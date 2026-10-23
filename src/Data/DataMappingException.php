@@ -37,4 +37,17 @@ final class DataMappingException extends \RuntimeException
     {
         return new self("Mapping {$class} nests deeper than {$max} levels, more than the encoder will write.");
     }
+
+    public static function notMappable(string $class, string $field, string $given): self
+    {
+        return new self("{$class}::\${$field} is a Data field, but its source is {$given}.");
+    }
+
+    public static function unknownType(string $where, string $name): self
+    {
+        return new self(
+            "{$where} names '{$name}' in its docblock, which is not a class. "
+            . 'Import it with use, or write it fully qualified.',
+        );
+    }
 }

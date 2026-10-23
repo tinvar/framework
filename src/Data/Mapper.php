@@ -17,23 +17,52 @@ use Tinvar\Orm\Model;
  * source property of the same name, converted by its declared type:
  *
  *   - a Data class: mapped from the source value, recursively;
- *   - a list of Data (`list<UnitData>` in the docblock): each element mapped;
+ *   - a list of Data (`list<UnitData>` in the docblock): each element mapped,
+ *     and an `array<string, UnitData>` keeps its keys;
  *   - `Lazy<T>`: the READ is deferred, not just the conversion, so a lazy
- *     relation is not loaded by mapping the object that holds it;
+ *     relation is not loaded by mapping the object that holds it, and it is
+ *     read later under the scope the mapping ran in;
  *   - anything else: passed through as it is.
  *
- * #[MapsFrom(Rack::class)] on the Data class makes from() refuse any other
- * source, so a Data class cannot be built from the wrong model by accident.
+ * Docblock names resolve as PHP would: fully qualified, through the file's
+ * `use` imports, or in the class's own namespace. A name that resolves to
+ * nothing is an error when the plan is built, not a model passed through
+ * to fail at the encoder far from its cause.
+ *
+ * #[MapsFrom(Rack::class)] on the Data class makes from() refuse an object
+ * of any other class. An array source is always accepted: it is data the
+ * caller assembled, and only its declared keys are read.
  *
  * The plan for each class is compiled once.
+ *
+ * @phpstan-type Field array{
+ *     name: string,
+ *     source: string,
+ *     kind: 'one'|'list'|'lazy-one'|'lazy-list'|'value',
+ *     target: class-string<Data>|null,
+ *     keyed: bool,
+ *     default: bool,
+ *     nullable: bool,
+ * }
+ * @phpstan-type Plan array{maps: class-string|null, fields: list<Field>}
  */
 final class Mapper
 {
     /** @var list<object|null> the sources being mapped, outermost first */
     private static array $mapping = [];
 
-    /** @var array<class-string<Data>, array{maps: class-string|null, fields: list<array{name: string, source: string, kind: string, target: class-string<Data>|null, default: bool, nullable: bool}>}> */
+    /** @var array<class-string<Data>, Plan> */
     private static array $plans = [];
+
+    /** @var array<string, array<string, string>> file => lowercased alias => imported name */
+    private static array $imports = [];
+
+    /** PHPDoc type names that are not classes. */
+    private const array PSEUDO_TYPES = [
+        'string', 'int', 'integer', 'float', 'double', 'bool', 'boolean', 'true', 'false', 'null', 'mixed',
+        'array', 'list', 'iterable', 'object', 'callable', 'scalar', 'numeric', 'array-key', 'non-empty-string',
+        'positive-int', 'negative-int', 'non-negative-int', 'class-string', 'resource', 'void', 'never',
+    ];
 
     /**
      * @template T of Data
@@ -94,7 +123,7 @@ final class Mapper
                 throw DataMappingException::missing($class, $field['name'], $field['source'], get_debug_type($source));
             }
 
-            $arguments[$field['name']] = $field['kind'] === 'lazy'
+            $arguments[$field['name']] = str_starts_with($field['kind'], 'lazy-')
                 ? self::deferred($class, $field, $source)
                 : self::convert($class, $field, self::read($source, $field['source']));
         }
@@ -103,47 +132,44 @@ final class Mapper
     }
 
     /**
-     * @param array{name: string, source: string, kind: string, target: class-string<Data>|null, default: bool, nullable: bool} $field
+     * @param Field $field
      * @param object|array<array-key, mixed> $source
      */
     private static function deferred(string $class, array $field, object|array $source): Lazy
     {
         // Nothing is read now -- reading a relation can load it, which is
-        // what Lazy exists to put off. When resolved: read, unwrap a Lazy
-        // the source already held, and convert. A Lazy<T> may hold one Data
-        // object or a list of them; the value decides which.
-        // Under the scope the mapping ran in, not whichever is in force when
-        // the encoder gets to it: a relation mapped inside actAs('acme') and
-        // read later under another tenant read that tenant's rows.
-        $scope = $source instanceof Model ? $source->orm()?->captureScope() : null;
+        // what Lazy exists to put off. And it is read under the scope the
+        // mapping ran in, not whichever is in force when the encoder gets
+        // to it: a relation mapped inside actAs('acme') and read later under
+        // another tenant read that tenant's rows.
+        $orm = $source instanceof Model ? $source->orm() : null;
+        $resolve = static function () use ($class, $field, $source): mixed {
+            $value = self::read($source, $field['source']);
 
-        return Lazy::of(static function () use ($class, $field, $source, $scope): mixed {
-            if ($scope !== null) {
-                return $scope(static fn (): mixed => self::resolveDeferred($class, $field, $source));
-            }
+            return self::convert(
+                $class,
+                ['kind' => $field['kind'] === 'lazy-list' ? 'list' : 'one'] + $field,
+                $value instanceof Lazy ? $value->resolve() : $value,
+            );
+        };
 
-            return self::resolveDeferred($class, $field, $source);
-        });
+        if ($orm === null) {
+            return Lazy::of($resolve);
+        }
+
+        // Mapped inside acrossTenants(): read now, inside the escape hatch.
+        // Deferred, the read would lift tenant scoping again wherever the
+        // encoder happened to resolve it -- outside the block that opened it.
+        if ($orm->isUnscoped()) {
+            return Lazy::value($resolve());
+        }
+
+        $scope = $orm->captureScope();
+
+        return Lazy::of(static fn (): mixed => $scope($resolve));
     }
 
-    /**
-     * @param array{name: string, source: string, kind: string, target: class-string<Data>|null, default: bool, nullable: bool} $field
-     * @param object|array<array-key, mixed> $source
-     */
-    private static function resolveDeferred(string $class, array $field, object|array $source): mixed
-    {
-        $value = self::read($source, $field['source']);
-
-        return self::convert(
-            $class,
-            ['kind' => 'either'] + $field,
-            $value instanceof Lazy ? $value->resolve() : $value,
-        );
-    }
-
-    /**
-     * @param array{name: string, source: string, kind: string, target: class-string<Data>|null, default: bool, nullable: bool} $field
-     */
+    /** @param Field $field */
     private static function convert(string $class, array $field, mixed $value): mixed
     {
         if ($value === null || $field['target'] === null) {
@@ -152,20 +178,15 @@ final class Mapper
 
         $target = $field['target'];
 
-        return match ($field['kind']) {
-            'one' => $value instanceof $target ? $value : self::map($target, self::source($class, $field, $value)),
-            'list' => self::mapList($class, $field, $target, $value),
-            // Inside a Lazy: a list of Data, or one.
-            default => \is_iterable($value) && !(\is_array($value) && !array_is_list($value))
-                ? self::mapList($class, $field, $target, $value)
-                : ($value instanceof $target ? $value : self::map($target, self::source($class, $field, $value))),
-        };
+        return $field['kind'] === 'list'
+            ? self::mapList($class, $field, $target, $value)
+            : ($value instanceof $target ? $value : self::map($target, self::source($class, $field, $value)));
     }
 
     /**
-     * @param array{name: string} $field
+     * @param Field $field
      * @param class-string<Data> $target
-     * @return list<Data>
+     * @return array<array-key, Data>
      */
     private static function mapList(string $class, array $field, string $target, mixed $value): array
     {
@@ -174,15 +195,21 @@ final class Mapper
         }
 
         $out = [];
-        foreach ($value as $item) {
-            $out[] = $item instanceof $target ? $item : self::map($target, self::source($class, $field, $item));
+        foreach ($value as $key => $item) {
+            $mapped = $item instanceof $target ? $item : self::map($target, self::source($class, $field, $item));
+            // An array<string, T> keeps its keys; a list<T> is renumbered.
+            if ($field['keyed'] && (\is_int($key) || \is_string($key))) {
+                $out[$key] = $mapped;
+            } else {
+                $out[] = $mapped;
+            }
         }
 
         return $out;
     }
 
     /**
-     * @param array{name: string} $field
+     * @param Field $field
      * @return object|array<array-key, mixed>
      */
     private static function source(string $class, array $field, mixed $value): object|array
@@ -191,7 +218,7 @@ final class Mapper
             return $value;
         }
 
-        throw DataMappingException::missing($class, $field['name'], $field['name'], get_debug_type($value));
+        throw DataMappingException::notMappable($class, $field['name'], get_debug_type($value));
     }
 
     /** @param object|array<array-key, mixed> $source */
@@ -229,7 +256,7 @@ final class Mapper
 
     /**
      * @param class-string<Data> $class
-     * @return array{maps: class-string|null, fields: list<array{name: string, source: string, kind: string, target: class-string<Data>|null, default: bool, nullable: bool}>}
+     * @return Plan
      */
     private static function planFor(string $class): array
     {
@@ -253,12 +280,13 @@ final class Mapper
             $type = $parameter->getType();
             $typeName = $type instanceof \ReflectionNamedType ? $type->getName() : null;
             $hint = self::hintFor($doc, $name) ?? self::hintFor($property?->getDocComment() ?: '', null);
+            $where = "{$class}::\${$name}";
 
-            [$kind, $target] = match (true) {
-                $typeName === Lazy::class => ['lazy', self::dataIn(self::lazyInner($hint), $reflection)],
-                $typeName === 'array' => ['list', self::dataIn(self::elementOf($hint), $reflection)],
-                $typeName !== null && is_subclass_of($typeName, Data::class) => ['one', $typeName],
-                default => ['value', null],
+            [$kind, $target, $keyed] = match (true) {
+                $typeName === Lazy::class => self::lazyShape($hint, $reflection, $where),
+                $typeName === 'array' => ['list', self::dataIn(self::elementOf($hint), $reflection, $where), self::isKeyed($hint)],
+                $typeName !== null && is_subclass_of($typeName, Data::class) => ['one', $typeName, false],
+                default => ['value', null, false],
             };
 
             $fields[] = [
@@ -266,6 +294,7 @@ final class Mapper
                 'source' => $from ?? $name,
                 'kind' => $kind,
                 'target' => $target,
+                'keyed' => $keyed,
                 'default' => $parameter->isDefaultValueAvailable(),
                 'nullable' => $type?->allowsNull() ?? true,
             ];
@@ -274,17 +303,42 @@ final class Mapper
         return self::$plans[$class] = ['maps' => $maps, 'fields' => $fields];
     }
 
-    /** The `@param T $name` type, or the sole `@var T`. */
+    /**
+     * Whether a Lazy holds a list or one value comes from its declared type.
+     * Guessed from the value, an iterable Data source was taken for a list
+     * and a keyed array of Data for one object.
+     *
+     * @param \ReflectionClass<Data> $declaring
+     * @return array{'lazy-one'|'lazy-list', class-string<Data>|null, bool}
+     */
+    private static function lazyShape(?string $hint, \ReflectionClass $declaring, string $where): array
+    {
+        $inner = self::withoutNull(self::lazyInner($hint));
+        $isList = $inner !== null && self::elementOf($inner) !== $inner;
+
+        return [
+            $isList ? 'lazy-list' : 'lazy-one',
+            self::dataIn(self::elementOf($inner), $declaring, $where),
+            $isList && self::isKeyed($inner),
+        ];
+    }
+
+    /** The `@param T $name` type, or the sole `@var T`, read one tag at a time. */
     private static function hintFor(string $doc, ?string $name): ?string
     {
         if ($doc === '') {
             return null;
         }
-        if ($name !== null && preg_match('/@param\s+(.+?)\s+\$' . preg_quote($name, '/') . '\b/', $doc, $m) === 1) {
-            return trim($m[1]);
-        }
-        if ($name === null && preg_match('/@var\s+(.+?)(?:\s+\$|\s*\*\/|\R)/', $doc, $m) === 1) {
-            return trim($m[1]);
+
+        // Line by line: a pattern across the whole block let a description
+        // that mentions `$name` on another line claim that line's type.
+        foreach (preg_split('/\R/', $doc) ?: [] as $line) {
+            if ($name !== null && preg_match('/@param\s+(.+?)\s+(?:\.\.\.)?\$(\w+)\b/', $line, $m) === 1 && $m[2] === $name) {
+                return trim($m[1]);
+            }
+            if ($name === null && preg_match('/@var\s+(.+?)(?:\s+\$\w+)?\s*(?:\*\/)?\s*$/', $line, $m) === 1) {
+                return trim($m[1]);
+            }
         }
 
         return null;
@@ -292,16 +346,27 @@ final class Mapper
 
     private static function lazyInner(?string $hint): ?string
     {
-        return $hint !== null && preg_match('/^Lazy<(.+)>(?:\|null)?$/s', $hint, $m) === 1 ? $m[1] : null;
+        return $hint !== null && preg_match('/^Lazy<(.+)>$/s', self::withoutNull($hint) ?? '', $m) === 1 ? $m[1] : null;
+    }
+
+    private static function withoutNull(?string $hint): ?string
+    {
+        return $hint === null ? null : (preg_replace('/\|null$|^null\|/', '', trim($hint)) ?? $hint);
+    }
+
+    /** `array<K, X>` keeps keys; `list<X>`, `array<X>` and `X[]` do not. */
+    private static function isKeyed(?string $hint): bool
+    {
+        return $hint !== null && preg_match('/^(?:non-empty-)?array<[^,<>]+,/', self::withoutNull($hint) ?? '') === 1;
     }
 
     /** `list<X>`, `array<X>`, `array<K, X>`, `X[]` -> X; a bare `X` -> X. */
     private static function elementOf(?string $hint): ?string
     {
+        $hint = self::withoutNull($hint);
         if ($hint === null) {
             return null;
         }
-        $hint = preg_replace('/\|null$|^null\|/', '', trim($hint)) ?? $hint;
 
         if (preg_match('/^(?:non-empty-)?(?:list|array)<(?:[^,<>]+,\s*)?(.+)>$/s', $hint, $m) === 1) {
             return trim($m[1]);
@@ -311,25 +376,126 @@ final class Mapper
     }
 
     /**
-     * The Data class a hint names -- a list of one, or one -- resolved
-     * against the declaring class's namespace, or null if it names none.
+     * The Data class a hint names -- a list of one, or one -- resolved as
+     * PHP resolves names, or null if it names a scalar or a non-Data class.
+     * A name that resolves to nothing at all is refused.
      *
      * @param \ReflectionClass<Data> $declaring
      * @return class-string<Data>|null
      */
-    private static function dataIn(?string $hint, \ReflectionClass $declaring): ?string
+    private static function dataIn(?string $hint, \ReflectionClass $declaring, string $where): ?string
     {
         $name = self::elementOf($hint);
         if ($name === null || !preg_match('/^\\\\?[A-Za-z_][A-Za-z0-9_\\\\]*$/', $name)) {
             return null;
         }
+        if (\in_array(strtolower($name), self::PSEUDO_TYPES, true)) {
+            return null;
+        }
 
-        foreach ([ltrim($name, '\\'), $declaring->getNamespaceName() . '\\' . $name] as $candidate) {
-            if (class_exists($candidate) && is_subclass_of($candidate, Data::class)) {
-                return $candidate;
+        $resolved = self::resolveName($name, $declaring);
+        if (!class_exists($resolved) && !interface_exists($resolved) && !enum_exists($resolved)) {
+            throw DataMappingException::unknownType($where, $name);
+        }
+
+        return is_subclass_of($resolved, Data::class) ? $resolved : null;
+    }
+
+    /** @param \ReflectionClass<Data> $declaring */
+    private static function resolveName(string $name, \ReflectionClass $declaring): string
+    {
+        if (str_starts_with($name, '\\')) {
+            return ltrim($name, '\\');
+        }
+
+        $parts = explode('\\', $name, 2);
+        $first = $parts[0];
+        $rest = $parts[1] ?? null;
+        $imports = self::importsOf($declaring->getFileName() ?: '');
+        if (isset($imports[strtolower($first)])) {
+            return $imports[strtolower($first)] . ($rest === null ? '' : '\\' . $rest);
+        }
+
+        $namespace = $declaring->getNamespaceName();
+
+        return $namespace === '' ? $name : $namespace . '\\' . $name;
+    }
+
+    /**
+     * The class imports of a file: `use A\B\C;` and `use A\B\C as D;`,
+     * including grouped `use A\B\{C, D as E};`. Function and constant
+     * imports are skipped, and so are a class's trait uses.
+     *
+     * @return array<string, string> lowercased alias => imported name
+     */
+    private static function importsOf(string $file): array
+    {
+        if ($file === '' || !is_file($file)) {
+            return [];
+        }
+        if (isset(self::$imports[$file])) {
+            return self::$imports[$file];
+        }
+
+        $imports = [];
+        $tokens = \PhpToken::tokenize((string) file_get_contents($file));
+        $depth = 0;
+        $count = \count($tokens);
+
+        for ($i = 0; $i < $count; $i++) {
+            $token = $tokens[$i];
+            if ($token->text === '{' || $token->id === T_CURLY_OPEN || $token->id === T_DOLLAR_OPEN_CURLY_BRACES) {
+                $depth++;
+            } elseif ($token->text === '}') {
+                $depth--;
+            }
+            if ($depth !== 0 || $token->id !== T_USE) {
+                continue;
+            }
+
+            $statement = '';
+            for ($i++; $i < $count && $tokens[$i]->text !== ';'; $i++) {
+                $statement .= $tokens[$i]->text;
+            }
+            $statement = trim($statement);
+            if (preg_match('/^(function|const)\s/i', $statement) === 1) {
+                continue;
+            }
+
+            foreach (self::expandUse($statement) as $alias => $imported) {
+                $imports[strtolower($alias)] = $imported;
             }
         }
 
-        return null;
+        return self::$imports[$file] = $imports;
+    }
+
+    /** @return array<string, string> alias => imported name, for one use statement */
+    private static function expandUse(string $statement): array
+    {
+        $out = [];
+        if (preg_match('/^([^{]+)\{(.+)\}$/s', $statement, $group) === 1) {
+            $prefix = rtrim(trim($group[1]), '\\');
+            foreach (explode(',', $group[2]) as $part) {
+                $out += self::expandUse($prefix . '\\' . trim($part));
+            }
+
+            return $out;
+        }
+
+        foreach (explode(',', $statement) as $part) {
+            $part = trim($part);
+            if ($part === '') {
+                continue;
+            }
+            if (preg_match('/^(.+?)\s+as\s+(\w+)$/i', $part, $m) === 1) {
+                $out[$m[2]] = ltrim(trim($m[1]), '\\');
+            } else {
+                $name = ltrim($part, '\\');
+                $out[substr($name, (int) strrpos('\\' . $name, '\\'))] = $name;
+            }
+        }
+
+        return $out;
     }
 }
