@@ -128,8 +128,9 @@ final class Kernel
     /**
      * @param \Closure(class-string): object $resolver builds pages, layouts, queries, actions and middleware
      * @param \Closure(Request): list<string> $allowedQueries the route's query allowlist
-     * @param list<class-string> $globalMiddleware
+     * @param list<class-string<Middleware>> $globalMiddleware
      * @param (\Closure(\Throwable, string): void)|null $log
+     * @param array<string, int> $limits requests per minute, by throttle bucket
      */
     public function __construct(
         public readonly Orm $orm,
@@ -159,7 +160,7 @@ final class Kernel
         $this->router = new Router(
             $this->routes,
             new LoaderRunner($this->orm, $resolver, $gate),
-            static fn (string $class): Middleware => $resolver($class),
+            self::middlewareFrom($resolver),
             $globalMiddleware,
         );
 
@@ -184,11 +185,12 @@ final class Kernel
             orm: $this->orm,
             render: $fragments->renderRoute,
             builds: $fragments->builds,
-            middlewareResolver: static fn (string $class): Middleware => $resolver($class),
+            middlewareResolver: self::middlewareFrom($resolver),
             panels: $panels,
             globalMiddleware: $globalMiddleware,
-            log: $log === null ? null : static fn (\Throwable $e): mixed
-                => $log($e, ExceptionHandler::digest($e)),
+            log: $log === null ? null : static function (\Throwable $e) use ($log): void {
+                $log($e, ExceptionHandler::digest($e));
+            },
         );
 
         $this->actions_ = new ActionEndpoint(new ActionRunner(
@@ -210,7 +212,7 @@ final class Kernel
 
         $this->queries_ = new QueryEndpoint($queryRunner, $allowedQueries);
 
-        $global = array_map(static fn (string $class): Middleware => $resolver($class), $globalMiddleware);
+        $global = array_map(self::middlewareFrom($resolver), $globalMiddleware);
 
         // The address pass is outermost -- ahead of the application's own
         // global middleware, so a refused request does not pay for session
@@ -301,7 +303,7 @@ final class Kernel
             render: $fragments->render,
             sessionId: $fragments->sessionId,
             allowedQueries: $fragments->allowedQueries,
-            middlewareResolver: static fn (string $class): Middleware => $resolver($class),
+            middlewareResolver: self::middlewareFrom($resolver),
             globalMiddleware: $globalMiddleware,
             extraGlobal: $this->throttleFor($throttle, 'fragments', $limits, byAddress: true),
             panels: $panels,
@@ -419,6 +421,29 @@ final class Kernel
         } finally {
             $this->scope->reset();
         }
+    }
+
+    /**
+     * The application's resolver, narrowed to middleware. A resolver that
+     * hands back something else is a misconfiguration to name, not a
+     * TypeError from deep inside a request.
+     *
+     * @param \Closure(class-string): object $resolver
+     * @return \Closure(class-string): Middleware
+     */
+    private static function middlewareFrom(\Closure $resolver): \Closure
+    {
+        return static function (string $class) use ($resolver): Middleware {
+            if (!class_exists($class)) {
+                throw new \LogicException("No middleware class {$class}.");
+            }
+            $middleware = $resolver($class);
+            if (!$middleware instanceof Middleware) {
+                throw new \LogicException("The resolver built {$class} as " . get_debug_type($middleware) . ', not middleware.');
+            }
+
+            return $middleware;
+        };
     }
 
     /**

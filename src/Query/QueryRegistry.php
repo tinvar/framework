@@ -110,7 +110,7 @@ final class QueryRegistry
         return $this->checks[$name];
     }
 
-    /** @param class-string|null $class */
+    /** @return class-string|null */
     public function classFor(string $name): ?string
     {
         return $this->classes[$name] ?? null;

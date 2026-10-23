@@ -63,7 +63,7 @@ final class Sapi
      * HTTP_* entries, plus the two the CGI convention files without the
      * prefix. Names lowercased and dashed, as Request expects.
      *
-     * @param array<string, mixed> $server
+     * @param array<array-key, mixed> $server numeric keys can occur
      * @return array<string, string>
      */
     private static function headers(array $server): array

@@ -37,7 +37,10 @@ final class Response
         return $response;
     }
 
-    /** @param \Closure(\Closure(string): void): void $producer */
+    /**
+     * @param \Closure(\Closure(string): void): void $producer
+     * @param array<string, string>                 $headers
+     */
     public static function stream(\Closure $producer, int $status = 200, array $headers = []): self
     {
         $response = self::make($status, '', $headers);

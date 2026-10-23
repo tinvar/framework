@@ -15,15 +15,6 @@ final class Request
     /** @var array<string, mixed> values middleware and the router attach */
     private array $attributes = [];
 
-    /**
-     * @param array<string, string>       $headers lowercased names
-     * @param array<string, string|list<string>> $query
-     * @param array<string, mixed>        $body
-     * @param array<string, string>       $cookies
-     * @param ?string                     $rawQuery the query string exactly as
-     *                                              received, without the `?`; null
-     *                                              when the adapter does not have it
-     */
     public readonly string $method;
 
     public readonly string $path;
@@ -34,6 +25,14 @@ final class Request
      * A server adapter builds requests with `new Request(...)` straight from
      * the environment; if the guard lived only in the test factories, the one
      * place that matters would be the one place without it.
+     *
+     * @param array<string, string>              $headers lowercased names
+     * @param array<string, string|list<string>> $query
+     * @param array<string, mixed>               $body
+     * @param array<string, string>              $cookies
+     * @param ?string                            $rawQuery the query string exactly as
+     *                                                     received, without the `?`; null
+     *                                                     when the adapter does not have it
      */
     public function __construct(
         string $method,
@@ -55,11 +54,19 @@ final class Request
         $this->path = self::normalizePath($path);
     }
 
+    /**
+     * @param array<string, string>              $headers any case
+     * @param array<string, string|list<string>> $query
+     */
     public static function get(string $path, array $headers = [], array $query = []): self
     {
         return new self('GET', $path, self::lowercase($headers), $query);
     }
 
+    /**
+     * @param array<string, mixed>  $body
+     * @param array<string, string> $headers any case
+     */
     public static function post(string $path, array $body = [], array $headers = []): self
     {
         return new self('POST', $path, self::lowercase($headers), [], $body);

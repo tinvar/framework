@@ -978,3 +978,22 @@ describe('version skew through the kernel', function () {
         expect($kernel->handle(Request::get($path), render())->status)->toBe(200);
     });
 });
+
+// A resolver that builds something other than middleware is named as a
+// misconfiguration when the Kernel is built -- the endpoint stacks are
+// resolved up front -- not left to a TypeError inside a request.
+it('names a resolver that builds something other than middleware', function () {
+    $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+
+    expect(fn () => new Kernel(
+        orm: new Orm($fixture->connection, new IdentityMap('test')),
+        routes: new RouteRegistry(),
+        queries: new QueryRegistry(),
+        actions: new ActionRegistry(),
+        auth: new AuthContext(),
+        policies: new PolicyRegistry(),
+        resolver: static fn (string $class): object => new stdClass(),
+        allowedQueries: static fn (Request $r): array => [],
+        globalMiddleware: [VerifyCsrfToken::class],
+    ))->toThrow(LogicException::class, 'VerifyCsrfToken as stdClass, not middleware');
+});

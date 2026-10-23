@@ -191,8 +191,9 @@ final class FragmentEndpoint
                     throw self::refuse('token was minted for a different tenant');
                 }
 
-                if ($this->panels !== null && $token->panel !== '' && $ambient === null) {
-                    return $this->panels->within(
+                $panels = $this->panels;
+                if ($panels !== null && $token->panel !== '' && $ambient === null) {
+                    return $panels->within(
                         $token->panel,
                         fn (): Response => $this->renderWithin($chain, $inner, $token),
                     );
