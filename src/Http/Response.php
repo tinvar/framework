@@ -153,7 +153,7 @@ final class Response
      */
     private static function assertSafeHeader(string $name, string $value): void
     {
-        if (preg_match('/^[A-Za-z0-9!#$%&\'*+.^_`|~-]+$/', $name) !== 1) {
+        if (preg_match('/^[A-Za-z0-9!#$%&\'*+.^_`|~-]+\z/', $name) !== 1) {
             throw new \InvalidArgumentException('Header name contains characters that are not allowed.');
         }
         if (preg_match('/[\x00-\x1f\x7f]/', $value) === 1) {
