@@ -154,16 +154,15 @@ final class Kernel
             $cache,
         ));
 
-        $this->queries_ = new QueryEndpoint(
-            new QueryRunner(
-                registry: $this->queries,
-                orm: $this->orm,
-                gate: $gate,
-                cache: $cache,
-                debug: $debug,
-            ),
-            $allowedQueries,
+        $queryRunner = new QueryRunner(
+            registry: $this->queries,
+            orm: $this->orm,
+            gate: $gate,
+            cache: $cache,
+            debug: $debug,
         );
+
+        $this->queries_ = new QueryEndpoint($queryRunner, $allowedQueries);
 
         $global = array_map(static fn (string $class): Middleware => $resolver($class), $globalMiddleware);
 
@@ -211,6 +210,22 @@ final class Kernel
         // logged like any other request.
         // The support object mints; it needs the same panel context the
         // endpoint reads, or the two halves disagree.
+        // A support object carrying a DIFFERENT context is a configuration
+        // error, not something to silently prefer one side of: the mint side
+        // would read one context and the verify side another, so a fragment
+        // minted under one panel would be checked against a context that
+        // never saw the switch.
+        if ($fragments !== null
+            && $fragments->panels !== null
+            && $panels !== null
+            && $fragments->panels !== $panels
+        ) {
+            throw new \InvalidArgumentException(
+                'FragmentSupport carries a different PanelContext than this Kernel. '
+                . 'Minting and verifying must read the same one.'
+            );
+        }
+
         if ($fragments !== null && $fragments->panels === null && $panels !== null) {
             $fragments = new FragmentSupport(
                 signer: $fragments->signer,
@@ -228,10 +243,12 @@ final class Kernel
             builds: $fragments->builds,
             render: $fragments->render,
             sessionId: $fragments->sessionId,
+            allowedQueries: $fragments->allowedQueries,
             middlewareResolver: static fn (string $class): Middleware => $resolver($class),
             globalMiddleware: $globalMiddleware,
-            extraGlobal: $this->throttleFor($throttle, 'fragments', $limits),
+            extraGlobal: $this->throttleFor($throttle, 'fragments', $limits, byAddress: true),
             panels: $panels,
+            extraInner: $this->throttleFor($throttle, 'fragments', $limits, byAddress: false),
         );
 
         // Both, or neither: a manifest says which boundaries exist, and
@@ -242,7 +259,7 @@ final class Kernel
             : new BootstrapEndpoint($this->routes, $manifest, $fragments);
 
         $this->exceptions = new ExceptionHandler($log);
-        $this->scope = RequestScope::standard($this->orm, $this->auth, $this->policies, $panels);
+        $this->scope = RequestScope::standard($this->orm, $this->auth, $this->policies, $panels, $queryRunner);
     }
 
     /**

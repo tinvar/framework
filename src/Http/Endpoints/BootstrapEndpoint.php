@@ -77,7 +77,20 @@ final class BootstrapEndpoint
             throw new HttpException(400, 'Bootstrap params must be an object.', 'bad_request');
         }
 
-        $params = array_map(strval(...), $params);
+        // Validated, not coerced. FragmentToken::params() carries a comment
+        // explaining why strval was wrong here -- true becomes "1", null
+        // becomes "", a nested array becomes the literal "Array" plus a
+        // warning that any handler promoting warnings turns into a 500,
+        // escaping the one-status rule. The fix was applied in one place and
+        // not the other.
+        foreach ($params as $name => $value) {
+            if (!\is_string($value) && !\is_int($value)) {
+                throw new HttpException(400, 'Bootstrap params must be scalars.', 'bad_request');
+            }
+            $params[(string) $name] = (string) $value;
+        }
+
+        /** @var array<string, string> $params */
 
         // The page, not the route: a statically-built page is a concrete URL,
         // and the props the build recorded belong to THAT page. Looking up by
@@ -96,13 +109,32 @@ final class BootstrapEndpoint
         // The route has to exist and its params have to fit, because the
         // token binds them and the fragment endpoint will rebuild this chain
         // from them later. A mismatch is the caller's error, not a 500.
+        // The SAME answer as an unbuilt page. Distinguishing "in the
+        // manifest but the params do not form" from "not in the manifest"
+        // confirmed which pages were built statically -- reintroducing, in
+        // the caller, the oracle FragmentManifest::boundariesFor() returns
+        // empty specifically to avoid.
         try {
             $this->routes->chainFor($route, $params);
         } catch (RoutingException) {
-            throw new HttpException(400, 'That route and those params do not go together.', 'bad_request');
+            return self::json(['tokens' => []]);
         }
 
-        $minter = $this->fragments->minterFor($request, $route, $params);
+        // A visitor arriving at a statically-served page may have no
+        // session yet, and that is the ordinary case rather than an error --
+        // but a token with no session to bind to is one every visitor would
+        // share, so it cannot be minted. FragmentEndpoint refuses the same
+        // condition cleanly; this one let the exception out as a 500,
+        // remotely triggerable without authentication.
+        try {
+            $minter = $this->fragments->minterFor($request, $route, $params);
+        } catch (\InvalidArgumentException) {
+            throw new HttpException(
+                409,
+                'A session is required before fragment tokens can be minted.',
+                'no_session',
+            );
+        }
 
         $tokens = [];
         foreach ($boundaries as $boundary) {

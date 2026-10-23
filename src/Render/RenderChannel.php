@@ -150,7 +150,24 @@ final class RenderChannel
 
                         $tokens = [];
                         foreach ($requests as $request) {
-                            $tokens[$request['id']] = $mint($request['component'], $request['props']);
+                            try {
+                                $tokens[$request['id']] = $mint(
+                                    $request['component'],
+                                    $request['props'],
+                                );
+                            } catch (FragmentTokenError) {
+                                // One bad boundary, not a failed page. The
+                                // bootstrap path already degrades this way;
+                                // here an oversized props object or a
+                                // malformed component id used to escape
+                                // render() and fail the whole render. Same
+                                // error, same minter, two policies.
+                                //
+                                // The id is omitted rather than answered, so
+                                // the renderer's promise rejects and that one
+                                // boundary reports instead of mounting.
+                                continue;
+                            }
                         }
 
                         $this->write($socket, $this->codec->encodeFrame(Frame::minted($tokens)));

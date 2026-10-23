@@ -21,6 +21,14 @@ final readonly class FragmentSupport
 {
     /**
      * @param \Closure(\Tinvar\Render\FragmentToken, Request, array<string, mixed>): Response $render
+     * @param (\Closure(string): list<string>)|null $allowedQueries the originating
+     *        route's query allowlist, by route name. The ENDPOINT asks for
+     *        this and hands the answer to $render, rather than letting the
+     *        render closure choose: "PHP rejects any other name on that
+     *        route's socket" is only true while the list comes from the
+     *        route. A closure free to pass the whole registry would make
+     *        /_fragment a query endpoint with no allowlist, no CSRF, no
+     *        authentication and the wrong throttle bucket.
      * @param \Closure(Request): string $sessionId must return a real session id; an empty
      *        one is refused, because every visitor without a session would otherwise share
      *        one binding and their tokens would be interchangeable
@@ -31,6 +39,7 @@ final readonly class FragmentSupport
         public \Closure $render,
         public \Closure $sessionId,
         public ?PanelContext $panels = null,
+        public ?\Closure $allowedQueries = null,
     ) {}
 
     /**
@@ -51,6 +60,7 @@ final readonly class FragmentSupport
         string $route,
         array $params,
         ?string $panel = null,
+        string $tenant = '',
     ): FragmentMinter {
         // The LIVE panel by default. It used to default to '', so the read
         // side consulted the context and the write side never did: every
@@ -63,6 +73,7 @@ final readonly class FragmentSupport
             route: $route,
             params: $params,
             panel: $panel,
+            tenant: $tenant,
             build: $this->builds->current,
             sessionId: ($this->sessionId)($request),
         );

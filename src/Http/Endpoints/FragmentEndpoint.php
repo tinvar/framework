@@ -9,6 +9,7 @@ use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Pipeline;
 use Tinvar\Http\Request;
+use Tinvar\Orm\Orm;
 use Tinvar\Http\Response;
 use Tinvar\Render\FragmentToken;
 use Tinvar\Render\FragmentTokenError;
@@ -56,12 +57,18 @@ final class FragmentEndpoint
     public const string CONTENT_TYPE = 'text/x-component';
 
     /**
-     * @param \Closure(FragmentToken, Request, array<string, mixed>): Response $render
-     *        opens a render channel for the subtree and returns its response
+     * @param \Closure(FragmentToken, Request, array<string, mixed>, list<string>): Response $render
+     *        opens a render channel for the subtree and returns its response.
+     *        The allowlist is the FOURTH argument because the endpoint
+     *        computes it from the originating route; a closure that chose its
+     *        own would make this a query endpoint without one.
      * @param \Closure(Request): string $sessionId
      * @param \Closure(class-string): Middleware $middlewareResolver
      * @param list<class-string> $globalMiddleware
      * @param list<Middleware> $extraGlobal already-built middleware to run outermost
+     * @param list<Middleware> $extraInner  already-built middleware to run AFTER the
+     *        application's global stack -- where a per-user throttle has to go,
+     *        because the session it reads is established by that stack
      */
     public function __construct(
         private readonly RouteRegistry $routes,
@@ -74,6 +81,9 @@ final class FragmentEndpoint
         private readonly array $globalMiddleware = [],
         private readonly array $extraGlobal = [],
         private readonly ?PanelContext $panels = null,
+        private readonly array $extraInner = [],
+        private readonly ?\Closure $allowedQueries = null,
+        private readonly ?Orm $orm = null,
     ) {}
 
     public function matches(Request $request): bool
@@ -134,10 +144,18 @@ final class FragmentEndpoint
             }
 
             $routeOnly = array_values(array_diff($chain->middleware(), $this->globalMiddleware));
-            $pipeline = new Pipeline(array_map(
-                fn (string $class): Middleware => ($this->middlewareResolver)($class),
-                $routeOnly,
-            ));
+            $pipeline = new Pipeline([
+                // Inner middleware first: the per-user throttle belongs here,
+                // after the global stack has established a session and before
+                // the route's own work. Fragments had only the address pass,
+                // and they are the most expensive endpoint to leave without
+                // an account ceiling -- one request is a full subtree render.
+                ...$this->extraInner,
+                ...array_map(
+                    fn (string $class): Middleware => ($this->middlewareResolver)($class),
+                    $routeOnly,
+                ),
+            ]);
 
             return $pipeline->run($passed, function (Request $inner) use ($chain, $token): Response {
                 // The panel the page was rendered in, CHECKED rather than
@@ -156,6 +174,15 @@ final class FragmentEndpoint
 
                 if ($ambient !== null && $ambient !== $token->panel) {
                     throw self::refuse('token was minted in a different panel');
+                }
+
+                // The same check for the tenant, which the spec names in the
+                // same clause. Checked rather than applied: a token must
+                // never be able to establish a tenant, only to agree with
+                // the one the request is already in.
+                $tenant = $this->orm?->tenant();
+                if ($tenant !== null && $tenant !== '' && $tenant !== $token->tenant) {
+                    throw self::refuse('token was minted for a different tenant');
                 }
 
                 if ($this->panels !== null && $token->panel !== '' && $ambient === null) {
@@ -177,7 +204,12 @@ final class FragmentEndpoint
         // subtree renders anything.
         $models = $this->loaders->bindAndAuthorize($chain, $inner);
 
-        $response = ($this->render)($token, $inner, $models);
+        // "PHP rejects any other name on that route's socket, so a
+        // compromised dependency can't call queries the page never uses."
+        // Derived here, from the route the token names.
+        $allowed = $this->allowedQueries === null ? [] : ($this->allowedQueries)($token->route);
+
+        $response = ($this->render)($token, $inner, $models, $allowed);
 
         // A refreshed token only on a response that succeeded. Handing one
         // back with a failure the renderer produced itself would extend the

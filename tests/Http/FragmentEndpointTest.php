@@ -85,9 +85,11 @@ function fragmentToken(Signer $signer, Fixture $fixture, array $overrides = []):
             'rack' => $fixture->ids['racks'][0],
         ],
         panel: $overrides['panel'] ?? '',
+        tenant: $overrides['tenant'] ?? '',
         build: $overrides['build'] ?? 'build-2',
         sessionHash: $overrides['sessionHash'] ?? FragmentToken::hashSession($signer, FRAGMENT_SESSION),
         expiresAt: $overrides['expiresAt'] ?? time() + 3600,
+        issuedAt: $overrides['issuedAt'] ?? time(),
     );
 }
 

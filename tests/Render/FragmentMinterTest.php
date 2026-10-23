@@ -29,6 +29,7 @@ function minter(Signer $signer, array $overrides = []): FragmentMinter
         route: $overrides['route'] ?? 'racks.show',
         params: $overrides['params'] ?? ['rack' => 'r-1'],
         panel: $overrides['panel'] ?? 'admin',
+        tenant: $overrides['tenant'] ?? 'acme',
         build: $overrides['build'] ?? 'build-7',
         sessionId: $overrides['sessionId'] ?? 'session-abc',
     );

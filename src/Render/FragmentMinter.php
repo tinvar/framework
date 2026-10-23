@@ -49,10 +49,20 @@ final class FragmentMinter
         private readonly string $route,
         private readonly array $params,
         private readonly string $panel,
+        private readonly string $tenant,
         private readonly string $build,
         private readonly string $sessionId,
         private readonly int $ttl = FragmentToken::DEFAULT_TTL,
     ) {
+        // decode() hard-rejects an expiry further out than DEFAULT_TTL, so a
+        // configured TTL above it would mint tokens that fail verification
+        // immediately and indistinguishably from forgeries.
+        if ($ttl < 1 || $ttl > FragmentToken::DEFAULT_TTL) {
+            throw new \InvalidArgumentException(
+                'A fragment token TTL must be between 1 second and ' . FragmentToken::DEFAULT_TTL . '.'
+            );
+        }
+
         if ($this->sessionId === '') {
             // hashSession('') is one constant, so every visitor without a
             // session would share one binding and their tokens would be
@@ -98,6 +108,7 @@ final class FragmentMinter
             route: $this->route,
             params: $this->params,
             panel: $this->panel,
+            tenant: $this->tenant,
             build: $this->build,
             sessionHash: FragmentToken::hashSession($this->signer, $this->sessionId),
             expiresAt: time() + $this->ttl,

@@ -19,9 +19,11 @@ function token(Signer $signer, array $overrides = []): FragmentToken
         route: $overrides['route'] ?? 'racks.show',
         params: $overrides['params'] ?? ['rack' => 'r-1'],
         panel: $overrides['panel'] ?? 'admin',
+        tenant: $overrides['tenant'] ?? 'acme',
         build: $overrides['build'] ?? 'build-1',
         sessionHash: $overrides['sessionHash'] ?? FragmentToken::hashSession($signer, 'session-abc'),
         expiresAt: $overrides['expiresAt'] ?? time() + 3600,
+        issuedAt: $overrides['issuedAt'] ?? time(),
     );
 }
 
@@ -275,4 +277,59 @@ describe('malleability and bounds', function () {
             $signer,
         ))->toThrow(FragmentTokenError::class);
     });
+});
+
+// From the Phase 2 review. Each was reproduced before being fixed.
+describe('the absolute lifetime', function () {
+    /**
+     * issuedAt was a defaulted constructor parameter and the ceiling check
+     * skipped it when zero -- so the one control the comment calls
+     * load-bearing could be switched off by leaving an argument out. A
+     * probe built a token that way, refreshed it three times, and it
+     * verified ten years later.
+     */
+    it('refuses a token that carries no issue time', function () {
+        $signer = signer();
+        $encoded = token($signer, ['issuedAt' => 0])->encode($signer);
+
+        expect(fn () => FragmentToken::decode($encoded, $signer))
+            ->toThrow(FragmentTokenError::class, 'no issue time');
+    });
+
+    it('refuses one older than a token may live across refreshes', function () {
+        $signer = signer();
+        $encoded = token($signer, ['issuedAt' => time() - FragmentToken::MAX_LIFETIME - 1])
+            ->encode($signer);
+
+        expect(fn () => FragmentToken::decode($encoded, $signer))
+            ->toThrow(FragmentTokenError::class, 'older than');
+    });
+
+    // Refreshing extends the expiry and must NOT extend the lifetime.
+    it('does not let refreshing push back the deadline', function () {
+        $signer = signer();
+        $issued = time() - FragmentToken::MAX_LIFETIME + 10;
+
+        $refreshed = token($signer, ['issuedAt' => $issued])->refreshed()->refreshed();
+
+        expect($refreshed->issuedAt)->toBe($issued);
+    });
+});
+
+/**
+ * "Client-held data is bound to (user, tenant) ... any mismatch between
+ * stored and current user or tenant also purges it." The panel was defended
+ * carefully and the tenant was not carried at all.
+ */
+it('carries the tenant it was minted for', function () {
+    $signer = signer();
+
+    expect(FragmentToken::decode(token($signer, ['tenant' => 'acme'])->encode($signer), $signer)->tenant)
+        ->toBe('acme');
+});
+
+it('keeps the tenant across a refresh', function () {
+    $signer = signer();
+
+    expect(token($signer, ['tenant' => 'acme'])->refreshed()->tenant)->toBe('acme');
 });

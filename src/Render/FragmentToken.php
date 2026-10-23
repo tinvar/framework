@@ -32,6 +32,16 @@ use Tinvar\Support\Signer;
  * The session binding is a HASH of the session id, not the id: the token is
  * readable in page source, and a token that carried a usable session id would
  * be a session-fixation primitive sitting in the DOM.
+ *
+ * The TENANT is carried for the same reason as the panel, and was missing for
+ * longer. "Client-held data is bound to (user, tenant) ... any mismatch
+ * between stored and current user or tenant also purges it." A fragment token
+ * is client-held data with a one-day ceiling and a refresh chain inside it, so
+ * without a tenant it asserts "this session was entitled to this route and
+ * these props" across a tenant switch or a revoked membership. Tenant
+ * resolution does not exist yet, so there is nothing to exploit today -- which
+ * is precisely why the field goes in now: adding one to a signed format later
+ * is a skew event.
  */
 final readonly class FragmentToken
 {
@@ -62,10 +72,11 @@ final readonly class FragmentToken
         public string $route,
         public array $params,
         public string $panel,
+        public string $tenant,
         public string $build,
         public string $sessionHash,
         public int $expiresAt,
-        public int $issuedAt = 0,
+        public int $issuedAt,
     ) {}
 
     /**
@@ -88,6 +99,7 @@ final readonly class FragmentToken
             'r' => $this->route,
             'a' => $this->params,
             'n' => $this->panel,
+            'y' => $this->tenant,
             'b' => $this->build,
             's' => $this->sessionHash,
             'e' => $this->expiresAt,
@@ -160,6 +172,7 @@ final readonly class FragmentToken
             route: self::string($decoded, 'r'),
             params: self::params($decoded),
             panel: self::string($decoded, 'n'),
+            tenant: self::string($decoded, 'y'),
             build: self::string($decoded, 'b'),
             sessionHash: self::string($decoded, 's'),
             expiresAt: \is_int($decoded['e'] ?? null) ? $decoded['e'] : 0,
@@ -183,7 +196,16 @@ final readonly class FragmentToken
         // The absolute deadline, which refreshing cannot push back. Without
         // it, a boundary refreshing on a timer re-asserted its original
         // session and panel indefinitely.
-        if ($self->issuedAt > 0 && $at - $self->issuedAt > self::MAX_LIFETIME) {
+        //
+        // A missing or zero issuedAt is MALFORMED, not exempt. It was a
+        // defaulted constructor parameter and the check skipped it when
+        // absent, so the one control the comment above calls load-bearing
+        // could be switched off by leaving an argument out.
+        if ($self->issuedAt <= 0) {
+            throw new FragmentTokenError('token carries no issue time');
+        }
+
+        if ($at - $self->issuedAt > self::MAX_LIFETIME) {
             throw new FragmentTokenError('token is older than one may live across refreshes');
         }
 
@@ -199,6 +221,7 @@ final readonly class FragmentToken
             route: $this->route,
             params: $this->params,
             panel: $this->panel,
+            tenant: $this->tenant,
             build: $this->build,
             sessionHash: $this->sessionHash,
             expiresAt: ($now ?? time()) + $ttl,

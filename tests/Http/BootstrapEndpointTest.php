@@ -174,21 +174,55 @@ describe('what a caller may ask to have signed', function () {
     });
 
     /**
-     * Only reachable when the manifest DOES have that page: params that do
-     * not match a built page answer empty first, which is the stronger
-     * refusal. This covers a manifest recorded against params the route
-     * cannot form -- a broken build rather than a hostile request.
+     * The SAME answer as an unbuilt page. Distinguishing "in the manifest but
+     * the params do not form" from "not in the manifest" confirmed which
+     * pages were built statically -- reintroducing, in the caller, the oracle
+     * the manifest returns empty specifically to avoid.
      */
-    it('refuses params the route cannot form', function () {
-        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+    it('answers empty, not 400, for params the route cannot form', function () {
         $manifest = (new FragmentManifest())
             ->declare('racks.show', 'history', 'UnitHistory', [], ['rack' => 'r-1']);
         [$endpoint] = bootstrapEndpoint($manifest);
 
-        expect(fn () => $endpoint->handle(
+        $response = $endpoint->handle(
             Request::post(BootstrapEndpoint::PATH),
             json_encode(['route' => 'racks.show', 'params' => ['rack' => 'r-1']]),
-        ))->toThrow(HttpException::class, 'do not go together');
+        );
+
+        expect($response->status)->toBe(200)
+            ->and(json_decode($response->body(), true)['tokens'])->toBe([]);
+    });
+
+    // The strval bug FragmentToken::params() documents as fixed, still here.
+    it('refuses params that are not scalars', function () {
+        [$endpoint] = bootstrapEndpoint();
+
+        expect(fn () => $endpoint->handle(
+            Request::post(BootstrapEndpoint::PATH),
+            json_encode(['route' => 'racks.show', 'params' => ['rack' => ['nested']]]),
+        ))->toThrow(HttpException::class, 'must be scalars');
+    });
+
+    /**
+     * A visitor arriving at a statically-served page may have no session
+     * yet. That is the ordinary case, not an error -- but it cannot be a
+     * 500, which is what letting the minter's exception out produced:
+     * remotely triggerable, unauthenticated.
+     */
+    it('refuses cleanly when the visitor has no session yet', function () {
+        [$endpoint, $fixture] = bootstrapEndpoint(session: '');
+
+        $caught = null;
+
+        try {
+            $endpoint->handle(Request::post(BootstrapEndpoint::PATH), bootstrapBody($fixture));
+        } catch (HttpException $e) {
+            $caught = $e;
+        }
+
+        expect($caught)->not->toBeNull('a session-less bootstrap was accepted')
+            ->and($caught->status)->toBe(409)
+            ->and($caught->code_)->toBe('no_session');
     });
 
     it('refuses anything but POST', function () {

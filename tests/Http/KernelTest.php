@@ -407,12 +407,82 @@ describe('the reset contract', function () {
             ->and($kernel->orm->isReadOnly())->toBeFalse();
     });
 
+    /**
+     * ADR 0008 said "a test asserts the list covers what exists, so adding
+     * something request-scoped without registering it fails rather than
+     * leaking quietly". The test it described asserted a hardcoded list
+     * against itself: it failed when someone REGISTERED something new, and
+     * could not fail in the case it was written for. Phase 2 then added
+     * QueryRunner::$tagsRead and nothing noticed.
+     *
+     * This one reflects over the framework's own classes and fails when one
+     * grows a reset-shaped method that nothing registers.
+     */
+    it('registers every resettable class the framework declares', function () {
+        [$kernel] = kernel(new AuthUser('u-1'));
+
+        $src = __DIR__ . '/../../src';
+        $resettable = [];
+
+        $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($src));
+        foreach ($files as $file) {
+            if ($file->getExtension() !== 'php') {
+                continue;
+            }
+
+            $class = 'Tinvar\\' . str_replace(
+                ['/', '.php'],
+                ['\\', ''],
+                substr($file->getPathname(), \strlen($src) + 1),
+            );
+
+            if (!class_exists($class)) {
+                continue;
+            }
+
+            $reflection = new ReflectionClass($class);
+            foreach (['reset', 'forgetTagsRead'] as $method) {
+                if ($reflection->hasMethod($method) && $reflection->getMethod($method)->isPublic()) {
+                    $resettable[] = $reflection->getShortName() . '::' . $method;
+                }
+            }
+        }
+
+        // Known and deliberately NOT in the request scope, with the reason.
+        $exempt = [
+            // Not request state: a per-worker counter store, swept by size.
+            'ArrayThrottleStore::reset',
+            // The scope itself.
+            'RequestScope::reset',
+            // Reset by the render channel per render, which is narrower than
+            // per request -- a render must not inherit the previous one's.
+            'BatchScheduler::reset',
+        ];
+
+        $unregistered = array_values(array_diff($resettable, $exempt));
+
+        // Every remaining resettable must be covered by one of the scope's
+        // entries. The mapping is deliberately explicit: a new one fails
+        // here until someone decides where it belongs.
+        $covered = [
+            'AuthContext::reset' => 'auth',
+            'PolicyRegistry::reset' => 'policies',
+            'PanelContext::reset' => 'panels',
+            'QueryRunner::forgetTagsRead' => 'queries',
+            'Orm::reset' => 'orm',
+        ];
+
+        $missing = array_values(array_diff($unregistered, array_keys($covered)));
+
+        expect($missing)->toBe([], 'these have a reset method and no place in RequestScope');
+    });
+
     // If something request-scoped is added later and nobody registers it, the
     // carry-over is silent. This fails instead.
     it('covers every resettable the framework owns', function () {
         [$kernel] = kernel();
 
-        expect($kernel->scope->names())->toBe(['orm', 'auth', 'policies']);
+        expect($kernel->scope->names())->toBe(['orm', 'auth', 'policies', 'queries']);
     });
 
     // "Tenant, auth, PANEL, identity map and #[Scoped] services reset at the
@@ -432,7 +502,7 @@ describe('the reset contract', function () {
             panels: $panels,
         );
 
-        expect($kernel->scope->names())->toBe(['orm', 'auth', 'policies', 'panels']);
+        expect($kernel->scope->names())->toBe(['orm', 'auth', 'policies', 'panels', 'queries']);
     });
 });
 

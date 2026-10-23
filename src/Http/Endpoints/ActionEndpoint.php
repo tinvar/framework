@@ -125,7 +125,13 @@ final class ActionEndpoint
         return Response::make(
             $status,
             $status === 204 ? '' : json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
-            ['content-type' => 'application/json', 'cache-control' => 'private, no-store'],
+            [
+                'content-type' => 'application/json',
+                'cache-control' => 'private, no-store',
+                // The one endpoint of the four that omitted it. Harmless
+                // beside no-store, and the spec asks for the pair together.
+                'vary' => 'Cookie',
+            ],
         );
     }
 }

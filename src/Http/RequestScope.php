@@ -8,6 +8,7 @@ use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Orm\Orm;
+use Tinvar\Query\QueryRunner;
 
 /**
  * Everything that must be cleared between requests on a long-lived worker.
@@ -38,6 +39,7 @@ final class RequestScope
         AuthContext $auth,
         PolicyRegistry $policies,
         ?PanelContext $panels = null,
+        ?QueryRunner $queries = null,
     ): self {
         $scope = new self();
 
@@ -55,6 +57,18 @@ final class RequestScope
         // narrow -- or fail to narrow -- work that never chose it.
         if ($panels !== null) {
             $scope->add('panels', $panels->reset(...));
+        }
+
+        // The tags a render read. Per-request state on a runner the query
+        // endpoint shares across requests, cleared only by RenderChannel --
+        // so the /_query path never cleared it at all, and the tags come
+        // from a closure over CLIENT-SUPPLIED arguments, which makes the
+        // cardinality attacker-chosen and the growth unbounded.
+        //
+        // Phase 2 added this and the coverage test did not notice, because
+        // that test asserted a hardcoded list against itself.
+        if ($queries !== null) {
+            $scope->add('queries', $queries->forgetTagsRead(...));
         }
 
         return $scope;
