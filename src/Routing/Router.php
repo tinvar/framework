@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Routing;
 
+use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Http\Pipeline;
@@ -20,6 +21,9 @@ use Tinvar\Http\Response;
  */
 final class Router
 {
+    /** What a page answers. */
+    public const array METHODS = ['GET', 'HEAD'];
+
     /**
      * @param \Closure(class-string): Middleware $middlewareResolver
      * @param list<class-string<Middleware>>     $globalMiddleware
@@ -48,6 +52,23 @@ final class Router
         return $global->run($request, function (Request $passed) use ($respond): Response {
             $chain = $this->routes->match($passed->path)
                 ?? throw new NotFoundException('No route matches this path.');
+
+            // A page answers GET and HEAD. Anything else ran the loaders --
+            // the read-only bodies prefetch runs on hover -- and answered a
+            // POST or a DELETE with a 200, so a form posted at a page's URL
+            // by mistake read as having worked. Refused before the route's
+            // own middleware: nothing of a route runs for a method it does
+            // not serve. The spec gives OPTIONS no meaning here (there is no
+            // CORS surface), so it is refused like the rest, and the Allow
+            // header says what would be answered.
+            if (!\in_array($passed->method, self::METHODS, true)) {
+                throw new HttpException(
+                    405,
+                    'A page answers GET and HEAD only.',
+                    'method_not_allowed',
+                    ['allow' => implode(', ', self::METHODS)],
+                );
+            }
 
             // The chain's own middleware can only exist once a chain does.
             $routeMiddleware = array_values(array_diff($chain->middleware(), $this->globalMiddleware));
