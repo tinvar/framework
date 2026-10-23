@@ -21,6 +21,15 @@ abstract class Model
     private array $foreignKeys = [];
 
     /**
+     * The ghost hydration put in each single relation, keyed by property. It
+     * stands for the key in $foreignKeys; kept so a ghost assigned since can
+     * be told from it without loading either.
+     *
+     * @var array<string, Model>
+     */
+    private array $installedRelations = [];
+
+    /**
      * Column values as they were when the row was read.
      *
      * "Original column values are snapshotted on hydrate; save() writes only
@@ -66,7 +75,11 @@ abstract class Model
     }
 
     /**
-     * Columns whose value differs from the snapshot.
+     * Columns whose value differs from the snapshot, foreign keys included.
+     *
+     * Diffed over what a write sends rather than the declared columns alone:
+     * the snapshot holds the foreign keys too, and leaving them out meant a
+     * row moved to another parent read as clean and was never written.
      *
      * @return array<string, mixed>
      */
@@ -77,7 +90,7 @@ abstract class Model
         }
 
         $changes = [];
-        foreach (static::meta()->columnValues($this) as $column => $value) {
+        foreach (static::meta()->writeValues($this) as $column => $value) {
             if (!\array_key_exists($column, $this->original) || $this->original[$column] !== $value) {
                 $changes[$column] = $value;
             }
@@ -107,9 +120,24 @@ abstract class Model
         $this->resultSet = $resultSet;
     }
 
-    /** @internal called by Orm during hydration */
-    public function rememberForeignKey(string $relationProperty, mixed $value): void
+    /**
+     * @internal called by Orm during hydration
+     * @param Model|null $installed the ghost put in the relation for this key
+     */
+    public function rememberForeignKey(string $relationProperty, mixed $value, ?Model $installed = null): void
     {
         $this->foreignKeys[$relationProperty] = $value;
+
+        if ($installed === null) {
+            unset($this->installedRelations[$relationProperty]);
+        } else {
+            $this->installedRelations[$relationProperty] = $installed;
+        }
+    }
+
+    /** @internal the ghost hydration put in a single relation, if any */
+    public function installedRelation(string $relationProperty): ?Model
+    {
+        return $this->installedRelations[$relationProperty] ?? null;
     }
 }

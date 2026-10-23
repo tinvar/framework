@@ -492,7 +492,7 @@ final class Orm
     {
         $model->attach($this, $resultSet);
         $this->installRelations($model, $meta, $row);
-        $model->markClean($this->writeValues($model, $meta));
+        $model->markClean($meta->writeValues($model));
     }
 
     /**
@@ -565,12 +565,13 @@ final class Orm
             }
 
             $foreignKey = $row[$relation->foreignKey] ?? null;
-            $model->rememberForeignKey($property, $foreignKey);
-            if ($foreignKey === null) {
+            $ghost = $foreignKey === null ? null : $this->singleRelationGhost($relation, $model, (string) $foreignKey);
+            $model->rememberForeignKey($property, $foreignKey, $ghost);
+            if ($ghost === null) {
                 continue;   // left uninitialized; a nullable relation reads as unset
             }
 
-            $meta->set($model, $property, $this->singleRelationGhost($relation, $model, (string) $foreignKey));
+            $meta->set($model, $property, $ghost);
         }
     }
 
@@ -677,7 +678,7 @@ final class Orm
             throw new MappingException("{$meta->class}: a preset key must be a UUID.");
         }
 
-        $values = $this->writeValues($model, $meta);
+        $values = $meta->writeValues($model);
 
         if ($meta->tenantColumn !== null) {
             $tenant = $this->identityMap->tenant();
@@ -752,58 +753,9 @@ final class Orm
             [...array_values($changes), $meta->keyOf($model), ...$scopeBindings],
         );
 
-        $model->markClean($this->writeValues($model, $meta));
+        $model->markClean($meta->writeValues($model));
 
         return $model;
-    }
-
-    /**
-     * Column values plus the foreign keys single relations own.
-     *
-     * A #[BelongsTo] property is not a declared column, but the key it stands
-     * for is a real column and has to be written -- otherwise an insert leaves
-     * it null and the row is unlinked.
-     *
-     * @return array<string, mixed>
-     */
-    private function writeValues(Model $model, ModelMeta $meta): array
-    {
-        $values = $meta->columnValues($model);
-
-        foreach ($meta->relations as $property => $relation) {
-            if ($relation->kind !== RelationKind::BelongsTo) {
-                continue;
-            }
-
-            $values[$relation->foreignKey] = $this->foreignKeyOf($model, $meta, $property, $relation);
-        }
-
-        return $values;
-    }
-
-    /**
-     * The key a single relation stands for, without forcing it to load.
-     *
-     * The property holds a lazy ghost until something reads it. Reading it
-     * here to ask for its id would make every hydrate issue a query for every
-     * belongsTo -- the exact 1+N the lazy ghost exists to avoid -- so an
-     * uninitialized ghost yields the key captured from the row instead.
-     */
-    private function foreignKeyOf(Model $model, ModelMeta $meta, string $property, RelationMeta $relation): mixed
-    {
-        if (!(new \ReflectionProperty($meta->class, $property))->isInitialized($model)) {
-            return $model->foreignKey($property);
-        }
-
-        $related = $meta->get($model, $property);
-
-        if ($related instanceof Model
-            && !(new \ReflectionClass($relation->target))->isUninitializedLazyObject($related)) {
-            return $related->primaryKey();
-        }
-
-        // Still a ghost: the row it stands for is the one the key names.
-        return $model->foreignKey($property) ?? ($related instanceof Model ? $related->primaryKey() : null);
     }
 
     /** Deletes a row, scoped to the tenant like every other write. */

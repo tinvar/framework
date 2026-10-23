@@ -37,16 +37,77 @@ final class ModelMeta
     ) {}
 
     /**
-     * The model's column values, as the database should see them.
+     * The model's declared column values, as the database should see them.
      *
-     * The inverse of the hydrator, and the basis of change tracking: save()
-     * compares this against the snapshot taken when the row was read.
+     * The inverse of the hydrator. Foreign keys are not declared columns;
+     * writeValues() adds them.
      *
      * @return array<string, mixed> column => value
      */
     public function columnValues(Model $model): array
     {
         return ($this->columnReader)($model);
+    }
+
+    /**
+     * Column values plus the foreign keys single relations own: everything a
+     * write sends, and so the basis of change tracking. The snapshot taken on
+     * hydrate is this, and save() writes what differs from it.
+     *
+     * A #[BelongsTo] property is not a declared column, but the key it stands
+     * for is a real column and has to be written -- otherwise an insert leaves
+     * it null and the row is unlinked, and a row moved to another parent
+     * stays where it was.
+     *
+     * @return array<string, mixed> column => value
+     */
+    public function writeValues(Model $model): array
+    {
+        $values = $this->columnValues($model);
+
+        foreach ($this->relations as $property => $relation) {
+            if ($relation->kind !== RelationKind::BelongsTo) {
+                continue;
+            }
+
+            $values[$relation->foreignKey] = $this->foreignKeyOf($model, $property, $relation);
+        }
+
+        return $values;
+    }
+
+    /**
+     * The key a single relation stands for, without forcing it to load.
+     *
+     * The property holds a lazy ghost until something reads it. Reading it
+     * here to ask for its id would make every hydrate issue a query for every
+     * belongsTo -- the exact 1+N the lazy ghost exists to avoid -- so the
+     * ghost hydration installed yields the key captured from the row instead.
+     */
+    private function foreignKeyOf(Model $model, string $property, RelationMeta $relation): mixed
+    {
+        if (!(new \ReflectionProperty($this->class, $property))->isInitialized($model)) {
+            return $model->foreignKey($property);
+        }
+
+        $related = $this->get($model, $property);
+
+        // Set to null: a nullable relation cleared, whatever the row said.
+        if (!$related instanceof Model) {
+            return null;
+        }
+
+        if (!(new \ReflectionClass($relation->target))->isUninitializedLazyObject($related)) {
+            return $related->primaryKey();
+        }
+
+        // Still a ghost. The one hydration installed stands for the key the
+        // row named. Any other -- another row's relation, assigned here before
+        // anything read it -- stands for a key only loading it can tell, and
+        // taking the row's key for it would silently undo the move.
+        return $related === $model->installedRelation($property)
+            ? $model->foreignKey($property)
+            : $related->primaryKey();
     }
 
     /** @param array<string, mixed> $row */
