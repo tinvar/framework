@@ -46,16 +46,33 @@ it('reads a lazy relation under the tenant it was mapped in', function () {
 
 // The seam the mapper uses: the scope in force when captured, re-entered
 // around work run later.
-it('captures tenant, read-only and unscoped state for work run later', function () {
+it('captures tenant and read-only state for work run later', function () {
     $fixture = new TenantFixture();
     $orm = new Orm($fixture->connection, new IdentityMap('scope-test'));
 
     $scoped = $orm->actAs('acme', fn (): \Closure => $orm->readOnly(fn (): \Closure => $orm->captureScope()));
-    $unscoped = $orm->acrossTenants(fn (): \Closure => $orm->captureScope());
-
     $orm->switchTenant('globex');
 
     expect($scoped(fn (): array => [$orm->tenant(), $orm->isReadOnly(), $orm->isUnscoped()]))->toBe(['acme', true, false])
-        ->and($unscoped(fn (): bool => $orm->isUnscoped()))->toBeTrue()
-        ->and([$orm->tenant(), $orm->isReadOnly(), $orm->isUnscoped()])->toBe(['globex', false, false]);
+        ->and([$orm->tenant(), $orm->isReadOnly()])->toBe(['globex', false]);
+});
+
+// acrossTenants() is an explicit escape hatch; deferred work that re-entered
+// it later would lift scoping outside the block that opened it.
+it('refuses to capture an unscoped context', function () {
+    $orm = new Orm((new TenantFixture())->connection, new IdentityMap('scope-test'));
+
+    expect(fn () => $orm->acrossTenants(fn (): \Closure => $orm->captureScope()))
+        ->toThrow(\LogicException::class, 'An unscoped read cannot be deferred');
+});
+
+it('reads a lazy relation mapped inside acrossTenants() there and then', function () {
+    $fixture = new TenantFixture();
+    $orm = new Orm($fixture->connection, new IdentityMap('scope-test'));
+    $acmeScript = $fixture->scripts['acme'][0];
+
+    $data = $orm->acrossTenants(fn (): ScriptData => ScriptData::from($orm->find(Script::class, $acmeScript)));
+
+    expect($data->runs->isResolved())->toBeTrue()
+        ->and($data->runs->resolve())->not->toBe([]);
 });

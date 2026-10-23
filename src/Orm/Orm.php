@@ -244,8 +244,8 @@ final class Orm
     }
 
     /**
-     * The read scope in force now -- tenant, unscoped or not, read-only or
-     * not -- as a closure that runs work under it later.
+     * The read scope in force now -- tenant, read-only or not -- as a
+     * closure that runs work under it later. An unscoped context is refused.
      *
      * For work deferred past the code that set the scope up: a Lazy field
      * mapped inside actAs('acme') is read when the encoder resolves it, by
@@ -255,16 +255,24 @@ final class Orm
      */
     public function captureScope(): \Closure
     {
+        // Never an unscoped one: acrossTenants() is an escape hatch the spec
+        // requires to be explicit, and work that re-entered it later would
+        // lift tenant scoping outside the block that opened the hatch.
+        if ($this->isUnscoped()) {
+            throw new \LogicException(
+                'An unscoped read cannot be deferred: do the work inside acrossTenants(), not after it.',
+            );
+        }
+
         $tenant = $this->tenant();
-        $unscoped = $this->isUnscoped();
         $readOnly = $this->isReadOnly();
 
-        return function (\Closure $work) use ($tenant, $unscoped, $readOnly): mixed {
+        return function (\Closure $work) use ($tenant, $readOnly): mixed {
             $run = $readOnly
                 ? fn (): mixed => $this->readOnly(static fn (): mixed => $work())
                 : static fn (): mixed => $work();
 
-            return $unscoped ? $this->acrossTenants($run) : $this->actAs($tenant, $run);
+            return $this->actAs($tenant, $run);
         };
     }
 
