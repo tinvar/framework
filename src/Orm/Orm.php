@@ -599,6 +599,9 @@ final class Orm
                     // touch tries again -- which matters when the first touch
                     // happened under a scope that hid the row. Returning
                     // instead marked it initialized and empty, permanently.
+                    // The miss is cached under that scope's key only, and an
+                    // unscoped load does not consult the cache, so a retry
+                    // as another tenant or inside acrossTenants() can succeed.
                     throw DanglingRelation::for(
                         $parent::class,
                         $relation->property,
@@ -921,12 +924,20 @@ final class Orm
         $key ??= $this->relationCacheKey($relation);
         $groupKeys = [];
 
+        // Unscoped, the cache is not consulted either. It holds what the
+        // tenant's scope let through -- an empty group, or a miss where the
+        // scope hid the row -- and an unscoped read answers from this load
+        // alone, so skipping a group cached under scope answered NOTHING for
+        // it: an empty collection, or a DanglingRelation for a row that is
+        // there, inside acrossTenants().
+        $unscoped = $this->isUnscoped();
+
         foreach ($parents as $parent) {
             $groupKey = $relation->kind === RelationKind::HasMany
                 ? $parent->primaryKey()
                 : (string) ($parent->foreignKey($relation->property) ?? '');
 
-            if ($groupKey !== '' && !$this->hasRows($key, $groupKey)) {
+            if ($groupKey !== '' && ($unscoped || !$this->hasRows($key, $groupKey))) {
                 $groupKeys[$groupKey] = true;
             }
         }
@@ -960,7 +971,7 @@ final class Orm
         // bypassed: these rows were read without a tenant predicate, and a
         // later scoped read must not be served one of them. The rows are
         // still RETURNED, so the caller that asked for them can use them.
-        if ($this->isUnscoped()) {
+        if ($unscoped) {
             return $grouped;
         }
 
