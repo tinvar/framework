@@ -56,9 +56,36 @@ it('gives up with a clear message when every port in the range is taken', functi
     });
 
     expect(fn () => $finder->find('127.0.0.1'))
-        ->toThrow(ServeException::class, 'No free port between 6000 and 7000 on 127.0.0.1: all 1001 are in use')
-        ->and($tried)->toBe(1001);
+        ->toThrow(ServeException::class, 'No free port between 6000 and 7000 on 127.0.0.1: all 992 are in use')
+        ->and($tried)->toBe(992, 'every port in the range but the nine browsers refuse');
 });
+
+// About one start in a hundred printed a URL Chromium will not load: nine
+// ports in the range are on the browsers' list of bad ports, 6000 (X11) and
+// the IRC ports among them.
+it('never picks a port browsers refuse to load', function () {
+    $tried = [];
+    $finder = finder(static function (string $host, int $port) use (&$tried): bool {
+        $tried[] = $port;
+
+        return false;
+    });
+
+    try {
+        $finder->find('127.0.0.1');
+    } catch (ServeException) {
+        // every port was refused, so every candidate was tried
+    }
+
+    expect(array_values(array_intersect($tried, PortFinder::BROWSER_UNSAFE)))->toBe([])
+        ->and(array_values(array_intersect([6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697], PortFinder::BROWSER_UNSAFE)))
+        ->toHaveCount(9);
+});
+
+it('refuses an explicit port browsers refuse to load, and says why', function (string $port) {
+    expect(fn () => finder(static fn (): bool => true)->find('127.0.0.1', $port))
+        ->toThrow(ServeException::class, "Port {$port} is one browsers refuse to load");
+})->with(['6000', '6667', '10080', '22']);
 
 it('uses an explicit port that is free', function () {
     expect(finder(static fn (string $host, int $port): bool => $port === 8080)->find('127.0.0.1', '8080'))->toBe(8080);

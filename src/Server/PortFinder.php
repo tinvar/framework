@@ -8,7 +8,8 @@ use Random\Randomizer;
 
 /**
  * The address `tinvar serve` listens on: the host and port asked for, or a
- * free port picked at random between 6000 and 7000.
+ * free port picked at random between 6000 and 7000, from those a browser
+ * will load a page from.
  *
  * "Free" is decided by trying the port, not by guessing: nothing answers a
  * connection on it, and a listener can open on it and close again. Random
@@ -21,6 +22,21 @@ final class PortFinder
 {
     public const int FROM = 6000;
     public const int TO = 7000;
+
+    /**
+     * The ports browsers refuse to load a page from: the Fetch standard's
+     * "bad ports", which Chromium, Firefox and Safari all block. Nine are in
+     * the range above -- 6000 (X11), 6566, 6665 to 6669 and 6697 (IRC),
+     * 6679 -- so about one start in a hundred printed a URL the browser
+     * would not open. Never picked, and refused when asked for.
+     */
+    public const array BROWSER_UNSAFE = [
+        1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95, 101, 102, 103,
+        104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389, 427, 465, 512, 513,
+        514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719,
+        1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679,
+        6697, 10080,
+    ];
 
     /** @var \Closure(string, int): bool */
     private readonly \Closure $canBind;
@@ -49,6 +65,12 @@ final class PortFinder
             if (preg_match('/^[1-9][0-9]{0,4}\z/', $port) !== 1 || (int) $port > 65535) {
                 throw new ServeException("--port must be a whole number from 1 to 65535; got '{$port}'.");
             }
+            if (\in_array((int) $port, self::BROWSER_UNSAFE, true)) {
+                throw new ServeException(
+                    "Port {$port} is one browsers refuse to load a page from (a Fetch standard \"bad port\"), "
+                    . 'so the URL would not open. Choose another --port, or leave --port off to pick one.',
+                );
+            }
             if (!($this->canBind)($host, (int) $port)) {
                 throw new ServeException(
                     "Port {$port} on {$host} is in use or not available to this user. "
@@ -59,8 +81,10 @@ final class PortFinder
             return (int) $port;
         }
 
-        // Every port in the range, each tried once, in random order.
-        foreach ($this->random->shuffleArray(range(self::FROM, self::TO)) as $candidate) {
+        // Every port in the range a browser will load, each tried once, in
+        // random order.
+        $candidates = array_values(array_diff(range(self::FROM, self::TO), self::BROWSER_UNSAFE));
+        foreach ($this->random->shuffleArray($candidates) as $candidate) {
             if (($this->canBind)($host, $candidate)) {
                 return $candidate;
             }
@@ -71,7 +95,7 @@ final class PortFinder
             self::FROM,
             self::TO,
             $host,
-            self::TO - self::FROM + 1,
+            \count($candidates),
         ));
     }
 
