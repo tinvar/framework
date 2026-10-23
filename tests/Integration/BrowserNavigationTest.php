@@ -32,6 +32,34 @@ beforeAll(function () use ($root) {
     }
 });
 
+/**
+ * Runs a command and returns its combined output, killing it past the
+ * deadline -- a browser that hangs on launch must fail the test, not hang it.
+ *
+ * @param list<string> $command
+ */
+function runWithTimeout(array $command, string $cwd, int $seconds): string
+{
+    $process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['redirect', 1]], $pipes, $cwd, ['PATH' => getenv('PATH') ?: '/usr/bin:/bin']);
+    stream_set_blocking($pipes[1], false);
+
+    $output = '';
+    $deadline = microtime(true) + $seconds;
+    while (proc_get_status($process)['running'] && microtime(true) < $deadline) {
+        $output .= (string) stream_get_contents($pipes[1]);
+        usleep(50_000);
+    }
+    $output .= (string) stream_get_contents($pipes[1]);
+
+    if (proc_get_status($process)['running']) {
+        proc_terminate($process, 9);
+        $output .= "\n[timed out after {$seconds}s]";
+    }
+    proc_close($process);
+
+    return $output;
+}
+
 it('navigates between racks in place, through the RSC payload', function () use ($root) {
     $seeded = json_decode((string) file_get_contents("{$root}/examples/racks/database/seeded.json"), true);
     [$a, $b] = [$seeded['racks'][0], $seeded['racks'][1]];
@@ -59,10 +87,14 @@ it('navigates between racks in place, through the RSC payload', function () use 
             restore_error_handler();
         }
 
-        $output = shell_exec(
-            'node ' . escapeshellarg("{$root}/examples/racks/e2e/navigation.mjs")
-            . ' ' . escapeshellarg("http://127.0.0.1:{$port}")
-            . ' ' . escapeshellarg($a) . ' ' . escapeshellarg($b) . ' 2>&1',
+        // A server that exited -- the port was taken -- would leave the
+        // browser talking to whatever else holds the port.
+        expect(proc_get_status($server)['running'])->toBeTrue("php -S did not start on port {$port}");
+
+        $output = runWithTimeout(
+            ['node', "{$root}/examples/racks/e2e/navigation.mjs", "http://127.0.0.1:{$port}", $a, $b],
+            $root,
+            60,
         );
     } finally {
         proc_terminate($server);
