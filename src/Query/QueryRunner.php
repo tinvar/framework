@@ -92,7 +92,7 @@ final class QueryRunner
         $groups = [];
         /** @var array<int, string> $groupOf call id => group key */
         $groupOf = [];
-        /** @var array<int, array{name: string, args: array<string, mixed>}> $accepted */
+        /** @var array<int, array{name: string, args: array<string, mixed>, key: string}> $accepted */
         $accepted = [];
 
         // Call ids come from the renderer, which the trust boundary calls
@@ -114,7 +114,7 @@ final class QueryRunner
                 $errors[$call['id']] = $prepared['error'];
                 continue;
             }
-            $accepted[$call['id']] = ['name' => $call['name'], 'args' => $prepared['args']];
+            $accepted[$call['id']] = ['name' => $call['name'], 'args' => $prepared['args'], 'key' => $prepared['key']];
         }
 
         // Step 2: resolve model arguments, scoped to the tenant -- batched, so
@@ -136,8 +136,9 @@ final class QueryRunner
             }
 
             // Dedupe on the validated arguments, before substitution: models
-            // are objects and would not key stably.
-            $key = $call['name'] . "\0" . self::canonical($call['args']);
+            // are objects and would not key stably. Keyed in admit(), where an
+            // argument with no key fails its own call.
+            $key = $call['name'] . "\0" . $call['key'];
             $groups[$key] ??= ['name' => $call['name'], 'args' => $resolved['args'], 'ids' => []];
             $groups[$key]['ids'][] = $id;
             $groupOf[$id] = $key;
@@ -333,7 +334,7 @@ final class QueryRunner
      *
      * @param array{id: int, name: string, args: array<string, mixed>} $call
      * @param list<string> $allowed
-     * @return array{args: array<string, mixed>}|array{error: array{code: string, digest: string, message?: string}}
+     * @return array{args: array<string, mixed>, key: string}|array{error: array{code: string, digest: string, message?: string}}
      */
     private function admit(array $call, array $allowed): array
     {
@@ -362,7 +363,21 @@ final class QueryRunner
             return ['error' => QueryError::of(QueryError::BAD_ARGUMENTS, $arguments, $this->debug)];
         }
 
-        return ['args' => $arguments];
+        // The dedupe key, made here so an argument that has none fails its
+        // own call. NaN, infinity and bytes that are not UTF-8 all cross the
+        // socket and have no JSON form; thrown from run(), one of them lost
+        // every other result in the tick.
+        try {
+            $key = self::canonical($arguments);
+        } catch (\JsonException $e) {
+            return ['error' => QueryError::of(
+                QueryError::BAD_ARGUMENTS,
+                "'{$name}' was called with an argument that has no JSON form: {$e->getMessage()}",
+                $this->debug,
+            )];
+        }
+
+        return ['args' => $arguments, 'key' => $key];
     }
 
     /**
