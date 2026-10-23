@@ -119,18 +119,18 @@ final class Kernel
     private readonly Pipeline $bootstrapStack;
 
     /**
-     * @param \Closure(class-string): object $resolver builds pages, layouts, queries, actions and middleware
-     * @param \Closure(Request): list<string> $allowedQueries the route's query allowlist
-     * @param list<class-string> $globalMiddleware
-     * @param (\Closure(\Throwable, string): void)|null $log
-     */
-    /**
      * The request attribute carrying the page's route token, for the
      * responder to put into the page metadata. Absent when no token is
      * minted.
      */
     public const string ROUTE_TOKEN = 'tinvar.route_token';
 
+    /**
+     * @param \Closure(class-string): object $resolver builds pages, layouts, queries, actions and middleware
+     * @param \Closure(Request): list<string> $allowedQueries the route's query allowlist
+     * @param list<class-string> $globalMiddleware
+     * @param (\Closure(\Throwable, string): void)|null $log
+     */
     public function __construct(
         public readonly Orm $orm,
         public readonly RouteRegistry $routes,
