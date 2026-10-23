@@ -10,25 +10,29 @@ declare(strict_types=1);
  * Every router test before this drove the router against a stubbed fetch
  * and a stubbed mount. This one is the only place the server's half and the
  * client's half of the protocol meet -- RSC: 1, X-Version from the page
- * metadata, a text/x-component payload, a mount that commits.
+ * metadata, a text/x-component payload, a mount that commits -- and where a
+ * person's whole visit runs end to end: sign in, orders, an order, a
+ * deferred boundary, an action, sign out.
  *
- * Skipped when its prerequisites are missing: the build, the seed data, or
- * Playwright's Chromium.
+ * Skipped when its prerequisites are missing: the JavaScript dependencies
+ * the build needs, or Playwright's Chromium.
  */
 
+namespace Tinvar\Tests\Integration\BrowserNavigation;
+
+use Shop\DemoAccount;
 use Tinvar\Bench\Renderer;
+use Tinvar\Bench\Shop;
 
 $root = \dirname(__DIR__, 4);
 
 beforeAll(function () use ($root) {
-    foreach ([
-        "{$root}/examples/racks/dist/rsc/index.js" => 'The Racks app is not built.',
-        "{$root}/examples/racks/database/seeded.json" => 'No seed data.',
-        "{$root}/node_modules/playwright/package.json" => 'Playwright is not installed.',
-    ] as $file => $why) {
-        if (!is_file($file)) {
-            test()->markTestSkipped($why);
-        }
+    if (!is_file("{$root}/node_modules/playwright/package.json")) {
+        test()->markTestSkipped('Playwright is not installed.');
+    }
+    $unbuilt = Shop::ensureBuilt();
+    if ($unbuilt !== null) {
+        test()->markTestSkipped($unbuilt);
     }
 });
 
@@ -61,8 +65,8 @@ function runWithTimeout(array $command, string $cwd, int $seconds): string
 }
 
 /**
- * The served app for one test: a renderer, and php -S on the front
- * controller with deferred boundaries enabled.
+ * The served shop for one test: a renderer, a freshly seeded database, and
+ * php -S on the front controller.
  *
  * @param \Closure(string): void $drive given the origin
  */
@@ -72,7 +76,7 @@ function served(string $root, \Closure $drive): void
     $port = 18_000 + random_int(0, 999);
     $keyFile = sys_get_temp_dir() . '/tinvar-e2e-' . bin2hex(random_bytes(4)) . '/app.key';
     $server = proc_open(
-        [PHP_BINARY, '-S', "127.0.0.1:{$port}", "{$root}/examples/racks/public/index.php"],
+        [PHP_BINARY, '-S', "127.0.0.1:{$port}", "{$root}/examples/shop/public/index.php"],
         [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']],
         $pipes,
         $root,
@@ -83,6 +87,7 @@ function served(string $root, \Closure $drive): void
             ...array_diff_key(getenv(), ['TINVAR_APP_KEY' => true]),
             'TINVAR_SOCKET' => $renderer->socketPath,
             'TINVAR_APP_KEY_FILE' => $keyFile,
+            'SHOP_DATABASE' => Shop::database(),
         ],
     );
 
@@ -109,9 +114,17 @@ function served(string $root, \Closure $drive): void
         proc_close($server);
         $renderer->stop();
         $generated = is_file($keyFile);
-        @unlink($keyFile);
-        @unlink(\dirname($keyFile) . '/.app.key.lock');
-        @rmdir(\dirname($keyFile));
+        if ($generated) {
+            unlink($keyFile);
+        }
+        foreach (glob(\dirname($keyFile) . '/{,.}*', GLOB_BRACE) ?: [] as $leftover) {
+            if (is_file($leftover)) {
+                unlink($leftover);
+            }
+        }
+        if (is_dir(\dirname($keyFile))) {
+            rmdir(\dirname($keyFile));
+        }
     }
 
     // After the finally, so a failure above is reported as itself rather
@@ -119,28 +132,28 @@ function served(string $root, \Closure $drive): void
     expect($generated)->toBeTrue('no application key was generated');
 }
 
-it('navigates between racks in place, through the RSC payload', function () use ($root) {
-    $seeded = json_decode((string) file_get_contents("{$root}/examples/racks/database/seeded.json"), true);
-    [$a, $b] = [$seeded['racks'][0], $seeded['racks'][1]];
-
+it('navigates from the catalog to a product and back, through the RSC payload', function () use ($root) {
     $output = '';
-    served($root, function (string $origin) use ($root, $a, $b, &$output): void {
-        $output = runWithTimeout(['node', "{$root}/examples/racks/e2e/navigation.mjs", $origin, $a, $b], $root, 60);
+    served($root, function (string $origin) use ($root, &$output): void {
+        $output = runWithTimeout(['node', "{$root}/examples/shop/e2e/navigation.mjs", $origin], $root, 60);
     });
 
     $result = json_decode((string) $output, true);
     expect($result)->toBeArray("the browser script failed:\n{$output}");
 
     expect($result['errors'])->toBe([])
-        ->and($result['first'])->not->toBe($result['second'])
-        ->and($result['path'])->toBe("/racks/{$b}")
-        ->and($result['units'])->toBe(42);
+        ->and($result['first'])->toBe('Catalog')
+        ->and($result['second'])->toBe($result['name'])
+        ->and($result['cards'])->toBe(24)
+        ->and($result['availability'])->toBe(24, 'every card awaited its availability query')
+        ->and($result['reloaded'])->toBe(1, 'one document load; the rest were client visits');
 
-    // One document load, then one client navigation that asked for the
-    // payload and named the build the page metadata gave it.
+    // One document load, then a client navigation that asked for the
+    // payload and named the build the page metadata gave it, then back.
     expect($result['requests'])->toBe([
-        ['path' => "/racks/{$a}", 'rsc' => null, 'version' => null],
-        ['path' => "/racks/{$b}", 'rsc' => '1', 'version' => 'dev'],
+        ['path' => '/', 'rsc' => null, 'version' => null],
+        ['path' => $result['path'], 'rsc' => '1', 'version' => 'dev'],
+        ['path' => '/', 'rsc' => '1', 'version' => 'dev'],
     ]);
 
     // The page ran under its Content-Security-Policy -- hydrated, and
@@ -152,9 +165,12 @@ it('navigates between racks in place, through the RSC payload', function () use 
         'violations' => [],
     ]);
 
-    // Nothing issued the CSRF cookie, so every POST was a 419. The document
-    // load issues it now -- readable by script, which copies it into the
-    // header -- and a POST carrying it gets past the check.
+    // StyleX's stylesheet was linked and applied, under that same policy.
+    expect($result['styled'])->toBe(['stylesheets' => true, 'inter' => true]);
+
+    // The document load issues the CSRF cookie -- readable by script, which
+    // copies it into the header -- and a POST carrying it gets past the
+    // check to authentication, which refuses a visitor who is signed out.
     expect($result['csrf'] ?? null)->toBe([
         'path' => '/',
         'secure' => true,
@@ -166,31 +182,55 @@ it('navigates between racks in place, through the RSC payload', function () use 
     ]);
 });
 
-// The Suspense boundary, for real: server-rendered with its fallback, its
-// subtree not rendered with the page, then -- scrolled into view -- fetched
-// from /_fragment/ with a signed token, decoded by the app's own bundle and
-// swapped in.
-it('loads a deferred boundary when it scrolls into view', function () use ($root) {
-    $seeded = json_decode((string) file_get_contents("{$root}/examples/racks/database/seeded.json"), true);
-
+// A customer's whole visit: redirected to sign in, a wrong password, the
+// right one, the orders, one order with its deferred shipping updates, a
+// new order, and signing out.
+it('signs in, reads orders and an order, places an order and signs out', function () use ($root) {
     $output = '';
-    served($root, function (string $origin) use ($root, $seeded, &$output): void {
-        $output = runWithTimeout(['node', "{$root}/examples/racks/e2e/deferred.mjs", $origin, $seeded['racks'][0]], $root, 60);
+    served($root, function (string $origin) use ($root, &$output): void {
+        $output = runWithTimeout(
+            ['node', "{$root}/examples/shop/e2e/account.mjs", $origin, DemoAccount::EMAIL, DemoAccount::PASSWORD],
+            $root,
+            90,
+        );
     });
 
     $result = json_decode((string) $output, true);
     expect($result)->toBeArray("the browser script failed:\n{$output}");
 
     expect($result['errors'])->toBe([])
-        ->and($result['before'])->toBe('Loading history…')
-        ->and($result['requestedBeforeScroll'])->toBe(0)
-        ->and($result['after'])->toBe('Recent changes')
-        ->and($result['fragments'])->toBe(['1'])
-        ->and($result['csp'] ?? null)->toBe(['nonce' => true, 'unnonced' => [], 'violations' => []]);
+        ->and($result['redirected'])->toBe(['path' => '/sign-in', 'next' => '/orders'])
+        ->and($result['wrong'])->toBe(\Shop\Actions\AccountActions::NO_MATCH);
 
-    // The fragment is session-bound, so it loading at all shows the cookie
-    // round-tripped; this shows it did so with the attributes the spec's
-    // cookie rule requires.
+    // Sign-in and sign-out each issue a new session id.
+    expect($result['rotated'])->toBe(['onSignIn' => true, 'onSignOut' => true]);
+
+    // The demo account has twelve orders: ten on the first page.
+    expect($result['orders'])->toBe([
+        'heading' => 'Orders',
+        'rows' => 10,
+        'range' => 'Showing 1–10 of 12PreviousNext',
+        'account' => true,
+    ]);
+
+    // The order page rendered without its shipping updates, which loaded
+    // from /_fragment/ only once scrolled to.
+    expect($result['order']['heading'])->toBe("Order {$result['order']['number']}")
+        ->and($result['order']['lines'])->toBeGreaterThan(0)
+        ->and($result['order']['requestedBeforeScroll'])->toBe(0)
+        ->and($result['order']['shipping'])->toBeTrue()
+        ->and($result['fragments'])->toBe(['1']);
+
+    expect($result['actions'])->toBe(['account.signIn', 'account.signIn', 'orders.place', 'account.signOut'])
+        ->and($result['placed']['heading'])->toStartWith('Order PW-')
+        ->and($result['placed']['lines'])->toBe(1)
+        ->and($result['placed']['quantity'])->toBe('2')
+        ->and($result['afterSignOut'])->toBe('/sign-in');
+
+    expect($result['csp'])->toBe(['nonced' => true, 'violations' => []]);
+
+    // The session cookie round-tripped with the attributes the spec's cookie
+    // rule requires.
     expect($result['session'] ?? null)->toBe([
         'path' => '/',
         'secure' => true,

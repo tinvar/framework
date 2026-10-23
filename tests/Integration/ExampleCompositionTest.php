@@ -16,43 +16,49 @@ declare(strict_types=1);
  * whether or not the app is built.
  */
 
-use Racks\Kernel;
+namespace Tinvar\Tests\Integration\ExampleComposition;
+
+use Shop\Database\Seeder;
+use Shop\Kernel;
+use Shop\Models\Product;
 use Tinvar\Http\NotFoundException;
+use Tinvar\Http\Request;
+use Tinvar\Http\Response;
 use Tinvar\Orm\PdoConnection;
+use Tinvar\Support\Signer;
+use Tinvar\Support\Uuid;
 
 function compositionKernel(): Kernel
 {
-    $pdo = new \PDO('sqlite::memory:');
-    $pdo->exec('CREATE TABLE sites (id TEXT PRIMARY KEY, code TEXT NOT NULL)');
-    $pdo->exec('CREATE TABLE racks (id TEXT PRIMARY KEY, name TEXT NOT NULL, height_u INTEGER NOT NULL, site_id TEXT NOT NULL)');
-    $pdo->exec('CREATE TABLE units (id TEXT PRIMARY KEY, position INTEGER NOT NULL, name TEXT NOT NULL, rated_watts INTEGER NOT NULL, rack_id TEXT NOT NULL)');
+    $connection = PdoConnection::sqlite(':memory:', 'shop');
+    new Seeder($connection)->run(customers: 2);
 
     // A socket that is not there: these tests never reach the renderer.
-    return new Kernel(new PdoConnection($pdo, 'racks'), '/tmp/tinvar-composition-none.sock');
+    return new Kernel($connection, '/tmp/tinvar-composition-none.sock', str_repeat('k', 32));
 }
 
 it('registers its routes through the registry that enforces the build rules', function () {
     $kernel = compositionKernel();
 
-    expect($kernel->routes->named('racks.show')->template)->toBe('/racks/{rack}');
+    expect($kernel->routes->named('shop.product')->template)->toBe('/products/{product}')
+        ->and($kernel->routes->named('orders.show')->template)->toBe('/orders/{order}');
 });
 
 /**
- * The reset contract is the Kernel's, and the example now inherits it. It
- * used to flush the identity map by hand at the top of showRack, which is
- * the same thing done in the wrong place -- a failure before that line left
- * the previous request's map in place.
+ * The reset contract is the Kernel's, and the example inherits it: a
+ * failure before anything renders still leaves the next request on this
+ * worker with an empty identity map.
  */
 it('clears the identity map after a request, even a failing one', function () {
     $kernel = compositionKernel();
 
     // Warm the map, then make a request that cannot reach the renderer.
-    $kernel->orm->all(Racks\Models\Site::class);
+    $kernel->orm->all(Product::class);
 
     try {
-        $kernel->showRack('no-such-rack', static fn (string $b): null => null);
+        $kernel->render(Request::get('/products/' . Uuid::v7()), static fn (string $b): null => null);
     } catch (\Throwable) {
-        // The renderer is not there; the teardown is what is under test.
+        // No such product; the teardown is what is under test.
     }
 
     expect($kernel->orm->identityMap()->count())->toBe(0);
@@ -60,9 +66,9 @@ it('clears the identity map after a request, even a failing one', function () {
 
 /**
  * Going through the Kernel means a thrown error is classified rather than
- * escaping. The example keeps the cause by logging it, so a benchmark still
- * gets a diagnostic instead of a generic 500 -- which is what a real
- * application does with its error handler.
+ * escaping. The example keeps the cause, so a benchmark still gets a
+ * diagnostic instead of a generic 500 -- which is what a real application
+ * does with its error handler.
  */
 it('surfaces the cause of a failure rather than a classified 500', function () {
     $kernel = compositionKernel();
@@ -70,7 +76,7 @@ it('surfaces the cause of a failure rather than a classified 500', function () {
     $caught = null;
 
     try {
-        $kernel->showRack('no-such-rack', static fn (string $b): null => null);
+        $kernel->render(Request::get('/products/' . Uuid::v7()), static fn (string $b): null => null);
     } catch (\Throwable $e) {
         $caught = $e;
     }
@@ -85,11 +91,19 @@ it('surfaces the cause of a failure rather than a classified 500', function () {
 it('refuses a short app key rather than signing with it', function () {
     putenv('TINVAR_APP_KEY=short');
     try {
-        expect(fn () => Racks\Kernel::fromEnvironment('/tmp/unused.sock'))
-            ->toThrow(InvalidArgumentException::class, 'at least 32 bytes');
+        expect(fn () => Kernel::fromEnvironment('/tmp/unused.sock', database: ':memory:'))
+            ->toThrow(\InvalidArgumentException::class, 'at least 32 bytes');
     } finally {
         putenv('TINVAR_APP_KEY');
     }
+});
+
+// A typo in the throttle setting would otherwise leave the limit where it was
+// and read as configured.
+it('reads throttle limits from the environment, or refuses them', function () {
+    expect(Kernel::limitsFrom(''))->toBe([])
+        ->and(Kernel::limitsFrom('actions=600, sign-in.address=0'))->toBe(['actions' => 600, 'sign-in.address' => 0])
+        ->and(fn () => Kernel::limitsFrom('actions=lots'))->toThrow(\InvalidArgumentException::class, 'bucket=limit');
 });
 
 // Signing stops a client inventing a session id. It does NOT stop fixation:
@@ -101,53 +115,51 @@ describe('the example session cookie', function () {
     $key = str_repeat('k', 32);
 
     it('carries an id this key signed', function () use ($key) {
-        $cookie = Racks\Kernel::newSession($key);
+        $cookie = Kernel::newSession($key);
 
-        expect(Racks\Kernel::sessionFrom($cookie, $key))->toBe(explode('.', $cookie)[0]);
+        expect(Kernel::sessionFrom($cookie, $key))->toBe(explode('.', $cookie)[0]);
     });
 
     it('refuses an id the client chose, or another key signed', function (?string $cookie) use ($key) {
-        expect(Racks\Kernel::sessionFrom($cookie, $key))->toBeNull();
+        expect(Kernel::sessionFrom($cookie, $key))->toBeNull();
     })->with([
         'bare id' => [str_repeat('b', 32)],
         'forged mac' => [str_repeat('b', 32) . '.AAAA'],
-        'other key' => [Racks\Kernel::newSession(str_repeat('x', 32))],
+        'other key' => [Kernel::newSession(str_repeat('x', 32))],
         'absent' => [null],
-        'trailing newline' => [Racks\Kernel::newSession(str_repeat('k', 32)) . "\n"],
+        'trailing newline' => [Kernel::newSession(str_repeat('k', 32)) . "\n"],
         // The format before the expiry was signed into it: accepted forever.
         'id and mac only' => [(static function (): string {
             $id = str_repeat('b', 32);
 
-            return $id . '.' . Tinvar\Support\Signer::encode(
-                new Tinvar\Support\Signer(str_repeat('k', 32), 'session-cookie')->sign($id),
-            );
+            return $id . '.' . Signer::encode(new Signer(str_repeat('k', 32), 'session-cookie')->sign($id));
         })()],
     ]);
 
     // It used to be good forever: whoever was handed one could plant it
     // in a victim's browser at any later date.
     it('refuses a cookie once it has expired', function () use ($key) {
-        $issued = time() - Racks\Kernel::SESSION_LIFETIME;
-        $cookie = Racks\Kernel::newSession($key, now: $issued);
+        $issued = time() - Kernel::SESSION_LIFETIME;
+        $cookie = Kernel::newSession($key, now: $issued);
 
-        expect(Racks\Kernel::sessionFrom($cookie, $key, now: $issued + Racks\Kernel::SESSION_LIFETIME - 1))
+        expect(Kernel::sessionFrom($cookie, $key, now: $issued + Kernel::SESSION_LIFETIME - 1))
             ->toBe(explode('.', $cookie)[0])
-            ->and(Racks\Kernel::sessionFrom($cookie, $key, now: $issued + Racks\Kernel::SESSION_LIFETIME))->toBeNull()
-            ->and(Racks\Kernel::sessionFrom($cookie, $key))->toBeNull();
+            ->and(Kernel::sessionFrom($cookie, $key, now: $issued + Kernel::SESSION_LIFETIME))->toBeNull()
+            ->and(Kernel::sessionFrom($cookie, $key))->toBeNull();
     });
 
     it('refuses a cookie issued in the future', function () use ($key) {
-        $cookie = Racks\Kernel::newSession($key, now: time() + 3600);
+        $cookie = Kernel::newSession($key, now: time() + 3600);
 
-        expect(Racks\Kernel::sessionFrom($cookie, $key))->toBeNull();
+        expect(Kernel::sessionFrom($cookie, $key))->toBeNull();
     });
 
     // The expiry is under the MAC, so it cannot be pushed out.
     it('refuses a cookie whose expiry was edited', function () use ($key) {
-        [$id, $issued, $expires, $mac] = explode('.', Racks\Kernel::newSession($key));
+        [$id, $issued, $expires, $mac] = explode('.', Kernel::newSession($key));
 
-        expect(Racks\Kernel::sessionFrom("{$id}.{$issued}." . ((int) $expires + 3600) . ".{$mac}", $key))->toBeNull()
-            ->and(Racks\Kernel::sessionFrom("{$id}.0{$issued}.{$expires}.{$mac}", $key))->toBeNull();
+        expect(Kernel::sessionFrom("{$id}.{$issued}." . ((int) $expires + 3600) . ".{$mac}", $key))->toBeNull()
+            ->and(Kernel::sessionFrom("{$id}.0{$issued}.{$expires}.{$mac}", $key))->toBeNull();
     });
 
     // Strict base64 ignores the spare low bits of the last character, so
@@ -155,38 +167,38 @@ describe('the example session cookie', function () {
     // two cookies for one session, which defeats anything keyed on the
     // string.
     it('accepts one spelling of the MAC only', function () use ($key) {
-        $cookie = Racks\Kernel::newSession($key);
+        $cookie = Kernel::newSession($key);
         $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
         $respelled = substr($cookie, 0, -1) . $alphabet[strpos($alphabet, $cookie[-1]) ^ 1];
-        // Plain base64, not Signer::decode(), which now refuses the second
+        // Plain base64, not Signer::decode(), which refuses the second
         // spelling itself and so cannot say it names the same bytes.
         $raw = static fn (string $cookie): string|false => base64_decode(strtr(explode('.', $cookie)[3], '-_', '+/'), true);
 
         expect($raw($respelled))->toBe($raw($cookie), 'the same bytes, spelled differently')
-            ->and(Racks\Kernel::sessionFrom($respelled, $key))->toBeNull();
+            ->and(Kernel::sessionFrom($respelled, $key))->toBeNull();
     });
 
     // tinvar-spec.md, "HTTP": "Session and CSRF cookies use the __Host-
     // prefix and are HttpOnly (session), Secure and SameSite=Lax."
     it('is set as the spec cookie rule requires', function () use ($key) {
         $now = time();
-        $cookie = Racks\Kernel::newSession($key, now: $now);
-        $line = Racks\Kernel::withSession(Tinvar\Http\Response::make(), $cookie, now: $now)->cookies()[Racks\Kernel::SESSION_COOKIE];
+        $cookie = Kernel::newSession($key, now: $now);
+        $line = Kernel::withSession(Response::make(), $cookie, now: $now)->cookies()[Kernel::SESSION_COOKIE];
 
-        expect(Racks\Kernel::SESSION_COOKIE)->toStartWith('__Host-')
-            ->and($line)->toBe(Racks\Kernel::SESSION_COOKIE . "={$cookie}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=" . Racks\Kernel::SESSION_LIFETIME)
+        expect(Kernel::SESSION_COOKIE)->toStartWith('__Host-')
+            ->and($line)->toBe(Kernel::SESSION_COOKIE . "={$cookie}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=" . Kernel::SESSION_LIFETIME)
             ->and($line)->not->toContain('Domain');
     });
 
     // Rotation on sign-in is what makes a planted id worthless at the
     // moment it would become valuable.
     it('rotates to a new id', function () use ($key) {
-        $before = Racks\Kernel::newSession($key);
-        $line = Racks\Kernel::rotateSession(Tinvar\Http\Response::make(), $key)->cookies()[Racks\Kernel::SESSION_COOKIE];
-        $after = explode(';', substr($line, \strlen(Racks\Kernel::SESSION_COOKIE) + 1))[0];
+        $before = Kernel::newSession($key);
+        $line = Kernel::rotateSession(Response::make(), $key)->cookies()[Kernel::SESSION_COOKIE];
+        $after = explode(';', substr($line, \strlen(Kernel::SESSION_COOKIE) + 1))[0];
 
-        expect(Racks\Kernel::sessionFrom($after, $key))->not->toBeNull()
-            ->and(Racks\Kernel::sessionFrom($after, $key))->not->toBe(Racks\Kernel::sessionFrom($before, $key));
+        expect(Kernel::sessionFrom($after, $key))->not->toBeNull()
+            ->and(Kernel::sessionFrom($after, $key))->not->toBe(Kernel::sessionFrom($before, $key));
     });
 });
 
@@ -201,27 +213,36 @@ it('generates the app key into the user state directory, outside the project', f
     putenv("HOME={$home}");
 
     try {
-        $key = Racks\Kernel::appKey();
+        $key = Kernel::appKey();
 
-        expect(trim((string) file_get_contents("{$home}/.local/state/tinvar/racks.key")))->toBe($key)
-            ->and(is_dir(\dirname(__DIR__, 4) . '/examples/racks/storage'))->toBeFalse();
+        expect(trim((string) file_get_contents("{$home}/.local/state/tinvar/shop.key")))->toBe($key)
+            ->and(is_dir(\dirname(__DIR__, 4) . '/examples/shop/storage'))->toBeFalse();
     } finally {
         foreach ($saved as $name => $value) {
             putenv($value === false ? $name : "{$name}={$value}");
         }
-        @unlink("{$home}/.local/state/tinvar/racks.key");
-        @unlink("{$home}/.local/state/tinvar/.racks.key.lock");
-        @rmdir("{$home}/.local/state/tinvar");
-        @rmdir("{$home}/.local/state");
-        @rmdir("{$home}/.local");
-        @rmdir($home);
+        removeKeyHome($home);
     }
 });
 
-// A relative path resolves against the starting directory, so php -S and
-// the CLI would each sign with a key of their own.
+function removeKeyHome(string $home): void
+{
+    foreach (["{$home}/.local/state/tinvar/shop.key", "{$home}/.local/state/tinvar/.shop.key.lock"] as $file) {
+        if (is_file($file)) {
+            unlink($file);
+        }
+    }
+    foreach (["{$home}/.local/state/tinvar", "{$home}/.local/state", "{$home}/.local", $home] as $directory) {
+        if (is_dir($directory)) {
+            rmdir($directory);
+        }
+    }
+}
+
+// A relative path resolves against the starting directory, so the server
+// and the CLI would each sign with a key of their own.
 describe('where the example keeps a generated key', function () {
-    $with = static function (array $env, Closure $body): mixed {
+    $with = static function (array $env, \Closure $body): mixed {
         $saved = [];
         foreach ($env as $name => $value) {
             $saved[$name] = getenv($name);
@@ -238,23 +259,18 @@ describe('where the example keeps a generated key', function () {
 
     it('refuses a relative TINVAR_APP_KEY_FILE', function () use ($with) {
         $with(['TINVAR_APP_KEY' => null, 'TINVAR_APP_KEY_FILE' => 'storage/app.key'], function () {
-            expect(fn () => Racks\Kernel::appKey())->toThrow(RuntimeException::class, 'absolute');
+            expect(fn () => Kernel::appKey())->toThrow(\RuntimeException::class, 'absolute');
         });
     });
 
     it('ignores a relative XDG_STATE_HOME, as the spec says to', function () use ($with) {
         $home = sys_get_temp_dir() . '/tinvar-xdg-' . bin2hex(random_bytes(4));
         $with(['TINVAR_APP_KEY' => null, 'TINVAR_APP_KEY_FILE' => null, 'XDG_STATE_HOME' => 'relative/state', 'HOME' => $home], function () use ($home) {
-            Racks\Kernel::appKey();
+            Kernel::appKey();
 
-            expect(is_file("{$home}/.local/state/tinvar/racks.key"))->toBeTrue()
+            expect(is_file("{$home}/.local/state/tinvar/shop.key"))->toBeTrue()
                 ->and(is_dir('relative'))->toBeFalse();
         });
-        @unlink("{$home}/.local/state/tinvar/racks.key");
-        @unlink("{$home}/.local/state/tinvar/.racks.key.lock");
-        @rmdir("{$home}/.local/state/tinvar");
-        @rmdir("{$home}/.local/state");
-        @rmdir("{$home}/.local");
-        @rmdir($home);
+        removeKeyHome($home);
     });
 });

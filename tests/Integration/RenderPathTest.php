@@ -2,62 +2,62 @@
 
 declare(strict_types=1);
 
-use Racks\Kernel;
-use Tinvar\Bench\Renderer;
-use Tinvar\Codec\JsonLinesCodec;
-use Tinvar\Codec\MessagePackCodec;
-use Tinvar\Render\RendererException;
-
 /**
  * The whole path, for real: PHP loaders -> Unix socket -> Node RSC + SSR ->
  * HTML streamed back, with the renderer calling queries the other way.
  *
- * Skipped rather than failed when the prerequisites are absent, so the unit
- * suite still runs on a machine with no database or no build.
+ * Skipped rather than failed when the JavaScript dependencies the build
+ * needs are absent, so the unit suite still runs on a machine without them.
  */
-$root = \dirname(__DIR__, 4);
-$seedPath = "{$root}/examples/racks/database/seeded.json";
-$appEntry = "{$root}/examples/racks/dist/rsc/index.js";
 
-beforeAll(function () use ($seedPath, $appEntry) {
-    if (!is_file($appEntry)) {
-        test()->markTestSkipped('The Racks app is not built (npm run build -w @tinvar/example-racks).');
-    }
-    if (!is_file($seedPath)) {
-        test()->markTestSkipped('No seed data (php examples/racks/database/seed.php).');
+namespace Tinvar\Tests\Integration\RenderPath;
+
+use Shop\Kernel;
+use Tinvar\Bench\Renderer;
+use Tinvar\Bench\Shop;
+use Tinvar\Codec\JsonLinesCodec;
+use Tinvar\Codec\MessagePackCodec;
+use Tinvar\Http\Request;
+use Tinvar\Render\RendererException;
+use Tinvar\Render\RenderResult;
+
+beforeAll(function () {
+    $unbuilt = Shop::ensureBuilt();
+    if ($unbuilt !== null) {
+        test()->markTestSkipped($unbuilt);
     }
 });
 
-function racksKernel(string $codec = 'msgpack'): array
+/** @return array{Kernel, Renderer} */
+function shopKernel(string $codec = 'msgpack'): array
 {
-    $root = \dirname(__DIR__, 4);
-    $seeded = json_decode((string) file_get_contents("{$root}/examples/racks/database/seeded.json"), true);
-
     $renderer = Renderer::start($codec, "test-{$codec}");
     $kernel = Kernel::fromEnvironment(
         $renderer->socketPath,
         $codec === 'json-lines' ? new JsonLinesCodec() : new MessagePackCodec(),
         debug: true,
+        database: Shop::database(),
     );
 
-    return [$kernel, $renderer, $seeded];
+    return [$kernel, $renderer];
 }
 
-function renderRack(Kernel $kernel, string $rackId): array
+/** @return array{string, RenderResult} */
+function renderCatalog(Kernel $kernel): array
 {
     $html = '';
-    $result = $kernel->showRack($rackId, function (string $bytes) use (&$html): void {
+    $result = $kernel->render(Request::get('/', ['accept' => 'text/html']), function (string $bytes) use (&$html): void {
         $html .= $bytes;
     });
 
     return [$html, $result];
 }
 
-it('renders the Racks Show page end to end', function () {
-    [$kernel, $renderer, $seeded] = racksKernel();
+it('renders the catalog end to end', function () {
+    [$kernel, $renderer] = shopKernel();
 
     try {
-        [$html, $result] = renderRack($kernel, $seeded['racks'][0]);
+        [$html, $result] = renderCatalog($kernel);
     } finally {
         $renderer->stop();
     }
@@ -65,18 +65,22 @@ it('renders the Racks Show page end to end', function () {
     expect($result->chunks)->toBeGreaterThan(1, 'the response streams in several flushes')
         ->and($result->bytes)->toBeGreaterThan(10_000);
 
-    // The nested layout rendered, with its own loader's data.
-    expect($html)->toContain('site-sidebar')->toContain('LAX1');
+    // The document, its stylesheet, and the layout rendered with its own
+    // loader's data.
+    expect($html)->toStartWith('<!DOCTYPE html>')
+        ->toMatch('#<link rel="stylesheet"[^>]* href="/assets/index-[\w-]+\.css"#')
+        ->toContain('Pellwick Supply')
+        ->toContain('<title>Catalog · Pellwick Supply</title>');
 
-    // The 'use client' island: one button per unit, and its chunk referenced.
-    expect(substr_count($html, 'class="unit"'))->toBe(42)
+    // A card per product, each a link, and a client chunk referenced.
+    expect(substr_count($html, 'data-product-name=""'))->toBe(24)
         ->and($html)->toMatch('#assets/index-[\w-]+\.js#');
 
-    // The Suspense boundary: fallback in the shell, content in a later flush.
-    expect($html)->toContain('stats-skeleton')
-        ->toContain('<!--$?-->')
-        ->toContain('$RC("B:0"')
-        ->and(substr_count($html, 'class="watts"'))->toBe(42);
+    // Each card's availability: a fallback in the shell, the line in a later
+    // flush once the batched query answered.
+    expect($html)->toContain('<!--$?-->')
+        ->toContain('$RC(')
+        ->and(substr_count($html, 'data-availability='))->toBe(24);
 
     // The RSC payload travels inline, as the spec's rendered output describes.
     expect($html)->toContain('self.__rsc');
@@ -86,67 +90,64 @@ it('renders the Racks Show page end to end', function () {
     // escaped, ahead of the payload rows.
     expect(preg_match('#<script type="application/json" id="tinvar-page">(.*?)</script>#s', $html, $m))->toBe(1);
     $meta = json_decode($m[1], true, flags: JSON_THROW_ON_ERROR);
-    expect($meta['url'])->toBe('/racks/' . $seeded['racks'][0])
+    expect($meta['url'])->toBe('/')
         ->and($meta['version'])->toBe('dev')
-        ->and($m[1])->not->toContain('"/racks')
         ->and(strpos($html, 'tinvar-page'))->toBeLessThan(strpos($html, 'self.__rsc'));
 });
 
-it('batches every unit query into one frame and one statement', function () {
-    [$kernel, $renderer, $seeded] = racksKernel();
+it('batches every availability query into one frame and no statement', function () {
+    [$kernel, $renderer] = shopKernel();
 
     try {
         $kernel->orm->connection()->resetStatementCount();
-        [, $result] = renderRack($kernel, $seeded['racks'][0]);
+        [, $result] = renderCatalog($kernel);
         $statements = $kernel->orm->connection()->statementCount();
     } finally {
         $renderer->stop();
     }
 
-    expect($result->queryCalls)->toBe(42, 'one UnitLoad per unit')
-        ->and($result->queryBatches)->toBe(1, '42 calls, one frame')
-        // Three: sites, racks, and the units relation. The 42 unitLoad calls
-        // resolve their units from the identity map, which already holds them
-        // from the page's own data -- so the batch costs no statement at all.
-        ->and($statements)->toBe(3, 'sites, racks, and the units relation');
+    expect($result->queryCalls)->toBe(24, 'one availability call per card')
+        ->and($result->queryBatches)->toBe(1, '24 calls, one frame')
+        // One: the products. The 24 availability calls resolve their
+        // products from the identity map the loader filled, so the batch
+        // costs no statement at all.
+        ->and($statements)->toBe(1, 'the products, once');
 });
 
 it('lets no model column reach the browser', function () {
-    [$kernel, $renderer, $seeded] = racksKernel();
+    [$kernel, $renderer] = shopKernel();
 
     try {
-        [$html] = renderRack($kernel, $seeded['racks'][0]);
+        [$html] = renderCatalog($kernel);
     } finally {
         $renderer->stop();
     }
 
-    // rated_watts is a real column on units and is on no Data object.
-    expect($html)->not->toContain('rated_watts')
-        ->not->toContain('ratedWatts')
-        ->not->toContain('height_u');
+    // stock and price_cents are real columns; the stock count is on no Data
+    // object, only the availability query's reading of it.
+    expect($html)->not->toContain('price_cents')
+        ->not->toContain('"stock"')
+        ->not->toContain('password');
 });
 
 it('renders identically over the json-lines codec', function () {
-    [$kernel, $renderer, $seeded] = racksKernel('json-lines');
+    [$kernel, $renderer] = shopKernel('json-lines');
 
     try {
-        [$html, $result] = renderRack($kernel, $seeded['racks'][0]);
+        [$html, $result] = renderCatalog($kernel);
     } finally {
         $renderer->stop();
     }
 
-    expect(substr_count($html, 'class="unit"'))->toBe(42)
-        ->and(substr_count($html, 'class="watts"'))->toBe(42)
+    expect(substr_count($html, 'data-product-name=""'))->toBe(24)
+        ->and(substr_count($html, 'data-availability='))->toBe(24)
         ->and($result->queryBatches)->toBe(1);
 });
 
 it('reports a clear error when the renderer is not there', function () {
-    $root = \dirname(__DIR__, 4);
-    $seeded = json_decode((string) file_get_contents("{$root}/examples/racks/database/seeded.json"), true);
-    $kernel = Kernel::fromEnvironment('/tmp/tinvar-no-such-renderer.sock');
+    $kernel = Kernel::fromEnvironment('/tmp/tinvar-no-such-renderer.sock', database: Shop::database());
 
-    expect(fn () => renderRack($kernel, $seeded['racks'][0]))
-        ->toThrow(RendererException::class, 'Cannot reach the renderer');
+    expect(fn () => renderCatalog($kernel))->toThrow(RendererException::class, 'Cannot reach the renderer');
 });
 
 // The renderer is the "runs third-party npm code" tier; the spec says its
@@ -174,14 +175,13 @@ it('includes the renderer message when debug is on', function () {
 // The front controller's path: one Request in, the document or -- for a
 // client navigation -- the payload alone out.
 it('serves the document, or the payload alone for a client navigation', function () {
-    [$kernel, $renderer, $seeded] = racksKernel();
+    [$kernel, $renderer] = shopKernel();
 
     try {
-        $path = '/racks/' . $seeded['racks'][0];
-        $document = $kernel->handle(Tinvar\Http\Request::get($path));
+        $document = $kernel->handle(Request::get('/', ['accept' => 'text/html']));
         // With the build the page metadata names, as the router sends it:
         // once fragment support is on, the version check is too.
-        $payload = $kernel->handle(Tinvar\Http\Request::get($path, ['RSC' => '1', 'X-Version' => 'dev']));
+        $payload = $kernel->handle(Request::get('/', ['RSC' => '1', 'X-Version' => 'dev']));
     } finally {
         $renderer->stop();
     }
@@ -192,23 +192,36 @@ it('serves the document, or the payload alone for a client navigation', function
 
     expect($payload->status)->toBe(200)
         ->and($payload->header('content-type'))->toBe('text/x-component')
-        ->and($payload->body())->not->toContain('<html')
         ->and($payload->body())->not->toContain('self.__rsc')
-        ->and($payload->body())->toContain('LAX1');
+        ->and($payload->body())->toContain('Pellwick Supply');
+});
+
+// A failed document request is a page in the shop's own look, under the
+// same policy, with the status the failure had and a reference to quote.
+it('renders a designed page for a document that is not found', function () {
+    [$kernel, $renderer] = shopKernel();
+
+    try {
+        $missing = $kernel->handle(Request::get('/no-such-page', ['accept' => 'text/html']));
+    } finally {
+        $renderer->stop();
+    }
+
+    expect($missing->status)->toBe(404)
+        ->and($missing->header('content-security-policy'))->toStartWith("script-src 'nonce-")
+        ->and($missing->body())->toContain('Nothing lives at this address')
+        ->toContain('Browse the catalog')
+        ->toMatch('#Reference <span[^>]*>[0-9a-f]{16}</span>#');
 });
 
 // "PHP sets a strict CSP with a per-request nonce and strict-dynamic ...
-// Script injected into the HTML stream doesn't run." Neither half was there:
-// no policy was sent, and React was never given the nonce, so its bootstrap
-// module and its inline Suspense reveals carried none -- under the policy,
-// the page would not hydrate.
+// Script injected into the HTML stream doesn't run."
 it('sends a CSP, and puts its nonce on every script in the document', function () {
-    [$kernel, $renderer, $seeded] = racksKernel();
+    [$kernel, $renderer] = shopKernel();
 
     try {
-        $path = '/racks/' . $seeded['racks'][0];
-        $document = $kernel->handle(Tinvar\Http\Request::get($path));
-        $payload = $kernel->handle(Tinvar\Http\Request::get($path, ['RSC' => '1', 'X-Version' => 'dev']));
+        $document = $kernel->handle(Request::get('/', ['accept' => 'text/html']));
+        $payload = $kernel->handle(Request::get('/', ['RSC' => '1', 'X-Version' => 'dev']));
     } finally {
         $renderer->stop();
     }
@@ -235,11 +248,10 @@ it('sends a CSP, and puts its nonce on every script in the document', function (
             static fn (string $tag): bool => !str_contains($tag, " nonce=\"{$nonce}\""),
         )))->toBe([], 'every script carries the nonce');
 
-    // Including the ones React writes itself, which were the ones without
-    // it: the bootstrap module, and the inline script that reveals the
-    // Suspense boundary.
+    // Including the ones React writes itself: the bootstrap module, and the
+    // inline scripts that reveal the Suspense boundaries.
     expect(array_filter($scripts, static fn (string $tag): bool => str_contains($tag, 'type="module"')))->toHaveCount(1)
-        ->and($document->body())->toContain('$RC("B:0"');
+        ->and($document->body())->toContain('$RC(');
 
     // A payload is not a document, and gets no policy.
     expect($payload->header('content-security-policy'))->toBeNull();
