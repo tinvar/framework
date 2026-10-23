@@ -137,7 +137,15 @@ final class ActionRegistry
         $models = [];
         $formRequests = [];
         $nestedModels = [];
+
+        // A name the action and one of its form requests both declare is one
+        // input, resolved once. It is optional only if EVERY declaration of
+        // it is: OR-ing them let a form request shared with a create form
+        // (`?Rack $rack = null`) make a required `Rack $rack` parameter
+        // optional, so its check was skipped when the caller left it out and
+        // the call ended in a TypeError from the body.
         $optional = [];
+        $required = [];
 
         // Two passes. Collecting parameters first, then nested fields, keeps
         // the collision check from depending on declaration order: with one
@@ -174,6 +182,8 @@ final class ActionRegistry
                 $models[$name] = $typeName;
                 if ($type->allowsNull() || $parameter->isDefaultValueAvailable()) {
                     $optional[$name] = true;
+                } else {
+                    $required[$name] = true;
                 }
                 continue;
             }
@@ -207,9 +217,13 @@ final class ActionRegistry
                 $nestedModels[$field] = $fieldModel;
                 if (self::fieldIsOptional($requestClass, $field)) {
                     $optional[$field] = true;
+                } else {
+                    $required[$field] = true;
                 }
             }
         }
+
+        $optional = array_diff_key($optional, $required);
 
         // Every check names an input this method takes, or a class. A class
         // check runs on every action in the class, so one naming an input
