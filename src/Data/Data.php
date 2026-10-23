@@ -20,4 +20,34 @@ namespace Tinvar\Data;
  * hooked properties, so a computed Data field is assigned in the constructor
  * rather than derived by a get hook. Models are unaffected.
  */
-abstract readonly class Data {}
+abstract readonly class Data
+{
+    /**
+     * Builds this Data object from a model, another object or an array:
+     * same-named properties map automatically, #[From('...')] names one that
+     * differs, and Data-typed and list-of-Data fields map recursively. See
+     * Mapper.
+     *
+     * @param object|array<array-key, mixed> $source
+     */
+    public static function from(object|array $source): static
+    {
+        return Mapper::map(static::class, $source);
+    }
+
+    /**
+     * One Data object per item.
+     *
+     * @param iterable<object|array<array-key, mixed>> $sources
+     * @return list<static>
+     */
+    public static function collect(iterable $sources): array
+    {
+        $out = [];
+        foreach ($sources as $source) {
+            $out[] = static::from($source);
+        }
+
+        return $out;
+    }
+}
