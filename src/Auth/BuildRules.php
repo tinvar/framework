@@ -238,19 +238,14 @@ final class BuildRules
                 $covered[] = $argument;
             }
 
-            if ($exempt) {
-                continue;
-            }
-
             // The same hazard as a bare id in a payload, on the path that has
             // no validation at all: a body that looks the row up itself runs
-            // unscoped and unauthorized.
+            // unscoped and unauthorized. Checked whether or not the method is
+            // exempt: #[NoAuthorization] opts out of the authorization rule,
+            // not out of tenant scoping.
             foreach ($method->getParameters() as $parameter) {
-                $type = $parameter->getType();
-                if (!$type instanceof \ReflectionNamedType || !$type->isBuiltin()) {
-                    continue;
-                }
-                if (!\in_array($type->getName(), ['string', 'int', 'array'], true)) {
+                $bare = self::bareIdType($parameter->getType());
+                if ($bare === null) {
                     continue;
                 }
 
@@ -262,9 +257,13 @@ final class BuildRules
                 $violations[] = new Violation(
                     self::TENANT_SCOPED_IDS_MUST_BE_TYPED,
                     "{$where}(\${$parameter->getName()})",
-                    "is a bare {$type->getName()} naming {$model}, which is #[TenantScoped]. "
+                    "is a bare {$bare} naming {$model}, which is #[TenantScoped]. "
                     . 'Type it as the model so it is resolved and scoped; a raw id is not.',
                 );
+            }
+
+            if ($exempt) {
+                continue;
             }
 
             foreach ($parameters as $name => $models) {
@@ -618,12 +617,11 @@ final class BuildRules
         foreach (self::payloadFields($class) as $name => $type) {
             // Recurse: a bare id two Data objects deep is still a bare id, and
             // the caller has no reason to enumerate nested types by hand.
-            if ($type['class'] !== null) {
-                $violations = [...$violations, ...$this->checkPayload($type['class'], $root, $visited)];
-                continue;
+            foreach ($type['classes'] as $nested) {
+                $violations = [...$violations, ...$this->checkPayload($nested, $root, $visited)];
             }
 
-            if (!\in_array($type['builtin'], ['string', 'int', 'array'], true)) {
+            if ($type['bare'] === null) {
                 continue;
             }
 
@@ -637,7 +635,7 @@ final class BuildRules
             $violations[] = new Violation(
                 self::TENANT_SCOPED_IDS_MUST_BE_TYPED,
                 $where,
-                "is a bare {$type['builtin']} naming {$model}, which is #[TenantScoped]. "
+                "is a bare {$type['bare']} naming {$model}, which is #[TenantScoped]. "
                 . 'Type it as the model so it is resolved and scoped; a raw id is not.',
             );
         }
@@ -650,7 +648,7 @@ final class BuildRules
      * assign a field in its body rather than promote it.
      *
      * @param class-string $class
-     * @return array<string, array{builtin: string|null, class: class-string|null}>
+     * @return array<string, array{bare: string|null, classes: list<class-string>}>
      */
     private static function payloadFields(string $class): array
     {
@@ -670,21 +668,52 @@ final class BuildRules
         return $fields;
     }
 
-    /** @return array{builtin: string|null, class: class-string|null} */
+    /** @return array{bare: string|null, classes: list<class-string>} */
     private static function describeType(?\ReflectionType $type): array
     {
-        if (!$type instanceof \ReflectionNamedType) {
-            return ['builtin' => null, 'class' => null];
+        $classes = [];
+        foreach (self::membersOf($type) as $member) {
+            if (!$member->isBuiltin()) {
+                /** @var class-string $name */
+                $name = $member->getName();
+                $classes[] = $name;
+            }
         }
 
-        if ($type->isBuiltin()) {
-            return ['builtin' => $type->getName(), 'class' => null];
+        return ['bare' => self::bareIdType($type), 'classes' => $classes];
+    }
+
+    /**
+     * The part of a type that can carry a raw id, as written -- `int|string`,
+     * `mixed` -- or null when every member is a class. Each member of a union
+     * counts: `int|string $scriptId` is as bare as `string $scriptId`, and an
+     * untyped one is barer still.
+     */
+    private static function bareIdType(?\ReflectionType $type): ?string
+    {
+        if ($type === null) {
+            return 'untyped value';
         }
 
-        /** @var class-string $name */
-        $name = $type->getName();
+        $bare = array_values(array_filter(
+            array_map(static fn (\ReflectionNamedType $t): string => $t->getName(), self::membersOf($type)),
+            static fn (string $name): bool => \in_array($name, ['string', 'int', 'array', 'mixed'], true),
+        ));
 
-        return ['builtin' => null, 'class' => $name];
+        return $bare === [] ? null : implode('|', $bare);
+    }
+
+    /** @return list<\ReflectionNamedType> */
+    private static function membersOf(?\ReflectionType $type): array
+    {
+        if ($type instanceof \ReflectionNamedType) {
+            return [$type];
+        }
+        if ($type instanceof \ReflectionUnionType) {
+            return array_values(array_filter($type->getTypes(), static fn ($t): bool => $t instanceof \ReflectionNamedType));
+        }
+
+        return [];   // an intersection is of classes, never a raw id
     }
 
     /**
