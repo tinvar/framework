@@ -34,6 +34,9 @@ final class TranslateRedirects implements Middleware
 {
     private const array REDIRECTS = [301, 302, 303, 307, 308];
 
+    /** Headers whose effect is not the redirect itself, carried onto the 409. */
+    private const array CARRIED = ['set-cookie', 'clear-site-data'];
+
     public function handle(Request $request, \Closure $next): Response
     {
         $response = $next($request);
@@ -55,10 +58,22 @@ final class TranslateRedirects implements Middleware
         // its own rules.
         $header = Response::isSameOriginTarget($location) ? 'x-redirect' : 'x-location';
 
-        return Response::make(409, '', [
+        $translated = Response::make(409, '', [
             $header => $location,
             'cache-control' => 'private, no-store',
             'vary' => 'RSC',
         ]);
+
+        // What a redirect does besides redirecting -- a login setting the
+        // session cookie, a logout clearing site data -- must survive the
+        // translation, or it silently stops happening for client navigations.
+        foreach (self::CARRIED as $name) {
+            $value = $response->header($name);
+            if ($value !== null) {
+                $translated = $translated->withHeader($name, $value);
+            }
+        }
+
+        return $translated;
     }
 }

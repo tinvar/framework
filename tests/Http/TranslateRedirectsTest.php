@@ -58,3 +58,18 @@ it('leaves a document request\'s redirect for the browser to follow', function (
 it('leaves everything that is not a redirect alone', function (int $status) {
     expect(translated(Response::make($status, 'x'))->status)->toBe($status);
 })->with([200, 304, 404, 409]);
+
+// A login's session cookie or a logout's Clear-Site-Data is part of what the
+// redirect does; dropped, it would silently stop happening for client visits.
+it('carries what the redirect does besides redirecting', function () {
+    $response = translated(
+        Response::redirect('/dashboard')
+            ->withHeader('set-cookie', 'session=abc; HttpOnly; Secure')
+            ->withHeader('clear-site-data', '"cache"')
+            ->withHeader('x-route-token', 'v1.old'),
+    );
+
+    expect($response->header('set-cookie'))->toBe('session=abc; HttpOnly; Secure')
+        ->and($response->header('clear-site-data'))->toBe('"cache"')
+        ->and($response->header('x-route-token'))->toBeNull();
+});
