@@ -47,17 +47,11 @@ final readonly class Email implements Rule
             return $invalid;
         }
 
-        $at = strrpos($value, '@');
-        if ($at === false) {
-            return $invalid;
-        }
+        // FILTER_VALIDATE_EMAIL has already required an @ and capped the
+        // local part at MAX_LOCAL_LENGTH (pinned by the tests), so only the
+        // domain is left to look at.
+        $domain = substr($value, (int) strrpos($value, '@') + 1);
 
-        $local = substr($value, 0, $at);
-        $domain = substr($value, $at + 1);
-
-        if (\strlen($local) > self::MAX_LOCAL_LENGTH) {
-            return $invalid;
-        }
         if (str_starts_with($domain, '[')) {
             return "{$field} must use a domain name, not an IP address.";
         }
