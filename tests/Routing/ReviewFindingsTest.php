@@ -57,10 +57,10 @@ function okResponder(): Closure
 
 // HIGH: a page spelling the shared parameter differently escaped the layout
 // entirely, and with it the layout's #[Authorize]. Fails open on a typo.
+// Refused at registration now, not on the first match (see
+// ParameterNamesAtRegistrationTest), so the registry is never built.
 it('refuses a page that renames a parameter its layout declares', function () {
-    $registry = registryOf([F\SiteLayout::class, F\MismatchedParameterPage::class]);
-
-    expect(fn () => $registry->match('/sites/abc/leak'))
+    expect(fn () => registryOf([F\SiteLayout::class, F\MismatchedParameterPage::class]))
         ->toThrow(RoutingException::class, 'names the parameter at position');
 });
 

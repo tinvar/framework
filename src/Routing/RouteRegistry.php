@@ -125,6 +125,20 @@ final class RouteRegistry
             }
         }
 
+        // Every layout and page pair this route forms with one already
+        // registered. Whichever of the two registers second is the one
+        // refused, so the order they arrive in does not matter -- and a
+        // typo fails registration rather than the first request under it.
+        if ($route->kind === RouteKind::Page) {
+            foreach ($this->layouts as $layout) {
+                self::assertParameterNamesAgree($layout, $route);
+            }
+        } else {
+            foreach ($this->pages as $page) {
+                self::assertParameterNamesAgree($route, $page);
+            }
+        }
+
         if ($route->kind === RouteKind::Layout) {
             $owner = $this->byLayoutKey[$route->layoutKey] ?? null;
             if ($owner !== null) {
@@ -221,30 +235,46 @@ final class RouteRegistry
     {
         $wrapping = [];
 
+        // Parameter names were checked pair by pair at registration (see
+        // assertParameterNamesAgree), so every layout wrapping the page
+        // binds what the page calls the same thing.
         foreach ($this->layouts as $layout) {
-            if (!$layout->wraps($page)) {
-                continue;
+            if ($layout->wraps($page)) {
+                $wrapping[] = $layout;
             }
-
-            // Checked here rather than at registration because it depends on
-            // both routes existing, and they may register in either order.
-            $mismatch = $layout->parameterNameMismatch($page);
-            if ($mismatch !== null) {
-                throw RoutingException::parameterNameMismatch(
-                    $layout->class,
-                    $layout->template,
-                    $page->class,
-                    $page->template,
-                    $mismatch,
-                );
-            }
-
-            $wrapping[] = $layout;
         }
 
         usort($wrapping, static fn (CompiledRoute $a, CompiledRoute $b): int => $a->depth() <=> $b->depth());
 
         return $wrapping;
+    }
+
+    /**
+     * Refuses a page that names a parameter differently from a layout that
+     * wraps it.
+     *
+     * The layout still wraps the page -- wrapping is positional, so a typo
+     * cannot unguard a route -- but it binds by name, and a page at
+     * `/sites/{siteId}/edit` under `/sites/{site}` would hand the layout a
+     * parameter it never receives. This used to surface on the first request
+     * under the pair.
+     */
+    private static function assertParameterNamesAgree(CompiledRoute $layout, CompiledRoute $page): void
+    {
+        if (!$layout->wraps($page)) {
+            return;
+        }
+
+        $mismatch = $layout->parameterNameMismatch($page);
+        if ($mismatch !== null) {
+            throw RoutingException::parameterNameMismatch(
+                $layout->class,
+                $layout->template,
+                $page->class,
+                $page->template,
+                $mismatch,
+            );
+        }
     }
 
     public function named(string $name): CompiledRoute
