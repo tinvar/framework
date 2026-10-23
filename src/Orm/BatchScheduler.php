@@ -74,16 +74,27 @@ final class BatchScheduler
         $this->rounds++;
 
         foreach ($groups as $key => $group) {
-            // Back into the tenant that awaited, so the statement carries that
-            // fiber's scope and the rows are cached under its namespace. The
-            // key is passed in rather than recomputed, for the same reason.
-            $this->orm->actAs($group['tenant'], function () use ($group, $key): void {
-                $this->orm->loadRelationRows(
-                    $group['relation'],
-                    array_values($group['parents']),
-                    $key,
-                );
-            });
+            // A load that fails fails only the fibers that awaited it. They
+            // resume to find their group missing, and resolveHasMany()'s
+            // fallback load runs again inside each one's own call, so the
+            // error is raised there and run() reports it against that call's
+            // id. Escaping here, it failed every call in the tick -- finished
+            // ones included -- and skipped the groups after it.
+            try {
+                // Back into the tenant that awaited, so the statement carries
+                // that fiber's scope and the rows are cached under its
+                // namespace. The key is passed in rather than recomputed, for
+                // the same reason.
+                $this->orm->actAs($group['tenant'], function () use ($group, $key): void {
+                    $this->orm->loadRelationRows(
+                        $group['relation'],
+                        array_values($group['parents']),
+                        $key,
+                    );
+                });
+            } catch (\Throwable) {
+                continue;
+            }
         }
     }
 
