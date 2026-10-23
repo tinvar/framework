@@ -102,7 +102,14 @@ final class Container
             $this->assertNotCaptive($class, Lifetime::Request);
         }
 
+        if (!isset($this->shared[$class]) && !isset($this->bindings[$class])
+            && !class_exists($class) && !interface_exists($class)) {
+            throw ContainerException::unknownClass($class);
+        }
+
         $object = $this->shared[$class] ?? $this->perRequest[$class] ?? $this->resolve($class);
+        // A binding's factory can build anything; checked before it is
+        // shared, in resolve(), and here for registered instances.
         if (!$object instanceof $class) {
             throw ContainerException::wrongType($class, $object::class);
         }
@@ -113,7 +120,7 @@ final class Container
     /** Whether the container can build or hand out this class. */
     public function has(string $class): bool
     {
-        return isset($this->shared[$class]) || isset($this->bindings[$class]) || class_exists($class);
+        return $this->canProvide($class);
     }
 
     /**
@@ -156,6 +163,9 @@ final class Container
         $this->buildingLifetimes[] = $lifetime;
         try {
             $object = isset($this->bindings[$class]) ? ($this->bindings[$class])($this) : $this->build($class);
+            if (!$object instanceof $class) {
+                throw ContainerException::wrongType($class, $object::class);
+            }
         } finally {
             array_pop($this->building);
             array_pop($this->buildingLifetimes);
@@ -247,6 +257,9 @@ final class Container
     private function build(string $class): object
     {
         $reflection = new \ReflectionClass($class);
+        if (!$reflection->isInstantiable() && !$reflection->isInterface() && !$reflection->isAbstract()) {
+            throw ContainerException::privateConstructor($class, \array_slice($this->building, 0, -1));
+        }
         if (!$reflection->isInstantiable()) {
             throw ContainerException::notInstantiable($class, \array_slice($this->building, 0, -1));
         }

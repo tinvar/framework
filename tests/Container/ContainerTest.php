@@ -93,6 +93,12 @@ final class BadInjection
 
 abstract class Shape {}
 
+final class Singleton
+{
+    private function __construct() {}
+}
+
+
 final class OptionalClock
 {
     /** @var list<Config> */
@@ -232,12 +238,31 @@ describe('bindings and instances', function () {
         expect($container->get(Page::class)->config)->toBe($config);
     });
 
-    it('says what it can provide', function () {
+    it('says what it can provide, and not what it cannot build', function () {
         $container = (new Container())->bind(Clock::class, FixedClock::class);
 
         expect($container->has(Clock::class))->toBeTrue()
             ->and($container->has(Config::class))->toBeTrue()
+            ->and($container->has(Shape::class))->toBeFalse()
+            ->and($container->has(Singleton::class))->toBeFalse()
             ->and($container->has('No\\Such\\Thing'))->toBeFalse();
+    });
+
+    it('names a class that does not exist', function () {
+        expect(fn () => (new Container())->get('No\\Such\\Thing'))->toThrow(ContainerException::class, 'No class No\\Such\\Thing.');
+    });
+
+    it('names a constructor it may not call', function () {
+        expect(fn () => (new Container())->get(Singleton::class))->toThrow(ContainerException::class, 'its constructor is not public');
+    });
+
+    // Refused before it is kept: a worker binding stored the wrong object
+    // and the next lookup handed it out.
+    it('keeps nothing a binding built wrongly', function () {
+        $container = (new Container())->bind(Clock::class, static fn (): object => new Config(), Lifetime::Worker);
+
+        expect(fn () => $container->get(Clock::class))->toThrow(ContainerException::class, 'which is not one')
+            ->and(fn () => $container->get(Clock::class))->toThrow(ContainerException::class, 'which is not one');
     });
 });
 
