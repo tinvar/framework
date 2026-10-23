@@ -27,14 +27,8 @@ final class PolicyGate implements Gate
 
     public function allows(Authorize $check, array $arguments): bool
     {
-        $subject = $arguments['subject'] ?? null;
-        if ($subject === null) {
-            throw AuthorizationException::badSubject($check->ability);
-        }
-
-        // A subject is either the resolved model or, for a class-level check
-        // such as Authorize('viewAny', Rack::class), the class itself.
-        $subjectClass = \is_object($subject) ? $subject::class : (string) $subject;
+        $subject = $this->subjectFor($check, $arguments);
+        $subjectClass = \is_object($subject) ? $subject::class : $subject;
         $policy = $this->policies->for($subjectClass);
         $user = $this->auth->user();
 
@@ -53,5 +47,43 @@ final class PolicyGate implements Gate
         }
 
         return (bool) $policy->{$check->ability}($user, $subject, $arguments);
+    }
+
+    /**
+     * What this check is about, taken from the attribute.
+     *
+     * Deliberately not a 'subject' key in $arguments: the caller's map may be
+     * shaped by the request, and a gate that reads a subject out of it could
+     * be pointed at a different record from the one the body will use. The
+     * attribute names the argument; the argument must already hold a resolved
+     * model, or be a class name written in the source.
+     *
+     * @param array<string, mixed> $arguments
+     */
+    private function subjectFor(Authorize $check, array $arguments): object|string
+    {
+        $argument = $check->argument;
+        if ($argument === null) {
+            throw AuthorizationException::badSubject($check->ability);
+        }
+
+        // A class named in the attribute is source, not request data.
+        if (class_exists($argument) || interface_exists($argument)) {
+            return $argument;
+        }
+
+        $value = $arguments[$argument] ?? null;
+
+        // A scalar here means resolution did not happen, which would leave the
+        // policy deciding about a string. Fail closed rather than guess.
+        if (!\is_object($value)) {
+            throw AuthorizationException::unresolvedSubject(
+                $check->ability,
+                $argument,
+                get_debug_type($value),
+            );
+        }
+
+        return $value;
     }
 }

@@ -81,6 +81,32 @@ final class ModelMeta
         return ($this->read)($model, $property);
     }
 
+    /**
+     * Every column name this model may be queried by.
+     *
+     * The query builder refuses anything outside this set, so a sort or filter
+     * field that reached a query from a request cannot name a hidden column --
+     * or inject SQL through the identifier.
+     *
+     * @return list<string>
+     */
+    public function knownIdentifiers(): array
+    {
+        $known = $this->selectColumns();
+
+        if ($this->tenantColumn !== null && !\in_array($this->tenantColumn, $known, true)) {
+            $known[] = $this->tenantColumn;
+        }
+
+        foreach ($this->relations as $relation) {
+            if (!\in_array($relation->foreignKey, $known, true)) {
+                $known[] = $relation->foreignKey;
+            }
+        }
+
+        return $known;
+    }
+
     public function relation(string $property): ?RelationMeta
     {
         return $this->relations[$property] ?? null;

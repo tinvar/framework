@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tinvar\Validation\Rules;
 
-use Tinvar\Orm\Metadata;
 use Tinvar\Orm\Model;
 use Tinvar\Validation\Rule;
 use Tinvar\Validation\ValidationContext;
@@ -26,12 +25,13 @@ final readonly class Exists implements Rule
         public ?string $column = null,
     ) {}
 
+    public function appliesTo(): array
+    {
+        return ['string', 'int'];
+    }
+
     public function check(mixed $value, string $field, ValidationContext $context): ?string
     {
-        if ($value === null || $value === '') {
-            return null;   // emptiness is Required's business, not this rule's
-        }
-
         $column = Column::resolve($this->model, $this->column, self::class, $field);
 
         return $context->orm()->whereIn($this->model, $column, [$value]) === []

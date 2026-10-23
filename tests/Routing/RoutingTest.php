@@ -357,7 +357,7 @@ describe('authorization in the route chain', function () {
 
             public function allows(Tinvar\Attributes\Authorize $check, array $arguments): bool
             {
-                $this->subjects[$check->argument ?? '?'] = $arguments['subject'] ?? null;
+                $this->subjects[$check->argument ?? '?'] = $arguments[$check->argument ?? '?'] ?? null;
 
                 return true;
             }

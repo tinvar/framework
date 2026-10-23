@@ -24,6 +24,13 @@ final readonly class In implements Rule
         $this->allowed = array_values($allowed);
     }
 
+    public function appliesTo(): array
+    {
+        // Not 'enum': a backed enum is already a closed set, and comparing its
+        // cases against strings strictly could never pass.
+        return ['string', 'int'];
+    }
+
     public function check(mixed $value, string $field, ValidationContext $context): ?string
     {
         // Strict comparison: '1' must not satisfy an allowed value of 1.

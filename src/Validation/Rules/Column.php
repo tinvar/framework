@@ -6,8 +6,6 @@ namespace Tinvar\Validation\Rules;
 
 use Tinvar\Orm\Metadata;
 use Tinvar\Orm\Model;
-use Tinvar\Validation\Rule;
-use Tinvar\Validation\ValidationContext;
 
 /**
  * Resolves and vets a column name for a database-backed rule.
@@ -19,8 +17,22 @@ use Tinvar\Validation\ValidationContext;
  */
 final class Column
 {
+    /** @var array<string, string> */
+    private static array $resolved = [];
+
     /** @param class-string<Model> $model */
     public static function resolve(string $model, ?string $column, string $rule, string $field): string
+    {
+        $key = $model . '|' . ($column ?? '');
+        if (isset(self::$resolved[$key])) {
+            return self::$resolved[$key];
+        }
+
+        return self::$resolved[$key] = self::lookUp($model, $column, $rule, $field);
+    }
+
+    /** @param class-string<Model> $model */
+    private static function lookUp(string $model, ?string $column, string $rule, string $field): string
     {
         $meta = Metadata::for($model);
 

@@ -118,11 +118,22 @@ final class Orm
         $this->setUnscopedDepth(0);
         $this->switchTenant($tenant);
 
+        // Entering a scoped context from an unscoped one: drop anything the
+        // unscoped read may have left reachable, in both directions.
+        if ($previousUnscoped > 0) {
+            $this->identityMap->flush();
+            $this->relationRows = [];
+        }
+
         try {
             return $work();
         } finally {
             $this->switchTenant($previous);
             $this->setUnscopedDepth($previousUnscoped);
+            if ($previousUnscoped > 0) {
+                $this->identityMap->flush();
+                $this->relationRows = [];
+            }
         }
     }
 
@@ -206,7 +217,11 @@ final class Orm
     /** @param class-string<Model> $class */
     public function find(string $class, string $id): ?Model
     {
-        if ($existing = $this->identityMap->get($class, $id)) {
+        // The identity map is keyed by tenant but knows nothing of scoping, so
+        // a row read inside acrossTenants() would otherwise answer a later
+        // scoped read for the same id. Unscoped reads bypass the caches
+        // entirely: an explicit escape hatch can afford to be uncached.
+        if (!$this->isUnscoped() && ($existing = $this->identityMap->get($class, $id))) {
             /** @var Model $existing */
             return $existing;
         }
@@ -223,6 +238,7 @@ final class Orm
     public function all(string $class, ?string $orderBy = null): array
     {
         $meta = Metadata::for($class);
+        $orderBy = $orderBy === null ? null : self::identifier($meta, $orderBy);
         [$scope, $scopeBindings] = $this->tenantScope($meta);
 
         $columns = implode(', ', array_map(static fn (string $c): string => '"' . $c . '"', $meta->selectColumns()));
@@ -248,6 +264,8 @@ final class Orm
             return [];
         }
         $meta = Metadata::for($class);
+        $column = self::identifier($meta, $column);
+        $orderBy = $orderBy === null ? null : self::identifier($meta, $orderBy);
         [$scope, $scopeBindings] = $this->tenantScope($meta);
 
         $rows = $this->connection->select(
@@ -269,15 +287,19 @@ final class Orm
         $resultSet = new ResultSet();
         $models = [];
 
+        $unscoped = $this->isUnscoped();
+
         foreach ($rows as $row) {
             $id = (string) ($row[$meta->idColumn] ?? '');
-            $model = $this->identityMap->get($class, $id);
+            $model = $unscoped ? null : $this->identityMap->get($class, $id);
 
             if ($model === null) {
                 /** @var Model $model */
                 $model = (new \ReflectionClass($class))->newInstanceWithoutConstructor();
                 $meta->hydrate($model, $row);
-                $model = $this->identityMap->remember($class, $id, $model);
+                if (!$unscoped) {
+                    $model = $this->identityMap->remember($class, $id, $model);
+                }
                 $model->attach($this, $resultSet);
                 $this->installRelations($model, $meta, $row);
             }
@@ -334,8 +356,11 @@ final class Orm
         );
 
         // Registered before it initializes, so every parent pointing at this row
-        // shares one instance and one initializer run.
-        return $this->identityMap->remember($target, $foreignKey, $ghost);
+        // shares one instance and one initializer run. Not while unscoped: a
+        // ghost put in the map there would be served to a later scoped read.
+        return $this->isUnscoped()
+            ? $ghost
+            : $this->identityMap->remember($target, $foreignKey, $ghost);
     }
 
     // ------------------------------------------------------------- relations
@@ -403,7 +428,10 @@ final class Orm
 
         $ids = array_keys($groupKeys);
         $targetMeta = Metadata::for($relation->target);
-        $childColumn = $relation->childColumn();
+        // A HasMany child's foreign key is declared on the owner's relation,
+        // not in the child's own metadata, so it is allowed explicitly. It is
+        // still compiled metadata; it just lives on the other side.
+        $childColumn = self::identifier($targetMeta, $relation->childColumn(), [$relation->foreignKey]);
 
         [$scope, $scopeBindings] = $this->tenantScope($targetMeta);
 
@@ -417,6 +445,12 @@ final class Orm
         $grouped = [];
         foreach ($rows as $row) {
             $grouped[(string) ($row[$childColumn] ?? '')][] = $row;
+        }
+
+        // Not cached while unscoped, for the same reason the identity map is
+        // bypassed: these rows were read without a tenant predicate.
+        if ($this->isUnscoped()) {
+            return;
         }
 
         foreach ($ids as $id) {
@@ -434,6 +468,34 @@ final class Orm
     // ------------------------------------------------------------------- sql
 
     /** @param list<string> $extraColumns */
+    /**
+     * Vets a column name before it is interpolated into SQL.
+     *
+     * tinvar-spec.md, "Identifiers from users": "The query builder rejects
+     * identifiers that don't come from compiled metadata, so no one can sort
+     * by a hidden column."
+     *
+     * Two checks, deliberately. Membership is the real one. The shape check
+     * behind it means that even a caller passing something from compiled
+     * metadata that somehow is not an identifier cannot reach the query --
+     * an injected identifier binds looser than the appended tenant predicate
+     * and would defeat tenant scoping as well as read hidden columns.
+     */
+    /** @param list<string> $alsoAllowed identifiers compiled elsewhere in the metadata */
+    private static function identifier(ModelMeta $meta, string $column, array $alsoAllowed = []): string
+    {
+        if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $column) !== 1) {
+            throw MappingException::malformedIdentifier($column);
+        }
+
+        $known = [...$meta->knownIdentifiers(), ...$alsoAllowed];
+        if (!\in_array($column, $known, true)) {
+            throw MappingException::unknownIdentifier($meta->class, $column, $known);
+        }
+
+        return $column;
+    }
+
     private function selectSql(
         ModelMeta $meta,
         string $column,

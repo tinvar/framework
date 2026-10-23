@@ -13,6 +13,11 @@ final readonly class Max implements Rule
 {
     public function __construct(public int|float $max) {}
 
+    public function appliesTo(): array
+    {
+        return ['int', 'float', 'string', 'array'];
+    }
+
     public function check(mixed $value, string $field, ValidationContext $context): ?string
     {
         if (\is_int($value) || \is_float($value)) {

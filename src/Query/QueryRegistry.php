@@ -6,6 +6,7 @@ namespace Tinvar\Query;
 
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Query;
+use Tinvar\Orm\Model;
 use Tinvar\Support\Str;
 
 /**
@@ -27,6 +28,9 @@ final class QueryRegistry
 
     /** @var array<string, array<string, bool>> query name => parameter name => required */
     private array $parameters = [];
+
+    /** @var array<string, array<string, class-string>> query name => argument => model */
+    private array $modelArguments = [];
 
     /** @var array<string, object> */
     private array $instances = [];
@@ -59,6 +63,7 @@ final class QueryRegistry
             $reflection->getAttributes(Authorize::class),
         );
         $this->parameters[$name] = self::parametersOf($reflection, $declaration);
+        $this->modelArguments[$name] = self::modelArgumentsOf($reflection, $declaration);
 
         return $name;
     }
@@ -148,8 +153,52 @@ final class QueryRegistry
         return $parameters;
     }
 
+    /**
+     * The arguments this query declares as models.
+     *
+     * #[Query(args: ['unit' => Unit::class])] -- "the per-call signature is
+     * declared ... and denied calls fail individually before the batch runs".
+     * A plain query's model arguments come from its __invoke signature.
+     *
+     * @return array<string, class-string>
+     */
+    public function modelArgumentsFor(string $name): array
+    {
+        return $this->modelArguments[$name] ?? [];
+    }
+
     public function isBatch(string $name): bool
     {
         return isset($this->classes[$name]) && is_subclass_of($this->classes[$name], BatchQuery::class);
+    }
+
+    /**
+     * @param \ReflectionClass<object> $reflection
+     * @return array<string, class-string>
+     */
+    private static function modelArgumentsOf(\ReflectionClass $reflection, Query $declaration): array
+    {
+        $models = [];
+
+        foreach ($declaration->args as $argument => $class) {
+            if (is_subclass_of($class, Model::class)) {
+                $models[$argument] = $class;
+            }
+        }
+
+        if ($models !== [] || !$reflection->hasMethod('__invoke')) {
+            return $models;
+        }
+
+        foreach ($reflection->getMethod('__invoke')->getParameters() as $parameter) {
+            $type = $parameter->getType();
+            if ($type instanceof \ReflectionNamedType
+                && !$type->isBuiltin()
+                && is_subclass_of($type->getName(), Model::class)) {
+                $models[$parameter->getName()] = $type->getName();
+            }
+        }
+
+        return $models;
     }
 }

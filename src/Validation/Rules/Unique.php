@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tinvar\Validation\Rules;
 
-use Tinvar\Orm\Metadata;
 use Tinvar\Orm\Model;
 use Tinvar\Validation\Rule;
 use Tinvar\Validation\ValidationContext;
@@ -30,12 +29,13 @@ final readonly class Unique implements Rule
         public bool $ignoreSubject = false,
     ) {}
 
+    public function appliesTo(): array
+    {
+        return ['string', 'int'];
+    }
+
     public function check(mixed $value, string $field, ValidationContext $context): ?string
     {
-        if ($value === null || $value === '') {
-            return null;
-        }
-
         $column = Column::resolve($this->model, $this->column, self::class, $field);
         $matches = $context->orm()->whereIn($this->model, $column, [$value]);
 

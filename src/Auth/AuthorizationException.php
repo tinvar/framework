@@ -27,6 +27,14 @@ final class AuthorizationException extends \RuntimeException
         return new self("{$policy} has no '{$ability}' method, and no before() hook answered it.");
     }
 
+    public static function unresolvedSubject(string $ability, string $argument, string $got): self
+    {
+        return new self(
+            "#[Authorize('{$ability}', '{$argument}')] needs a resolved model for '{$argument}', got {$got}. "
+            . 'Model arguments are resolved and scoped before authorization; a raw identifier is not a subject.'
+        );
+    }
+
     public static function badSubject(string $ability): self
     {
         return new self(

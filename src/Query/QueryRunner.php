@@ -8,6 +8,8 @@ use Tinvar\Auth\AllowAllGate;
 use Tinvar\Auth\Gate;
 use Tinvar\Data\DataBoundaryException;
 use Tinvar\Data\Encoder;
+use Tinvar\Orm\Metadata;
+use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 
 /**
@@ -45,25 +47,45 @@ final class QueryRunner
         $errors = [];
         /** @var array<string, array{name: string, args: array<string, mixed>, ids: list<int>}> $groups */
         $groups = [];
-
         /** @var array<int, string> $groupOf call id => group key */
         $groupOf = [];
+        /** @var array<int, array{name: string, args: array<string, mixed>}> $accepted */
+        $accepted = [];
 
+        // Step 1: the allowlist and the shape of the arguments.
         foreach ($calls as $call) {
-            $prepared = $this->prepare($call, $allowed);
+            $prepared = $this->admit($call, $allowed);
             if (isset($prepared['error'])) {
                 $errors[$call['id']] = $prepared['error'];
                 continue;
             }
+            $accepted[$call['id']] = ['name' => $call['name'], 'args' => $prepared['args']];
+        }
 
-            // Dedupe on the *resolved* arguments: "Identical calls collapse into
-            // one; results are memoized for the request, matching React cache()
-            // semantics."
-            $arguments = $prepared['args'];
-            $key = $call['name'] . "\0" . self::canonical($arguments);
-            $groups[$key] ??= ['name' => $call['name'], 'args' => $arguments, 'ids' => []];
-            $groups[$key]['ids'][] = $call['id'];
-            $groupOf[$call['id']] = $key;
+        // Step 2: resolve model arguments, scoped to the tenant -- batched, so
+        // 42 calls naming 42 units cost one statement, not 42.
+        $models = $this->resolveModels($accepted);
+
+        foreach ($accepted as $id => $call) {
+            $resolved = $this->substitute($call, $models);
+            if (isset($resolved['error'])) {
+                $errors[$id] = $resolved['error'];
+                continue;
+            }
+
+            // Step 3: authorize, against the resolved model.
+            $denial = $this->authorize($call['name'], $resolved['args']);
+            if ($denial !== null) {
+                $errors[$id] = $denial;
+                continue;
+            }
+
+            // Dedupe on the validated arguments, before substitution: models
+            // are objects and would not key stably.
+            $key = $call['name'] . "\0" . self::canonical($call['args']);
+            $groups[$key] ??= ['name' => $call['name'], 'args' => $resolved['args'], 'ids' => []];
+            $groups[$key]['ids'][] = $id;
+            $groupOf[$id] = $key;
         }
 
         $values = $groups === [] ? [] : $this->execute($groups);
@@ -86,14 +108,97 @@ final class QueryRunner
     }
 
     /**
-     * Allowlist, then argument resolution, then #[Authorize] -- the spec's
-     * order, with step 2 doing real work.
+     * One whereIn per model class, for every call in the tick.
+     *
+     * @param array<int, array{name: string, args: array<string, mixed>}> $accepted
+     * @return array<class-string, array<string, Model>>
+     */
+    private function resolveModels(array $accepted): array
+    {
+        /** @var array<class-string, list<string>> $wanted */
+        $wanted = [];
+
+        foreach ($accepted as $call) {
+            foreach ($this->registry->modelArgumentsFor($call['name']) as $argument => $class) {
+                $value = $call['args'][$argument] ?? null;
+                if (\is_string($value) || \is_int($value)) {
+                    $wanted[$class][] = (string) $value;
+                }
+            }
+        }
+
+        $resolved = [];
+        foreach ($wanted as $class => $ids) {
+            $meta = Metadata::for($class);
+            foreach ($this->orm->whereIn($class, $meta->idColumn, array_values(array_unique($ids))) as $model) {
+                $resolved[$class][$model->primaryKey()] = $model;
+            }
+        }
+
+        return $resolved;
+    }
+
+    /**
+     * @param array{name: string, args: array<string, mixed>} $call
+     * @param array<class-string, array<string, Model>> $models
+     * @return array{args: array<string, mixed>}|array{error: array{code: string, digest: string, message?: string}}
+     */
+    private function substitute(array $call, array $models): array
+    {
+        $args = $call['args'];
+
+        foreach ($this->registry->modelArgumentsFor($call['name']) as $argument => $class) {
+            if (!\array_key_exists($argument, $args)) {
+                continue;
+            }
+
+            $id = (string) $args[$argument];
+            $model = $models[$class][$id] ?? null;
+
+            // Out of scope reads as absent, never as forbidden, so the
+            // response cannot be used to probe another tenant.
+            if ($model === null) {
+                return ['error' => QueryError::of(
+                    QueryError::NOT_FOUND,
+                    "no {$class} with the given id is in scope for '{$call['name']}'",
+                    $this->debug,
+                )];
+            }
+
+            $args[$argument] = $model;
+        }
+
+        return ['args' => $args];
+    }
+
+    /**
+     * @param array<string, mixed> $arguments
+     * @return array{code: string, digest: string, message?: string}|null
+     */
+    private function authorize(string $name, array $arguments): ?array
+    {
+        foreach ($this->registry->checksFor($name) as $check) {
+            if (!$this->gate->allows($check, $arguments)) {
+                return QueryError::of(
+                    QueryError::FORBIDDEN,
+                    "'{$check->ability}' denied for '{$name}'",
+                    $this->debug,
+                );
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Step 1 of the order: the route's allowlist, and the shape of the
+     * arguments. Resolution and authorization follow, in run().
      *
      * @param array{id: int, name: string, args: array<string, mixed>} $call
      * @param list<string> $allowed
      * @return array{args: array<string, mixed>}|array{error: array{code: string, digest: string, message?: string}}
      */
-    private function prepare(array $call, array $allowed): array
+    private function admit(array $call, array $allowed): array
     {
         $name = $call['name'];
 
@@ -118,26 +223,6 @@ final class QueryRunner
         $arguments = $this->resolveArguments($name, $call['args']);
         if (\is_string($arguments)) {
             return ['error' => QueryError::of(QueryError::BAD_ARGUMENTS, $arguments, $this->debug)];
-        }
-
-        // The gate sees exactly the map the body will receive, so a check named
-        // for an argument cannot be satisfied by a differently-shaped call.
-        foreach ($this->registry->checksFor($name) as $check) {
-            if ($check->argument !== null && !\array_key_exists($check->argument, $arguments)) {
-                return ['error' => QueryError::of(
-                    QueryError::FORBIDDEN,
-                    "'{$name}' declares #[Authorize] for '{$check->argument}', which this call does not supply",
-                    $this->debug,
-                )];
-            }
-
-            if (!$this->gate->allows($check, $arguments)) {
-                return ['error' => QueryError::of(
-                    QueryError::FORBIDDEN,
-                    "'{$check->ability}' denied for '{$name}'",
-                    $this->debug,
-                )];
-            }
         }
 
         return ['args' => $arguments];

@@ -52,24 +52,22 @@ final class UnitLoad implements BatchQuery
 {
     public function __construct(private readonly Orm $orm) {}
 
+    /**
+     * The units arrive already resolved and tenant-scoped: #[Query(args:)]
+     * declares them, and the runner batches the lookup into one statement
+     * before authorizing each call.
+     *
+     * @param list<array{unit: Unit}> $calls
+     * @return list<UnitLoadData>
+     */
     public function loadMany(array $calls): array
     {
-        $ids = array_map(static fn (array $c): string => (string) $c['unit'], $calls);
-
-        $rows = $this->orm->connection()->select(
-            'SELECT "id", "position" FROM "units" WHERE "id" IN ('
-            . implode(', ', array_fill(0, \count($ids), '?')) . ')',
-            $ids,
-        );
-
-        $watts = [];
-        foreach ($rows as $row) {
-            $watts[(string) $row['id']] = 100 + ((int) $row['position'] * 7);
-        }
-
         return array_map(
-            static fn (string $id): UnitLoadData => new UnitLoadData($id, $watts[$id] ?? 0),
-            $ids,
+            static fn (array $call): UnitLoadData => new UnitLoadData(
+                $call['unit']->primaryKey(),
+                100 + ($call['unit']->position * 7),
+            ),
+            $calls,
         );
     }
 }

@@ -113,10 +113,13 @@ final class BuildRules
                     continue;
                 }
 
-                $name = $parameter->getName();
-                if (\in_array($name, $covered, true) || \in_array($type->getName(), $covered, true)) {
+                // Only a check naming THIS parameter counts. An
+                // Authorize('viewAny', Rack::class) says something about the
+                // collection, not about the instance this input resolves to.
+                if (\in_array($parameter->getName(), $covered, true)) {
                     continue;
                 }
+                $name = $parameter->getName();
 
                 $violations[] = new Violation(
                     self::AUTHORIZE_EVERY_MODEL_INPUT,

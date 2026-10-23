@@ -87,12 +87,15 @@ final class LoaderRunner
     public function authorize(RouteChain $chain, array $models, array $parameters): void
     {
         foreach ($chain->checks() as ['route' => $route, 'check' => $check]) {
+            // Validated here so a declaration bug is a clear routing error
+            // rather than a gate failure; the gate re-derives it from the
+            // attribute and never trusts a key in this map.
             $subject = $this->subjectFor($check, $models, $route);
 
-            // The gate gets the resolved subject under 'subject', plus every
-            // bound model by name. A raw path segment is never a subject.
             $arguments = $models;
-            $arguments['subject'] = $subject;
+            if (\is_object($subject)) {
+                $arguments[$check->argument] = $subject;
+            }
 
             if (!$this->gate->allows($check, $arguments)) {
                 throw ForbiddenException::check($check->ability, $route->class);

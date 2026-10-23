@@ -24,6 +24,22 @@ final class MappingException extends \RuntimeException
         );
     }
 
+    /** @param list<string> $known */
+    public static function unknownIdentifier(string $class, string $column, array $known): self
+    {
+        return new self(
+            "{$class} has no column '{$column}'. The query builder only accepts identifiers from compiled "
+            . 'metadata, so a sort or filter field cannot name a hidden column. Known: ' . implode(', ', $known) . '.'
+        );
+    }
+
+    public static function malformedIdentifier(string $column): self
+    {
+        return new self(
+            "'{$column}' is not a well-formed column name. Identifiers are never interpolated from input."
+        );
+    }
+
     public static function unsupportedColumnType(string $class, string $property, string $type): self
     {
         return new self("{$class}::\${$property} has unsupported column type {$type}.");
