@@ -65,10 +65,10 @@ final class ActionRunner
         $action = $this->registry->get($name);
 
         // 2. Resolve model arguments, scoped to the tenant.
-        $models = $this->resolveModels($action, $input);
+        [$models, $unsent] = $this->resolveModels($action, $input);
 
         // 3. Authorize, against the resolved models.
-        $this->authorize($action, $models);
+        $this->authorize($action, $models, $unsent);
 
         $subject = $this->subjectOf($action, $models);
 
@@ -119,8 +119,8 @@ final class ActionRunner
     public function validateField(string $name, array $input, string $field): array
     {
         $action = $this->registry->get($name);
-        $models = $this->resolveModels($action, $input);
-        $this->authorize($action, $models);
+        [$models, $unsent] = $this->resolveModels($action, $input);
+        $this->authorize($action, $models, $unsent);
 
         $subject = $this->subjectOf($action, $models);
 
@@ -147,12 +147,24 @@ final class ActionRunner
     }
 
     /**
+     * The models the call names, and the required form-request model fields
+     * it left out.
+     *
+     * "A missing or foreign ID is a 404" is about an id that was SENT: one
+     * naming no row in scope, or another tenant's. A form-request field that
+     * was not sent at all carries no id; it is that form request's "site is
+     * required.", a 422 from step 4. Answering it with a 404 here turned a
+     * half-filled form into an HTTP error -- on the full submit, and on
+     * Precognition's validate('email') before the user had reached the site
+     * select, contradicting Validator::errorsFor.
+     *
      * @param array<string, mixed> $input
-     * @return array<string, Model>
+     * @return array{array<string, Model>, list<string>}
      */
     private function resolveModels(CompiledAction $action, array $input): array
     {
         $models = [];
+        $unsent = [];
 
         // Both the action's own parameters and model-typed fields inside its
         // form requests: "resolve model arguments, and model-typed fields
@@ -164,6 +176,13 @@ final class ActionRunner
                 // Optional means optional, as it already does in the
                 // validator. A present but unresolvable id is still a 404.
                 if (isset($action->optionalModels[$parameter])) {
+                    continue;
+                }
+
+                // Only a form-request field: a model the action takes as its
+                // own parameter is the record it acts on, not a form input.
+                if (!isset($action->models[$parameter])) {
+                    $unsent[] = $parameter;
                     continue;
                 }
 
@@ -179,23 +198,47 @@ final class ActionRunner
                 ?? throw NotFoundException::model($class, (string) $id);
         }
 
-        return $models;
+        return [$models, $unsent];
     }
 
-    /** @param array<string, Model> $models */
-    private function authorize(CompiledAction $action, array $models): void
+    /**
+     * @param array<string, Model> $models
+     * @param list<string>         $unsent required form-request models the call left out
+     */
+    private function authorize(CompiledAction $action, array $models, array $unsent = []): void
     {
         $optional = array_keys($action->optionalModels);
+
+        // A check on a required form field the caller left out has no
+        // subject, and is set aside rather than counted as undecided. That
+        // is safe only because the call cannot reach the body: the form
+        // request that requires the field fails validation with "is
+        // required", and Precognition runs no body at all.
+        $checks = $action->checks;
+        $classLevel = $action->classLevelChecks;
+        if ($unsent !== []) {
+            $kept = [];
+            foreach ($checks as $index => $check) {
+                if ($check->argument !== null && \in_array($check->argument, $unsent, true)) {
+                    if ($index < $action->classLevelChecks) {
+                        $classLevel--;
+                    }
+                    continue;
+                }
+                $kept[] = $check;
+            }
+            $checks = $kept;
+        }
 
         // Every check named an optional input and the call left them all
         // out: nothing would be asked, and the body would still run. Judged
         // for the method's own checks apart from the class's, so a blanket
         // check on the holder cannot stand in for the method's.
-        if (Checks::undecided($action->checks, $action->classLevelChecks, $models, $optional)) {
+        if (Checks::undecided($checks, $classLevel, $models, $optional)) {
             throw ForbiddenException::undecided($action->where());
         }
 
-        foreach ($action->checks as $check) {
+        foreach ($checks as $check) {
             // A check naming a declared-optional model input the caller did
             // not supply has no subject to decide about; the body gets null.
             if (!Checks::applies($check, $models, $optional)) {
