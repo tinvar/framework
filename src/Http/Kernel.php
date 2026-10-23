@@ -145,7 +145,8 @@ final class Kernel
      * @param \Closure(Request): list<string> $allowedQueries the route's query allowlist
      * @param list<class-string<Middleware>> $globalMiddleware
      * @param (\Closure(\Throwable, string): void)|null $log
-     * @param array<string, int> $limits requests per minute, by throttle bucket
+     * @param array<string, int> $limits requests per minute, by throttle bucket, over
+     *        DEFAULT_LIMITS; 0 turns a bucket off
      * @param Container|null $container registered with the framework's objects, and its
      *        request-lived services cleared by the reset contract
      * @param CsrfTokens|null $csrf the session-bound CSRF token. Given, every
@@ -178,6 +179,22 @@ final class Kernel
     ) {
         $this->csrf = $csrf;
         $this->manifest = $manifest;
+
+        // Over the defaults, not instead of them: tightening one bucket by
+        // passing ['actions' => 3] silently turned off every other one. A
+        // bucket is off only when it says so, with 0.
+        $limits = [...self::DEFAULT_LIMITS, ...$limits];
+
+        // The per-account pass reads who is signed in from the context it
+        // was built with. Built with any other than this Kernel's, it saw
+        // every caller as anonymous and the per-user limit never applied --
+        // which is how the example wired it.
+        if ($throttle !== null && !$throttle->reads($auth)) {
+            throw new \InvalidArgumentException(
+                'The Throttle reads a different AuthContext than this Kernel, so its per-account limit '
+                . 'would never apply. Build it with the same one.',
+            );
+        }
 
         // The framework's own objects, so anything the container builds can
         // take them by type. Pass $container->resolver() as $resolver.
@@ -275,19 +292,30 @@ final class Kernel
         // throttle in front of it always sees an anonymous caller: putting
         // both outermost looked right and silently disabled the per-user
         // limit entirely.
+        //
+        // Both budget passes come after CSRF. A page on another site can make
+        // a visitor's browser send POSTs that fail it -- from the visitor's
+        // own address -- and while the address pass ran first, sixty of
+        // those locked the visitor out of their own actions. Outermost there
+        // is only a flood guard, at ten times the budget, so a flood is
+        // still refused before session start: no address limit can tell a
+        // visitor's requests from a hostile page in the same browser, but
+        // the one their real requests spend can no longer be spent for them.
         $this->actionStack = new Pipeline([
-            ...$this->throttleFor($throttle, 'actions', $limits, byAddress: true),
+            ...$this->floodGuardFor($throttle, 'actions', $limits),
             ...$global,
-            ...$this->throttleFor($throttle, 'actions', $limits, byAddress: false),
             new VerifyCsrfToken(tokens: $csrf),
+            ...$this->throttleFor($throttle, 'actions', $limits, byAddress: true),
+            ...$this->throttleFor($throttle, 'actions', $limits, byAddress: false),
             new RequireAuthentication($this->auth, $this->entryPointFor(...)),
         ]);
 
         $this->queryStack = new Pipeline([
-            ...$this->throttleFor($throttle, 'queries', $limits, byAddress: true),
+            ...$this->floodGuardFor($throttle, 'queries', $limits),
             ...$global,
-            ...$this->throttleFor($throttle, 'queries', $limits, byAddress: false),
             new VerifyCsrfToken(tokens: $csrf),
+            ...$this->throttleFor($throttle, 'queries', $limits, byAddress: true),
+            ...$this->throttleFor($throttle, 'queries', $limits, byAddress: false),
             new RequireAuthentication($this->auth, $this->entryPointFor(...)),
         ]);
 
@@ -299,10 +327,11 @@ final class Kernel
         // minting is not authorization, and every token it hands back still
         // has to survive the originating route's #[Authorize] chain on use.
         $this->bootstrapStack = new Pipeline([
-            ...$this->throttleFor($throttle, 'bootstrap', $limits, byAddress: true),
+            ...$this->floodGuardFor($throttle, 'bootstrap', $limits),
             ...$global,
-            ...$this->throttleFor($throttle, 'bootstrap', $limits, byAddress: false),
             new VerifyCsrfToken(tokens: $csrf),
+            ...$this->throttleFor($throttle, 'bootstrap', $limits, byAddress: true),
+            ...$this->throttleFor($throttle, 'bootstrap', $limits, byAddress: false),
         ]);
 
         // Fragments run their own stack: GET with no body, so CSRF does not
@@ -450,7 +479,14 @@ final class Kernel
                 $response = $this->withCsrfCookie($passed, $respond($loaded, $passed));
 
                 if ($token === null) {
-                    return $response;
+                    // Still per-visitor by default: a page runs its loaders
+                    // and #[Authorize] chain for whoever asked, and with no
+                    // cache header a shared cache was free to keep one
+                    // visitor's page for the next. A page meant for every
+                    // visitor says so with its own Cache-Control.
+                    return $response->header('cache-control') !== null
+                        ? $response
+                        : $response->withHeader('cache-control', 'private, no-cache')->withAddedHeader('vary', 'Cookie');
                 }
 
                 // The token carries a session hash, a tenant and a panel, so
@@ -542,6 +578,22 @@ final class Kernel
     }
 
     /**
+     * The outermost per-address guard: the bucket's budget ten times over,
+     * counted before anything else runs.
+     *
+     * @param array<string, int> $limits
+     * @return list<Middleware>
+     */
+    private function floodGuardFor(?Throttle $throttle, string $name, array $limits): array
+    {
+        if ($throttle === null || ($limits[$name] ?? 0) <= 0) {
+            return [];
+        }
+
+        return [new ThrottleRequests($throttle, "{$name}.flood", $limits[$name] * 10, byAddress: true, advertise: false)];
+    }
+
+    /**
      * `throttle:<name>`, or nothing when the application configured none.
      *
      * Absent rather than unlimited-by-default: a throttle with no shared
@@ -557,7 +609,7 @@ final class Kernel
         array $limits,
         bool $byAddress = true,
     ): array {
-        if ($throttle === null || !isset($limits[$name])) {
+        if ($throttle === null || ($limits[$name] ?? 0) <= 0) {
             return [];
         }
 

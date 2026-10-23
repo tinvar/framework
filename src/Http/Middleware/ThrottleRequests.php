@@ -13,12 +13,13 @@ use Tinvar\Http\Throttle;
 /**
  * `throttle:<name>` from the endpoints table, one half at a time.
  *
- * The two halves cannot run in the same place, which is the thing that was
- * wrong before. Charging the ADDRESS wants to be outermost, so a caller
- * hammering an endpoint does not cost a session lookup on the way to being
- * refused. Charging the ACCOUNT cannot be outermost, because the auth
+ * The halves cannot run in the same place, which is the thing that was
+ * wrong before. Charging the ACCOUNT cannot be outermost, because the auth
  * context is populated by middleware -- a throttle ahead of it always sees
- * an anonymous caller, so the per-user limit silently never applies.
+ * an anonymous caller, so the per-user limit silently never applies. The
+ * Kernel charges both after CSRF, so a request a hostile page forged spends
+ * neither, and puts a silent flood guard outermost so a caller hammering an
+ * endpoint is still refused before it costs a session lookup.
  *
  * Counts the hit BEFORE calling the next middleware, so a request that is
  * over the limit costs a counter increment and nothing else -- no model
@@ -37,6 +38,10 @@ final class ThrottleRequests implements Middleware
      *        caller's address and needs nothing to have run first; false for
      *        the pass that charges their ACCOUNT, which must run after the
      *        session middleware has populated the auth context
+     * @param bool $advertise whether an allowed response carries the
+     *        X-RateLimit headers. Off for an outer guard, whose generous
+     *        numbers would otherwise overwrite the budget a client should
+     *        pace itself by.
      */
     public function __construct(
         private readonly Throttle $throttle,
@@ -44,6 +49,7 @@ final class ThrottleRequests implements Middleware
         private readonly int $limit,
         private readonly int $window = 60,
         private readonly bool $byAddress = true,
+        private readonly bool $advertise = true,
     ) {}
 
     public function handle(Request $request, \Closure $next): Response
@@ -72,6 +78,9 @@ final class ThrottleRequests implements Middleware
         }
 
         $response = $next($request);
+        if (!$this->advertise) {
+            return $response;
+        }
 
         foreach ($result->headers() as $header => $value) {
             $response = $response->withHeader($header, $value);

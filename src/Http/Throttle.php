@@ -46,6 +46,12 @@ final class Throttle
         private readonly \Closure $addressOf,
     ) {}
 
+    /** Whether this throttle counts accounts from the given context. */
+    public function reads(AuthContext $auth): bool
+    {
+        return $this->auth === $auth;
+    }
+
     /**
      * Records a hit against every bucket that applies.
      *
