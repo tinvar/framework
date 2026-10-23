@@ -48,6 +48,15 @@ final class ExemptIdPage
     }
 }
 
+#[Page('/bare/intersection', view: 'intersection'), Authorize('viewAny', Script::class)]
+final class IntersectionIdPage
+{
+    public function __invoke(\Countable&\Traversable $scriptId): IdData
+    {
+        return new IdData((string) \count($scriptId));
+    }
+}
+
 final readonly class UnionIdRequest extends FormRequest
 {
     public function __construct(public int|string $scriptId) {}
@@ -106,4 +115,9 @@ it('names the bare part of the type in the message', function () {
     $violations = (new BuildRules([Script::class]))->check([UnionIdPage::class]);
 
     expect($violations[0]->message)->toContain('is a bare string|int naming');
+});
+
+// An intersection is of classes, so it can never be a raw id.
+it('passes an intersection-typed parameter', function () {
+    expect(bareIdViolations([IntersectionIdPage::class]))->toBe([]);
 });
