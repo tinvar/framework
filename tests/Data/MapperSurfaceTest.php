@@ -73,3 +73,26 @@ it('resolves a short name in the namespace of a class that has no file', functio
 
     expect($data->items[0])->toBeInstanceOf(Local::class)->and($data->items[0]->id)->toBe('x');
 });
+
+// PHP keeps imports per namespace block. Read per file, and only outside
+// braces, a braced block's imports were missed and two blocks' clashed.
+it('resolves imports inside braced namespace blocks, each against its own', function () {
+    require_once __DIR__ . '/Fixtures/braced.php';
+
+    $first = \Tinvar\Tests\Data\Braced\First\FirstHolder::from(['items' => [['id' => 'a']]]);
+    $second = \Tinvar\Tests\Data\Braced\Second\SecondHolder::from(['items' => [['name' => 'b']]]);
+
+    expect($first->items[0])->toBeInstanceOf(\Tinvar\Tests\Data\Braced\Parts\Part::class)
+        ->and($second->items[0])->toBeInstanceOf(\Tinvar\Tests\Data\Braced\Parts\Other::class);
+});
+
+// A closure's `use (...)` is not an import, and reading it as one -- then
+// skipping its body's braces uncounted -- lost every import after it.
+it('does not mistake a closure use at file scope for an import', function () {
+    require_once __DIR__ . '/Fixtures/braced.php';
+    require_once __DIR__ . '/Fixtures/closure-at-file-scope.php';
+
+    $data = \Tinvar\Tests\Data\FileScope\AfterClosure::from(['parts' => [['id' => 'p']]]);
+
+    expect($data->parts[0])->toBeInstanceOf(\Tinvar\Tests\Data\Braced\Parts\Part::class);
+});

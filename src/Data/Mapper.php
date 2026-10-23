@@ -54,7 +54,7 @@ final class Mapper
     /** @var array<class-string<Data>, Plan> */
     private static array $plans = [];
 
-    /** @var array<string, array<string, string>> file => lowercased alias => imported name */
+    /** @var array<string, array<string, array<string, string>>> file => lowercased namespace => lowercased alias => imported name */
     private static array $imports = [];
 
     /** PHPDoc type names that are not classes. */
@@ -411,7 +411,7 @@ final class Mapper
         $parts = explode('\\', $name, 2);
         $first = $parts[0];
         $rest = $parts[1] ?? null;
-        $imports = self::importsOf($declaring->getFileName() ?: '');
+        $imports = self::importsOf($declaring->getFileName() ?: '', $declaring->getNamespaceName());
         if (isset($imports[strtolower($first)])) {
             return $imports[strtolower($first)] . ($rest === null ? '' : '\\' . $rest);
         }
@@ -422,34 +422,74 @@ final class Mapper
     }
 
     /**
-     * The class imports of a file: `use A\B\C;` and `use A\B\C as D;`,
-     * including grouped `use A\B\{C, D as E};`. Function and constant
-     * imports are skipped, and so are a class's trait uses.
+     * The class imports in effect in one namespace of a file: `use A\B\C;`
+     * and `use A\B\C as D;`, including grouped `use A\B\{C, D as E};`.
+     * Function and constant imports are skipped, and so are a class's trait
+     * uses and a closure's `use (...)`.
+     *
+     * Kept per namespace, because PHP keeps them per namespace: a file with
+     * two namespace blocks has two import tables, and a braced
+     * `namespace X { use ...; }` imports one level down.
      *
      * @return array<string, string> lowercased alias => imported name
      */
-    private static function importsOf(string $file): array
+    private static function importsOf(string $file, string $namespace): array
     {
         if ($file === '' || !is_file($file)) {
             return [];
         }
-        if (isset(self::$imports[$file])) {
-            return self::$imports[$file];
-        }
 
+        return (self::$imports[$file] ??= self::parseImports($file))[strtolower($namespace)] ?? [];
+    }
+
+    /** @return array<string, array<string, string>> lowercased namespace => lowercased alias => imported name */
+    private static function parseImports(string $file): array
+    {
         $imports = [];
         $tokens = \PhpToken::tokenize((string) file_get_contents($file));
-        $depth = 0;
         $count = \count($tokens);
+        $namespace = '';
+        $depth = 0;
+        $top = 0;          // the depth of a namespace's own statements
+        $previous = null;  // the last significant token
 
         for ($i = 0; $i < $count; $i++) {
             $token = $tokens[$i];
+            if ($token->isIgnorable()) {
+                continue;
+            }
+
+            if ($token->id === T_NAMESPACE && $depth === 0) {
+                $name = '';
+                for ($i++; $i < $count && $tokens[$i]->text !== ';' && $tokens[$i]->text !== '{'; $i++) {
+                    $name .= $tokens[$i]->isIgnorable() ? '' : $tokens[$i]->text;
+                }
+                $namespace = strtolower(ltrim($name, '\\'));
+                if (($tokens[$i]->text ?? ';') === '{') {
+                    $depth = $top = 1;
+                } else {
+                    $top = 0;
+                }
+                $previous = $tokens[$i] ?? null;
+
+                continue;
+            }
+
             if ($token->text === '{' || $token->id === T_CURLY_OPEN || $token->id === T_DOLLAR_OPEN_CURLY_BRACES) {
                 $depth++;
             } elseif ($token->text === '}') {
                 $depth--;
+                if ($depth === 0 && $top === 1) {
+                    $namespace = '';
+                    $top = 0;
+                }
             }
-            if ($depth !== 0 || $token->id !== T_USE) {
+
+            // An import starts a statement. A closure's `use` follows its
+            // parameter list's `)`, and a trait `use` sits in a class body.
+            $import = $token->id === T_USE && $depth === $top && $previous?->text !== ')';
+            $previous = $token;
+            if (!$import) {
                 continue;
             }
 
@@ -463,11 +503,11 @@ final class Mapper
             }
 
             foreach (self::expandUse($statement) as $alias => $imported) {
-                $imports[strtolower($alias)] = $imported;
+                $imports[$namespace][strtolower($alias)] = $imported;
             }
         }
 
-        return self::$imports[$file] = $imports;
+        return $imports;
     }
 
     /** @return array<string, string> alias => imported name, for one use statement */
