@@ -80,6 +80,32 @@ final class LoaderRunner
     }
 
     /**
+     * Binds the chain's models and runs its checks, WITHOUT running loaders.
+     *
+     * What a deferred fragment needs. tinvar-spec.md, "Deferred components":
+     * "PHP verifies the token, runs the originating route's full middleware,
+     * layout and page #[Authorize] chain, and opens a render channel for that
+     * subtree only." The subtree does not need the page's loader data, but it
+     * absolutely needs the page's access rules -- a fragment is part of that
+     * page, and reaching it must mean being allowed to reach the page.
+     *
+     * Deliberately the same binder and the same authorize() the full render
+     * uses: a second implementation would be a second place for the rules to
+     * drift, which is how a fragment ends up readable when its page is not.
+     *
+     * @return array<string, Model>
+     */
+    public function bindAndAuthorize(RouteChain $chain, Request $request): array
+    {
+        $binder = new Binder($this->orm);
+        $models = $binder->resolveChain($chain, $chain->parameters);
+
+        $this->authorize($chain, $models);
+
+        return $models;
+    }
+
+    /**
      * Every declared check in the chain, outermost first.
      *
      * @param array<string, Model> $models
