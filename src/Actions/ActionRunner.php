@@ -13,6 +13,7 @@ use Tinvar\Http\NotFoundException;
 use Tinvar\Http\Request;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
+use Tinvar\Validation\FormRequest;
 use Tinvar\Validation\ValidationException;
 use Tinvar\Validation\Validator;
 
@@ -72,19 +73,15 @@ final class ActionRunner
 
         $subject = $this->subjectOf($action, $models);
 
-        // 4. Validate. A Precognition call stops here, and validates the form
-        //    requests directly: binding the whole call first would 404 on a
-        //    missing scalar, and a half-filled form is exactly the case
-        //    Precognition exists for.
-        if ($precognitive) {
-            foreach ($action->formRequests as $class) {
-                $this->validator->validate($class, $input, $subject, $models, $models);
-            }
+        // 4. Validate, every form request before anything is reported. A
+        //    Precognition call stops here.
+        $requests = $this->validateRequests($action, $input, $subject, $models);
 
+        if ($precognitive) {
             return ActionResult::ok();
         }
 
-        $arguments = $this->bind($action, $input, $models, $subject, $request);
+        $arguments = $this->bind($action, $input, $models, $requests, $request);
 
         // 5. Run the body.
         $instance = $this->registry->instanceFor($action);
@@ -124,20 +121,85 @@ final class ActionRunner
 
         $subject = $this->subjectOf($action, $models);
 
-        // Every form request, not just the first: an action may take more
-        // than one, and answering about a field of the second must not read
-        // as "this field does not exist".
+        // Every form request that declares the field, not just the first: two
+        // requests sharing a name both judge it on submit, so answering from
+        // one of them passed a value the submit then refused.
+        $declared = false;
+        $errors = [];
         foreach ($action->formRequests as $class) {
             foreach ((new \ReflectionClass($class))->getConstructor()?->getParameters() ?? [] as $parameter) {
                 if ($parameter->getName() === $field) {
-                    return $this->validator->errorsFor($class, $input, $field, $subject, $models, $models);
+                    $declared = true;
+                    $errors = self::mergeErrors($errors, [
+                        $field => $this->validator->errorsFor($class, $input, $field, $subject, $models, $models),
+                    ]);
                 }
             }
         }
 
         // A typo would otherwise return [] and read as "this field is fine",
         // which is the hazard Validator::errorsFor refuses one layer down.
-        throw new \LogicException("Action '{$name}' has no form-request field named '{$field}'.");
+        if (!$declared) {
+            throw new \LogicException("Action '{$name}' has no form-request field named '{$field}'.");
+        }
+
+        return $errors[$field] ?? [];
+    }
+
+    /**
+     * Validates every form request the action takes, and reports what all of
+     * them found at once.
+     *
+     * Throwing on the first one's errors meant a form split across two
+     * requests showed its second half's mistakes only after the first half
+     * was fixed -- and Precognition, which asks per field, already answered
+     * for both, so the two disagreed about the same input.
+     *
+     * The already-resolved models are handed in, so validation cannot
+     * resolve a different row from the one authorized.
+     *
+     * @param array<string, mixed> $input
+     * @param array<string, Model> $models
+     * @return array<string, FormRequest> parameter => the request it built
+     */
+    private function validateRequests(CompiledAction $action, array $input, ?Model $subject, array $models): array
+    {
+        $built = [];
+        $errors = [];
+
+        foreach ($action->formRequests as $parameter => $class) {
+            try {
+                $built[$parameter] = $this->validator->validate($class, $input, $subject, $models, $models);
+            } catch (ValidationException $e) {
+                $errors = self::mergeErrors($errors, $e->errors);
+            }
+        }
+
+        if ($errors !== []) {
+            throw new ValidationException($errors);
+        }
+
+        return $built;
+    }
+
+    /**
+     * One error bag from several, a message once per field however many
+     * declarations of the field produced it.
+     *
+     * @param array<string, list<string>> $into
+     * @param array<string, list<string>> $more
+     * @return array<string, list<string>>
+     */
+    private static function mergeErrors(array $into, array $more): array
+    {
+        foreach ($more as $field => $messages) {
+            if ($messages === []) {
+                continue;
+            }
+            $into[$field] = array_values(array_unique([...$into[$field] ?? [], ...$messages]));
+        }
+
+        return $into;
     }
 
     /** @param array<string, Model> $models */
@@ -252,15 +314,16 @@ final class ActionRunner
     }
 
     /**
-     * @param array<string, mixed> $input
-     * @param array<string, Model> $models
+     * @param array<string, mixed>       $input
+     * @param array<string, Model>       $models
+     * @param array<string, FormRequest> $requests already validated, by parameter
      * @return array<string, mixed>
      */
     private function bind(
         CompiledAction $action,
         array $input,
         array $models,
-        ?Model $subject,
+        array $requests,
         ?Request $request,
     ): array {
         $arguments = [];
@@ -274,16 +337,8 @@ final class ActionRunner
                 continue;
             }
 
-            if (isset($action->formRequests[$name])) {
-                // The already-resolved models are handed in, so validation
-                // cannot resolve a different row from the one authorized.
-                $arguments[$name] = $this->validator->validate(
-                    $action->formRequests[$name],
-                    $input,
-                    $subject,
-                    $models,
-                    $models,
-                );
+            if (isset($requests[$name])) {
+                $arguments[$name] = $requests[$name];
                 continue;
             }
 
