@@ -34,8 +34,10 @@ interface Connection
 
     /**
      * Runs $work in a transaction, committing on return and rolling back on a
-     * throw. Nested calls join the outer transaction rather than opening a
-     * second one, so an inner rollback does not silently commit the outer.
+     * throw. A nested call runs in a savepoint of the outer transaction: a
+     * throw rolls back that call's writes and no others, and still propagates,
+     * so the outer caller decides whether to carry on. What an inner call
+     * that returned wrote commits or rolls back with the outer one.
      *
      * @template T
      * @param \Closure(): T $work

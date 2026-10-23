@@ -177,9 +177,9 @@ describe('transactions', function () {
             ->find(Rack::class, $id))->toBeNull();
     });
 
-    // Opening a second transaction is not possible on most drivers, and
-    // emulating it would let an inner rollback look like success outside.
-    it('joins an outer transaction rather than nesting', function () {
+    // A nested call is a savepoint inside the outer transaction, not a second
+    // transaction; NestedTransactionTest covers what its rollback undoes.
+    it('stays inside the outer transaction when nested', function () {
         $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
         $orm = writeOrm($fixture);
 

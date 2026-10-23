@@ -13,6 +13,9 @@ final class PdoConnection implements Connection
 
     private bool $logSql = true;
 
+    /** Savepoints open inside the outermost transaction; names the next one. */
+    private int $savepoints = 0;
+
     public function __construct(
         private readonly \PDO $pdo,
         private readonly string $name = 'default',
@@ -61,11 +64,13 @@ final class PdoConnection implements Connection
 
     public function transaction(\Closure $work): mixed
     {
-        // A nested call joins the outer transaction. Opening a second one is
-        // not possible on most drivers, and emulating it with savepoints would
-        // let an inner rollback look like success to the outer caller.
+        // A nested call runs in a savepoint. It used to join the outer
+        // transaction, so an inner call that threw kept its writes, and an
+        // outer caller that caught the throw and carried on committed them.
+        // The throw still propagates, so the inner rollback cannot look like
+        // success to the outer caller.
         if ($this->pdo->inTransaction()) {
-            return $work();
+            return $this->savepoint($work);
         }
 
         $this->pdo->beginTransaction();
@@ -79,6 +84,36 @@ final class PdoConnection implements Connection
         }
 
         $this->pdo->commit();
+
+        return $result;
+    }
+
+    /**
+     * @template T
+     * @param \Closure(): T $work
+     * @return T
+     */
+    private function savepoint(\Closure $work): mixed
+    {
+        $name = 'tinvar_' . ++$this->savepoints;
+        $this->pdo->exec("SAVEPOINT {$name}");
+
+        try {
+            $result = $work();
+        } catch (\Throwable $e) {
+            // ROLLBACK TO leaves the savepoint open on SQLite and Postgres
+            // alike, so it is released as well. On Postgres this is also what
+            // brings the outer transaction back from a failed statement:
+            // until then it refuses every statement that follows.
+            $this->pdo->exec("ROLLBACK TO SAVEPOINT {$name}");
+            $this->pdo->exec("RELEASE SAVEPOINT {$name}");
+
+            throw $e;
+        } finally {
+            $this->savepoints--;
+        }
+
+        $this->pdo->exec("RELEASE SAVEPOINT {$name}");
 
         return $result;
     }
