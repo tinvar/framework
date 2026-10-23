@@ -86,7 +86,12 @@ function shop(): array
 {
     $path = sys_get_temp_dir() . '/tinvar-shop-account-' . bin2hex(random_bytes(4)) . '.sqlite';
     new Seeder(PdoConnection::sqlite($path, 'shop', create: true))->run(customers: 3);
-    register_shutdown_function(static function () use ($path): void {
+    $owner = getmypid();
+    register_shutdown_function(static function () use ($path, $owner): void {
+        // Not in a forked child, which runs shutdown functions too.
+        if (getmypid() !== $owner) {
+            return;
+        }
         foreach (['', '-wal', '-shm'] as $suffix) {
             if (is_file($path . $suffix)) {
                 unlink($path . $suffix);
