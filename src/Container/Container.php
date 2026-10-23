@@ -82,6 +82,14 @@ final class Container
      */
     public function get(string $class): object
     {
+        // Checked on every lookup of a request-lived service, not only when
+        // it is first built: in a real request the service usually exists
+        // already -- a page or middleware asked for it -- when a worker
+        // service that wants it is built, and that is exactly the capture.
+        if (isset($this->perRequest[$class])) {
+            $this->assertNotCaptive($class, Lifetime::Request);
+        }
+
         $object = $this->shared[$class] ?? $this->perRequest[$class] ?? $this->resolve($class);
         if (!$object instanceof $class) {
             throw ContainerException::wrongType($class, $object::class);

@@ -261,6 +261,28 @@ describe('captive dependencies', function () {
         'by property' => [InjectsMeter::class],
     ]);
 
+    // The normal order in a request: the request service already exists when
+    // the worker service that wants it is first built.
+    it('refuses a request service in a worker service when it is already built', function (string $class) {
+        $container = new Container();
+        $container->get(Meter::class);
+
+        expect(fn () => $container->get($class))
+            ->toThrow(ContainerException::class, Meter::class . ' lives for one request, but ');
+    })->with([
+        'by constructor' => [CapturesMeter::class],
+        'through a transient in between' => [CapturesThroughMiddle::class],
+        'by property' => [InjectsMeter::class],
+    ]);
+
+    it('refuses an already-built request service while something long-lived is assembled', function () {
+        $container = new Container();
+        $container->get(Meter::class);
+
+        expect(fn () => $container->longLived('the boot', fn () => $container->get(Meter::class)))
+            ->toThrow(ContainerException::class, 'but the boot outlives the request');
+    });
+
     it('refuses a request service while something long-lived is assembled', function () {
         $container = new Container();
 
