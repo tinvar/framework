@@ -170,3 +170,27 @@ it('includes the renderer message when debug is on', function () {
 
     expect($e->getMessage())->toBe('TypeError: boom');
 });
+
+// The front controller's path: one Request in, the document or -- for a
+// client navigation -- the payload alone out.
+it('serves the document, or the payload alone for a client navigation', function () {
+    [$kernel, $renderer, $seeded] = racksKernel();
+
+    try {
+        $path = '/racks/' . $seeded['racks'][0];
+        $document = $kernel->handle(Tinvar\Http\Request::get($path));
+        $payload = $kernel->handle(Tinvar\Http\Request::get($path, ['RSC' => '1']));
+    } finally {
+        $renderer->stop();
+    }
+
+    expect($document->status)->toBe(200)
+        ->and($document->header('content-type'))->toStartWith('text/html')
+        ->and($document->body())->toContain('tinvar-page');
+
+    expect($payload->status)->toBe(200)
+        ->and($payload->header('content-type'))->toBe('text/x-component')
+        ->and($payload->body())->not->toContain('<html')
+        ->and($payload->body())->not->toContain('self.__rsc')
+        ->and($payload->body())->toContain('LAX1');
+});
