@@ -76,11 +76,10 @@ final class Collection implements \IteratorAggregate, \Countable, \ArrayAccess
      */
     private function resolve(): array
     {
-        if ($this->loader === null) {
-            return [];
-        }
-
-        $items = ($this->loader)();
+        // One of the two is always set: `loaded` is assigned the moment this
+        // returns, and the loader is cleared only after it has.
+        $loader = $this->loader ?? throw new \LogicException('A collection has neither items nor a loader.');
+        $items = $loader();
         $this->loader = null;
 
         return $items;
