@@ -103,6 +103,17 @@ final class QueryRegistry
             throw new \InvalidArgumentException("Two queries are named '{$name}': {$existing} and {$class}.");
         }
 
+        // A plain query's signature is its __invoke, which is what the runner
+        // calls. #[Query(args:)] there was read INSTEAD of it for model
+        // arguments while the parameter list still came from __invoke, so an
+        // args naming only `rack` left `site` unresolved: the gate was handed
+        // a string and the call ended in a TypeError. A second declaration
+        // of the same signature can only repeat it or contradict it, so one
+        // that contradicts it is refused rather than merged.
+        if (!is_subclass_of($class, BatchQuery::class) && $declaration->args !== []) {
+            self::assertArgsAgree($reflection, $declaration);
+        }
+
         // A batch has no signature to read arguments off, so #[Query(args:)]
         // is its only declaration. Without one, the runner checked no keys
         // and resolved no models: whatever the renderer sent reached
@@ -297,11 +308,54 @@ final class QueryRegistry
     }
 
     /**
+     * Refuses #[Query(args:)] on a plain query unless it names exactly the
+     * __invoke parameters, each with its declared type.
+     *
+     * @param \ReflectionClass<object> $reflection
+     */
+    private static function assertArgsAgree(\ReflectionClass $reflection, Query $declaration): void
+    {
+        $signature = [];
+        foreach ($reflection->getMethod('__invoke')->getParameters() as $parameter) {
+            $type = $parameter->getType();
+            $signature[$parameter->getName()] = $type instanceof \ReflectionNamedType ? $type->getName() : null;
+        }
+
+        $declared = [];
+        foreach ($declaration->args as $argument => $type) {
+            $declared[(string) $argument] = ltrim($type, '\\');
+        }
+
+        $sorted = static function (array $arguments): array {
+            ksort($arguments);
+
+            return $arguments;
+        };
+        if ($sorted($declared) === $sorted($signature)) {
+            return;
+        }
+
+        $describe = static fn (array $arguments): string => implode(', ', array_map(
+            static fn (string $name, ?string $type): string => ($type ?? 'untyped') . " \${$name}",
+            array_keys($arguments),
+            $arguments,
+        ));
+
+        throw new \InvalidArgumentException(
+            "{$reflection->getName()} declares #[Query(args:)] as ({$describe($declared)}), but its __invoke takes "
+            . "({$describe($signature)}). A plain query's arguments are its __invoke parameters; drop args, "
+            . 'which only a BatchQuery needs, or make it name exactly those.',
+        );
+    }
+
+    /**
      * The arguments this query declares as models.
      *
      * #[Query(args: ['unit' => Unit::class])] -- "the per-call signature is
      * declared ... and denied calls fail individually before the batch runs".
-     * A plain query's model arguments come from its __invoke signature.
+     * A plain query's model arguments come from its __invoke signature, the
+     * same place its parameter list does; register() has refused an args
+     * that disagrees with it.
      *
      * @return array<string, class-string<Model>>
      */
@@ -323,13 +377,13 @@ final class QueryRegistry
     {
         $models = [];
 
-        foreach ($declaration->args as $argument => $class) {
-            if (is_subclass_of($class, Model::class)) {
-                $models[$argument] = $class;
+        if (is_subclass_of($reflection->getName(), BatchQuery::class)) {
+            foreach ($declaration->args as $argument => $class) {
+                if (is_subclass_of($class, Model::class)) {
+                    $models[$argument] = $class;
+                }
             }
-        }
 
-        if ($models !== [] || !$reflection->hasMethod('__invoke')) {
             return $models;
         }
 

@@ -13,7 +13,8 @@ final readonly class Query
      * @param string|null   $cache TTL such as '5m'
      * @param \Closure|null $tags  cache tags, receiving the query's arguments
      * @param array<string, string> $args per-call argument types -- a model class, or a scalar type
-     *        name -- which a batch query must declare, having no signature to read them from
+     *        name -- which a batch query must declare, having no signature to read them from. A
+     *        plain query's signature is its __invoke, and an args that disagrees with it is refused
      */
     public function __construct(
         public ?string $name = null,
