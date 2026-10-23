@@ -40,6 +40,11 @@ final class MappingException extends \RuntimeException
         );
     }
 
+    public static function relationTargetNotModel(string $class, string $property, string $target): self
+    {
+        return new self("{$class}::\${$property} relates to {$target}, which is not a Model.");
+    }
+
     public static function unsupportedColumnType(string $class, string $property, string $type): self
     {
         return new self("{$class}::\${$property} has unsupported column type {$type}.");

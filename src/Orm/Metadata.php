@@ -214,6 +214,23 @@ final class Metadata
         return $bound;
     }
 
+    /**
+     * A relation's target, which the attribute declares as any class name,
+     * checked to be a model when the model is compiled rather than when the
+     * relation is first read.
+     *
+     * @param class-string<Model> $class
+     * @return class-string<Model>
+     */
+    private static function modelTarget(string $class, \ReflectionProperty $property, string $target): string
+    {
+        if (!is_subclass_of($target, Model::class)) {
+            throw MappingException::relationTargetNotModel($class, $property->getName(), $target);
+        }
+
+        return $target;
+    }
+
     /** @param class-string<Model> $class */
     private static function relationFor(string $class, \ReflectionProperty $property): ?RelationMeta
     {
@@ -224,7 +241,7 @@ final class Metadata
                 kind: RelationKind::HasMany,
                 owner: $class,
                 property: $property->getName(),
-                target: $attribute->target,
+                target: self::modelTarget($class, $property, $attribute->target),
                 foreignKey: $attribute->foreignKey ?? Str::snake(Str::shortName($class)) . '_id',
                 orderBy: $attribute->orderBy,
             );
@@ -283,7 +300,7 @@ final class Metadata
             \DateTimeImmutable::class => static fn (mixed $v): \DateTimeImmutable => $v instanceof \DateTimeImmutable
                 ? $v
                 : new \DateTimeImmutable((string) $v),
-            'mixed', null => null,
+            'mixed' => null,
             default => throw MappingException::unsupportedColumnType($class, $property->getName(), $type->getName()),
         };
     }
