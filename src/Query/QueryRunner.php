@@ -15,6 +15,7 @@ use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 use Tinvar\Protocol\Frame;
 use Tinvar\Protocol\ProtocolException;
+use Tinvar\Support\Uuid;
 
 /**
  * Runs one tick's worth of query calls.
@@ -175,7 +176,14 @@ final class QueryRunner
         foreach ($accepted as $call) {
             foreach ($this->registry->modelArgumentsFor($call['name']) as $argument => $class) {
                 $value = $call['args'][$argument] ?? null;
-                if (\is_string($value) || \is_int($value)) {
+
+                // Orm::find()'s guard, on the batched path that bypasses it.
+                // Every key is a UUID, so anything else names no row and is
+                // left out: substitute() then answers that one call as not
+                // found. Sent to the database, Postgres refused the malformed
+                // value for a uuid column, which failed the whole tick and
+                // quoted the caller's input in the error.
+                if ((\is_string($value) || \is_int($value)) && Uuid::isValid((string) $value)) {
                     $wanted[$class][] = (string) $value;
                 }
             }
