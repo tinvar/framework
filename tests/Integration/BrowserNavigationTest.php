@@ -70,12 +70,20 @@ function served(string $root, \Closure $drive): void
 {
     $renderer = Renderer::start('msgpack', 'browser-e2e');
     $port = 18_000 + random_int(0, 999);
+    $keyFile = sys_get_temp_dir() . '/tinvar-e2e-' . bin2hex(random_bytes(4)) . '/app.key';
     $server = proc_open(
         [PHP_BINARY, '-S', "127.0.0.1:{$port}", "{$root}/examples/racks/public/index.php"],
         [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']],
         $pipes,
         $root,
-        [...getenv(), 'TINVAR_SOCKET' => $renderer->socketPath, 'TINVAR_APP_KEY' => 'browser-test-key-0123456789abcdef0123'],
+        // No TINVAR_APP_KEY: the app generates one into a fresh key file.
+        // Every php -S request is its own process, so a deferred boundary
+        // loading at all shows that they all read the one key.
+        [
+            ...array_diff_key(getenv(), ['TINVAR_APP_KEY' => true]),
+            'TINVAR_SOCKET' => $renderer->socketPath,
+            'TINVAR_APP_KEY_FILE' => $keyFile,
+        ],
     );
 
     try {
@@ -100,6 +108,11 @@ function served(string $root, \Closure $drive): void
         proc_terminate($server);
         proc_close($server);
         $renderer->stop();
+
+        // Generated, and kept for the run: every request read this one.
+        expect(is_file($keyFile))->toBeTrue('no application key was generated');
+        unlink($keyFile);
+        rmdir(\dirname($keyFile));
     }
 }
 
