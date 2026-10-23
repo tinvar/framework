@@ -15,12 +15,6 @@ final class Pipeline
     /** @param list<Middleware> $middleware */
     public function __construct(private readonly array $middleware = []) {}
 
-    /** @param list<Middleware> $middleware */
-    public function through(array $middleware): self
-    {
-        return new self([...$this->middleware, ...$middleware]);
-    }
-
     /** @param \Closure(Request): Response $destination */
     public function run(Request $request, \Closure $destination): Response
     {

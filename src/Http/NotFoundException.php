@@ -26,13 +26,4 @@ final class NotFoundException extends HttpException
     {
         return new self("No {$class} with the given id in the active scope.");
     }
-
-    /**
-     * The path is not interpolated: it is fully client-controlled, and these
-     * messages reach logs. A CRLF in a path would forge log lines.
-     */
-    public static function route(string $path): self
-    {
-        return new self('No route matches this path.');
-    }
 }
