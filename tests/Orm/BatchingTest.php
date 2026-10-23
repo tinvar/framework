@@ -251,3 +251,23 @@ describe('level 2: render-wide batching over fibers', function () {
             ->and($results[2])->toBe(2);
     });
 });
+
+// Namespacing the relation-row cache by tenant stops it reading ACROSS one,
+// but not from going stale: a switch back must not serve rows cached before
+// an intervening write, which is exactly what the identity map clears for.
+it('drops the entered tenant relation rows on a switch', function () {
+    $fixture = new Fixture(racks: 2, unitsPerRack: 2);
+    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+
+    $rack = $orm->all(Rack::class)[0];
+    expect($rack->units->count())->toBe(2);
+
+    $orm->switchTenant('other');
+    $orm->switchTenant('');
+
+    $before = $fixture->connection->statementCount();
+    $orm->all(Rack::class)[0]->units->count();
+
+    expect($fixture->connection->statementCount())
+        ->toBeGreaterThan($before, 'the relation is read again, not served from before the switch');
+});

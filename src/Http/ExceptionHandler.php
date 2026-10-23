@@ -115,13 +115,61 @@ final class ExceptionHandler
         }
     }
 
-    /** @param array<string, mixed> $payload */
+    /**
+     * JSON for the endpoints, HTML for a browser asking for a page.
+     *
+     * The handler took a Request and ignored it, so a browser hitting a 404
+     * through the router branch got a JSON body. Negotiation is on Accept,
+     * and JSON is the default: the two endpoints are the JSON callers, and a
+     * client that states no preference is more likely to be one of them than
+     * a person with a browser.
+     *
+     * The HTML carries the same three things the JSON does -- status, code,
+     * digest -- and no more. An error page that says more than the API would
+     * is how the message rules get lost.
+     *
+     * @param array<string, mixed> $payload
+     */
     private function respond(int $status, array $payload, Request $request): Response
     {
+        if (!self::wantsHtml($request)) {
+            return Response::make(
+                $status,
+                json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+                ['content-type' => 'application/json', 'cache-control' => 'private, no-store'],
+            );
+        }
+
+        $error = $payload['error'] ?? [];
+        $code = \is_array($error) ? (string) ($error['code'] ?? '') : '';
+        $digest = \is_array($error) ? (string) ($error['digest'] ?? '') : '';
+        $reason = self::REASONS[$status] ?? self::REASONS[500];
+
+        $html = sprintf(
+            '<!doctype html><meta charset="utf-8"><title>%d</title>'
+            . '<h1>%d</h1><p>%s</p><p><small>%s %s</small></p>',
+            $status,
+            $status,
+            htmlspecialchars($reason, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($code, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($digest, ENT_QUOTES, 'UTF-8'),
+        );
+
         return Response::make(
             $status,
-            json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
-            ['content-type' => 'application/json', 'cache-control' => 'private, no-store'],
+            $html,
+            ['content-type' => 'text/html; charset=utf-8', 'cache-control' => 'private, no-store'],
         );
+    }
+
+    private static function wantsHtml(Request $request): bool
+    {
+        $accept = $request->header('accept');
+
+        if ($accept === null || str_contains($accept, 'application/json')) {
+            return false;
+        }
+
+        return str_contains($accept, 'text/html');
     }
 }

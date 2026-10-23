@@ -16,7 +16,7 @@ namespace Tinvar\Orm;
  */
 final class BatchScheduler
 {
-    /** @var array<string, array{relation: RelationMeta, parents: array<string, Model>}> */
+    /** @var array<string, array{relation: RelationMeta, tenant: string, parents: array<string, Model>}> */
     private array $pending = [];
 
     private int $rounds = 0;
@@ -33,9 +33,15 @@ final class BatchScheduler
     {
         // The key comes from the caller because it carries the tenant: two
         // fibers awaiting the same relation in DIFFERENT tenants must not join
-        // one group, or the batch would run under whichever scope was live
-        // when it flushed.
+        // one group.
+        //
+        // Grouping alone is not enough. flush() runs in the MAIN context, not
+        // in the fiber that awaited, so the tenant it would read there is the
+        // main one -- the load would run under the wrong scope however neatly
+        // it was grouped. The awaiting fiber's tenant is recorded here and
+        // re-entered at flush time.
         $this->pending[$key]['relation'] = $relation;
+        $this->pending[$key]['tenant'] = $this->orm->tenant();
         $this->pending[$key]['parents'][$groupKey] = $parent;
 
         \Fiber::suspend();
@@ -63,8 +69,17 @@ final class BatchScheduler
         $this->pending = [];
         $this->rounds++;
 
-        foreach ($groups as $group) {
-            $this->orm->loadRelationRows($group['relation'], array_values($group['parents']));
+        foreach ($groups as $key => $group) {
+            // Back into the tenant that awaited, so the statement carries that
+            // fiber's scope and the rows are cached under its namespace. The
+            // key is passed in rather than recomputed, for the same reason.
+            $this->orm->actAs($group['tenant'], function () use ($group, $key): void {
+                $this->orm->loadRelationRows(
+                    $group['relation'],
+                    array_values($group['parents']),
+                    $key,
+                );
+            });
         }
     }
 

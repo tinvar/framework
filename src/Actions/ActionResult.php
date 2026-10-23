@@ -120,7 +120,7 @@ final readonly class ActionResult
         );
     }
 
-/**
+    /**
      * The data boundary, applied to what an action hands back.
      *
      * "The PHP->renderer encoder accepts only Data objects, scalars, lists and

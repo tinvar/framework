@@ -265,6 +265,21 @@ describe('the reset contract', function () {
             ->and($ran)->toBe(['first', 'second'], 'a teardown that gives up halfway leaves what it had to clear');
     });
 
+    // The spec's clause starts with the tenant, and Orm::flush() cleared the
+    // caches while leaving the context -- tenant, unscoped depth, read-only
+    // depth -- as the last request left it.
+    it('clears the tenant and the scoping depths', function () {
+        [$kernel, $fixture] = kernel(new AuthUser('u-1'));
+
+        $kernel->orm->switchTenant('acme');
+
+        $kernel->handle(Request::get(showPath($fixture)), render());
+
+        expect($kernel->orm->tenant())->toBe('', 'a tenant must not outlive its request')
+            ->and($kernel->orm->isUnscoped())->toBeFalse()
+            ->and($kernel->orm->isReadOnly())->toBeFalse();
+    });
+
     // If something request-scoped is added later and nobody registers it, the
     // carry-over is silent. This fails instead.
     it('covers every resettable the framework owns', function () {

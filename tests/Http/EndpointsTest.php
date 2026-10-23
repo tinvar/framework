@@ -464,3 +464,33 @@ describe('public entry points', function () {
         ))->toThrow(HttpException::class, 'Authentication required');
     });
 });
+
+// The handler took a Request and never used it, so a browser hitting a 404
+// page got a JSON body.
+describe('error responses are negotiated', function () {
+    it('answers HTML to a browser', function () {
+        $request = new Request('GET', '/nope', ['accept' => 'text/html,application/xhtml+xml']);
+
+        $response = (new ExceptionHandler())->handle(new HttpException(404, 'No Rack with that id.'), $request);
+
+        expect($response->header('content-type'))->toContain('text/html')
+            ->and($response->body())->toContain('404')
+            ->and($response->body())->not->toContain('Rack', 'the message rules still hold on an error page');
+    });
+
+    it('answers JSON to an endpoint caller', function () {
+        $request = new Request('POST', '/_action/x', ['accept' => 'application/json']);
+
+        $response = (new ExceptionHandler())->handle(new HttpException(403, 'denied'), $request);
+
+        expect($response->header('content-type'))->toBe('application/json');
+    });
+
+    // A client that states no preference is more likely to be one of the two
+    // endpoints than a person with a browser.
+    it('defaults to JSON when nothing is stated', function () {
+        $response = (new ExceptionHandler())->handle(new HttpException(500, 'boom'), Request::get('/'));
+
+        expect($response->header('content-type'))->toBe('application/json');
+    });
+});

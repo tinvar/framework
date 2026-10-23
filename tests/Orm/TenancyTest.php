@@ -264,6 +264,28 @@ describe('read-only contexts', function () {
         });
     });
 
+    it('refuses a delete inside one', function () {
+        $fixture = new TenantFixture();
+        $orm = tenantOrm($fixture);
+
+        $orm->actAs('acme', function () use ($orm): void {
+            $script = $orm->all(Script::class)[0];
+
+            expect(fn () => $orm->readOnly(static fn (): mixed => $orm->delete($script)))
+                ->toThrow(ReadOnlyViolation::class, 'delete()');
+        });
+    });
+
+    // A transaction opened in a loader is a write by intent, even when
+    // nothing inside it goes through save().
+    it('refuses a transaction inside one', function () {
+        $fixture = new TenantFixture();
+        $orm = tenantOrm($fixture);
+
+        expect(fn () => $orm->readOnly(static fn (): mixed => $orm->transaction(static fn (): bool => true)))
+            ->toThrow(ReadOnlyViolation::class, 'transaction()');
+    });
+
     it('allows writes again once it ends', function () {
         $fixture = new TenantFixture();
         $orm = tenantOrm($fixture);
@@ -302,5 +324,64 @@ describe('read-only contexts', function () {
         $reader->resume();
 
         expect($other)->toBeTrue('and the fiber kept its own');
+    });
+});
+
+/**
+ * Making the tenant fiber-local let batching survive an actAs() inside a
+ * render, which it never had before -- and that exposed the other half:
+ * BatchScheduler::flush() runs in the MAIN context, not in the fiber that
+ * awaited. Grouping the pending loads by a tenant-namespaced key was not
+ * enough; the statement itself ran under the main tenant.
+ */
+describe('batched relation loads run in the awaiting fiber tenant', function () {
+    it('does not run the batch under the main context tenant', function () {
+        $fixture = new TenantFixture();
+        $orm = tenantOrm($fixture);
+        $orm->beginRender();
+
+        try {
+            $out = $orm->scheduler()->run([
+                'a' => static function () use ($orm): mixed {
+                    return $orm->actAs('acme', static function () use ($orm): int {
+                        return \count($orm->all(Script::class)[0]->runs->items);
+                    });
+                },
+            ]);
+        } finally {
+            $orm->endRender();
+        }
+
+        // The main tenant is '', so a batch flushed there threw
+        // NoTenantContext -- out of the scheduler, killing the whole tick
+        // rather than failing one call.
+        expect($out['a'])->toBe(1);
+    });
+
+    it('gives two fibers in different tenants their own rows', function () {
+        $fixture = new TenantFixture();
+        $orm = tenantOrm($fixture);
+        $orm->switchTenant('acme');
+        $orm->beginRender();
+
+        try {
+            $out = $orm->scheduler()->run([
+                'acme' => static fn (): mixed => $orm->actAs('acme', static fn (): array => array_map(
+                    static fn (object $r): string => $r->status,
+                    $orm->all(Script::class)[0]->runs->items,
+                )),
+                'globex' => static fn (): mixed => $orm->actAs('globex', static fn (): array => array_map(
+                    static fn (object $r): string => $r->status,
+                    $orm->all(Script::class)[0]->runs->items,
+                )),
+            ]);
+        } finally {
+            $orm->endRender();
+        }
+
+        // globex used to come back empty: its group was never loaded, and
+        // resolveHasMany read straight through a cache miss to [].
+        expect($out['acme'])->toBe(['ok'])
+            ->and($out['globex'])->toBe(['ok']);
     });
 });

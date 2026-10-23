@@ -183,3 +183,43 @@ it('fills a ghost from a row it has just read, without replacing the object', fu
         ->and($fixture->connection->statementCount())
         ->toBe($before, 'reading it costs nothing: the row was already in hand');
 });
+
+/**
+ * A ghost that resolved its OWN row was hydrated, attached and had its
+ * relations installed -- but was never marked clean, so it stayed
+ * isPersisted() === false for the rest of the request.
+ *
+ * That quietly defeated the find() guard added beside it: the guard saw a
+ * model that was not persisted, re-queried, and handed back the same instance
+ * anyway. And save() on any model reached through a #[BelongsTo] issued an
+ * INSERT for a row that already existed.
+ */
+it('marks a ghost persisted once it has found its row', function () {
+    $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+
+    $rack = $orm->all(Rack::class)[0];
+    $site = $rack->site;
+
+    expect($site->isPersisted())->toBeTrue();
+
+    $before = $fixture->connection->statementCount();
+
+    expect($orm->find(Site::class, $site->primaryKey()))
+        ->toBe($site, 'the same instance')
+        ->and($fixture->connection->statementCount())
+        ->toBe($before, 'and no re-query, because the guard is satisfied');
+});
+
+it('updates rather than inserts a model reached through a relation', function () {
+    $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+
+    $site = $orm->all(Rack::class)[0]->site;
+    $site->code = 'CHANGED';
+    $orm->save($site);
+
+    $orm->flush();
+
+    expect($orm->find(Site::class, $site->primaryKey())->code)->toBe('CHANGED');
+});

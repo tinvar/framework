@@ -77,12 +77,29 @@ final class Orm
         $this->scheduler = null;
     }
 
-    /** Reset at every request, job and tenant boundary. */
+    /**
+     * Reset at every request, job and tenant boundary.
+     *
+     * This is the ORM's half of the reset contract (Http\RequestScope), and
+     * the spec's clause starts with the tenant: "Tenant, auth, panel, identity
+     * map and #[Scoped] services reset at the end of each request and job."
+     * It used to clear the caches and leave the CONTEXT -- tenant, unscoped
+     * depth, read-only depth -- exactly as the last request left it. actAs()
+     * restores in a finally so the usual path was safe, but switchTenant() is
+     * public, and a tenant carried into the next request on a worker is the
+     * same class of bug as a user carried into it.
+     */
     public function flush(): void
     {
         $this->identityMap->flush();
         $this->relationRows = [];
         $this->scheduler = null;
+
+        $this->identityMap->resetTenant();
+        $this->unscopedMain = 0;
+        $this->unscopedByFiber = new \WeakMap();
+        $this->readOnlyMain = 0;
+        $this->readOnlyByFiber = new \WeakMap();
     }
 
     /**
@@ -100,10 +117,16 @@ final class Orm
         }
 
         // The relation-row cache is namespaced by tenant (relationCacheKey),
-        // so a switch no longer has to drop it -- and the scheduler is left
+        // so a switch cannot read across one -- and the scheduler is left
         // alone. Nulling it here meant any actAs() inside a render silently
         // dropped every later relation load in that render from Level 2
         // batching to Level 1, with no diagnostic.
+        //
+        // Namespacing is not the same as freshness, though. The entered
+        // tenant's relation rows are dropped alongside its identity-map
+        // buckets, for the reason the map does it: a switch BACK must not
+        // serve rows cached before an intervening write.
+        $this->forgetRelationRows($tenant);
         $this->identityMap->switchTenant($tenant);
     }
 
@@ -192,6 +215,13 @@ final class Orm
      * READ ONLY transaction. A real one is the stronger guarantee and belongs
      * here later; this one holds on SQLite too, names the offending call, and
      * does not need the connection to be transactional.
+     *
+     * Being a PHP check, it covers the ORM facade -- save(), delete() and
+     * transaction() -- and nothing below it. `$orm->connection()->execute()`
+     * from inside a loader still writes, as do job and event dispatch, which
+     * the spec names in the same breath and which do not exist yet. A database
+     * READ ONLY transaction is what closes those, and the README says this is
+     * still open rather than leaving the gap to be discovered.
      *
      * @template T
      * @param \Closure(): T $work
@@ -312,7 +342,6 @@ final class Orm
         return $this->whereIn($class, $meta->idColumn, [$id])[0] ?? null;
     }
 
-
     /**
      * @param class-string<Model> $class
      * @return list<Model>
@@ -398,7 +427,7 @@ final class Orm
                     $model = $this->identityMap->remember($class, $id, $model);
                 }
                 $this->settle($model, $meta, $row, $resultSet);
-            } elseif ($reflection->isUninitializedLazyObject($model)) {
+            } elseif ($reflection->isUninitializedLazyObject($model) || !$model->isPersisted()) {
                 // A #[BelongsTo] put a ghost here from a foreign key: a
                 // promise that a row exists, not the row. We are now holding
                 // that row. Discarding it left the ghost to fetch the same
@@ -406,11 +435,18 @@ final class Orm
                 // already in hand, and a window where find() saw a model that
                 // was not persisted.
                 //
+                // Also repairs a model that IS initialized but was never
+                // marked clean -- which a ghost that resolved its own row used
+                // to be -- so isPersisted() tells the truth either way.
+                //
                 // The object itself is kept, because other holders already
-                // reference it and identity is the point of this map. It is
-                // marked initialized FIRST: writing to a live ghost would run
+                // reference it and identity is the point of this map. A live
+                // ghost is marked initialized FIRST: writing to one would run
                 // its initializer, which is the fetch being avoided.
-                $reflection->markLazyObjectAsInitialized($model);
+                if ($reflection->isUninitializedLazyObject($model)) {
+                    $reflection->markLazyObjectAsInitialized($model);
+                }
+
                 $meta->hydrate($model, $row);
                 $this->settle($model, $meta, $row, $resultSet);
             }
@@ -461,8 +497,16 @@ final class Orm
                     return;
                 }
                 $targetMeta->hydrate($object, $row);
-                $object->attach($this, new ResultSet());
-                $this->installRelations($object, $targetMeta, $row);
+
+                // Through settle(), so a ghost that found its row ends up in
+                // exactly the state a hydrated row does -- attached, relations
+                // installed, and MARKED CLEAN. It used to skip markClean(), so
+                // a model reached by touching a #[BelongsTo] stayed
+                // isPersisted() === false for the rest of the request: find()'s
+                // guard re-queried it on every lookup and still handed back the
+                // same instance, and save() on it issued an INSERT for a row
+                // that already existed.
+                $this->settle($object, $targetMeta, $row, new ResultSet());
             }
         );
 
@@ -476,6 +520,14 @@ final class Orm
 
     // ------------------------------------------------------------- writing
 
+    /** Refuses a write inside a loader or query body. */
+    private function refuseWrite(string $what): void
+    {
+        if ($this->isReadOnly()) {
+            throw ReadOnlyViolation::write($what, 'a loader or query body');
+        }
+    }
+
     /**
      * Writes a model, inserting or updating as appropriate.
      *
@@ -487,14 +539,6 @@ final class Orm
      * @param T $model
      * @return T
      */
-    /** Refuses a write inside a loader or query body. */
-    private function refuseWrite(string $what): void
-    {
-        if ($this->isReadOnly()) {
-            throw ReadOnlyViolation::write($what, 'a loader or query body');
-        }
-    }
-
     public function save(Model $model): Model
     {
         $this->refuseWrite('save()');
@@ -675,6 +719,10 @@ final class Orm
      */
     public function transaction(\Closure $work): mixed
     {
+        // A transaction opened inside a loader or query body is a write by
+        // intent even if nothing in it writes through save().
+        $this->refuseWrite('transaction()');
+
         try {
             return $this->connection->transaction($work);
         } catch (\Throwable $e) {
@@ -713,6 +761,14 @@ final class Orm
             }
         }
 
+        // A batch that did not produce this group leaves the cache without the
+        // key, and reading straight through would answer an EMPTY relation --
+        // a silent wrong answer rather than a missing one. Load it directly
+        // instead; the batch has already had its chance to be cheap.
+        if (!$this->hasRows($key, $groupKey)) {
+            $this->loadRelationRows($relation, $parent->resultSet()?->all() ?? [$parent], $key);
+        }
+
         /** @var list<array<string, mixed>> $rows */
         $rows = $this->relationRows[$key][$groupKey] ?? [];
 
@@ -738,9 +794,12 @@ final class Orm
      *
      * @param list<Model> $parents
      */
-    public function loadRelationRows(RelationMeta $relation, array $parents): void
+    public function loadRelationRows(RelationMeta $relation, array $parents, ?string $key = null): void
     {
-        $key = $this->relationCacheKey($relation);
+        // The scheduler passes the key the awaiting fiber computed, because
+        // the tenant it was namespaced under is the one being re-entered, not
+        // whatever is live in the context that happens to call this.
+        $key ??= $this->relationCacheKey($relation);
         $groupKeys = [];
 
         foreach ($parents as $parent) {
@@ -805,6 +864,18 @@ final class Orm
      * the same key, would have merged two fibers in different tenants into one
      * statement under whichever scope happened to be live at flush time.
      */
+    /** Drops every relation-row group belonging to one tenant. */
+    private function forgetRelationRows(string $tenant): void
+    {
+        $prefix = $tenant . "\0";
+
+        foreach (array_keys($this->relationRows) as $key) {
+            if (str_starts_with($key, $prefix)) {
+                unset($this->relationRows[$key]);
+            }
+        }
+    }
+
     public function relationCacheKey(RelationMeta $relation): string
     {
         return $this->tenant() . "\0" . $relation->key();

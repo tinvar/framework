@@ -114,6 +114,19 @@ final class IdentityMap
         return $this->tenantByFiber[$fiber] ?? $this->tenantMain;
     }
 
+    /**
+     * Clears the tenant itself, for the request and job teardown.
+     *
+     * flush() drops the rows; this drops the context they were read under.
+     * Leaving it meant a tenant set by switchTenant() survived into the next
+     * request on a long-lived worker.
+     */
+    public function resetTenant(): void
+    {
+        $this->tenantMain = '';
+        $this->tenantByFiber = new \WeakMap();
+    }
+
     /** Drops every bucket belonging to one tenant. */
     private function forgetTenant(string $tenant): void
     {

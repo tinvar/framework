@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace Tinvar\Actions;
 
 use Tinvar\Auth\Checks;
+use Tinvar\Auth\Gate;
 use Tinvar\Cache\QueryCache;
 use Tinvar\Data\Encoder;
-use Tinvar\Auth\Gate;
 use Tinvar\Http\ForbiddenException;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Http\Request;

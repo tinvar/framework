@@ -67,7 +67,6 @@ final class Binder
         return $this->models;
     }
 
-
     /**
      * Model inputs the chain's loaders declare optional.
      *
