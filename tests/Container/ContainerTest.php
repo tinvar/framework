@@ -187,6 +187,14 @@ describe('bindings and instances', function () {
     });
 });
 
+describe('the container itself', function () {
+    it('hands itself to something that takes the container', function () {
+        $container = (new Container())->instance(Config::class, new Config('ap'));
+
+        expect($container->get(Container::class))->toBe($container);
+    });
+});
+
 describe('lifetimes', function () {
     it('builds a transient service fresh every time', function () {
         $container = new Container();
@@ -210,6 +218,14 @@ describe('lifetimes', function () {
         $container->endRequest();
 
         expect($container->get(Pool::class))->toBe($pool);
+    });
+
+    // The way to give a class with no attribute a lifetime; it read as a
+    // cycle, the class re-entering its own resolution.
+    it('gives a lifetime to a class bound to itself', function () {
+        $container = (new Container())->bind(Config::class, Config::class, Lifetime::Worker);
+
+        expect($container->get(Config::class))->toBe($container->get(Config::class));
     });
 
     it('applies a lifetime given to a binding', function () {

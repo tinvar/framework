@@ -38,6 +38,13 @@ final class Container
     /** @var list<string> classes being built, outermost first */
     private array $building = [];
 
+    public function __construct()
+    {
+        // Something that takes the container gets this one, with everything
+        // registered on it -- not a new, empty one autowired from nothing.
+        $this->shared[self::class] = $this;
+    }
+
     /** @var list<Lifetime> the lifetime of each class being built */
     private array $buildingLifetimes = [];
 
@@ -67,9 +74,14 @@ final class Container
      */
     public function bind(string $abstract, string|\Closure $concrete, Lifetime $lifetime = Lifetime::Transient): self
     {
-        $this->bindings[$abstract] = \is_string($concrete)
-            ? static fn (self $c): object => $c->get($concrete)
-            : $concrete;
+        // A class bound to itself -- the way to give a class with no
+        // attribute a lifetime -- is built directly; through get() it would
+        // re-enter its own resolution and read as a cycle.
+        $this->bindings[$abstract] = match (true) {
+            $concrete === $abstract => fn (self $c): object => $this->build($abstract),
+            \is_string($concrete) => static fn (self $c): object => $c->get($concrete),
+            default => $concrete,
+        };
         $this->lifetimes[$abstract] = $lifetime;
 
         return $this;
