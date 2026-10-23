@@ -39,7 +39,14 @@ describe('durations', function () {
 
     it('refuses anything else', function (string $ttl) {
         expect(fn () => Duration::seconds($ttl))->toThrow(InvalidArgumentException::class);
-    })->with(['5', 'm', '5 minutes', '-1m', '1y', '']);
+    })->with([
+        '5', 'm', '5 minutes', '-1m', '1y', '',
+        // A zero TTL writes an entry that is already expired: the cache would
+        // look enabled and never hit.
+        '0s',
+        // Would overflow int*int to float and TypeError out of an int method.
+        '9999999999999999999d',
+    ]);
 });
 
 describe('the key', function () {
@@ -120,14 +127,57 @@ describe('the key', function () {
 });
 
 describe('tags', function () {
-    it('builds them from the attribute closure', function () {
+    it('builds them from the attribute closure, namespaced by tenant', function () {
         $cache = new QueryCache(new ArrayStore(), new AuthContext());
         $declaration = new QueryAttribute(
             cache: '1m',
             tags: static function (string $rack): array { return ["rack:{$rack}"]; },
         );
 
-        expect($cache->tagsFor($declaration, ['rack' => 'r1']))->toBe(['rack:r1']);
+        expect($cache->tagsFor($declaration, ['rack' => 'r1'], 'acme'))->toBe(["acme\0rack:r1"]);
+    });
+
+    it('refuses a tag that is not a string', function () {
+        $cache = new QueryCache(new ArrayStore(), new AuthContext());
+        $declaration = new QueryAttribute(
+            cache: '1m',
+            tags: static function (string $rack): array { return [['nested']]; },
+        );
+
+        expect(fn () => $cache->tagsFor($declaration, ['rack' => 'r1'], 'acme'))
+            ->toThrow(LogicException::class, 'must return strings');
+    });
+
+    // A flat namespace let a write in one tenant drop another's entries.
+    it('does not let one tenant invalidate another', function () {
+        $store = new ArrayStore();
+        $cache = new QueryCache($store, new AuthContext());
+        $declaration = new QueryAttribute(
+            cache: '1m',
+            tags: static function (string $rack): array { return ["rack:{$rack}"]; },
+        );
+
+        $cache->put('q', $declaration, ['rack' => 'r1'], 'acme', 'acme value');
+        $cache->put('q', $declaration, ['rack' => 'r1'], 'globex', 'globex value');
+
+        expect($cache->forgetTags(['rack:r1'], 'globex'))->toBe(1)
+            ->and($cache->get('q', $declaration, ['rack' => 'r1'], 'acme')['hit'])
+            ->toBeTrue('the other tenant is untouched');
+    });
+
+    // A mistyped closure is only reachable on a miss, after the body has run.
+    it('does not cache, rather than failing, when the tag closure is wrong', function () {
+        $store = new ArrayStore();
+        $cache = new QueryCache($store, new AuthContext());
+        $declaration = new QueryAttribute(
+            cache: '1m',
+            tags: static function (string $somethingElse): array { return ['x']; },
+        );
+
+        $cache->put('q', $declaration, ['rack' => 'r1'], 'acme', 'value');
+
+        expect($store->stats()['entries'])->toBe(0)
+            ->and($cache->failures())->toHaveCount(1);
     });
 
     it('invalidates every entry holding a tag', function () {
@@ -141,7 +191,7 @@ describe('tags', function () {
         $cache->put('q', $declaration, ['rack' => 'r1'], 'acme', 'one');
         $cache->put('q', $declaration, ['rack' => 'r2'], 'acme', 'two');
 
-        expect($cache->forgetTags(['rack:r1']))->toBe(1)
+        expect($cache->forgetTags(['rack:r1'], 'acme'))->toBe(1)
             ->and($cache->get('q', $declaration, ['rack' => 'r1'], 'acme')['hit'])->toBeFalse()
             ->and($cache->get('q', $declaration, ['rack' => 'r2'], 'acme')['hit'])->toBeTrue();
     });
@@ -214,10 +264,71 @@ describe('through the runner', function () {
 
         Tinvar\Tests\Query\Fixtures\CachedSummary::$runs = 0;
         $query->run($call, allowed: ['racks.cached']);
-        expect($store->forgetTags(["rack:{$rack}"]))->toBe(1);
+        // Tenant-namespaced, as QueryCache writes them. The ORM's tenant is
+        // empty here, so the prefix is empty too.
+        expect($store->forgetTags(["\0rack:{$rack}"]))->toBe(1);
 
         $query->run($call, allowed: ['racks.cached']);
 
         expect(Tinvar\Tests\Query\Fixtures\CachedSummary::$runs)->toBe(2, 'the body ran again');
+    });
+});
+
+describe('the store keeps its index honest', function () {
+    // forgetTags used to delete the entry and unset only the tag it was asked
+    // about; every other tag kept pointing at a key that no longer existed.
+    it('leaves no tag pointing at a key it deleted', function () {
+        $store = new ArrayStore();
+        $store->put('k1', 'v', 60, ['t1', 't2']);
+
+        expect($store->forgetTags(['t1']))->toBe(1)
+            ->and($store->stats()['entries'])->toBe(0)
+            ->and($store->stats()['tags'])->toBe(0, 't2 no longer points at a deleted key');
+    });
+
+    it('replaces a key\'s tags on re-put rather than adding to them', function () {
+        $store = new ArrayStore();
+        $store->put('k1', 'first', 60, ['old']);
+        $store->put('k1', 'second', 60, ['new']);
+
+        expect($store->forgetTags(['old']))->toBe(0, 'the stale tag no longer reaches it')
+            ->and($store->get('k1')['value'])->toBe('second')
+            ->and($store->forgetTags(['new']))->toBe(1);
+    });
+
+    it('forgets a key from every tag index it was in', function () {
+        $store = new ArrayStore();
+        $store->put('k1', 'v', 60, ['a', 'b', 'c']);
+        $store->forget('k1');
+
+        expect($store->stats()['tags'])->toBe(0);
+    });
+
+    // Expiry is read-triggered, so an entry nobody reads is otherwise
+    // immortal and a caller can mint keys without limit.
+    it('caps how much it will hold', function () {
+        $store = new ArrayStore(maxEntries: 50);
+
+        for ($i = 0; $i < 500; $i++) {
+            $store->put("k{$i}", $i, 60, ["t{$i}"]);
+        }
+
+        expect($store->stats()['entries'])->toBeLessThanOrEqual(50)
+            ->and($store->stats()['tags'])->toBeLessThanOrEqual(50, 'the tag index was capped with it');
+    });
+
+    it('sweeps expired entries nobody read', function () {
+        $now = 1000.0;
+        $store = new ArrayStore(function () use (&$now): float { return $now; }, maxEntries: 10);
+
+        for ($i = 0; $i < 10; $i++) {
+            $store->put("old{$i}", $i, 30);
+        }
+
+        $now += 100;
+        $store->put('fresh', 'v', 30);
+
+        expect($store->stats()['entries'])->toBeLessThanOrEqual(10)
+            ->and($store->get('fresh')['hit'])->toBeTrue();
     });
 });

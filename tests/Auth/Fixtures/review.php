@@ -204,3 +204,26 @@ final class PerUserQuery
         return new WattsData($this->auth->check() ? 1 : 0);
     }
 }
+
+/** Reads the user, but only through an injected helper. */
+final class Greeter
+{
+    public function __construct(private readonly \Tinvar\Auth\AuthContext $auth) {}
+
+    public function greeting(): string
+    {
+        return 'secret of ' . ($this->auth->id() ?? 'nobody');
+    }
+}
+
+/** Shared, and reaches the user indirectly. A text grep misses this. */
+#[Query(name: 'review.sharedIndirect', cache: '1m', shared: true)]
+final class SharedIndirectQuery
+{
+    public function __construct(private readonly Greeter $greeter) {}
+
+    public function __invoke(): WattsData
+    {
+        return new WattsData(\strlen($this->greeter->greeting()));
+    }
+}

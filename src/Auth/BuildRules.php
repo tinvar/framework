@@ -58,20 +58,24 @@ final class BuildRules
     public const string SHARED_QUERY_MUST_NOT_READ_THE_USER = 'shared-query-must-not-read-the-user';
 
     /**
-     * What a `shared: true` query may not touch.
-     *
-     * Each would make the answer depend on something the cache key no longer
-     * carries, so two users would read one entry.
+     * Types a `shared: true` query may not reach by injection, directly or
+     * through another injected class.
      */
-    private const array USER_DEPENDENT = [
-        'auth()' => 'the current user',
-        '->user(' => 'the current user',
-        'AuthContext' => 'the current user',
-        '->can(' => 'a policy decision',
-        'can(' => 'a policy decision',
+    private const array USER_DEPENDENT_TYPES = [
+        AuthContext::class => 'the current user',
+        Gate::class => 'a policy decision',
+    ];
+
+    /**
+     * Calls a `shared: true` query may not make in its own body.
+     *
+     * These are methods on objects a query legitimately depends on, so a type
+     * walk cannot tell them apart; only the direct case is caught.
+     */
+    private const array USER_DEPENDENT_CALLS = [
+        '->acrossTenants(' => 'another tenant',
+        '->withinReseller(' => 'another reseller',
         'Panel::current' => 'the current panel',
-        'acrossTenants' => 'another tenant',
-        'withinReseller' => 'another reseller',
     ];
 
     /** Attributes that make a class's __invoke a routable entry point. */
@@ -368,10 +372,21 @@ final class BuildRules
      * `shared: true` drops the user from the cache key, so the body must not
      * be able to vary by user.
      *
-     * This reads the class's own source, not its call graph. Following the
-     * graph needs a static analyser; saying so is better than implying a
-     * guarantee this does not give. It catches the direct case, which is the
-     * one people write.
+     * Two checks, and the limits of both are stated rather than implied:
+     *
+     *  - A TYPE walk over the constructor dependency closure. Any class the
+     *    query can reach by injection that itself depends on AuthContext or a
+     *    Gate is refused. This catches the indirect case -- a query that reads
+     *    the user through an injected helper -- which a textual check cannot.
+     *  - A TEXTUAL check of the class's own source for acrossTenants,
+     *    withinReseller and Panel::current. These are methods on objects a
+     *    query legitimately depends on, so a type walk cannot distinguish
+     *    them; only the direct case is caught.
+     *
+     * What is NOT checked: a method call into the call graph that reaches one
+     * of those from a class whose type closure looks innocent. The spec asks
+     * for "body or call graph", and the call graph needs a static analyser.
+     * Saying so is better than a check that quietly passes the case it misses.
      *
      * @param class-string $class
      * @return list<Violation>
@@ -385,32 +400,81 @@ final class BuildRules
             return [];
         }
 
+        $violations = [];
+
+        foreach (self::userDependentDependencies($class, []) as $dependency => $reason) {
+            $violations[] = new Violation(
+                self::SHARED_QUERY_MUST_NOT_READ_THE_USER,
+                $class,
+                "is #[Query(shared: true)] but depends on {$dependency}, which reads {$reason}. "
+                . 'A shared query drops the user from its cache key, so two users read one entry. '
+                . 'Either stop depending on it, or drop shared.',
+            );
+        }
+
+        foreach (self::USER_DEPENDENT_CALLS as $needle => $what) {
+            if (str_contains(self::sourceOf($reflection), $needle)) {
+                $violations[] = new Violation(
+                    self::SHARED_QUERY_MUST_NOT_READ_THE_USER,
+                    $class,
+                    "is #[Query(shared: true)] but calls '{$needle}', which reads {$what}. "
+                    . 'A shared query drops the user from its cache key, so two users read one entry.',
+                );
+            }
+        }
+
+        return $violations;
+    }
+
+    /**
+     * Classes reachable by constructor injection that depend on the user.
+     *
+     * @param class-string       $class
+     * @param list<class-string> $visited
+     * @return array<string, string> dependency => what it reads
+     */
+    private static function userDependentDependencies(string $class, array $visited): array
+    {
+        if (\in_array($class, $visited, true) || !class_exists($class)) {
+            return [];
+        }
+        $visited[] = $class;
+
+        $found = [];
+
+        foreach ((new \ReflectionClass($class))->getConstructor()?->getParameters() ?? [] as $parameter) {
+            $type = $parameter->getType();
+            if (!$type instanceof \ReflectionNamedType || $type->isBuiltin()) {
+                continue;
+            }
+
+            $name = $type->getName();
+
+            foreach (self::USER_DEPENDENT_TYPES as $forbidden => $reason) {
+                if ($name === $forbidden || is_a($name, $forbidden, true)) {
+                    $found[$name] = $reason;
+                    continue 2;
+                }
+            }
+
+            $found = [...$found, ...self::userDependentDependencies($name, $visited)];
+        }
+
+        return $found;
+    }
+
+    /** @param \ReflectionClass<object> $reflection */
+    private static function sourceOf(\ReflectionClass $reflection): string
+    {
         $file = $reflection->getFileName();
         $start = $reflection->getStartLine();
         $end = $reflection->getEndLine();
 
         if ($file === false || $start === false || $end === false) {
-            return [];
+            return '';
         }
 
-        $source = implode('', \array_slice(file($file) ?: [], $start - 1, $end - $start + 1));
-        $violations = [];
-
-        foreach (self::USER_DEPENDENT as $needle => $what) {
-            if (!str_contains($source, $needle)) {
-                continue;
-            }
-
-            $violations[] = new Violation(
-                self::SHARED_QUERY_MUST_NOT_READ_THE_USER,
-                $class,
-                "is #[Query(shared: true)] but mentions '{$needle}', which reads {$what}. "
-                . 'A shared query drops the user from its cache key, so two users read one entry. '
-                . 'Either stop reading it, or drop shared.',
-            );
-        }
-
-        return $violations;
+        return implode('', \array_slice(file($file) ?: [], $start - 1, $end - $start + 1));
     }
 
     /**

@@ -286,6 +286,15 @@ describe('shared queries may not read the user', function () {
             ->toContain(BuildRules::SHARED_QUERY_MUST_NOT_READ_THE_USER);
     });
 
+    // The case a text grep misses: the query's own source mentions nothing.
+    it('flags one that reaches the user through an injected helper', function () {
+        $violations = (new BuildRules())->check([R\SharedIndirectQuery::class]);
+
+        expect($violations)->not->toBeEmpty()
+            ->and($violations[0]->rule)->toBe(BuildRules::SHARED_QUERY_MUST_NOT_READ_THE_USER)
+            ->and($violations[0]->message)->toContain('AuthContext');
+    });
+
     it('leaves a per-user query alone, since its key separates callers', function () {
         expect((new BuildRules())->check([R\PerUserQuery::class]))->toBe([]);
     });
