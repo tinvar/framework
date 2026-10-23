@@ -261,9 +261,7 @@ final class Validator
         }
 
         if ($field->enumClass !== null) {
-            $case = $field->enumClass::tryFrom(\is_int($raw) ? $raw : (string) $raw);
-
-            return $case ?? throw new CoercionFailed("{$field->name} is not a recognised value.");
+            return self::toEnum($raw, $field->enumClass, $field->name);
         }
 
         return match ($field->kind) {
@@ -297,14 +295,47 @@ final class Validator
     /** As strict as toInt: '1e3' and ' 12' are not numbers a form should send. */
     private static function toFloat(mixed $raw, string $field): float
     {
-        if (\is_int($raw) || \is_float($raw)) {
-            return (float) $raw;
-        }
-        if (\is_string($raw) && preg_match('/^-?\d+(\.\d+)?\z/', $raw) === 1) {
-            return (float) $raw;
+        $value = match (true) {
+            \is_int($raw), \is_float($raw) => (float) $raw,
+            \is_string($raw) && preg_match('/^-?\d+(\.\d+)?\z/', $raw) === 1 => (float) $raw,
+            default => throw new CoercionFailed("{$field} must be a number."),
+        };
+
+        // Four hundred digits pass the pattern and come out as INF, as does
+        // 1e400 in JSON. INF clears every Min, -INF every Max, and neither is
+        // a value anything downstream of a form expects.
+        if (!is_finite($value)) {
+            throw new CoercionFailed("{$field} must be a finite number.");
         }
 
-        throw new CoercionFailed("{$field} must be a number.");
+        return $value;
+    }
+
+    /**
+     * Converted by the enum's backing type, before tryFrom() sees it: under
+     * strict types an int-backed enum's tryFrom() throws a TypeError on a
+     * string, which is what every form and query string sends.
+     *
+     * @param class-string<\BackedEnum> $enum
+     */
+    private static function toEnum(mixed $raw, string $enum, string $field): \BackedEnum
+    {
+        $intBacked = (new \ReflectionEnum($enum))->getBackingType()?->getName() === 'int';
+
+        // Only a value that is already the backing type, or spells it exactly,
+        // is converted. An array or a bool was cast to a string first, so an
+        // array became 'Array' with a warning and true became '1'.
+        $value = match (true) {
+            $intBacked && \is_int($raw) => $raw,
+            $intBacked && \is_string($raw) && preg_match('/^-?\d+\z/', $raw) === 1 => (int) $raw,
+            !$intBacked && \is_string($raw) => $raw,
+            !$intBacked && \is_int($raw) => (string) $raw,
+            default => null,
+        };
+
+        $case = $value === null ? null : $enum::tryFrom($value);
+
+        return $case ?? throw new CoercionFailed("{$field} is not a recognised value.");
     }
 
     /**

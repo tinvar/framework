@@ -268,17 +268,32 @@ final class Binder
 
         if (!$type->isBuiltin() && is_subclass_of($name, \BackedEnum::class)) {
             // A path segment outside the enum is a path that does not exist.
-            return $name::tryFrom($value) ?? throw new NotFoundException('Unrecognised path segment.');
+            // A segment is always a string, and under strict types an
+            // int-backed enum's tryFrom() throws a TypeError on one, so it is
+            // converted first -- or found not to be an integer at all.
+            $intBacked = (new \ReflectionEnum($name))->getBackingType()?->getName() === 'int';
+
+            return $name::tryFrom($intBacked ? self::toInt($value) : $value)
+                ?? throw new NotFoundException('Unrecognised path segment.');
         }
 
         return match ($name) {
             'int' => self::toInt($value),
-            'float' => is_numeric($value)
-                ? (float) $value
-                : throw new NotFoundException('Path segment is not a number.'),
+            'float' => self::toFloat($value),
             'bool' => self::toBool($value),
             default => $value,
         };
+    }
+
+    private static function toFloat(string $value): float
+    {
+        // '1e400' is numeric and comes out as INF, which no loader expects.
+        $float = is_numeric($value) ? (float) $value : NAN;
+        if (!is_finite($float)) {
+            throw new NotFoundException('Path segment is not a number.');
+        }
+
+        return $float;
     }
 
     private static function toBool(string $value): bool
