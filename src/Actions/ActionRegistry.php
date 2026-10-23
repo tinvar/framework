@@ -211,7 +211,7 @@ final class ActionRegistry
             models: $models,
             formRequests: $formRequests,
             nestedModels: $nestedModels,
-            middleware: [...$classMiddleware, ...self::middlewareOf($method->getAttributes(Middleware::class))],
+            middleware: array_values(array_unique([...$classMiddleware, ...self::middlewareOf($method->getAttributes(Middleware::class))])),
             exempt: $exempt,
             subjectArgument: $subjectArgument,
             optionalModels: $optional,

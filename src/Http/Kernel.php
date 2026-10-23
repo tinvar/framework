@@ -209,14 +209,20 @@ final class Kernel
                 },
             );
 
-        $this->actions_ = new ActionEndpoint(new ActionRunner(
-            $this->actions,
-            $this->orm,
-            $gate,
-            new Validator($this->orm),
-            new \Tinvar\Data\Encoder(),
-            $cache,
-        ), revalidator: $revalidator, sessionId: $fragments?->sessionId);
+        $this->actions_ = new ActionEndpoint(
+            new ActionRunner(
+                $this->actions,
+                $this->orm,
+                $gate,
+                new Validator($this->orm),
+                new \Tinvar\Data\Encoder(),
+                $cache,
+            ),
+            revalidator: $revalidator,
+            sessionId: $fragments?->sessionId,
+            middlewareResolver: self::middlewareFrom($resolver),
+            globalMiddleware: $globalMiddleware,
+        );
 
         $queryRunner = new QueryRunner(
             registry: $this->queries,

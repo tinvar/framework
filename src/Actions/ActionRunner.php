@@ -44,6 +44,18 @@ final class ActionRunner
     ) {}
 
     /**
+     * The #[Middleware] an action declares, on its class and its method.
+     * None for a name that is not registered: that is answered with a 404
+     * by run(), and there is no middleware to have declared.
+     *
+     * @return list<class-string>
+     */
+    public function middlewareFor(string $name): array
+    {
+        return $this->registry->has($name) ? $this->registry->get($name)->middleware : [];
+    }
+
+    /**
      * @param array<string, mixed> $input
      * @param bool $precognitive validate-only: authorization and the form
      *        request run, the body does not

@@ -7,6 +7,8 @@ namespace Tinvar\Http\Endpoints;
 use Tinvar\Actions\ActionRunner;
 use Tinvar\Actions\Revalidator;
 use Tinvar\Http\HttpException;
+use Tinvar\Http\Middleware;
+use Tinvar\Http\Pipeline;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Validation\ValidationException;
@@ -26,12 +28,18 @@ final class ActionEndpoint
     /**
      * @param (\Closure(Request): string)|null $sessionId needed only to verify
      *        the route tokens a client sends for re-rendering
+     * @param (\Closure(class-string): Middleware)|null $middlewareResolver builds
+     *        an action's own #[Middleware]; required once any action declares one
+     * @param list<class-string> $globalMiddleware already run by the stack this
+     *        endpoint is mounted in, so not run a second time
      */
     public function __construct(
         private readonly ActionRunner $runner,
         private readonly int $maxBodyBytes = Limits::MAX_BODY_BYTES,
         private readonly ?Revalidator $revalidator = null,
         private readonly ?\Closure $sessionId = null,
+        private readonly ?\Closure $middlewareResolver = null,
+        private readonly array $globalMiddleware = [],
     ) {}
 
     /**
@@ -62,6 +70,26 @@ final class ActionEndpoint
             throw new HttpException(404, 'No action named in the path.', 'not_found');
         }
 
+        // The action's own #[Middleware], inside the endpoint stack and around
+        // everything that touches the action -- Precognition included, since
+        // it resolves models and authorizes too. Compiled and never run, a
+        // middleware an author put on an action was silently ignored.
+        $own = array_values(array_diff($this->runner->middlewareFor($name), $this->globalMiddleware));
+        if ($own === []) {
+            return $this->dispatch($request, $name, $rawBody);
+        }
+        if ($this->middlewareResolver === null) {
+            throw new \LogicException(
+                "Action {$name} declares #[Middleware] but the endpoint was given no middleware resolver.",
+            );
+        }
+
+        return new Pipeline(array_map($this->middlewareResolver, $own))
+            ->run($request, fn (Request $r): Response => $this->dispatch($r, $name, $rawBody));
+    }
+
+    private function dispatch(Request $request, string $name, string $rawBody): Response
+    {
         $input = $rawBody === '' ? $request->body : Limits::decodeJson($rawBody, $this->maxBodyBytes);
 
         // "Precognition / Precognition-Validate-Only": validate without
