@@ -514,8 +514,13 @@ describe('bootstrap through the kernel', function () {
                 render: static fn (): mixed => null,
                 sessionId: static fn (Request $r): string => 'session-abc',
             ),
-            manifest: (new Tinvar\Render\FragmentManifest())
-                ->declare('racks.show', 'history', 'UnitHistory'),
+            manifest: (new Tinvar\Render\FragmentManifest())->declare(
+                'racks.show',
+                'history',
+                'UnitHistory',
+                [],
+                ['site' => $fixture->ids['sites'][0], 'rack' => $fixture->ids['racks'][0]],
+            ),
         );
 
         expect($kernel->bootstrap_)->not->toBeNull();

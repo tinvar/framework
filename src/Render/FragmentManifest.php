@@ -29,12 +29,28 @@ namespace Tinvar\Render;
  */
 final class FragmentManifest
 {
-    /** @var array<string, list<array{id: string, component: string, props: array<string, mixed>}>> */
-    private array $byRoute = [];
+    /**
+     * Keyed by route AND the params the page was built with.
+     *
+     * A statically-built page is a concrete URL, not a template. Keying by
+     * route alone let a caller pair ANY params with the fixed props the build
+     * recorded -- so a page built for one entity could be bootstrapped with
+     * another's params, and the resulting token carried props belonging to
+     * neither. The props are not authorized by the fragment endpoint (it
+     * authorizes the route chain against the params), so the pairing has to
+     * be the one the build actually emitted.
+     *
+     * @var array<string, list<array{id: string, component: string, props: array<string, mixed>}>>
+     */
+    private array $byPage = [];
 
     /**
-     * @param array<string, list<array{id: string, component: string, props?: array<string, mixed>}>> $boundaries
-     *        route name => the boundaries that route's built HTML contains
+     * @param array<string, list<array{
+     *     id: string,
+     *     component: string,
+     *     props?: array<string, mixed>,
+     *     params?: array<string, string>
+     * }>> $boundaries route name => the boundaries that route's built pages contain
      */
     public function __construct(array $boundaries = [])
     {
@@ -45,6 +61,7 @@ final class FragmentManifest
                     $boundary['id'],
                     $boundary['component'],
                     $boundary['props'] ?? [],
+                    $boundary['params'] ?? [],
                 );
             }
         }
@@ -84,14 +101,24 @@ final class FragmentManifest
         return new self($decoded);
     }
 
-    /** @param array<string, mixed> $props */
-    public function declare(string $route, string $id, string $component, array $props = []): self
-    {
+    /**
+     * @param array<string, mixed>  $props  what the build gave this boundary
+     * @param array<string, string> $params the params the page was built for
+     */
+    public function declare(
+        string $route,
+        string $id,
+        string $component,
+        array $props = [],
+        array $params = [],
+    ): self {
         if ($id === '') {
             throw new \InvalidArgumentException('A declared boundary needs an id to be addressed by.');
         }
 
-        foreach ($this->byRoute[$route] ?? [] as $existing) {
+        $page = self::pageKey($route, $params);
+
+        foreach ($this->byPage[$page] ?? [] as $existing) {
             if ($existing['id'] === $id) {
                 // Two boundaries under one id would make "mint the token for
                 // boundary X" ambiguous, and the client could not tell which
@@ -102,34 +129,59 @@ final class FragmentManifest
             }
         }
 
-        $this->byRoute[$route][] = ['id' => $id, 'component' => $component, 'props' => $props];
+        $this->byPage[$page][] = ['id' => $id, 'component' => $component, 'props' => $props];
 
         return $this;
     }
 
     /**
-     * The boundaries a route declares, or none.
+     * One built page: a route and the exact params it was built for.
      *
-     * An unknown route is empty rather than an error: it is the ordinary
+     * Params are sorted so the key does not depend on the order a caller
+     * happened to send them in, and the separators cannot appear in a
+     * route name or a param value without being escaped by json_encode.
+     *
+     * @param array<string, string> $params
+     */
+    private static function pageKey(string $route, array $params): string
+    {
+        ksort($params);
+
+        return $route . "\0" . json_encode($params, JSON_THROW_ON_ERROR);
+    }
+
+    /**
+     * The boundaries one built page declares, or none.
+     *
+     * The params must be the ones the page was BUILT with, exactly. A page
+     * built for a different entity is a different page, and pairing its
+     * recorded props with these params would mint a token describing a
+     * combination that was never rendered.
+     *
+     * An unknown page is empty rather than an error: it is the ordinary
      * answer for a page that was not built statically, and distinguishing
      * "no such route" from "no boundaries" would tell a caller which routes
      * exist.
      *
+     * @param array<string, string> $params
      * @return list<array{id: string, component: string, props: array<string, mixed>}>
      */
-    public function boundariesFor(string $route): array
+    public function boundariesFor(string $route, array $params = []): array
     {
-        return $this->byRoute[$route] ?? [];
+        return $this->byPage[self::pageKey($route, $params)] ?? [];
     }
 
     public function hasAny(): bool
     {
-        return $this->byRoute !== [];
+        return $this->byPage !== [];
     }
 
-    /** @return list<string> */
-    public function routes(): array
+    /** @return list<string> every built page, as "route" plus its params */
+    public function pages(): array
     {
-        return array_keys($this->byRoute);
+        return array_map(
+            static fn (string $key): string => explode("\0", $key)[0],
+            array_keys($this->byPage),
+        );
     }
 }

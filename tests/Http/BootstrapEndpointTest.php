@@ -39,9 +39,12 @@ function bootstrapEndpoint(?FragmentManifest $manifest = null, string $session =
         Tinvar\Tests\Routing\Fixtures\RackShowPage::class,
     ]);
 
+    // Declared for the page the build actually emitted -- route AND params.
+    $built = ['site' => $fixture->ids['sites'][0], 'rack' => $fixture->ids['racks'][0]];
+
     $manifest ??= (new FragmentManifest())
-        ->declare('racks.show', 'history', 'UnitHistory', ['unit' => 'u-1'])
-        ->declare('racks.show', 'audit', 'AuditLog');
+        ->declare('racks.show', 'history', 'UnitHistory', ['unit' => 'u-1'], $built)
+        ->declare('racks.show', 'audit', 'AuditLog', [], $built);
 
     $support = new FragmentSupport(
         signer: $signer,
@@ -144,6 +147,18 @@ describe('what a caller may ask to have signed', function () {
             ->and(FragmentToken::decode($tokens['history'], $signer)->component)->toBe('UnitHistory');
     });
 
+    // A page built for one entity must not hand out tokens for another's.
+    it('answers empty for params the page was not built with', function () {
+        [$endpoint, $fixture] = bootstrapEndpoint();
+
+        $response = $endpoint->handle(Request::post(BootstrapEndpoint::PATH), json_encode([
+            'route' => 'racks.show',
+            'params' => ['site' => $fixture->ids['sites'][0], 'rack' => 'some-other-rack'],
+        ]));
+
+        expect(json_decode($response->body(), true)['tokens'])->toBe([]);
+    });
+
     // "No such route" and "no boundaries" are the same answer, or the
     // response says which routes exist.
     it('answers empty for a route the build never recorded', function () {
@@ -158,8 +173,17 @@ describe('what a caller may ask to have signed', function () {
             ->and(json_decode($response->body(), true)['tokens'])->toBe([]);
     });
 
-    it('refuses params that do not fit the route', function () {
-        [$endpoint] = bootstrapEndpoint();
+    /**
+     * Only reachable when the manifest DOES have that page: params that do
+     * not match a built page answer empty first, which is the stronger
+     * refusal. This covers a manifest recorded against params the route
+     * cannot form -- a broken build rather than a hostile request.
+     */
+    it('refuses params the route cannot form', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $manifest = (new FragmentManifest())
+            ->declare('racks.show', 'history', 'UnitHistory', [], ['rack' => 'r-1']);
+        [$endpoint] = bootstrapEndpoint($manifest);
 
         expect(fn () => $endpoint->handle(
             Request::post(BootstrapEndpoint::PATH),
@@ -191,15 +215,48 @@ describe('what a caller may ask to have signed', function () {
 });
 
 describe('the manifest', function () {
-    it('refuses two boundaries under one id', function () {
+    it('refuses two boundaries under one id on one page', function () {
         expect(fn () => (new FragmentManifest())
-            ->declare('racks.show', 'history', 'A')
-            ->declare('racks.show', 'history', 'B'))
+            ->declare('racks.show', 'history', 'A', [], ['rack' => 'r-1'])
+            ->declare('racks.show', 'history', 'B', [], ['rack' => 'r-1']))
             ->toThrow(InvalidArgumentException::class, 'two deferred boundaries');
     });
 
+    // Two built pages of one route are two pages, and an id is only unique
+    // within a page.
+    it('allows one id on two different built pages', function () {
+        $manifest = (new FragmentManifest())
+            ->declare('racks.show', 'history', 'A', [], ['rack' => 'r-1'])
+            ->declare('racks.show', 'history', 'B', [], ['rack' => 'r-2']);
+
+        expect($manifest->boundariesFor('racks.show', ['rack' => 'r-1'])[0]['component'])->toBe('A')
+            ->and($manifest->boundariesFor('racks.show', ['rack' => 'r-2'])[0]['component'])->toBe('B');
+    });
+
+    /**
+     * Keying by route alone let a caller pair ANY params with the fixed
+     * props the build recorded, minting a token for a combination that was
+     * never rendered -- and the fragment endpoint authorizes the route chain
+     * against the params, not the props, so nothing downstream caught it.
+     */
+    it('does not pair one page props with another page params', function () {
+        $manifest = (new FragmentManifest())
+            ->declare('racks.show', 'history', 'UnitHistory', ['unit' => 'someone-elses'], ['rack' => 'r-1']);
+
+        expect($manifest->boundariesFor('racks.show', ['rack' => 'r-2']))
+            ->toBe([], 'a different page is a different page');
+    });
+
+    it('does not care what order params arrive in', function () {
+        $manifest = (new FragmentManifest())
+            ->declare('racks.show', 'history', 'A', [], ['site' => 's-1', 'rack' => 'r-1']);
+
+        expect($manifest->boundariesFor('racks.show', ['rack' => 'r-1', 'site' => 's-1']))
+            ->toHaveCount(1);
+    });
+
     it('refuses a boundary with no id', function () {
-        expect(fn () => (new FragmentManifest())->declare('racks.show', '', 'A'))
+        expect(fn () => (new FragmentManifest())->declare('racks.show', '', 'A', [], ['rack' => 'r-1']))
             ->toThrow(InvalidArgumentException::class, 'needs an id');
     });
 
@@ -225,14 +282,20 @@ describe('the manifest', function () {
     it('reads what a build wrote', function () {
         $path = tempnam(sys_get_temp_dir(), 'manifest');
         file_put_contents($path, json_encode([
-            'racks.show' => [['id' => 'history', 'component' => 'UnitHistory', 'props' => ['unit' => 'u-1']]],
+            'racks.show' => [[
+                'id' => 'history',
+                'component' => 'UnitHistory',
+                'props' => ['unit' => 'u-1'],
+                'params' => ['rack' => 'r-1'],
+            ]],
         ]));
 
         try {
             $manifest = FragmentManifest::fromFile($path);
 
-            expect($manifest->routes())->toBe(['racks.show'])
-                ->and($manifest->boundariesFor('racks.show')[0]['component'])->toBe('UnitHistory');
+            expect($manifest->pages())->toBe(['racks.show'])
+                ->and($manifest->boundariesFor('racks.show', ['rack' => 'r-1'])[0]['component'])
+                ->toBe('UnitHistory');
         } finally {
             unlink($path);
         }

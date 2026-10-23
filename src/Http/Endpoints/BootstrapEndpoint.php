@@ -77,7 +77,15 @@ final class BootstrapEndpoint
             throw new HttpException(400, 'Bootstrap params must be an object.', 'bad_request');
         }
 
-        $boundaries = $this->manifest->boundariesFor($route);
+        $params = array_map(strval(...), $params);
+
+        // The page, not the route: a statically-built page is a concrete URL,
+        // and the props the build recorded belong to THAT page. Looking up by
+        // route alone let a caller pair any params with those props, minting
+        // a token for a combination that was never rendered -- and the
+        // fragment endpoint authorizes the route chain against the params,
+        // not the props, so nothing downstream would have caught it.
+        $boundaries = $this->manifest->boundariesFor($route, $params);
         if ($boundaries === []) {
             // Empty rather than 404: a page with no deferred boundaries and a
             // route that was never built statically are the same answer here,
@@ -89,12 +97,12 @@ final class BootstrapEndpoint
         // token binds them and the fragment endpoint will rebuild this chain
         // from them later. A mismatch is the caller's error, not a 500.
         try {
-            $this->routes->chainFor($route, array_map(strval(...), $params));
+            $this->routes->chainFor($route, $params);
         } catch (RoutingException) {
             throw new HttpException(400, 'That route and those params do not go together.', 'bad_request');
         }
 
-        $minter = $this->fragments->minterFor($request, $route, array_map(strval(...), $params));
+        $minter = $this->fragments->minterFor($request, $route, $params);
 
         $tokens = [];
         foreach ($boundaries as $boundary) {
