@@ -75,7 +75,7 @@ function served(string $root, \Closure $drive): void
         [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']],
         $pipes,
         $root,
-        [...getenv(), 'TINVAR_SOCKET' => $renderer->socketPath, 'TINVAR_APP_KEY' => 'browser-test-key'],
+        [...getenv(), 'TINVAR_SOCKET' => $renderer->socketPath, 'TINVAR_APP_KEY' => 'browser-test-key-0123456789abcdef0123'],
     );
 
     try {

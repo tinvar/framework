@@ -80,3 +80,14 @@ it('surfaces the cause of a failure rather than a classified 500', function () {
     expect($caught)->toBeInstanceOf(NotFoundException::class)
         ->and($caught->getMessage())->not->toBe('Something went wrong.');
 });
+
+// Every token is an offline oracle for its key, so a short one is refused.
+it('refuses a short app key rather than signing with it', function () {
+    putenv('TINVAR_APP_KEY=short');
+    try {
+        expect(fn () => Racks\Kernel::fromEnvironment('/tmp/unused.sock'))
+            ->toThrow(InvalidArgumentException::class, 'at least 32 bytes');
+    } finally {
+        putenv('TINVAR_APP_KEY');
+    }
+});
