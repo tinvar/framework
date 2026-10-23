@@ -17,6 +17,7 @@ final class QueryError
     public const string BAD_RESULT = 'query_bad_result';
     public const string BAD_ARGUMENTS = 'query_bad_arguments';
     public const string NOT_FOUND = 'query_not_found';
+    public const string MISCONFIGURED = 'query_misconfigured';
 
     /** @return array{code: string, digest: string, message?: string} */
     public static function of(string $code, \Throwable|string $cause, bool $debug): array

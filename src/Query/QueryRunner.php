@@ -4,13 +4,14 @@ declare(strict_types=1);
 
 namespace Tinvar\Query;
 
-use Tinvar\Auth\AllowAllGate;
 use Tinvar\Auth\Gate;
 use Tinvar\Data\DataBoundaryException;
 use Tinvar\Data\Encoder;
 use Tinvar\Orm\Metadata;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
+use Tinvar\Protocol\Frame;
+use Tinvar\Protocol\ProtocolException;
 
 /**
  * Runs one tick's worth of query calls.
@@ -31,7 +32,7 @@ final class QueryRunner
     public function __construct(
         private readonly QueryRegistry $registry,
         private readonly Orm $orm,
-        private readonly Gate $gate = new AllowAllGate(),
+        private readonly Gate $gate,
         private readonly Encoder $encoder = new Encoder(),
         private readonly bool $debug = false,
     ) {}
@@ -51,6 +52,18 @@ final class QueryRunner
         $groupOf = [];
         /** @var array<int, array{name: string, args: array<string, mixed>}> $accepted */
         $accepted = [];
+
+        // Call ids come from the renderer, which the trust boundary calls
+        // semi-trusted. Everything below is keyed by id, so a repeated one
+        // would collapse two calls into one -- and the survivor's data would
+        // be returned under an id whose own arguments were never authorized.
+        $seen = [];
+        foreach ($calls as $call) {
+            if (isset($seen[$call['id']])) {
+                throw ProtocolException::malformed(Frame::QUERY, 'two calls share id ' . $call['id']);
+            }
+            $seen[$call['id']] = true;
+        }
 
         // Step 1: the allowlist and the shape of the arguments.
         foreach ($calls as $call) {
@@ -178,7 +191,18 @@ final class QueryRunner
     private function authorize(string $name, array $arguments): ?array
     {
         foreach ($this->registry->checksFor($name) as $check) {
-            if (!$this->gate->allows($check, $arguments)) {
+            try {
+                $allowed = $this->gate->allows($check, $arguments);
+            } catch (\Throwable $e) {
+                // A declaration bug -- a missing policy, an ability that is
+                // not public, a check naming an unresolved argument -- must
+                // fail its own call. Letting it out of run() loses every other
+                // result in the tick, and the message would bypass the code
+                // and digest that keep exception text away from the renderer.
+                return QueryError::of(QueryError::MISCONFIGURED, $e, $this->debug);
+            }
+
+            if (!$allowed) {
                 return QueryError::of(
                     QueryError::FORBIDDEN,
                     "'{$check->ability}' denied for '{$name}'",
@@ -249,6 +273,16 @@ final class QueryRunner
             }
             if ($declared !== [] && !\array_key_exists($key, $declared)) {
                 return "'{$name}' does not declare an argument named '{$key}'";
+            }
+        }
+
+        // A model argument is an identifier. Casting an array to string later
+        // emits a warning on remote-controlled input before failing closed.
+        foreach ($this->registry->modelArgumentsFor($name) as $argument => $_) {
+            if (\array_key_exists($argument, $args)
+                && !\is_string($args[$argument])
+                && !\is_int($args[$argument])) {
+                return "'{$name}' needs an identifier for '{$argument}'";
             }
         }
 

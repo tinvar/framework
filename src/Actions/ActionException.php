@@ -30,6 +30,24 @@ final class ActionException extends \RuntimeException
         );
     }
 
+    public static function unguardedField(string $where, string $request, string $field, string $model): self
+    {
+        return new self(
+            "{$where} takes {$request}, whose \${$field} is a {$model}, and no #[Authorize] names it. "
+            . "Add #[Authorize('<ability>', '{$field}')], or #[NoAuthorization(reason: '...')]. "
+            . 'A model-typed field inside a form request is resolved and reaches the body like any other '
+            . 'input, so it needs a check like any other input.'
+        );
+    }
+
+    public static function conflictingField(string $where, string $field, string $first, string $second): self
+    {
+        return new self(
+            "{$where} resolves '{$field}' as both {$first} and {$second}. One name cannot mean two models: "
+            . 'a check naming it could only cover one of them.'
+        );
+    }
+
     public static function unbindable(string $where, string $parameter, string $type): self
     {
         return new self(

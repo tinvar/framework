@@ -35,10 +35,18 @@ final class Validator
      * @param Model|null           $subject the record being edited, resolved
      *        and authorized by the router -- rules that need it read it here
      *        rather than from the payload
+     * @param array<string, Model> $resolved models the caller already resolved
+     *        and authorized; a model-typed field named here is taken from this
+     *        map rather than looked up again, so validation cannot substitute
+     *        a different row for the one that was checked
      * @return T
      */
-    public function validate(string $class, array $input, ?Model $subject = null): FormRequest
-    {
+    public function validate(
+        string $class,
+        array $input,
+        ?Model $subject = null,
+        array $resolved = [],
+    ): FormRequest {
         $context = new ValidationContext($input, $this->orm, $subject);
 
         /** @var array<string, list<string>> $errors */
@@ -81,7 +89,9 @@ final class Validator
             }
 
             try {
-                $value = $this->coerce($raw, $field);
+                $value = \array_key_exists($name, $resolved) && $field->modelClass !== null
+                    ? $resolved[$name]
+                    : $this->coerce($raw, $field);
             } catch (CoercionFailed $failure) {
                 $errors[$name][] = $failure->getMessage();
                 continue;

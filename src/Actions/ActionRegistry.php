@@ -101,6 +101,7 @@ final class ActionRegistry
 
         $models = [];
         $formRequests = [];
+        $nestedModels = [];
 
         foreach ($method->getParameters() as $parameter) {
             $name = $parameter->getName();
@@ -132,6 +133,20 @@ final class ActionRegistry
 
             if (is_subclass_of($typeName, FormRequest::class)) {
                 $formRequests[$name] = $typeName;
+
+                // A model-typed field inside a form request is resolved and
+                // reaches the body exactly like a parameter, so it needs a
+                // check exactly like a parameter.
+                foreach (self::modelFieldsOf($typeName) as $field => $fieldModel) {
+                    $existing = $nestedModels[$field] ?? $models[$field] ?? null;
+                    if ($existing !== null && $existing !== $fieldModel) {
+                        throw ActionException::conflictingField($where, $field, $existing, $fieldModel);
+                    }
+                    if (!$exempt && !\in_array($field, $covered, true)) {
+                        throw ActionException::unguardedField($where, $typeName, $field, $fieldModel);
+                    }
+                    $nestedModels[$field] = $fieldModel;
+                }
                 continue;
             }
 
@@ -149,6 +164,7 @@ final class ActionRegistry
             checks: $checks,
             models: $models,
             formRequests: $formRequests,
+            nestedModels: $nestedModels,
             middleware: [...$classMiddleware, ...self::middlewareOf($method->getAttributes(Middleware::class))],
             exempt: $exempt,
         );
@@ -191,6 +207,32 @@ final class ActionRegistry
         return $this->instances[$action->class] ??= $this->resolver !== null
             ? ($this->resolver)($action->class)
             : new ($action->class)();
+    }
+
+    /**
+     * Model-typed constructor fields of a form request.
+     *
+     * @param class-string<FormRequest> $class
+     * @return array<string, class-string>
+     */
+    private static function modelFieldsOf(string $class): array
+    {
+        $constructor = (new \ReflectionClass($class))->getConstructor();
+        if ($constructor === null) {
+            return [];
+        }
+
+        $fields = [];
+        foreach ($constructor->getParameters() as $parameter) {
+            $type = $parameter->getType();
+            if ($type instanceof \ReflectionNamedType
+                && !$type->isBuiltin()
+                && is_subclass_of($type->getName(), Model::class)) {
+                $fields[$parameter->getName()] = $type->getName();
+            }
+        }
+
+        return $fields;
     }
 
     /**

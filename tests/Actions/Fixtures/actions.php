@@ -96,3 +96,35 @@ final class UnbindableActions
         return ActionResult::ok();
     }
 }
+
+// --- model-typed fields inside a form request -----------------------------
+
+final readonly class TransferRequest extends FormRequest
+{
+    public function __construct(
+        public Site $destination,
+        #[Min(1)] public int $priority = 1,
+    ) {}
+}
+
+final class NestedModelActions
+{
+    /** Both the parameter and the field inside the request are named. */
+    #[Action, Authorize('update', 'rack'), Authorize('view', 'destination')]
+    public function transfer(Rack $rack, TransferRequest $request): ActionResult
+    {
+        Trace::note('body:nested-transfer');
+
+        return ActionResult::ok($request->destination->code);
+    }
+}
+
+/** The field inside the request is resolved but never checked. */
+final class UnguardedFieldActions
+{
+    #[Action, Authorize('update', 'rack')]
+    public function transfer(Rack $rack, TransferRequest $request): ActionResult
+    {
+        return ActionResult::ok();
+    }
+}

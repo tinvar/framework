@@ -103,7 +103,10 @@ final class ActionRunner
     {
         $models = [];
 
-        foreach ($action->models as $parameter => $class) {
+        // Both the action's own parameters and model-typed fields inside its
+        // form requests: "resolve model arguments, and model-typed fields
+        // inside Data and form requests, scoped to the tenant".
+        foreach ($action->allModels() as $parameter => $class) {
             $id = $input[$parameter] ?? null;
             if (!\is_string($id) && !\is_int($id)) {
                 throw new NotFoundException("Action '{$action->name}' needs an identifier for '{$parameter}'.");
@@ -151,7 +154,14 @@ final class ActionRunner
             }
 
             if (isset($action->formRequests[$name])) {
-                $arguments[$name] = $this->validator->validate($action->formRequests[$name], $input, $subject);
+                // The already-resolved models are handed in, so validation
+                // cannot resolve a different row from the one authorized.
+                $arguments[$name] = $this->validator->validate(
+                    $action->formRequests[$name],
+                    $input,
+                    $subject,
+                    $models,
+                );
                 continue;
             }
 

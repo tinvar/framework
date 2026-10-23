@@ -237,3 +237,66 @@ describe('ActionResult', function () {
             ->not->toBeEmpty();
     })->with(['ok', 'revalidate', 'revalidateTags', 'redirect', 'withRoutes', 'withTags', 'flash', 'withValue']);
 });
+
+/**
+ * A model-typed field inside a form request is resolved and reaches the body
+ * exactly like a parameter, so it needs a check exactly like a parameter.
+ */
+describe('model fields inside a form request', function () {
+    it('refuses one that no check names', function () {
+        expect(fn () => (new ActionRegistry())->register(A\UnguardedFieldActions::class))
+            ->toThrow(ActionException::class, 'is a');
+    });
+
+    it('authorizes it, against the resolved model', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $registry = new ActionRegistry();
+        $registry->register(A\NestedModelActions::class);
+
+        $gate = new AllowAllGate();
+        $runner = new ActionRunner($registry, $orm, $gate, new Validator($orm));
+
+        $result = $runner->run('NestedModelActions.transfer', [
+            'rack' => $fixture->ids['racks'][0],
+            'destination' => $fixture->ids['sites'][0],
+            'priority' => '2',
+        ]);
+
+        expect($result->value)->toBe('LAX0')
+            ->and($gate->checks)->toBe([
+                ['ability' => 'update', 'argument' => 'rack'],
+                ['ability' => 'view', 'argument' => 'destination'],
+            ]);
+    });
+
+    it('denies before the body runs', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $registry = new ActionRegistry();
+        $registry->register(A\NestedModelActions::class);
+        $runner = new ActionRunner($registry, $orm, new DenyGate(), new Validator($orm));
+
+        A\Trace::reset();
+
+        expect(fn () => $runner->run('NestedModelActions.transfer', [
+            'rack' => $fixture->ids['racks'][0],
+            'destination' => $fixture->ids['sites'][0],
+        ]))->toThrow(ForbiddenException::class);
+
+        expect(A\Trace::$events)->toBe([]);
+    });
+
+    it('404s on a destination that does not resolve, before authorizing', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $registry = new ActionRegistry();
+        $registry->register(A\NestedModelActions::class);
+        $runner = new ActionRunner($registry, $orm, new AllowAllGate(), new Validator($orm));
+
+        expect(fn () => $runner->run('NestedModelActions.transfer', [
+            'rack' => $fixture->ids['racks'][0],
+            'destination' => '0192f3a1-0000-7000-8000-000000000000',
+        ]))->toThrow(NotFoundException::class);
+    });
+});

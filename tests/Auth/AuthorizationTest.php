@@ -210,13 +210,81 @@ describe('build rules', function () {
     });
 
     it('checks queries and action methods, not just pages', function () {
-        $violations = (new BuildRules())->check([A\UnguardedQuery::class, A\Actions::class]);
-
-        $where = array_map(static fn ($v): string => $v->where, $violations);
+        $where = array_map(
+            static fn ($v): string => $v->where,
+            (new BuildRules())->check([A\UnguardedQuery::class, A\Actions::class]),
+        );
 
         expect($where)->toContain(A\UnguardedQuery::class . '::__invoke($unit)')
             ->and($where)->toContain(A\Actions::class . '::move($unit)')
             ->and($where)->not->toContain(A\Actions::class . '::rename($rack)');
+    });
+
+    // The failure the rule exists to catch is forgetting the attribute, so
+    // routability must never depend on the attribute being there.
+    it('flags an #[Action] that declares nothing at all', function () {
+        $where = array_map(
+            static fn ($v): string => $v->where,
+            (new BuildRules())->check([A\Actions::class]),
+        );
+
+        expect($where)->toContain(A\Actions::class . '::destroy($rack)');
+    });
+
+    it('flags a static entry point rather than skipping it', function () {
+        $rules = array_map(
+            static fn ($v): string => $v->rule,
+            array_values(array_filter(
+                (new BuildRules())->check([A\Actions::class]),
+                static fn ($v): bool => str_contains($v->where, 'archive'),
+            )),
+        );
+
+        expect($rules)->toBe([BuildRules::ENTRY_POINT_MUST_NOT_BE_STATIC]);
+    });
+
+    it('does not let a class-level check cover a later method', function () {
+        $where = array_map(
+            static fn ($v): string => $v->where,
+            (new BuildRules())->check([A\BoardPage::class]),
+        );
+
+        expect($where)->toContain(A\BoardPage::class . '::nuke($rack)')
+            ->and($where)->not->toContain(A\BoardPage::class . '::__invoke($rack)');
+    });
+
+    it('does not let a class-level opt-out exempt a later method', function () {
+        $where = array_map(
+            static fn ($v): string => $v->where,
+            (new BuildRules())->check([A\StatusBoardPage::class]),
+        );
+
+        expect($where)->toContain(A\StatusBoardPage::class . '::delete($rack)');
+    });
+
+    it('flags an #[Authorize] with no subject', function () {
+        $violations = (new BuildRules())->check([A\SubjectlessPage::class]);
+
+        expect($violations)->toHaveCount(1)
+            ->and($violations[0]->rule)->toBe(BuildRules::AUTHORIZE_MUST_NAME_A_SUBJECT);
+    });
+
+    it('flags a check naming a parameter that is not model-typed', function () {
+        $violations = (new BuildRules())->check([A\RawCheckPage::class]);
+
+        expect($violations)->toHaveCount(1)
+            ->and($violations[0]->rule)->toBe(BuildRules::AUTHORIZE_MUST_NAME_A_SUBJECT)
+            ->and($violations[0]->message)->toContain('not model-typed');
+    });
+
+    it('flags a base-class-typed and a union-typed model input', function () {
+        $where = array_map(
+            static fn ($v): string => $v->where,
+            (new BuildRules())->check([A\WideTypedPage::class]),
+        );
+
+        expect($where)->toContain(A\WideTypedPage::class . '::__invoke($thing)')
+            ->and($where)->toContain(A\WideTypedPage::class . '::__invoke($other)');
     });
 
     describe('tenant-scoped ids must be typed', function () {
@@ -237,6 +305,17 @@ describe('build rules', function () {
         it('ignores an id naming a model that is not tenant-scoped', function () {
             // Rack carries no #[TenantScoped], so rackId is not flagged.
             expect((new BuildRules([Rack::class]))->check([], [A\BadIdRequest::class]))->toBe([]);
+        });
+
+        it('recurses into a nested Data object', function () use ($rules) {
+            $violations = $rules()->check([], [A\OuterData::class]);
+
+            expect($violations)->toHaveCount(1)
+                ->and($violations[0]->where)->toContain('InnerIdData::$scriptId');
+        });
+
+        it('flags a plural list of ids', function () use ($rules) {
+            expect($rules()->check([], [A\PluralIdsRequest::class]))->toHaveCount(1);
         });
     });
 

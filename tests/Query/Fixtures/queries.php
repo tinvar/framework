@@ -28,17 +28,19 @@ final readonly class RackSummaryData extends Data
     ) {}
 }
 
-/** A plain query. Touches a relation, so it exercises Level 2 batching. */
+/**
+ * A plain query. Touches a relation, so it exercises Level 2 batching.
+ *
+ * The parameter is model-typed, so the runner resolves and scopes it before
+ * the check runs. Declaring Authorize over a bare string would hand the policy
+ * an identifier, which fails closed.
+ */
 #[Query(name: 'racks.summary'), Authorize('view', 'rack')]
 final class RackSummary
 {
-    public function __construct(private readonly Orm $orm) {}
-
-    public function __invoke(string $rack): RackSummaryData
+    public function __invoke(Rack $rack): RackSummaryData
     {
-        $model = $this->orm->find(Rack::class, $rack);
-
-        return new RackSummaryData($model->name, $model->units->count());
+        return new RackSummaryData($rack->name, $rack->units->count());
     }
 }
 
@@ -76,11 +78,9 @@ final class UnitLoad implements BatchQuery
 #[Query(name: 'racks.leak')]
 final class LeakyQuery
 {
-    public function __construct(private readonly Orm $orm) {}
-
-    public function __invoke(string $rack): Rack
+    public function __invoke(Rack $rack): Rack
     {
-        return $this->orm->find(Rack::class, $rack);
+        return $rack;
     }
 }
 
@@ -88,13 +88,9 @@ final class LeakyQuery
 #[Query(name: 'racks.window')]
 final class RackWindow
 {
-    public function __construct(private readonly Orm $orm) {}
-
-    public function __invoke(string $rack, int $limit): RackSummaryData
+    public function __invoke(Rack $rack, int $limit): RackSummaryData
     {
-        $model = $this->orm->find(Rack::class, $rack);
-
-        return new RackSummaryData($model->name, min($limit, $model->units->count()));
+        return new RackSummaryData($rack->name, min($limit, $rack->units->count()));
     }
 }
 

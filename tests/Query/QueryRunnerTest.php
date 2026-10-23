@@ -85,7 +85,7 @@ describe('authorization', function () {
         expect($gate->checks)->toBe([['ability' => 'view', 'argument' => 'rack']]);
     });
 
-    it('fails a denied call individually, without running any statement', function () {
+    it('fails a denied call individually, without running its body', function () {
         $fixture = new Fixture(racks: 1, unitsPerRack: 2);
         [$runner] = runnerFor($fixture, new DenyGate());
         $fixture->connection->resetStatementCount();
@@ -95,8 +95,11 @@ describe('authorization', function () {
             allowed: ['racks.summary'],
         );
 
+        // One statement: resolving the model, which the spec's order puts
+        // before the check so the policy has a scoped subject to decide about.
+        // The body, which would load the rack's units, never ran.
         expect($results[0]['error']['code'])->toBe(QueryError::FORBIDDEN)
-            ->and($fixture->connection->statementCount())->toBe(0, 'denied before the body ran');
+            ->and($fixture->connection->statementCount())->toBe(1, 'the model was resolved, the body was not run');
     });
 });
 

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Auth\Fixtures;
 
+use Tinvar\Attributes\Action;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Page;
@@ -123,18 +124,110 @@ final class UnguardedQuery
 
 final class Actions
 {
-    #[Authorize('update', 'rack')]
+    #[Action, Authorize('update', 'rack')]
     public function rename(Rack $rack, string $name): OkData
     {
         return new OkData($name);
     }
 
     /** Guards $rack but not $unit. */
-    #[Authorize('update', 'rack')]
+    #[Action, Authorize('update', 'rack')]
     public function move(Rack $rack, Unit $unit): OkData
     {
         return new OkData($unit->name);
     }
+
+    /** No declaration at all: the mistake the rule exists to catch. */
+    #[Action]
+    public function destroy(Rack $rack): OkData
+    {
+        return new OkData('gone');
+    }
+
+    /** Static, so the runners could never call it. */
+    #[Action, Authorize('update', 'rack')]
+    public static function archive(Rack $rack): OkData
+    {
+        return new OkData('archived');
+    }
+}
+
+/** A class-level check must not blanket a later, destructive method. */
+#[Page('/board/{rack}', view: 'board'), Authorize('view', 'rack')]
+final class BoardPage
+{
+    public function __invoke(Rack $rack): OkData
+    {
+        return new OkData($rack->name);
+    }
+
+    #[Action]
+    public function nuke(Rack $rack): OkData
+    {
+        return new OkData('nuked');
+    }
+}
+
+/** A class-level opt-out must not exempt a later action either. */
+#[Page('/status/{rack}', view: 'status'), NoAuthorization(reason: 'public status board')]
+final class StatusBoardPage
+{
+    public function __invoke(Rack $rack): OkData
+    {
+        return new OkData($rack->name);
+    }
+
+    #[Action]
+    public function delete(Rack $rack): OkData
+    {
+        return new OkData('deleted');
+    }
+}
+
+/** An #[Authorize] with no subject: a 500 on the first request. */
+#[Page('/create', view: 'create'), Authorize('create')]
+final class SubjectlessPage
+{
+    public function __invoke(): OkData
+    {
+        return new OkData('x');
+    }
+}
+
+/** A check naming a parameter that is not model-typed. */
+#[Page('/raw/{rack}', view: 'rawcheck'), Authorize('view', 'rack')]
+final class RawCheckPage
+{
+    public function __invoke(string $rack): OkData
+    {
+        return new OkData($rack);
+    }
+}
+
+/** A base-class-typed and a union-typed model input. */
+#[Page('/wide/{thing}', view: 'wide')]
+final class WideTypedPage
+{
+    public function __invoke(\Tinvar\Orm\Model $thing, Rack|Site $other): OkData
+    {
+        return new OkData('x');
+    }
+}
+
+final readonly class InnerIdData extends Data
+{
+    public function __construct(public string $scriptId) {}
+}
+
+final readonly class OuterData extends Data
+{
+    public function __construct(public InnerIdData $inner) {}
+}
+
+final readonly class PluralIdsRequest extends FormRequest
+{
+    /** @param list<string> $scriptIds */
+    public function __construct(public array $scriptIds) {}
 }
 
 /** A bare id naming a tenant-scoped model. */

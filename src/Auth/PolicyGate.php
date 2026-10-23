@@ -35,18 +35,57 @@ final class PolicyGate implements Gate
         // A before() hook answers for every ability on that policy: the usual
         // place for "an owner may do anything here". Returning null means it
         // has no opinion and the ability method decides.
-        if (method_exists($policy, 'before')) {
+        if (self::callable($policy, 'before')) {
             $verdict = $policy->before($user, $check->ability, $subject);
             if ($verdict !== null) {
-                return (bool) $verdict;
+                return self::decision($policy, 'before', $verdict);
             }
         }
 
-        if (!method_exists($policy, $check->ability)) {
+        if (!self::callable($policy, $check->ability)) {
             throw AuthorizationException::noAbility($policy::class, $check->ability);
         }
 
-        return (bool) $policy->{$check->ability}($user, $subject, $arguments);
+        return self::decision(
+            $policy,
+            $check->ability,
+            $policy->{$check->ability}($user, $subject, $arguments),
+        );
+    }
+
+    /**
+     * method_exists() is true for a private or protected method, which this
+     * class cannot call: the attempt raises a raw Error that is neither a
+     * decision nor an AuthorizationException.
+     */
+    private static function callable(object $policy, string $method): bool
+    {
+        $reflection = new \ReflectionClass($policy);
+
+        if (!$reflection->hasMethod($method)) {
+            return false;
+        }
+        if (!$reflection->getMethod($method)->isPublic()) {
+            throw AuthorizationException::notPublic($policy::class, $method);
+        }
+
+        return true;
+    }
+
+    /**
+     * A policy answers with a bool or it has not answered.
+     *
+     * Casting with (bool) turns a reason string, an error array or a role name
+     * into a permit. The class promises that every path returns a policy's
+     * decision or throws; a truthy non-bool is not a decision.
+     */
+    private static function decision(object $policy, string $method, mixed $verdict): bool
+    {
+        if (!\is_bool($verdict)) {
+            throw AuthorizationException::notBoolean($policy::class, $method, get_debug_type($verdict));
+        }
+
+        return $verdict;
     }
 
     /**

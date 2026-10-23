@@ -14,6 +14,43 @@ namespace Tinvar\Auth;
  */
 final class AuthorizationException extends \RuntimeException
 {
+    /**
+     * A declaration bug is a server error, not a denial.
+     *
+     * Carrying the status means an error layer can classify it without
+     * matching on the message -- which must not reach a client, since these
+     * carry policy and class names.
+     */
+    public int $status {
+        get => 500;
+    }
+
+    /** @param list<string> $matches */
+    public static function ambiguousPolicy(string $subject, array $matches): self
+    {
+        return new self(
+            "Policies for " . implode(' and ', $matches) . " both apply to {$subject}, and neither is more "
+            . 'specific. Register one for ' . $subject . ' so the choice is not left to registration order.'
+        );
+    }
+
+    public static function notPublic(string $policy, string $method): self
+    {
+        return new self(
+            "{$policy}::{$method}() is not public, so the gate cannot call it. "
+            . 'A policy ability, and before(), must be public.'
+        );
+    }
+
+    public static function notBoolean(string $policy, string $method, string $got): self
+    {
+        return new self(
+            "{$policy}::{$method}() returned {$got}; a policy must answer with a bool. "
+            . 'A truthy value is not a decision, and treating one as an allow is how a policy that '
+            . 'returns a reason object becomes a permit.'
+        );
+    }
+
     public static function noPolicy(string $subject): self
     {
         return new self(

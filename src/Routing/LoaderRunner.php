@@ -40,7 +40,7 @@ final class LoaderRunner
         $binder = new Binder($this->orm);
         $models = $binder->resolveChain($chain, $chain->parameters);
 
-        $this->authorize($chain, $models, $chain->parameters);
+        $this->authorize($chain, $models);
 
         /** @var array<class-string, Data> $byType */
         $byType = [];
@@ -81,23 +81,18 @@ final class LoaderRunner
     /**
      * Every declared check in the chain, outermost first.
      *
-     * @param array<string, object> $models
-     * @param array<string, string> $parameters
+     * @param array<string, Model> $models
      */
-    public function authorize(RouteChain $chain, array $models, array $parameters): void
+    public function authorize(RouteChain $chain, array $models): void
     {
         foreach ($chain->checks() as ['route' => $route, 'check' => $check]) {
-            // Validated here so a declaration bug is a clear routing error
-            // rather than a gate failure; the gate re-derives it from the
-            // attribute and never trusts a key in this map.
-            $subject = $this->subjectFor($check, $models, $route);
+            // Validated here so a declaration bug reads as a routing error
+            // rather than a gate failure. The gate re-derives the subject from
+            // the attribute itself and never trusts a key in this map, so the
+            // models go through unchanged.
+            $this->subjectFor($check, $models, $route);
 
-            $arguments = $models;
-            if (\is_object($subject)) {
-                $arguments[$check->argument] = $subject;
-            }
-
-            if (!$this->gate->allows($check, $arguments)) {
+            if (!$this->gate->allows($check, $models)) {
                 throw ForbiddenException::check($check->ability, $route->class);
             }
         }
