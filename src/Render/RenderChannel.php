@@ -236,8 +236,11 @@ final class RenderChannel
             timeToFirstByteMs: ($firstByteNs ?? $totalNs) / 1e6,
             totalMs: $totalNs / 1e6,
             queryMs: $queryNs / 1e6,
-            // Wall time blocked on the socket, minus the part spent answering it.
-            waitingOnRendererMs: max(0.0, ($waitNs - $queryNs) / 1e6),
+            // Wall time blocked reading the socket, which is all $waitNs
+            // measures. Query time was never part of it: subtracting it
+            // reported a render that waited 200 ms on Node and spent 300 ms
+            // in queries as one that never waited at all.
+            waitingOnRendererMs: $waitNs / 1e6,
             tagsRead: $this->runner->tagsRead(),
         );
     }
