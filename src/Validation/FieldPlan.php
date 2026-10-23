@@ -37,8 +37,17 @@ final readonly class FieldPlan
         public ?string $enumClass = null,
     ) {}
 
-    public static function of(\ReflectionParameter $parameter, string $owner): self
-    {
+    /**
+     * @param \ReflectionProperty|null $property the property this parameter
+     *        fills, when the constructor assigns it rather than promoting it.
+     *        Every rule targets properties too, so a rule written there reads
+     *        as enforced and has to be.
+     */
+    public static function of(
+        \ReflectionParameter $parameter,
+        string $owner,
+        ?\ReflectionProperty $property = null,
+    ): self {
         $name = $parameter->getName();
         $where = "{$owner}::\${$name}";
 
@@ -54,11 +63,18 @@ final readonly class FieldPlan
 
         [$kind, $modelClass, $enumClass] = self::kindOf($parameter, $where);
 
+        // PHP copies an attribute on a promoted parameter onto its property as
+        // well, so reading both would apply every such rule twice.
+        $attributes = $parameter->getAttributes();
+        if ($property !== null && !$parameter->isPromoted()) {
+            $attributes = [...$attributes, ...$property->getAttributes()];
+        }
+
         $rules = [];
-        foreach ($parameter->getAttributes() as $attribute) {
+        foreach ($attributes as $attribute) {
             // Checked before instantiating: an unrelated attribute's
             // constructor has no business running inside validation.
-            if (!is_subclass_of($attribute->getName(), Rule::class)) {
+            if (!self::isRule($attribute)) {
                 continue;
             }
 
@@ -66,6 +82,8 @@ final readonly class FieldPlan
             $rule = $attribute->newInstance();
             $applies = $rule->appliesTo();
 
+            // Judged against the parameter's kind, not the property's: the
+            // value a rule sees is the one coerced for the parameter.
             if ($applies !== [] && !\in_array($kind, $applies, true)) {
                 throw new \LogicException(
                     "{$where} is {$kind}, which " . $rule::class . ' cannot check (it applies to '
@@ -86,6 +104,12 @@ final readonly class FieldPlan
             modelClass: $modelClass,
             enumClass: $enumClass,
         );
+    }
+
+    /** @param \ReflectionAttribute<object> $attribute */
+    public static function isRule(\ReflectionAttribute $attribute): bool
+    {
+        return is_subclass_of($attribute->getName(), Rule::class);
     }
 
     /** @return array{'string'|'int'|'float'|'bool'|'array'|'enum'|'model', class-string<Model>|null, class-string<\BackedEnum>|null} */

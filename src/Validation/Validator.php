@@ -367,14 +367,32 @@ final class Validator
             return self::$plans[$class];
         }
 
-        $constructor = (new \ReflectionClass($class))->getConstructor();
-        if ($constructor === null) {
-            return self::$plans[$class] = [];
-        }
+        $reflection = new \ReflectionClass($class);
 
         $plan = [];
-        foreach ($constructor->getParameters() as $parameter) {
-            $plan[] = FieldPlan::of($parameter, $class);
+        $planned = [];
+        foreach ($reflection->getConstructor()?->getParameters() ?? [] as $parameter) {
+            $name = $parameter->getName();
+            $property = $reflection->hasProperty($name) ? $reflection->getProperty($name) : null;
+            $plan[] = FieldPlan::of($parameter, $class, $property);
+            $planned[$name] = true;
+        }
+
+        // A rule on a property no parameter fills has no input to judge, so it
+        // would read as enforced while passing everything.
+        foreach ($reflection->getProperties() as $property) {
+            if (isset($planned[$property->getName()])) {
+                continue;
+            }
+            foreach ($property->getAttributes() as $attribute) {
+                if (FieldPlan::isRule($attribute)) {
+                    throw new \LogicException(
+                        "{$class}::\${$property->getName()} has a rule, but no constructor parameter of that "
+                        . 'name fills it, so the rule has no input to check. Name the parameter after the '
+                        . 'property, or move the rule onto the parameter that sets it.',
+                    );
+                }
+            }
         }
 
         return self::$plans[$class] = $plan;
