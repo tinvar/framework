@@ -161,7 +161,7 @@ final class BuildRules
     private function checkEntryPoint(string $class): array
     {
         $reflection = new \ReflectionClass($class);
-        $violations = [];
+        $violations = self::checkLoaderlessRoute($reflection);
 
         foreach ($this->entryMethods($reflection) as [$method, $classLevel]) {
             $where = "{$class}::{$method->getName()}";
@@ -311,6 +311,57 @@ final class BuildRules
                     . 'if it genuinely needs none.',
                 );
             }
+        }
+
+        return $violations;
+    }
+
+    /**
+     * The checks of a page or layout that has no loader.
+     *
+     * "Loaders are optional", and a route without one still carries its
+     * #[Authorize] -- which checkEntryPoint() never saw, since it walks
+     * entry METHODS and there is none. Authorize('view') with no subject, or
+     * Authorize('view', 'site') with nothing to resolve a site, registered
+     * cleanly and then failed every request with a 500.
+     *
+     * With no loader there is no model input to name, so the check names a
+     * class. That is the rule a route WITH a loader is already held to --
+     * its subject is one of its own parameters or a class, never a model a
+     * layout above it happens to resolve -- and it is decided from the class
+     * alone, so it holds whatever order the routes register in.
+     *
+     * @param \ReflectionClass<object> $reflection
+     * @return list<Violation>
+     */
+    private static function checkLoaderlessRoute(\ReflectionClass $reflection): array
+    {
+        $isRoute = $reflection->getAttributes(Page::class) !== []
+            || $reflection->getAttributes(Layout::class) !== [];
+        if (!$isRoute || $reflection->hasMethod('__invoke')) {
+            return [];
+        }
+
+        $class = $reflection->getName();
+        $violations = [];
+
+        foreach (Authorize::declaredOn($class) as $check) {
+            $argument = $check->argument;
+            if ($argument !== null && (class_exists($argument) || interface_exists($argument))) {
+                continue;
+            }
+
+            $violations[] = new Violation(
+                self::AUTHORIZE_MUST_NAME_A_SUBJECT,
+                $class,
+                $argument === null
+                    ? "has no loader and declares #[Authorize('{$check->ability}')] with no subject. Name the "
+                        . "class it covers, as in Authorize('viewAny', Rack::class)."
+                    : "has no loader and declares #[Authorize('{$check->ability}', '{$argument}')], but "
+                        . "'{$argument}' is not a class, and with no loader there is no model input for it to "
+                        . 'name. Give the route a loader taking the model, or name a class. It would throw on '
+                        . 'the first request.',
+            );
         }
 
         return $violations;
