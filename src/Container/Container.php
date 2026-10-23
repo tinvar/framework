@@ -215,6 +215,18 @@ final class Container
         }
     }
 
+    /** Whether get() could hand this out without failing for want of a binding or a cycle. */
+    private function canProvide(string $class): bool
+    {
+        if (isset($this->shared[$class]) || isset($this->perRequest[$class]) || isset($this->bindings[$class])) {
+            return true;
+        }
+
+        return class_exists($class)
+            && (new \ReflectionClass($class))->isInstantiable()
+            && !\in_array($class, $this->building, true);
+    }
+
     /** @param class-string $class */
     private function lifetimeOf(string $class): Lifetime
     {
@@ -241,6 +253,10 @@ final class Container
 
         $arguments = [];
         foreach ($reflection->getConstructor()?->getParameters() ?? [] as $parameter) {
+            // A variadic takes nothing: there is no list of things to invent.
+            if ($parameter->isVariadic()) {
+                break;
+            }
             $arguments[] = $this->argumentFor($class, $parameter);
         }
 
@@ -278,7 +294,19 @@ final class Container
 
         if ($type instanceof \ReflectionNamedType && !$type->isBuiltin()) {
             $dependency = $type->getName();
+            if ($dependency === 'self' || $dependency === 'static') {
+                $dependency = $parameter->getDeclaringClass()?->getName() ?? $class;
+            }
+
             if (class_exists($dependency) || interface_exists($dependency)) {
+                // An optional dependency the container cannot provide -- an
+                // unbound interface, a class already being built -- takes
+                // its default. Only a required one is an error.
+                $optional = $parameter->isDefaultValueAvailable() || $type->allowsNull();
+                if ($optional && !$this->canProvide($dependency)) {
+                    return $parameter->isDefaultValueAvailable() ? $parameter->getDefaultValue() : null;
+                }
+
                 return $this->get($dependency);
             }
 

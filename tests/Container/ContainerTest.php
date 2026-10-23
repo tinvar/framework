@@ -93,6 +93,23 @@ final class BadInjection
 
 abstract class Shape {}
 
+final class OptionalClock
+{
+    /** @var list<Config> */
+    public array $extra;
+
+    public function __construct(public ?Clock $clock = null, Config ...$extra)
+    {
+        $this->extra = $extra;
+    }
+}
+
+final class TreeNode
+{
+    public function __construct(public ?self $parent = null) {}
+}
+
+
 final class PromotedDependency
 {
     public function __construct(#[Dependency] public readonly Pool $pool) {}
@@ -164,6 +181,24 @@ describe('autowiring', function () {
     it('names a cycle rather than recursing until the stack runs out', function () {
         expect(fn () => (new Container())->get(Chicken::class))
             ->toThrow(ContainerException::class, 'Circular dependency: ' . Chicken::class . ' -> ' . Egg::class . ' -> ' . Chicken::class);
+    });
+
+    // Optional means optional: an unbound interface, or the class being
+    // built, is not an error when there is a default to take instead.
+    it('gives an optional dependency it cannot provide its default', function () {
+        $object = (new Container())->get(OptionalClock::class);
+
+        expect($object->clock)->toBeNull()->and($object->extra)->toBe([]);
+    });
+
+    it('provides an optional dependency it can', function () {
+        $container = (new Container())->bind(Clock::class, FixedClock::class);
+
+        expect($container->get(OptionalClock::class)->clock)->toBeInstanceOf(FixedClock::class);
+    });
+
+    it('reads self as the declaring class, and does not cycle on an optional one', function () {
+        expect((new Container())->get(TreeNode::class)->parent)->toBeNull();
     });
 
     it('refuses an interface or abstract class with nothing bound', function (string $class) {
