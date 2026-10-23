@@ -274,11 +274,12 @@ it('deletes a tenant-scoped row only inside its own tenant', function () {
         ->not->toBeNull('another tenant cannot delete it');
 });
 
-it('asks nothing of the database for an empty whereIn, or a flush with nothing pending', function () {
+it('asks nothing of the database for an empty whereIn or relation load, or a flush with nothing pending', function () {
     $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
     $orm = new Orm($fixture->connection, new IdentityMap('test'));
 
-    expect($orm->whereIn(Rack::class, 'id', []))->toBe([]);
+    expect($orm->whereIn(Rack::class, 'id', []))->toBe([])
+        ->and($orm->loadRelationRows(Rack::meta()->relations['units'], []))->toBe([]);
     (new BatchScheduler($orm))->flush();
 
     expect($fixture->connection->statementCount())->toBe(0);
