@@ -492,11 +492,16 @@ final class QueryRunner
                 continue;
             }
 
-            if (!\is_array($batch) || \count($batch) !== \count($keys)) {
+            // A list, exactly one per call, or nothing is answered. An array
+            // keyed by call index but filled in the order rows came back has
+            // the right count; realigned by position, call A got call B's
+            // data. Which result was meant for which call cannot be
+            // recovered from any other shape, so none of them is guessed at.
+            if (!\is_array($batch) || !array_is_list($batch) || \count($batch) !== \count($keys)) {
                 $detail = sprintf(
-                    '%s::loadMany() returned %s for %d call(s)',
+                    '%s::loadMany() returned %s for %d call(s); it must return a list, one per call, in call order',
                     $this->registry->classFor($name) ?? $name,
-                    get_debug_type($batch),
+                    \is_array($batch) && !array_is_list($batch) ? 'an array that is not a list' : get_debug_type($batch),
                     \count($keys),
                 );
                 foreach ($keys as $key) {
@@ -506,7 +511,7 @@ final class QueryRunner
             }
 
             foreach ($keys as $index => $key) {
-                $outcomes[$key] = $this->settle(array_values($batch)[$index]);
+                $outcomes[$key] = $this->settle($batch[$index]);
                 $this->remember($name, $groups[$key]['args'], $outcomes[$key]);
             }
         }
