@@ -59,7 +59,7 @@ final class FragmentManifest
      *     id: string,
      *     component: string,
      *     props?: array<string, mixed>,
-     *     params?: array<string, string>
+     *     params?: array<string, string|int>
      * }>> $boundaries route name => the boundaries that route's built pages contain
      * @param list<string> $routes routes whose pages contain a <Deferred>
      *        boundary however they are rendered -- what a dynamic render
@@ -120,7 +120,7 @@ final class FragmentManifest
 
     /**
      * @param array<string, mixed>  $props  what the build gave this boundary
-     * @param array<string, string> $params the params the page was built for
+     * @param array<string, string|int> $params the params the page was built for
      */
     public function declare(
         string $route,
@@ -188,13 +188,41 @@ final class FragmentManifest
      * happened to send them in, and the separators cannot appear in a
      * route name or a param value without being escaped by json_encode.
      *
-     * @param array<string, string> $params
+     * @param array<array-key, mixed> $params
      */
     private static function pageKey(string $route, array $params): string
     {
+        $params = self::paramStrings($params);
         ksort($params);
 
         return $route . "\0" . json_encode($params, JSON_THROW_ON_ERROR);
+    }
+
+    /**
+     * Params as strings, which is how a route carries them.
+     *
+     * The build writes this manifest as JSON, where a numeric param is
+     * naturally a number, and the bootstrap endpoint stringifies every param
+     * before it looks a page up. Keyed as given, `"page": 2` made a page no
+     * request could ever match. Anything but a string or an integer is not a
+     * route param at all, so it is a broken build rather than a page.
+     *
+     * @param array<array-key, mixed> $params
+     * @return array<array-key, string>
+     */
+    private static function paramStrings(array $params): array
+    {
+        $strings = [];
+        foreach ($params as $name => $value) {
+            if (!\is_string($value) && !\is_int($value)) {
+                throw new \InvalidArgumentException(
+                    "Param '{$name}' of a built page must be a string or an integer, not " . get_debug_type($value) . '.',
+                );
+            }
+            $strings[$name] = (string) $value;
+        }
+
+        return $strings;
     }
 
     /**
@@ -210,7 +238,7 @@ final class FragmentManifest
      * "no such route" from "no boundaries" would tell a caller which routes
      * exist.
      *
-     * @param array<string, string> $params
+     * @param array<string, string|int> $params
      * @return list<array{id: string, component: string, props: array<string, mixed>}>
      */
     public function boundariesFor(string $route, array $params = []): array
@@ -228,12 +256,17 @@ final class FragmentManifest
         return $this->byPage !== [];
     }
 
-    /** @return list<string> every built page, as "route" plus its params */
+    /**
+     * The routes with a statically-built page, each named once however many
+     * pages the build made of it.
+     *
+     * @return list<string>
+     */
     public function pages(): array
     {
-        return array_map(
+        return array_values(array_unique(array_map(
             static fn (string $key): string => explode("\0", $key)[0],
             array_keys($this->byPage),
-        );
+        )));
     }
 }
