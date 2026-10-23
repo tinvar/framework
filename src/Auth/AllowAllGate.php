@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Tinvar\Query;
+namespace Tinvar\Auth;
 
 use Tinvar\Attributes\Authorize;
 

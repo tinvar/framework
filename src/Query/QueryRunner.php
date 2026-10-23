@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Query;
 
+use Tinvar\Auth\AllowAllGate;
+use Tinvar\Auth\Gate;
 use Tinvar\Data\DataBoundaryException;
 use Tinvar\Data\Encoder;
 use Tinvar\Orm\Orm;

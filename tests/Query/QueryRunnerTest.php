@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
-use Tinvar\Query\AllowAllGate;
-use Tinvar\Query\DenyGate;
+use Tinvar\Auth\AllowAllGate;
+use Tinvar\Auth\DenyGate;
 use Tinvar\Query\QueryError;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
