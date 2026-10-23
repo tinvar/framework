@@ -28,6 +28,15 @@ final class QueryRegistry
     /** @var array<string, object> */
     private array $instances = [];
 
+    /**
+     * Phase 0's container seam. The brief asks for dependency wiring to stay
+     * stubbed behind an interface; a resolver closure is enough until there is
+     * a real container.
+     *
+     * @param (\Closure(class-string): object)|null $resolver
+     */
+    public function __construct(private readonly ?\Closure $resolver = null) {}
+
     /** @param class-string $class */
     public function register(string $class): string
     {
@@ -87,7 +96,11 @@ final class QueryRegistry
     /** Query objects are stateless, so one instance per worker is enough. */
     public function instanceFor(string $name): object
     {
-        return $this->instances[$name] ??= new ($this->classes[$name])();
+        $class = $this->classes[$name];
+
+        return $this->instances[$name] ??= $this->resolver !== null
+            ? ($this->resolver)($class)
+            : new $class();
     }
 
     public function isBatch(string $name): bool
