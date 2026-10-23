@@ -124,6 +124,13 @@ final class Kernel
      * @param list<class-string> $globalMiddleware
      * @param (\Closure(\Throwable, string): void)|null $log
      */
+    /**
+     * The request attribute carrying the page's route token, for the
+     * responder to put into the page metadata. Absent when no token is
+     * minted.
+     */
+    public const string ROUTE_TOKEN = 'tinvar.route_token';
+
     public function __construct(
         public readonly Orm $orm,
         public readonly RouteRegistry $routes,
@@ -363,8 +370,15 @@ final class Kernel
             // by the application, so route and params come from the chain
             // that was actually matched.
             $navigate = fn (Request $r): Response => $this->router->handle($r, function (LoadedRoute $loaded, Request $passed) use ($respond): Response {
-                $response = $respond($loaded, $passed);
+                // Minted BEFORE the page renders and handed to it, because a
+                // document load cannot read response headers: the token has
+                // to be in the page's own metadata too, or the first page a
+                // visitor lands on can never be revalidated by an action.
                 $token = $this->routeTokenFor($loaded, $passed);
+                $response = $respond(
+                    $loaded,
+                    $token === null ? $passed : $passed->withAttribute(self::ROUTE_TOKEN, $token),
+                );
 
                 if ($token === null) {
                     return $response;

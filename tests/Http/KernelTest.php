@@ -872,14 +872,23 @@ describe('revalidation transport', function () {
             ),
         );
 
+        $seen = null;
         $response = $kernel->handle(
             Request::get('/sites/' . $fixture->ids['sites'][0] . '/racks/' . $fixture->ids['racks'][0]),
-            render(),
+            static function (LoadedRoute $loaded, Request $request) use (&$seen): Response {
+                $seen = $request->attribute(Kernel::ROUTE_TOKEN);
+
+                return Response::make(200, 'page');
+            },
         );
 
         expect($response->header('x-route-token'))->not->toBeNull()
             ->and($response->header('cache-control'))->toBe('private, no-store')
             ->and($response->header('vary'))->toContain('Cookie');
+
+        // A document load cannot read the header, so the page has to be
+        // handed the same token to put in its metadata.
+        expect($seen)->toBe($response->header('x-route-token'));
     });
 });
 
