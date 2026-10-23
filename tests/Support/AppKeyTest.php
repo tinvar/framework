@@ -96,7 +96,7 @@ describe('a key file it cannot trust', function () {
         file_put_contents($this->file, str_repeat('w', 44));
         chmod($this->file, 0644);
 
-        expect(fn () => AppKey::resolve('TINVAR_TEST_KEY', $this->file))->toThrow(RuntimeException::class, 'mode 0600');
+        expect(fn () => AppKey::resolve('TINVAR_TEST_KEY', $this->file))->toThrow(RuntimeException::class, 'readable by no one outside');
     });
 
     it('refuses a directory others can write', function () {
@@ -106,16 +106,24 @@ describe('a key file it cannot trust', function () {
         expect(fn () => AppKey::resolve('TINVAR_TEST_KEY', $this->file))->toThrow(RuntimeException::class, 'writable by no one else');
     });
 
-    it('refuses a symlink in place of the file', function () {
+    it('refuses a symlink to a file others can read', function () {
         mkdir($this->dir, 0700);
         $target = $this->dir . '/elsewhere';
         file_put_contents($target, str_repeat('w', 44));
-        chmod($target, 0600);
+        chmod($target, 0644);
         symlink($target, $this->file);
 
-        expect(fn () => AppKey::resolve('TINVAR_TEST_KEY', $this->file))->toThrow(RuntimeException::class, 'regular file');
+        expect(fn () => AppKey::resolve('TINVAR_TEST_KEY', $this->file))->toThrow(RuntimeException::class, 'readable by no one outside');
         unlink($this->file);
         unlink($target);
+    });
+
+    it('refuses a symlink to nothing', function () {
+        mkdir($this->dir, 0700);
+        symlink($this->dir . '/missing', $this->file);
+
+        expect(fn () => AppKey::resolve('TINVAR_TEST_KEY', $this->file))->toThrow(RuntimeException::class, 'symlink to nothing');
+        unlink($this->file);
     });
 });
 
@@ -180,4 +188,45 @@ it('gives concurrent first starts one key between them', function () {
 
     expect(array_unique($keys))->toHaveCount(1)
         ->and($keys[0])->toBe(trim((string) file_get_contents($this->file)));
+});
+
+// Real setups the first version refused: a dotfiles-managed state directory
+// is a symlink; a Kubernetes secret is a symlink to the mounted file; a key
+// shared with the web server is group-readable.
+describe('a key file set up by someone sensible', function () {
+    it('accepts a symlinked directory, judged by what it resolves to', function () {
+        $real = $this->dir . '-real';
+        mkdir($real, 0700);
+        mkdir($this->dir, 0700);
+        rmdir($this->dir);
+        symlink($real, $this->dir);
+
+        $key = AppKey::resolve('TINVAR_TEST_KEY', $this->file);
+
+        expect(trim(file_get_contents($real . '/app.key')))->toBe($key);
+        unlink($real . '/app.key');
+        @unlink($real . '/.app.key.lock');
+        unlink($this->dir);
+        rmdir($real);
+    });
+
+    it('accepts a key file that is a symlink to a private file', function () {
+        mkdir($this->dir, 0700);
+        $target = $this->dir . '/mounted';
+        file_put_contents($target, str_repeat('m', 44));
+        chmod($target, 0600);
+        symlink($target, $this->file);
+
+        expect(AppKey::resolve('TINVAR_TEST_KEY', $this->file))->toBe(str_repeat('m', 44));
+        unlink($this->file);
+        unlink($target);
+    });
+
+    it('accepts a key file readable by its group', function () {
+        mkdir($this->dir, 0700);
+        file_put_contents($this->file, str_repeat('g', 44));
+        chmod($this->file, 0640);
+
+        expect(AppKey::resolve('TINVAR_TEST_KEY', $this->file))->toBe(str_repeat('g', 44));
+    });
 });

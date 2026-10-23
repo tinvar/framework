@@ -161,10 +161,16 @@ final class AppKey
 
     /**
      * The key file is believed only if nobody else could have put it there
-     * or read it. Someone who can write the directory can plant a key they
-     * know -- and then forge every session cookie and token -- and a
-     * readable file is a leaked key. A symlink is refused outright: it can
-     * point anywhere, at any moment.
+     * or read it: whoever can write the directory can plant a key they know
+     * -- and then forge every session cookie and token -- and a file anyone
+     * can read is a leaked key.
+     *
+     * Judged by what the paths really are. A symlinked state directory (a
+     * dotfiles setup) or a key file that is a symlink to a mounted secret
+     * (Kubernetes) is fine; what it resolves to is checked instead. Owned by
+     * this user or by root -- a secret mounted by the platform is root's --
+     * and writable by nobody else; the file readable by nobody outside its
+     * group, so a key shared with the web server's group still works.
      *
      * Skipped where POSIX ownership and modes do not exist (Windows), which
      * relies on the profile's ACLs instead.
@@ -175,27 +181,31 @@ final class AppKey
             return;
         }
 
-        $me = posix_geteuid();
-        $dir = \dirname($file);
-
+        $trusted = [posix_geteuid(), 0];
         clearstatcache();
 
-        $dirStat = is_link($dir) || file_exists($dir) ? lstat($dir) : false;
-        if ($dirStat !== false) {
-            if (is_link($dir) || $dirStat['uid'] !== $me || ($dirStat['mode'] & 0022) !== 0) {
+        if (is_link($file) && !file_exists($file)) {
+            throw new \RuntimeException("Refusing the application key file {$file}: it is a symlink to nothing.");
+        }
+
+        $dir = realpath(\dirname($file));
+        if ($dir !== false) {
+            $stat = stat($dir);
+            if (!\in_array($stat['uid'], $trusted, true) || ($stat['mode'] & 0022) !== 0) {
                 throw new \RuntimeException(
-                    "Refusing the application key directory {$dir}: it must be a directory owned by this user "
-                    . 'and writable by no one else.',
+                    "Refusing the application key directory {$dir}: it must be owned by this user or root and "
+                    . 'writable by no one else. Or set TINVAR_APP_KEY.',
                 );
             }
         }
 
-        $fileStat = is_link($file) || file_exists($file) ? lstat($file) : false;
-        if ($fileStat !== false) {
-            if (is_link($file) || $fileStat['uid'] !== $me || ($fileStat['mode'] & 0077) !== 0) {
+        $real = realpath($file);
+        if ($real !== false) {
+            $stat = stat($real);
+            if (!is_file($real) || !\in_array($stat['uid'], $trusted, true) || ($stat['mode'] & 0026) !== 0) {
                 throw new \RuntimeException(
-                    "Refusing the application key file {$file}: it must be a regular file owned by this user "
-                    . 'with mode 0600.',
+                    "Refusing the application key file {$real}: it must be a regular file owned by this user or "
+                    . 'root, writable by no one else and readable by no one outside its group. Or set TINVAR_APP_KEY.',
                 );
             }
         }
