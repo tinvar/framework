@@ -16,16 +16,31 @@ final class SignedToken
 {
     public const string VERSION = 'v1';
 
-    /** @param array<string, mixed> $payload */
-    public static function encode(Signer $signer, array $payload): string
+    /**
+     * @param string $purpose what KIND of token this is, bound into the MAC
+     * @param array<string, mixed> $payload
+     */
+    public static function encode(Signer $signer, string $purpose, array $payload): string
     {
         $body = Signer::encode(json_encode($payload, JSON_THROW_ON_ERROR));
 
-        // The version is INSIDE the signed string, not merely prefixed to
-        // it: otherwise a token could be replayed under a later version
-        // whose fields mean something else.
+        // The version AND the purpose are inside the signed string, not
+        // merely prefixed to it.
+        //
+        // The version, so a token cannot be replayed under a later one
+        // whose fields mean something else. The purpose, because a route
+        // payload is a strict SUBSET of a fragment payload and nothing in
+        // the claims distinguishes them -- so without a type bound into the
+        // MAC, any fragment token decodes cleanly as a route token. Every
+        // <Deferred> boundary puts one in page source and /_bootstrap hands
+        // them to anonymous visitors, so they are the cheap ones to obtain
+        // and were, in effect, universal.
+        //
+        // Binding it here rather than relying on a separate key per purpose
+        // means the separation survives an application wiring one signer
+        // into two places -- which is exactly what happened.
         return self::VERSION . '.' . $body . '.' . Signer::encode(
-            $signer->sign(self::VERSION . '.' . $body)
+            $signer->sign(self::signed($purpose, $body))
         );
     }
 
@@ -35,14 +50,14 @@ final class SignedToken
      * @return array<string, mixed>
      * @throws TokenError
      */
-    public static function decode(string $token, Signer $signer): array
+    public static function decode(string $token, Signer $signer, string $purpose): array
     {
         $parts = explode('.', $token);
         if (\count($parts) !== 3 || $parts[0] !== self::VERSION) {
             throw new TokenError('malformed or unknown token version');
         }
 
-        [$version, $payload, $mac] = $parts;
+        [, $payload, $mac] = $parts;
 
         $signature = Signer::decode($mac);
 
@@ -57,7 +72,9 @@ final class SignedToken
         // Checked BEFORE the payload is parsed: everything after this point
         // treats the contents as data this server issued, and parsing first
         // would mean parsing attacker-controlled JSON.
-        if ($signature === null || !$signer->verify($version . '.' . $payload, $signature)) {
+        if ($signature === null || !$signer->verify(self::signed($purpose, $payload), $signature)) {
+            // Covers both "forged" and "a token of another kind", which the
+            // caller must not be able to tell apart.
             throw new TokenError('signature does not verify');
         }
 
@@ -78,5 +95,11 @@ final class SignedToken
 
         /** @var array<string, mixed> */
         return $decoded;
+    }
+
+    /** What the MAC is actually over. */
+    private static function signed(string $purpose, string $body): string
+    {
+        return self::VERSION . '.' . $purpose . '.' . $body;
     }
 }

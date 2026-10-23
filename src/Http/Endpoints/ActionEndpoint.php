@@ -35,15 +35,16 @@ final class ActionEndpoint
     ) {}
 
     /**
-     * How many mounted routes one action may be asked to re-render.
+     * How many route tokens one action request will even look at.
      *
-     * Each is a full GET pipeline -- middleware, authorization, loaders --
-     * so an unbounded list would let one write cost many renders. A client
-     * with more mounted pages than this gets the first few re-rendered and
-     * reloads the rest, which is the same thing it does for an expired
-     * token.
+     * Distinct from Revalidator::MAX_ROUTES, which bounds RENDERS. This
+     * bounds parsing: each token is base64-decoded and JSON-parsed before
+     * anything can reject it, so an unbounded list is work before the work.
      */
-    public const int MAX_REVALIDATED_ROUTES = 8;
+    public const int MAX_ROUTE_TOKENS = 32;
+
+    /** A route token is a path-sized string, not a payload. */
+    public const int MAX_ROUTE_TOKEN_BYTES = 4096;
 
     public function matches(Request $request): bool
     {
@@ -113,6 +114,13 @@ final class ActionEndpoint
                     : self::json(422, ['errors' => $errors]);
             }
 
+            // The token list is transport, not input. Left in, it reached
+            // every form request and Data object as a user-supplied field,
+            // collided with any field genuinely named _routes, and counted
+            // against the body budget alongside real data.
+            $routeTokens = $input['_routes'] ?? [];
+            unset($input['_routes']);
+
             $result = $this->runner->run($name, $input, $precognitive, $request);
         } catch (ValidationException $e) {
             // "With JavaScript, a failed action returns errors with the
@@ -134,7 +142,7 @@ final class ActionEndpoint
             // mounted routes." Absent for any route whose pipeline denied,
             // whose token this server will not act on, or that the client
             // was not holding -- the write stands either way.
-            'payloads' => $this->rerender($result->revalidatedRoutes, $input, $request),
+            'payloads' => $this->rerender($result->revalidatedRoutes, $routeTokens, $request),
         ])
             // "an action's response lists the server-side query tags it
             // invalidated, and the client flushes matching prefetch entries
@@ -162,25 +170,32 @@ final class ActionEndpoint
      * Re-renders the mounted routes this action invalidated.
      *
      * @param list<string> $invalidated
-     * @param array<string, mixed> $input
      * @return array<string, string>
      */
-    private function rerender(array $invalidated, array $input, Request $request): array
+    private function rerender(array $invalidated, mixed $tokens, Request $request): array
     {
         if ($this->revalidator === null || $this->sessionId === null || $invalidated === []) {
             return [];
         }
 
-        $tokens = $input['_routes'] ?? [];
         if (!\is_array($tokens) || !array_is_list($tokens)) {
             return [];
         }
 
-        $tokens = array_values(array_filter($tokens, \is_string(...)));
+        $tokens = array_values(array_filter(
+            $tokens,
+            static fn (mixed $t): bool => \is_string($t) && $t !== ''
+                && \strlen($t) <= self::MAX_ROUTE_TOKEN_BYTES,
+        ));
 
+        // The cap lives in the Revalidator, which is the only place that
+        // can apply it after deduplication -- here it bounded tokens
+        // examined rather than renders performed. This bound is on how much
+        // the endpoint will PARSE, which is a different and also necessary
+        // limit.
         return $this->revalidator->rerender(
             $invalidated,
-            \array_slice($tokens, 0, self::MAX_REVALIDATED_ROUTES),
+            \array_slice($tokens, 0, self::MAX_ROUTE_TOKENS),
             $request,
             $this->sessionId,
         );

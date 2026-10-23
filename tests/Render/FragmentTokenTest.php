@@ -11,6 +11,20 @@ function signer(string $secret = 'test-app-key'): Signer
     return new Signer($secret, FragmentToken::PURPOSE);
 }
 
+/**
+ * Re-signs a tampered payload the way the envelope does.
+ *
+ * The MAC covers the version AND the purpose, not just the body, so a forge
+ * that signs only the body fails on the signature before reaching whatever
+ * it was meant to test.
+ */
+function resign(Signer $signer, array $payload, string $purpose = FragmentToken::PURPOSE): string
+{
+    $body = Signer::encode(json_encode($payload));
+
+    return 'v1.' . $body . '.' . Signer::encode($signer->sign('v1.' . $purpose . '.' . $body));
+}
+
 function token(Signer $signer, array $overrides = []): FragmentToken
 {
     return new FragmentToken(
@@ -254,12 +268,7 @@ describe('malleability and bounds', function () {
 
         $json = json_decode(Signer::decode($payload), true);
         $json['a'] = ['rack' => ['nested' => true]];
-        $forged = Signer::encode(json_encode($json));
-
-        expect(fn () => FragmentToken::decode(
-            $version . '.' . $forged . '.' . Signer::encode($signer->sign($version . '.' . $forged)),
-            $signer,
-        ))->toThrow(FragmentTokenError::class, 'not a scalar');
+        expect(fn () => FragmentToken::decode(resign($signer, $json), $signer))->toThrow(FragmentTokenError::class, 'not a scalar');
     });
 
     // A JSON list passes is_array() and then breaks the array<string, mixed>
@@ -270,12 +279,7 @@ describe('malleability and bounds', function () {
 
         $json = json_decode(Signer::decode($payload), true);
         $json['p'] = ['a', 'b'];
-        $forged = Signer::encode(json_encode($json));
-
-        expect(fn () => FragmentToken::decode(
-            $version . '.' . $forged . '.' . Signer::encode($signer->sign($version . '.' . $forged)),
-            $signer,
-        ))->toThrow(FragmentTokenError::class);
+        expect(fn () => FragmentToken::decode(resign($signer, $json), $signer))->toThrow(FragmentTokenError::class);
     });
 });
 
@@ -332,4 +336,47 @@ it('keeps the tenant across a refresh', function () {
     $signer = signer();
 
     expect(token($signer, ['tenant' => 'acme'])->refreshed()->tenant)->toBe('acme');
+});
+
+/**
+ * refreshed() kept issuedAt -- correctly, since refreshing must not extend
+ * the absolute lifetime -- and clamped nothing, so a token issued just under
+ * the ceiling came back with a nominal hour of life and was undecodable
+ * within seconds, failing indistinguishably from a forgery. This is a LIVE
+ * path: every fragment response returns a refreshed token.
+ */
+describe('refreshing near the deadline', function () {
+    it('clamps the new expiry to the absolute deadline', function () {
+        $signer = signer();
+        $now = time();
+        $issued = $now - FragmentToken::MAX_LIFETIME + 30;
+
+        $refreshed = token($signer, ['issuedAt' => $issued])->refreshed(now: $now);
+
+        expect($refreshed)->not->toBeNull()
+            ->and($refreshed->expiresAt)->toBe($issued + FragmentToken::MAX_LIFETIME)
+            ->and($refreshed->expiresAt - $now)->toBeLessThan(FragmentToken::DEFAULT_TTL);
+    });
+
+    // A clamped token must still decode, which the unclamped one did not.
+    it('produces a token that still verifies', function () {
+        $signer = signer();
+        $now = time();
+        $issued = $now - FragmentToken::MAX_LIFETIME + 30;
+
+        $encoded = token($signer, ['issuedAt' => $issued])->refreshed(now: $now)->encode($signer);
+
+        expect(FragmentToken::decode($encoded, $signer, now: $now + 10)->component)
+            ->toBe('UnitHistory');
+    });
+
+    // Null says "re-bootstrap", which the caller can act on; a dead token
+    // says nothing a forgery would not.
+    it('refuses to refresh once the lifetime is spent', function () {
+        $signer = signer();
+        $now = time();
+
+        expect(token($signer, ['issuedAt' => $now - FragmentToken::MAX_LIFETIME - 1])->refreshed(now: $now))
+            ->toBeNull();
+    });
 });

@@ -98,6 +98,13 @@ final readonly class TokenClaims
     {
         $at = $now ?? time();
 
+        // The malformed check first: a token with no issue time that is
+        // ALSO expired should be reported as malformed, which is the more
+        // specific cause and the one the log exists for.
+        if ($this->issuedAt <= 0) {
+            throw new TokenError('token carries no issue time');
+        }
+
         if ($this->expiresAt <= $at) {
             throw new TokenError('expired');
         }
@@ -106,14 +113,6 @@ final readonly class TokenClaims
         // claiming PHP_INT_MAX from being honoured forever.
         if ($this->expiresAt - $at > $ttl) {
             throw new TokenError('expiry is further out than a token may be issued for');
-        }
-
-        // A missing issue time is MALFORMED, not exempt. It was once a
-        // defaulted parameter, and the ceiling check skipped it when absent
-        // -- so the one control stopping a refresh chain living forever
-        // could be switched off by leaving an argument out.
-        if ($this->issuedAt <= 0) {
-            throw new TokenError('token carries no issue time');
         }
 
         if ($at - $this->issuedAt > $maxLifetime) {
@@ -126,9 +125,25 @@ final readonly class TokenClaims
         return hash_equals($this->sessionHash, self::hashSession($signer, $sessionId));
     }
 
-    /** The same claims, valid for another window. The issue time is kept. */
-    public function refreshed(int $ttl, ?int $now = null): self
+    /**
+     * The same claims, valid for another window, CLAMPED to the deadline.
+     *
+     * The issue time is kept, which is the point -- refreshing must not
+     * extend the absolute lifetime. But nothing clamped the new expiry, so
+     * a token issued just under the ceiling was handed back with a nominal
+     * hour of life and became undecodable within seconds, failing
+     * indistinguishably from a forgery. Null says "re-bootstrap", which the
+     * caller can act on.
+     */
+    public function refreshed(int $ttl, int $maxLifetime, ?int $now = null): ?self
     {
+        $at = $now ?? time();
+        $deadline = $this->issuedAt + $maxLifetime;
+
+        if ($deadline <= $at) {
+            return null;
+        }
+
         return new self(
             route: $this->route,
             params: $this->params,
@@ -136,7 +151,7 @@ final readonly class TokenClaims
             tenant: $this->tenant,
             build: $this->build,
             sessionHash: $this->sessionHash,
-            expiresAt: ($now ?? time()) + $ttl,
+            expiresAt: min($at + $ttl, $deadline),
             issuedAt: $this->issuedAt,
         );
     }

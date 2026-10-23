@@ -41,20 +41,23 @@ final readonly class RouteToken
 
     public function encode(Signer $signer): string
     {
-        return SignedToken::encode($signer, $this->claims->toMap());
+        return SignedToken::encode($signer, self::PURPOSE, $this->claims->toMap());
     }
 
     /** @throws TokenError */
     public static function decode(string $token, Signer $signer, ?int $now = null): self
     {
-        $claims = TokenClaims::fromMap(SignedToken::decode($token, $signer));
+        $claims = TokenClaims::fromMap(SignedToken::decode($token, $signer, self::PURPOSE));
         $claims->assertFresh(self::DEFAULT_TTL, self::MAX_LIFETIME, $now);
 
         return new self($claims);
     }
 
-    public function refreshed(?int $now = null): self
+    /** Null when the absolute lifetime has run out: the client must re-bootstrap. */
+    public function refreshed(?int $now = null): ?self
     {
-        return new self($this->claims->refreshed(self::DEFAULT_TTL, $now));
+        $claims = $this->claims->refreshed(self::DEFAULT_TTL, self::MAX_LIFETIME, $now);
+
+        return $claims === null ? null : new self($claims);
     }
 }

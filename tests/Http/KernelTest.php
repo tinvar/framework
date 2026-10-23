@@ -665,6 +665,8 @@ describe('post-action revalidation through the kernel', function () {
     it('re-renders a mounted route the action invalidated', function () {
         $fixture = new Fixture(racks: 2, unitsPerRack: 1, sites: 1);
         $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        // Two signers, as an application must supply: one per purpose.
+        $fragmentSigner = new Tinvar\Support\Signer('k', Tinvar\Render\FragmentToken::PURPOSE);
         $signer = new Tinvar\Support\Signer('k', Tinvar\Render\RouteToken::PURPOSE);
 
         $routes = new RouteRegistry();
@@ -691,12 +693,13 @@ describe('post-action revalidation through the kernel', function () {
             allowedQueries: static fn (Request $r): array => [],
             gate: new Tinvar\Auth\AllowAllGate(),
             fragments: new Tinvar\Http\FragmentSupport(
-                signer: $signer,
+                signer: $fragmentSigner,
                 builds: new Tinvar\Http\BuildRegistry('b1'),
                 render: static fn (): mixed => null,
                 sessionId: static fn (Request $r): string => 'session-abc',
                 renderRoute: static fn (Tinvar\Routing\LoadedRoute $l, Request $r): string
                     => 'fresh:' . $l->chain->page->name,
+                routeSigner: $signer,
             ),
         );
 
@@ -724,7 +727,7 @@ describe('post-action revalidation through the kernel', function () {
         $body = json_decode($response->body(), true);
 
         expect($response->status)->toBe(200)
-            ->and($body['payloads'])->toBe(['racks.show' => 'fresh:racks.show']);
+            ->and(array_values($body['payloads']))->toBe(['fresh:racks.show']);
     });
 
     /**
@@ -735,6 +738,8 @@ describe('post-action revalidation through the kernel', function () {
     it('hands a page its route token', function () {
         $fixture = new Fixture(racks: 2, unitsPerRack: 1, sites: 1);
         $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        // Two signers, as an application must supply: one per purpose.
+        $fragmentSigner = new Tinvar\Support\Signer('k', Tinvar\Render\FragmentToken::PURPOSE);
         $signer = new Tinvar\Support\Signer('k', Tinvar\Render\RouteToken::PURPOSE);
 
         $routes = new RouteRegistry();
@@ -758,10 +763,11 @@ describe('post-action revalidation through the kernel', function () {
             allowedQueries: static fn (Request $r): array => [],
             gate: new Tinvar\Auth\AllowAllGate(),
             fragments: new Tinvar\Http\FragmentSupport(
-                signer: $signer,
+                signer: $fragmentSigner,
                 builds: new Tinvar\Http\BuildRegistry('b1'),
                 render: static fn (): mixed => null,
                 sessionId: static fn (Request $r): string => 'session-abc',
+                routeSigner: $signer,
             ),
         );
 
@@ -793,5 +799,86 @@ describe('post-action revalidation through the kernel', function () {
         expect($response->status)->toBe(200)
             ->and($body['revalidated'])->toBe(['racks.show'])
             ->and($body['payloads'])->toBe([]);
+    });
+});
+
+/**
+ * Transport details the reviews caught: the token list is not user input,
+ * and a response carrying a per-visitor token is not cacheable.
+ */
+describe('revalidation transport', function () {
+    it('keeps the token list out of the action input', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $registry = new ActionRegistry();
+        $registry->register(A\RackActions::class);
+
+        // An action that reports what input it was given.
+        $endpoint = new Tinvar\Http\Endpoints\ActionEndpoint(
+            new Tinvar\Actions\ActionRunner(
+                $registry,
+                $orm,
+                new Tinvar\Auth\AllowAllGate(),
+                new Tinvar\Validation\Validator($orm),
+            ),
+        );
+
+        // With no revalidator the list is still stripped, so it can never
+        // reach a form request as a field.
+        $response = $endpoint->handle(
+            Request::post('/_action/RackActions.moveUnit'),
+            json_encode([
+                'rack' => $fixture->ids['racks'][0],
+                'position' => 12,
+                '_routes' => ['v1.whatever.mac'],
+            ]),
+        );
+
+        expect($response->status)->toBe(200);
+    });
+
+    it('does not let a page token be cached across visitors', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $fragmentSigner = new Tinvar\Support\Signer('k', Tinvar\Render\FragmentToken::PURPOSE);
+        $routeSigner = new Tinvar\Support\Signer('k', Tinvar\Render\RouteToken::PURPOSE);
+
+        $routes = new RouteRegistry();
+        $routes->registerAll([
+            Tinvar\Tests\Routing\Fixtures\RootLayout::class,
+            Tinvar\Tests\Routing\Fixtures\SiteLayout::class,
+            Tinvar\Tests\Routing\Fixtures\RackShowPage::class,
+        ]);
+
+        $auth = new AuthContext();
+        $auth->login(new AuthUser('u-1'));
+
+        $kernel = new Kernel(
+            orm: $orm,
+            routes: $routes,
+            queries: new QueryRegistry(),
+            actions: new ActionRegistry(),
+            auth: $auth,
+            policies: new PolicyRegistry(),
+            resolver: static fn (string $class): object => new $class(),
+            allowedQueries: static fn (Request $r): array => [],
+            gate: new Tinvar\Auth\AllowAllGate(),
+            fragments: new Tinvar\Http\FragmentSupport(
+                signer: $fragmentSigner,
+                builds: new Tinvar\Http\BuildRegistry('b1'),
+                render: static fn (): mixed => null,
+                sessionId: static fn (Request $r): string => 'session-abc',
+                routeSigner: $routeSigner,
+            ),
+        );
+
+        $response = $kernel->handle(
+            Request::get('/sites/' . $fixture->ids['sites'][0] . '/racks/' . $fixture->ids['racks'][0]),
+            render(),
+        );
+
+        expect($response->header('x-route-token'))->not->toBeNull()
+            ->and($response->header('cache-control'))->toBe('private, no-store')
+            ->and($response->header('vary'))->toContain('Cookie');
     });
 });

@@ -229,12 +229,20 @@ final class FragmentEndpoint
         // not merely asked not to store. The content type is promised here
         // rather than left to whatever the render closure happened to set,
         // because the client refuses anything else.
-        return $response
+        $response = $response
             ->withHeader('content-type', self::CONTENT_TYPE)
             ->withHeader('cache-control', 'private, no-store')
-            ->withHeader('x-fragment-token', $token->refreshed()->encode($this->signer))
             ->withAddedHeader('vary', 'RSC')
             ->withAddedHeader('vary', 'Cookie');
+
+        // No refreshed token once the absolute lifetime is spent. Its
+        // absence is how the client learns to reload rather than keep
+        // refreshing something that will fail.
+        $refreshed = $token->refreshed();
+
+        return $refreshed === null
+            ? $response
+            : $response->withHeader('x-fragment-token', $refreshed->encode($this->signer));
     }
 
     /**

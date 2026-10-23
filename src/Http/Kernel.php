@@ -155,15 +155,27 @@ final class Kernel
         // has supplied them. Without it, revalidate() still names routes
         // and the response simply carries no payloads -- which is what a
         // client reads as "reload that route yourself".
-        $revalidator = $fragments === null ? null : new Revalidator(
+        // Both halves must exist: a signer for route tokens, and something
+        // that can render one. Defaulting the renderer to a closure
+        // returning '' meant every invalidated route a client held paid for
+        // a full loader run and came back as an empty payload, which a
+        // client renders as empty content rather than reading as absent.
+        $routeSigner = $fragments?->routeSigner;
+
+        $revalidator = ($fragments === null || $routeSigner === null || $fragments->renderRoute === null)
+            ? null
+            : new Revalidator(
             routes: $this->routes,
             loaders: new LoaderRunner($this->orm, $resolver, $gate),
-            signer: $fragments->signer,
+            signer: $routeSigner,
             orm: $this->orm,
-            render: $fragments->renderRoute ?? static fn (): string => '',
-            panels: $panels,
+            render: $fragments->renderRoute,
+            builds: $fragments->builds,
             middlewareResolver: static fn (string $class): Middleware => $resolver($class),
+            panels: $panels,
             globalMiddleware: $globalMiddleware,
+            log: $log === null ? null : static fn (\Throwable $e): mixed
+                => $log($e, ExceptionHandler::digest($e)),
         );
 
         $this->actions_ = new ActionEndpoint(new ActionRunner(
@@ -248,12 +260,22 @@ final class Kernel
         }
 
         if ($fragments !== null && ($fragments->panels === null || $fragments->orm === null)) {
+            // EVERY field. This rebuild listed five of nine, so an
+            // application that supplied a query allowlist, a route signer
+            // or a route renderer lost them here -- silently, and only on
+            // the path that was supposed to be repairing the object. It
+            // also never set `orm`, so the condition it exists to fix
+            // stayed true.
             $fragments = new FragmentSupport(
                 signer: $fragments->signer,
                 builds: $fragments->builds,
                 render: $fragments->render,
                 sessionId: $fragments->sessionId,
-                panels: $panels,
+                panels: $fragments->panels ?? $panels,
+                allowedQueries: $fragments->allowedQueries,
+                orm: $fragments->orm ?? $this->orm,
+                renderRoute: $fragments->renderRoute,
+                routeSigner: $fragments->routeSigner,
             );
         }
 
@@ -332,7 +354,19 @@ final class Kernel
                 $response = $respond($loaded, $passed);
                 $token = $this->routeTokenFor($loaded, $passed);
 
-                return $token === null ? $response : $response->withHeader('x-route-token', $token);
+                if ($token === null) {
+                    return $response;
+                }
+
+                // The token carries a session hash, a tenant and a panel, so
+                // the response holding it is per-visitor. A shared cache
+                // keyed on URL could otherwise hand one visitor's to
+                // another -- inert, since the binding holds, but it is
+                // still disclosure.
+                return $response
+                    ->withHeader('x-route-token', $token)
+                    ->withHeader('cache-control', 'private, no-store')
+                    ->withAddedHeader('vary', 'Cookie');
             });
         } catch (\Throwable $e) {
             return $this->exceptions->handle($e, $request);
@@ -414,8 +448,13 @@ final class Kernel
             return null;
         }
 
+        $routeSigner = $this->support->routeSigner;
+        if ($routeSigner === null) {
+            return null;
+        }
+
         return (new RouteMinter(
-            signer: $this->support->signer,
+            signer: $routeSigner,
             panel: $this->panels?->currentOrNull() ?? '',
             tenant: $this->orm->tenant(),
             build: $this->support->builds->current,

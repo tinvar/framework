@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Tinvar\Actions;
 
 use Tinvar\Auth\PanelContext;
+use Tinvar\Http\BuildRegistry;
+use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Pipeline;
 use Tinvar\Http\Request;
@@ -45,9 +47,14 @@ final class Revalidator
     /**
      * @param \Closure(LoadedRoute, Request): string $render produces the payload
      *        for one re-rendered route
-     * @param (\Closure(class-string): Middleware)|null $middlewareResolver
+     * @param \Closure(class-string): Middleware $middlewareResolver required,
+     *        not optional: null meant "run no middleware", which is silently
+     *        the pre-fix behaviour for anyone constructing this directly
      * @param list<class-string> $globalMiddleware already applied by the action
      *        stack this runs inside, so they are not applied twice
+     * @param (\Closure(\Throwable): void)|null $log receives a re-render that
+     *        failed for a reason that is NOT a denial -- without it, a broken
+     *        loader looks exactly like a permission result
      */
     public function __construct(
         private readonly RouteRegistry $routes,
@@ -55,16 +62,29 @@ final class Revalidator
         private readonly Signer $signer,
         private readonly Orm $orm,
         private readonly \Closure $render,
+        private readonly BuildRegistry $builds,
+        private readonly \Closure $middlewareResolver,
         private readonly ?PanelContext $panels = null,
-        private readonly ?\Closure $middlewareResolver = null,
         private readonly array $globalMiddleware = [],
+        private readonly ?\Closure $log = null,
     ) {}
+
+    /**
+     * How many distinct pages one action may re-render.
+     *
+     * Each is a full GET pipeline -- middleware, authorization, loaders --
+     * so this bounds the work a single write can buy. Applied AFTER
+     * deduplication, because the thing worth bounding is renders: the cap
+     * used to sit on the endpoint's raw token list, so eight copies of one
+     * token were eight full pipelines for one payload.
+     */
+    public const int MAX_ROUTES = 8;
 
     /**
      * @param list<string> $invalidated route names the action revalidated
      * @param list<string> $tokens      route tokens the client is holding
      * @param \Closure(Request): string $sessionId
-     * @return array<string, string> route name => payload, for those that rendered
+     * @return array<string, string> page key => payload, for those that rendered
      */
     public function rerender(array $invalidated, array $tokens, Request $request, \Closure $sessionId): array
     {
@@ -73,8 +93,15 @@ final class Revalidator
         }
 
         $wanted = array_flip($invalidated);
-        $payloads = [];
 
+        // Deduplicated BEFORE anything renders, and keyed by route AND
+        // params. Both halves were wrong: the cap bounded tokens looked at
+        // rather than renders performed, and keying by route name alone
+        // meant two tokens for the same route with different params
+        // rendered twice and the second silently overwrote the first --
+        // handing the client a payload for the wrong row with no way to
+        // tell.
+        $pages = [];
         foreach ($tokens as $raw) {
             $token = $this->verified($raw, $request, $sessionId);
             if ($token === null) {
@@ -89,13 +116,33 @@ final class Revalidator
                 continue;
             }
 
+            $pages[self::pageKey($claims->route, $claims->params)] ??= $claims;
+        }
+
+        $payloads = [];
+        foreach (\array_slice($pages, 0, self::MAX_ROUTES, preserve_keys: true) as $key => $claims) {
             $payload = $this->renderOne($claims->route, $claims->params, $claims->panel, $request);
             if ($payload !== null) {
-                $payloads[$claims->route] = $payload;
+                $payloads[$key] = $payload;
             }
         }
 
         return $payloads;
+    }
+
+    /**
+     * A page: a route and the params it was mounted with.
+     *
+     * The client matches payloads against the tokens it sent, so the key
+     * has to identify the same thing a token does.
+     *
+     * @param array<string, string> $params
+     */
+    public static function pageKey(string $route, array $params): string
+    {
+        ksort($params);
+
+        return $route . '?' . http_build_query($params);
     }
 
     /**
@@ -123,6 +170,15 @@ final class Revalidator
         // reasons: a token is client-held state, and client-held state is
         // bound to (user, tenant) and purged on a panel switch.
         if ($this->orm->tenant() !== $token->claims->tenant) {
+            return null;
+        }
+
+        // And the build. FragmentEndpoint refuses a revoked one because "a
+        // revoked build means a full page load, which is the only way to
+        // get a browser off code it already has" -- and that reasoning does
+        // not stop applying because the token names a route instead of a
+        // component. The claim was signed and read by nothing.
+        if (!$this->builds->accepts($token->claims->build)) {
             return null;
         }
 
@@ -158,14 +214,30 @@ final class Revalidator
             // The global stack is excluded: the action request is already
             // inside it, and running it twice would double every counter
             // and every side effect it has.
-            $routeOnly = $this->middlewareResolver === null
-                ? []
-                : array_values(array_diff($chain->middleware(), $this->globalMiddleware));
+            $routeOnly = array_values(array_diff($chain->middleware(), $this->globalMiddleware));
 
             $pipeline = new Pipeline(array_map(
                 fn (string $class): Middleware => ($this->middlewareResolver)($class),
                 $routeOnly,
             ));
+
+            // A GET for the ROUTE, not the action's POST.
+            //
+            // The spec says "the full GET pipeline", and what ran saw
+            // method POST, path /_action/..., and the action's body -- so a
+            // loader reading the request got action input, and middleware
+            // keyed on method or path behaved differently here than on
+            // navigation. That asymmetry is the one this was supposed to
+            // close. Only the cross-cutting parts of the original carry
+            // over: the cookies and headers that identify the caller.
+            $asGet = new Request(
+                'GET',
+                $this->routes->url($route, $params),
+                $request->headers(),
+                [],
+                [],
+                $request->cookies,
+            );
 
             try {
                 // Response is the pipeline's currency; the payload is
@@ -174,7 +246,7 @@ final class Revalidator
                 // payload" rather than as an empty one.
                 $payload = null;
 
-                $pipeline->run($request, function (Request $inner) use ($chain, &$payload): Response {
+                $pipeline->run($asGet, function (Request $inner) use ($chain, &$payload): Response {
                     $loaded = $this->loaders->run($chain, $inner);
                     $payload = ($this->render)($loaded, $inner);
 
@@ -182,9 +254,21 @@ final class Revalidator
                 });
 
                 return $payload;
-            } catch (\Throwable) {
-                // Including a denial, from a policy or from middleware.
-                // The write stands; the payload does not.
+            } catch (HttpException | RoutingException $e) {
+                // A denial, a 404, a refusal from middleware. Expected, and
+                // the reason the payload is absent rather than the request
+                // failing.
+                return null;
+            } catch (\Throwable $e) {
+                // Anything else is a BUG -- a mistyped loader, a dead
+                // database, a broken render closure -- and it used to look
+                // identical to a permission result. The payload is still
+                // omitted, because the write has already happened, but it
+                // is reported rather than swallowed.
+                if ($this->log !== null) {
+                    ($this->log)($e);
+                }
+
                 return null;
             }
         };

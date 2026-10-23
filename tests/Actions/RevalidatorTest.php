@@ -55,6 +55,8 @@ function revalidator(?object $gate = null): array
         orm: $orm,
         render: static fn (LoadedRoute $loaded, Request $r): string
             => 'payload:' . $loaded->chain->page->name,
+        builds: new Tinvar\Http\BuildRegistry('build-1'),
+        middlewareResolver: static fn (string $class): Tinvar\Http\Middleware => new $class(),
         panels: $panels,
     );
 
@@ -95,7 +97,120 @@ describe('re-rendering after an action', function () {
             session(),
         );
 
-        expect($payloads)->toBe(['racks.show' => 'payload:racks.show']);
+        // Keyed by PAGE -- route and params -- not by route name, so a
+        // client can match a payload to the token it sent.
+        expect($payloads)->toBe([
+            Revalidator::pageKey('racks.show', [
+                'site' => $fixture->ids['sites'][0],
+                'rack' => $fixture->ids['racks'][0],
+            ]) => 'payload:racks.show',
+        ]);
+    });
+
+    /**
+     * Keying by route name alone meant two tokens for the same route with
+     * DIFFERENT params rendered twice and the second silently overwrote the
+     * first -- the client got a payload for the wrong row and no way to
+     * tell.
+     */
+    it('keeps two instances of one route apart', function () {
+        [$revalidator, $fixture, $signer] = revalidator();
+
+        $payloads = $revalidator->rerender(
+            ['racks.show'],
+            [
+                routeToken($signer, $fixture),
+                routeToken($signer, $fixture, ['params' => [
+                    'site' => $fixture->ids['sites'][0],
+                    'rack' => $fixture->ids['racks'][1],
+                ]]),
+            ],
+            Request::post('/_action/x'),
+            session(),
+        );
+
+        expect($payloads)->toHaveCount(2);
+    });
+
+    /**
+     * The cap bounds RENDERS, applied after deduplication. It used to bound
+     * tokens examined, so eight copies of one token were eight full GET
+     * pipelines for one payload -- and the test for it passed with the cap
+     * deleted, because dedupe-by-key guaranteed one payload either way.
+     */
+    it('renders a duplicated token once', function () {
+        [$revalidator, $fixture, $signer, $panels, $orm] = revalidator();
+
+        $renders = 0;
+        $routes = new RouteRegistry();
+        $routes->registerAll([RootLayout::class, SiteLayout::class, RackShowPage::class]);
+
+        $counting = new Revalidator(
+            routes: $routes,
+            loaders: new LoaderRunner($orm, static fn (string $c): object => new $c(), new AllowAllGate()),
+            signer: $signer,
+            orm: $orm,
+            render: static function (LoadedRoute $l, Request $r) use (&$renders): string {
+                $renders++;
+
+                return 'payload';
+            },
+            builds: new Tinvar\Http\BuildRegistry('build-1'),
+            middlewareResolver: static fn (string $class): Tinvar\Http\Middleware => new $class(),
+            panels: $panels,
+        );
+
+        $counting->rerender(
+            ['racks.show'],
+            array_fill(0, 8, routeToken($signer, $fixture)),
+            Request::post('/_action/x'),
+            session(),
+        );
+
+        expect($renders)->toBe(1);
+    });
+
+    it('renders at most the cap, counted in pages', function () {
+        // Enough real racks that every page resolves -- synthetic ids would
+        // 404 in the loaders and never reach the render closure, so the
+        // count would be zero whether or not the cap worked.
+        $fixture = new Fixture(racks: Revalidator::MAX_ROUTES + 12, unitsPerRack: 1, sites: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $signer = new Signer('test-app-key', RouteToken::PURPOSE);
+        $panels = new PanelContext();
+
+        $renders = 0;
+        $routes = new RouteRegistry();
+        $routes->registerAll([RootLayout::class, SiteLayout::class, RackShowPage::class]);
+
+        $counting = new Revalidator(
+            routes: $routes,
+            loaders: new LoaderRunner($orm, static fn (string $c): object => new $c(), new AllowAllGate()),
+            signer: $signer,
+            orm: $orm,
+            render: static function (LoadedRoute $l, Request $r) use (&$renders): string {
+                $renders++;
+
+                return 'payload';
+            },
+            builds: new Tinvar\Http\BuildRegistry('build-1'),
+            middlewareResolver: static fn (string $class): Tinvar\Http\Middleware => new $class(),
+            panels: $panels,
+        );
+
+        $tokens = [];
+        foreach ($fixture->ids['racks'] as $rack) {
+            $tokens[] = routeToken($signer, $fixture, ['params' => [
+                'site' => $fixture->ids['sites'][0],
+                'rack' => $rack,
+            ]]);
+        }
+
+        expect($tokens)->toHaveCount(Revalidator::MAX_ROUTES + 12);
+
+        $counting->rerender(['racks.show'], $tokens, Request::post('/_action/x'), session());
+
+        expect($renders)->toBe(Revalidator::MAX_ROUTES);
     });
 
     // Neither side decides alone.
@@ -269,12 +384,13 @@ describe('through the action endpoint', function () {
         $body = json_decode($response->body(), true);
 
         expect($body['revalidated'])->toBe(['racks.show'])
-            ->and($body['payloads'])->toBe(['racks.show' => 'payload:racks.show']);
+            ->and($body['payloads'])->toHaveCount(1)
+            ->and(array_values($body['payloads']))->toBe(['payload:racks.show']);
     });
 
-    // Each re-render is a full GET pipeline, so an unbounded list would let
-    // one write cost many renders.
-    it('bounds how many routes one action may re-render', function () {
+    // The endpoint's own bound is on how much it will PARSE, which is a
+    // different limit from how many pages render.
+    it('looks at no more tokens than it will parse', function () {
         [$revalidator, $fixture, $signer] = revalidator();
         $orm = new Orm($fixture->connection, new IdentityMap('test'));
         $registry = new Tinvar\Actions\ActionRegistry();
@@ -288,7 +404,7 @@ describe('through the action endpoint', function () {
 
         $many = array_fill(
             0,
-            Tinvar\Http\Endpoints\ActionEndpoint::MAX_REVALIDATED_ROUTES + 20,
+            Tinvar\Http\Endpoints\ActionEndpoint::MAX_ROUTE_TOKENS + 20,
             routeToken($signer, $fixture),
         );
 
@@ -301,11 +417,7 @@ describe('through the action endpoint', function () {
             ]),
         );
 
-        // They are all the same route, so one payload -- the cap is about
-        // how many are LOOKED AT, which the duplicate tokens make visible
-        // only by not blowing up.
-        expect(json_decode($response->body(), true)['payloads'])
-            ->toBe(['racks.show' => 'payload:racks.show']);
+        expect(json_decode($response->body(), true)['payloads'])->toHaveCount(1);
     });
 
     it('carries no payloads when the client sends no tokens', function () {
@@ -352,8 +464,9 @@ describe('the route pipeline', function () {
             signer: $signer,
             orm: $orm,
             render: static fn (LoadedRoute $l, Request $r): string => 'payload',
-            panels: $panels,
+            builds: new Tinvar\Http\BuildRegistry('build-1'),
             middlewareResolver: static fn (string $class): Tinvar\Http\Middleware => new $class(),
+            panels: $panels,
         );
 
         Tinvar\Tests\Routing\Fixtures\Trace::reset();
@@ -383,8 +496,9 @@ describe('the route pipeline', function () {
             signer: $signer,
             orm: $orm,
             render: static fn (LoadedRoute $l, Request $r): string => 'payload',
-            panels: $panels,
+            builds: new Tinvar\Http\BuildRegistry('build-1'),
             middlewareResolver: static fn (string $class): Tinvar\Http\Middleware => new $class(),
+            panels: $panels,
             globalMiddleware: [Tinvar\Tests\Routing\Fixtures\OuterMiddleware::class],
         );
 
@@ -414,7 +528,7 @@ describe('the route pipeline', function () {
             signer: $signer,
             orm: $orm,
             render: static fn (LoadedRoute $l, Request $r): string => 'payload',
-            panels: $panels,
+            builds: new Tinvar\Http\BuildRegistry('build-1'),
             middlewareResolver: static fn (string $class): Tinvar\Http\Middleware
                 => new class implements Tinvar\Http\Middleware {
                     public function handle(Request $request, Closure $next): Tinvar\Http\Response
@@ -422,6 +536,7 @@ describe('the route pipeline', function () {
                         throw new Tinvar\Http\ForbiddenException('not here');
                     }
                 },
+            panels: $panels,
         );
 
         $payloads = $revalidator->rerender(
@@ -513,5 +628,114 @@ describe('minting a route token', function () {
             build: 'b1',
             sessionId: '',
         ))->toThrow(InvalidArgumentException::class, 'session is required');
+    });
+});
+
+/**
+ * "Each re-render runs that route's full GET pipeline." What ran saw the
+ * action's POST -- method, path and body -- so a loader reading the request
+ * got action input, and middleware keyed on method or path behaved
+ * differently here than on navigation. That is the asymmetry the feature
+ * exists to close.
+ */
+describe('the request a re-render sees', function () {
+    it('is a GET for the route, not the action POST', function () {
+        [, $fixture, $signer, $panels, $orm] = revalidator();
+
+        $seen = null;
+        $routes = new RouteRegistry();
+        $routes->registerAll([RootLayout::class, SiteLayout::class, RackShowPage::class]);
+
+        $capturing = new Revalidator(
+            routes: $routes,
+            loaders: new LoaderRunner($orm, static fn (string $c): object => new $c(), new AllowAllGate()),
+            signer: $signer,
+            orm: $orm,
+            render: static function (LoadedRoute $l, Request $r) use (&$seen): string {
+                $seen = $r;
+
+                return 'payload';
+            },
+            builds: new Tinvar\Http\BuildRegistry('build-1'),
+            middlewareResolver: static fn (string $class): Tinvar\Http\Middleware => new $class(),
+            panels: $panels,
+        );
+
+        $capturing->rerender(
+            ['racks.show'],
+            [routeToken($signer, $fixture)],
+            new Request('POST', '/_action/RackActions.moveUnit', [], [], ['secret' => 'from the action']),
+            session(),
+        );
+
+        expect($seen?->method)->toBe('GET')
+            ->and($seen?->path)->toBe(
+                '/sites/' . $fixture->ids['sites'][0] . '/racks/' . $fixture->ids['racks'][0]
+            )
+            ->and($seen?->body)->toBe([], 'the action body must not reach a loader');
+    });
+
+    // A bug in a loader used to look exactly like a permission result.
+    it('reports a failure that is not a denial', function () {
+        [, $fixture, $signer, $panels, $orm] = revalidator();
+
+        $logged = [];
+        $routes = new RouteRegistry();
+        $routes->registerAll([RootLayout::class, SiteLayout::class, RackShowPage::class]);
+
+        $broken = new Revalidator(
+            routes: $routes,
+            loaders: new LoaderRunner($orm, static fn (string $c): object => new $c(), new AllowAllGate()),
+            signer: $signer,
+            orm: $orm,
+            render: static function (): string {
+                throw new RuntimeException('the renderer is down');
+            },
+            builds: new Tinvar\Http\BuildRegistry('build-1'),
+            middlewareResolver: static fn (string $class): Tinvar\Http\Middleware => new $class(),
+            panels: $panels,
+            log: static function (Throwable $e) use (&$logged): void {
+                $logged[] = $e->getMessage();
+            },
+        );
+
+        $payloads = $broken->rerender(
+            ['racks.show'],
+            [routeToken($signer, $fixture)],
+            Request::post('/_action/x'),
+            session(),
+        );
+
+        expect($payloads)->toBe([], 'the write still stands')
+            ->and($logged)->toBe(['the renderer is down']);
+    });
+
+    // A revoked build means a full page load; that does not stop applying
+    // because the token names a route instead of a component.
+    it('omits a payload for a revoked build', function () {
+        [, $fixture, $signer, $panels, $orm] = revalidator();
+
+        $routes = new RouteRegistry();
+        $routes->registerAll([RootLayout::class, SiteLayout::class, RackShowPage::class]);
+
+        $revalidator = new Revalidator(
+            routes: $routes,
+            loaders: new LoaderRunner($orm, static fn (string $c): object => new $c(), new AllowAllGate()),
+            signer: $signer,
+            orm: $orm,
+            render: static fn (LoadedRoute $l, Request $r): string => 'payload',
+            builds: (new Tinvar\Http\BuildRegistry('build-2', ['build-1']))->revoke('build-1'),
+            middlewareResolver: static fn (string $class): Tinvar\Http\Middleware => new $class(),
+            panels: $panels,
+        );
+
+        $payloads = $revalidator->rerender(
+            ['racks.show'],
+            [routeToken($signer, $fixture, ['build' => 'build-1'])],
+            Request::post('/_action/x'),
+            session(),
+        );
+
+        expect($payloads)->toBe([]);
     });
 });

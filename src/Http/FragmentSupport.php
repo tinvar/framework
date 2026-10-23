@@ -48,7 +48,24 @@ final readonly class FragmentSupport
         public ?\Closure $allowedQueries = null,
         public ?Orm $orm = null,
         public ?\Closure $renderRoute = null,
+        public ?Signer $routeSigner = null,
     ) {}
+
+    /**
+     * The signer for route tokens.
+     *
+     * A SECOND signer, not the fragment one. Signer derives a key per
+     * purpose precisely so a value signed for one can never verify as
+     * another, and the composition root bypassed that by handing one signer
+     * to both -- which, before the purpose was bound into the MAC, made
+     * every fragment token a valid route token. The MAC binding closes that
+     * on its own; keeping the keys separate as well means the property does
+     * not rest on a single mechanism.
+     */
+    public function routeSigner(): ?Signer
+    {
+        return $this->routeSigner;
+    }
 
     /**
      * The minter for one page render.
