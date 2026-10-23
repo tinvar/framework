@@ -55,13 +55,19 @@ final class QueryEndpoint
         return str_starts_with($request->path, self::PREFIX);
     }
 
+    /** Refuses any method but POST, saying which would do; see ActionEndpoint::assertMethod(). */
+    public static function assertMethod(Request $request): void
+    {
+        // POST, not GET: arguments are a JSON body, and a GET would be
+        // cached and logged by every intermediary.
+        if ($request->method !== 'POST') {
+            throw new HttpException(405, 'Queries over HTTP are POST only.', 'method_not_allowed', ['allow' => 'POST']);
+        }
+    }
+
     public function handle(Request $request, string $rawBody = ''): Response
     {
-        if ($request->method !== 'POST') {
-            // POST, not GET: arguments are a JSON body, and a GET would be
-            // cached and logged by every intermediary.
-            throw new HttpException(405, 'Queries over HTTP are POST only.', 'method_not_allowed');
-        }
+        self::assertMethod($request);
 
         $name = substr($request->path, \strlen(self::PREFIX));
         if ($name === '') {

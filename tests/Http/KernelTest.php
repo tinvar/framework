@@ -185,6 +185,28 @@ function render(): Closure
 }
 
 /**
+ * An endpoint's method was checked only by the endpoint, at the bottom of its
+ * stack: a GET to an action that is not public was answered 401 -- "sign in"
+ * -- rather than 405, and no 405 said which method would have done.
+ */
+describe('endpoint methods', function () {
+    it('refuses another method before anything else runs, and says which one would do', function (string $method, string $path, string $allow) {
+        [$kernel] = bootstrapKernel();
+
+        $response = $kernel->handle(new Request($method, $path, ['accept' => 'application/json']), render());
+
+        expect($response->status)->toBe(405)
+            ->and($response->header('allow'))->toBe($allow);
+    })->with([
+        'a GET to an action that needs a user' => ['GET', '/_action/RackActions.moveUnit', 'POST'],
+        'a GET to a query' => ['GET', '/_query/racks.summary', 'POST'],
+        'a GET to bootstrap' => ['GET', '/_bootstrap', 'POST'],
+        'a POST to a fragment' => ['POST', '/_fragment/anything', 'GET'],
+        'a HEAD to a fragment' => ['HEAD', '/_fragment/anything', 'GET'],
+    ]);
+});
+
+/**
  * Both fragment reviews flagged that the endpoint existed and was reachable
  * from nothing. A feature with no composition root is the same shape as every
  * phase-1 finding: a well-built part that nothing joins up.

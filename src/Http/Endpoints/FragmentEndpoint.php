@@ -86,6 +86,20 @@ final class FragmentEndpoint
         private readonly ?\Closure $allowedQueries = null,
     ) {}
 
+    /**
+     * Refuses any method but GET, saying which would do; see
+     * ActionEndpoint::assertMethod().
+     *
+     * A fragment is a read. Anything else would be an action wearing a
+     * fragment's clothes, and actions are POST with CSRF.
+     */
+    public static function assertMethod(Request $request): void
+    {
+        if ($request->method !== 'GET') {
+            throw new HttpException(405, 'Fragments are GET only.', 'method_not_allowed', ['allow' => 'GET']);
+        }
+    }
+
     public function matches(Request $request): bool
     {
         return str_starts_with($request->path, self::PREFIX);
@@ -117,11 +131,7 @@ final class FragmentEndpoint
         ]);
 
         return $global->run($request, function (Request $passed): Response {
-            // A fragment is a read. Anything else would be an action wearing
-            // a fragment's clothes, and actions are POST with CSRF.
-            if ($passed->method !== 'GET') {
-                throw new HttpException(405, 'Fragments are GET only.', 'method_not_allowed');
-            }
+            self::assertMethod($passed);
 
             $token = $this->verify($passed);
 

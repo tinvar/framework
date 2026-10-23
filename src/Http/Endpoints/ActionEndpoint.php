@@ -59,11 +59,22 @@ final class ActionEndpoint
         return str_starts_with($request->path, self::PREFIX);
     }
 
-    public function handle(Request $request, string $rawBody = ''): Response
+    /**
+     * Refuses any method but POST, saying which would do. The Kernel asks
+     * before the endpoint stack runs, so a GET to an action is a 405 and not
+     * whatever the stack would have said first -- a 401 for one that needs a
+     * user.
+     */
+    public static function assertMethod(Request $request): void
     {
         if ($request->method !== 'POST') {
-            throw new HttpException(405, 'Actions are POST only.', 'method_not_allowed');
+            throw new HttpException(405, 'Actions are POST only.', 'method_not_allowed', ['allow' => 'POST']);
         }
+    }
+
+    public function handle(Request $request, string $rawBody = ''): Response
+    {
+        self::assertMethod($request);
 
         $name = substr($request->path, \strlen(self::PREFIX));
         if ($name === '') {

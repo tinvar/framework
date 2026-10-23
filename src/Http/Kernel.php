@@ -432,7 +432,13 @@ final class Kernel
         $navigating = false;
 
         try {
+            // Each endpoint's method is checked before its stack runs: a
+            // GET to an action that needs a user was answered 401 by the
+            // stack's authentication, where the answer is 405 and the method
+            // that would do.
             if ($this->actions_->matches($request)) {
+                ActionEndpoint::assertMethod($request);
+
                 return $this->actionStack->run(
                     $request,
                     fn (Request $passed): Response => $this->actions_->handle($passed, $rawBody),
@@ -442,6 +448,8 @@ final class Kernel
             // Before the other two, because its prefix is as specific and the
             // order should not depend on which was written first.
             if ($this->bootstrap_ !== null && $this->bootstrap_->matches($request)) {
+                BootstrapEndpoint::assertMethod($request);
+
                 return $this->bootstrapStack->run(
                     $request,
                     fn (Request $passed): Response => $this->bootstrap_->handle($passed, $rawBody),
@@ -449,10 +457,14 @@ final class Kernel
             }
 
             if ($this->fragments_ !== null && $this->fragments_->matches($request)) {
+                FragmentEndpoint::assertMethod($request);
+
                 return $this->fragments_->handle($request);
             }
 
             if ($this->queries_->matches($request)) {
+                QueryEndpoint::assertMethod($request);
+
                 return $this->queryStack->run(
                     $request,
                     fn (Request $passed): Response => $this->queries_->handle($passed, $rawBody),

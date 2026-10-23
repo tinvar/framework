@@ -55,15 +55,25 @@ final class BootstrapEndpoint
         return $request->path === self::PATH;
     }
 
+    /**
+     * Refuses any method but POST, saying which would do; see
+     * ActionEndpoint::assertMethod().
+     *
+     * POST, though it reads nothing: the response is per-session and must
+     * never be cached or prefetched, and a GET with a body is not a thing.
+     * It is covered by CSRF for the same reason every other POST is, and the
+     * spec's own bootstrap is a request, not a link.
+     */
+    public static function assertMethod(Request $request): void
+    {
+        if ($request->method !== 'POST') {
+            throw new HttpException(405, 'Bootstrap is POST only.', 'method_not_allowed', ['allow' => 'POST']);
+        }
+    }
+
     public function handle(Request $request, string $rawBody = ''): Response
     {
-        // POST, though it reads nothing: the response is per-session and
-        // must never be cached or prefetched, and a GET with a body is not a
-        // thing. It is covered by CSRF for the same reason every other POST
-        // is, and the spec's own bootstrap is a request, not a link.
-        if ($request->method !== 'POST') {
-            throw new HttpException(405, 'Bootstrap is POST only.', 'method_not_allowed');
-        }
+        self::assertMethod($request);
 
         $body = Limits::input($request, $rawBody, self::MAX_BODY_BYTES);
 
