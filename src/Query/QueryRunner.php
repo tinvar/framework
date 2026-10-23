@@ -246,7 +246,10 @@ final class QueryRunner
         $args = $call['args'];
 
         foreach ($this->registry->modelArgumentsFor($call['name']) as $argument => $class) {
-            if (!\array_key_exists($argument, $args)) {
+            // Null only ever reaches here for an optional model the call
+            // left out (resolveArguments() refuses it for a required one),
+            // and the body is handed it as the absence it is.
+            if (!\array_key_exists($argument, $args) || $args[$argument] === null) {
                 continue;
             }
 
@@ -406,13 +409,30 @@ final class QueryRunner
 
         // A model argument is an identifier. Casting an array to string later
         // emits a warning on remote-controlled input before failing closed.
+        //
+        // Null for an OPTIONAL model is the absence of one -- a component's
+        // `undefined` encodes as nil -- and is treated exactly as leaving
+        // the key out, so it meets the same checks: Checks::applies() skips
+        // only a check whose subject the query declares optional, and
+        // Checks::undecided() still refuses a call that sidesteps them all.
+        // For a required model it is still not an identifier.
         foreach ($this->registry->modelArgumentsFor($name) as $argument => $_) {
-            if (\array_key_exists($argument, $args)
-                && !\is_string($args[$argument])
-                && !\is_int($args[$argument])) {
+            if (!\array_key_exists($argument, $args)) {
+                continue;
+            }
+            if ($args[$argument] === null && ($declared[$argument] ?? true) === false) {
+                unset($args[$argument]);
+                continue;
+            }
+            if (!\is_string($args[$argument]) && !\is_int($args[$argument])) {
                 return "'{$name}' needs an identifier for '{$argument}'";
             }
         }
+
+        // Optional because it accepts null, not because it has a default:
+        // PHP has no value of its own to bind, so the absent argument is
+        // given null rather than left out of a call it would fail.
+        $nullWhenAbsent = $this->registry->nullWhenAbsentFor($name);
 
         $resolved = [];
         foreach ($declared as $parameter => $required) {
@@ -422,6 +442,9 @@ final class QueryRunner
             }
             if ($required) {
                 return "'{$name}' requires an argument named '{$parameter}'";
+            }
+            if (\in_array($parameter, $nullWhenAbsent, true)) {
+                $resolved[$parameter] = null;
             }
         }
 

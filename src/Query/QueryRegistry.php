@@ -37,6 +37,9 @@ final class QueryRegistry
     /** @var array<string, array<string, bool>> query name => parameter name => required */
     private array $parameters = [];
 
+    /** @var array<string, list<string>> query name => optional parameters that have no default */
+    private array $nullWhenAbsent = [];
+
     /** @var array<string, array<string, class-string<Model>>> query name => argument => model */
     private array $modelArguments = [];
 
@@ -135,6 +138,7 @@ final class QueryRegistry
         $this->classLevelChecks[$name] = \count($reflection->getAttributes(Authorize::class));
         $this->middleware[$name] = Middleware::declaredOn($class, Query::entryMethodOf($class));
         $this->parameters[$name] = self::parametersOf($reflection, $declaration);
+        $this->nullWhenAbsent[$name] = self::nullWhenAbsentOf($reflection);
         $this->modelArguments[$name] = self::modelArgumentsOf($reflection, $declaration);
 
         return $name;
@@ -255,6 +259,41 @@ final class QueryRegistry
         }
 
         return $parameters;
+    }
+
+    /**
+     * The optional parameters PHP has no value of its own for: they accept
+     * null, so parametersFor() calls them optional, but they declare no
+     * default. A call that leaves one out has to be given null for it, or
+     * the body is invoked an argument short.
+     *
+     * @return list<string>
+     */
+    public function nullWhenAbsentFor(string $name): array
+    {
+        return $this->nullWhenAbsent[$name] ?? [];
+    }
+
+    /**
+     * @param \ReflectionClass<object> $reflection
+     * @return list<string>
+     */
+    private static function nullWhenAbsentOf(\ReflectionClass $reflection): array
+    {
+        // A batch's per-call arguments are all required, and loadMany() is
+        // handed them as data rather than bound as parameters.
+        if (is_subclass_of($reflection->getName(), BatchQuery::class)) {
+            return [];
+        }
+
+        $names = [];
+        foreach ($reflection->getMethod('__invoke')->getParameters() as $parameter) {
+            if ($parameter->allowsNull() && !$parameter->isDefaultValueAvailable()) {
+                $names[] = $parameter->getName();
+            }
+        }
+
+        return $names;
     }
 
     /**
