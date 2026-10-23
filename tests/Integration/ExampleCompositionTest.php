@@ -91,3 +91,25 @@ it('refuses a short app key rather than signing with it', function () {
         putenv('TINVAR_APP_KEY');
     }
 });
+
+// A client that could pick its own session id could fix a victim's session
+// -- planting the cookie from a sibling subdomain -- and share its tokens.
+describe('the example session cookie', function () {
+    $key = str_repeat('k', 32);
+
+    it('carries an id this key signed', function () use ($key) {
+        $cookie = Racks\Kernel::newSession($key);
+
+        expect(Racks\Kernel::sessionFrom($cookie, $key))->toBe(explode('.', $cookie)[0]);
+    });
+
+    it('refuses an id the client chose, or another key signed', function (?string $cookie) use ($key) {
+        expect(Racks\Kernel::sessionFrom($cookie, $key))->toBeNull();
+    })->with([
+        'bare id' => [str_repeat('b', 32)],
+        'forged mac' => [str_repeat('b', 32) . '.AAAA'],
+        'other key' => [Racks\Kernel::newSession(str_repeat('x', 32))],
+        'absent' => [null],
+        'trailing newline' => [Racks\Kernel::newSession(str_repeat('k', 32)) . "\n"],
+    ]);
+});
