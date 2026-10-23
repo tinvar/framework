@@ -230,3 +230,39 @@ describe('a key file set up by someone sensible', function () {
         expect(AppKey::resolve('TINVAR_TEST_KEY', $this->file))->toBe(str_repeat('g', 44));
     });
 });
+
+it('refuses a key path that names a directory', function (string $suffix) {
+    mkdir($this->dir, 0700);
+
+    expect(fn () => AppKey::resolve('TINVAR_TEST_KEY', $this->dir . $suffix))
+        ->toThrow(InvalidArgumentException::class, 'not a directory');
+})->with(['', '/']);
+
+// A UTF-16 file or a NUL passed the length check and silently became a
+// different key.
+it('refuses a key that is not printable ASCII', function (string $key) {
+    putenv('TINVAR_TEST_KEY=' . $key);
+
+    expect(fn () => AppKey::resolve('TINVAR_TEST_KEY', $this->file))
+        ->toThrow(InvalidArgumentException::class, 'printable ASCII');
+})->with([
+    'accented' => [str_repeat('é', 20)],
+    'inner space' => [str_repeat('k', 20) . ' ' . str_repeat('k', 20)],
+]);
+
+it('strips a byte-order mark behind leading whitespace too', function () {
+    $key = base64_encode(random_bytes(32));
+    putenv("TINVAR_TEST_KEY= \u{FEFF}{$key}");
+
+    expect(AppKey::resolve('TINVAR_TEST_KEY', $this->file))->toBe($key);
+});
+
+// The environment cannot carry a NUL, so the UTF-16 case is a file.
+it('refuses a UTF-16 key file', function () {
+    mkdir($this->dir, 0700);
+    file_put_contents($this->file, mb_convert_encoding(str_repeat('k', 40), 'UTF-16LE'));
+    chmod($this->file, 0600);
+
+    expect(fn () => AppKey::resolve('TINVAR_TEST_KEY', $this->file))
+        ->toThrow(InvalidArgumentException::class, 'printable ASCII');
+});

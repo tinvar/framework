@@ -33,6 +33,10 @@ final class AppKey
      */
     public static function resolve(string $envName, string $file): string
     {
+        if ($file === '' || str_ends_with($file, '/') || is_dir($file)) {
+            throw new \InvalidArgumentException("The application key file must be a file path, not a directory: {$file}.");
+        }
+
         $fromEnv = getenv($envName);
         if (\is_string($fromEnv) && self::normalised($fromEnv) !== '') {
             return self::checked(self::normalised($fromEnv), "\${$envName}");
@@ -62,9 +66,10 @@ final class AppKey
         // mounts -- and every start there failed.
         $lock = self::openPrivately($dir . '/.' . basename($file) . '.lock', 'c');
         try {
-            if (!flock($lock, LOCK_EX)) {
-                throw new \RuntimeException("Cannot lock {$dir} to generate the application key.");
-            }
+            // Some network and FUSE mounts refuse locks. Generating without
+            // one there can only race another first start, and the re-read
+            // after the rename settles every process on whichever key landed.
+            $locked = flock($lock, LOCK_EX);
 
             $existing = self::read($file);
             if ($existing !== null) {
@@ -76,8 +81,9 @@ final class AppKey
             $key = base64_encode(random_bytes(self::BYTES));
 
             // Written in full under a private name, flushed to disk, then
-            // renamed into place: a reader never sees a half-written file,
-            // and a power cut cannot leave an empty one in its place.
+            // renamed into place: a reader never sees a half-written file.
+            // (The rename itself is not flushed: after a power cut the key
+            // can be missing and is generated afresh -- never half there.)
             $temporary = $dir . '/.' . basename($file) . '.' . bin2hex(random_bytes(6));
             self::writePrivately($temporary, $key . "\n");
             if (!rename($temporary, $file)) {
@@ -85,9 +91,11 @@ final class AppKey
                 throw new \RuntimeException("Cannot move the application key into {$file}.");
             }
 
-            return $key;
+            return $locked ? $key : self::checked(self::read($file) ?? $key, $file);
         } finally {
-            flock($lock, LOCK_UN);
+            if ($locked ?? false) {
+                flock($lock, LOCK_UN);
+            }
             fclose($lock);
         }
     }
@@ -237,6 +245,8 @@ final class AppKey
      */
     private static function normalised(string $key): string
     {
+        $key = trim($key);
+
         return trim(str_starts_with($key, "\u{FEFF}") ? substr($key, 3) : $key);
     }
 
@@ -248,6 +258,15 @@ final class AppKey
      */
     private static function checked(string $key, string $source): string
     {
+        // Visible ASCII only. A UTF-16 file, a stray NUL or an editor's
+        // encoding passed the length check and silently became a different
+        // key from the one meant.
+        if (preg_match('/^[\x21-\x7e]*\z/', $key) !== 1) {
+            throw new \InvalidArgumentException(
+                "The application key from {$source} must be printable ASCII, such as `openssl rand -base64 32`.",
+            );
+        }
+
         if (\strlen($key) < self::MIN_LENGTH) {
             throw new \InvalidArgumentException(
                 "The application key from {$source} must be at least " . self::MIN_LENGTH . ' bytes'
