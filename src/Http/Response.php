@@ -116,9 +116,14 @@ final class Response
         // `/..//host` normalizes to `//host` under RFC 3986 dot-segment
         // removal. Browsers resolve that against this origin, so it is not a
         // redirect off-site today -- but a target with traversal in it is
-        // never intentional, and parsers disagree about these.
-        if (\in_array('..', explode('/', $location), true)) {
-            $refuse('it contains a traversal segment');
+        // never intentional, and parsers disagree about these. Encoded too:
+        // browsers decode `%2e%2e` as `..` when they resolve a path, and
+        // `/%2e%2e//host` reached a client that hands the result to
+        // location.assign() as `//host`, which is another site.
+        foreach (explode('/', explode('?', $location, 2)[0]) as $segment) {
+            if (str_ireplace('%2e', '.', $segment) === '..') {
+                $refuse('it contains a traversal segment');
+            }
         }
 
         $parts = parse_url($location);
