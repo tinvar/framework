@@ -124,7 +124,7 @@ final class FragmentManifest
                 // boundary X" ambiguous, and the client could not tell which
                 // token it got.
                 throw new \InvalidArgumentException(
-                    "Route '{$route}' declares two deferred boundaries with id '{$id}'."
+                    "Route '{$route}' declares two deferred boundaries with id '{$id}'.",
                 );
             }
         }

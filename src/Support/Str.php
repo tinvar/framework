@@ -12,7 +12,7 @@ final class Str
     public static function snake(string $value): string
     {
         return self::$snakeCache[$value] ??= strtolower(
-            (string) preg_replace('/(?<!^)[A-Z]/', '_$0', $value)
+            (string) preg_replace('/(?<!^)[A-Z]/', '_$0', $value),
         );
     }
 

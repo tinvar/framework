@@ -30,7 +30,8 @@ enum Priority: string
 final readonly class MoveUnitRequest extends FormRequest
 {
     public function __construct(
-        #[Min(1), Max(42)] public int $position,
+        #[Min(1), Max(42)]
+        public int $position,
         public string $reason = 'none',
     ) {}
 }
@@ -38,10 +39,14 @@ final readonly class MoveUnitRequest extends FormRequest
 final readonly class ProfileRequest extends FormRequest
 {
     public function __construct(
-        #[Email] public string $contact,
-        #[Min(3), Max(8)] public string $handle,
-        #[Pattern('[a-z]+-\d+')] public string $code,
-        #[In('low', 'high')] public string $urgency,
+        #[Email]
+        public string $contact,
+        #[Min(3), Max(8)]
+        public string $handle,
+        #[Pattern('[a-z]+-\d+')]
+        public string $code,
+        #[In('low', 'high')]
+        public string $urgency,
         public ?string $note = null,
         public bool $subscribed = false,
         public ?Priority $priority = null,
@@ -56,14 +61,16 @@ final readonly class BoundRackRequest extends FormRequest
 final readonly class ExistingRackRequest extends FormRequest
 {
     public function __construct(
-        #[Exists(Rack::class)] public string $rack,
+        #[Exists(Rack::class)]
+        public string $rack,
     ) {}
 }
 
 final readonly class UniqueNameRequest extends FormRequest
 {
     public function __construct(
-        #[Unique(Rack::class, 'name')] public string $name,
+        #[Unique(Rack::class, 'name')]
+        public string $name,
         public ?string $rackId = null,
     ) {}
 }
@@ -71,7 +78,8 @@ final readonly class UniqueNameRequest extends FormRequest
 final readonly class UniqueIgnoringRequest extends FormRequest
 {
     public function __construct(
-        #[Unique(Rack::class, 'name', ignoreSubject: true)] public string $name,
+        #[Unique(Rack::class, 'name', ignoreSubject: true)]
+        public string $name,
     ) {}
 }
 

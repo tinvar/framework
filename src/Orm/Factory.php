@@ -140,7 +140,7 @@ abstract class Factory
             \count($matches) === 0
                 ? static::model() . ' has no single relation to ' . $parent::class . '.'
                 : static::model() . ' has ' . \count($matches) . ' relations to ' . $parent::class
-                    . '; name the one you mean: ->for($parent, \'' . $matches[0] . '\').'
+                    . '; name the one you mean: ->for($parent, \'' . $matches[0] . '\').',
         );
     }
 
@@ -155,7 +155,7 @@ abstract class Factory
 
         if (!$type instanceof \ReflectionNamedType || $type->isBuiltin()) {
             throw new \LogicException(
-                static::class . '::definition() must declare the model it returns, so the factory is typed.'
+                static::class . '::definition() must declare the model it returns, so the factory is typed.',
             );
         }
 

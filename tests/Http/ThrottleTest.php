@@ -23,7 +23,9 @@ require_once __DIR__ . '/../Auth/Fixtures/policies.php';
 function throttle(?int &$now = null): array
 {
     $now ??= 1_000_000;
-    $store = new ArrayThrottleStore(static function () use (&$now): int { return $now; });
+    $store = new ArrayThrottleStore(static function () use (&$now): int {
+        return $now;
+    });
     $auth = new AuthContext();
 
     return [

@@ -167,7 +167,7 @@ final class BuildRegistry
         $position = array_search($after, $this->retained, true);
         if ($position === false) {
             throw new \InvalidArgumentException(
-                "Cannot place '{$build}' after '{$after}', which is not retained."
+                "Cannot place '{$build}' after '{$after}', which is not retained.",
             );
         }
 
@@ -186,7 +186,7 @@ final class BuildRegistry
     {
         if (preg_match(self::SHAPE, $build) !== 1) {
             throw new \InvalidArgumentException(
-                'A build ID must be alphanumeric with dashes and no path separators.'
+                'A build ID must be alphanumeric with dashes and no path separators.',
             );
         }
     }

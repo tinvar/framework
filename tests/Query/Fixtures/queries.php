@@ -118,7 +118,9 @@ final class MiscountedBatch implements BatchQuery
 #[Query(
     name: 'racks.cached',
     cache: '5m',
-    tags: static function (Rack $rack): array { return ['rack:' . $rack->primaryKey()]; },
+    tags: static function (Rack $rack): array {
+        return ['rack:' . $rack->primaryKey()];
+    },
 ), NoAuthorization(reason: 'fixture: exercises the query cache, not access control')]
 final class CachedSummary
 {

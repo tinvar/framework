@@ -158,7 +158,7 @@ final class QueryCache
                 // strval on a nested array yields the literal "Array", which
                 // would merge unrelated entries under one tag.
                 throw new \LogicException(
-                    'A #[Query(tags:)] closure must return strings, got ' . get_debug_type($tag) . '.'
+                    'A #[Query(tags:)] closure must return strings, got ' . get_debug_type($tag) . '.',
                 );
             }
             $strings[] = $tag;

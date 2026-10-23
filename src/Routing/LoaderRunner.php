@@ -60,7 +60,7 @@ final class LoaderRunner
             if (isset($byType[$returned])) {
                 throw new RoutingException(
                     "{$layout->class} returned {$returned}, which a layout above it already returned. "
-                    . 'A child asking for that type by type could not tell them apart.'
+                    . 'A child asking for that type by type could not tell them apart.',
                 );
             }
 
@@ -164,7 +164,7 @@ final class LoaderRunner
         throw new RoutingException(
             "{$route->class} declares #[Authorize('{$check->ability}', '{$check->argument}')], "
             . "but '{$check->argument}' is neither a model-typed parameter of its loader nor a class name. "
-            . 'Type the loader argument as the model so it is resolved and scoped before the check runs.'
+            . 'Type the loader argument as the model so it is resolved and scoped before the check runs.',
         );
     }
 
@@ -197,7 +197,7 @@ final class LoaderRunner
         if ($result !== null && !$result instanceof Data) {
             throw new RoutingException(
                 "{$route->class}::__invoke() returned " . get_debug_type($result)
-                . '; a loader returns a Data object or null, because only Data objects cross to the renderer.'
+                . '; a loader returns a Data object or null, because only Data objects cross to the renderer.',
             );
         }
 

@@ -24,7 +24,6 @@ use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
 use Tinvar\Tests\Auth\Fixtures\Review as R;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
-use Tinvar\Tests\Orm\Fixtures\Rack;
 
 require_once __DIR__ . '/../Orm/Fixtures/models.php';
 require_once __DIR__ . '/../Orm/Fixtures/schema.php';

@@ -28,7 +28,7 @@ final class MessagePackCodec implements FrameCodec
     public function encodeFrame(array $frame): string
     {
         return $this->frame(
-            self::hasNativeExtension() ? msgpack_pack($frame) : MessagePack::encode($frame)
+            self::hasNativeExtension() ? msgpack_pack($frame) : MessagePack::encode($frame),
         );
     }
 

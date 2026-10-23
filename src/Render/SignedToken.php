@@ -40,7 +40,7 @@ final class SignedToken
         // means the separation survives an application wiring one signer
         // into two places -- which is exactly what happened.
         return self::VERSION . '.' . $body . '.' . Signer::encode(
-            $signer->sign(self::signed($purpose, $body))
+            $signer->sign(self::signed($purpose, $body)),
         );
     }
 

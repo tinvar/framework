@@ -96,7 +96,7 @@ describe('optional model inputs', function () {
             ->toBe('nowhere');
     });
 
-// ActionRegistry REQUIRES a check naming every model input, and records the
+    // ActionRegistry REQUIRES a check naming every model input, and records the
     // same input as optional. Under a real gate those two rules were mutually
     // unsatisfiable: the check was evaluated with no subject and threw an
     // AuthorizationException -- which is not an HttpException, so a 500.
@@ -271,7 +271,9 @@ describe('tag invalidation reaches the server cache', function () {
         $rack = $fixture->ids['racks'][0];
         $declaration = new QueryAttribute(
             cache: '5m',
-            tags: static function (string $rack): array { return ['rack:' . $rack]; },
+            tags: static function (string $rack): array {
+                return ['rack:' . $rack];
+            },
         );
         $tenant = $orm->tenant();
         $cache->put('racks.cached', $declaration, ['rack' => $rack], $tenant, ['n' => 1]);
@@ -304,7 +306,9 @@ describe('tag invalidation reaches the server cache', function () {
 
         $declaration = new QueryAttribute(
             cache: '5m',
-            tags: static function (string $rack): array { return ['rack:' . $rack]; },
+            tags: static function (string $rack): array {
+                return ['rack:' . $rack];
+            },
         );
         $cache->put('q', $declaration, ['rack' => 'r1'], 'acme', ['n' => 1]);
 

@@ -61,13 +61,13 @@ final readonly class Unique implements Rule
 
                 throw new \LogicException(
                     "Unique on {$field} is set to ignore the subject, but {$named}. "
-                    . 'The action must bind the record being edited before validating.'
+                    . 'The action must bind the record being edited before validating.',
                 );
             }
 
             if (!$subject instanceof $this->model) {
                 throw new \LogicException(
-                    "Unique on {$field} exempts " . $subject::class . ", not {$this->model}."
+                    "Unique on {$field} exempts " . $subject::class . ", not {$this->model}.",
                 );
             }
 

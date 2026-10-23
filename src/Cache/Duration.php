@@ -16,7 +16,7 @@ final class Duration
     {
         if (preg_match('/^(\d+)([smhdw])$/', trim($ttl), $m) !== 1) {
             throw new \InvalidArgumentException(
-                "'{$ttl}' is not a duration. Use a number and one of s, m, h, d, w -- '5m', '1h'."
+                "'{$ttl}' is not a duration. Use a number and one of s, m, h, d, w -- '5m', '1h'.",
             );
         }
 
@@ -33,7 +33,7 @@ final class Duration
         // to return int.
         if ($amount > intdiv(self::MAX_SECONDS, self::UNITS[$m[2]])) {
             throw new \InvalidArgumentException(
-                "'{$ttl}' is longer than the " . self::MAX_SECONDS . '-second maximum.'
+                "'{$ttl}' is longer than the " . self::MAX_SECONDS . '-second maximum.',
             );
         }
 

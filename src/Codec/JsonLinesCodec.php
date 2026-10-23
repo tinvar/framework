@@ -24,7 +24,7 @@ final class JsonLinesCodec implements FrameCodec
     {
         return $this->frame(json_encode(
             self::liftBinary($frame),
-            JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE
+            JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE,
         ));
     }
 

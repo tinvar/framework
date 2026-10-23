@@ -502,7 +502,7 @@ final class Orm
         foreach ($meta->relations as $property => $relation) {
             if ($relation->kind === RelationKind::HasMany) {
                 $meta->set($model, $property, Collection::lazy(
-                    fn (): array => $this->resolveHasMany($relation, $model)
+                    fn (): array => $this->resolveHasMany($relation, $model),
                 ));
                 continue;
             }
@@ -559,7 +559,7 @@ final class Orm
                 $set = new ResultSet();
                 $this->settle($object, $targetMeta, $row, $set);
                 $set->add($object);
-            }
+            },
         );
 
         // Registered before it initializes, so every parent pointing at this row

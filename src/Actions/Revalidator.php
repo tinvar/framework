@@ -254,7 +254,7 @@ final class Revalidator
                 });
 
                 return $payload;
-            } catch (HttpException | RoutingException $e) {
+            } catch (HttpException|RoutingException $e) {
                 // A denial, a 404, a refusal from middleware. Expected, and
                 // the reason the payload is absent rather than the request
                 // failing.

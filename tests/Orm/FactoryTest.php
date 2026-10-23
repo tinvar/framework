@@ -71,7 +71,9 @@ it('attaches a parent by type, with no property name needed', function () {
 
 it('applies a state after the definition', function () {
     $rack = RackFactory::new()
-        ->state(static function (Rack $rack): void { $rack->heightU = 24; })
+        ->state(static function (Rack $rack): void {
+            $rack->heightU = 24;
+        })
         ->make();
 
     expect($rack->heightU)->toBe(24)->and($rack->name)->toBe('R-01');
@@ -100,7 +102,9 @@ it('leaves nothing behind when a write in the batch fails', function () {
     $colliding = RackFactory::new()
         ->count(5)
         ->for($site)
-        ->state(static function (Rack $rack): void { $rack->name = 'R-SAME'; });
+        ->state(static function (Rack $rack): void {
+            $rack->name = 'R-SAME';
+        });
 
     expect(fn () => $colliding->create($orm))->toThrow(PDOException::class);
     expect(racksOrm($connection)->all(Rack::class))->toHaveCount(0);

@@ -177,7 +177,9 @@ it('refuses a cycle instead of recursing forever', function () {
     // A Lazy field resolving back to its own holder still can, and the guard
     // has to catch it rather than recursing until the stack goes.
     $holder = null;
-    $lazy = Lazy::of(static function () use (&$holder): mixed { return $holder; });
+    $lazy = Lazy::of(static function () use (&$holder): mixed {
+        return $holder;
+    });
     $holder = new LazyFixture($lazy);
 
     expect(fn () => $this->encoder->encode($holder))

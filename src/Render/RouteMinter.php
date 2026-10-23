@@ -41,7 +41,7 @@ final readonly class RouteMinter
 
         if ($ttl < 1 || $ttl > RouteToken::DEFAULT_TTL) {
             throw new \InvalidArgumentException(
-                'A route token TTL must be between 1 second and ' . RouteToken::DEFAULT_TTL . '.'
+                'A route token TTL must be between 1 second and ' . RouteToken::DEFAULT_TTL . '.',
             );
         }
     }

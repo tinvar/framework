@@ -18,7 +18,7 @@ final class NoPanelContext extends \RuntimeException
     {
         parent::__construct(
             'No panel is set for this work. An HTTP request takes its panel from the route; '
-            . 'a job, console command or service call must state one with PanelContext::within().'
+            . 'a job, console command or service call must state one with PanelContext::within().',
         );
     }
 }

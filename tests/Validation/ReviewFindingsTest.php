@@ -15,7 +15,6 @@ use Tinvar\Tests\Orm\Fixtures\Fixture;
 use Tinvar\Tests\Orm\Fixtures\Rack;
 use Tinvar\Validation\FormRequest;
 use Tinvar\Validation\Rules\Email;
-use Tinvar\Validation\Rules\In;
 use Tinvar\Validation\Rules\Min;
 use Tinvar\Validation\Rules\Pattern;
 use Tinvar\Validation\ValidationException;
@@ -44,8 +43,10 @@ final readonly class StrictTypesRequest extends FormRequest
 final readonly class PrecognitionRequest extends FormRequest
 {
     public function __construct(
-        #[Email] public string $contact,
-        #[Min(3)] public string $handle,
+        #[Email]
+        public string $contact,
+        #[Min(3)]
+        public string $handle,
         public ?Rack $rack = null,
     ) {}
 }

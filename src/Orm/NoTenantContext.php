@@ -20,7 +20,7 @@ final class NoTenantContext extends \RuntimeException
     {
         parent::__construct(
             "{$class} is #[TenantScoped] and was queried with no active tenant. "
-            . 'Set one with Orm::actAs(), or state the intent with Orm::acrossTenants().'
+            . 'Set one with Orm::actAs(), or state the intent with Orm::acrossTenants().',
         );
     }
 }

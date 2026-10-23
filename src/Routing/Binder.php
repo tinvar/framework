@@ -162,7 +162,7 @@ final class Binder
 
             throw new RoutingException(
                 "Cannot bind \${$name} on {$route->class}: it is neither a route parameter, "
-                . 'a model, a parent layout Data object, nor the Request.'
+                . 'a model, a parent layout Data object, nor the Request.',
             );
         }
 
@@ -190,13 +190,13 @@ final class Binder
         if ($matches !== []) {
             throw new RoutingException(
                 "{$route->class} asks for {$class}, which matches " . \count($matches)
-                . ' layouts above it. Ask for the exact class instead.'
+                . ' layouts above it. Ask for the exact class instead.',
             );
         }
 
         throw new RoutingException(
             "{$route->class} asks for {$class}, which no layout above it returned. "
-            . 'A loader can only receive data from a layout that runs before it.'
+            . 'A loader can only receive data from a layout that runs before it.',
         );
     }
 

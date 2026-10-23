@@ -136,7 +136,7 @@ describe('the call order', function () {
         $auth = new AuthContext();
         $policies = (new PolicyRegistry())->register(
             Tinvar\Tests\Orm\Fixtures\Rack::class,
-            new class () {
+            new class {
                 public function update(?object $user, object $rack): bool
                 {
                     return $rack->name === 'R-02';

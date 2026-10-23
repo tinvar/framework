@@ -114,7 +114,7 @@ final class RenderChannel
                         // it happened.
                         if ($queryCalls > $this->maxQueryCalls) {
                             throw RendererException::queryBudget(
-                                "more than {$this->maxQueryCalls} query calls"
+                                "more than {$this->maxQueryCalls} query calls",
                             );
                         }
 
@@ -124,7 +124,7 @@ final class RenderChannel
 
                         if ($queryNs / 1e9 > $this->maxQuerySeconds) {
                             throw RendererException::queryBudget(
-                                sprintf('more than %.1fs of query time', $this->maxQuerySeconds)
+                                sprintf('more than %.1fs of query time', $this->maxQuerySeconds),
                             );
                         }
 

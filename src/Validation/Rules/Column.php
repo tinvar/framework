@@ -53,7 +53,7 @@ final class Column
 
         throw new \LogicException(
             "{$rule} on {$field} names column '{$column}', which {$model} does not declare. "
-            . 'Known columns: ' . implode(', ', $known) . '.'
+            . 'Known columns: ' . implode(', ', $known) . '.',
         );
     }
 }

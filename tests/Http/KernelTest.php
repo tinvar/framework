@@ -386,7 +386,9 @@ describe('the reset contract', function () {
 
                 throw new RuntimeException('teardown blew up');
             })
-            ->add('second', function () use (&$ran): void { $ran[] = 'second'; });
+            ->add('second', function () use (&$ran): void {
+                $ran[] = 'second';
+            });
 
         expect(fn () => $scope->reset())->toThrow(RuntimeException::class, 'teardown blew up')
             ->and($ran)->toBe(['first', 'second'], 'a teardown that gives up halfway leaves what it had to clear');

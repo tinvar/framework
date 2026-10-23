@@ -56,7 +56,7 @@ final readonly class ValidationContext
     public function orm(): Orm
     {
         return $this->orm ?? throw new \LogicException(
-            'This rule needs database access, but the validator was built without an Orm.'
+            'This rule needs database access, but the validator was built without an Orm.',
         );
     }
 }

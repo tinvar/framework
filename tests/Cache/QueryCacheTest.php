@@ -15,7 +15,6 @@ use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
-use Tinvar\Validation\Validator;
 
 require_once __DIR__ . '/../Orm/Fixtures/models.php';
 require_once __DIR__ . '/../Orm/Fixtures/schema.php';
@@ -159,7 +158,9 @@ describe('tags', function () {
         $cache = new QueryCache(new ArrayStore(), new AuthContext());
         $declaration = new QueryAttribute(
             cache: '1m',
-            tags: static function (string $rack): array { return ["rack:{$rack}"]; },
+            tags: static function (string $rack): array {
+                return ["rack:{$rack}"];
+            },
         );
 
         expect($cache->tagsFor($declaration, ['rack' => 'r1'], 'acme'))->toBe(["acme\0rack:r1"]);
@@ -169,7 +170,9 @@ describe('tags', function () {
         $cache = new QueryCache(new ArrayStore(), new AuthContext());
         $declaration = new QueryAttribute(
             cache: '1m',
-            tags: static function (string $rack): array { return [['nested']]; },
+            tags: static function (string $rack): array {
+                return [['nested']];
+            },
         );
 
         expect(fn () => $cache->tagsFor($declaration, ['rack' => 'r1'], 'acme'))
@@ -182,7 +185,9 @@ describe('tags', function () {
         $cache = new QueryCache($store, new AuthContext());
         $declaration = new QueryAttribute(
             cache: '1m',
-            tags: static function (string $rack): array { return ["rack:{$rack}"]; },
+            tags: static function (string $rack): array {
+                return ["rack:{$rack}"];
+            },
         );
 
         $cache->put('q', $declaration, ['rack' => 'r1'], 'acme', 'acme value');
@@ -199,7 +204,9 @@ describe('tags', function () {
         $cache = new QueryCache($store, new AuthContext());
         $declaration = new QueryAttribute(
             cache: '1m',
-            tags: static function (string $somethingElse): array { return ['x']; },
+            tags: static function (string $somethingElse): array {
+                return ['x'];
+            },
         );
 
         $cache->put('q', $declaration, ['rack' => 'r1'], 'acme', 'value');
@@ -213,7 +220,9 @@ describe('tags', function () {
         $cache = new QueryCache($store, new AuthContext());
         $declaration = new QueryAttribute(
             cache: '1m',
-            tags: static function (string $rack): array { return ["rack:{$rack}"]; },
+            tags: static function (string $rack): array {
+                return ["rack:{$rack}"];
+            },
         );
 
         $cache->put('q', $declaration, ['rack' => 'r1'], 'acme', 'one');
@@ -227,7 +236,9 @@ describe('tags', function () {
 
 it('expires an entry once its TTL has passed', function () {
     $now = 1000.0;
-    $store = new ArrayStore(function () use (&$now): float { return $now; });
+    $store = new ArrayStore(function () use (&$now): float {
+        return $now;
+    });
     $cache = new QueryCache($store, new AuthContext());
     $declaration = new QueryAttribute(cache: '30s');
 
@@ -347,7 +358,9 @@ describe('the store keeps its index honest', function () {
 
     it('sweeps expired entries nobody read', function () {
         $now = 1000.0;
-        $store = new ArrayStore(function () use (&$now): float { return $now; }, maxEntries: 10);
+        $store = new ArrayStore(function () use (&$now): float {
+            return $now;
+        }, maxEntries: 10);
 
         for ($i = 0; $i < 10; $i++) {
             $store->put("old{$i}", $i, 30);

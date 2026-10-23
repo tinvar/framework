@@ -30,7 +30,7 @@ final class AuthorizationException extends \RuntimeException
     {
         return new self(
             "Policies for " . implode(' and ', $matches) . " both apply to {$subject}, and neither is more "
-            . 'specific. Register one for ' . $subject . ' so the choice is not left to registration order.'
+            . 'specific. Register one for ' . $subject . ' so the choice is not left to registration order.',
         );
     }
 
@@ -38,7 +38,7 @@ final class AuthorizationException extends \RuntimeException
     {
         return new self(
             "{$policy}::{$method}() is not public, so the gate cannot call it. "
-            . 'A policy ability, and before(), must be public.'
+            . 'A policy ability, and before(), must be public.',
         );
     }
 
@@ -47,7 +47,7 @@ final class AuthorizationException extends \RuntimeException
         return new self(
             "{$policy}::{$method}() returned {$got}; a policy must answer with a bool. "
             . 'A truthy value is not a decision, and treating one as an allow is how a policy that '
-            . 'returns a reason object becomes a permit.'
+            . 'returns a reason object becomes a permit.',
         );
     }
 
@@ -55,7 +55,7 @@ final class AuthorizationException extends \RuntimeException
     {
         return new self(
             "No policy is registered for {$subject}. Every #[Authorize] needs one; "
-            . 'register it, or declare #[NoAuthorization(reason: ...)] on the entry point.'
+            . 'register it, or declare #[NoAuthorization(reason: ...)] on the entry point.',
         );
     }
 
@@ -68,7 +68,7 @@ final class AuthorizationException extends \RuntimeException
     {
         return new self(
             "#[Authorize('{$ability}', '{$argument}')] needs a resolved model for '{$argument}', got {$got}. "
-            . 'Model arguments are resolved and scoped before authorization; a raw identifier is not a subject.'
+            . 'Model arguments are resolved and scoped before authorization; a raw identifier is not a subject.',
         );
     }
 
@@ -76,7 +76,7 @@ final class AuthorizationException extends \RuntimeException
     {
         return new self(
             "#[Authorize('{$ability}')] has no subject to check. Name the model-typed input it covers, "
-            . 'or the class, as in Authorize(\'viewAny\', Rack::class).'
+            . 'or the class, as in Authorize(\'viewAny\', Rack::class).',
         );
     }
 }

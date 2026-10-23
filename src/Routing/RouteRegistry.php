@@ -214,7 +214,11 @@ final class RouteRegistry
             $mismatch = $layout->parameterNameMismatch($page);
             if ($mismatch !== null) {
                 throw RoutingException::parameterNameMismatch(
-                    $layout->class, $layout->template, $page->class, $page->template, $mismatch,
+                    $layout->class,
+                    $layout->template,
+                    $page->class,
+                    $page->template,
+                    $mismatch,
                 );
             }
 

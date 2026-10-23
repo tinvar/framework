@@ -82,9 +82,15 @@ describe('emitting a response', function () {
 
         Sapi::emit(
             $response,
-            static function (int $s) use (&$log): void { $log[] = "status {$s}"; },
-            static function (string $n, string $v) use (&$log): void { $log[] = "{$n}: {$v}"; },
-            static function (string $c) use (&$log): void { $log[] = $c; },
+            static function (int $s) use (&$log): void {
+                $log[] = "status {$s}";
+            },
+            static function (string $n, string $v) use (&$log): void {
+                $log[] = "{$n}: {$v}";
+            },
+            static function (string $c) use (&$log): void {
+                $log[] = $c;
+            },
         );
 
         expect($log)->toBe(['status 200', 'content-type: text/html', '<p>one</p>', '<p>two</p>']);

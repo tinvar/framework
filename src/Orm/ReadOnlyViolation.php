@@ -22,7 +22,7 @@ final class ReadOnlyViolation extends \RuntimeException
         return new self(
             "{$what} is not allowed inside {$where}, which runs read-only. "
             . 'Hovering a link runs a loader, so a write here happens without anyone choosing it. '
-            . 'Move the write into an #[Action].'
+            . 'Move the write into an #[Action].',
         );
     }
 }

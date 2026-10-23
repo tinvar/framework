@@ -66,7 +66,7 @@ final class QueryRegistry
         if ($violations !== []) {
             throw new \InvalidArgumentException(
                 "{$class} fails the security model's build rules:\n  "
-                . implode("\n  ", array_map(strval(...), $violations))
+                . implode("\n  ", array_map(strval(...), $violations)),
             );
         }
 

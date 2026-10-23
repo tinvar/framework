@@ -107,7 +107,7 @@ final class BatchScheduler
             if (!$this->hasPending()) {
                 throw new \LogicException(
                     'Render stalled: ' . \count($live) . ' fiber(s) suspended with no pending relation load. '
-                    . 'A suspend outside the scheduler cannot be resumed.'
+                    . 'A suspend outside the scheduler cannot be resumed.',
                 );
             }
 

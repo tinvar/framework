@@ -20,7 +20,7 @@ final class MappingException extends \RuntimeException
     {
         return new self(
             "{$class}::\${$property} has #[BelongsTo] but no class type to infer its target from; "
-            . 'name the target explicitly.'
+            . 'name the target explicitly.',
         );
     }
 
@@ -29,14 +29,14 @@ final class MappingException extends \RuntimeException
     {
         return new self(
             "{$class} has no column '{$column}'. The query builder only accepts identifiers from compiled "
-            . 'metadata, so a sort or filter field cannot name a hidden column. Known: ' . implode(', ', $known) . '.'
+            . 'metadata, so a sort or filter field cannot name a hidden column. Known: ' . implode(', ', $known) . '.',
         );
     }
 
     public static function malformedIdentifier(string $column): self
     {
         return new self(
-            "'{$column}' is not a well-formed column name. Identifiers are never interpolated from input."
+            "'{$column}' is not a well-formed column name. Identifiers are never interpolated from input.",
         );
     }
 

@@ -179,19 +179,19 @@ final class Kernel
         $revalidator = ($fragments === null || $routeSigner === null || $fragments->renderRoute === null)
             ? null
             : new Revalidator(
-            routes: $this->routes,
-            loaders: new LoaderRunner($this->orm, $resolver, $gate),
-            signer: $routeSigner,
-            orm: $this->orm,
-            render: $fragments->renderRoute,
-            builds: $fragments->builds,
-            middlewareResolver: self::middlewareFrom($resolver),
-            panels: $panels,
-            globalMiddleware: $globalMiddleware,
-            log: $log === null ? null : static function (\Throwable $e) use ($log): void {
-                $log($e, ExceptionHandler::digest($e));
-            },
-        );
+                routes: $this->routes,
+                loaders: new LoaderRunner($this->orm, $resolver, $gate),
+                signer: $routeSigner,
+                orm: $this->orm,
+                render: $fragments->renderRoute,
+                builds: $fragments->builds,
+                middlewareResolver: self::middlewareFrom($resolver),
+                panels: $panels,
+                globalMiddleware: $globalMiddleware,
+                log: $log === null ? null : static function (\Throwable $e) use ($log): void {
+                    $log($e, ExceptionHandler::digest($e));
+                },
+            );
 
         $this->actions_ = new ActionEndpoint(new ActionRunner(
             $this->actions,
@@ -270,7 +270,7 @@ final class Kernel
         ) {
             throw new \InvalidArgumentException(
                 'FragmentSupport carries a different PanelContext than this Kernel. '
-                . 'Minting and verifying must read the same one.'
+                . 'Minting and verifying must read the same one.',
             );
         }
 

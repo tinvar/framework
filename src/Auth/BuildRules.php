@@ -144,7 +144,7 @@ final class BuildRules
         }
 
         throw new \RuntimeException(
-            "Build rules failed:\n  " . implode("\n  ", array_map(strval(...), $violations))
+            "Build rules failed:\n  " . implode("\n  ", array_map(strval(...), $violations)),
         );
     }
 

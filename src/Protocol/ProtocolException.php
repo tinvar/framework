@@ -10,7 +10,7 @@ final class ProtocolException extends \RuntimeException
     {
         return new self(
             "The renderer may not send a '{$type}' frame. It may send only: "
-            . implode(', ', Frame::RENDERER_TO_PHP) . '.'
+            . implode(', ', Frame::RENDERER_TO_PHP) . '.',
         );
     }
 

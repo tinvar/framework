@@ -226,7 +226,7 @@ final class ActionRunner
 
             if ($type instanceof \ReflectionNamedType && $type->getName() === Request::class) {
                 $arguments[$name] = $request ?? throw new \LogicException(
-                    "{$action->where()} asks for the Request, but none was supplied."
+                    "{$action->where()} asks for the Request, but none was supplied.",
                 );
                 continue;
             }

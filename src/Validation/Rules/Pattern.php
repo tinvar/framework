@@ -63,14 +63,14 @@ final readonly class Pattern implements Rule
         if (!self::parenthesesBalance($this->pattern)) {
             throw new \LogicException(
                 "Rule Pattern on {$field} has unbalanced parentheses. The pattern is wrapped to anchor it, "
-                . 'and an unbalanced group would close that wrapper and defeat the anchoring.'
+                . 'and an unbalanced group would close that wrapper and defeat the anchoring.',
             );
         }
 
         if (@preg_match($compiled, '') === false) {
             throw new \LogicException(
                 "Rule Pattern on {$field} has an invalid expression: " . preg_last_error_msg() . '. '
-                . 'The delimiter is ~, so a pattern containing ~ must escape it.'
+                . 'The delimiter is ~, so a pattern containing ~ must escape it.',
             );
         }
 

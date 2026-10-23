@@ -59,7 +59,7 @@ final class FragmentMinter
         // immediately and indistinguishably from forgeries.
         if ($ttl < 1 || $ttl > FragmentToken::DEFAULT_TTL) {
             throw new \InvalidArgumentException(
-                'A fragment token TTL must be between 1 second and ' . FragmentToken::DEFAULT_TTL . '.'
+                'A fragment token TTL must be between 1 second and ' . FragmentToken::DEFAULT_TTL . '.',
             );
         }
 

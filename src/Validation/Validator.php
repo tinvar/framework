@@ -253,7 +253,7 @@ final class Validator
                 throw new CoercionFailed("{$field->name} must be an identifier.");
             }
             $orm = $this->orm ?? throw new \LogicException(
-                "{$field->name} is model-typed, but the validator was built without an Orm."
+                "{$field->name} is model-typed, but the validator was built without an Orm.",
             );
 
             return $orm->find($field->modelClass, (string) $raw)

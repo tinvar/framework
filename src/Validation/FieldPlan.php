@@ -45,7 +45,7 @@ final readonly class FieldPlan
         if ($parameter->isVariadic()) {
             throw new \LogicException(
                 "{$where} is variadic. A form request field maps to one named value, and a variadic "
-                . 'parameter cannot receive one.'
+                . 'parameter cannot receive one.',
             );
         }
         if ($parameter->isPassedByReference()) {
@@ -69,7 +69,7 @@ final readonly class FieldPlan
             if ($applies !== [] && !\in_array($kind, $applies, true)) {
                 throw new \LogicException(
                     "{$where} is {$kind}, which " . $rule::class . ' cannot check (it applies to '
-                    . implode(', ', $applies) . '). A rule that cannot judge a field would pass everything.'
+                    . implode(', ', $applies) . '). A rule that cannot judge a field would pass everything.',
                 );
             }
 
@@ -95,14 +95,14 @@ final readonly class FieldPlan
 
         if ($type === null) {
             throw new \LogicException(
-                "{$where} has no type. Typed properties are the schema; an untyped field declares nothing."
+                "{$where} has no type. Typed properties are the schema; an untyped field declares nothing.",
             );
         }
 
         if (!$type instanceof \ReflectionNamedType) {
             throw new \LogicException(
                 "{$where} is a union or intersection type, which the validator cannot coerce to. "
-                . 'Declare one type, or take the value as a string and convert it yourself.'
+                . 'Declare one type, or take the value as a string and convert it yourself.',
             );
         }
 
@@ -118,14 +118,14 @@ final readonly class FieldPlan
 
             throw new \LogicException(
                 "{$where} is {$name}, which the validator cannot build from request input. "
-                . 'A field is a scalar, an array, a backed enum, or a model resolved by id.'
+                . 'A field is a scalar, an array, a backed enum, or a model resolved by id.',
             );
         }
 
         if (!\in_array($name, ['string', 'int', 'float', 'bool', 'array'], true)) {
             throw new \LogicException(
                 "{$where} is {$name}, which the validator cannot coerce to. "
-                . 'Use string, int, float, bool, array, a backed enum, or a model.'
+                . 'Use string, int, float, bool, array, a backed enum, or a model.',
             );
         }
 

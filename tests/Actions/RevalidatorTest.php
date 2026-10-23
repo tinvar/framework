@@ -670,7 +670,7 @@ describe('the request a re-render sees', function () {
 
         expect($seen?->method)->toBe('GET')
             ->and($seen?->path)->toBe(
-                '/sites/' . $fixture->ids['sites'][0] . '/racks/' . $fixture->ids['racks'][0]
+                '/sites/' . $fixture->ids['sites'][0] . '/racks/' . $fixture->ids['racks'][0],
             )
             ->and($seen?->body)->toBe([], 'the action body must not reach a loader');
     });

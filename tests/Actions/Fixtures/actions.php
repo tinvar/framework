@@ -35,9 +35,9 @@ final class Trace
 final readonly class MoveUnitRequest extends FormRequest
 {
     public function __construct(
-        #[Min(1), Max(42)] public int $position,
-    ) {
-    }
+        #[Min(1), Max(42)]
+        public int $position,
+    ) {}
 }
 
 final class RackActions
@@ -105,7 +105,8 @@ final readonly class TransferRequest extends FormRequest
 {
     public function __construct(
         public Site $destination,
-        #[Min(1)] public int $priority = 1,
+        #[Min(1)]
+        public int $priority = 1,
     ) {}
 }
 
@@ -228,7 +229,8 @@ final class TwoRequestActions
 final readonly class RenameSiteRequest extends FormRequest
 {
     public function __construct(
-        #[\Tinvar\Validation\Rules\Unique(Site::class, 'code', ignoreSubject: true)] public string $code,
+        #[\Tinvar\Validation\Rules\Unique(Site::class, 'code', ignoreSubject: true)]
+        public string $code,
     ) {}
 }
 

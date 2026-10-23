@@ -11,7 +11,6 @@ use Tinvar\Tests\Orm\Fixtures\Rack;
 use Tinvar\Tests\Orm\Fixtures\Script;
 use Tinvar\Tests\Orm\Fixtures\Site;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
-use Tinvar\Tests\Orm\Fixtures\Unit;
 
 require_once __DIR__ . '/Fixtures/models.php';
 require_once __DIR__ . '/Fixtures/schema.php';

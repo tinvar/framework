@@ -92,7 +92,7 @@ final class Response
     {
         $refuse = static fn (string $why): never => throw new \InvalidArgumentException(
             "A redirect target must be a root-relative path ({$why}). "
-            . 'Use Response::location() for an allowlisted external URL.'
+            . 'Use Response::location() for an allowlisted external URL.',
         );
 
         // Checked here, first, rather than relied on downstream. withHeader()

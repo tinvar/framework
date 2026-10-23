@@ -120,7 +120,9 @@ it('signs a token for a boundary the renderer asked about', function () {
         mintChannel($fixture, $path)->render(
             Frame::render('racks/show', ['rack' => 'r-1'], [], 'rid', 'nonce', []),
             [],
-            static function (string $bytes) use (&$seen): void { $seen .= $bytes; },
+            static function (string $bytes) use (&$seen): void {
+                $seen .= $bytes;
+            },
             $minter->closure(),
         );
     } finally {
