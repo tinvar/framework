@@ -611,6 +611,11 @@ final class Orm
         // its key before the write and the identity map can hold it.
         if (!$this->isSet($model, $meta, $meta->idProperty)) {
             $meta->set($model, $meta->idProperty, Uuid::v7());
+        } elseif (!Uuid::isValid((string) $meta->get($model, $meta->idProperty))) {
+            // A key find() would never look up. find() answers a non-UUID
+            // key without asking the database, so a row stored under one
+            // could be written and never read back.
+            throw new MappingException("{$meta->class}: a preset key must be a UUID.");
         }
 
         $values = $this->writeValues($model, $meta);

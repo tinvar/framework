@@ -244,3 +244,15 @@ it('finds nothing for a key that is not a UUID, without asking the database', fu
     expect($orm->find(Rack::class, $id))->toBeNull()
         ->and($fixture->connection->statementCount())->toBe(0);
 })->with(['nope', '', "01a166b1-0816-74c0-b4d5-2e9eb49b0838\n", '01a166b1-0816-74c0-b4d5-2e9eb49b0838 x']);
+
+// find() answers a non-UUID key without querying, so a row stored under one
+// could never be read back.
+it('refuses to insert under a preset key that is not a UUID', function () {
+    $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+    $rack = new Rack('R-x');
+    $rack->site = $orm->find(Site::class, $fixture->ids['sites'][0]);
+    (new ReflectionProperty(Rack::class, 'id'))->setValue($rack, 'rack-1');
+
+    expect(fn () => $orm->save($rack))->toThrow(Tinvar\Orm\MappingException::class);
+});
