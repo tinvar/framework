@@ -12,6 +12,7 @@ namespace Tinvar\Tests\Integration\ShopAccount;
 
 use Shop\Actions\AccountActions;
 use Shop\Auth\NextPath;
+use Shop\Auth\Sessions;
 use Shop\Auth\SignInThrottle;
 use Shop\Database\Seeder;
 use Shop\DemoAccount;
@@ -132,18 +133,60 @@ it('sends a signed-out visitor to sign in, and remembers where they were going',
 });
 
 // Keyed by a hash of the id: a copy of the table is not a list of cookies.
-it('stores a new session server-side, keyed by a hash of its id', function () {
+it('stores a signed-in session server-side, keyed by a hash of its id', function () {
     [$visitor, $pdo] = shop();
+    $visitor->get('/sign-in');
 
-    $visitor->get('/orders');
+    signIn($visitor);
     $row = sessionRow($pdo, $visitor->sessionId());
 
     expect($visitor->sessionId())->not->toBeNull()
         ->and($row)->not->toBeNull()
-        ->and($row['customer_id'])->toBeNull()
+        ->and($row['customer_id'])->toBe(demoId($pdo))
         ->and((int) $row['expires_at'] - (int) $row['created_at'])->toBe(Kernel::SESSION_LIFETIME)
         ->and($pdo->query('SELECT COUNT(*) FROM sessions WHERE id = ' . $pdo->quote((string) $visitor->sessionId()))->fetchColumn())
         ->toBe(0, 'the id itself is never a key');
+});
+
+// Every cookie-less request -- a crawler, a health check, a 404 -- wrote a
+// row, and only a sign-in or sign-out ever swept them. A signed-out session
+// needs none: its CSRF and fragment tokens bind to the cookie's id.
+it('writes no session row for a visitor who has not signed in', function () {
+    [$visitor, $pdo] = shop();
+    $count = static fn (): int => (int) $pdo->query('SELECT COUNT(*) FROM sessions')->fetchColumn();
+    $before = $count();
+
+    for ($i = 0; $i < 20; $i++) {
+        $visitor->cookies = [];
+        $visitor->get("/no-such-page-{$i}");
+    }
+    $visitor->get('/sign-in');
+    $visitor->get('/');
+
+    expect($visitor->sessionId())->not->toBeNull()
+        ->and($count())->toBe($before);
+});
+
+// Rows come only from sign-ins, and each sign-in sweeps up to a batch of
+// expired ones: the sweep removes far more than sign-ins add, so it cannot
+// fall behind, and no one sign-in pays for an unbounded delete.
+it('sweeps expired sessions a bounded batch at a time as customers sign in', function () {
+    [$visitor, $pdo] = shop();
+    $visitor->get('/sign-in');
+    $expired = Sessions::SWEEP_BATCH * 2 + 10;
+    $insert = $pdo->prepare('INSERT INTO sessions (id, customer_id, created_at, last_seen_at, expires_at) VALUES (?, NULL, 1, 1, 2)');
+    for ($i = 0; $i < $expired; $i++) {
+        $insert->execute([hash('sha256', "expired-{$i}")]);
+    }
+    $left = static fn (): int => (int) $pdo->query('SELECT COUNT(*) FROM sessions WHERE expires_at <= 2')->fetchColumn();
+
+    signIn($visitor);
+    $afterOne = $left();
+    signIn($visitor);
+    signIn($visitor);
+
+    expect($afterOne)->toBe($expired - Sessions::SWEEP_BATCH)
+        ->and($left())->toBe(0);
 });
 
 // Rotation is what makes an id planted before sign-in worthless after it.
@@ -318,7 +361,7 @@ it('signs out under a new, signed-out session, and the old one stops working', f
     expect($visitor->action('account.signOut', [])->status)->toBe(200)
         ->and($visitor->sessionId())->not->toBe($signedInId)
         ->and(sessionRow($pdo, $signedInId))->toBeNull()
-        ->and(sessionRow($pdo, $visitor->sessionId())['customer_id'])->toBeNull();
+        ->and(sessionRow($pdo, $visitor->sessionId()))->toBeNull('signed out, so no row');
 
     // Someone who kept the signed-in cookie is no one now.
     $visitor->cookies[Kernel::SESSION_COOKIE] = $signedIn;
