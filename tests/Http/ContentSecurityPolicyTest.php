@@ -17,7 +17,7 @@ use Tinvar\Http\Request;
  * RenderPathTest and in the browser; these are the policies themselves.
  */
 it('is the policy the spec describes, for the nonce given', function () {
-    expect(\Racks\Kernel::contentSecurityPolicy('abc+/=='))
+    expect(\Shop\Kernel::contentSecurityPolicy('abc+/=='))
         ->toBe("script-src 'nonce-abc+/==' 'strict-dynamic'; object-src 'none'; base-uri 'none'");
 });
 

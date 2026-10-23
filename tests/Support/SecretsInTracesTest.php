@@ -160,36 +160,34 @@ it('keeps the password out of the trace of a refused connection', function () {
         ->and(leaks($e, $password))->toBeFalse();
 })->skip(!\extension_loaded('pdo_pgsql'), 'pdo_pgsql is not loaded.');
 
-// The example's boot: a database that is down throws from the frame that
-// was handed the key.
+// The example's boot: a database that is not there throws from the frame
+// that was handed the key.
 it('keeps the key out of the trace of an example that could not start', function () {
     $key = secret();
-    $saved = getenv('TINVAR_DSN');
-    putenv('TINVAR_DSN=pgsql:host=127.0.0.1;port=1;dbname=none');
 
-    try {
-        $e = thrown(static fn (): \Racks\Kernel => \Racks\Kernel::fromEnvironment('/tmp/unused.sock', key: $key));
-    } finally {
-        putenv($saved === false ? 'TINVAR_DSN' : "TINVAR_DSN={$saved}");
-    }
+    $e = thrown(static fn (): \Shop\Kernel => \Shop\Kernel::fromEnvironment(
+        '/tmp/unused.sock',
+        key: $key,
+        database: sys_get_temp_dir() . '/tinvar-no-such-database-' . bin2hex(random_bytes(4)) . '.sqlite',
+    ));
 
     expect($e)->toBeInstanceOf(\PDOException::class)
         ->and(leaks($e, $key))->toBeFalse();
-})->skip(!\extension_loaded('pdo_pgsql'), 'pdo_pgsql is not loaded.');
+});
 
 it('keeps the key and the session id out of the example session helpers', function () {
     $key = secret();
-    $cookie = \Racks\Kernel::newSession($key);
+    $cookie = \Shop\Kernel::newSession($key);
 
     // Neither can be made to throw from outside, so the redaction is read
     // off the declarations: every parameter that carries one is marked.
     $marked = static fn (string $method, string $parameter): bool => array_any(
-        new \ReflectionMethod(\Racks\Kernel::class, $method)->getParameters(),
+        new \ReflectionMethod(\Shop\Kernel::class, $method)->getParameters(),
         static fn (\ReflectionParameter $p): bool => $p->getName() === $parameter
             && $p->getAttributes(\SensitiveParameter::class) !== [],
     );
 
-    expect(\Racks\Kernel::sessionFrom($cookie, $key))->not->toBeNull()
+    expect(\Shop\Kernel::sessionFrom($cookie, $key))->not->toBeNull()
         ->and($marked('newSession', 'key'))->toBeTrue()
         ->and($marked('sessionFrom', 'key'))->toBeTrue()
         ->and($marked('sessionFrom', 'cookie'))->toBeTrue()

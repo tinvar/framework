@@ -2,128 +2,129 @@
 
 declare(strict_types=1);
 
-use Racks\Database\Factories\RackFactory;
-use Racks\Database\Factories\UnitFactory;
-use Racks\Models\Rack;
-use Racks\Models\Site;
-use Racks\Models\Unit;
+use Shop\Database\Factories\CustomerFactory;
+use Shop\Database\Factories\OrderFactory;
+use Shop\Database\Factories\ProductFactory;
+use Shop\Models\Customer;
+use Shop\Models\Order;
+use Shop\Models\Product;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Support\Uuid;
 
-/** The Racks schema in SQLite, so factories are exercised without a server. */
-function racksSqlite(): PdoConnection
+/** The shop's own schema in an in-memory SQLite database, foreign keys enforced. */
+function shopSqlite(): PdoConnection
 {
-    $pdo = new PDO('sqlite::memory:');
-    $pdo->exec('CREATE TABLE sites (id TEXT PRIMARY KEY, code TEXT NOT NULL, name TEXT NOT NULL)');
-    $pdo->exec('CREATE TABLE racks (id TEXT PRIMARY KEY, name TEXT NOT NULL, height_u INTEGER NOT NULL, site_id TEXT NOT NULL)');
-    $pdo->exec('CREATE TABLE units (id TEXT PRIMARY KEY, position INTEGER NOT NULL, name TEXT NOT NULL, rated_watts INTEGER NOT NULL, rack_id TEXT NOT NULL)');
+    $connection = PdoConnection::sqlite(':memory:', 'shop-test');
+    $connection->pdo()->exec((string) file_get_contents(__DIR__ . '/../../../../examples/shop/database/schema.sql'));
 
-    return new PdoConnection($pdo, 'racks-test');
+    return $connection;
 }
 
-function racksOrm(PdoConnection $connection): Orm
+function shopOrm(PdoConnection $connection): Orm
 {
-    return new Orm($connection, new IdentityMap('racks-test'));
+    return new Orm($connection, new IdentityMap('shop-test'));
 }
 
-function seedSite(Orm $orm): Site
-{
-    return $orm->save(new Site(code: 'LAX1', name: 'Los Angeles 1'));
-}
+it('builds a model with its typed fields set', function () {
+    $product = ProductFactory::new()->make();
 
-it('builds a model through its own constructor, so the fields are typed', function () {
-    $rack = RackFactory::new()->make();
-
-    expect($rack)->toBeInstanceOf(Rack::class)
-        ->and($rack->name)->toBe('R-01')
-        ->and($rack->heightU)->toBe(42)
-        ->and($rack->isPersisted())->toBeFalse('make() does not write');
+    expect($product)->toBeInstanceOf(Product::class)
+        ->and($product->name)->toBe('Test product 1')
+        ->and($product->priceCents)->toBe(1001)
+        ->and($product->isPersisted())->toBeFalse('make() does not write');
 });
 
 it('derives the model it builds from definition()', function () {
-    expect(RackFactory::model())->toBe(Rack::class)
-        ->and(UnitFactory::model())->toBe(Unit::class);
+    expect(ProductFactory::model())->toBe(Product::class)
+        ->and(OrderFactory::model())->toBe(Order::class);
 });
 
 it('builds a list when asked for several', function () {
-    $racks = RackFactory::new()->count(3)->make();
+    $products = ProductFactory::new()->count(3)->make();
 
-    expect($racks)->toHaveCount(3)
-        ->and(array_map(static fn (Rack $r): string => $r->name, $racks))
-        ->toBe(['R-01', 'R-02', 'R-03']);
+    expect($products)->toHaveCount(3)
+        ->and(array_map(static fn (Product $p): string => $p->sku, $products))
+        ->toBe(['PW-9001', 'PW-9002', 'PW-9003']);
 });
 
 it('attaches a parent by type, with no property name needed', function () {
-    $connection = racksSqlite();
-    $orm = racksOrm($connection);
-    $site = seedSite($orm);
+    $connection = shopSqlite();
+    $orm = shopOrm($connection);
+    $customer = CustomerFactory::new()->create($orm);
 
-    $rack = RackFactory::new()->for($site)->create($orm);
+    $order = OrderFactory::new()->for($customer)->create($orm);
 
-    expect($rack->isPersisted())->toBeTrue()
-        ->and(Uuid::isValid($rack->primaryKey()))->toBeTrue();
+    expect($order->isPersisted())->toBeTrue()
+        ->and(Uuid::isValid($order->primaryKey()))->toBeTrue();
 
-    $reread = racksOrm($connection)->find(Rack::class, $rack->primaryKey());
-    expect($reread->site->primaryKey())->toBe($site->primaryKey());
+    $reread = shopOrm($connection)->find(Order::class, $order->primaryKey());
+    expect($reread->customer->primaryKey())->toBe($customer->primaryKey());
 });
 
 it('applies a state after the definition', function () {
-    $rack = RackFactory::new()
-        ->state(static function (Rack $rack): void {
-            $rack->heightU = 24;
+    $product = ProductFactory::new()
+        ->state(static function (Product $product): void {
+            $product->stock = 0;
         })
         ->make();
 
-    expect($rack->heightU)->toBe(24)->and($rack->name)->toBe('R-01');
+    expect($product->stock)->toBe(0)->and($product->name)->toBe('Test product 1');
 });
 
 it('writes a batch in one transaction', function () {
-    $connection = racksSqlite();
-    $orm = racksOrm($connection);
-    $site = seedSite($orm);
+    $connection = shopSqlite();
+    $orm = shopOrm($connection);
+    $customer = CustomerFactory::new()->create($orm);
 
-    $racks = RackFactory::new()->count(20)->for($site)->create($orm);
+    $orders = OrderFactory::new()->count(20)->for($customer)->create($orm);
 
-    expect($racks)->toHaveCount(20)
-        ->and(racksOrm($connection)->all(Rack::class))->toHaveCount(20);
+    expect($orders)->toHaveCount(20)
+        ->and(shopOrm($connection)->all(Order::class))->toHaveCount(20);
 });
 
 it('leaves nothing behind when a write in the batch fails', function () {
-    $connection = racksSqlite();
-    $orm = racksOrm($connection);
-    $site = seedSite($orm);
+    $connection = shopSqlite();
+    $orm = shopOrm($connection);
 
-    // Every rack in the batch takes the same name, so the second insert
-    // collides and the whole batch must roll back.
-    $connection->pdo()->exec('CREATE UNIQUE INDEX racks_name ON racks (name)');
-
-    $colliding = RackFactory::new()
+    // Every product in the batch takes the same SKU, which the schema holds
+    // unique, so the second insert collides and the whole batch must roll
+    // back.
+    $colliding = ProductFactory::new()
         ->count(5)
-        ->for($site)
-        ->state(static function (Rack $rack): void {
-            $rack->name = 'R-SAME';
+        ->state(static function (Product $product): void {
+            $product->sku = 'PW-SAME';
         });
 
     expect(fn () => $colliding->create($orm))->toThrow(PDOException::class);
-    expect(racksOrm($connection)->all(Rack::class))->toHaveCount(0);
+    expect(shopOrm($connection)->all(Product::class))->toHaveCount(0);
 });
 
 it('refuses an ambiguous or absent parent relation', function () {
-    $connection = racksSqlite();
-    $orm = racksOrm($connection);
-    $site = seedSite($orm);
+    $connection = shopSqlite();
+    $orm = shopOrm($connection);
+    $customer = CustomerFactory::new()->create($orm);
 
-    // A Unit has no relation to a Site.
-    expect(fn () => UnitFactory::new()->for($site))
+    // A product belongs to no customer.
+    expect(fn () => ProductFactory::new()->for($customer))
         ->toThrow(LogicException::class, 'no single relation');
 });
 
 it('is immutable, so a configured factory can be reused', function () {
-    $base = RackFactory::new();
+    $base = ProductFactory::new();
     $three = $base->count(3);
 
-    expect($base->make())->toBeInstanceOf(Rack::class)
+    expect($base->make())->toBeInstanceOf(Product::class)
         ->and($three->make())->toHaveCount(3);
+});
+
+it('builds a customer the policy and the session can use', function () {
+    $orm = shopOrm(shopSqlite());
+
+    $customer = CustomerFactory::new()->create($orm);
+
+    expect($customer)->toBeInstanceOf(Customer::class)
+        ->and($customer->authIdentifier())->toBe($customer->primaryKey())
+        ->and(password_verify('factory-1', $customer->passwordHash))->toBeTrue();
 });
