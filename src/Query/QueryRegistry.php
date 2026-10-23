@@ -54,6 +54,15 @@ final class QueryRegistry
             throw new \InvalidArgumentException("{$class} has no #[Query] attribute.");
         }
 
+        // Found here, not on the first call: there it threw out of the whole
+        // tick and took every other query's result with it.
+        if (!is_subclass_of($class, BatchQuery::class)
+            && !($reflection->hasMethod('__invoke') && $reflection->getMethod('__invoke')->isPublic())) {
+            throw new \InvalidArgumentException(
+                "{$class} is a #[Query] with no body: give it a public __invoke(), or implement BatchQuery.",
+            );
+        }
+
         $declaration = $attribute->newInstance();
         $name = $declaration->name ?? Str::queryName($class);
 
@@ -167,13 +176,9 @@ final class QueryRegistry
             return array_map(static fn (): bool => true, $declaration->args);
         }
 
-        $invoke = $reflection->hasMethod('__invoke') ? $reflection->getMethod('__invoke') : null;
-        if ($invoke === null) {
-            return [];
-        }
-
+        // register() has made sure a query that is not a batch has one.
         $parameters = [];
-        foreach ($invoke->getParameters() as $parameter) {
+        foreach ($reflection->getMethod('__invoke')->getParameters() as $parameter) {
             $parameters[$parameter->getName()] = !$parameter->isDefaultValueAvailable()
                 && !$parameter->allowsNull();
         }

@@ -78,12 +78,9 @@ describe('registration', function () {
             ->toThrow(\InvalidArgumentException::class, 'has no #[Query] attribute');
     });
 
-    it('declares no parameters for a query class with no body', function () {
-        $registry = new QueryRegistry();
-        $name = $registry->register(InertQuery::class);
-
-        expect($registry->parametersFor($name))->toBe([])
-            ->and($registry->modelArgumentsFor($name))->toBe([]);
+    it('refuses a query class with no body', function () {
+        expect(fn () => (new QueryRegistry())->register(InertQuery::class))
+            ->toThrow(\InvalidArgumentException::class, 'is a #[Query] with no body');
     });
 });
 
@@ -111,11 +108,15 @@ describe('an optional model argument', function () {
 });
 
 describe('a query the runner cannot call', function () {
-    it('refuses a registered query class with no __invoke', function () {
-        $runner = surfaceRunner(new Fixture(racks: 1, unitsPerRack: 1), [InertQuery::class]);
+    it('refuses a query whose resolver hands back something it cannot call', function () {
+        $runner = surfaceRunner(
+            new Fixture(racks: 1, unitsPerRack: 1),
+            [OptionalRackSummary::class],
+            resolver: static fn (string $class): object => new \stdClass(),
+        );
 
-        expect(fn () => $runner->run([surfaceCall('surface.inert')], ['surface.inert']))
-            ->toThrow(\LogicException::class, "Query 'surface.inert' is not invocable");
+        expect(fn () => $runner->run([surfaceCall('surface.optionalRack')], ['surface.optionalRack']))
+            ->toThrow(\LogicException::class, "Query 'surface.optionalRack' is not invocable");
     });
 
     it('refuses a batch query whose resolver hands back something else', function () {
