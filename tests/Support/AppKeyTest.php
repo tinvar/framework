@@ -53,6 +53,19 @@ it('takes the key already in place when another process got there first', functi
     expect(AppKey::resolve('TINVAR_TEST_KEY', $this->file))->toBe(str_repeat('w', 44));
 });
 
+// Created private, not tightened afterwards: under a permissive umask the
+// key was readable by other users between the write and the chmod.
+it('creates the key file private even under a permissive umask', function () {
+    $previous = umask(0000);
+    try {
+        AppKey::resolve('TINVAR_TEST_KEY', $this->file);
+    } finally {
+        umask($previous);
+    }
+
+    expect(fileperms($this->file) & 0777)->toBe(0600);
+});
+
 it('leaves no temporary file behind', function () {
     AppKey::resolve('TINVAR_TEST_KEY', $this->file);
 

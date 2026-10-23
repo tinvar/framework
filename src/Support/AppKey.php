@@ -61,10 +61,7 @@ final class AppKey
         // there -- reads that one rather than signing with its own. A plain
         // write could leave a reader seeing a half-written file.
         $temporary = $dir . '/.' . basename($file) . '.' . bin2hex(random_bytes(6));
-        if (file_put_contents($temporary, $key . "\n") === false) {
-            throw new \RuntimeException("Cannot write the application key under {$dir}.");
-        }
-        chmod($temporary, 0600);
+        self::writePrivately($temporary, $key . "\n");
 
         $won = @link($temporary, $file);
         unlink($temporary);
@@ -77,6 +74,42 @@ final class AppKey
             ?? throw new \RuntimeException("Cannot read the application key from {$file}.");
 
         return self::checked($winner, $file);
+    }
+
+    /**
+     * Creates the file private from its first byte. Writing it and then
+     * tightening it left the key readable, under the default umask, by any
+     * user on the machine for the moment in between. So: a 0077 umask for
+     * the create, exclusive so nothing already there is reused, and 0600
+     * confirmed before the key is written.
+     */
+    private static function writePrivately(string $path, string $contents): void
+    {
+        $previous = umask(0077);
+        try {
+            $handle = @fopen($path, 'x');
+        } finally {
+            umask($previous);
+        }
+
+        if ($handle === false) {
+            throw new \RuntimeException("Cannot create {$path} for the application key.");
+        }
+
+        try {
+            if (!chmod($path, 0600) || (fileperms($path) & 0077) !== 0) {
+                throw new \RuntimeException("Cannot make {$path} private; refusing to write the application key into it.");
+            }
+            if (fwrite($handle, $contents) !== \strlen($contents)) {
+                throw new \RuntimeException("Cannot write the application key to {$path}.");
+            }
+        } catch (\Throwable $e) {
+            fclose($handle);
+            @unlink($path);
+            throw $e;
+        }
+
+        fclose($handle);
     }
 
     private static function read(string $file): ?string
