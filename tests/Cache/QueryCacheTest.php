@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Tinvar\Attributes\Query as QueryAttribute;
 use Tinvar\Auth\AllowAllGate;
 use Tinvar\Auth\AuthContext;
+use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\Authenticatable;
 use Tinvar\Cache\ArrayStore;
 use Tinvar\Cache\Duration;
@@ -50,8 +51,18 @@ describe('durations', function () {
 });
 
 describe('the key', function () {
-    $cache = fn (AuthContext $auth, string $panel = 'default'): QueryCache
-        => new QueryCache(new ArrayStore(), $auth, $panel);
+    // The panel now comes from a context rather than a constructor constant:
+    // baked in at construction, every entry was keyed with whichever panel
+    // the instance happened to be built for, so one worker serving two panels
+    // could answer a narrow panel from a wide panel's entry.
+    $cache = function (AuthContext $auth, ?string $panel = null): QueryCache {
+        $panels = new PanelContext();
+        if ($panel !== null) {
+            $panels->within($panel, static fn (): bool => true);
+        }
+
+        return new QueryCache(new ArrayStore(), $auth, $panels);
+    };
 
     // "The default cache key is the query name, its arguments, the tenant, the
     // user, the panel and its effective scope, the locale."
@@ -75,12 +86,29 @@ describe('the key', function () {
             ->not->toBe($cache($auth)->key('q', $declaration, ['x' => 1], 'globex'));
     });
 
-    it('separates two panels', function () use ($cache) {
+    it('separates two panels', function () {
         $auth = new AuthContext();
         $declaration = new QueryAttribute(cache: '1m');
+        $panels = new PanelContext();
+        $cache = new QueryCache(new ArrayStore(), $auth, $panels);
 
-        expect($cache($auth, 'user')->key('q', $declaration, ['x' => 1], 'acme'))
-            ->not->toBe($cache($auth, 'admin')->key('q', $declaration, ['x' => 1], 'acme'));
+        $user = $panels->within('user', static fn (): string => $cache->key('q', $declaration, ['x' => 1], 'acme'));
+        $admin = $panels->within('admin', static fn (): string => $cache->key('q', $declaration, ['x' => 1], 'acme'));
+
+        expect($user)->not->toBe($admin);
+    });
+
+    // One instance, two panels, which is the case a constructor constant
+    // could not express at all.
+    it('keys one instance differently per panel', function () {
+        $panels = new PanelContext();
+        $cache = new QueryCache(new ArrayStore(), new AuthContext(), $panels);
+        $declaration = new QueryAttribute(cache: '1m');
+
+        $outside = $cache->key('q', $declaration, ['x' => 1], 'acme');
+        $inside = $panels->within('admin', static fn (): string => $cache->key('q', $declaration, ['x' => 1], 'acme'));
+
+        expect($outside)->not->toBe($inside, 'no panel is not the same as some panel');
     });
 
     // "shared: true drops the user from the key."

@@ -13,6 +13,8 @@ use Tinvar\Http\Response;
 use Tinvar\Render\FragmentToken;
 use Tinvar\Render\FragmentTokenError;
 use Tinvar\Routing\LoaderRunner;
+use Tinvar\Auth\PanelContext;
+use Tinvar\Routing\RouteChain;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Routing\RoutingException;
 use Tinvar\Support\Signer;
@@ -54,6 +56,17 @@ final class FragmentEndpoint
     public const string CONTENT_TYPE = 'text/x-component';
 
     /**
+     * What a token minted outside any panel runs as.
+     *
+     * PanelContext refuses an empty name, because "no panel" and "a panel
+     * called nothing" are different states and conflating them is how a
+     * narrowing mechanism gets widened by accident. A token from a
+     * panel-less application is given this name so the fragment still runs
+     * inside a decided panel rather than an undecided one.
+     */
+    public const string NO_PANEL = 'none';
+
+    /**
      * @param \Closure(FragmentToken, Request, array<string, mixed>): Response $render
      *        opens a render channel for the subtree and returns its response
      * @param \Closure(Request): string $sessionId
@@ -71,6 +84,7 @@ final class FragmentEndpoint
         private readonly \Closure $middlewareResolver,
         private readonly array $globalMiddleware = [],
         private readonly array $extraGlobal = [],
+        private readonly ?PanelContext $panels = null,
     ) {}
 
     public function matches(Request $request): bool
@@ -135,33 +149,52 @@ final class FragmentEndpoint
             ));
 
             return $pipeline->run($passed, function (Request $inner) use ($chain, $token): Response {
-                // Model binding and every #[Authorize] in the chain, before
-                // the subtree renders anything.
-                $models = $this->loaders->bindAndAuthorize($chain, $inner);
-
-                $response = ($this->render)($token, $inner, $models);
-
-                // A refreshed token only on a response that succeeded. Handing
-                // one back with a failure the renderer produced itself would
-                // extend the life of a boundary that just failed.
-                if ($response->status >= 400) {
-                    return $response;
+                // The panel the page was rendered in. It is covered by the
+                // MAC and was consulted by NOTHING: a signed field that no
+                // decision reads is either dead weight or a missing check,
+                // and here it was the second. A fragment rendering under a
+                // different panel than the one it was issued in would see a
+                // different narrowing, and its query cache keys would
+                // disagree with the page's.
+                if ($this->panels !== null) {
+                    return $this->panels->within(
+                        $token->panel === '' ? self::NO_PANEL : $token->panel,
+                        fn (): Response => $this->renderWithin($chain, $inner, $token),
+                    );
                 }
 
-                // "always private, no-store with Vary: Cookie". The body is
-                // session-bound -- the token is -- so a shared cache has to be
-                // told, not merely asked not to store.
-                // The client refuses anything that is not this, so the
-                // endpoint has to promise it rather than leave it to whatever
-                // the render closure happened to set.
-                return $response
-                    ->withHeader('content-type', self::CONTENT_TYPE)
-                    ->withHeader('cache-control', 'private, no-store')
-                    ->withHeader('x-fragment-token', $token->refreshed()->encode($this->signer))
-                    ->withAddedHeader('vary', 'RSC')
-                    ->withAddedHeader('vary', 'Cookie');
+                return $this->renderWithin($chain, $inner, $token);
             });
         });
+    }
+
+    /** The subtree itself, once the panel is established. */
+    private function renderWithin(RouteChain $chain, Request $inner, FragmentToken $token): Response
+    {
+        // Model binding and every #[Authorize] in the chain, before the
+        // subtree renders anything.
+        $models = $this->loaders->bindAndAuthorize($chain, $inner);
+
+        $response = ($this->render)($token, $inner, $models);
+
+        // A refreshed token only on a response that succeeded. Handing one
+        // back with a failure the renderer produced itself would extend the
+        // life of a boundary that just failed.
+        if ($response->status >= 400) {
+            return $response;
+        }
+
+        // "always private, no-store with Vary: Cookie". The body is
+        // session-bound -- the token is -- so a shared cache has to be told,
+        // not merely asked not to store. The content type is promised here
+        // rather than left to whatever the render closure happened to set,
+        // because the client refuses anything else.
+        return $response
+            ->withHeader('content-type', self::CONTENT_TYPE)
+            ->withHeader('cache-control', 'private, no-store')
+            ->withHeader('x-fragment-token', $token->refreshed()->encode($this->signer))
+            ->withAddedHeader('vary', 'RSC')
+            ->withAddedHeader('vary', 'Cookie');
     }
 
     /**

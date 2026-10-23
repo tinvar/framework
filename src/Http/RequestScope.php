@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Http;
 
 use Tinvar\Auth\AuthContext;
+use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Orm\Orm;
 
@@ -32,8 +33,12 @@ final class RequestScope
     private array $resets = [];
 
     /** The resettables the framework itself owns. */
-    public static function standard(Orm $orm, AuthContext $auth, PolicyRegistry $policies): self
-    {
+    public static function standard(
+        Orm $orm,
+        AuthContext $auth,
+        PolicyRegistry $policies,
+        ?PanelContext $panels = null,
+    ): self {
         $scope = new self();
 
         // The identity map and the relation-row caches: one request, one map.
@@ -44,6 +49,13 @@ final class RequestScope
 
         // Policy instances may memoise per-request answers.
         $scope->add('policies', $policies->reset(...));
+
+        // The panel, which the spec lists in the same clause as the tenant
+        // and the auth context. A panel carried into the next request would
+        // narrow -- or fail to narrow -- work that never chose it.
+        if ($panels !== null) {
+            $scope->add('panels', $panels->reset(...));
+        }
 
         return $scope;
     }

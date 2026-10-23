@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Tinvar\Auth\AllowAllGate;
+use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\DenyGate;
 use Tinvar\Http\BuildRegistry;
 use Tinvar\Http\Endpoints\FragmentEndpoint;
@@ -36,9 +37,10 @@ final class RenderLog
     public array $calls = [];
 }
 
-/** @return array{0: FragmentEndpoint, 1: Fixture, 2: Signer, 3: BuildRegistry, 4: RenderLog} */
+/** @return array{0: FragmentEndpoint, 1: Fixture, 2: Signer, 3: BuildRegistry, 4: RenderLog, 5: PanelContext} */
 function fragmentEndpoint(?object $gate = null, array $globalMiddleware = []): array
 {
+    $panels = new PanelContext();
     $fixture = new Fixture(racks: 2, unitsPerRack: 1, sites: 1);
     $orm = new Orm($fixture->connection, new IdentityMap('test'));
 
@@ -54,17 +56,22 @@ function fragmentEndpoint(?object $gate = null, array $globalMiddleware = []): a
         loaders: new LoaderRunner($orm, static fn (string $c): object => new $c(), $gate ?? new AllowAllGate()),
         signer: $signer,
         builds: $builds,
-        render: static function (FragmentToken $token, Request $request, array $models) use ($log): Response {
-            $log->calls[] = ['component' => $token->component, 'models' => array_keys($models)];
+        render: static function (FragmentToken $token, Request $request, array $models) use ($log, $panels): Response {
+            $log->calls[] = [
+                'component' => $token->component,
+                'models' => array_keys($models),
+                'panel' => $panels->currentOrNull(),
+            ];
 
             return Response::make(200, 'RSC-PAYLOAD', ['content-type' => 'text/x-component']);
         },
         sessionId: static fn (Request $r): string => $r->header('x-session') ?? FRAGMENT_SESSION,
         middlewareResolver: static fn (string $class): Middleware => new $class(),
         globalMiddleware: $globalMiddleware,
+        panels: $panels,
     );
 
-    return [$endpoint, $fixture, $signer, $builds, $log];
+    return [$endpoint, $fixture, $signer, $builds, $log, $panels];
 }
 
 function fragmentToken(Signer $signer, Fixture $fixture, array $overrides = []): FragmentToken
@@ -451,5 +458,40 @@ describe('the build registry', function () {
 
     it('refuses a missing version', function () {
         expect((new BuildRegistry('b1'))->accepts(null))->toBeFalse();
+    });
+});
+
+/**
+ * The token's panel was covered by the MAC and consulted by nothing. A
+ * fragment rendering under a different panel than the one it was issued in
+ * sees a different narrowing, and its query cache keys disagree with the
+ * page's.
+ */
+describe('the panel a fragment runs in', function () {
+    it('renders inside the panel the token was minted for', function () {
+        [$endpoint, $fixture, $signer, , $log] = fragmentEndpoint();
+
+        $endpoint->handle(fragmentRequest($signer, fragmentToken($signer, $fixture, ['panel' => 'admin'])));
+
+        expect($log->calls[0]['panel'])->toBe('admin');
+    });
+
+    it('leaves no panel set once the request is done', function () {
+        [$endpoint, $fixture, $signer, , , $panels] = fragmentEndpoint();
+
+        $endpoint->handle(fragmentRequest($signer, fragmentToken($signer, $fixture, ['panel' => 'admin'])));
+
+        expect($panels->isSet())->toBeFalse();
+    });
+
+    // PanelContext refuses an empty name, so a token from a panel-less
+    // application still runs inside a DECIDED panel rather than an undecided
+    // one -- code asking which panel it is in gets an answer either way.
+    it('runs a panel-less token inside a named no-panel', function () {
+        [$endpoint, $fixture, $signer, , $log] = fragmentEndpoint();
+
+        $endpoint->handle(fragmentRequest($signer, fragmentToken($signer, $fixture, ['panel' => ''])));
+
+        expect($log->calls[0]['panel'])->toBe(FragmentEndpoint::NO_PANEL);
     });
 });

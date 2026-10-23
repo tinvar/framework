@@ -8,6 +8,7 @@ use Tinvar\Actions\ActionRegistry;
 use Tinvar\Actions\ActionRunner;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\Gate;
+use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\PolicyGate;
 use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Cache\QueryCache;
@@ -58,6 +59,7 @@ final class Kernel
      */
     public readonly ?FragmentEndpoint $fragments_;
     public readonly RequestScope $scope;
+    public readonly ?PanelContext $panels;
 
     /**
      * The endpoints table's `throttle:<name>` defaults, per minute.
@@ -118,9 +120,11 @@ final class Kernel
         ?FragmentSupport $fragments = null,
         ?Throttle $throttle = null,
         array $limits = self::DEFAULT_LIMITS,
+        ?PanelContext $panels = null,
     ) {
+        $this->panels = $panels;
         $gate ??= new PolicyGate($this->policies, $this->auth);
-        $cache ??= new QueryCache(new \Tinvar\Cache\ArrayStore(), $this->auth);
+        $cache ??= new QueryCache(new \Tinvar\Cache\ArrayStore(), $this->auth, $panels);
 
         $this->router = new Router(
             $this->routes,
@@ -184,10 +188,11 @@ final class Kernel
             middlewareResolver: static fn (string $class): Middleware => $resolver($class),
             globalMiddleware: $globalMiddleware,
             extraGlobal: $this->throttleFor($throttle, 'fragments', $limits),
+            panels: $panels,
         );
 
         $this->exceptions = new ExceptionHandler($log);
-        $this->scope = RequestScope::standard($this->orm, $this->auth, $this->policies);
+        $this->scope = RequestScope::standard($this->orm, $this->auth, $this->policies, $panels);
     }
 
     /**

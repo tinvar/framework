@@ -6,6 +6,7 @@ namespace Tinvar\Cache;
 
 use Tinvar\Attributes\Query;
 use Tinvar\Auth\AuthContext;
+use Tinvar\Auth\PanelContext;
 use Tinvar\Orm\Model;
 
 /**
@@ -27,10 +28,22 @@ final class QueryCache
     /** @var list<\Throwable> */
     private array $failures = [];
 
+    /**
+     * The panel comes from a CONTEXT, not a constructor argument.
+     *
+     * "The panel and effective scope are part of query cache keys, fragment
+     * and route tokens" -- which makes the panel per request. Baking it in at
+     * construction was wrong the moment one worker served two panels: every
+     * entry would be keyed with whichever panel the instance happened to be
+     * built for, so a narrow panel could be served a wide panel's answer.
+     *
+     * A null context means an application with no panels at all, which keys
+     * as the empty panel rather than guessing a name.
+     */
     public function __construct(
         private readonly Store $store,
         private readonly AuthContext $auth,
-        private readonly string $panel = 'default',
+        private readonly ?PanelContext $panels = null,
         private readonly string $locale = 'en',
     ) {}
 
@@ -197,7 +210,7 @@ final class QueryCache
             'q' => $name,
             'a' => self::canonical($arguments),
             't' => $tenant,
-            'p' => $this->panel,
+            'p' => $this->panels?->currentOrNull() ?? '',
             'l' => $this->locale,
         ];
 

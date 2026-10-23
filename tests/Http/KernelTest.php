@@ -363,6 +363,26 @@ describe('the reset contract', function () {
 
         expect($kernel->scope->names())->toBe(['orm', 'auth', 'policies']);
     });
+
+    // "Tenant, auth, PANEL, identity map and #[Scoped] services reset at the
+    // end of each request and job."
+    it('resets the panel when the application has panels', function () {
+        $panels = new Tinvar\Auth\PanelContext();
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $kernel = new Kernel(
+            orm: new Orm($fixture->connection, new IdentityMap('test')),
+            routes: new RouteRegistry(),
+            queries: new QueryRegistry(),
+            actions: new ActionRegistry(),
+            auth: new AuthContext(),
+            policies: new PolicyRegistry(),
+            resolver: static fn (string $class): object => new $class(),
+            allowedQueries: static fn (Request $r): array => [],
+            panels: $panels,
+        );
+
+        expect($kernel->scope->names())->toBe(['orm', 'auth', 'policies', 'panels']);
+    });
 });
 
 /**
