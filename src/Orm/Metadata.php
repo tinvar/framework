@@ -1,0 +1,247 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tinvar\Orm;
+
+use Tinvar\Attributes\BelongsTo;
+use Tinvar\Attributes\Column;
+use Tinvar\Attributes\HasMany;
+use Tinvar\Attributes\Id;
+use Tinvar\Attributes\Table;
+use Tinvar\Attributes\TenantScoped;
+use Tinvar\Support\Str;
+
+/**
+ * The metadata compiler. Reflection runs once per model and the result is cached
+ * for the life of the worker; nothing here runs per request
+ * (tinvar-spec.md, "Engine layers").
+ */
+final class Metadata
+{
+    /** @var array<class-string<Model>, ModelMeta> */
+    private static array $compiled = [];
+
+    /** @param class-string<Model> $class */
+    public static function for(string $class): ModelMeta
+    {
+        return self::$compiled[$class] ??= self::compile($class);
+    }
+
+    public static function forget(): void
+    {
+        self::$compiled = [];
+    }
+
+    /** @param class-string<Model> $class */
+    private static function compile(string $class): ModelMeta
+    {
+        $reflection = new \ReflectionClass($class);
+
+        $table = $reflection->getAttributes(Table::class)[0] ?? null;
+        if ($table === null) {
+            throw MappingException::noTable($class);
+        }
+        $tenant = $reflection->getAttributes(TenantScoped::class)[0] ?? null;
+
+        $columns = [];
+        $relations = [];
+        $idProperty = null;
+        /** @var list<array{string, string, (\Closure(mixed): mixed)|null}> $plan */
+        $plan = [];
+
+        foreach ($reflection->getProperties() as $property) {
+            $name = $property->getName();
+
+            if ($relation = self::relationFor($class, $property)) {
+                $relations[$name] = $relation;
+                continue;
+            }
+
+            $isId = $property->getAttributes(Id::class) !== [];
+            $columnAttribute = $property->getAttributes(Column::class)[0] ?? null;
+            if (!$isId && $columnAttribute === null) {
+                continue;   // virtual properties, computed hooks and plain state are not columns
+            }
+
+            $column = $columnAttribute?->newInstance()->name ?? Str::snake($name);
+            $columns[$name] = $column;
+            $plan[] = [$name, $column, self::castFor($class, $property)];
+
+            if ($isId) {
+                $idProperty = $name;
+            }
+        }
+
+        if ($idProperty === null) {
+            throw MappingException::noId($class);
+        }
+
+        return new ModelMeta(
+            class: $class,
+            table: $table->newInstance()->name,
+            idProperty: $idProperty,
+            idColumn: $columns[$idProperty],
+            columns: $columns,
+            relations: $relations,
+            tenantColumn: $tenant?->newInstance()->column,
+            hydrator: self::compileHydrator($class, $plan),
+            readKey: self::compileKeyReader($class, $idProperty),
+            write: self::compileWriter($class),
+            read: self::compileReader($class),
+        );
+    }
+
+    /**
+     * One closure per model, bound to the model's own scope so ORM-owned
+     * properties stay `private(set)` to everyone else. This is what the spec
+     * means by a generated hydrator: no reflection on the hot path.
+     *
+     * @param class-string<Model> $class
+     * @param list<array{string, string, (\Closure(mixed): mixed)|null}> $plan
+     * @return \Closure(Model, array<string, mixed>): void
+     */
+    private static function compileHydrator(string $class, array $plan): \Closure
+    {
+        /** @var \Closure(Model, array<string, mixed>): void $bound */
+        $bound = \Closure::bind(
+            static function (Model $model, array $row) use ($plan): void {
+                foreach ($plan as [$property, $column, $cast]) {
+                    if (!\array_key_exists($column, $row)) {
+                        continue;
+                    }
+                    $value = $row[$column];
+                    $model->{$property} = ($cast === null || $value === null) ? $value : $cast($value);
+                }
+            },
+            null,
+            $class,
+        );
+
+        return $bound;
+    }
+
+    /**
+     * @param class-string<Model> $class
+     * @return \Closure(Model): string
+     */
+    private static function compileKeyReader(string $class, string $idProperty): \Closure
+    {
+        /** @var \Closure(Model): string $bound */
+        $bound = \Closure::bind(
+            static fn (Model $model): string => (string) $model->{$idProperty},
+            null,
+            $class,
+        );
+
+        return $bound;
+    }
+
+    /**
+     * @param class-string<Model> $class
+     * @return \Closure(Model, string, mixed): void
+     */
+    private static function compileWriter(string $class): \Closure
+    {
+        /** @var \Closure(Model, string, mixed): void $bound */
+        $bound = \Closure::bind(
+            static function (Model $model, string $property, mixed $value): void {
+                $model->{$property} = $value;
+            },
+            null,
+            $class,
+        );
+
+        return $bound;
+    }
+
+    /**
+     * @param class-string<Model> $class
+     * @return \Closure(Model, string): mixed
+     */
+    private static function compileReader(string $class): \Closure
+    {
+        /** @var \Closure(Model, string): mixed $bound */
+        $bound = \Closure::bind(
+            static fn (Model $model, string $property): mixed => $model->{$property},
+            null,
+            $class,
+        );
+
+        return $bound;
+    }
+
+    /** @param class-string<Model> $class */
+    private static function relationFor(string $class, \ReflectionProperty $property): ?RelationMeta
+    {
+        if ($hasMany = ($property->getAttributes(HasMany::class)[0] ?? null)) {
+            $attribute = $hasMany->newInstance();
+
+            return new RelationMeta(
+                kind: RelationKind::HasMany,
+                owner: $class,
+                property: $property->getName(),
+                target: $attribute->target,
+                foreignKey: $attribute->foreignKey ?? Str::snake(Str::shortName($class)) . '_id',
+                orderBy: $attribute->orderBy,
+            );
+        }
+
+        if ($belongsTo = ($property->getAttributes(BelongsTo::class)[0] ?? null)) {
+            $attribute = $belongsTo->newInstance();
+            $target = $attribute->target ?? self::typeOf($property);
+            if ($target === null || !is_subclass_of($target, Model::class)) {
+                throw MappingException::untypedRelation($class, $property->getName());
+            }
+
+            return new RelationMeta(
+                kind: RelationKind::BelongsTo,
+                owner: $class,
+                property: $property->getName(),
+                target: $target,
+                foreignKey: $attribute->foreignKey ?? Str::snake(Str::shortName($target)) . '_id',
+            );
+        }
+
+        return null;
+    }
+
+    /** @return class-string|null */
+    private static function typeOf(\ReflectionProperty $property): ?string
+    {
+        $type = $property->getType();
+        if (!$type instanceof \ReflectionNamedType || $type->isBuiltin()) {
+            return null;
+        }
+
+        /** @var class-string */
+        return $type->getName();
+    }
+
+    /**
+     * @param class-string<Model> $class
+     * @return (\Closure(mixed): mixed)|null
+     */
+    private static function castFor(string $class, \ReflectionProperty $property): ?\Closure
+    {
+        $type = $property->getType();
+        if (!$type instanceof \ReflectionNamedType) {
+            return null;
+        }
+
+        return match ($type->getName()) {
+            'string' => static fn (mixed $v): string => (string) $v,
+            'int' => static fn (mixed $v): int => (int) $v,
+            'float' => static fn (mixed $v): float => (float) $v,
+            'bool' => static fn (mixed $v): bool => (bool) $v,
+            'array' => static fn (mixed $v): array => \is_array($v)
+                ? $v
+                : (json_decode((string) $v, true, flags: JSON_THROW_ON_ERROR) ?: []),
+            \DateTimeImmutable::class => static fn (mixed $v): \DateTimeImmutable => $v instanceof \DateTimeImmutable
+                ? $v
+                : new \DateTimeImmutable((string) $v),
+            'mixed', null => null,
+            default => throw MappingException::unsupportedColumnType($class, $property->getName(), $type->getName()),
+        };
+    }
+}
