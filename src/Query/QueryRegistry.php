@@ -119,14 +119,25 @@ final class QueryRegistry
         return $this->classes[$name] ?? null;
     }
 
-    /** Query objects are stateless, so one instance per worker is enough. */
+    /**
+     * The query object for a name.
+     *
+     * Built with `new`, a query has no dependencies and so no state, and one
+     * instance per worker is enough. Built by the application's resolver, it
+     * may take services, and how long those live is the resolver's to
+     * decide: kept here for the worker's life, a query holding a
+     * request-lived service would carry one request's state into the next.
+     * So it is asked every time -- a container keeps what should be kept.
+     */
     public function instanceFor(string $name): object
     {
         $class = $this->classes[$name];
 
-        return $this->instances[$name] ??= $this->resolver !== null
-            ? ($this->resolver)($class)
-            : new $class();
+        if ($this->resolver !== null) {
+            return ($this->resolver)($class);
+        }
+
+        return $this->instances[$name] ??= new $class();
     }
 
     /**
