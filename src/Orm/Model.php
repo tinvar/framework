@@ -97,7 +97,10 @@ abstract class Model
         return $this->changes() !== [];
     }
 
-    /** @internal called by Orm after a read or a write @param array<string, mixed> $values */
+    /**
+     * @internal called by Orm after a read or a write
+     * @param array<string, mixed> $values
+     */
     public function markClean(array $values): void
     {
         $this->original = $values;

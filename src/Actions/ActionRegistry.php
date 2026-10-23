@@ -29,7 +29,10 @@ final class ActionRegistry
     /** @param (\Closure(class-string): object)|null $resolver */
     public function __construct(private readonly ?\Closure $resolver = null) {}
 
-    /** @param class-string $class @return list<CompiledAction> */
+    /**
+     * @param class-string $class
+     * @return list<CompiledAction>
+     */
     public function register(string $class): array
     {
         $reflection = new \ReflectionClass($class);
@@ -70,7 +73,10 @@ final class ActionRegistry
         return $compiled;
     }
 
-    /** @param list<class-string> $classes @return list<CompiledAction> */
+    /**
+     * @param list<class-string> $classes
+     * @return list<CompiledAction>
+     */
     public function registerAll(array $classes): array
     {
         $out = [];

@@ -39,7 +39,11 @@ final class IdentityMap
         $this->tenantByFiber = new \WeakMap();
     }
 
-    /** @template T of object @param class-string<T> $class @return T|null */
+    /**
+     * @template T of object
+     * @param class-string<T> $class
+     * @return T|null
+     */
     public function get(string $class, string $id): ?object
     {
         /** @var T|null */

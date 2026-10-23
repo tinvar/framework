@@ -23,7 +23,10 @@ interface Store
 
     public function forget(string $key): void;
 
-    /** @param list<string> $tags @return int how many entries went */
+    /**
+     * @param list<string> $tags
+     * @return int how many entries went
+     */
     public function forgetTags(array $tags): int;
 
     public function flush(): void;

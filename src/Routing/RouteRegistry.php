@@ -90,7 +90,10 @@ final class RouteRegistry
         return $route;
     }
 
-    /** @param list<class-string> $classes @return list<CompiledRoute> */
+    /**
+     * @param list<class-string> $classes
+     * @return list<CompiledRoute>
+     */
     public function registerAll(array $classes): array
     {
         return array_map($this->register(...), $classes);

@@ -27,20 +27,29 @@ final class Collection implements \IteratorAggregate, \Countable, \ArrayAccess
     /** @var (\Closure(): list<T>)|null */
     private ?\Closure $loader;
 
-    /** @param list<T>|null $items @param (\Closure(): list<T>)|null $loader */
+    /**
+     * @param list<T>|null $items
+     * @param (\Closure(): list<T>)|null $loader
+     */
     private function __construct(?array $items, ?\Closure $loader)
     {
         $this->loaded = $items;
         $this->loader = $loader;
     }
 
-    /** @param list<T> $items @return self<T> */
+    /**
+     * @param list<T> $items
+     * @return self<T>
+     */
     public static function of(array $items): self
     {
         return new self($items, null);
     }
 
-    /** @param \Closure(): list<T> $loader @return self<T> */
+    /**
+     * @param \Closure(): list<T> $loader
+     * @return self<T>
+     */
     public static function lazy(\Closure $loader): self
     {
         return new self(null, $loader);
@@ -100,13 +109,19 @@ final class Collection implements \IteratorAggregate, \Countable, \ArrayAccess
         return $this->items;
     }
 
-    /** @param \Closure(T): mixed $fn @return list<mixed> */
+    /**
+     * @param \Closure(T): mixed $fn
+     * @return list<mixed>
+     */
     public function map(\Closure $fn): array
     {
         return array_map($fn, $this->items);
     }
 
-    /** @param \Closure(T): bool $fn @return list<T> */
+    /**
+     * @param \Closure(T): bool $fn
+     * @return list<T>
+     */
     public function filter(\Closure $fn): array
     {
         return array_values(array_filter($this->items, $fn));
