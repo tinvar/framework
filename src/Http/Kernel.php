@@ -13,6 +13,7 @@ use Tinvar\Auth\PolicyGate;
 use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Cache\QueryCache;
 use Tinvar\Http\Endpoints\ActionEndpoint;
+use Tinvar\Http\Endpoints\BootstrapEndpoint;
 use Tinvar\Http\Endpoints\FragmentEndpoint;
 use Tinvar\Http\Endpoints\QueryEndpoint;
 use Tinvar\Http\Middleware\RequireAuthentication;
@@ -21,6 +22,7 @@ use Tinvar\Http\Middleware\VerifyCsrfToken;
 use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
+use Tinvar\Render\FragmentManifest;
 use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\Router;
@@ -58,6 +60,9 @@ final class Kernel
      * that would answer with a half-configured one.
      */
     public readonly ?FragmentEndpoint $fragments_;
+
+    /** Mounted only when an application has statically-built pages to bootstrap. */
+    public readonly ?BootstrapEndpoint $bootstrap_;
     public readonly RequestScope $scope;
     public readonly ?PanelContext $panels;
 
@@ -121,6 +126,7 @@ final class Kernel
         ?Throttle $throttle = null,
         array $limits = self::DEFAULT_LIMITS,
         ?PanelContext $panels = null,
+        ?FragmentManifest $manifest = null,
     ) {
         $this->panels = $panels;
         $gate ??= new PolicyGate($this->policies, $this->auth);
@@ -191,6 +197,13 @@ final class Kernel
             panels: $panels,
         );
 
+        // Both, or neither: a manifest says which boundaries exist, and
+        // FragmentSupport is what can sign for them. Either alone cannot
+        // answer a bootstrap request.
+        $this->bootstrap_ = $fragments === null || $manifest === null || !$manifest->hasAny()
+            ? null
+            : new BootstrapEndpoint($this->routes, $manifest, $fragments);
+
         $this->exceptions = new ExceptionHandler($log);
         $this->scope = RequestScope::standard($this->orm, $this->auth, $this->policies, $panels);
     }
@@ -216,6 +229,15 @@ final class Kernel
 
             // Before the other two, because its prefix is as specific and the
             // order should not depend on which was written first.
+            // Behind the action stack: it is a POST that mints, so it wants
+            // the CSRF and throttling an action gets.
+            if ($this->bootstrap_ !== null && $this->bootstrap_->matches($request)) {
+                return $this->actionStack->run(
+                    $request,
+                    fn (Request $passed): Response => $this->bootstrap_->handle($passed, $rawBody),
+                );
+            }
+
             if ($this->fragments_ !== null && $this->fragments_->matches($request)) {
                 return $this->fragments_->handle($request);
             }

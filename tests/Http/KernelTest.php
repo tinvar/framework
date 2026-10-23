@@ -477,3 +477,59 @@ describe('throttling', function () {
         expect($statuses)->toBe([200, 200, 200, 200, 200]);
     });
 });
+
+/**
+ * The bootstrap endpoint had to be mounted to be reachable, and the first
+ * attempt at mounting it silently did not apply -- the Kernel had no
+ * bootstrap_ property at all, and the suite reported a warning rather than a
+ * failure. These assert the wiring, not just the construction.
+ */
+describe('bootstrap through the kernel', function () {
+    it('mounts one when an application has both a manifest and fragment support', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $signer = new Tinvar\Support\Signer('k', Tinvar\Render\FragmentToken::PURPOSE);
+
+        $routes = new RouteRegistry();
+        $routes->registerAll([
+            Tinvar\Tests\Routing\Fixtures\RootLayout::class,
+            Tinvar\Tests\Routing\Fixtures\SiteLayout::class,
+            Tinvar\Tests\Routing\Fixtures\RackShowPage::class,
+        ]);
+
+        $auth = new AuthContext();
+        $auth->login(new AuthUser('u-1'));
+
+        $kernel = new Kernel(
+            orm: new Orm($fixture->connection, new IdentityMap('test')),
+            routes: $routes,
+            queries: new QueryRegistry(),
+            actions: new ActionRegistry(),
+            auth: $auth,
+            policies: new PolicyRegistry(),
+            resolver: static fn (string $class): object => new $class(),
+            allowedQueries: static fn (Request $r): array => [],
+            fragments: new Tinvar\Http\FragmentSupport(
+                signer: $signer,
+                builds: new Tinvar\Http\BuildRegistry('b1'),
+                render: static fn (): mixed => null,
+                sessionId: static fn (Request $r): string => 'session-abc',
+            ),
+            manifest: (new Tinvar\Render\FragmentManifest())
+                ->declare('racks.show', 'history', 'UnitHistory'),
+        );
+
+        expect($kernel->bootstrap_)->not->toBeNull();
+
+        $response = $kernel->handle(
+            guardedPost(Tinvar\Http\Endpoints\BootstrapEndpoint::PATH),
+            render(),
+            json_encode([
+                'route' => 'racks.show',
+                'params' => ['site' => $fixture->ids['sites'][0], 'rack' => $fixture->ids['racks'][0]],
+            ]),
+        );
+
+        expect($response->status)->toBe(200)
+            ->and(json_decode($response->body(), true)['tokens'])->toHaveKey('history');
+    });
+});
