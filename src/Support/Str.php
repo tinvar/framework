@@ -41,4 +41,29 @@ final class Str
 
         return implode('.', $tail);
     }
+
+    /**
+     * An ASCII identifier: what a TypeScript property or function name can
+     * be written as without quoting or escaping.
+     *
+     * Names from attributes reach generated TypeScript, so they are checked
+     * when they are registered rather than trusted to be well-formed by the
+     * time codegen writes them into source.
+     */
+    public static function isIdentifier(string $value): bool
+    {
+        return preg_match('/^[A-Za-z_][A-Za-z0-9_]*\z/', $value) === 1;
+    }
+
+    /** Identifiers joined by dots: `racks.show`, `RackActions.moveUnit`. */
+    public static function isDottedIdentifier(string $value): bool
+    {
+        return preg_match('/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\z/', $value) === 1;
+    }
+
+    /** A view path: segments of letters, digits, `_` and `-`, joined by `/`. */
+    public static function isViewPath(string $value): bool
+    {
+        return preg_match('#^[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*\z#', $value) === 1;
+    }
 }

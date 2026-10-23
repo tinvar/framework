@@ -105,6 +105,13 @@ final class ActionRegistry
         $class = $reflection->getName();
         $where = "{$class}::{$method->getName()}()";
 
+        // The name becomes a generated TypeScript stub, so it is checked
+        // here, where it is declared, rather than written into source as is.
+        $actionName = $declaration->name ?? Str::shortName($class) . '.' . $method->getName();
+        if (!Str::isDottedIdentifier($actionName)) {
+            throw ActionException::badName($where, $actionName);
+        }
+
         // The class's checks first, then the method's, and the action must
         // pass every one. Only the method's own count as covering an input.
         $checks = Authorize::declaredOn($class, $method->getName());
@@ -224,7 +231,7 @@ final class ActionRegistry
         }
 
         return new CompiledAction(
-            name: $declaration->name ?? Str::shortName($class) . '.' . $method->getName(),
+            name: $actionName,
             class: $class,
             method: $method->getName(),
             checks: $checks,

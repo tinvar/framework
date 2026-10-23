@@ -21,6 +21,22 @@ final class RoutingException extends \RuntimeException
         return new self("Two routes are named '{$name}': {$first} and {$second}.");
     }
 
+    public static function badView(string $class, string $view): self
+    {
+        return new self(
+            "{$class} declares view '{$view}', which is not a view path. A view is segments of letters, "
+            . "digits, '_' and '-' joined by '/', as in 'racks/show'.",
+        );
+    }
+
+    public static function badName(string $class, string $name): self
+    {
+        return new self(
+            "{$class} declares route name '{$name}', which is not a dotted identifier. A route name is "
+            . "identifiers joined by '.', as in 'racks.show'.",
+        );
+    }
+
     public static function missingAttribute(string $class): self
     {
         return new self("{$class} has neither a #[Page] nor a #[Layout] attribute.");

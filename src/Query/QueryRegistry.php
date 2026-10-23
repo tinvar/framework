@@ -73,6 +73,24 @@ final class QueryRegistry
         $declaration = $attribute->newInstance();
         $name = $declaration->name ?? Str::queryName($class);
 
+        // The name becomes a generated TypeScript function and the argument
+        // keys its parameter's properties, so both are checked here, where
+        // they are declared, rather than written into source as they come.
+        if (!Str::isDottedIdentifier($name)) {
+            throw new \InvalidArgumentException(
+                "{$class} is registered as query '{$name}', which is not a dotted identifier. A query name "
+                . "is identifiers joined by '.', as in 'racks.unitLoad'.",
+            );
+        }
+        foreach (array_keys($declaration->args) as $argument) {
+            if (!Str::isIdentifier((string) $argument)) {
+                throw new \InvalidArgumentException(
+                    "{$class} declares #[Query(args:)] key '{$argument}', which is not an identifier. "
+                    . 'An argument name is letters, digits and _, not starting with a digit.',
+                );
+            }
+        }
+
         // Replacing silently meant a route's allowlist entry, a cache key and
         // a generated TypeScript function all started meaning a different
         // class -- one with its own checks -- depending on which registered

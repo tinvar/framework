@@ -35,6 +35,14 @@ final class ActionException extends \RuntimeException
         );
     }
 
+    public static function badName(string $where, string $name): self
+    {
+        return new self(
+            "{$where} is registered as action '{$name}', which is not a dotted identifier. An action name "
+            . "is identifiers joined by '.', as in 'RackActions.moveUnit'.",
+        );
+    }
+
     public static function duplicate(string $name, string $first, string $second): self
     {
         return new self("Two actions are named '{$name}': {$first} and {$second}.");

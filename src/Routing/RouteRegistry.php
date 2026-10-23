@@ -9,6 +9,7 @@ use Tinvar\Attributes\Layout;
 use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\Page;
 use Tinvar\Auth\BuildRules;
+use Tinvar\Support\Str;
 
 /**
  * Routes come from attributes on classes. There are no route files.
@@ -50,6 +51,17 @@ final class RouteRegistry
         $kind = $pageAttribute !== null ? RouteKind::Page : RouteKind::Layout;
         $declaration = ($pageAttribute ?? $layoutAttribute)->newInstance();
         $name = $declaration instanceof Page ? $declaration->name : null;
+
+        // Both reach generated TypeScript -- PageProps<'racks/show'>,
+        // route('racks.show') -- so a quote, a backslash or a newline in
+        // either would be written into source. Refused here, where the
+        // declaration is read, rather than left for codegen to escape.
+        if (!Str::isViewPath($declaration->view)) {
+            throw RoutingException::badView($class, $declaration->view);
+        }
+        if ($name !== null && !Str::isDottedIdentifier($name)) {
+            throw RoutingException::badName($class, $name);
+        }
 
         // Compiled once; parameter names are derived from the same pass.
         $segments = self::compile($declaration->path);
