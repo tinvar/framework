@@ -199,3 +199,17 @@ it('begins deferred when asked to', function () {
         removeDatabase($path);
     }
 });
+
+// A long render, or a caller that never resets, must not grow the log
+// without bound; the count, which budgets read, goes on.
+it('keeps at most a bounded log of statements, and counts them all', function () {
+    $connection = PdoConnection::sqlite(':memory:');
+
+    for ($i = 0; $i < PdoConnection::MAX_LOGGED + 10; $i++) {
+        $connection->select('SELECT ' . $i);
+    }
+
+    expect($connection->statementLog())->toHaveCount(PdoConnection::MAX_LOGGED)
+        ->and($connection->statementLog()[0])->toBe('SELECT 0')
+        ->and($connection->statementCount())->toBe(PdoConnection::MAX_LOGGED + 10);
+});

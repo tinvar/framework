@@ -97,11 +97,18 @@ it('renders the catalog end to end', function () {
 
 it('batches every availability query into one frame and no statement', function () {
     [$kernel, $renderer] = shopKernel();
+    $statements = null;
 
     try {
         $kernel->orm->connection()->resetStatementCount();
-        [, $result] = renderCatalog($kernel);
-        $statements = $kernel->orm->connection()->statementCount();
+        // Read as the render streams, since the request's teardown resets
+        // the count once it is done; the last flush comes after every query.
+        $result = $kernel->render(
+            Request::get('/', ['accept' => 'text/html']),
+            static function () use ($kernel, &$statements): void {
+                $statements = $kernel->orm->connection()->statementCount();
+            },
+        );
     } finally {
         $renderer->stop();
     }

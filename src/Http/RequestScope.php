@@ -46,6 +46,11 @@ final class RequestScope
         // The identity map and the relation-row caches: one request, one map.
         $scope->add('orm', $orm->flush(...));
 
+        // The statement count and log, which query budgets and the dev
+        // toolbar read per request. Never cleared on a worker, the log grew
+        // with every request it served.
+        $scope->add('statements', $orm->connection()->resetStatementCount(...));
+
         // The current user. Carrying this over is the worst of the three.
         $scope->add('auth', $auth->reset(...));
 

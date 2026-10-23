@@ -370,6 +370,17 @@ describe('the reset contract', function () {
         expect($kernel->orm->identityMap()->count())->toBe(0);
     });
 
+    // Never cleared on a worker, the statement log grew with every request:
+    // twelve thousand entries and 1.45 MB of SQL after three thousand.
+    it('clears the statement log and count when the request ends', function () {
+        [$kernel, $fixture] = kernel(new AuthUser('u-1'));
+
+        $kernel->handle(Request::get(showPath($fixture)), render());
+
+        expect($kernel->orm->connection()->statementLog())->toBe([])
+            ->and($kernel->orm->connection()->statementCount())->toBe(0);
+    });
+
     it('resets even when the request failed', function () {
         [$kernel] = kernel(new AuthUser('u-1'));
 
@@ -484,7 +495,7 @@ describe('the reset contract', function () {
     it('covers every resettable the framework owns', function () {
         [$kernel] = kernel();
 
-        expect($kernel->scope->names())->toBe(['orm', 'auth', 'policies', 'queries']);
+        expect($kernel->scope->names())->toBe(['orm', 'statements', 'auth', 'policies', 'queries']);
     });
 
     // "Tenant, auth, PANEL, identity map and #[Scoped] services reset at the
@@ -504,7 +515,7 @@ describe('the reset contract', function () {
             panels: $panels,
         );
 
-        expect($kernel->scope->names())->toBe(['orm', 'auth', 'policies', 'panels', 'queries']);
+        expect($kernel->scope->names())->toBe(['orm', 'statements', 'auth', 'policies', 'panels', 'queries']);
     });
 });
 

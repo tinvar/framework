@@ -6,6 +6,16 @@ namespace Tinvar\Orm;
 
 final class PdoConnection implements Connection
 {
+    /**
+     * The most statements the log keeps between resets; the count goes on.
+     *
+     * The reset contract clears the log after every request. This bounds it
+     * whatever runs without one -- a long job, a caller that never resets --
+     * since every statement the ORM builds is a fresh string, and a worker
+     * kept twelve thousand of them, 1.45 MB, after three thousand requests.
+     */
+    public const int MAX_LOGGED = 1000;
+
     private int $statements = 0;
 
     /** @var list<string> */
@@ -234,7 +244,7 @@ final class PdoConnection implements Connection
     private function record(string $sql): void
     {
         $this->statements++;
-        if ($this->logSql) {
+        if ($this->logSql && \count($this->log) < self::MAX_LOGGED) {
             $this->log[] = $sql;
         }
     }
