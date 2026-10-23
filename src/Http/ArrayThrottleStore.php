@@ -29,6 +29,13 @@ final class ArrayThrottleStore implements ThrottleStore
     /** @var array<string, array{count: int, resetsAt: int}> */
     private array $windows = [];
 
+    /**
+     * When to sweep next. Doubled past what a sweep leaves behind: with that
+     * many windows still live, sweeping on every hit made each one cost the
+     * whole array -- the growth this bound exists to stop, paid in CPU.
+     */
+    private int $sweepAt = self::SWEEP_AT;
+
     /** @param (\Closure(): int)|null $clock for tests; defaults to time() */
     public function __construct(private readonly ?\Closure $clock = null) {}
 
@@ -36,8 +43,9 @@ final class ArrayThrottleStore implements ThrottleStore
     {
         $now = $this->clock === null ? time() : ($this->clock)();
 
-        if (\count($this->windows) >= self::SWEEP_AT) {
+        if (\count($this->windows) >= $this->sweepAt) {
             $this->sweep($now);
+            $this->sweepAt = max(self::SWEEP_AT, 2 * \count($this->windows));
         }
 
         $current = $this->windows[$key] ?? null;
@@ -57,6 +65,7 @@ final class ArrayThrottleStore implements ThrottleStore
     public function flush(): void
     {
         $this->windows = [];
+        $this->sweepAt = self::SWEEP_AT;
     }
 
     /**

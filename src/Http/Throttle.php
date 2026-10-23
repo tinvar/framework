@@ -149,7 +149,18 @@ final class Throttle
     private function addressFor(Request $request): string
     {
         $address = ($this->addressOf)($request);
+        if ($address === '') {
+            return self::UNIDENTIFIED;
+        }
 
-        return $address === '' ? self::UNIDENTIFIED : $address;
+        // One IPv6 subscriber is handed a whole /64, so counting per address
+        // gave each of them 2^64 budgets. The prefix is the unit a network
+        // actually assigns.
+        $packed = @inet_pton($address);
+        if ($packed !== false && \strlen($packed) === 16 && !str_starts_with($packed, str_repeat("\0", 10) . "\xff\xff")) {
+            return bin2hex(substr($packed, 0, 8)) . '::/64';
+        }
+
+        return $address;
     }
 }
