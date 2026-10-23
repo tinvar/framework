@@ -333,4 +333,30 @@ describe('the middleware', function () {
                 ->and($e->headers['x-ratelimit-remaining'])->toBe('0');
         }
     });
+
+    // The account pass runs inside the address pass, and the address pass
+    // used to overwrite its headers on the way out: a customer on a laptop
+    // and then a phone was told "3 left" one request before being refused.
+    it('advertises the strictest budget of the passes that ran', function () use ($next) {
+        [$throttle, $auth] = throttle();
+        $auth->login(new AuthUser('u-1'));
+        $byAddress = new ThrottleRequests($throttle, 'actions', 5, 60, byAddress: true);
+        $byAccount = new ThrottleRequests($throttle, 'actions', 5, 60, byAddress: false);
+        $from = static fn (string $address): Response => $byAddress->handle(
+            new Request('POST', '/_action/x', ['x-forwarded-for' => $address]),
+            static fn (Request $r): Response => $byAccount->handle($r, $next),
+        );
+
+        $remaining = [];
+        foreach (['198.51.100.7', '198.51.100.7', '198.51.100.7', '203.0.113.9', '203.0.113.9'] as $address) {
+            $remaining[] = $from($address)->header('x-ratelimit-remaining');
+        }
+
+        // And the other way round: an address another account has spent.
+        $auth->login(new AuthUser('u-2'));
+        $shared = $from('198.51.100.7');
+
+        expect($remaining)->toBe(['4', '3', '2', '1', '0'], 'the account, closest to running out')
+            ->and($shared->header('x-ratelimit-remaining'))->toBe('1', 'the address, closest to running out');
+    });
 });

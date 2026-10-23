@@ -82,6 +82,15 @@ final class ThrottleRequests implements Middleware
             return $response;
         }
 
+        // A pass inside this one -- the account's, inside the address's --
+        // has already said what is left, and the caller should pace itself
+        // by whichever budget runs out first. Overwriting it told a customer
+        // "3 left" one request before their account's budget refused them.
+        $advertised = $response->header('x-ratelimit-remaining');
+        if ($advertised !== null && (int) $advertised <= $result->remaining) {
+            return $response;
+        }
+
         foreach ($result->headers() as $header => $value) {
             $response = $response->withHeader($header, $value);
         }
