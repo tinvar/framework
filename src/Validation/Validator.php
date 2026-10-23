@@ -276,7 +276,7 @@ final class Validator
             return $raw;
         }
         // Deliberately strict: '12abc', '1e3' and ' 12' are not integers.
-        if (\is_string($raw) && preg_match('/^-?\d+$/', $raw) === 1) {
+        if (\is_string($raw) && preg_match('/^-?\d+\z/', $raw) === 1) {
             return (int) $raw;
         }
 
@@ -289,7 +289,7 @@ final class Validator
         if (\is_int($raw) || \is_float($raw)) {
             return (float) $raw;
         }
-        if (\is_string($raw) && preg_match('/^-?\d+(\.\d+)?$/', $raw) === 1) {
+        if (\is_string($raw) && preg_match('/^-?\d+(\.\d+)?\z/', $raw) === 1) {
             return (float) $raw;
         }
 

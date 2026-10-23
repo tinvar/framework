@@ -63,7 +63,7 @@ describe('type coercion', function () {
         expect((new Validator())->passes(StrictTypesRequest::class, [
             'name' => 'a', 'ratio' => $given, 'tags' => [],
         ]))->toBeFalse();
-    })->with([' 12', '12 ', '1e3', '.5', 'abc']);
+    })->with([' 12', '12 ', '1e3', '.5', 'abc', "1.5\n"]);
 
     it('accepts a well-formed float', function () {
         expect((new Validator())->validate(StrictTypesRequest::class, [

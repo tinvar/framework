@@ -94,7 +94,7 @@ describe('types do the first half of the work', function () {
     it('refuses an integer that is not one', function (string $given) {
         expect(fn () => (new Validator())->validate(MoveUnitRequest::class, ['position' => $given]))
             ->toThrow(ValidationException::class);
-    })->with(['12abc', '1e3', ' 12', '12.0', 'twelve', '']);
+    })->with(['12abc', '1e3', ' 12', '12.0', 'twelve', '', "12\n"]);
 
     it('accepts a well-formed integer', function () {
         expect((new Validator())->validate(MoveUnitRequest::class, ['position' => '12'])->position)->toBe(12);

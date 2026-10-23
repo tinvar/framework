@@ -1002,7 +1002,7 @@ final class Orm
     /** @param list<string> $alsoAllowed identifiers compiled elsewhere in the metadata */
     private static function identifier(ModelMeta $meta, string $column, array $alsoAllowed = []): string
     {
-        if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $column) !== 1) {
+        if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*\z/', $column) !== 1) {
             throw MappingException::malformedIdentifier($column);
         }
 

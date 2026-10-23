@@ -297,7 +297,7 @@ final class Binder
     {
         // A non-integer where an int is declared is a path that does not exist,
         // not a server error.
-        if (preg_match('/^-?\d+$/', $value) !== 1) {
+        if (preg_match('/^-?\d+\z/', $value) !== 1) {
             throw new NotFoundException('Path segment is not an integer.');
         }
 
