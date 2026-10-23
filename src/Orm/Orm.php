@@ -340,6 +340,19 @@ final class Orm
     /** @param class-string<Model> $class */
     public function find(string $class, string $id): ?Model
     {
+        // Every key is a UUIDv7 this Orm minted, so anything else names no
+        // row -- and must be answered as such without asking the database.
+        // Postgres refuses a malformed value for a uuid column outright, so
+        // a route segment like /racks/nope was a 500 rather than a 404, and
+        // inside a transaction the refusal would abort the transaction too.
+        //
+        // After the tenant check, which must fail closed whatever the key.
+        if (!Uuid::isValid($id)) {
+            $this->tenantScope(Metadata::for($class));
+
+            return null;
+        }
+
         // The identity map is keyed by tenant but knows nothing of scoping, so
         // a row read inside acrossTenants() would otherwise answer a later
         // scoped read for the same id. Unscoped reads bypass the caches

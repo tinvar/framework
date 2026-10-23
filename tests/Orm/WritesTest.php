@@ -233,3 +233,14 @@ describe('writes are tenant-scoped', function () {
         });
     });
 });
+
+// Postgres refuses a malformed value for a uuid column, so /racks/nope was a
+// 500 -- and inside a transaction it would abort the transaction.
+it('finds nothing for a key that is not a UUID, without asking the database', function (string $id) {
+    $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+    $fixture->connection->resetStatementCount();
+
+    expect($orm->find(Rack::class, $id))->toBeNull()
+        ->and($fixture->connection->statementCount())->toBe(0);
+})->with(['nope', '', "01a166b1-0816-74c0-b4d5-2e9eb49b0838\n", '01a166b1-0816-74c0-b4d5-2e9eb49b0838 x']);
