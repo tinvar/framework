@@ -294,6 +294,19 @@ final class Orm
     }
 
     /**
+     * The common tail of hydrating a row: attach it, wire its relations and
+     * snapshot it for change tracking.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function settle(Model $model, ModelMeta $meta, array $row, ResultSet $resultSet): void
+    {
+        $model->attach($this, $resultSet);
+        $this->installRelations($model, $meta, $row);
+        $model->markClean($this->writeValues($model, $meta));
+    }
+
+    /**
      * @param class-string<Model> $class
      * @param list<array<string, mixed>> $rows
      * @return list<Model>
@@ -306,20 +319,35 @@ final class Orm
 
         $unscoped = $this->isUnscoped();
 
+        $reflection = new \ReflectionClass($class);
+
         foreach ($rows as $row) {
             $id = (string) ($row[$meta->idColumn] ?? '');
             $model = $unscoped ? null : $this->identityMap->get($class, $id);
 
             if ($model === null) {
                 /** @var Model $model */
-                $model = (new \ReflectionClass($class))->newInstanceWithoutConstructor();
+                $model = $reflection->newInstanceWithoutConstructor();
                 $meta->hydrate($model, $row);
                 if (!$unscoped) {
                     $model = $this->identityMap->remember($class, $id, $model);
                 }
-                $model->attach($this, $resultSet);
-                $this->installRelations($model, $meta, $row);
-                $model->markClean($this->writeValues($model, $meta));
+                $this->settle($model, $meta, $row, $resultSet);
+            } elseif ($reflection->isUninitializedLazyObject($model)) {
+                // A #[BelongsTo] put a ghost here from a foreign key: a
+                // promise that a row exists, not the row. We are now holding
+                // that row. Discarding it left the ghost to fetch the same
+                // row again on first touch -- one extra statement for a row
+                // already in hand, and a window where find() saw a model that
+                // was not persisted.
+                //
+                // The object itself is kept, because other holders already
+                // reference it and identity is the point of this map. It is
+                // marked initialized FIRST: writing to a live ghost would run
+                // its initializer, which is the fetch being avoided.
+                $reflection->markLazyObjectAsInitialized($model);
+                $meta->hydrate($model, $row);
+                $this->settle($model, $meta, $row, $resultSet);
             }
 
             $resultSet->add($model);

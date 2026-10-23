@@ -150,3 +150,36 @@ it('still resolves find() from the map for a row that was read', function () {
     expect($second)->toBe($first)
         ->and($fixture->connection->statementCount())->toBe($before, 'served from the identity map');
 });
+
+/**
+ * The other half of the ghost story: when the row DOES arrive, take it.
+ *
+ * hydrateAll() reused whatever the identity map held and discarded the row it
+ * had just read, so a ghost installed by a #[BelongsTo] stayed a promise even
+ * while the fact was in hand -- one extra statement on first touch, and a
+ * window in which find() saw a model that was not persisted.
+ */
+it('fills a ghost from a row it has just read, without replacing the object', function () {
+    $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+
+    // Reading racks installs a Site ghost from site_id.
+    $rack = $orm->all(Rack::class)[0];
+    $siteId = $fixture->ids['sites'][0];
+
+    $ghost = $orm->identityMap()->get(Site::class, $siteId);
+    expect($ghost)->not->toBeNull()
+        ->and((new ReflectionClass(Site::class))->isUninitializedLazyObject($ghost))->toBeTrue();
+
+    // Now read the sites for real.
+    $orm->all(Site::class);
+    $before = $fixture->connection->statementCount();
+
+    expect($orm->identityMap()->get(Site::class, $siteId))
+        ->toBe($ghost, 'the same instance: other holders already reference it')
+        ->and((new ReflectionClass(Site::class))->isUninitializedLazyObject($ghost))->toBeFalse()
+        ->and($ghost->isPersisted())->toBeTrue()
+        ->and($ghost->code)->not->toBeEmpty()
+        ->and($fixture->connection->statementCount())
+        ->toBe($before, 'reading it costs nothing: the row was already in hand');
+});

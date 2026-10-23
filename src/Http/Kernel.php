@@ -1,0 +1,134 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tinvar\Http;
+
+use Tinvar\Actions\ActionRegistry;
+use Tinvar\Actions\ActionRunner;
+use Tinvar\Auth\AuthContext;
+use Tinvar\Auth\Gate;
+use Tinvar\Auth\PolicyGate;
+use Tinvar\Auth\PolicyRegistry;
+use Tinvar\Cache\QueryCache;
+use Tinvar\Http\Endpoints\ActionEndpoint;
+use Tinvar\Http\Endpoints\QueryEndpoint;
+use Tinvar\Orm\Orm;
+use Tinvar\Query\QueryRegistry;
+use Tinvar\Query\QueryRunner;
+use Tinvar\Routing\LoaderRunner;
+use Tinvar\Routing\LoadedRoute;
+use Tinvar\Routing\Router;
+use Tinvar\Routing\RouteRegistry;
+use Tinvar\Validation\Validator;
+
+/**
+ * The composition root: one place where the request path is actually joined up.
+ *
+ * Phase 1 built the router, the loader runner, the gate, the validator, the
+ * action and query runners, the cache and the two endpoints -- and nothing in
+ * the repository constructed them together. Every seam was exercised only by a
+ * test that built both sides itself with a fake in the middle, which is how a
+ * page with no #[Authorize] came to register happily, how revalidateTags()
+ * came to invalidate nothing, and how three runners came to disagree about an
+ * absent optional model. A phase with no integration point cannot notice any
+ * of that.
+ *
+ * So this is deliberately boring and deliberately complete: registries, the
+ * gate, the runners, the endpoints, an exception handler and a reset contract,
+ * in the order the spec gives them. It is not a container -- the brief asks
+ * for wiring to stay a stub behind an interface -- so dependencies come from
+ * one resolver closure.
+ */
+final class Kernel
+{
+    public readonly Router $router;
+    public readonly ActionEndpoint $actions_;
+    public readonly QueryEndpoint $queries_;
+    public readonly RequestScope $scope;
+
+    private readonly ExceptionHandler $exceptions;
+
+    /**
+     * @param \Closure(class-string): object $resolver builds pages, layouts, queries, actions and middleware
+     * @param \Closure(Request): list<string> $allowedQueries the route's query allowlist
+     * @param list<class-string> $globalMiddleware
+     * @param (\Closure(\Throwable, string): void)|null $log
+     */
+    public function __construct(
+        public readonly Orm $orm,
+        public readonly RouteRegistry $routes,
+        public readonly QueryRegistry $queries,
+        public readonly ActionRegistry $actions,
+        public readonly AuthContext $auth,
+        public readonly PolicyRegistry $policies,
+        \Closure $resolver,
+        \Closure $allowedQueries,
+        ?QueryCache $cache = null,
+        array $globalMiddleware = [],
+        ?Gate $gate = null,
+        ?\Closure $log = null,
+        bool $debug = false,
+    ) {
+        $gate ??= new PolicyGate($this->policies, $this->auth);
+        $cache ??= new QueryCache(new \Tinvar\Cache\ArrayStore(), $this->auth);
+
+        $this->router = new Router(
+            $this->routes,
+            new LoaderRunner($this->orm, $resolver, $gate),
+            static fn (string $class): Middleware => $resolver($class),
+            $globalMiddleware,
+        );
+
+        $this->actions_ = new ActionEndpoint(new ActionRunner(
+            $this->actions,
+            $this->orm,
+            $gate,
+            new Validator($this->orm),
+            new \Tinvar\Data\Encoder(),
+            $cache,
+        ));
+
+        $this->queries_ = new QueryEndpoint(
+            new QueryRunner(
+                registry: $this->queries,
+                orm: $this->orm,
+                gate: $gate,
+                cache: $cache,
+                debug: $debug,
+            ),
+            $allowedQueries,
+        );
+
+        $this->exceptions = new ExceptionHandler($log);
+        $this->scope = RequestScope::standard($this->orm, $this->auth, $this->policies);
+    }
+
+    /**
+     * One request, start to finish.
+     *
+     * Everything that can be thrown is classified here rather than escaping,
+     * and the scope is reset in a finally so the next request on this worker
+     * does not inherit this one's user, identity map or policy instances.
+     *
+     * @param \Closure(LoadedRoute, Request): Response $respond renders a matched route
+     */
+    public function handle(Request $request, \Closure $respond, string $rawBody = ''): Response
+    {
+        try {
+            if ($this->actions_->matches($request)) {
+                return $this->actions_->handle($request, $rawBody);
+            }
+
+            if ($this->queries_->matches($request)) {
+                return $this->queries_->handle($request, $rawBody);
+            }
+
+            return $this->router->handle($request, $respond);
+        } catch (\Throwable $e) {
+            return $this->exceptions->handle($e, $request);
+        } finally {
+            $this->scope->reset();
+        }
+    }
+}

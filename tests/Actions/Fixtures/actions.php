@@ -320,6 +320,13 @@ final class RecordingRackPolicy
 
         return true;
     }
+
+    public function view(?Authenticatable $user, Rack|string $rack): bool
+    {
+        self::$asked[] = 'rack.view';
+
+        return true;
+    }
 }
 
 final class RecordingSitePolicy
