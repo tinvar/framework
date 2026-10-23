@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Data\Surface;
 
 use Tinvar\Data\Data;
-use Tinvar\Tests\Data\Elsewhere\{ItemData, ItemData as GroupedItem};
+use Tinvar\Tests\Data\Elsewhere\{ItemData, ItemData as GroupedItem,};
 
 // This import and the next take ItemData's name in the function and
 // constant tables. Read as class imports, they would replace it.
@@ -37,7 +37,7 @@ final readonly class Local extends Data
     public function __construct(public string $id) {}
 }
 
-it('resolves docblock names through grouped use imports, passing over function and constant imports', function () {
+it('resolves docblock names through grouped use imports, a trailing comma included, passing over function and constant imports', function () {
     $data = Grouped::from(['items' => [['id' => 'a']], 'aliased' => [['id' => 'b']]]);
 
     expect($data->items[0])->toBeInstanceOf(ItemData::class)

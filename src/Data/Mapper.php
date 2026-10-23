@@ -517,7 +517,10 @@ final class Mapper
         if (preg_match('/^([^{]+)\{(.+)\}$/s', $statement, $group) === 1) {
             $prefix = rtrim(trim($group[1]), '\\');
             foreach (explode(',', $group[2]) as $part) {
-                $out += self::expandUse($prefix . '\\' . trim($part));
+                // A group may end in a trailing comma.
+                if (trim($part) !== '') {
+                    $out += self::expandUse($prefix . '\\' . trim($part));
+                }
             }
 
             return $out;
@@ -525,9 +528,6 @@ final class Mapper
 
         foreach (explode(',', $statement) as $part) {
             $part = trim($part);
-            if ($part === '') {
-                continue;
-            }
             if (preg_match('/^(.+?)\s+as\s+(\w+)$/i', $part, $m) === 1) {
                 $out[$m[2]] = ltrim(trim($m[1]), '\\');
             } else {
