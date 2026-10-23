@@ -173,12 +173,21 @@ describe('scalar parameters are coerced, not passed through', function () {
 
 describe('Precognition', function () {
     // A half-filled form is the whole point; binding the call first 404'd on
-    // the missing scalar before validation could report anything.
+    // the missing scalar before validation could report anything. It is now
+    // reported as the 422 the submit gives, rather than passed: Precognition
+    // judges scalar parameters too (see PrecognitionScalarsTest), and a
+    // whole-form call that passed what the submit refuses was the bug there.
     it('does not fail on a missing scalar parameter', function () {
         [$runner, $fixture] = runnerOf(A\OptionalActions::class);
 
-        expect($runner->run('OptionalActions.rename', ['rack' => $fixture->ids['racks'][0]], precognitive: true))
-            ->not->toBeNull();
+        try {
+            $runner->run('OptionalActions.rename', ['rack' => $fixture->ids['racks'][0]], precognitive: true);
+            $errors = [];
+        } catch (ValidationException $e) {
+            $errors = $e->errors;
+        }
+
+        expect($errors)->toBe(['name' => ['name is required.']]);
     });
 
     it('consults every form request, not just the first', function () {

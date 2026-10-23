@@ -73,15 +73,15 @@ final class ActionRunner
 
         $subject = $this->subjectOf($action, $models);
 
-        // 4. Validate, every form request before anything is reported. A
-        //    Precognition call stops here.
-        $requests = $this->validateRequests($action, $input, $subject, $models);
+        // 4. Validate, every form request and scalar parameter before
+        //    anything is reported. A Precognition call stops here.
+        [$requests, $scalars] = $this->validateInputs($action, $input, $subject, $models);
 
         if ($precognitive) {
             return ActionResult::ok();
         }
 
-        $arguments = $this->bind($action, $input, $models, $requests, $request);
+        $arguments = $this->bind($action, $models, $requests, $scalars, $request);
 
         // 5. Run the body.
         $instance = $this->registry->instanceFor($action);
@@ -137,34 +137,47 @@ final class ActionRunner
             }
         }
 
+        // The action's own scalar parameters are fields of the same form: a
+        // submit coerces and judges them, so validate-only has to as well.
+        $scalar = self::scalarParameters($action)[$field] ?? null;
+        if ($scalar !== null) {
+            $declared = true;
+            [, $found] = $this->validator->parameter($scalar, $action->where(), $input, $subject, $models);
+            $errors = self::mergeErrors($errors, [$field => $found]);
+        }
+
         // A typo would otherwise return [] and read as "this field is fine",
         // which is the hazard Validator::errorsFor refuses one layer down.
         if (!$declared) {
-            throw new \LogicException("Action '{$name}' has no form-request field named '{$field}'.");
+            throw new \LogicException(
+                "Action '{$name}' has no form-request field named '{$field}', nor a parameter of that name.",
+            );
         }
 
         return $errors[$field] ?? [];
     }
 
     /**
-     * Validates every form request the action takes, and reports what all of
-     * them found at once.
+     * Validates every form request and scalar parameter the action takes,
+     * and reports what all of them found at once.
      *
-     * Throwing on the first one's errors meant a form split across two
-     * requests showed its second half's mistakes only after the first half
-     * was fixed -- and Precognition, which asks per field, already answered
-     * for both, so the two disagreed about the same input.
+     * Throwing on the first form request's errors meant a form split across
+     * two showed its second half's mistakes only after the first half was
+     * fixed. Precognition looked at no scalar parameter at all, so a value
+     * it passed failed the submit.
      *
      * The already-resolved models are handed in, so validation cannot
      * resolve a different row from the one authorized.
      *
      * @param array<string, mixed> $input
      * @param array<string, Model> $models
-     * @return array<string, FormRequest> parameter => the request it built
+     * @return array{array<string, FormRequest>, array<string, mixed>} the
+     *         requests built and the scalars read, each by parameter
      */
-    private function validateRequests(CompiledAction $action, array $input, ?Model $subject, array $models): array
+    private function validateInputs(CompiledAction $action, array $input, ?Model $subject, array $models): array
     {
         $built = [];
+        $scalars = [];
         $errors = [];
 
         foreach ($action->formRequests as $parameter => $class) {
@@ -175,11 +188,43 @@ final class ActionRunner
             }
         }
 
+        foreach (self::scalarParameters($action) as $name => $parameter) {
+            [$value, $found] = $this->validator->parameter($parameter, $action->where(), $input, $subject, $models);
+            if ($found === []) {
+                $scalars[$name] = $value;
+            }
+            $errors = self::mergeErrors($errors, [$name => $found]);
+        }
+
         if ($errors !== []) {
             throw new ValidationException($errors);
         }
 
-        return $built;
+        return [$built, $scalars];
+    }
+
+    /**
+     * The parameters a caller fills with plain values: neither a model, a
+     * form request nor the Request.
+     *
+     * @return array<string, \ReflectionParameter>
+     */
+    private static function scalarParameters(CompiledAction $action): array
+    {
+        $scalars = [];
+        foreach ((new \ReflectionMethod($action->class, $action->method))->getParameters() as $parameter) {
+            $name = $parameter->getName();
+            $type = $parameter->getType();
+
+            if (isset($action->models[$name]) || isset($action->formRequests[$name])) {
+                continue;
+            }
+            if ($type instanceof \ReflectionNamedType && $type->isBuiltin()) {
+                $scalars[$name] = $parameter;
+            }
+        }
+
+        return $scalars;
     }
 
     /**
@@ -314,16 +359,16 @@ final class ActionRunner
     }
 
     /**
-     * @param array<string, mixed>       $input
      * @param array<string, Model>       $models
      * @param array<string, FormRequest> $requests already validated, by parameter
+     * @param array<string, mixed>       $scalars  already coerced and judged, by parameter
      * @return array<string, mixed>
      */
     private function bind(
         CompiledAction $action,
-        array $input,
         array $models,
         array $requests,
+        array $scalars,
         ?Request $request,
     ): array {
         $arguments = [];
@@ -357,19 +402,14 @@ final class ActionRunner
                 continue;
             }
 
-            if (\array_key_exists($name, $input)) {
+            if (\array_key_exists($name, $scalars)) {
                 // Coerced, not passed through: a client sending name[]=x would
                 // otherwise turn a 422 into a TypeError from inside the call.
-                $arguments[$name] = $this->validator->coerceParameter($parameter, $action->where(), $input[$name]);
+                $arguments[$name] = $scalars[$name];
                 continue;
             }
 
-            if ($parameter->isDefaultValueAvailable()) {
-                $arguments[$name] = $parameter->getDefaultValue();
-                continue;
-            }
-
-            throw new ValidationException([$name => ["{$name} is required."]]);
+            throw new \LogicException("{$action->where()}: \${$name} was neither validated nor bound.");
         }
 
         return $arguments;

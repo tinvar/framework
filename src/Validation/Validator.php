@@ -227,6 +227,52 @@ final class Validator
     }
 
     /**
+     * Reads one scalar action parameter from the input: coerced to its
+     * declared type, then judged by the rules written on it.
+     *
+     * One reader for a submit and for Precognition. The submit used to coerce
+     * a parameter while Precognition never looked at one, so `heightU=tall`
+     * passed validate-only and failed the real call -- and rules written on a
+     * parameter ran on neither.
+     *
+     * @param array<string, mixed> $input
+     * @param array<string, Model> $subjects
+     * @return array{mixed, list<string>} the value, meaningful only when the
+     *         list of what is wrong with it is empty
+     */
+    public function parameter(
+        \ReflectionParameter $parameter,
+        string $owner,
+        array $input,
+        ?Model $subject = null,
+        array $subjects = [],
+    ): array {
+        $plan = FieldPlan::of($parameter, $owner);
+        $name = $plan->name;
+
+        if (!\array_key_exists($name, $input)) {
+            return $plan->hasDefault ? [$plan->default, []] : [null, ["{$name} is required."]];
+        }
+
+        try {
+            $value = $this->coerce($input[$name], $plan);
+        } catch (CoercionFailed $failure) {
+            return [null, [$failure->getMessage()]];
+        }
+
+        $context = new ValidationContext($input, $this->orm, $subject, $subjects);
+        $errors = [];
+        foreach ($plan->rules as $rule) {
+            $message = $rule->check($value, $name, $context);
+            if ($message !== null) {
+                $errors[] = $message;
+            }
+        }
+
+        return [$value, $errors];
+    }
+
+    /**
      * Coerces one value against a parameter's declared type.
      *
      * Action parameters get the same careful conversions as form-request
