@@ -13,6 +13,8 @@ use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Cache\QueryCache;
 use Tinvar\Http\Endpoints\ActionEndpoint;
 use Tinvar\Http\Endpoints\QueryEndpoint;
+use Tinvar\Http\Middleware\RequireAuthentication;
+use Tinvar\Http\Middleware\VerifyCsrfToken;
 use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
@@ -48,6 +50,22 @@ final class Kernel
     public readonly RequestScope $scope;
 
     private readonly ExceptionHandler $exceptions;
+
+    /**
+     * The stack the two endpoints run behind.
+     *
+     * The spec gives /_action and /_query a default stack -- "web, auth,
+     * throttle:actions, plus the action's panel stack" -- and the endpoints'
+     * own docblocks say it is applied "by whoever mounts this". This is
+     * whoever mounts them. Dispatching to them outside the pipeline, as this
+     * class first did, meant CSRF, authentication and every global middleware
+     * covered the page path and nothing else: an unauthenticated,
+     * token-less POST reached an action body.
+     *
+     * Throttling is not here, because there is no throttler yet; the README
+     * says so rather than this implying otherwise.
+     */
+    private readonly Pipeline $endpoints;
 
     /**
      * @param \Closure(class-string): object $resolver builds pages, layouts, queries, actions and middleware
@@ -100,6 +118,12 @@ final class Kernel
             $allowedQueries,
         );
 
+        $this->endpoints = new Pipeline([
+            ...array_map(static fn (string $class): Middleware => $resolver($class), $globalMiddleware),
+            new VerifyCsrfToken(),
+            new RequireAuthentication($this->auth, $this->entryPointFor(...)),
+        ]);
+
         $this->exceptions = new ExceptionHandler($log);
         $this->scope = RequestScope::standard($this->orm, $this->auth, $this->policies);
     }
@@ -117,11 +141,17 @@ final class Kernel
     {
         try {
             if ($this->actions_->matches($request)) {
-                return $this->actions_->handle($request, $rawBody);
+                return $this->endpoints->run(
+                    $request,
+                    fn (Request $passed): Response => $this->actions_->handle($passed, $rawBody),
+                );
             }
 
             if ($this->queries_->matches($request)) {
-                return $this->queries_->handle($request, $rawBody);
+                return $this->endpoints->run(
+                    $request,
+                    fn (Request $passed): Response => $this->queries_->handle($passed, $rawBody),
+                );
             }
 
             return $this->router->handle($request, $respond);
@@ -130,5 +160,35 @@ final class Kernel
         } finally {
             $this->scope->reset();
         }
+    }
+
+    /**
+     * Which entry point a request targets, so #[PublicAccess] can be read off
+     * it. An unknown name resolves to null, which is not public: the endpoint
+     * refuses it anyway, and telling an anonymous caller "no such action"
+     * would be an enumeration oracle.
+     *
+     * @return array{0: class-string, 1: string|null}|null
+     */
+    private function entryPointFor(Request $request): ?array
+    {
+        if (str_starts_with($request->path, ActionEndpoint::PREFIX)) {
+            $name = substr($request->path, \strlen(ActionEndpoint::PREFIX));
+            if (!$this->actions->has($name)) {
+                return null;
+            }
+            $action = $this->actions->get($name);
+
+            return [$action->class, $action->method];
+        }
+
+        if (str_starts_with($request->path, QueryEndpoint::PREFIX)) {
+            $name = substr($request->path, \strlen(QueryEndpoint::PREFIX));
+            $class = $this->queries->classFor($name);
+
+            return $class === null ? null : [$class, '__invoke'];
+        }
+
+        return null;
     }
 }

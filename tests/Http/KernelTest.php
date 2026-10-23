@@ -15,6 +15,7 @@ use Tinvar\Actions\ActionRegistry;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Http\Kernel;
+use Tinvar\Http\Middleware\VerifyCsrfToken;
 use Tinvar\Http\Request;
 use Tinvar\Http\RequestScope;
 use Tinvar\Http\Response;
@@ -122,17 +123,102 @@ it('does not put the thrown message in the response', function () {
         ->and($response->body())->not->toContain('does-not-exist');
 });
 
+/** A POST that carries what the endpoint stack requires. */
+function guardedPost(string $path): Request
+{
+    return new Request('POST', $path, ['x-xsrf-token' => 'tok'], cookies: [
+        VerifyCsrfToken::COOKIE => 'tok',
+    ]);
+}
+
 it('runs an action end to end over its endpoint', function () {
     [$kernel, $fixture] = kernel(new AuthUser('u-1'));
 
     $response = $kernel->handle(
-        Request::post('/_action/RackActions.moveUnit'),
+        guardedPost('/_action/RackActions.moveUnit'),
         render(),
         json_encode(['rack' => $fixture->ids['racks'][0], 'position' => 12]),
     );
 
     expect($response->status)->toBe(200)
         ->and(json_decode($response->body(), true)['flash'])->toBe(['message' => 'Moved to 12']);
+});
+
+/**
+ * The endpoints used to be dispatched OUTSIDE the pipeline, so CSRF,
+ * authentication and every global middleware covered the page path and nothing
+ * else -- an unauthenticated, token-less POST reached an action body. The
+ * endpoints' own docblocks say the stack is applied "by whoever mounts this";
+ * the Kernel is whoever mounts them.
+ */
+describe('the endpoint middleware stack', function () {
+    it('refuses an action with no CSRF token', function () {
+        [$kernel, $fixture] = kernel(new AuthUser('u-1'));
+
+        $response = $kernel->handle(
+            Request::post('/_action/RackActions.moveUnit'),
+            render(),
+            json_encode(['rack' => $fixture->ids['racks'][0], 'position' => 12]),
+        );
+
+        expect($response->status)->toBe(419)
+            ->and(json_decode($response->body(), true)['error']['code'])->toBe('page_expired');
+    });
+
+    it('refuses an action from an anonymous caller', function () {
+        [$kernel, $fixture] = kernel();
+
+        $response = $kernel->handle(
+            guardedPost('/_action/RackActions.moveUnit'),
+            render(),
+            json_encode(['rack' => $fixture->ids['racks'][0], 'position' => 12]),
+        );
+
+        expect($response->status)->toBe(401)
+            ->and(json_decode($response->body(), true)['error']['code'])->toBe('unauthenticated');
+    });
+
+    it('refuses a query from an anonymous caller', function () {
+        [$kernel] = kernel();
+
+        $response = $kernel->handle(
+            guardedPost('/_query/racks.summary'),
+            render(),
+            json_encode(['args' => []]),
+        );
+
+        expect($response->status)->toBe(401);
+    });
+
+    // The body must not have run. A 401 that still wrote would be the bug
+    // wearing a status code.
+    it('does not reach the body when it refuses', function () {
+        [$kernel, $fixture] = kernel();
+        A\Trace::reset();
+
+        $kernel->handle(
+            guardedPost('/_action/RackActions.moveUnit'),
+            render(),
+            json_encode(['rack' => $fixture->ids['racks'][0], 'position' => 12]),
+        );
+
+        expect(A\Trace::$events)->toBe([]);
+    });
+
+    // #[PublicAccess] still opts out, through the Kernel's own lookup.
+    it('lets an anonymous caller reach an entry point that opts out', function () {
+        [$kernel] = kernel();
+        $kernel->actions->register(A\MixedAccessActions::class);
+
+        $response = $kernel->handle(
+            guardedPost('/_action/MixedAccessActions.status'),
+            render(),
+            '{}',
+        );
+
+        expect($response->status)->toBe(200)
+            ->and(json_decode($response->body(), true)['value'])->toBe('ok');
+    });
 });
 
 // "Tenant, auth, panel, identity map and #[Scoped] services reset at the end
