@@ -21,7 +21,7 @@ use Tinvar\Support\Signer;
 final readonly class FragmentSupport
 {
     /**
-     * @param \Closure(\Tinvar\Render\FragmentToken, Request, array<string, mixed>): Response $render
+     * @param \Closure(\Tinvar\Render\FragmentToken, Request, array<string, mixed>, list<string>): Response $render
      * @param (\Closure(string): list<string>)|null $allowedQueries the originating
      *        route's query allowlist, by route name. The ENDPOINT asks for
      *        this and hands the answer to $render, rather than letting the
