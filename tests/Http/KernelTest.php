@@ -14,6 +14,8 @@ declare(strict_types=1);
 use Tinvar\Actions\ActionRegistry;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PolicyRegistry;
+use Tinvar\Http\ArrayThrottleStore;
+use Tinvar\Http\Throttle;
 use Tinvar\Http\Kernel;
 use Tinvar\Http\Middleware\VerifyCsrfToken;
 use Tinvar\Http\Request;
@@ -78,6 +80,59 @@ function kernel(?AuthUser $user = null): array
 function showPath(Fixture $fixture): string
 {
     return '/sites/' . $fixture->ids['sites'][0] . '/racks/' . $fixture->ids['racks'][0];
+}
+
+/**
+ * @return array{0: Kernel, 1: Fixture, 2: Closure} a kernel with throttling
+ *         mounted, plus a signIn() -- the reset contract clears the user at
+ *         the end of every request, so a second request needs a session again
+ */
+function throttledKernel(int $limit = 2): array
+{
+    $fixture = new Fixture(racks: 2, unitsPerRack: 2, sites: 1);
+    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+
+    $auth = new AuthContext();
+    $auth->login(new AuthUser('u-1'));
+
+    $routes = new RouteRegistry();
+    $routes->registerAll([
+        Tinvar\Tests\Routing\Fixtures\RootLayout::class,
+        Tinvar\Tests\Routing\Fixtures\SiteLayout::class,
+        Tinvar\Tests\Routing\Fixtures\RackShowPage::class,
+    ]);
+
+    $actions = new ActionRegistry();
+    $actions->register(A\RackActions::class);
+
+    $policies = (new PolicyRegistry())->registerAll([
+        Rack::class => A\RecordingRackPolicy::class,
+        Site::class => A\RecordingSitePolicy::class,
+    ]);
+    A\RecordingRackPolicy::reset();
+
+    $kernel = new Kernel(
+        orm: $orm,
+        routes: $routes,
+        queries: new QueryRegistry(),
+        actions: $actions,
+        auth: $auth,
+        policies: $policies,
+        resolver: static fn (string $class): object => new $class(),
+        allowedQueries: static fn (Request $r): array => [],
+        throttle: new Throttle(
+            new ArrayThrottleStore(),
+            $auth,
+            static fn (Request $r): string => '10.0.0.1',
+        ),
+        limits: ['actions' => $limit, 'queries' => $limit, 'fragments' => $limit],
+    );
+
+    $signIn = static function () use ($auth): void {
+        $auth->login(new AuthUser('u-1'));
+    };
+
+    return [$kernel, $fixture, $signIn];
 }
 
 function render(): Closure
@@ -307,5 +362,90 @@ describe('the reset contract', function () {
         [$kernel] = kernel();
 
         expect($kernel->scope->names())->toBe(['orm', 'auth', 'policies']);
+    });
+});
+
+/**
+ * "throttle:actions", "throttle:queries", "throttle:fragments" from the
+ * endpoints table. No endpoint had any -- both fragment reviews noted a junk
+ * token could be replayed at full rate, and the README said so.
+ */
+describe('throttling', function () {
+    it('refuses an action past the limit with 429', function () {
+        [$kernel, $fixture, $signIn] = throttledKernel(limit: 2);
+        $body = json_encode(['rack' => $fixture->ids['racks'][0], 'position' => 12]);
+
+        $statuses = [];
+        for ($i = 0; $i < 3; $i++) {
+            $signIn();
+            $statuses[] = $kernel->handle(
+                guardedPost('/_action/RackActions.moveUnit'),
+                render(),
+                $body,
+            )->status;
+        }
+
+        expect($statuses)->toBe([200, 200, 429]);
+    });
+
+    it('tells an allowed caller what is left', function () {
+        [$kernel, $fixture, $signIn] = throttledKernel(limit: 5);
+        $signIn();
+
+        $response = $kernel->handle(
+            guardedPost('/_action/RackActions.moveUnit'),
+            render(),
+            json_encode(['rack' => $fixture->ids['racks'][0], 'position' => 12]),
+        );
+
+        expect($response->header('x-ratelimit-limit'))->toBe('5')
+            ->and($response->header('x-ratelimit-remaining'))->toBe('4');
+    });
+
+    it('gives the refusal a retry-after a client can act on', function () {
+        [$kernel, $fixture, $signIn] = throttledKernel(limit: 1);
+        $body = json_encode(['rack' => $fixture->ids['racks'][0], 'position' => 12]);
+
+        $signIn();
+        $kernel->handle(guardedPost('/_action/RackActions.moveUnit'), render(), $body);
+        $signIn();
+        $response = $kernel->handle(guardedPost('/_action/RackActions.moveUnit'), render(), $body);
+
+        expect($response->status)->toBe(429)
+            ->and(json_decode($response->body(), true)['error']['code'])->toBe('too_many_requests');
+    });
+
+    // Separate buckets: hammering queries must not lock a caller out of
+    // actions, and the endpoints table names them separately for that reason.
+    it('keeps the action and query budgets apart', function () {
+        [$kernel, $fixture, $signIn] = throttledKernel(limit: 1);
+
+        $signIn();
+        $kernel->handle(
+            guardedPost('/_action/RackActions.moveUnit'),
+            render(),
+            json_encode(['rack' => $fixture->ids['racks'][0], 'position' => 12]),
+        );
+
+        $signIn();
+        $query = $kernel->handle(guardedPost('/_query/racks.summary'), render(), '{"args":{}}');
+
+        expect($query->status)->not->toBe(429);
+    });
+
+    // A throttle with no shared store is a limit multiplied by the worker
+    // count, which looks enforced and is not -- so an application has to say
+    // what store it means rather than getting one by default.
+    it('mounts nothing when the application configured no throttle', function () {
+        [$kernel, $fixture] = kernel(new AuthUser('u-1'));
+        $body = json_encode(['rack' => $fixture->ids['racks'][0], 'position' => 12]);
+
+        $statuses = [];
+        for ($i = 0; $i < 5; $i++) {
+            $kernel->auth->login(new AuthUser('u-1'));
+            $statuses[] = $kernel->handle(guardedPost('/_action/RackActions.moveUnit'), render(), $body)->status;
+        }
+
+        expect($statuses)->toBe([200, 200, 200, 200, 200]);
     });
 });

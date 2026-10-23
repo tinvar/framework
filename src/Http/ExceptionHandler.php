@@ -41,6 +41,7 @@ final class ExceptionHandler
         413 => 'The request is too large.',
         419 => 'The session has expired.',
         422 => 'The request could not be processed.',
+        429 => 'Too many requests; slow down.',
         500 => 'Something went wrong.',
     ];
 
@@ -104,6 +105,7 @@ final class ExceptionHandler
             413 => 'body_too_large',
             419 => 'csrf_token_mismatch',
             422 => 'unprocessable',
+            429 => 'too_many_requests',
             default => 'internal_error',
         };
     }

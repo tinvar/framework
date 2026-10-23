@@ -15,6 +15,7 @@ use Tinvar\Http\Endpoints\ActionEndpoint;
 use Tinvar\Http\Endpoints\FragmentEndpoint;
 use Tinvar\Http\Endpoints\QueryEndpoint;
 use Tinvar\Http\Middleware\RequireAuthentication;
+use Tinvar\Http\Middleware\ThrottleRequests;
 use Tinvar\Http\Middleware\VerifyCsrfToken;
 use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
@@ -58,6 +59,23 @@ final class Kernel
     public readonly ?FragmentEndpoint $fragments_;
     public readonly RequestScope $scope;
 
+    /**
+     * The endpoints table's `throttle:<name>` defaults, per minute.
+     *
+     * "Proposed defaults, configurable per app" -- so they are a constant an
+     * application can replace wholesale rather than numbers buried in the
+     * middleware. Fragments get the largest budget because one page can
+     * legitimately mount many boundaries; actions the smallest, because an
+     * action writes.
+     *
+     * @var array<string, int>
+     */
+    public const array DEFAULT_LIMITS = [
+        'actions' => 60,
+        'queries' => 240,
+        'fragments' => 300,
+    ];
+
     private readonly ExceptionHandler $exceptions;
 
     /**
@@ -74,7 +92,8 @@ final class Kernel
      * Throttling is not here, because there is no throttler yet; the README
      * says so rather than this implying otherwise.
      */
-    private readonly Pipeline $endpoints;
+    private readonly Pipeline $actionStack;
+    private readonly Pipeline $queryStack;
 
     /**
      * @param \Closure(class-string): object $resolver builds pages, layouts, queries, actions and middleware
@@ -97,6 +116,8 @@ final class Kernel
         ?\Closure $log = null,
         bool $debug = false,
         ?FragmentSupport $fragments = null,
+        ?Throttle $throttle = null,
+        array $limits = self::DEFAULT_LIMITS,
     ) {
         $gate ??= new PolicyGate($this->policies, $this->auth);
         $cache ??= new QueryCache(new \Tinvar\Cache\ArrayStore(), $this->auth);
@@ -128,8 +149,22 @@ final class Kernel
             $allowedQueries,
         );
 
-        $this->endpoints = new Pipeline([
-            ...array_map(static fn (string $class): Middleware => $resolver($class), $globalMiddleware),
+        $global = array_map(static fn (string $class): Middleware => $resolver($class), $globalMiddleware);
+
+        // Throttling is OUTERMOST, before CSRF and authentication: a request
+        // over the limit should cost a counter increment and nothing else,
+        // and a caller hammering an endpoint with no credentials at all is
+        // exactly the traffic worth refusing first.
+        $this->actionStack = new Pipeline([
+            ...$global,
+            ...$this->throttleFor($throttle, 'actions', $limits),
+            new VerifyCsrfToken(),
+            new RequireAuthentication($this->auth, $this->entryPointFor(...)),
+        ]);
+
+        $this->queryStack = new Pipeline([
+            ...$global,
+            ...$this->throttleFor($throttle, 'queries', $limits),
             new VerifyCsrfToken(),
             new RequireAuthentication($this->auth, $this->entryPointFor(...)),
         ]);
@@ -148,6 +183,7 @@ final class Kernel
             sessionId: $fragments->sessionId,
             middlewareResolver: static fn (string $class): Middleware => $resolver($class),
             globalMiddleware: $globalMiddleware,
+            extraGlobal: $this->throttleFor($throttle, 'fragments', $limits),
         );
 
         $this->exceptions = new ExceptionHandler($log);
@@ -167,7 +203,7 @@ final class Kernel
     {
         try {
             if ($this->actions_->matches($request)) {
-                return $this->endpoints->run(
+                return $this->actionStack->run(
                     $request,
                     fn (Request $passed): Response => $this->actions_->handle($passed, $rawBody),
                 );
@@ -180,7 +216,7 @@ final class Kernel
             }
 
             if ($this->queries_->matches($request)) {
-                return $this->endpoints->run(
+                return $this->queryStack->run(
                     $request,
                     fn (Request $passed): Response => $this->queries_->handle($passed, $rawBody),
                 );
@@ -222,5 +258,24 @@ final class Kernel
         }
 
         return null;
+    }
+
+    /**
+     * `throttle:<name>`, or nothing when the application configured none.
+     *
+     * Absent rather than unlimited-by-default: a throttle with no shared
+     * store is a limit multiplied by the worker count, which looks enforced
+     * and is not, so an application has to say what store it means.
+     *
+     * @param array<string, int> $limits
+     * @return list<Middleware>
+     */
+    private function throttleFor(?Throttle $throttle, string $name, array $limits): array
+    {
+        if ($throttle === null || !isset($limits[$name])) {
+            return [];
+        }
+
+        return [new ThrottleRequests($throttle, $name, $limits[$name])];
     }
 }

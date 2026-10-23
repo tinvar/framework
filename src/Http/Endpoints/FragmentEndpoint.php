@@ -59,6 +59,7 @@ final class FragmentEndpoint
      * @param \Closure(Request): string $sessionId
      * @param \Closure(class-string): Middleware $middlewareResolver
      * @param list<class-string> $globalMiddleware
+     * @param list<Middleware> $extraGlobal already-built middleware to run outermost
      */
     public function __construct(
         private readonly RouteRegistry $routes,
@@ -69,6 +70,7 @@ final class FragmentEndpoint
         private readonly \Closure $sessionId,
         private readonly \Closure $middlewareResolver,
         private readonly array $globalMiddleware = [],
+        private readonly array $extraGlobal = [],
     ) {}
 
     public function matches(Request $request): bool
@@ -88,10 +90,16 @@ final class FragmentEndpoint
         //
         // The route's own middleware necessarily stays inside, because which
         // route it is only becomes known once the token verifies.
-        $global = new Pipeline(array_map(
-            fn (string $class): Middleware => ($this->middlewareResolver)($class),
-            array_values(array_unique($this->globalMiddleware)),
-        ));
+        $global = new Pipeline([
+            ...array_map(
+                fn (string $class): Middleware => ($this->middlewareResolver)($class),
+                array_values(array_unique($this->globalMiddleware)),
+            ),
+            // Already-constructed middleware the mounting kernel adds --
+            // throttle:fragments, which needs a store the endpoint has no
+            // business knowing about.
+            ...$this->extraGlobal,
+        ]);
 
         return $global->run($request, function (Request $passed): Response {
             // A fragment is a read. Anything else would be an action wearing
