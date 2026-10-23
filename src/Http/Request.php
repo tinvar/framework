@@ -156,24 +156,7 @@ final class Request
         }
 
         foreach (explode('/', ltrim($path, '/')) as $segment) {
-            $decoded = rawurldecode($segment);
-
-            // A parameter is one segment. A decoded separator, a traversal
-            // step or a null byte means the request is trying to be more.
-            // Control characters are checked again after decoding: the raw
-            // check above cannot see %0a, and a decoded newline reaches logs
-            // through parameter values.
-            //
-            // A backslash is refused the same way. Browsers treat it as a
-            // separator in http URLs, so "/\evil.example/x" echoed back as a
-            // relative location resolves to https://evil.example/x -- an open
-            // redirect anywhere a path is reflected, which the version check's
-            // X-Location does. Response::assertSameOrigin already refuses it;
-            // the path a request is built from has to agree.
-            if ($decoded === '.' || $decoded === '..'
-                || str_contains($decoded, '/')
-                || str_contains($decoded, '\\')
-                || preg_match('/[\x00-\x1f\x7f]/', $decoded) === 1) {
+            if (!self::isPathSegment(rawurldecode($segment))) {
                 // The segment is not interpolated: it is client-controlled and
                 // this message reaches logs.
                 throw new NotFoundException('A path segment is not a single path segment.');
@@ -181,6 +164,33 @@ final class Request
         }
 
         return $path;
+    }
+
+    /**
+     * Whether a DECODED value can stand as one path segment.
+     *
+     * The rule normalizePath() holds every request to, and the one a route
+     * holds a URL it builds to -- or it would build links this router then
+     * answers with a 404.
+     */
+    public static function isPathSegment(string $decoded): bool
+    {
+        // A parameter is one segment. A decoded separator, a traversal step
+        // or a null byte means the request is trying to be more. Control
+        // characters are checked again after decoding: the raw check in
+        // normalizePath() cannot see %0a, and a decoded newline reaches logs
+        // through parameter values.
+        //
+        // A backslash is refused the same way. Browsers treat it as a
+        // separator in http URLs, so "/\evil.example/x" echoed back as a
+        // relative location resolves to https://evil.example/x -- an open
+        // redirect anywhere a path is reflected, which the version check's
+        // X-Location does. Response::assertSameOrigin already refuses it; the
+        // path a request is built from has to agree.
+        return $decoded !== '.' && $decoded !== '..'
+            && !str_contains($decoded, '/')
+            && !str_contains($decoded, '\\')
+            && preg_match('/[\x00-\x1f\x7f]/', $decoded) !== 1;
     }
 
     /**

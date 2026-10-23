@@ -61,11 +61,13 @@ final class RoutingException extends \RuntimeException
 
     public static function badParameterValue(string $route, string $parameter, string $value): self
     {
-        $shown = $value === '' ? '(empty)' : $value;
+        // Encoded for the message: the value may hold the very control
+        // characters it is refused for, and this message reaches logs.
+        $shown = $value === '' ? '(empty)' : rawurlencode($value);
 
         return new self(
             "Route '{$route}' cannot take '{$shown}' for '{$parameter}': a parameter is one path segment, "
-            . 'so it may not be empty or contain a slash.',
+            . "so it may not be empty, '.' or '..', or contain a slash, a backslash or a control character.",
         );
     }
 

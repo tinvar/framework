@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Routing;
 
 use Tinvar\Attributes\Authorize;
+use Tinvar\Http\Request;
 
 /**
  * One #[Page] or #[Layout], compiled once.
@@ -173,11 +174,12 @@ final readonly class CompiledRoute
 
             $value = (string) $parameters[$key];
 
-            // A parameter is one segment. Encoding a separator would build a
-            // URL that this same router then refuses to match, so it is
-            // refused here instead of generating a link that cannot be
-            // followed.
-            if ($value === '' || str_contains($value, '/')) {
+            // A parameter is one segment. Encoding a separator, a traversal
+            // step, a backslash or a control character would build a URL that
+            // this same router then refuses to match -- Request decodes each
+            // segment and holds it to the same rule -- so it is refused here
+            // instead of generating a link that cannot be followed.
+            if ($value === '' || !Request::isPathSegment($value)) {
                 throw RoutingException::badParameterValue($this->name ?? $this->template, $key, $value);
             }
 
