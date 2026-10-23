@@ -62,11 +62,12 @@ final class RouteRegistry
             name: $name,
             segments: $segments,
             parameters: self::parametersOf($declaration->path, $segments),
-            middleware: self::middlewareOf($reflection),
-            checks: array_map(
-                static fn (\ReflectionAttribute $a): Authorize => $a->newInstance(),
-                $reflection->getAttributes(Authorize::class),
-            ),
+            // The class's declarations and its loader's, read the way
+            // BuildRules reads them. Only the class's used to reach the
+            // chain, so an #[Authorize] or #[Middleware] written on __invoke
+            // passed the build rules and never ran.
+            middleware: Middleware::declaredOn($class, '__invoke'),
+            checks: Authorize::declaredOn($class, '__invoke'),
             layoutKey: $kind === RouteKind::Layout ? self::layoutKeyOf($declaration->view) : '',
         );
 
@@ -308,24 +309,6 @@ final class RouteRegistry
                     throw RoutingException::badTemplate($template, "'{$name}' appears twice");
                 }
                 $out[] = $name;
-            }
-        }
-
-        return $out;
-    }
-
-    /**
-     * @param \ReflectionClass<object> $reflection
-     * @return list<class-string>
-     */
-    private static function middlewareOf(\ReflectionClass $reflection): array
-    {
-        $out = [];
-        foreach ($reflection->getAttributes(Middleware::class) as $attribute) {
-            foreach ($attribute->newInstance()->classes as $class) {
-                if (!\in_array($class, $out, true)) {
-                    $out[] = $class;
-                }
             }
         }
 

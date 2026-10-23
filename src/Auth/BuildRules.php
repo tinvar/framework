@@ -95,9 +95,6 @@ final class BuildRules
         '->currentOrNull(' => 'the current panel',
     ];
 
-    /** Attributes that make a class's __invoke a routable entry point. */
-    private const array CLASS_MARKERS = [Page::class, Layout::class, Query::class];
-
     /** @var array<string, class-string> lowercased model name => class */
     private array $tenantScoped = [];
 
@@ -174,7 +171,7 @@ final class BuildRules
             // (__invoke) only. Letting it blanket every method means one
             // read-only check on the class satisfies a destructive method.
             $checks = $classLevel
-                ? [...self::attributes($reflection, Authorize::class), ...self::attributes($method, Authorize::class)]
+                ? Authorize::declaredOn($class, $method->getName())
                 : self::attributes($method, Authorize::class);
 
             $exempt = $method->getAttributes(NoAuthorization::class) !== []
@@ -350,23 +347,23 @@ final class BuildRules
      */
     private function entryMethods(\ReflectionClass $reflection): array
     {
+        /** @var array<string, array{\ReflectionMethod, bool}> $methods */
         $methods = [];
-        $hasClassMarker = false;
+        $isRoute = $reflection->getAttributes(Page::class) !== []
+            || $reflection->getAttributes(Layout::class) !== [];
 
-        foreach (self::CLASS_MARKERS as $marker) {
-            if ($reflection->getAttributes($marker) !== []) {
-                $hasClassMarker = true;
-                break;
+        if ($isRoute && $reflection->hasMethod('__invoke')) {
+            $methods['__invoke'] = [$reflection->getMethod('__invoke'), true];
+        }
+
+        // The method the query runner calls: loadMany() for a BatchQuery,
+        // even one that also has an __invoke. Checking __invoke there left
+        // the method that actually runs unexamined.
+        if ($reflection->getAttributes(Query::class) !== []) {
+            $entry = Query::entryMethodOf($reflection->getName());
+            if ($reflection->hasMethod($entry)) {
+                $methods[$entry] ??= [$reflection->getMethod($entry), true];
             }
-        }
-
-        if ($hasClassMarker && $reflection->hasMethod('__invoke')) {
-            $methods[] = [$reflection->getMethod('__invoke'), true];
-        }
-
-        // A BatchQuery has no __invoke; loadMany is its entry point.
-        if ($hasClassMarker && !$reflection->hasMethod('__invoke') && $reflection->hasMethod('loadMany')) {
-            $methods[] = [$reflection->getMethod('loadMany'), true];
         }
 
         // An #[Action] marks its own method, wherever it sits, including on a
@@ -375,13 +372,10 @@ final class BuildRules
             if ($method->getAttributes(Action::class) === []) {
                 continue;
             }
-            if ($method->getName() === '__invoke' && $hasClassMarker) {
-                continue;   // already added
-            }
-            $methods[] = [$method, false];
+            $methods[$method->getName()] ??= [$method, false];
         }
 
-        return $methods;
+        return array_values($methods);
     }
 
     /**

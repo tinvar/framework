@@ -81,10 +81,11 @@ final class QueryRegistry
 
         $this->classes[$name] = $class;
         $this->declarations[$name] = $declaration;
-        $this->checks[$name] = array_map(
-            static fn (\ReflectionAttribute $a): Authorize => $a->newInstance(),
-            $reflection->getAttributes(Authorize::class),
-        );
+        // The class's checks and its entry method's -- loadMany() for a
+        // batch -- read the way BuildRules reads them. Only the class's used
+        // to be kept, so a check written on the method passed the build
+        // rules and never ran.
+        $this->checks[$name] = Authorize::declaredOn($class, Query::entryMethodOf($class));
         $this->parameters[$name] = self::parametersOf($reflection, $declaration);
         $this->modelArguments[$name] = self::modelArgumentsOf($reflection, $declaration);
 

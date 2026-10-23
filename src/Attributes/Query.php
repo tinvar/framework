@@ -21,4 +21,20 @@ final readonly class Query
         public array $args = [],
         public bool $shared = false,
     ) {}
+
+    /**
+     * The method a query's caller actually reaches: loadMany() for a
+     * BatchQuery, __invoke() otherwise.
+     *
+     * Named once, so the build rules and the registry read declarations off
+     * the same method. A BatchQuery that also had an __invoke was checked on
+     * __invoke, which the runner never calls, while loadMany() -- which it
+     * does call -- went unexamined.
+     *
+     * @param class-string $class
+     */
+    public static function entryMethodOf(string $class): string
+    {
+        return is_subclass_of($class, \Tinvar\Query\BatchQuery::class) ? 'loadMany' : '__invoke';
+    }
 }
