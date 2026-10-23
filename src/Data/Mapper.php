@@ -201,9 +201,24 @@ final class Mapper
             return \array_key_exists($name, $source);
         }
 
-        // property_exists sees declared properties whether or not they are
-        // initialized -- a relation ghost included -- without touching them.
-        return property_exists($source, $name) || isset($source->{$name});
+        // A declared property is a source only if it is public -- every
+        // Model has private $orm and $original, which a Data field of that
+        // name hit as "Cannot access private property" -- and holds a value:
+        // a typed property never set threw "must not be accessed before
+        // initialization" instead of letting the field take its default.
+        // A hooked, virtual property computes its value and always counts.
+        // None of this reads the property, so a relation is not loaded.
+        if (property_exists($source, $name)) {
+            $property = new \ReflectionProperty($source, $name);
+            if (!$property->isPublic()) {
+                return false;
+            }
+
+            return $property->isVirtual() || $property->isInitialized($source);
+        }
+
+        // Undeclared: dynamic properties, or __get/__isset magic.
+        return isset($source->{$name});
     }
 
     /** @param object|array<array-key, mixed> $source */

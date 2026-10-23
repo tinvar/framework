@@ -112,6 +112,21 @@ final readonly class ChainView extends Data
     public function __construct(public string $id, public ?ChainView $next) {}
 }
 
+final class HalfBuilt
+{
+    public string $id = 'h';
+    public string $note;
+    private string $secret = 'hidden';
+    public string $shout {
+        get => strtoupper($this->id);
+    }
+}
+
+final readonly class HalfView extends Data
+{
+    public function __construct(public string $id, public ?string $note = null, public ?string $secret = null, public string $shout = '') {}
+}
+
 function rack(): RackModel
 {
     return new RackModel('r-1', 'R-01', [new UnitModel('u-1', 1), new UnitModel('u-2', 2)], new UnitModel('u-9', 9));
@@ -222,4 +237,15 @@ it('refuses a graph deeper than the encoder would write', function () {
     }
 
     expect(fn () => ChainView::from($source))->toThrow(DataMappingException::class, 'nests deeper than 32 levels');
+});
+
+
+// property_exists is true for private properties -- every Model has
+// private $orm -- and for typed ones never set; both crashed the mapping.
+it('treats private and unset properties as absent, and computed ones as present', function () {
+    $view = HalfView::from(new HalfBuilt());
+
+    expect($view->note)->toBeNull()
+        ->and($view->secret)->toBeNull()
+        ->and($view->shout)->toBe('H');
 });
