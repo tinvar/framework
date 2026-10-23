@@ -295,6 +295,23 @@ describe('shared queries may not read the user', function () {
             ->and($violations[0]->message)->toContain('AuthContext');
     });
 
+    // The textual check is kept ALONGSIDE the type walk: a walk cannot see a
+    // class the query builds or looks up itself.
+    it('flags one that reaches the user without injection', function () {
+        $violations = (new BuildRules())->check([R\SharedContainerQuery::class]);
+
+        expect($violations)->not->toBeEmpty()
+            ->and($violations[0]->rule)->toBe(BuildRules::SHARED_QUERY_MUST_NOT_READ_THE_USER);
+    });
+
+    // An interface could be anything at runtime, so the walk proves nothing.
+    it('refuses a dependency it cannot analyse rather than assuming it safe', function () {
+        $violations = (new BuildRules())->check([R\SharedInterfaceQuery::class]);
+
+        expect($violations)->not->toBeEmpty()
+            ->and($violations[0]->message)->toContain('cannot be checked');
+    });
+
     it('leaves a per-user query alone, since its key separates callers', function () {
         expect((new BuildRules())->check([R\PerUserQuery::class]))->toBe([]);
     });

@@ -227,3 +227,32 @@ final class SharedIndirectQuery
         return new WattsData(\strlen($this->greeter->greeting()));
     }
 }
+
+interface Clockish
+{
+    public function now(): int;
+}
+
+/** Shared, taking an interface: the type walk cannot see what it will be. */
+#[Query(name: 'review.sharedInterface', cache: '1m', shared: true)]
+final class SharedInterfaceQuery
+{
+    public function __construct(private readonly Clockish $clock) {}
+
+    public function __invoke(): WattsData
+    {
+        return new WattsData($this->clock->now());
+    }
+}
+
+/** Shared, reaching the user through a container rather than injection. */
+#[Query(name: 'review.sharedContainer', cache: '1m', shared: true)]
+final class SharedContainerQuery
+{
+    public function __invoke(): WattsData
+    {
+        $auth = new \Tinvar\Auth\AuthContext();
+
+        return new WattsData($auth->check() ? 1 : 0);
+    }
+}

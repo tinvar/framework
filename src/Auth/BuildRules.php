@@ -67,12 +67,21 @@ final class BuildRules
     ];
 
     /**
-     * Calls a `shared: true` query may not make in its own body.
+     * Text a `shared: true` query may not contain in its own source.
      *
-     * These are methods on objects a query legitimately depends on, so a type
-     * walk cannot tell them apart; only the direct case is caught.
+     * Kept ALONGSIDE the type walk, not instead of it. The walk sees injected
+     * dependencies; it cannot see `$container->get(AuthContext::class)` or a
+     * static call, and dropping the textual check for those was a regression.
+     * Each needle is specific enough not to fire on an ordinary identifier --
+     * '->can(' does not match '->rescan(' -- and a false positive on an
+     * explicit, dangerous opt-in is the right direction to be wrong in.
      */
     private const array USER_DEPENDENT_CALLS = [
+        'AuthContext' => 'the current user',
+        '->user(' => 'the current user',
+        'auth()' => 'the current user',
+        '->can(' => 'a policy decision',
+        '->allows(' => 'a policy decision',
         '->acrossTenants(' => 'another tenant',
         '->withinReseller(' => 'another reseller',
         'Panel::current' => 'the current panel',
@@ -402,6 +411,25 @@ final class BuildRules
 
         $violations = [];
 
+        // The constructor's parameters as well as the entry point's: a
+        // dependency arrives either way.
+        $parameters = [
+            ...($reflection->getConstructor()?->getParameters() ?? []),
+            ...self::entryParametersOf($reflection),
+        ];
+
+        foreach ($parameters as $parameter) {
+            foreach (self::unanalysable($parameter) as $why) {
+                $violations[] = new Violation(
+                    self::SHARED_QUERY_MUST_NOT_READ_THE_USER,
+                    "{$class}::\${$parameter->getName()}",
+                    "is #[Query(shared: true)] and takes {$why}, which cannot be checked for a dependency "
+                    . 'on the current user. A shared query drops the user from its cache key, so an '
+                    . 'unanalysable dependency is refused rather than assumed safe.',
+                );
+            }
+        }
+
         foreach (self::userDependentDependencies($class, []) as $dependency => $reason) {
             $violations[] = new Violation(
                 self::SHARED_QUERY_MUST_NOT_READ_THE_USER,
@@ -442,25 +470,109 @@ final class BuildRules
 
         $found = [];
 
-        foreach ((new \ReflectionClass($class))->getConstructor()?->getParameters() ?? [] as $parameter) {
-            $type = $parameter->getType();
-            if (!$type instanceof \ReflectionNamedType || $type->isBuiltin()) {
-                continue;
-            }
+        $reflection = new \ReflectionClass($class);
+        $parameters = [
+            ...($reflection->getConstructor()?->getParameters() ?? []),
+            ...self::entryParametersOf($reflection),
+        ];
 
-            $name = $type->getName();
+        foreach ($parameters as $parameter) {
+            // Union and intersection members all count: one of them reaching
+            // the user is enough.
+            foreach (self::namedTypesOf($parameter) as $name) {
+                $matched = false;
 
-            foreach (self::USER_DEPENDENT_TYPES as $forbidden => $reason) {
-                if ($name === $forbidden || is_a($name, $forbidden, true)) {
-                    $found[$name] = $reason;
-                    continue 2;
+                foreach (self::USER_DEPENDENT_TYPES as $forbidden => $reason) {
+                    if ($name === $forbidden || is_a($name, $forbidden, true)) {
+                        $found[$name] = $reason;
+                        $matched = true;
+                        break;
+                    }
+                }
+
+                if (!$matched) {
+                    $found = [...$found, ...self::userDependentDependencies($name, $visited)];
                 }
             }
-
-            $found = [...$found, ...self::userDependentDependencies($name, $visited)];
         }
 
         return $found;
+    }
+
+    /**
+     * Parameters of whatever the query's entry point is.
+     *
+     * @param \ReflectionClass<object> $reflection
+     * @return list<\ReflectionParameter>
+     */
+    private static function entryParametersOf(\ReflectionClass $reflection): array
+    {
+        foreach (['__invoke', 'loadMany'] as $method) {
+            if ($reflection->hasMethod($method)) {
+                return $reflection->getMethod($method)->getParameters();
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * Class names a parameter can hold, flattening unions and intersections.
+     *
+     * @return list<class-string>
+     */
+    private static function namedTypesOf(\ReflectionParameter $parameter): array
+    {
+        $type = $parameter->getType();
+
+        $candidates = match (true) {
+            $type instanceof \ReflectionNamedType => [$type],
+            $type instanceof \ReflectionUnionType,
+            $type instanceof \ReflectionIntersectionType => $type->getTypes(),
+            default => [],
+        };
+
+        $names = [];
+        foreach ($candidates as $candidate) {
+            if ($candidate instanceof \ReflectionNamedType && !$candidate->isBuiltin()) {
+                /** @var class-string $name */
+                $name = $candidate->getName();
+                $names[] = $name;
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * Why a parameter cannot be checked, if it cannot.
+     *
+     * An untyped, interface-typed or abstract-typed dependency could be
+     * anything at runtime, so the type walk proves nothing about it. For an
+     * explicit, dangerous opt-in, that is a refusal rather than a pass.
+     *
+     * @return list<string>
+     */
+    private static function unanalysable(\ReflectionParameter $parameter): array
+    {
+        $type = $parameter->getType();
+
+        if ($type === null) {
+            return ['an untyped parameter'];
+        }
+
+        $reasons = [];
+        foreach (self::namedTypesOf($parameter) as $name) {
+            if (interface_exists($name)) {
+                $reasons[] = "the interface {$name}";
+                continue;
+            }
+            if (class_exists($name) && (new \ReflectionClass($name))->isAbstract()) {
+                $reasons[] = "the abstract class {$name}";
+            }
+        }
+
+        return $reasons;
     }
 
     /** @param \ReflectionClass<object> $reflection */
