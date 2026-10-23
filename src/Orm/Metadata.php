@@ -274,8 +274,9 @@ final class Metadata
             return null;
         }
 
-        /** @var class-string */
-        return $type->getName();
+        $name = $type->getName();
+
+        return class_exists($name) || interface_exists($name) ? $name : null;
     }
 
     /**
