@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace Tinvar\Routing;
 
+use Tinvar\Attributes\Authorize;
 use Tinvar\Auth\Gate;
 use Tinvar\Data\Data;
 use Tinvar\Http\ForbiddenException;
 use Tinvar\Http\Request;
+use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 
 /**
@@ -72,21 +74,52 @@ final class LoaderRunner
     public function authorize(RouteChain $chain, array $models, array $parameters): void
     {
         foreach ($chain->checks() as ['route' => $route, 'check' => $check]) {
-            // A check naming an argument is evaluated against the resolved
-            // model, never against the raw path segment.
-            $subjects = $models + $parameters;
+            $subject = $this->subjectFor($check, $models, $route);
 
-            if ($check->argument !== null && !\array_key_exists($check->argument, $subjects)) {
-                throw new RoutingException(
-                    "{$route->class} declares #[Authorize('{$check->ability}', '{$check->argument}')] "
-                    . 'but nothing in the route resolves that name.'
-                );
-            }
+            // The gate gets the resolved subject under 'subject', plus every
+            // bound model by name. A raw path segment is never a subject.
+            $arguments = $models;
+            $arguments['subject'] = $subject;
 
-            if (!$this->gate->allows($check, $subjects)) {
+            if (!$this->gate->allows($check, $arguments)) {
                 throw ForbiddenException::check($check->ability, $route->class);
             }
         }
+    }
+
+    /**
+     * What an #[Authorize] is checking.
+     *
+     * The spec writes these two ways: `Authorize('view', 'rack')`, naming a
+     * model-typed input, and `Authorize('viewAny', Rack::class)`, naming a
+     * class. Both are supported; a raw path segment is not.
+     *
+     * Letting a check fall back to the string from the URL would be subject
+     * confusion: a policy written for a Rack would receive '../../etc' and
+     * decide on it. If a check names something that resolved only to a path
+     * segment, that is a declaration bug and it fails closed.
+     *
+     * @param array<string, Model> $models
+     */
+    private function subjectFor(Authorize $check, array $models, CompiledRoute $route): mixed
+    {
+        if ($check->argument === null) {
+            return null;
+        }
+
+        if (isset($models[$check->argument])) {
+            return $models[$check->argument];
+        }
+
+        if (class_exists($check->argument) || interface_exists($check->argument)) {
+            return $check->argument;
+        }
+
+        throw new RoutingException(
+            "{$route->class} declares #[Authorize('{$check->ability}', '{$check->argument}')], "
+            . "but '{$check->argument}' is neither a model-typed parameter of its loader nor a class name. "
+            . 'Type the loader argument as the model so it is resolved and scoped before the check runs.'
+        );
     }
 
     /**

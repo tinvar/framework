@@ -21,7 +21,9 @@ use Tinvar\Tests\Orm\Fixtures\Rack;
 use Tinvar\Tests\Routing\Fixtures\BadReturnPage;
 use Tinvar\Tests\Routing\Fixtures\HealthPage;
 use Tinvar\Tests\Routing\Fixtures\OrphanCheckPage;
+use Tinvar\Tests\Routing\Fixtures\RackIndexPage;
 use Tinvar\Tests\Routing\Fixtures\RackShowPage;
+use Tinvar\Tests\Routing\Fixtures\RawSubjectPage;
 use Tinvar\Tests\Routing\Fixtures\RootLayout;
 use Tinvar\Tests\Routing\Fixtures\SiteLayout;
 use Tinvar\Tests\Routing\Fixtures\SiteNewPage;
@@ -35,6 +37,7 @@ require_once __DIR__ . '/Fixtures/routes.php';
 const ROUTE_CLASSES = [
     RootLayout::class, SiteLayout::class, RackShowPage::class, SiteNewPage::class,
     HealthPage::class, TypedParamPage::class, BadReturnPage::class, OrphanCheckPage::class,
+    RackIndexPage::class, RawSubjectPage::class,
 ];
 
 function registry(): RouteRegistry
@@ -291,7 +294,85 @@ describe('authorization in the route chain', function () {
         [$router] = router();
 
         expect(fn () => $router->handle(Request::get('/orphan'), respondWithLoaded()))
-            ->toThrow(RoutingException::class, 'nothing in the route resolves that name');
+            ->toThrow(RoutingException::class, 'neither a model-typed parameter');
+    });
+
+    // A policy written for a Rack must never be handed the raw path segment.
+    it('refuses a check whose argument resolves only to a path segment', function () {
+        [$router] = router();
+
+        expect(fn () => $router->handle(Request::get('/raw/anything'), respondWithLoaded()))
+            ->toThrow(RoutingException::class, 'neither a model-typed parameter');
+
+        expect(Trace::$events)->not->toContain('page:raw');
+    });
+
+    it('accepts a class-level check such as Authorize(viewAny, Rack::class)', function () {
+        $gate = new AllowAllGate();
+        [$router] = router($gate);
+
+        $router->handle(Request::get('/racks'), respondWithLoaded());
+
+        expect($gate->checks)->toContain(['ability' => 'viewAny', 'argument' => Rack::class]);
+    });
+
+    it('hands the gate the resolved model, not the string from the URL', function () {
+        $seen = null;
+        $gate = new class ($seen) implements Tinvar\Auth\Gate {
+            public array $subjects = [];
+
+            public function __construct(mixed &$seen) {}
+
+            public function allows(Tinvar\Attributes\Authorize $check, array $arguments): bool
+            {
+                $this->subjects[$check->argument ?? '?'] = $arguments['subject'] ?? null;
+
+                return true;
+            }
+        };
+
+        [$router, $fixture] = router($gate);
+        $site = $fixture->ids['sites'][0];
+        $rack = $fixture->ids['racks'][0];
+
+        $router->handle(Request::get("/sites/{$site}/racks/{$rack}"), respondWithLoaded());
+
+        expect($gate->subjects['site'])->toBeInstanceOf(Tinvar\Tests\Orm\Fixtures\Site::class)
+            ->and($gate->subjects['rack'])->toBeInstanceOf(Rack::class)
+            ->and($gate->subjects['rack']->primaryKey())->toBe($rack);
+    });
+});
+
+describe('the route chain is not cached across requests', function () {
+    // A RouteChain carries the parameters of the request that built it. Caching
+    // one by template would hand every later request the first one's row.
+    it('gives each request its own parameters for the same template', function () {
+        $registry = registry();
+
+        $first = $registry->match('/sites/aaa/racks/111');
+        $second = $registry->match('/sites/bbb/racks/222');
+
+        expect($first->parameters)->toBe(['site' => 'aaa', 'rack' => '111'])
+            ->and($second->parameters)->toBe(['site' => 'bbb', 'rack' => '222'])
+            ->and($first->parameters)->not->toBe($second->parameters);
+    });
+
+    it('loads the row named by the current request, not an earlier one', function () {
+        [$router, $fixture] = router();
+        $site = $fixture->ids['sites'][0];
+
+        $one = json_decode($router->handle(
+            Request::get("/sites/{$site}/racks/{$fixture->ids['racks'][0]}"),
+            respondWithLoaded(),
+        )->body(), true);
+
+        $two = json_decode($router->handle(
+            Request::get("/sites/{$site}/racks/{$fixture->ids['racks'][1]}"),
+            respondWithLoaded(),
+        )->body(), true);
+
+        expect($one['page']['rack'])->toBe('R-01')
+            ->and($two['page']['rack'])->toBe('R-02');
     });
 });
 

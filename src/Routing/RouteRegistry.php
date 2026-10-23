@@ -26,8 +26,8 @@ final class RouteRegistry
     /** @var array<string, CompiledRoute> */
     private array $byName = [];
 
-    /** @var array<string, RouteChain> */
-    private array $chainCache = [];
+    /** @var array<string, list<CompiledRoute>> page template => its layouts */
+    private array $layoutCache = [];
 
     private bool $sorted = false;
 
@@ -100,7 +100,7 @@ final class RouteRegistry
         }
 
         $this->sorted = false;
-        $this->chainCache = [];
+        $this->layoutCache = [];
     }
 
     /** Matches a path to a page and the layouts wrapping it. */
@@ -114,11 +114,15 @@ final class RouteRegistry
                 continue;
             }
 
-            return $this->chainCache[$page->template] ??= new RouteChain(
-                page: $page,
-                layouts: $this->layoutsFor($page),
-                parameters: $parameters,
-            );
+            // Only the layout list is cached. A RouteChain carries the
+            // parameters of the request that produced it, so caching the whole
+            // chain would hand every later request for this template the first
+            // request's parameters -- in a worker that is a cross-request data
+            // leak and an authorization bypass, since the chain's checks would
+            // run against someone else's row.
+            $layouts = $this->layoutCache[$page->template] ??= $this->layoutsFor($page);
+
+            return new RouteChain(page: $page, layouts: $layouts, parameters: $parameters);
         }
 
         return null;

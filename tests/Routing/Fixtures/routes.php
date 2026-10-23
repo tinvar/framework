@@ -179,3 +179,30 @@ final class DuplicateParameterPage {}
 final class BadSegmentPage {}
 
 final class NotARoute {}
+
+/** Class-level check: the spec writes Authorize('viewAny', Rack::class). */
+#[Page('/racks', view: 'racks/index', name: 'racks.index'), Authorize('viewAny', Rack::class)]
+final class RackIndexPage
+{
+    public function __invoke(): RootLayoutData
+    {
+        Trace::note('page:rack-index');
+
+        return new RootLayoutData('all');
+    }
+}
+
+/**
+ * A check naming a parameter that is only a raw path segment, never resolved
+ * to a model. Must fail closed rather than hand the policy a string.
+ */
+#[Page('/raw/{thing}', view: 'raw', name: 'raw'), Authorize('view', 'thing')]
+final class RawSubjectPage
+{
+    public function __invoke(string $thing): RootLayoutData
+    {
+        Trace::note('page:raw');
+
+        return new RootLayoutData($thing);
+    }
+}
