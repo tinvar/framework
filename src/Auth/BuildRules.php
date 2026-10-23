@@ -182,7 +182,7 @@ final class BuildRules
             // On an action it still runs, ahead of the method's own, so its
             // subject is checked here too -- it just covers nothing.
             $checks = Authorize::declaredOn($class, $method->getName());
-            $inherited = $classLevel ? 0 : \count($reflection->getAttributes(Authorize::class));
+            $inherited = $classLevel ? 0 : Authorize::classLevelCount($class);
 
             $exempt = $method->getAttributes(NoAuthorization::class) !== []
                 || ($classLevel && $reflection->getAttributes(NoAuthorization::class) !== []);

@@ -24,7 +24,8 @@ final readonly class Middleware
     }
 
     /**
-     * Every middleware an entry point declares, the class's first, then its
+     * Every middleware an entry point declares, the class's first -- its
+     * ancestors' and traits' included, see ClassAttributes -- then its
      * method's, each once.
      *
      * The attribute targets methods, and an #[Middleware] on a page's
@@ -36,7 +37,7 @@ final readonly class Middleware
     public static function declaredOn(string $class, ?string $method = null): array
     {
         $reflection = new \ReflectionClass($class);
-        $attributes = $reflection->getAttributes(self::class);
+        $attributes = ClassAttributes::of($reflection, self::class);
 
         if ($method !== null && $reflection->hasMethod($method)) {
             $attributes = [...$attributes, ...$reflection->getMethod($method)->getAttributes(self::class)];

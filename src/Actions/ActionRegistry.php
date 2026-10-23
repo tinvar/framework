@@ -49,8 +49,12 @@ final class ActionRegistry
         // method's own (see compile()): "everything in here is admin-only"
         // was silently dropped the moment a method declared a check of its
         // own, which is exactly when an author stops looking.
-        $classMiddleware = self::middlewareOf($reflection->getAttributes(Middleware::class));
-        $classDeclares = $reflection->getAttributes(Authorize::class) !== []
+        //
+        // "The class" includes its ancestors and traits. PHP does not inherit
+        // class attributes, so a holder extending an #[Authorize]- and
+        // #[Middleware]-carrying base ran with neither.
+        $classMiddleware = Middleware::declaredOn($class);
+        $classDeclares = Authorize::classLevelCount($class) > 0
             || $reflection->getAttributes(NoAuthorization::class) !== [];
 
         $compiled = [];
@@ -115,7 +119,7 @@ final class ActionRegistry
         // The class's checks first, then the method's, and the action must
         // pass every one. Only the method's own count as covering an input.
         $checks = Authorize::declaredOn($class, $method->getName());
-        $inherited = \count($reflection->getAttributes(Authorize::class));
+        $inherited = Authorize::classLevelCount($class);
         $exempt = $method->getAttributes(NoAuthorization::class) !== [];
 
         $covered = [];

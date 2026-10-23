@@ -22,7 +22,8 @@ final readonly class Authorize
     ) {}
 
     /**
-     * Every check an entry point declares: the class's first, then its
+     * Every check an entry point declares: the class's first -- its
+     * ancestors' and traits' included, see ClassAttributes -- then its
      * method's.
      *
      * One reader for the build rules and every registry. The attribute
@@ -36,12 +37,24 @@ final readonly class Authorize
     public static function declaredOn(string $class, ?string $method = null): array
     {
         $reflection = new \ReflectionClass($class);
-        $attributes = $reflection->getAttributes(self::class);
+        $attributes = ClassAttributes::of($reflection, self::class);
 
         if ($method !== null && $reflection->hasMethod($method)) {
             $attributes = [...$attributes, ...$reflection->getMethod($method)->getAttributes(self::class)];
         }
 
         return array_map(static fn (\ReflectionAttribute $a): self => $a->newInstance(), $attributes);
+    }
+
+    /**
+     * How many checks the class declares, ancestors and traits included: the
+     * leading part of declaredOn() that runs ahead of the method's own and
+     * covers no input of it.
+     *
+     * @param class-string $class
+     */
+    public static function classLevelCount(string $class): int
+    {
+        return \count(ClassAttributes::of($class, self::class));
     }
 }

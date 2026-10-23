@@ -135,7 +135,7 @@ final class QueryRegistry
         // to be kept, so a check written on the method passed the build
         // rules and never ran.
         $this->checks[$name] = Authorize::declaredOn($class, Query::entryMethodOf($class));
-        $this->classLevelChecks[$name] = \count($reflection->getAttributes(Authorize::class));
+        $this->classLevelChecks[$name] = Authorize::classLevelCount($class);
         $this->middleware[$name] = Middleware::declaredOn($class, Query::entryMethodOf($class));
         $this->parameters[$name] = self::parametersOf($reflection, $declaration);
         $this->nullWhenAbsent[$name] = self::nullWhenAbsentOf($reflection);
