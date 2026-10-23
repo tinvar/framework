@@ -142,14 +142,16 @@ it('exempts the row of the rule\'s own class, not whichever model came first', f
  * strict as the build rules.
  */
 describe('class-level declarations do not cover action methods', function () {
+    // Refused loudly rather than silently ignored: the author wrote the
+    // class-level attribute expecting it to cover these.
     it('refuses an action a class-level opt-out would have exempted', function () {
         expect(fn () => (new ActionRegistry())->register(A\BlanketExemptActions::class))
-            ->toThrow(ActionException::class, 'no #[Authorize] naming it');
+            ->toThrow(ActionException::class, 'does not cover action methods');
     });
 
     it('refuses an action a read-only class check would have satisfied', function () {
         expect(fn () => (new ActionRegistry())->register(A\BlanketCheckActions::class))
-            ->toThrow(ActionException::class, 'no #[Authorize] naming it');
+            ->toThrow(ActionException::class, 'does not cover action methods');
     });
 
     it('refuses a check that names no subject', function () {

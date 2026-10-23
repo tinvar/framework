@@ -95,7 +95,10 @@ it('batches every unit query into one frame and one statement', function () {
 
     expect($result->queryCalls)->toBe(42, 'one UnitLoad per unit')
         ->and($result->queryBatches)->toBe(1, '42 calls, one frame')
-        ->and($statements)->toBe(4, 'sites, racks, the units relation, and one batched unitLoad');
+        // Three: sites, racks, and the units relation. The 42 unitLoad calls
+        // resolve their units from the identity map, which already holds them
+        // from the page's own data -- so the batch costs no statement at all.
+        ->and($statements)->toBe(3, 'sites, racks, and the units relation');
 });
 
 it('lets no model column reach the browser', function () {

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Query;
 
 use Tinvar\Auth\Gate;
+use Tinvar\Cache\QueryCache;
 use Tinvar\Data\DataBoundaryException;
 use Tinvar\Data\Encoder;
 use Tinvar\Orm\Metadata;
@@ -35,6 +36,7 @@ final class QueryRunner
         private readonly Gate $gate,
         private readonly Encoder $encoder = new Encoder(),
         private readonly bool $debug = false,
+        private readonly ?QueryCache $cache = null,
     ) {}
 
     /**
@@ -142,8 +144,26 @@ final class QueryRunner
 
         $resolved = [];
         foreach ($wanted as $class => $ids) {
+            $missing = [];
+
+            // The identity map already holds anything read earlier in this
+            // request, and it is keyed by tenant -- so this is a scoped hit,
+            // not a shortcut around scoping.
+            foreach (array_unique($ids) as $id) {
+                $known = $this->orm->identityMap()->get($class, $id);
+                if ($known !== null) {
+                    $resolved[$class][$id] = $known;
+                } else {
+                    $missing[] = $id;
+                }
+            }
+
+            if ($missing === []) {
+                continue;
+            }
+
             $meta = Metadata::for($class);
-            foreach ($this->orm->whereIn($class, $meta->idColumn, array_values(array_unique($ids))) as $model) {
+            foreach ($this->orm->whereIn($class, $meta->idColumn, array_values($missing)) as $model) {
                 $resolved[$class][$model->primaryKey()] = $model;
             }
         }
@@ -314,8 +334,18 @@ final class QueryRunner
         $byQuery = [];
         /** @var array<string, \Closure(): mixed> $tasks */
         $tasks = [];
+        /** @var array<string, array{value?: mixed, error?: array{code: string, digest: string, message?: string}}> $cached */
+        $cached = [];
 
         foreach ($groups as $key => $group) {
+            // The lookup is here, after the gate: "Declarative #[Authorize]
+            // runs before the lookup, so a cache hit never skips it."
+            $hit = $this->cachedValue($group['name'], $group['args']);
+            if ($hit !== null) {
+                $cached[$key] = $hit;
+                continue;
+            }
+
             if ($this->registry->isBatch($group['name'])) {
                 $byQuery[$group['name']][] = $key;
                 continue;
@@ -335,13 +365,16 @@ final class QueryRunner
             $tasks['batch:' . $name] = static fn (): array => $query->loadMany(array_values($argumentSets));
         }
 
-        $raw = $scheduler->run($tasks);
+        $raw = $tasks === [] ? [] : $scheduler->run($tasks);
 
-        $outcomes = [];
+        $outcomes = $cached;
         foreach ($groups as $key => $group) {
-            if (!$this->registry->isBatch($group['name'])) {
-                $outcomes[$key] = $this->settle($raw[$key] ?? null);
+            if (isset($outcomes[$key]) || $this->registry->isBatch($group['name'])) {
+                continue;
             }
+
+            $outcomes[$key] = $this->settle($raw[$key] ?? null);
+            $this->remember($group['name'], $group['args'], $outcomes[$key]);
         }
 
         foreach ($byQuery as $name => $keys) {
@@ -369,6 +402,7 @@ final class QueryRunner
 
             foreach (array_values($keys) as $index => $key) {
                 $outcomes[$key] = $this->settle(array_values($batch)[$index]);
+                $this->remember($name, $groups[$key]['args'], $outcomes[$key]);
             }
         }
 
@@ -381,6 +415,45 @@ final class QueryRunner
      *
      * @return array{value?: mixed, error?: array{code: string, digest: string, message?: string}}
      */
+    /**
+     * A cached value for this call, or null for a miss.
+     *
+     * @param array<string, mixed> $arguments
+     * @return array{value: mixed}|null
+     */
+    private function cachedValue(string $name, array $arguments): ?array
+    {
+        if ($this->cache === null) {
+            return null;
+        }
+
+        $hit = $this->cache->get($name, $this->registry->declarationFor($name), $arguments, $this->orm->tenant());
+
+        return $hit['hit'] ? ['value' => $hit['value']] : null;
+    }
+
+    /**
+     * Stores a successful result. A failure is never cached: an error is about
+     * this attempt, not about the data.
+     *
+     * @param array<string, mixed> $arguments
+     * @param array{value?: mixed, error?: array<string, mixed>} $outcome
+     */
+    private function remember(string $name, array $arguments, array $outcome): void
+    {
+        if ($this->cache === null || isset($outcome['error'])) {
+            return;
+        }
+
+        $this->cache->put(
+            $name,
+            $this->registry->declarationFor($name),
+            $arguments,
+            $this->orm->tenant(),
+            $outcome['value'],
+        );
+    }
+
     private function settle(mixed $value): array
     {
         if ($value instanceof \Throwable) {

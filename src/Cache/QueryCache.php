@@ -46,7 +46,10 @@ final class QueryCache
             return ['hit' => false, 'value' => null];
         }
 
-        return $this->store->get($this->key($name, $declaration, $arguments, $tenant));
+        $key = $this->keyOrNull($name, $declaration, $arguments, $tenant);
+
+        // Unkeyable means uncacheable, never loosely keyed.
+        return $key === null ? ['hit' => false, 'value' => null] : $this->store->get($key);
     }
 
     /** @param array<string, mixed> $arguments */
@@ -61,8 +64,13 @@ final class QueryCache
             return;
         }
 
+        $key = $this->keyOrNull($name, $declaration, $arguments, $tenant);
+        if ($key === null) {
+            return;
+        }
+
         $this->store->put(
-            $this->key($name, $declaration, $arguments, $tenant),
+            $key,
             $value,
             Duration::seconds((string) $declaration->cache),
             $this->tagsFor($declaration, $arguments),
@@ -96,6 +104,16 @@ final class QueryCache
         }
 
         return array_values(array_map(strval(...), $tags));
+    }
+
+    /** @param array<string, mixed> $arguments */
+    private function keyOrNull(string $name, Query $declaration, array $arguments, string $tenant): ?string
+    {
+        try {
+            return $this->key($name, $declaration, $arguments, $tenant);
+        } catch (\JsonException) {
+            return null;
+        }
     }
 
     /**
@@ -142,6 +160,9 @@ final class QueryCache
                 : $value;
         }
 
-        return json_encode($flat, JSON_THROW_ON_ERROR | JSON_PARTIAL_OUTPUT_ON_ERROR);
+        // No partial output. A value that cannot be encoded would otherwise
+        // produce a key that two different argument sets could share, and a
+        // shared key is one caller reading another's result.
+        return json_encode($flat, JSON_THROW_ON_ERROR);
     }
 }

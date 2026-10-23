@@ -42,6 +42,8 @@ final class ActionRegistry
         // ones. BuildRules already refuses that shape; the registry must
         // agree, since it is the check that cannot be skipped.
         $classMiddleware = self::middlewareOf($reflection->getAttributes(Middleware::class));
+        $classDeclares = $reflection->getAttributes(Authorize::class) !== []
+            || $reflection->getAttributes(NoAuthorization::class) !== [];
 
         $compiled = [];
 
@@ -52,6 +54,14 @@ final class ActionRegistry
             }
             if ($method->isStatic()) {
                 throw new ActionException("{$class}::{$method->getName()}() is static; an action is an instance method.");
+            }
+
+            // Silently ignoring a class-level declaration is its own hazard:
+            // the author wrote it expecting coverage. Say so instead.
+            if ($classDeclares
+                && $method->getAttributes(Authorize::class) === []
+                && $method->getAttributes(NoAuthorization::class) === []) {
+                throw ActionException::classLevelDeclaration($class, $method->getName());
             }
 
             $compiled[] = $this->add($this->compile($reflection, $method, $attribute->newInstance(), $classMiddleware));

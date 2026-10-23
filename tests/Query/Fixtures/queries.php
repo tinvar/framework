@@ -112,3 +112,22 @@ final class MiscountedBatch implements BatchQuery
         return [new UnitLoadData('only-one', 1)];
     }
 }
+
+/** A cached query, with a tag derived from its resolved model. */
+#[Query(
+    name: 'racks.cached',
+    cache: '5m',
+    tags: static function (Rack $rack): array { return ['rack:' . $rack->primaryKey()]; },
+)]
+final class CachedSummary
+{
+    /** Counts body runs, since a cache hit is not visible in statement counts. */
+    public static int $runs = 0;
+
+    public function __invoke(Rack $rack): RackSummaryData
+    {
+        self::$runs++;
+
+        return new RackSummaryData($rack->name, $rack->units->count());
+    }
+}

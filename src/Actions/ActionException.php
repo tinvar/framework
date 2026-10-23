@@ -6,6 +6,16 @@ namespace Tinvar\Actions;
 
 final class ActionException extends \RuntimeException
 {
+    public static function classLevelDeclaration(string $class, string $method): self
+    {
+        return new self(
+            "{$class} carries a class-level #[Authorize] or #[NoAuthorization], and {$method}() declares "
+            . 'neither. A class-level declaration does not cover action methods -- one read-only check on '
+            . 'the class would otherwise satisfy a destructive method, and one opt-out would exempt every '
+            . 'action added later. Declare the check on the method.'
+        );
+    }
+
     public static function subjectless(string $where, string $ability): self
     {
         return new self(

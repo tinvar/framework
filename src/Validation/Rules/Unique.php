@@ -23,10 +23,15 @@ use Tinvar\Validation\ValidationContext;
 final readonly class Unique implements Rule
 {
     /** @param class-string<Model> $model */
+    /**
+     * @param bool|string $ignoreSubject true exempts the single resolved model
+     *        of this rule's class, and fails closed when there is more than
+     *        one; a string names the parameter to exempt outright.
+     */
     public function __construct(
         public string $model,
         public ?string $column = null,
-        public bool $ignoreSubject = false,
+        public bool|string $ignoreSubject = false,
     ) {}
 
     public function appliesTo(): array
@@ -40,15 +45,29 @@ final readonly class Unique implements Rule
         $matches = $context->orm()->whereIn($this->model, $column, [$value]);
 
         $exempt = null;
-        if ($this->ignoreSubject) {
-            // Picked by class, so an action with two model inputs exempts the
-            // right row rather than whichever one came first.
-            $subject = $context->subjectOf($this->model);
+        if ($this->ignoreSubject !== false) {
+            // Either the parameter this rule names, or -- with `true` -- the
+            // single resolved model of its own class. Taking whichever model
+            // came first let a caller point another parameter at the row
+            // holding the value and skip the check entirely.
+            $subject = \is_string($this->ignoreSubject)
+                ? ($context->subjects[$this->ignoreSubject] ?? null)
+                : $context->subjectOf($this->model);
 
             if ($subject === null) {
+                $named = \is_string($this->ignoreSubject)
+                    ? "no '{$this->ignoreSubject}' was resolved"
+                    : "no single {$this->model} was resolved";
+
                 throw new \LogicException(
-                    "Unique on {$field} is set to ignore the subject, but no {$this->model} was resolved. "
+                    "Unique on {$field} is set to ignore the subject, but {$named}. "
                     . 'The action must bind the record being edited before validating.'
+                );
+            }
+
+            if (!$subject instanceof $this->model) {
+                throw new \LogicException(
+                    "Unique on {$field} exempts " . $subject::class . ", not {$this->model}."
                 );
             }
 
