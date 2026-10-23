@@ -82,7 +82,9 @@ final class CheckVersion implements Middleware
         return Response::make(409, '', [
             'x-location' => $location,
             'cache-control' => 'private, no-store',
-            'vary' => 'RSC',
+            // The answer depends on the build the client named as much as on
+            // the RSC header, should anything ever cache it.
+            'vary' => 'RSC, X-Version',
         ]);
     }
 

@@ -98,7 +98,8 @@ describe('a client navigation', function () {
     it('does not let the refusal be cached', function () {
         $response = versioned()->handle(clientNav('/racks/r-1', 'b1'), passes());
 
-        expect($response->header('cache-control'))->toBe('private, no-store');
+        expect($response->header('cache-control'))->toBe('private, no-store')
+            ->and($response->header('vary'))->toBe('RSC, X-Version');
     });
 });
 
