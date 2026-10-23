@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Http\Endpoints;
 
 use Tinvar\Http\HttpException;
+use Tinvar\Http\Request;
 
 /**
  * The endpoint limits from the spec's table.
@@ -36,6 +37,40 @@ final class Limits
      * does not cover it.
      */
     public const int MAX_PRECOGNITION_FIELDS = 32;
+
+    /**
+     * An endpoint's input, decoded as its Content-Type says the body is.
+     *
+     * Chosen by the header, not by whether the raw body was empty: a form
+     * posted before JavaScript loads -- urlencoded, with the hidden _token
+     * -- has a raw body too, and was handed to the JSON decoder and refused
+     * as bad JSON. A multipart one has none, since PHP consumes it, which is
+     * why the guess ever looked right. A body of any other type is refused
+     * rather than guessed at.
+     *
+     * A request with no type at all is read as before: its raw body as
+     * JSON, the endpoints' own format, or else what was parsed for it. That
+     * is a caller in the same process building a Request -- a test, a
+     * benchmark, an application dispatching to itself. A browser labels
+     * every form body it sends, so this is never how a form arrives.
+     *
+     * @return array<mixed>
+     */
+    public static function input(Request $request, string $rawBody, int $maxBytes = self::MAX_BODY_BYTES): array
+    {
+        $type = strtolower(trim(explode(';', $request->header('content-type') ?? '', 2)[0]));
+
+        return match ($type) {
+            'application/json' => self::decodeJson($rawBody, $maxBytes),
+            'application/x-www-form-urlencoded', 'multipart/form-data' => self::form($request->body, $maxBytes),
+            '' => $rawBody === '' ? self::form($request->body, $maxBytes) : self::decodeJson($rawBody, $maxBytes),
+            default => throw new HttpException(
+                415,
+                'Send the body as application/json, or as a form.',
+                'unsupported_media_type',
+            ),
+        };
+    }
 
     /**
      * Decodes a JSON body, refusing one that is too large or too deep.

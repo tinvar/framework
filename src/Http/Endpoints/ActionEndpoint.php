@@ -90,7 +90,7 @@ final class ActionEndpoint
 
     private function dispatch(Request $request, string $name, string $rawBody): Response
     {
-        $input = $rawBody === '' ? Limits::form($request->body, $this->maxBodyBytes) : Limits::decodeJson($rawBody, $this->maxBodyBytes);
+        $input = Limits::input($request, $rawBody, $this->maxBodyBytes);
 
         // "Precognition / Precognition-Validate-Only": validate without
         // running the body, optionally one field at a time.

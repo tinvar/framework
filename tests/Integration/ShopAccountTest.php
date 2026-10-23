@@ -47,11 +47,7 @@ final class Visitor
     /** @param array<string, mixed> $body */
     public function action(string $name, array $body): Response
     {
-        // The session's own token, as the page would have issued it.
-        $token = (string) new CsrfTokens(
-            new Signer(KEY, CsrfTokens::PURPOSE),
-            static fn (Request $r): string => Kernel::sessionFrom($r->cookie(Kernel::SESSION_COOKIE), KEY) ?? '',
-        )->for(new Request('GET', '/', [], [], [], $this->cookies));
+        $token = $this->csrfToken();
 
         return $this->keep($this->kernel->handle(
             new Request(
@@ -66,6 +62,41 @@ final class Visitor
             ),
             json_encode($body, JSON_THROW_ON_ERROR),
         ));
+    }
+
+    /**
+     * A form posted before JavaScript loads: urlencoded, with the token in
+     * the hidden field rather than a header.
+     *
+     * @param array<string, string> $fields
+     */
+    public function postForm(string $name, array $fields): Response
+    {
+        $token = $this->csrfToken();
+        $fields = [...$fields, '_token' => $token];
+
+        return $this->keep($this->kernel->handle(
+            new Request(
+                'POST',
+                "/_action/{$name}",
+                ['content-type' => 'application/x-www-form-urlencoded', 'accept' => 'text/html'],
+                [],
+                $fields,
+                [...$this->cookies, '__Host-XSRF-TOKEN' => $token],
+                null,
+                $this->address,
+            ),
+            http_build_query($fields),
+        ));
+    }
+
+    /** The session's own token, as the page would have issued it. */
+    private function csrfToken(): string
+    {
+        return (string) new CsrfTokens(
+            new Signer(KEY, CsrfTokens::PURPOSE),
+            static fn (Request $r): string => Kernel::sessionFrom($r->cookie(Kernel::SESSION_COOKIE), KEY) ?? '',
+        )->for(new Request('GET', '/', [], [], [], $this->cookies));
     }
 
     public function sessionId(): ?string
@@ -215,6 +246,23 @@ it('answers a wrong password and an unknown email alike, on the password field',
     expect($wrong->status)->toBe(422)
         ->and($wrong->body())->toBe($unknown->body())
         ->and(json_decode($wrong->body(), true)['errors'])->toBe(['password' => [AccountActions::NO_MATCH]]);
+});
+
+// "<Form> also renders a hidden _token field during dynamic server
+// rendering, so forms work before JavaScript loads." The urlencoded body
+// was handed to the JSON decoder, and refused as bad JSON.
+it('signs in from a form posted before JavaScript loads', function () {
+    [$visitor, $pdo] = shop();
+    $visitor->get('/sign-in');
+
+    $response = $visitor->postForm('account.signIn', [
+        'email' => DemoAccount::EMAIL,
+        'password' => DemoAccount::PASSWORD,
+        'next' => '/orders',
+    ]);
+
+    expect($response->status)->toBe(200)
+        ->and(sessionRow($pdo, $visitor->sessionId())['customer_id'] ?? null)->toBe(demoId($pdo));
 });
 
 it('signs in whatever the email\'s case', function () {

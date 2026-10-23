@@ -166,6 +166,53 @@ describe('endpoint limits', function () {
     });
 });
 
+/**
+ * The decoder used to be chosen by whether the raw body was empty. A form
+ * posted before JavaScript loads is urlencoded and has a raw body, so it went
+ * to the JSON decoder and came back 400; only multipart, whose raw body PHP
+ * consumes, got through.
+ */
+describe('reading a body by its Content-Type', function () {
+    it('runs an action posted as a form, whatever its encoding', function (string $type) {
+        [$endpoint, $fixture] = actionEndpoint();
+        $fields = ['rack' => $fixture->ids['racks'][0], 'position' => '12', '_token' => 'from-the-hidden-field'];
+        $request = new Request('POST', '/_action/RackActions.moveUnit', ['content-type' => $type], [], $fields);
+
+        // PHP leaves php://input empty for multipart, and full for urlencoded.
+        $raw = str_starts_with($type, 'multipart/') ? '' : http_build_query($fields);
+
+        expect($endpoint->handle($request, $raw)->status)->toBe(200);
+    })->with([
+        'urlencoded' => 'application/x-www-form-urlencoded',
+        'multipart' => 'multipart/form-data; boundary=----x',
+    ]);
+
+    it('decodes JSON labelled with a charset', function () {
+        [$endpoint, $fixture] = actionEndpoint();
+        $request = new Request('POST', '/_action/RackActions.moveUnit', ['content-type' => 'application/json; charset=utf-8']);
+
+        expect($endpoint->handle($request, json_encode(['rack' => $fixture->ids['racks'][0], 'position' => 12]))->status)
+            ->toBe(200);
+    });
+
+    it('refuses a body of any other type with 415 rather than guess', function (string $type) {
+        $request = new Request('POST', '/_action/x', ['content-type' => $type]);
+
+        try {
+            Limits::input($request, '{"rack": "r"}');
+            expect()->fail("a {$type} body was read");
+        } catch (HttpException $e) {
+            expect($e->status)->toBe(415);
+        }
+    })->with(['text/plain', 'application/xml', 'application/octet-stream']);
+
+    it('reads an untyped body as the endpoints\' own JSON, or else what was parsed for it', function () {
+        expect(Limits::input(Request::post('/_action/x'), '{"a": 1}'))->toBe(['a' => 1])
+            ->and(Limits::input(Request::post('/_action/x', ['b' => '2']), ''))->toBe(['b' => '2'])
+            ->and(Limits::input(Request::post('/_action/x'), ''))->toBe([]);
+    });
+});
+
 describe('CSRF', function () {
     $next = static fn (Request $r): Response => Response::make(200, 'ok');
 

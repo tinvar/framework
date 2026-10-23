@@ -65,7 +65,7 @@ final class BootstrapEndpoint
             throw new HttpException(405, 'Bootstrap is POST only.', 'method_not_allowed');
         }
 
-        $body = $rawBody === '' ? Limits::form($request->body, self::MAX_BODY_BYTES) : Limits::decodeJson($rawBody, self::MAX_BODY_BYTES);
+        $body = Limits::input($request, $rawBody, self::MAX_BODY_BYTES);
 
         $route = $body['route'] ?? null;
         if (!\is_string($route) || $route === '') {

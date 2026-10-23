@@ -87,7 +87,7 @@ final class QueryEndpoint
 
     private function dispatch(Request $request, string $name, string $rawBody): Response
     {
-        $body = $rawBody === '' ? Limits::form($request->body, $this->maxBodyBytes) : Limits::decodeJson($rawBody, $this->maxBodyBytes);
+        $body = Limits::input($request, $rawBody, $this->maxBodyBytes);
         $args = $body['args'] ?? [];
 
         // {} decodes to [], which array_is_list() calls a list: an
