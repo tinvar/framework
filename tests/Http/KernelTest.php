@@ -999,3 +999,67 @@ it('names a resolver that builds something other than middleware', function () {
         globalMiddleware: [VerifyCsrfToken::class],
     ))->toThrow(LogicException::class, 'VerifyCsrfToken as stdClass, not middleware');
 });
+
+#[Tinvar\Attributes\Dependency(Tinvar\Container\Lifetime::Request)]
+final class KernelRequestService
+{
+    public function __construct(public Orm $orm) {}
+}
+
+describe('the kernel with a container', function () {
+    function containerKernel(Tinvar\Container\Container $container): array
+    {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $routes = new RouteRegistry();
+        $routes->registerAll([Tinvar\Tests\Routing\Fixtures\RootLayout::class, Tinvar\Tests\Routing\Fixtures\SiteLayout::class, Tinvar\Tests\Routing\Fixtures\RackShowPage::class]);
+        $auth = new AuthContext();
+        $auth->login(new AuthUser('u-1'));
+
+        $kernel = new Kernel(
+            orm: new Orm($fixture->connection, new IdentityMap('test')),
+            routes: $routes,
+            queries: new QueryRegistry(),
+            actions: new ActionRegistry(),
+            auth: $auth,
+            policies: new PolicyRegistry(),
+            resolver: $container->resolver(),
+            allowedQueries: static fn (Request $r): array => [],
+            gate: new Tinvar\Auth\AllowAllGate(),
+            container: $container,
+        );
+
+        return [$kernel, '/sites/' . $fixture->ids['sites'][0] . '/racks/' . $fixture->ids['racks'][0]];
+    }
+
+    // Anything the container builds can take the framework's objects by type.
+    it('registers the framework objects it was built with', function () {
+        $container = new Tinvar\Container\Container();
+        [$kernel] = containerKernel($container);
+
+        expect($container->get(KernelRequestService::class)->orm)->toBe($kernel->orm)
+            ->and($container->get(AuthContext::class))->toBe($kernel->auth);
+    });
+
+    it('builds the pages and layouts a request needs through the container', function () {
+        $container = new Tinvar\Container\Container();
+        [$kernel, $path] = containerKernel($container);
+
+        expect($kernel->handle(Request::get($path), render())->status)->toBe(200);
+    });
+
+    // One that remembered a user's data would hand it to the next request.
+    it('drops request-lived services when the request ends', function () {
+        $container = new Tinvar\Container\Container();
+        [$kernel, $path] = containerKernel($container);
+        $during = null;
+
+        $kernel->handle(Request::get($path), function () use ($container, &$during): Response {
+            $during = $container->get(KernelRequestService::class);
+
+            return Response::make(200, 'ok');
+        });
+
+        expect($kernel->scope->names())->toContain('container')
+            ->and($container->get(KernelRequestService::class))->not->toBe($during);
+    });
+});

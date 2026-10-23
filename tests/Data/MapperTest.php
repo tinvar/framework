@@ -53,8 +53,10 @@ final readonly class RackView extends Data
      */
     public function __construct(
         public string $id,
-        #[From('name')] public string $label,
-        #[From('equipment')] public array $units,
+        #[From('name')]
+        public string $label,
+        #[From('equipment')]
+        public array $units,
         public ?UnitView $primary,
         public string $note = 'none',
     ) {}
@@ -68,7 +70,8 @@ final readonly class LazyRackView extends Data
      */
     public function __construct(
         public string $id,
-        #[From('equipment')] public Lazy $units,
+        #[From('equipment')]
+        public Lazy $units,
         public Lazy $primary,
     ) {}
 }

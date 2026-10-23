@@ -19,6 +19,7 @@ use Tinvar\Http\Endpoints\FragmentEndpoint;
 use Tinvar\Http\Endpoints\QueryEndpoint;
 use Tinvar\Http\Middleware\CheckVersion;
 use Tinvar\Http\Middleware\TranslateRedirects;
+use Tinvar\Container\Container;
 use Tinvar\Http\Middleware\RequireAuthentication;
 use Tinvar\Http\Middleware\ThrottleRequests;
 use Tinvar\Http\Middleware\VerifyCsrfToken;
@@ -131,6 +132,8 @@ final class Kernel
      * @param list<class-string<Middleware>> $globalMiddleware
      * @param (\Closure(\Throwable, string): void)|null $log
      * @param array<string, int> $limits requests per minute, by throttle bucket
+     * @param Container|null $container registered with the framework's objects, and its
+     *        request-lived services cleared by the reset contract
      */
     public function __construct(
         public readonly Orm $orm,
@@ -152,7 +155,20 @@ final class Kernel
         ?PanelContext $panels = null,
         ?FragmentManifest $manifest = null,
         ?BuildRegistry $builds = null,
+        ?Container $container = null,
     ) {
+        // The framework's own objects, so anything the container builds can
+        // take them by type. Pass $container->resolver() as $resolver.
+        $container?->instance(Orm::class, $this->orm)
+            ->instance(RouteRegistry::class, $this->routes)
+            ->instance(QueryRegistry::class, $this->queries)
+            ->instance(ActionRegistry::class, $this->actions)
+            ->instance(AuthContext::class, $this->auth)
+            ->instance(PolicyRegistry::class, $this->policies);
+        if ($panels !== null) {
+            $container?->instance(PanelContext::class, $panels);
+        }
+
         $this->panels = $panels;
         $gate ??= new PolicyGate($this->policies, $this->auth);
         $cache ??= new QueryCache(new \Tinvar\Cache\ArrayStore(), $this->auth, $panels);
@@ -326,6 +342,13 @@ final class Kernel
         $this->versions = $builds === null ? null : new CheckVersion($builds);
         $this->exceptions = new ExceptionHandler($log);
         $this->scope = RequestScope::standard($this->orm, $this->auth, $this->policies, $panels, $queryRunner);
+
+        // Request-lived services go with the request, like the user and the
+        // identity map: one that remembered a user's data would hand it to
+        // the next request on this worker.
+        if ($container !== null) {
+            $this->scope->add('container', $container->endRequest(...));
+        }
     }
 
     /**
