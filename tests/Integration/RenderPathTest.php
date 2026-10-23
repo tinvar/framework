@@ -179,7 +179,9 @@ it('serves the document, or the payload alone for a client navigation', function
     try {
         $path = '/racks/' . $seeded['racks'][0];
         $document = $kernel->handle(Tinvar\Http\Request::get($path));
-        $payload = $kernel->handle(Tinvar\Http\Request::get($path, ['RSC' => '1']));
+        // With the build the page metadata names, as the router sends it:
+        // once fragment support is on, the version check is too.
+        $payload = $kernel->handle(Tinvar\Http\Request::get($path, ['RSC' => '1', 'X-Version' => 'dev']));
     } finally {
         $renderer->stop();
     }
