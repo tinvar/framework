@@ -141,3 +141,44 @@ it('generates the app key into the user state directory, outside the project', f
         @rmdir($home);
     }
 });
+
+// A relative path resolves against the starting directory, so php -S and
+// the CLI would each sign with a key of their own.
+describe('where the example keeps a generated key', function () {
+    $with = static function (array $env, Closure $body): mixed {
+        $saved = [];
+        foreach ($env as $name => $value) {
+            $saved[$name] = getenv($name);
+            putenv($value === null ? $name : "{$name}={$value}");
+        }
+        try {
+            return $body();
+        } finally {
+            foreach ($saved as $name => $value) {
+                putenv($value === false ? $name : "{$name}={$value}");
+            }
+        }
+    };
+
+    it('refuses a relative TINVAR_APP_KEY_FILE', function () use ($with) {
+        $with(['TINVAR_APP_KEY' => null, 'TINVAR_APP_KEY_FILE' => 'storage/app.key'], function () {
+            expect(fn () => Racks\Kernel::appKey())->toThrow(RuntimeException::class, 'absolute');
+        });
+    });
+
+    it('ignores a relative XDG_STATE_HOME, as the spec says to', function () use ($with) {
+        $home = sys_get_temp_dir() . '/tinvar-xdg-' . bin2hex(random_bytes(4));
+        $with(['TINVAR_APP_KEY' => null, 'TINVAR_APP_KEY_FILE' => null, 'XDG_STATE_HOME' => 'relative/state', 'HOME' => $home], function () use ($home) {
+            Racks\Kernel::appKey();
+
+            expect(is_file("{$home}/.local/state/tinvar/racks.key"))->toBeTrue()
+                ->and(is_dir('relative'))->toBeFalse();
+        });
+        @unlink("{$home}/.local/state/tinvar/racks.key");
+        @unlink("{$home}/.local/state/tinvar/.racks.key.lock");
+        @rmdir("{$home}/.local/state/tinvar");
+        @rmdir("{$home}/.local/state");
+        @rmdir("{$home}/.local");
+        @rmdir($home);
+    });
+});
