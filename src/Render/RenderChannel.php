@@ -46,6 +46,12 @@ final class RenderChannel
     {
         $minted = 0;
         $started = hrtime(true);
+
+        // One render, one tag set. The runner may be shared across requests
+        // on a worker, and a fragment declaring another request's tags would
+        // have the client re-fetching boundaries that never read them.
+        $this->runner->forgetTagsRead();
+
         $socket = $this->connect();
 
         $meta = [];
@@ -161,6 +167,7 @@ final class RenderChannel
             queryMs: $queryNs / 1e6,
             // Wall time blocked on the socket, minus the part spent answering it.
             waitingOnRendererMs: max(0.0, ($waitNs - $queryNs) / 1e6),
+            tagsRead: $this->runner->tagsRead(),
         );
     }
 

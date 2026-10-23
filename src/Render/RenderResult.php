@@ -12,7 +12,12 @@ namespace Tinvar\Render;
  */
 final readonly class RenderResult
 {
-    /** @param list<array<string, mixed>> $meta head tags */
+    /**
+     * @param list<array<string, mixed>> $meta head tags
+     * @param list<string> $tagsRead cache tags the queries in this render
+     *        depended on, so a fragment response can declare them and the
+     *        client can re-fetch just the boundaries an action invalidated
+     */
     public function __construct(
         public array $meta,
         public int $bytes,
@@ -23,5 +28,6 @@ final readonly class RenderResult
         public float $totalMs,
         public float $queryMs,
         public float $waitingOnRendererMs,
+        public array $tagsRead = [],
     ) {}
 }

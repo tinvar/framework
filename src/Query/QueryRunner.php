@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Query;
 
+use Tinvar\Attributes\Query as QueryAttribute;
 use Tinvar\Auth\Checks;
 use Tinvar\Auth\Gate;
 use Tinvar\Cache\QueryCache;
@@ -39,6 +40,33 @@ final class QueryRunner
         private readonly bool $debug = false,
         private readonly ?QueryCache $cache = null,
     ) {}
+
+    /**
+     * Cache tags the queries in this render depend on.
+     *
+     * "Revalidation reaches mounted fragments. When an action revalidates a
+     * tag, the client re-fetches any mounted fragment that read it, not the
+     * whole page." A fragment can only declare what it read if something
+     * records it, and the only place that knows is where the tags are
+     * computed -- so they are collected as queries run, hit or miss.
+     *
+     * @var array<string, true>
+     */
+    private array $tagsRead = [];
+
+    /**
+     * @return list<string> the tags this runner has seen, tenant-namespaced
+     *         exactly as QueryCache stores them
+     */
+    public function tagsRead(): array
+    {
+        return array_keys($this->tagsRead);
+    }
+
+    public function forgetTagsRead(): void
+    {
+        $this->tagsRead = [];
+    }
 
     /**
      * @param list<array{id: int, name: string, args: array<string, mixed>}> $calls
@@ -467,7 +495,15 @@ final class QueryRunner
             return null;
         }
 
-        $hit = $this->cache->get($name, $this->registry->declarationFor($name), $arguments, $this->orm->tenant());
+        $declaration = $this->registry->declarationFor($name);
+
+        // Recorded on the way IN, so a hit declares its tags too -- a
+        // fragment served from cache still depends on them, and a client
+        // that only learned about tags on a miss would stop re-fetching
+        // exactly the boundaries the cache is keeping warm.
+        $this->recordTags($declaration, $arguments);
+
+        $hit = $this->cache->get($name, $declaration, $arguments, $this->orm->tenant());
 
         return $hit['hit'] ? ['value' => $hit['value']] : null;
     }
@@ -492,6 +528,26 @@ final class QueryRunner
             $this->orm->tenant(),
             $outcome['value'],
         );
+    }
+
+    /**
+     * @param array<string, mixed> $arguments
+     */
+    private function recordTags(QueryAttribute $declaration, array $arguments): void
+    {
+        if ($this->cache === null || $declaration->tags === null) {
+            return;
+        }
+
+        try {
+            foreach ($this->cache->tagsFor($declaration, $arguments, $this->orm->tenant()) as $tag) {
+                $this->tagsRead[$tag] = true;
+            }
+        } catch (\Throwable) {
+            // A mistyped tag closure is already reported by QueryCache, which
+            // treats it as "do not cache this one". Failing the render over
+            // it here would turn a caching bug into an outage.
+        }
     }
 
     private function settle(mixed $value): array

@@ -332,3 +332,86 @@ describe('the store keeps its index honest', function () {
             ->and($store->get('fresh')['hit'])->toBeTrue();
     });
 });
+
+/**
+ * "Revalidation reaches mounted fragments. When an action revalidates a tag,
+ * the client re-fetches any mounted fragment that read it, not the whole
+ * page."
+ *
+ * A fragment can only declare what it read if something records it. Nothing
+ * did: ActionEndpoint shipped x-invalidated-tags, and the symmetric half --
+ * a render declaring the tags it DEPENDS on -- did not exist.
+ */
+describe('tags read during a render', function () {
+    it('records the tags a cacheable query depends on', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $cache = new QueryCache(new ArrayStore(), new AuthContext());
+
+        $registry = new QueryRegistry(static fn (string $c): object => new $c());
+        $registry->register(Tinvar\Tests\Query\Fixtures\CachedSummary::class);
+        $runner = new QueryRunner(
+            registry: $registry,
+            orm: $orm,
+            gate: new AllowAllGate(),
+            cache: $cache,
+        );
+
+        $rack = $fixture->ids['racks'][0];
+        $runner->run([['id' => 0, 'name' => 'racks.cached', 'args' => ['rack' => $rack]]], ['racks.cached']);
+
+        expect($runner->tagsRead())->toHaveCount(1)
+            ->and($runner->tagsRead()[0])->toContain("rack:{$rack}");
+    });
+
+    // A fragment served from cache still depends on its tags. Recording only
+    // on a miss would stop the client re-fetching exactly the boundaries the
+    // cache is keeping warm.
+    it('records them on a cache hit too', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $cache = new QueryCache(new ArrayStore(), new AuthContext());
+
+        $registry = new QueryRegistry(static fn (string $c): object => new $c());
+        $registry->register(Tinvar\Tests\Query\Fixtures\CachedSummary::class);
+        $runner = new QueryRunner(
+            registry: $registry,
+            orm: $orm,
+            gate: new AllowAllGate(),
+            cache: $cache,
+        );
+
+        $call = [['id' => 0, 'name' => 'racks.cached', 'args' => ['rack' => $fixture->ids['racks'][0]]]];
+
+        $runner->run($call, ['racks.cached']);
+        $runner->forgetTagsRead();
+        $runner->run($call, ['racks.cached']);
+
+        expect($runner->tagsRead())->toHaveCount(1);
+    });
+
+    // The runner may be shared across requests on a worker, and a fragment
+    // declaring another request's tags would have the client re-fetching
+    // boundaries that never read them.
+    it('forgets them between renders', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+
+        $registry = new QueryRegistry(static fn (string $c): object => new $c());
+        $registry->register(Tinvar\Tests\Query\Fixtures\CachedSummary::class);
+        $runner = new QueryRunner(
+            registry: $registry,
+            orm: $orm,
+            gate: new AllowAllGate(),
+            cache: new QueryCache(new ArrayStore(), new AuthContext()),
+        );
+
+        $runner->run(
+            [['id' => 0, 'name' => 'racks.cached', 'args' => ['rack' => $fixture->ids['racks'][0]]]],
+            ['racks.cached'],
+        );
+        $runner->forgetTagsRead();
+
+        expect($runner->tagsRead())->toBe([]);
+    });
+});
