@@ -91,6 +91,27 @@ final readonly class Plain extends Data
     public function __construct(public string $id, public array $tags) {}
 }
 
+final class NodeModel
+{
+    /** @var list<NodeModel> */
+    public array $children = [];
+
+    public ?NodeModel $parent = null;
+
+    public function __construct(public string $id) {}
+}
+
+final readonly class NodeView extends Data
+{
+    /** @param list<NodeView> $children */
+    public function __construct(public string $id, public array $children, public ?NodeView $parent) {}
+}
+
+final readonly class ChainView extends Data
+{
+    public function __construct(public string $id, public ?ChainView $next) {}
+}
+
 function rack(): RackModel
 {
     return new RackModel('r-1', 'R-01', [new UnitModel('u-1', 1), new UnitModel('u-2', 2)], new UnitModel('u-9', 9));
@@ -173,4 +194,32 @@ it('refuses a source other than the class it maps from', function () {
 it('refuses a list field whose source is not a list', function () {
     expect(fn () => RackView::from(['id' => 'r', 'name' => 'n', 'equipment' => 'nope', 'primary' => null]))
         ->toThrow(DataMappingException::class, 'is a list, but its source is string');
+});
+
+
+// A parent and child relation pair is one cyclic graph; mapping it ran
+// PHP out of memory -- a fatal error that takes the worker down.
+it('refuses a cyclic source instead of recursing until memory runs out', function () {
+    $parent = new NodeModel('p');
+    $child = new NodeModel('c');
+    $parent->children = [$child];
+    $child->parent = $parent;
+
+    expect(fn () => NodeView::from($parent))->toThrow(DataMappingException::class, 'the source graph is cyclic');
+});
+
+it('maps the same object twice when it is shared, not cyclic', function () {
+    $shared = new UnitModel('u', 1);
+
+    expect(RackView::from(['id' => 'r', 'name' => 'n', 'equipment' => [$shared, $shared], 'primary' => $shared])->units)
+        ->toHaveCount(2);
+});
+
+it('refuses a graph deeper than the encoder would write', function () {
+    $source = ['id' => 'end', 'next' => null];
+    for ($i = 0; $i < 40; $i++) {
+        $source = ['id' => "n{$i}", 'next' => $source];
+    }
+
+    expect(fn () => ChainView::from($source))->toThrow(DataMappingException::class, 'nests deeper than 32 levels');
 });

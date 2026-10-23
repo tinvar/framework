@@ -28,6 +28,9 @@ use Tinvar\Attributes\MapsFrom;
  */
 final class Mapper
 {
+    /** @var list<object|null> the sources being mapped, outermost first */
+    private static array $mapping = [];
+
     /** @var array<class-string<Data>, array{maps: class-string|null, fields: list<array{name: string, source: string, kind: string, target: class-string<Data>|null, default: bool, nullable: bool}>}> */
     private static array $plans = [];
 
@@ -38,6 +41,38 @@ final class Mapper
      * @return T
      */
     public static function map(string $class, object|array $source): Data
+    {
+        // A cyclic source -- a parent and child relation pair, which the
+        // identity map makes one object graph -- recursed until PHP ran out
+        // of memory: a fatal error, uncatchable, taking the worker down with
+        // every request it held. A source already being mapped, or a graph
+        // deeper than the encoder would ever write, is refused instead.
+        if (\count(self::$mapping) >= Encoder::MAX_DEPTH) {
+            throw DataMappingException::tooDeep($class, Encoder::MAX_DEPTH);
+        }
+        if (\is_object($source)) {
+            foreach (self::$mapping as $active) {
+                if ($active === $source) {
+                    throw DataMappingException::cycle($class, $source::class);
+                }
+            }
+        }
+
+        self::$mapping[] = \is_object($source) ? $source : null;
+        try {
+            return self::mapOne($class, $source);
+        } finally {
+            array_pop(self::$mapping);
+        }
+    }
+
+    /**
+     * @template T of Data
+     * @param class-string<T> $class
+     * @param object|array<array-key, mixed> $source
+     * @return T
+     */
+    private static function mapOne(string $class, object|array $source): Data
     {
         $plan = self::planFor($class);
 

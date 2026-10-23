@@ -24,4 +24,17 @@ final class DataMappingException extends \RuntimeException
     {
         return new self("{$class}::\${$field} is a list, but its source is {$given}.");
     }
+
+    public static function cycle(string $class, string $source): self
+    {
+        return new self(
+            "Mapping {$class} reached a {$source} it is already mapping: the source graph is cyclic. "
+            . 'Map the back-reference as an id, or leave it out of the Data class.',
+        );
+    }
+
+    public static function tooDeep(string $class, int $max): self
+    {
+        return new self("Mapping {$class} nests deeper than {$max} levels, more than the encoder will write.");
+    }
 }
