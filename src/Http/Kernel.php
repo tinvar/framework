@@ -17,6 +17,7 @@ use Tinvar\Http\Endpoints\ActionEndpoint;
 use Tinvar\Http\Endpoints\BootstrapEndpoint;
 use Tinvar\Http\Endpoints\FragmentEndpoint;
 use Tinvar\Http\Endpoints\QueryEndpoint;
+use Tinvar\Http\Middleware\CheckVersion;
 use Tinvar\Http\Middleware\RequireAuthentication;
 use Tinvar\Http\Middleware\ThrottleRequests;
 use Tinvar\Http\Middleware\VerifyCsrfToken;
@@ -68,6 +69,9 @@ final class Kernel
 
     /** Kept so a page render can mint the route token its client sends back. */
     private readonly ?FragmentSupport $support;
+
+    /** Null when the application declared no builds, so there is nothing to check against. */
+    private readonly ?CheckVersion $versions;
     public readonly RequestScope $scope;
     public readonly ?PanelContext $panels;
 
@@ -138,6 +142,7 @@ final class Kernel
         array $limits = self::DEFAULT_LIMITS,
         ?PanelContext $panels = null,
         ?FragmentManifest $manifest = null,
+        ?BuildRegistry $builds = null,
     ) {
         $this->panels = $panels;
         $gate ??= new PolicyGate($this->policies, $this->auth);
@@ -303,6 +308,12 @@ final class Kernel
             : new BootstrapEndpoint($this->routes, $manifest, $fragments);
 
         $this->support = $fragments;
+
+        // Its own argument, not reached through FragmentSupport: detecting a
+        // deploy is something every application with a client router needs,
+        // whether or not it has a single <Deferred>.
+        $builds ??= $fragments?->builds;
+        $this->versions = $builds === null ? null : new CheckVersion($builds);
         $this->exceptions = new ExceptionHandler($log);
         $this->scope = RequestScope::standard($this->orm, $this->auth, $this->policies, $panels, $queryRunner);
     }
@@ -350,7 +361,7 @@ final class Kernel
             // when an action invalidates this route. Minted here rather than
             // by the application, so route and params come from the chain
             // that was actually matched.
-            return $this->router->handle($request, function (LoadedRoute $loaded, Request $passed) use ($respond): Response {
+            $navigate = fn (Request $r): Response => $this->router->handle($r, function (LoadedRoute $loaded, Request $passed) use ($respond): Response {
                 $response = $respond($loaded, $passed);
                 $token = $this->routeTokenFor($loaded, $passed);
 
@@ -368,6 +379,13 @@ final class Kernel
                     ->withHeader('cache-control', 'private, no-store')
                     ->withAddedHeader('vary', 'Cookie');
             });
+
+            // Version first, before anything renders: a client on another
+            // build gets told to reload rather than handed a payload whose
+            // client-component IDs it cannot resolve.
+            return $this->versions === null
+                ? $navigate($request)
+                : $this->versions->handle($request, $navigate);
         } catch (\Throwable $e) {
             return $this->exceptions->handle($e, $request);
         } finally {

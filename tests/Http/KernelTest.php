@@ -882,3 +882,62 @@ describe('revalidation transport', function () {
             ->and($response->header('vary'))->toContain('Cookie');
     });
 });
+
+/**
+ * Through the composition root, by a real request -- the standard every
+ * mounted feature has had to meet after three were declared done while
+ * unreachable from here.
+ */
+describe('version skew through the kernel', function () {
+    function versionedKernel(): array
+    {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $routes = new RouteRegistry();
+        $routes->registerAll([
+            Tinvar\Tests\Routing\Fixtures\RootLayout::class,
+            Tinvar\Tests\Routing\Fixtures\SiteLayout::class,
+            Tinvar\Tests\Routing\Fixtures\RackShowPage::class,
+        ]);
+
+        $auth = new AuthContext();
+        $auth->login(new AuthUser('u-1'));
+
+        $kernel = new Kernel(
+            orm: new Orm($fixture->connection, new IdentityMap('test')),
+            routes: $routes,
+            queries: new QueryRegistry(),
+            actions: new ActionRegistry(),
+            auth: $auth,
+            policies: new PolicyRegistry(),
+            resolver: static fn (string $class): object => new $class(),
+            allowedQueries: static fn (Request $r): array => [],
+            gate: new Tinvar\Auth\AllowAllGate(),
+            builds: (new Tinvar\Http\BuildRegistry('b2', ['b1']))->revoke('b1'),
+        );
+
+        return [$kernel, '/sites/' . $fixture->ids['sites'][0] . '/racks/' . $fixture->ids['racks'][0]];
+    }
+
+    it('tells a client on a revoked build to reload', function () {
+        [$kernel, $path] = versionedKernel();
+
+        $response = $kernel->handle(Request::get($path, ['RSC' => '1', 'X-Version' => 'b1']), render());
+
+        expect($response->status)->toBe(409)
+            ->and($response->header('x-location'))->toBe($path);
+    });
+
+    it('serves a client on the current build', function () {
+        [$kernel, $path] = versionedKernel();
+
+        $response = $kernel->handle(Request::get($path, ['RSC' => '1', 'X-Version' => 'b2']), render());
+
+        expect($response->status)->toBe(200);
+    });
+
+    it('serves a document load whatever its version', function () {
+        [$kernel, $path] = versionedKernel();
+
+        expect($kernel->handle(Request::get($path), render())->status)->toBe(200);
+    });
+});
