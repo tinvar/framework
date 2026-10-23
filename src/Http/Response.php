@@ -283,6 +283,17 @@ final class Response
     /** @param \Closure(string): void $sink */
     public function sendBody(\Closure $sink): void
     {
+        // What body() already buffered, if anything did: running the
+        // producer again would send the client a second render, after a
+        // logger or a middleware had read the first.
+        if ($this->buffered !== null) {
+            if ($this->buffered !== '') {
+                $sink($this->buffered);
+            }
+
+            return;
+        }
+
         if ($this->producer !== null) {
             ($this->producer)($sink);
 

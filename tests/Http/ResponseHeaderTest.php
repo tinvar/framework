@@ -12,3 +12,24 @@ it('refuses a header name that is not a token', function (string $name) {
 it('accepts a token header name', function () {
     expect(Response::make()->withHeader('x-route-token', 'v')->header('x-route-token'))->toBe('v');
 });
+
+// body() keeps what a producer wrote so a render is never run twice, and
+// sendBody() -- the path Sapi::send() takes -- ignored that and ran it again:
+// a logger or middleware that read the body first made the client get a
+// second render.
+it('sends the body a producer already wrote rather than running it again', function () {
+    $runs = 0;
+    $response = Response::stream(static function (\Closure $sink) use (&$runs): void {
+        $runs++;
+        $sink("render #{$runs}");
+    });
+
+    $response->body();
+    $sent = '';
+    $response->sendBody(static function (string $chunk) use (&$sent): void {
+        $sent .= $chunk;
+    });
+
+    expect($runs)->toBe(1)
+        ->and($sent)->toBe('render #1');
+});
