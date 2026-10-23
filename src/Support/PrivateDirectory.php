@@ -25,6 +25,9 @@ final class PrivateDirectory
     /** The longest Unix socket path the strictest supported platform takes. */
     public const int MAX_SOCKET_PATH = 104;
 
+    /** The file naming the process a directory belongs to, for removeAbandoned(). */
+    public const string OWNER_FILE = 'owner.pid';
+
     /**
      * Creates the directory and returns its path.
      *
@@ -33,19 +36,16 @@ final class PrivateDirectory
      * at a guessable name -- fails the mkdir and another name is tried, so
      * the directory returned is always one this call made.
      *
-     * @param string $prefix the name's first part, so a stray directory says what left it
-     * @param string $base   where to make it; /tmp unless that is missing
+     * @param string   $prefix the name's first part, so a stray directory says what left it
+     * @param string   $base   where to make it; /tmp unless that is missing
+     * @param int|null $owner  the process it belongs to, written in it, so that once
+     *        that process is gone removeAbandoned() can tell the directory is too
      */
-    public static function create(string $prefix = 'tinvar', ?string $base = null): string
+    public static function create(string $prefix = 'tinvar', ?string $base = null, ?int $owner = null): string
     {
-        if (preg_match('/^[a-z0-9][a-z0-9-]{0,15}\z/', $prefix) !== 1) {
-            throw new \InvalidArgumentException(
-                'A private directory prefix is 1 to 16 lowercase letters, digits and dashes.',
-            );
-        }
+        self::assertPrefix($prefix);
 
-        $base ??= is_dir('/tmp') ? '/tmp' : sys_get_temp_dir();
-        $base = rtrim($base, '/');
+        $base = self::base($base);
         if (!is_dir($base) || !is_writable($base)) {
             throw new \RuntimeException("Could not create a private directory under {$base}: it is not a writable directory.");
         }
@@ -64,10 +64,55 @@ final class PrivateDirectory
             // chmod makes it exactly 0700 whatever the umask was.
             chmod($path, 0700);
 
+            if ($owner !== null) {
+                file_put_contents("{$path}/" . self::OWNER_FILE, (string) $owner);
+            }
+
             return $path;
         }
 
         throw new \RuntimeException("Could not create a private directory under {$base}.");
+    }
+
+    /**
+     * Removes the directories made with this prefix whose owner has gone.
+     *
+     * A process killed outright -- SIGKILL, a crash -- cleans up nothing,
+     * and its directory stayed in /tmp for good. Only one that names its
+     * owner, belongs to this user, and whose owner is no longer running is
+     * removed: one still being set up names no owner yet, and one whose
+     * owner is alive is in use.
+     *
+     * @return list<string> the directories removed
+     */
+    public static function removeAbandoned(string $prefix, ?string $base = null): array
+    {
+        self::assertPrefix($prefix);
+        if (!\function_exists('posix_kill') || !\function_exists('posix_geteuid')) {
+            return [];
+        }
+
+        $removed = [];
+        foreach (glob(self::base($base) . "/{$prefix}-*", GLOB_ONLYDIR) ?: [] as $directory) {
+            // Named as create() names them, so nothing else under /tmp that
+            // shares the prefix is touched.
+            if (preg_match('/^' . preg_quote($prefix, '/') . '-[0-9a-f]{10}\z/', basename($directory)) !== 1
+                || is_link($directory)
+                || fileowner($directory) !== posix_geteuid()) {
+                continue;
+            }
+
+            $ownerFile = "{$directory}/" . self::OWNER_FILE;
+            $owner = is_file($ownerFile) && !is_link($ownerFile) ? file_get_contents($ownerFile) : false;
+            if (!\is_string($owner) || preg_match('/^[1-9][0-9]{0,9}\z/', $owner) !== 1 || self::running((int) $owner)) {
+                continue;
+            }
+
+            self::remove($directory);
+            $removed[] = $directory;
+        }
+
+        return $removed;
     }
 
     /**
@@ -99,5 +144,25 @@ final class PrivateDirectory
         if (scandir($directory) === ['.', '..']) {
             rmdir($directory);
         }
+    }
+
+    private static function assertPrefix(string $prefix): void
+    {
+        if (preg_match('/^[a-z0-9][a-z0-9-]{0,15}\z/', $prefix) !== 1) {
+            throw new \InvalidArgumentException(
+                'A private directory prefix is 1 to 16 lowercase letters, digits and dashes.',
+            );
+        }
+    }
+
+    private static function base(?string $base): string
+    {
+        return rtrim($base ?? (is_dir('/tmp') ? '/tmp' : sys_get_temp_dir()), '/');
+    }
+
+    /** Signal 0 asks without sending anything; EPERM is a process that exists under another user. */
+    private static function running(int $pid): bool
+    {
+        return posix_kill($pid, 0) || posix_get_last_error() === 1;
     }
 }

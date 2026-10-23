@@ -26,7 +26,9 @@ use Tinvar\Support\PrivateDirectory;
  *
  * It prints the URL once FrankenPHP is answering on it, forwards SIGINT and
  * SIGTERM to both children, and if either exits on its own stops the other
- * and exits non-zero.
+ * and exits non-zero. Killed outright, it can do none of that, so each child
+ * also stops when this process's end of its standard input closes; and the
+ * next start removes the directory a killed one left.
  */
 final class ServeCommand
 {
@@ -47,6 +49,14 @@ final class ServeCommand
     private readonly \Closure $err;
 
     private bool $stopping = false;
+
+    /**
+     * The write end of each child's standard input, by process: held open
+     * and never written to. See spawn().
+     *
+     * @var array<int, resource>
+     */
+    private array $tethers = [];
 
     /**
      * @param string $projectRoot where the framework's node_modules and tools are
@@ -179,7 +189,9 @@ final class ServeCommand
     /** @param array{host: string, port: int, app: string, entry: string, renderer: string, frankenphp: string, workers: int} $plan */
     private function serve(array $plan): int
     {
-        $directory = PrivateDirectory::create('tinvar-serve');
+        // One killed outright had no chance to remove its own.
+        PrivateDirectory::removeAbandoned('tinvar-serve');
+        $directory = PrivateDirectory::create('tinvar-serve', owner: getmypid() ?: null);
         $socket = "{$directory}/renderer.sock";
         $children = [];
 
@@ -187,14 +199,25 @@ final class ServeCommand
 
         try {
             $children['the renderer'] = $renderer = $this->spawn(
-                ['node', $plan['renderer'], $socket, $plan['entry']],
+                ['node', $plan['renderer'], $socket, $plan['entry'], '--exit-with-stdin'],
                 $plan['app'],
                 [...array_intersect_key(getenv(), array_flip(self::RENDERER_ENV)), 'NODE_ENV' => 'production'],
             );
             $this->waitFor(static fn (): bool => file_exists($socket), $renderer, 'The renderer', 20);
 
+            // FrankenPHP watches nothing of its parent's, so it runs under a
+            // PHP process that watches standard input for it.
             $children['FrankenPHP'] = $server = $this->spawn(
-                [$plan['frankenphp'], 'run', '--config', "{$plan['app']}/Caddyfile", '--adapter', 'caddyfile'],
+                [
+                    PHP_BINARY,
+                    __DIR__ . '/../../bin/tethered.php',
+                    $plan['frankenphp'],
+                    'run',
+                    '--config',
+                    "{$plan['app']}/Caddyfile",
+                    '--adapter',
+                    'caddyfile',
+                ],
                 $plan['app'],
                 [
                     ...getenv(),
@@ -300,10 +323,17 @@ final class ServeCommand
     {
         // Children write to this process's standard error, so its standard
         // output carries only the URL a caller may be waiting to read.
-        $process = proc_open($command, [0 => ['file', '/dev/null', 'r'], 1 => STDERR, 2 => STDERR], $pipes, $cwd, $env);
+        //
+        // Their standard input is a pipe this process holds the other end
+        // of and never writes to. Killed outright -- SIGKILL, a crash -- it
+        // forwards no signal, and the children kept serving the port as
+        // orphans; but the system closes the pipe whatever killed it, and
+        // each child stops when its input ends.
+        $process = proc_open($command, [0 => ['pipe', 'r'], 1 => STDERR, 2 => STDERR], $pipes, $cwd, $env);
         if (!\is_resource($process)) {
             throw new ServeException('Could not start ' . $command[0] . '.');
         }
+        $this->tethers[(int) $process] = $pipes[0];
 
         return $process;
     }
@@ -352,6 +382,10 @@ final class ServeCommand
             }
             if (proc_get_status($process)['running']) {
                 proc_terminate($process, \defined('SIGKILL') ? SIGKILL : 9);
+            }
+            if (isset($this->tethers[(int) $process])) {
+                fclose($this->tethers[(int) $process]);
+                unset($this->tethers[(int) $process]);
             }
             proc_close($process);
         }

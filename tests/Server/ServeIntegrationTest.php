@@ -14,7 +14,9 @@ namespace Tinvar\Tests\Server\ServeIntegration;
 
 use Tinvar\Bench\Shop;
 use Tinvar\Server\FrankenPhp;
+use Tinvar\Server\PortFinder;
 use Tinvar\Server\ServeException;
+use Tinvar\Support\PrivateDirectory;
 
 $root = \dirname(__DIR__, 4);
 
@@ -33,7 +35,8 @@ beforeAll(function () use ($root) {
 /**
  * A running `tinvar serve`, its URL, and a way to stop it.
  *
- * @return array{resource, string, \Closure(): ?int} the process, its URL, and a stop that returns its exit status
+ * @return array{resource, string, \Closure(): ?int, string} the process, its URL, a stop that returns
+ *         its exit status, and the file its children's output goes to
  */
 function serve(string $root, string $keyFile): array
 {
@@ -95,7 +98,7 @@ function serve(string $root, string $keyFile): array
         );
     }
 
-    return [$process, $m[1], $stop];
+    return [$process, $m[1], $stop, $log];
 }
 
 /** @return array{int, array<string, string>, string} status, headers by lowercase name, body */
@@ -175,4 +178,54 @@ it('serves the shop on a free port it chose, and stops cleanly', function () use
 
     expect($code)->toBe(0)
         ->and($answers)->toBeFalse();
+});
+
+// Killed outright, the command forwards no signal: the renderer and
+// FrankenPHP kept serving the port as orphans, and the private directory
+// stayed in /tmp. Each child now stops when its end of the command's pipe
+// closes, and the next start removes the directory.
+it('takes its children with it when it is killed outright', function () use ($root) {
+    $keyFile = sys_get_temp_dir() . '/tinvar-serve-key-' . bin2hex(random_bytes(4)) . '/app.key';
+    [$process, $url, $stop, $log] = serve($root, $keyFile);
+    $port = (int) parse_url($url, PHP_URL_PORT);
+    preg_match('#a renderer at (/\S+)/renderer\.sock#', (string) file_get_contents($log), $m);
+    $directory = $m[1] ?? '';
+
+    try {
+        posix_kill(proc_get_status($process)['pid'], SIGKILL);
+
+        $deadline = microtime(true) + 15;
+        while (PortFinder::answers('127.0.0.1', $port) && microtime(true) < $deadline) {
+            usleep(100_000);
+        }
+        $answering = PortFinder::answers('127.0.0.1', $port);
+        $left = is_dir($directory);
+    } finally {
+        // Reaped here, as a shell would have reaped it: until then it is a
+        // zombie, which still counts as running.
+        $stop();
+        $removed = PrivateDirectory::removeAbandoned('tinvar-serve');
+
+        // Before the fix, what was left serving; best effort, so a failing
+        // run does not leave it for the next.
+        foreach (explode("\n", trim((string) shell_exec("lsof -ti tcp:{$port} -sTCP:LISTEN 2>/dev/null"))) as $pid) {
+            if ((int) $pid > 0) {
+                posix_kill((int) $pid, SIGKILL);
+            }
+        }
+        foreach (glob(\dirname($keyFile) . '/{,.}*', GLOB_BRACE) ?: [] as $leftover) {
+            if (is_file($leftover)) {
+                unlink($leftover);
+            }
+        }
+        if (is_dir(\dirname($keyFile))) {
+            rmdir(\dirname($keyFile));
+        }
+    }
+
+    expect($directory)->toStartWith('/tmp/tinvar-serve-')
+        ->and($answering)->toBeFalse('nothing serves the port once the command is gone')
+        ->and($left)->toBeTrue('a killed command removes nothing itself')
+        ->and($removed)->toContain($directory)
+        ->and(is_dir($directory))->toBeFalse('the next start removes it');
 });

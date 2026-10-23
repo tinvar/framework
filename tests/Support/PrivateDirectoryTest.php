@@ -98,3 +98,43 @@ it('gives up when the base directory cannot hold one', function () {
     expect(fn () => PrivateDirectory::create('test', '/nonexistent-' . bin2hex(random_bytes(4))))
         ->toThrow(\RuntimeException::class, 'Could not create a private directory');
 });
+
+/** A process id that was running a moment ago and is not now. */
+function deadPid(): int
+{
+    $process = proc_open([PHP_BINARY, '-r', 'echo getmypid();'], [1 => ['pipe', 'w']], $pipes);
+    $pid = (int) stream_get_contents($pipes[1]);
+    proc_close($process);
+
+    return $pid;
+}
+
+// A `tinvar serve` killed outright cleans up nothing, and its directory stayed
+// in /tmp for good. The next one to start removes it.
+it('removes a directory whose owner has gone, and leaves the rest', function () {
+    $base = sys_get_temp_dir() . '/tinvar-abandon-' . bin2hex(random_bytes(3));
+    mkdir($base, 0700);
+
+    try {
+        $abandoned = PrivateDirectory::create('test', $base, owner: deadPid());
+        touch("{$abandoned}/renderer.sock");
+        $live = PrivateDirectory::create('test', $base, owner: getmypid());
+        $unowned = PrivateDirectory::create('test', $base);
+        mkdir("{$base}/test-not-ours");
+        file_put_contents("{$base}/test-not-ours/" . PrivateDirectory::OWNER_FILE, (string) deadPid());
+
+        expect(PrivateDirectory::removeAbandoned('test', $base))->toBe([$abandoned])
+            ->and(is_dir($abandoned))->toBeFalse()
+            ->and(is_dir($live))->toBeTrue('its owner is running')
+            ->and(is_dir($unowned))->toBeTrue('it names no owner, and may be one still being set up')
+            ->and(is_dir("{$base}/test-not-ours"))->toBeTrue('not named as this class names them');
+    } finally {
+        foreach (glob("{$base}/*/*") ?: [] as $file) {
+            unlink($file);
+        }
+        foreach (glob("{$base}/*") ?: [] as $directory) {
+            rmdir($directory);
+        }
+        rmdir($base);
+    }
+});
