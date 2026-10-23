@@ -41,6 +41,65 @@ final class PdoConnection implements Connection
         return new self(new \PDO($dsn, $user, $password, [\PDO::ATTR_PERSISTENT => false]), $name);
     }
 
+    /** How long a connection waits on another's write lock before giving up. */
+    public const int SQLITE_BUSY_TIMEOUT_MS = 5000;
+
+    /**
+     * A SQLite database file, opened the way a server with several workers
+     * needs it.
+     *
+     * Each pragma is per connection, and SQLite's defaults are wrong for
+     * this: a rollback journal blocks every reader while anyone writes, a
+     * busy connection fails at once instead of waiting its turn, and foreign
+     * keys are not enforced at all -- so a REFERENCES clause in the schema
+     * was decoration. WAL lets readers run beside the one writer; the busy
+     * timeout queues writers instead of failing them; foreign_keys makes the
+     * schema's references real.
+     *
+     * The file must exist unless $create says otherwise. Opening a mistyped
+     * path made a fresh, empty database there, and every query then failed
+     * with "no such table" far from the cause.
+     */
+    public static function sqlite(
+        string $path,
+        string $name = 'default',
+        bool $create = false,
+        int $busyTimeoutMs = self::SQLITE_BUSY_TIMEOUT_MS,
+    ): self {
+        if ($path === '') {
+            throw new \InvalidArgumentException('A SQLite connection needs a database path.');
+        }
+
+        $flags = \Pdo\Sqlite::OPEN_READWRITE | ($create ? \Pdo\Sqlite::OPEN_CREATE : 0);
+        $pdo = new \Pdo\Sqlite("sqlite:{$path}", null, null, [\Pdo\Sqlite::ATTR_OPEN_FLAGS => $flags]);
+        $connection = new self($pdo, $name);
+
+        // Before anything else: the journal mode cannot change while another
+        // statement holds the database, and the timeout has to be in place
+        // before the first lock is contended.
+        $pdo->exec('PRAGMA busy_timeout = ' . max(0, $busyTimeoutMs));
+        $mode = $connection->select('PRAGMA journal_mode = WAL')[0]['journal_mode'] ?? null;
+        $pdo->exec('PRAGMA foreign_keys = ON');
+
+        // The pragma is setup, not the application's work: query budgets
+        // count from the first statement a caller issues.
+        $connection->resetStatementCount();
+
+        // An in-memory database has no journal file to put in WAL mode, and
+        // answers 'memory'. A file that answers anything but 'wal' -- one on
+        // a filesystem without shared memory, say -- would silently go back
+        // to blocking readers on every write.
+        if ($path !== ':memory:' && !str_starts_with($path, 'file::memory:') && $mode !== 'wal') {
+            throw new \RuntimeException(\sprintf(
+                'SQLite would not put %s in WAL mode (it answered %s).',
+                $path,
+                var_export($mode, true),
+            ));
+        }
+
+        return $connection;
+    }
+
     public function select(string $sql, array $bindings = []): array
     {
         $this->record($sql);
