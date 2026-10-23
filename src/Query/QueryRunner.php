@@ -184,7 +184,7 @@ final class QueryRunner
                 // value for a uuid column, which failed the whole tick and
                 // quoted the caller's input in the error.
                 if ((\is_string($value) || \is_int($value)) && Uuid::isValid((string) $value)) {
-                    $wanted[$class][] = (string) $value;
+                    $wanted[$class][] = self::idOf($value);
                 }
             }
         }
@@ -249,7 +249,7 @@ final class QueryRunner
                 continue;
             }
 
-            $id = (string) $args[$argument];
+            $id = self::idOf($args[$argument]);
             $model = $models[$class][$id] ?? null;
 
             // Out of scope reads as absent, never as forbidden, so the
@@ -608,6 +608,20 @@ final class QueryRunner
             // failed every other call in the tick with it.
             return ['error' => QueryError::of(QueryError::FAILED, $e, $this->debug)];
         }
+    }
+
+    /**
+     * A model argument as the key its row is filed under.
+     *
+     * Lower-cased: every key is a UUID, which names the same row in either
+     * case, and the database and the identity map hand rows back under the
+     * lower-case primaryKey(). Used verbatim, an upper-case id was looked up
+     * under a key nothing was filed under, and a row that exists answered
+     * NOT_FOUND.
+     */
+    private static function idOf(mixed $value): string
+    {
+        return strtolower(\is_string($value) || \is_int($value) ? (string) $value : '');
     }
 
     /** @param array<string, mixed> $args */
