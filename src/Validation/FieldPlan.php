@@ -87,7 +87,8 @@ final readonly class FieldPlan
             if ($applies !== [] && !\in_array($kind, $applies, true)) {
                 throw new \LogicException(
                     "{$where} is {$kind}, which " . $rule::class . ' cannot check (it applies to '
-                    . implode(', ', $applies) . '). A rule that cannot judge a field would pass everything.',
+                    . implode(', ', $applies) . '). A rule that cannot judge a field would pass everything, or '
+                    . 'refuse everything.',
                 );
             }
 
