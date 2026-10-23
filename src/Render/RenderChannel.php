@@ -207,10 +207,13 @@ final class RenderChannel
                                 // render() and fail the whole render. Same
                                 // error, same minter, two policies.
                                 //
-                                // The id is omitted rather than answered, so
-                                // the renderer's promise rejects and that one
-                                // boundary reports instead of mounting.
-                                continue;
+                                // Answered with no token rather than left
+                                // out, so the renderer rejects that one
+                                // boundary's promise and <Deferred> reports
+                                // it while the page completes. Left out, the
+                                // promise had nothing to settle it, and the
+                                // whole render hung until the deadline.
+                                $tokens[$request['id']] = null;
                             }
                         }
 

@@ -124,7 +124,11 @@ final class Frame
     /**
      * Fragment tokens PHP has signed, answering a `mint` frame.
      *
-     * @param array<int, string> $tokens request id => encoded token
+     * Every request is answered. A null token is a refusal, and the renderer
+     * fails that one boundary; a request with no answer at all would leave
+     * the render waiting on it.
+     *
+     * @param array<int, string|null> $tokens request id => encoded token, or null for a refusal
      * @return array<string, mixed>
      */
     public static function minted(array $tokens): array

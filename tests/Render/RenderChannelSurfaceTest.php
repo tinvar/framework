@@ -204,7 +204,9 @@ describe('the query time budget', function () {
 });
 
 describe('minting', function () {
-    it('leaves out a boundary the minter refuses and signs the rest', function () {
+    // Answered, not left out: the renderer's promise for a boundary with no
+    // answer stayed pending, and the render with it, until the deadline.
+    it('answers a boundary the minter refuses with no token and signs the rest', function () {
         $signer = new Signer('test-app-key', FragmentToken::PURPOSE);
         $minter = new FragmentMinter($signer, 'racks.show', [], 'admin', 'acme', 'build-1', 'session-abc');
         $seen = '';
@@ -233,8 +235,9 @@ describe('minting', function () {
         $reply = json_decode($seen, true);
 
         expect($reply['t'])->toBe(Frame::MINTED)
-            ->and(array_column($reply['m'], 'id'))->toBe([0])
-            ->and(FragmentToken::decode($reply['m'][0]['token'], $signer)->component)->toBe('UnitHistory');
+            ->and(array_column($reply['m'], 'id'))->toBe([0, 1])
+            ->and(FragmentToken::decode($reply['m'][0]['token'], $signer)->component)->toBe('UnitHistory')
+            ->and($reply['m'][1])->toBe(['id' => 1, 'token' => null]);
     });
 });
 
