@@ -24,6 +24,16 @@ final class Site extends Model
 {
     #[Id] public private(set) string $id;
     #[Column] public string $code;
+
+    /**
+     * A site owns racks. Here so a model that is reachable as a #[BelongsTo]
+     * ghost also owns a #[HasMany] -- the shape that exposed resolveHasMany()
+     * answering an empty collection.
+     *
+     * @var Collection<Rack>
+     */
+    #[HasMany(Rack::class, orderBy: 'name')]
+    public Collection $racks;
 }
 
 #[Table('racks')]

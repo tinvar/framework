@@ -2,6 +2,10 @@
 
 declare(strict_types=1);
 
+use Tinvar\Orm\DanglingRelation;
+use Tinvar\Support\Uuid;
+use Tinvar\Tests\Orm\Fixtures\Fixture;
+use Tinvar\Tests\Orm\Fixtures\Rack;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\NoTenantContext;
 use Tinvar\Orm\Orm;
@@ -9,6 +13,8 @@ use Tinvar\Orm\ReadOnlyViolation;
 use Tinvar\Tests\Orm\Fixtures\Script;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 
+require_once __DIR__ . '/Fixtures/models.php';
+require_once __DIR__ . '/Fixtures/schema.php';
 require_once __DIR__ . '/Fixtures/tenant.php';
 
 function tenantOrm(TenantFixture $fixture): Orm
@@ -384,4 +390,79 @@ describe('batched relation loads run in the awaiting fiber tenant', function () 
         expect($out['acme'])->toBe(['ok'])
             ->and($out['globex'])->toBe(['ok']);
     });
+});
+
+/**
+ * acrossTenants() is the escape hatch the spec requires to be explicit. It
+ * answered [] for every relation: loadRelationRows() refuses to CACHE an
+ * unscoped read -- correctly, since those rows carry no tenant predicate and
+ * must never be served to a later scoped read -- but both resolvers read
+ * their result back out of that same cache, so refusing to cache meant
+ * refusing to answer.
+ */
+describe('relations inside acrossTenants', function () {
+    it('answers a hasMany across every tenant', function () {
+        $fixture = new TenantFixture();
+        $orm = tenantOrm($fixture);
+
+        $total = $orm->acrossTenants(static function () use ($orm): int {
+            $sum = 0;
+            foreach ($orm->all(Script::class) as $script) {
+                $sum += $script->runs->count();
+            }
+
+            return $sum;
+        });
+
+        expect($total)->toBe(4, 'two tenants, two scripts each, one run each');
+    });
+
+    // The rows an unscoped read returned must not survive into a scoped one.
+    it('does not leave unscoped relation rows behind for a scoped read', function () {
+        $fixture = new TenantFixture();
+        $orm = tenantOrm($fixture);
+
+        $orm->acrossTenants(static function () use ($orm): void {
+            foreach ($orm->all(Script::class) as $script) {
+                $script->runs->count();
+            }
+        });
+
+        $scoped = $orm->actAs('acme', static function () use ($orm): int {
+            $sum = 0;
+            foreach ($orm->all(Script::class) as $script) {
+                $sum += $script->runs->count();
+            }
+
+            return $sum;
+        });
+
+        expect($scoped)->toBe(2, 'acme only, not the four the unscoped read saw');
+    });
+});
+
+/**
+ * A #[BelongsTo] whose key names no readable row used to leave the object
+ * marked initialized, holding nothing, and never retrying -- so reading a
+ * field raised PHP's own "must not be accessed before initialization" Error
+ * from a getter, with no mention of the relation, the key or the scope.
+ */
+it('names a dangling relation instead of leaving a hollow object', function () {
+    $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+
+    $fixture->connection->execute(
+        'INSERT INTO racks (id, name, height_u, site_id) VALUES (?, ?, ?, ?)',
+        [Uuid::v7(), 'R-DANGLING', 42, Uuid::v7()],
+    );
+
+    $dangling = null;
+    foreach ($orm->all(Rack::class) as $rack) {
+        if ($rack->name === 'R-DANGLING') {
+            $dangling = $rack;
+        }
+    }
+
+    expect(static fn (): string => $dangling->site->code)
+        ->toThrow(DanglingRelation::class, 'which no scoped read returns');
 });

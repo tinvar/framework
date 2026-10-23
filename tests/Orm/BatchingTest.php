@@ -271,3 +271,33 @@ it('drops the entered tenant relation rows on a switch', function () {
     expect($fixture->connection->statementCount())
         ->toBeGreaterThan($before, 'the relation is read again, not served from before the switch');
 });
+
+/**
+ * Relation reads that answered [] without saying so.
+ *
+ * The parents a load covers were chosen with `?? [$parent]`, which never
+ * fired: an EMPTY result set is not null. Zero parents reached the loader, it
+ * returned early, cached nothing, and the read fell through to an empty
+ * collection -- no fibers, no tenancy, no scheduler involved.
+ */
+describe('a relation never answers empty by accident', function () {
+    it('loads a hasMany on an owner reached through a belongsTo ghost', function () {
+        $fixture = new Fixture(racks: 3, unitsPerRack: 1, sites: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+
+        // Touching the ghost is the only way this Site enters the request.
+        $site = $orm->all(Rack::class)[0]->site;
+
+        expect($site->racks->count())->toBe(3);
+    });
+
+    it('agrees with the same site read directly', function () {
+        $fixture = new Fixture(racks: 3, unitsPerRack: 1, sites: 1);
+
+        $direct = new Orm($fixture->connection, new IdentityMap('test'));
+        $viaGhost = new Orm($fixture->connection, new IdentityMap('test'));
+
+        expect($viaGhost->all(Rack::class)[0]->site->racks->count())
+            ->toBe($direct->all(Site::class)[0]->racks->count());
+    });
+});

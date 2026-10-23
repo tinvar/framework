@@ -166,7 +166,9 @@ final class QueryRunner
             foreach (array_unique($ids) as $id) {
                 $known = $trustMap ? $this->orm->identityMap()->get($class, $id) : null;
 
-                if ($known instanceof Model && $known->isPersisted()) {
+                // Orm::holdsRow checks laziness before persistence, so this
+                // cannot force a ghost to initialize just by asking about it.
+                if ($known instanceof Model && Orm::holdsRow($known)) {
                     $resolved[$class][$id] = $known;
                     continue;
                 }

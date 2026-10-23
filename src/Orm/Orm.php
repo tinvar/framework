@@ -314,6 +314,29 @@ final class Orm
 
     // ---------------------------------------------------------------- reading
 
+    /**
+     * Whether a model in the identity map stands for a row that was read.
+     *
+     * Two things have to be true, and the ORDER matters. Laziness is checked
+     * first, and WITHOUT touching the object: isPersisted() reads a property,
+     * and reading a property of an uninitialized lazy ghost runs its
+     * initializer. So asking "is this a real row?" the obvious way issued the
+     * very query the question exists to avoid trusting -- and once a dangling
+     * foreign key raises DanglingRelation, it did so from inside what should
+     * have been a plain lookup.
+     *
+     * A ghost is a promise about a foreign key. Only markClean() -- hydrate
+     * from a real row, or an insert -- makes a model evidence of one.
+     */
+    public static function holdsRow(object $model): bool
+    {
+        if ((new \ReflectionClass($model::class))->isUninitializedLazyObject($model)) {
+            return false;
+        }
+
+        return $model instanceof Model && $model->isPersisted();
+    }
+
     /** @param class-string<Model> $class */
     public function find(string $class, string $id): ?Model
     {
@@ -333,7 +356,7 @@ final class Orm
         // here, so the guard belongs here too.
         if (!$this->isUnscoped() && ($existing = $this->identityMap->get($class, $id))) {
             /** @var Model $existing */
-            if ($existing->isPersisted()) {
+            if (self::holdsRow($existing)) {
                 return $existing;
             }
         }
@@ -494,7 +517,16 @@ final class Orm
             function (Model $object) use ($relation, $parent, $foreignKey, $targetMeta): void {
                 $row = $this->resolveBelongsToRow($relation, $parent, $foreignKey);
                 if ($row === null) {
-                    return;
+                    // Throwing leaves the object UNINITIALIZED, so a later
+                    // touch tries again -- which matters when the first touch
+                    // happened under a scope that hid the row. Returning
+                    // instead marked it initialized and empty, permanently.
+                    throw DanglingRelation::for(
+                        $parent::class,
+                        $relation->property,
+                        $relation->target,
+                        $foreignKey,
+                    );
                 }
                 $targetMeta->hydrate($object, $row);
 
@@ -506,7 +538,12 @@ final class Orm
                 // guard re-queried it on every lookup and still handed back the
                 // same instance, and save() on it issued an INSERT for a row
                 // that already existed.
-                $this->settle($object, $targetMeta, $row, new ResultSet());
+                // The object joins the result set it is settled into, so a
+                // relation read on it afterwards has a batch to widen to
+                // rather than an empty set.
+                $set = new ResultSet();
+                $this->settle($object, $targetMeta, $row, $set);
+                $set->add($object);
             }
         );
 
@@ -744,11 +781,40 @@ final class Orm
 
     // ------------------------------------------------------------- relations
 
+    /**
+     * The parents a relation load should cover: the whole result set this
+     * model came back in, or just this model.
+     *
+     * The choice used to be `?? [$parent]`, which never fired -- an EMPTY
+     * result set is not null, so zero parents were handed to the loader, it
+     * returned early, cached nothing, and the read fell through to an empty
+     * collection. Silently, with no fibers and no tenancy involved: a model
+     * reached through a #[BelongsTo] always has an empty result set, so
+     * touching a relation and then reading a #[HasMany] on what came back
+     * answered [].
+     *
+     * @return list<Model>
+     */
+    private function batchWith(Model $parent): array
+    {
+        $set = $parent->resultSet()?->all() ?? [];
+
+        return $set === [] ? [$parent] : $set;
+    }
+
     /** @return list<Model> */
     public function resolveHasMany(RelationMeta $relation, Model $parent): array
     {
         $key = $this->relationCacheKey($relation);
         $groupKey = $parent->primaryKey();
+
+        // An unscoped read never touches the cache, in either direction, so it
+        // takes its answer straight from the load.
+        if ($this->isUnscoped()) {
+            $grouped = $this->loadRelationRows($relation, $this->batchWith($parent), $key);
+
+            return $this->hydrateAll($relation->target, $grouped[$groupKey] ?? []);
+        }
 
         if (!$this->hasRows($key, $groupKey)) {
             // Inside a render, hand the load to the scheduler so it joins every
@@ -757,7 +823,7 @@ final class Orm
             if ($this->scheduler !== null && \Fiber::getCurrent() !== null) {
                 $this->scheduler->await($key, $relation, $parent, $groupKey);
             } else {
-                $this->loadRelationRows($relation, $parent->resultSet()?->all() ?? [$parent]);
+                $this->loadRelationRows($relation, $this->batchWith($parent));
             }
         }
 
@@ -765,8 +831,11 @@ final class Orm
         // key, and reading straight through would answer an EMPTY relation --
         // a silent wrong answer rather than a missing one. Load it directly
         // instead; the batch has already had its chance to be cheap.
+        //
+        // This parent alone, not its result set: if the set is what came back
+        // empty, widening to it again would repeat the miss.
         if (!$this->hasRows($key, $groupKey)) {
-            $this->loadRelationRows($relation, $parent->resultSet()?->all() ?? [$parent], $key);
+            $this->loadRelationRows($relation, [$parent], $key);
         }
 
         /** @var list<array<string, mixed>> $rows */
@@ -780,8 +849,15 @@ final class Orm
     {
         $key = $this->relationCacheKey($relation);
 
+        if ($this->isUnscoped()) {
+            $grouped = $this->loadRelationRows($relation, $this->batchWith($parent), $key);
+
+            /** @var array<string, mixed>|null */
+            return $grouped[$foreignKey][0] ?? null;
+        }
+
         if (!$this->hasRows($key, $foreignKey)) {
-            $this->loadRelationRows($relation, $parent->resultSet()?->all() ?? [$parent]);
+            $this->loadRelationRows($relation, $this->batchWith($parent));
         }
 
         /** @var array<string, mixed>|null */
@@ -792,9 +868,18 @@ final class Orm
      * One statement for every parent handed in. This is the whole point of the
      * batching: the group may span result sets and query calls.
      *
+     * Returns the rows it grouped, keyed by group key, so a caller that
+     * cannot use the cache still gets its answer. An unscoped read is exactly
+     * that caller: these rows were read with no tenant predicate, so caching
+     * them would serve them to a later scoped read -- but refusing to cache
+     * them used to mean refusing to ANSWER, because both resolvers read their
+     * result back out of the cache. acrossTenants() therefore returned an
+     * empty collection for every relation.
+     *
      * @param list<Model> $parents
+     * @return array<string, list<array<string, mixed>>>
      */
-    public function loadRelationRows(RelationMeta $relation, array $parents, ?string $key = null): void
+    public function loadRelationRows(RelationMeta $relation, array $parents, ?string $key = null): array
     {
         // The scheduler passes the key the awaiting fiber computed, because
         // the tenant it was namespaced under is the one being re-entered, not
@@ -813,7 +898,7 @@ final class Orm
         }
 
         if ($groupKeys === []) {
-            return;
+            return [];
         }
 
         $ids = array_keys($groupKeys);
@@ -838,9 +923,11 @@ final class Orm
         }
 
         // Not cached while unscoped, for the same reason the identity map is
-        // bypassed: these rows were read without a tenant predicate.
+        // bypassed: these rows were read without a tenant predicate, and a
+        // later scoped read must not be served one of them. The rows are
+        // still RETURNED, so the caller that asked for them can use them.
         if ($this->isUnscoped()) {
-            return;
+            return $grouped;
         }
 
         foreach ($ids as $id) {
@@ -848,6 +935,8 @@ final class Orm
                 ? ($grouped[$id] ?? [])
                 : ($grouped[$id][0] ?? null);
         }
+
+        return $grouped;
     }
 
     public function hasRows(string $relationKey, string $groupKey): bool
