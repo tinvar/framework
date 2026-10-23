@@ -50,6 +50,9 @@ final class FragmentEndpoint
     /** Tokens are long, but not unbounded: this is a path segment. */
     public const int MAX_TOKEN_BYTES = 4096;
 
+    /** "The response is RSC payload only." */
+    public const string CONTENT_TYPE = 'text/x-component';
+
     /**
      * @param \Closure(FragmentToken, Request, array<string, mixed>): Response $render
      *        opens a render channel for the subtree and returns its response
@@ -140,7 +143,11 @@ final class FragmentEndpoint
                 // "always private, no-store with Vary: Cookie". The body is
                 // session-bound -- the token is -- so a shared cache has to be
                 // told, not merely asked not to store.
+                // The client refuses anything that is not this, so the
+                // endpoint has to promise it rather than leave it to whatever
+                // the render closure happened to set.
                 return $response
+                    ->withHeader('content-type', self::CONTENT_TYPE)
                     ->withHeader('cache-control', 'private, no-store')
                     ->withHeader('x-fragment-token', $token->refreshed()->encode($this->signer))
                     ->withAddedHeader('vary', 'RSC')
