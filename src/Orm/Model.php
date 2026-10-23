@@ -124,6 +124,29 @@ abstract class Model
         $this->original = null;
     }
 
+    /**
+     * @internal read by Orm before a write inside a transaction
+     * @return array<string, mixed>|null
+     */
+    public function snapshot(): ?array
+    {
+        return $this->original;
+    }
+
+    /**
+     * @internal called by Orm when a transaction rolls back
+     *
+     * The write that replaced the snapshot was undone, so the model has to
+     * describe the row as it is again: unpersisted if its insert was undone,
+     * dirty if its update was, persisted if its delete was.
+     *
+     * @param array<string, mixed>|null $snapshot
+     */
+    public function restoreSnapshot(?array $snapshot): void
+    {
+        $this->original = $snapshot;
+    }
+
     /** @internal called by Orm during hydration */
     public function attach(Orm $orm, ResultSet $resultSet): void
     {

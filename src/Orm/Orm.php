@@ -22,6 +22,16 @@ final class Orm
     private ?BatchScheduler $scheduler = null;
 
     /**
+     * What a rollback has to put back: one frame per open transaction(),
+     * listing each model a write touched in it and the snapshot it had
+     * before. A nested frame that returns is folded into the one around it,
+     * since the outer rollback undoes its writes too.
+     *
+     * @var list<list<array{Model, array<string, mixed>|null}>>
+     */
+    private array $journal = [];
+
+    /**
      * Depth of acrossTenants() calls outside any fiber.
      *
      * Kept per fiber as well, below: "Context is fiber-local, so a suspended
@@ -709,6 +719,7 @@ final class Orm
             array_values($values),
         );
 
+        $this->journal($model);
         $model->markClean($values);
         $model->attach($this, new ResultSet());
         $this->identityMap->remember($meta->class, $meta->keyOf($model), $model);
@@ -771,6 +782,7 @@ final class Orm
             throw MissingRow::onUpdate($meta->class, $meta->keyOf($model));
         }
 
+        $this->journal($model);
         $model->markClean($meta->writeValues($model));
 
         return $model;
@@ -794,6 +806,7 @@ final class Orm
 
         // Left marked persisted, a later save() sent an UPDATE for a row that
         // no longer exists. It now inserts the row again, as for a new model.
+        $this->journal($model);
         $model->markDeleted();
     }
 
@@ -811,17 +824,42 @@ final class Orm
         // intent even if nothing in it writes through save().
         $this->refuseWrite('transaction()');
 
+        $this->journal[] = [];
+
         try {
-            return $this->connection->transaction($work);
+            $result = $this->connection->transaction($work);
         } catch (\Throwable $e) {
             // The rows written inside the transaction are gone, but the models
-            // are still in the identity map with snapshots describing writes
-            // that no longer exist. A later read would be served one of those
-            // rather than the database's actual state.
+            // still carry the snapshots those writes took: an undone insert
+            // read as persisted and an undone update as clean, so retrying the
+            // same save() wrote nothing. Restored newest first, so a model
+            // saved twice ends with the snapshot it had before either.
+            foreach (array_reverse(array_pop($this->journal)) as [$model, $snapshot]) {
+                $model->restoreSnapshot($snapshot);
+            }
+
+            // And the identity map still serves those models. A later read
+            // would be handed one of them rather than the database's state.
             $this->identityMap->flush();
             $this->relationRows = [];
 
             throw $e;
+        }
+
+        // A nested call that returned is undone if the outer one rolls back.
+        $frame = array_pop($this->journal);
+        if ($this->journal !== []) {
+            array_push($this->journal[array_key_last($this->journal)], ...$frame);
+        }
+
+        return $result;
+    }
+
+    /** Notes a model's snapshot before a write replaces it, for a rollback to put back. */
+    private function journal(Model $model): void
+    {
+        if ($this->journal !== []) {
+            $this->journal[array_key_last($this->journal)][] = [$model, $model->snapshot()];
         }
     }
 
