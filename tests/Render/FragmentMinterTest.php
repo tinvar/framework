@@ -150,3 +150,42 @@ describe('what the renderer sends', function () {
             ->and(FragmentToken::decode($encoded, $signer)->component)->toBe('UnitHistory');
     });
 });
+
+/**
+ * The seam the review found missing: FragmentSupport builds the minter, so an
+ * application never chooses a token's binding fields itself.
+ */
+describe('FragmentSupport owns the minter', function () {
+    it('binds the build it is configured with and the session it resolves', function () {
+        $signer = minterSigner();
+        $support = new Tinvar\Http\FragmentSupport(
+            signer: $signer,
+            builds: new Tinvar\Http\BuildRegistry('build-9'),
+            render: static fn (): mixed => null,
+            sessionId: static fn (Tinvar\Http\Request $r): string => 'session-from-request',
+        );
+
+        $token = FragmentToken::decode(
+            $support->minterFor(Tinvar\Http\Request::get('/racks/r-1'), 'racks.show', ['rack' => 'r-1'])
+                ->mint('UnitHistory', ['unit' => 'u-1']),
+            $signer,
+        );
+
+        expect($token->build)->toBe('build-9', 'the current build, not one the renderer named')
+            ->and($token->route)->toBe('racks.show')
+            ->and($token->params)->toBe(['rack' => 'r-1'])
+            ->and($token->belongsTo($signer, 'session-from-request'))->toBeTrue();
+    });
+
+    it('refuses to build a minter when the request has no session', function () {
+        $support = new Tinvar\Http\FragmentSupport(
+            signer: minterSigner(),
+            builds: new Tinvar\Http\BuildRegistry('build-9'),
+            render: static fn (): mixed => null,
+            sessionId: static fn (Tinvar\Http\Request $r): string => '',
+        );
+
+        expect(fn () => $support->minterFor(Tinvar\Http\Request::get('/x'), 'racks.show', []))
+            ->toThrow(InvalidArgumentException::class, 'session is required');
+    });
+});
