@@ -21,6 +21,7 @@ final readonly class FieldPlan
     public const array KINDS = ['string', 'int', 'float', 'bool', 'array', 'enum', 'model'];
 
     /**
+     * @param 'string'|'int'|'float'|'bool'|'array'|'enum'|'model' $kind
      * @param list<Rule>                     $rules
      * @param class-string<Model>|null       $modelClass
      * @param class-string<\BackedEnum>|null $enumClass
@@ -87,7 +88,7 @@ final readonly class FieldPlan
         );
     }
 
-    /** @return array{string, class-string<Model>|null, class-string<\BackedEnum>|null} */
+    /** @return array{'string'|'int'|'float'|'bool'|'array'|'enum'|'model', class-string<Model>|null, class-string<\BackedEnum>|null} */
     private static function kindOf(\ReflectionParameter $parameter, string $where): array
     {
         $type = $parameter->getType();

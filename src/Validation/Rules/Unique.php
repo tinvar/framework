@@ -22,8 +22,8 @@ use Tinvar\Validation\ValidationContext;
 #[\Attribute(\Attribute::TARGET_PARAMETER | \Attribute::TARGET_PROPERTY)]
 final readonly class Unique implements Rule
 {
-    /** @param class-string<Model> $model */
     /**
+     * @param class-string<Model> $model
      * @param bool|string $ignoreSubject true exempts the single resolved model
      *        of this rule's class, and fails closed when there is more than
      *        one; a string names the parameter to exempt outright.

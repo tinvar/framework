@@ -119,7 +119,12 @@ final class Validator
         return new $class(...$arguments);
     }
 
-    /** True when the input would validate, without building anything. */
+    /**
+     * True when the input would validate, without building anything.
+     *
+     * @param class-string<FormRequest> $class
+     * @param array<string, mixed>      $input
+     */
     public function passes(string $class, array $input, ?Model $subject = null): bool
     {
         try {
@@ -143,7 +148,10 @@ final class Validator
      * every other field's Exists and Unique queries on each keystroke, and let
      * a 404 from a different model-typed field escape.
      *
-     * @param array<string, mixed> $input
+     * @param class-string<FormRequest> $class
+     * @param array<string, mixed>      $input
+     * @param array<string, Model>      $resolved
+     * @param array<string, Model>      $subjects
      * @return list<string>
      */
     public function errorsFor(
@@ -181,6 +189,7 @@ final class Validator
 
     /**
      * @param array<string, mixed> $input
+     * @param array<string, Model>  $resolved
      * @return list<string>
      */
     private function checkField(
@@ -267,6 +276,8 @@ final class Validator
             'float' => self::toFloat($raw, $field->name),
             'bool' => self::toBool($raw, $field->name),
             'array' => self::toArray($raw, $field->name),
+            // Handled above by their class; reaching here is a plan built wrong.
+            'enum', 'model' => throw new \LogicException("{$field->name}: a {$field->kind} field without its class."),
         };
     }
 
@@ -303,6 +314,7 @@ final class Validator
      * later phase; until then nothing else stops a deeply nested payload from
      * reaching a rule that counts only its top level.
      */
+    /** @return array<array-key, mixed> */
     private static function toArray(mixed $raw, string $field): array
     {
         if (!\is_array($raw)) {
