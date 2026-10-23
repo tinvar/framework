@@ -107,8 +107,16 @@ final class PolicyGate implements Gate
             throw AuthorizationException::badSubject($check->ability);
         }
 
-        // A class named in the attribute is source, not request data.
-        if (class_exists($argument) || interface_exists($argument)) {
+        // The argument by that name first, as the build rules and the loader
+        // runner read it. class_exists() is case-insensitive and sees every
+        // declared class -- a built-in such as \Directory, any class_alias
+        // -- so asking it first handed the policy a class-name string
+        // whenever a model input happened to share a name with one, and a
+        // policy that answers class-level abilities for a string then
+        // decided about the class instead of the row.
+        if (!\array_key_exists($argument, $arguments)
+            && (class_exists($argument) || interface_exists($argument))) {
+            // A class named in the attribute is source, not request data.
             return $argument;
         }
 
