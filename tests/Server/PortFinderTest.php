@@ -1,0 +1,112 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Choosing where `tinvar serve` listens, with the bind check injected so no
+ * port is touched -- and once against the real check, with a port held.
+ */
+
+namespace Tinvar\Tests\Server\PortFinder;
+
+use Random\Engine\Mt19937;
+use Random\Randomizer;
+use Tinvar\Server\PortFinder;
+use Tinvar\Server\ServeException;
+
+/** @param \Closure(string, int): bool $canBind */
+function finder(\Closure $canBind, int $seed = 7): PortFinder
+{
+    return new PortFinder($canBind, new Randomizer(new Mt19937($seed)));
+}
+
+it('picks a free port between 6000 and 7000 when none is given', function () {
+    $port = finder(static fn (): bool => true)->find('127.0.0.1');
+
+    expect($port)->toBeGreaterThanOrEqual(6000)->toBeLessThanOrEqual(7000);
+});
+
+// Random, so two servers started together do not race for one port.
+it('picks at random rather than the first free port', function () {
+    $picks = array_map(static fn (int $seed): int => finder(static fn (): bool => true, $seed)->find('127.0.0.1'), range(1, 5));
+
+    expect(array_unique($picks))->not->toHaveCount(1)
+        ->and($picks)->not->toContain(6000);
+});
+
+it('skips a taken port, trying each one once', function () {
+    $tried = [];
+    $port = finder(static function (string $host, int $port) use (&$tried): bool {
+        $tried[] = $port;
+
+        return $port === 6512;
+    })->find('127.0.0.1');
+
+    expect($port)->toBe(6512)
+        ->and($tried)->toBe(array_values(array_unique($tried)), 'no port is tried twice')
+        ->and(end($tried))->toBe(6512);
+});
+
+it('gives up with a clear message when every port in the range is taken', function () {
+    $tried = 0;
+    $finder = finder(static function () use (&$tried): bool {
+        $tried++;
+
+        return false;
+    });
+
+    expect(fn () => $finder->find('127.0.0.1'))
+        ->toThrow(ServeException::class, 'No free port between 6000 and 7000 on 127.0.0.1: all 1001 are in use')
+        ->and($tried)->toBe(1001);
+});
+
+it('uses an explicit port that is free', function () {
+    expect(finder(static fn (string $host, int $port): bool => $port === 8080)->find('127.0.0.1', '8080'))->toBe(8080);
+});
+
+it('refuses an explicit port that is in use', function () {
+    expect(fn () => finder(static fn (): bool => false)->find('127.0.0.1', '8080'))
+        ->toThrow(ServeException::class, 'Port 8080 on 127.0.0.1 is in use');
+});
+
+it('refuses a port that is not one', function (string $port) {
+    expect(fn () => finder(static fn (): bool => true)->find('127.0.0.1', $port))
+        ->toThrow(ServeException::class, '--port must be a whole number from 1 to 65535');
+})->with(['zero' => ['0'], 'too high' => ['65536'], 'words' => ['abc'], 'a suffix' => ['80x'], 'negative' => ['-1'], 'empty' => [''], 'leading zero' => ['080']]);
+
+it('refuses a host that is not one', function (string $host) {
+    expect(fn () => finder(static fn (): bool => true)->find($host))
+        ->toThrow(ServeException::class, '--host must be an IP address or a host name');
+})->with([
+    'spaces' => ['not a host'],
+    'a URL' => ['http://127.0.0.1'],
+    'a port glued on' => ['127.0.0.1:8080'],
+    'empty' => [''],
+    'an address out of range' => ['999.1.1.1'],
+]);
+
+it('takes an address or a host name', function (string $host) {
+    expect(finder(static fn (): bool => true)->find($host, '8080'))->toBe(8080);
+})->with(['IPv4' => ['127.0.0.1'], 'IPv6' => ['::1'], 'every interface' => ['0.0.0.0'], 'a name' => ['localhost']]);
+
+it('writes an IPv6 host in brackets for a URL', function () {
+    expect(PortFinder::hostForUrl('::1'))->toBe('[::1]')
+        ->and(PortFinder::hostForUrl('127.0.0.1'))->toBe('127.0.0.1');
+});
+
+// The real check: a port someone is listening on cannot be bound.
+it('sees a port another listener holds as taken', function () {
+    $held = stream_socket_server('tcp://127.0.0.1:0');
+    expect($held)->not->toBeFalse();
+    $port = (int) substr((string) stream_socket_get_name($held, false), \strlen('127.0.0.1:'));
+
+    try {
+        expect(PortFinder::bind('127.0.0.1', $port))->toBeFalse()
+            ->and(fn () => new PortFinder()->find('127.0.0.1', (string) $port))
+            ->toThrow(ServeException::class, 'in use');
+    } finally {
+        fclose($held);
+    }
+
+    expect(PortFinder::bind('127.0.0.1', $port))->toBeTrue();
+});
