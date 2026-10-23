@@ -154,11 +154,44 @@ describe('a token is not a capability', function () {
             'params' => ['site' => $fixture->ids['sites'][0], 'rack' => 'no-such-rack'],
         ]);
 
-        expect(fn () => $endpoint->handle(fragmentRequest($signer, $token)))
-            ->toThrow(HttpException::class);
+        try {
+            $endpoint->handle(fragmentRequest($signer, $token));
+            expect()->fail('an unresolvable parameter was accepted');
+        } catch (HttpException $e) {
+            expect($e->status)->toBe(404);
+        }
     });
 
-    it('runs the route middleware', function () {
+    /**
+     * The chain is resolved by NAME, never by rebuilding a URL and matching
+     * it back -- the round trip is not identity. With a static /sites/new
+     * registered, a token for sites.show with site="new" re-matched onto
+     * sites.new and ran ITS middleware and #[Authorize] chain, which in that
+     * shape is an empty one.
+     */
+    it('runs the named route chain, not whatever now owns that URL', function () {
+        [, $fixture, $signer] = fragmentEndpoint();
+
+        $routes = new RouteRegistry();
+        $routes->registerAll([
+            Tinvar\Tests\Routing\Fixtures\RootLayout::class,
+            Tinvar\Tests\Routing\Fixtures\SiteLayout::class,
+            Tinvar\Tests\Routing\Fixtures\RackShowPage::class,
+        ]);
+
+        $chain = $routes->chainFor('racks.show', [
+            'site' => $fixture->ids['sites'][0],
+            'rack' => $fixture->ids['racks'][0],
+        ]);
+
+        expect($chain->page->name)->toBe('racks.show')
+            ->and($chain->checks())->not->toBe([], 'the originating chain carries its own checks');
+    });
+
+    // Asserted as BOTH marks in order. It used to assert only that Trace was
+    // non-empty, which either stack alone satisfied -- removing the route
+    // middleware or removing the global stack each left it passing.
+    it('runs the global stack and then the route stack', function () {
         [$endpoint, $fixture, $signer] = fragmentEndpoint(
             globalMiddleware: [Tinvar\Tests\Routing\Fixtures\OuterMiddleware::class],
         );
@@ -166,7 +199,30 @@ describe('a token is not a capability', function () {
 
         $endpoint->handle(fragmentRequest($signer, fragmentToken($signer, $fixture)));
 
-        expect(Tinvar\Tests\Routing\Fixtures\Trace::$events)->not->toBe([]);
+        expect(Tinvar\Tests\Routing\Fixtures\Trace::$events)
+            ->toBe(['middleware:outer', 'middleware:inner']);
+    });
+
+    /**
+     * The global stack wraps the REFUSAL too.
+     *
+     * Verification used to run before the pipeline existed, so a junk token
+     * skipped throttling, security headers, logging and tenant resolution --
+     * free unlimited probing of exactly the path an attacker enumerates.
+     */
+    it('runs the global stack even for a token it refuses', function () {
+        [$endpoint] = fragmentEndpoint(
+            globalMiddleware: [Tinvar\Tests\Routing\Fixtures\OuterMiddleware::class],
+        );
+        Tinvar\Tests\Routing\Fixtures\Trace::reset();
+
+        try {
+            $endpoint->handle(new Request('GET', FragmentEndpoint::PREFIX . 'garbage'));
+        } catch (HttpException) {
+            // the refusal is the point; so is what ran before it
+        }
+
+        expect(Tinvar\Tests\Routing\Fixtures\Trace::$events)->toBe(['middleware:outer']);
     });
 });
 
@@ -242,12 +298,48 @@ describe('tokens this server will not act on', function () {
             ->toThrow(NotFoundException::class, 'single path segment');
     });
 
+    // Built from a VALID, correctly signed token padded past the cap. The
+    // previous version was 'v1.' + 4096 'A's, which failed signature
+    // verification long before the size check mattered -- replacing the cap
+    // with `if (false)` left the suite green.
     it('refuses a token over the size cap', function () {
-        [$endpoint] = fragmentEndpoint();
-        $huge = 'v1.' . str_repeat('A', FragmentEndpoint::MAX_TOKEN_BYTES) . '.x';
+        [$endpoint, $fixture, $signer] = fragmentEndpoint();
+        $valid = fragmentToken($signer, $fixture, [
+            'props' => ['pad' => str_repeat('p', FragmentEndpoint::MAX_TOKEN_BYTES)],
+        ])->encode($signer);
 
-        expect(fn () => $endpoint->handle(new Request('GET', FragmentEndpoint::PREFIX . $huge)))
+        expect(\strlen($valid))->toBeGreaterThan(FragmentEndpoint::MAX_TOKEN_BYTES)
+            ->and(fn () => $endpoint->handle(new Request('GET', FragmentEndpoint::PREFIX . $valid)))
             ->toThrow(HttpException::class, 'Fragment unavailable');
+    });
+
+    // A param that is not a scalar used to become the literal string "Array"
+    // with a PHP warning, which any handler promoting warnings turns into a
+    // 500 -- escaping the one-status rule this feature is built around.
+    it('refuses a token whose params are not scalars', function () {
+        [$endpoint, $fixture, $signer] = fragmentEndpoint();
+        $token = fragmentToken($signer, $fixture);
+
+        [$version, $payload, ] = explode('.', $token->encode($signer));
+        $json = json_decode(Signer::decode($payload), true);
+        $json['a'] = ['rack' => ['nested' => 1]];
+        $forged = Signer::encode(json_encode($json));
+        $raw = $version . '.' . $forged . '.' . Signer::encode($signer->sign($version . '.' . $forged));
+
+        expect(fn () => $endpoint->handle(new Request('GET', FragmentEndpoint::PREFIX . $raw)))
+            ->toThrow(HttpException::class, 'Fragment unavailable');
+    });
+
+    // hashSession('') is one constant, so every visitor without a session
+    // would share one binding and their tokens would be interchangeable.
+    it('refuses when there is no session to bind to', function () {
+        [$endpoint, $fixture, $signer] = fragmentEndpoint();
+
+        expect(fn () => $endpoint->handle(fragmentRequest(
+            $signer,
+            fragmentToken($signer, $fixture),
+            ['x-session' => ''],
+        )))->toThrow(HttpException::class, 'Fragment unavailable');
     });
 
     // 404, never 403: a token this server will not act on is, as far as the
@@ -323,6 +415,32 @@ describe('the build registry', function () {
 
         expect($builds->accepts('b1'))->toBeFalse()
             ->and($builds->accepts('b2'))->toBeFalse();
+    });
+
+    // retain() appended, so a build re-added after construction became the
+    // NEWEST -- and a registry with a floor above it silently admitted it.
+    // That is the one operation this method exists for: rolling an old build
+    // back into rotation.
+    it('does not lift a re-retained build over the floor', function () {
+        $builds = (new BuildRegistry('b3', ['b2']))->floor('b3');
+
+        expect($builds->accepts('b1'))->toBeFalse();
+
+        $builds->retain('b1');
+
+        expect($builds->accepts('b1'))->toBeFalse('re-adding it must not promote it')
+            ->and($builds->retained())->toBe(['b1', 'b2', 'b3']);
+    });
+
+    it('places a re-retained build after the one it names', function () {
+        $builds = (new BuildRegistry('b4', ['b1', 'b3']))->retain('b2', after: 'b1');
+
+        expect($builds->retained())->toBe(['b1', 'b2', 'b3', 'b4']);
+    });
+
+    it('refuses to place a build after one it does not know', function () {
+        expect(fn () => (new BuildRegistry('b2'))->retain('b1', after: 'nope'))
+            ->toThrow(InvalidArgumentException::class, 'not retained');
     });
 
     it('keeps the current build newest, whatever order it was given in', function () {

@@ -159,6 +159,43 @@ final class RouteRegistry
         return null;
     }
 
+    /**
+     * The chain for a page identified by NAME, with parameters given directly.
+     *
+     * For callers that already know which route they mean -- a deferred
+     * fragment token, a post-action re-render -- rather than ones that have a
+     * URL to resolve.
+     *
+     * Going through a URL instead is not the same thing, because the round
+     * trip is not identity: build `/sites/{site}` with site="new" and you get
+     * `/sites/new`, which forward-matches a more specific static route if one
+     * exists. A fragment issued for `sites.show` would then run `sites.new`'s
+     * middleware and #[Authorize] chain -- a chain its own page never
+     * declared, and possibly an empty one. The spec says "the ORIGINATING
+     * route's full middleware, layout and page #[Authorize] chain"; only
+     * naming the route gets that.
+     *
+     * @param array<string, string> $parameters
+     */
+    public function chainFor(string $name, array $parameters): RouteChain
+    {
+        $page = $this->named($name);
+
+        // Every parameter the template declares has to be present, or the
+        // chain would authorize against a model nobody named.
+        foreach ($page->parameters as $parameter) {
+            if (!\array_key_exists($parameter, $parameters)) {
+                throw RoutingException::missingParameter($name, $parameter);
+            }
+        }
+
+        return new RouteChain(
+            page: $page,
+            layouts: $this->layoutCache[$page->template] ??= $this->layoutsFor($page),
+            parameters: $parameters,
+        );
+    }
+
     /** @return list<CompiledRoute> outermost first */
     private function layoutsFor(CompiledRoute $page): array
     {

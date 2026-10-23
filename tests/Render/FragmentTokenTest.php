@@ -193,3 +193,86 @@ describe('refreshing', function () {
         expect(token($signer)->refreshed()->belongsTo($signer, 'session-xyz'))->toBeFalse();
     });
 });
+
+// Hardening from the fragment security review. Each was reproduced first.
+describe('malleability and bounds', function () {
+    // base64_decode skips whitespace even in strict mode, and '$' matches
+    // before a trailing newline -- so one logical value had many accepted
+    // spellings, and anything keyed on the string could be evaded.
+    it('refuses encoding with trailing whitespace', function () {
+        expect(Signer::decode("AAAA\n"))->toBeNull()
+            ->and(Signer::decode('AAAA '))->toBeNull();
+    });
+
+    it('refuses a token with a trailing newline', function () {
+        $signer = signer();
+        $encoded = token($signer)->encode($signer);
+
+        expect(fn () => FragmentToken::decode($encoded . "\n", $signer))
+            ->toThrow(FragmentTokenError::class);
+    });
+
+    // base64url leaves slack in the final character, so several distinct
+    // strings decode to one MAC. Accepting all of them is not a forgery, but
+    // it defeats any replay cache or audit log keyed on the token string.
+    it('refuses a non-canonical MAC encoding', function () {
+        $signer = signer();
+        [$version, $payload, $mac] = explode('.', token($signer)->encode($signer));
+
+        // Flip the final character to another that decodes to the same bytes.
+        $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+        $variant = null;
+        foreach (str_split($alphabet) as $character) {
+            $candidate = substr($mac, 0, -1) . $character;
+            if ($candidate !== $mac && Signer::decode($candidate) === Signer::decode($mac)) {
+                $variant = $candidate;
+                break;
+            }
+        }
+
+        expect($variant)->not->toBeNull('a non-canonical spelling exists to test with')
+            ->and(fn () => FragmentToken::decode("{$version}.{$payload}.{$variant}", $signer))
+            ->toThrow(FragmentTokenError::class);
+    });
+
+    // Only the mint side applied the TTL, so a token claiming PHP_INT_MAX was
+    // honoured forever.
+    it('refuses an expiry further out than a token may be issued for', function () {
+        $signer = signer();
+        $encoded = token($signer, ['expiresAt' => PHP_INT_MAX])->encode($signer);
+
+        expect(fn () => FragmentToken::decode($encoded, $signer))
+            ->toThrow(FragmentTokenError::class, 'further out');
+    });
+
+    it('refuses params that are not scalars', function () {
+        $signer = signer();
+        $original = token($signer);
+        [$version, $payload, ] = explode('.', $original->encode($signer));
+
+        $json = json_decode(Signer::decode($payload), true);
+        $json['a'] = ['rack' => ['nested' => true]];
+        $forged = Signer::encode(json_encode($json));
+
+        expect(fn () => FragmentToken::decode(
+            $version . '.' . $forged . '.' . Signer::encode($signer->sign($version . '.' . $forged)),
+            $signer,
+        ))->toThrow(FragmentTokenError::class, 'not a scalar');
+    });
+
+    // A JSON list passes is_array() and then breaks the array<string, mixed>
+    // contract everything downstream was promised.
+    it('refuses props that are a list', function () {
+        $signer = signer();
+        [$version, $payload, ] = explode('.', token($signer)->encode($signer));
+
+        $json = json_decode(Signer::decode($payload), true);
+        $json['p'] = ['a', 'b'];
+        $forged = Signer::encode(json_encode($json));
+
+        expect(fn () => FragmentToken::decode(
+            $version . '.' . $forged . '.' . Signer::encode($signer->sign($version . '.' . $forged)),
+            $signer,
+        ))->toThrow(FragmentTokenError::class);
+    });
+});

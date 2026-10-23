@@ -12,6 +12,7 @@ use Tinvar\Auth\PolicyGate;
 use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Cache\QueryCache;
 use Tinvar\Http\Endpoints\ActionEndpoint;
+use Tinvar\Http\Endpoints\FragmentEndpoint;
 use Tinvar\Http\Endpoints\QueryEndpoint;
 use Tinvar\Http\Middleware\RequireAuthentication;
 use Tinvar\Http\Middleware\VerifyCsrfToken;
@@ -47,6 +48,14 @@ final class Kernel
     public readonly Router $router;
     public readonly ActionEndpoint $actions_;
     public readonly QueryEndpoint $queries_;
+
+    /**
+     * Null unless the application supplied what a fragment needs: a signing
+     * key, a build registry and a way to render a subtree. A deployment with
+     * no deferred components mounts nothing, rather than mounting an endpoint
+     * that would answer with a half-configured one.
+     */
+    public readonly ?FragmentEndpoint $fragments_;
     public readonly RequestScope $scope;
 
     private readonly ExceptionHandler $exceptions;
@@ -87,6 +96,7 @@ final class Kernel
         ?Gate $gate = null,
         ?\Closure $log = null,
         bool $debug = false,
+        ?FragmentSupport $fragments = null,
     ) {
         $gate ??= new PolicyGate($this->policies, $this->auth);
         $cache ??= new QueryCache(new \Tinvar\Cache\ArrayStore(), $this->auth);
@@ -124,6 +134,22 @@ final class Kernel
             new RequireAuthentication($this->auth, $this->entryPointFor(...)),
         ]);
 
+        // Fragments run their own stack: GET with no body, so CSRF does not
+        // apply, and the endpoint composes the originating ROUTE's middleware
+        // inside it once the token says which route that is. The global stack
+        // it is given is this kernel's, so a refusal is still throttled and
+        // logged like any other request.
+        $this->fragments_ = $fragments === null ? null : new FragmentEndpoint(
+            routes: $this->routes,
+            loaders: new LoaderRunner($this->orm, $resolver, $gate),
+            signer: $fragments->signer,
+            builds: $fragments->builds,
+            render: $fragments->render,
+            sessionId: $fragments->sessionId,
+            middlewareResolver: static fn (string $class): Middleware => $resolver($class),
+            globalMiddleware: $globalMiddleware,
+        );
+
         $this->exceptions = new ExceptionHandler($log);
         $this->scope = RequestScope::standard($this->orm, $this->auth, $this->policies);
     }
@@ -145,6 +171,12 @@ final class Kernel
                     $request,
                     fn (Request $passed): Response => $this->actions_->handle($passed, $rawBody),
                 );
+            }
+
+            // Before the other two, because its prefix is as specific and the
+            // order should not depend on which was written first.
+            if ($this->fragments_ !== null && $this->fragments_->matches($request)) {
+                return $this->fragments_->handle($request);
             }
 
             if ($this->queries_->matches($request)) {

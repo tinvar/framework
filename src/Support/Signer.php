@@ -67,7 +67,12 @@ final readonly class Signer
     /** The inverse. Returns null for anything that is not valid encoding. */
     public static function decode(string $encoded): ?string
     {
-        if ($encoded === '' || preg_match('/^[A-Za-z0-9_-]+$/', $encoded) !== 1) {
+        // \z, not $: '$' matches before a trailing newline, and
+        // base64_decode() skips whitespace even in strict mode -- so
+        // "AAAA\n" decoded happily and one logical value had many accepted
+        // spellings. Anything keyed on the string (a replay cache, a rate
+        // limit, an audit log) is bypassable when that is true.
+        if ($encoded === '' || preg_match('/^[A-Za-z0-9_-]+\z/', $encoded) !== 1) {
             return null;
         }
 

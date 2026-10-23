@@ -109,6 +109,15 @@ final readonly class FragmentToken
         [$version, $payload, $mac] = $parts;
 
         $signature = Signer::decode($mac);
+
+        // Compared as the CANONICAL encoding, not just as bytes. base64url
+        // leaves slack in the final character, so several distinct token
+        // STRINGS decode to one MAC; accepting all of them is not a forgery,
+        // but it defeats anything that keys on the token string.
+        if ($signature !== null && Signer::encode($signature) !== $mac) {
+            throw new FragmentTokenError('token is not canonically encoded');
+        }
+
         if ($signature === null || !$signer->verify($version . '.' . $payload, $signature)) {
             // Checked BEFORE the payload is parsed: everything after this
             // point treats the contents as data this server issued, and
@@ -136,15 +145,25 @@ final readonly class FragmentToken
             component: self::string($decoded, 'c'),
             props: self::map($decoded, 'p'),
             route: self::string($decoded, 'r'),
-            params: array_map(strval(...), self::map($decoded, 'a')),
+            params: self::params($decoded),
             panel: self::string($decoded, 'n'),
             build: self::string($decoded, 'b'),
             sessionHash: self::string($decoded, 's'),
             expiresAt: \is_int($decoded['e'] ?? null) ? $decoded['e'] : 0,
         );
 
-        if ($self->expiresAt <= ($now ?? time())) {
+        $at = $now ?? time();
+
+        if ($self->expiresAt <= $at) {
             throw new FragmentTokenError('expired');
+        }
+
+        // Only the mint side applies the TTL, so nothing stopped a token
+        // claiming PHP_INT_MAX from being honoured forever. The reader
+        // enforces it too: a token valid for longer than one may be issued
+        // for was not issued by any path this framework offers.
+        if ($self->expiresAt - $at > self::DEFAULT_TTL) {
+            throw new FragmentTokenError('expiry is further out than a token may be issued for');
         }
 
         return $self;
@@ -189,10 +208,40 @@ final readonly class FragmentToken
     private static function map(array $decoded, string $key): array
     {
         $value = $decoded[$key] ?? [];
-        if (!\is_array($value)) {
+
+        // A JSON list passes is_array() and then breaks the array<string,
+        // mixed> contract everything downstream was promised.
+        if (!\is_array($value) || array_is_list($value) && $value !== []) {
             throw new FragmentTokenError("field '{$key}' is not an object");
         }
 
         return $value;
+    }
+
+    /**
+     * Route parameters, VALIDATED rather than coerced.
+     *
+     * This was array_map(strval(...)), which turned true into "1", null into
+     * "" and a nested array into the literal "Array" -- with a PHP warning
+     * that any handler promoting warnings to exceptions would turn into a 500,
+     * escaping the one-status rule. A parameter that is not a scalar is a
+     * token this server will not act on, like every other malformed field.
+     *
+     * @param array<string, mixed> $decoded
+     * @return array<string, string>
+     */
+    private static function params(array $decoded): array
+    {
+        $params = [];
+
+        foreach (self::map($decoded, 'a') as $name => $value) {
+            if (!\is_string($value) && !\is_int($value)) {
+                throw new FragmentTokenError("param '{$name}' is not a scalar");
+            }
+
+            $params[(string) $name] = (string) $value;
+        }
+
+        return $params;
     }
 }

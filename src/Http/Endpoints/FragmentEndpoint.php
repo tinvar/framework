@@ -14,6 +14,7 @@ use Tinvar\Render\FragmentToken;
 use Tinvar\Render\FragmentTokenError;
 use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\RouteRegistry;
+use Tinvar\Routing\RoutingException;
 use Tinvar\Support\Signer;
 
 /**
@@ -74,42 +75,77 @@ final class FragmentEndpoint
 
     public function handle(Request $request): Response
     {
-        // A fragment is a read. Anything else would be an action wearing a
-        // fragment's clothes, and actions are POST with CSRF.
-        if ($request->method !== 'GET') {
-            throw new HttpException(405, 'Fragments are GET only.', 'method_not_allowed');
-        }
-
-        $token = $this->verify($request);
-
-        $chain = $this->routes->match(
-            $this->routes->named($token->route)->url($token->params)
-        ) ?? throw self::refuse('the originating route no longer matches');
-
-        // The route's own middleware, under the global stack, exactly as a
-        // page render would run them -- a fragment that skipped them would be
-        // a hole in whatever they enforce for that route.
-        $pipeline = new Pipeline(array_map(
+        // The GLOBAL stack wraps everything, including a refusal.
+        //
+        // Verification used to run first, which meant a junk token skipped
+        // throttling, security headers, request logging and tenant resolution
+        // entirely -- an attacker could hammer this endpoint with garbage at
+        // full rate for free. Router::handle()'s own docblock argues exactly
+        // this ordering and this endpoint was doing the thing it warns about.
+        //
+        // The route's own middleware necessarily stays inside, because which
+        // route it is only becomes known once the token verifies.
+        $global = new Pipeline(array_map(
             fn (string $class): Middleware => ($this->middlewareResolver)($class),
-            array_values(array_unique([
-                ...$this->globalMiddleware,
-                ...array_diff($chain->middleware(), $this->globalMiddleware),
-            ])),
+            array_values(array_unique($this->globalMiddleware)),
         ));
 
-        return $pipeline->run($request, function (Request $inner) use ($chain, $token): Response {
-            // Model binding and every #[Authorize] in the chain, before the
-            // subtree renders anything.
-            $models = $this->loaders->bindAndAuthorize($chain, $inner);
+        return $global->run($request, function (Request $passed): Response {
+            // A fragment is a read. Anything else would be an action wearing
+            // a fragment's clothes, and actions are POST with CSRF.
+            if ($passed->method !== 'GET') {
+                throw new HttpException(405, 'Fragments are GET only.', 'method_not_allowed');
+            }
 
-            $response = ($this->render)($token, $inner, $models);
+            $token = $this->verify($passed);
 
-            // "sent private, no-store with a refreshed token", so a refresh
-            // boundary outlives the first hour without a page load.
-            return $response
-                ->withHeader('cache-control', 'private, no-store')
-                ->withHeader('x-fragment-token', $token->refreshed()->encode($this->signer))
-                ->withAddedHeader('vary', 'RSC');
+            // By NAME, never by rebuilding a URL and matching it back. The
+            // round trip is not identity -- /sites/{site} with site="new"
+            // matches a static /sites/new if one exists -- so a token issued
+            // for one route could run another route's middleware and
+            // #[Authorize] chain, possibly an empty one.
+            //
+            // Every way this can fail is a token this server will not act on,
+            // not a bug: a route renamed or removed since the token was issued
+            // is the ordinary deploy-skew case this feature exists for, and it
+            // takes the same 404 as everything else. Letting RoutingException
+            // out would make it a 500, which breaks the one-status rule and
+            // tells a caller whether the route still exists.
+            try {
+                $chain = $this->routes->chainFor($token->route, $token->params);
+            } catch (RoutingException $e) {
+                throw self::refuse($e->getMessage());
+            }
+
+            $routeOnly = array_values(array_diff($chain->middleware(), $this->globalMiddleware));
+            $pipeline = new Pipeline(array_map(
+                fn (string $class): Middleware => ($this->middlewareResolver)($class),
+                $routeOnly,
+            ));
+
+            return $pipeline->run($passed, function (Request $inner) use ($chain, $token): Response {
+                // Model binding and every #[Authorize] in the chain, before
+                // the subtree renders anything.
+                $models = $this->loaders->bindAndAuthorize($chain, $inner);
+
+                $response = ($this->render)($token, $inner, $models);
+
+                // A refreshed token only on a response that succeeded. Handing
+                // one back with a failure the renderer produced itself would
+                // extend the life of a boundary that just failed.
+                if ($response->status >= 400) {
+                    return $response;
+                }
+
+                // "always private, no-store with Vary: Cookie". The body is
+                // session-bound -- the token is -- so a shared cache has to be
+                // told, not merely asked not to store.
+                return $response
+                    ->withHeader('cache-control', 'private, no-store')
+                    ->withHeader('x-fragment-token', $token->refreshed()->encode($this->signer))
+                    ->withAddedHeader('vary', 'RSC')
+                    ->withAddedHeader('vary', 'Cookie');
+            });
         });
     }
 
@@ -133,7 +169,16 @@ final class FragmentEndpoint
 
         // "PHP rejects a token from another session, another build outside the
         // skew window, or past its expiry."
-        if (!$token->belongsTo($this->signer, ($this->sessionId)($request))) {
+        //
+        // An empty session id is refused rather than hashed: hashSession('')
+        // is one constant, so every visitor without a session would share one
+        // binding and their tokens would be interchangeable.
+        $session = ($this->sessionId)($request);
+        if ($session === '') {
+            throw self::refuse('no session to bind the token to');
+        }
+
+        if (!$token->belongsTo($this->signer, $session)) {
             throw self::refuse('token belongs to another session');
         }
 

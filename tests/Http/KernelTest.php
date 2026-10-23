@@ -86,6 +86,27 @@ function render(): Closure
         => Response::make(200, json_encode(['layouts' => array_keys($loaded->layouts)]));
 }
 
+/**
+ * Both fragment reviews flagged that the endpoint existed and was reachable
+ * from nothing. A feature with no composition root is the same shape as every
+ * phase-1 finding: a well-built part that nothing joins up.
+ */
+describe('fragments through the kernel', function () {
+    it('mounts nothing when the application supplies no fragment support', function () {
+        [$kernel] = kernel(new AuthUser('u-1'));
+
+        expect($kernel->fragments_)->toBeNull();
+    });
+
+    it('falls through to the router when fragments are not mounted', function () {
+        [$kernel] = kernel(new AuthUser('u-1'));
+
+        $response = $kernel->handle(Request::get('/_fragment/anything'), render());
+
+        expect($response->status)->toBe(404);
+    });
+});
+
 it('routes a page request through loaders and authorization', function () {
     [$kernel, $fixture] = kernel(new AuthUser('u-1'));
 

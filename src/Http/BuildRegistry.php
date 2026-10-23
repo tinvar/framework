@@ -38,7 +38,7 @@ final class BuildRegistry
      * separators of any kind, because the one thing this value must never
      * become is a path segment.
      */
-    private const string SHAPE = '/^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/';
+    private const string SHAPE = '/^[A-Za-z0-9][A-Za-z0-9-]{0,63}\z/';
 
     /**
      * Retained build IDs, OLDEST FIRST.
@@ -139,14 +139,39 @@ final class BuildRegistry
         return $this;
     }
 
-    /** Appends a build as the newest retained one. */
-    public function retain(string $build): self
+    /**
+     * Brings a build back into rotation, at a stated position.
+     *
+     * Appending would have made it the NEWEST, which is wrong for the only
+     * operation this method exists for: rolling an older build back in. A
+     * registry with floor('b3') refused 'b1', and retain('b1') then put 'b1'
+     * after 'b3' and admitted it -- re-adding a build silently lifted it over
+     * the floor.
+     *
+     * @param string|null $after the build this one follows, or null for oldest
+     */
+    public function retain(string $build, ?string $after = null): self
     {
         self::assertShape($build);
 
-        if (!\in_array($build, $this->retained, true)) {
-            $this->retained[] = $build;
+        if (\in_array($build, $this->retained, true)) {
+            return $this;
         }
+
+        if ($after === null) {
+            array_unshift($this->retained, $build);
+
+            return $this;
+        }
+
+        $position = array_search($after, $this->retained, true);
+        if ($position === false) {
+            throw new \InvalidArgumentException(
+                "Cannot place '{$build}' after '{$after}', which is not retained."
+            );
+        }
+
+        array_splice($this->retained, $position + 1, 0, [$build]);
 
         return $this;
     }
