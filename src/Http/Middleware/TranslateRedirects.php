@@ -48,24 +48,17 @@ final class TranslateRedirects implements Middleware
         }
 
         // Root-relative and nothing that a browser would read as another
-        // host: the same rules Response::redirect() enforces, re-checked
-        // here because a response can be built without going through it. A
-        // target that fails them is still followed -- as a document load,
-        // where the browser applies its own rules.
-        $header = self::isLocalPath($location) ? 'x-redirect' : 'x-location';
+        // host: Response::redirect()'s own rules, by the same function,
+        // because a response can be built without going through it. A copy
+        // of them here had already missed the `..` rule. A target that fails
+        // is still followed -- as a document load, where the browser applies
+        // its own rules.
+        $header = Response::isSameOriginTarget($location) ? 'x-redirect' : 'x-location';
 
         return Response::make(409, '', [
             $header => $location,
             'cache-control' => 'private, no-store',
             'vary' => 'RSC',
         ]);
-    }
-
-    private static function isLocalPath(string $location): bool
-    {
-        return str_starts_with($location, '/')
-            && !str_starts_with($location, '//')
-            && !str_contains($location, '\\')
-            && preg_match('/[\x00-\x20\x7f]/', $location) !== 1;
     }
 }

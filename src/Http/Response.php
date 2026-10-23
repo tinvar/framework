@@ -62,6 +62,22 @@ final class Response
     }
 
     /**
+     * Whether a target passes the same rules redirect() enforces. For code
+     * that has to classify a Location it did not build -- one validator, so
+     * two cannot disagree about the same string.
+     */
+    public static function isSameOriginTarget(string $location): bool
+    {
+        try {
+            self::assertSameOrigin($location);
+
+            return true;
+        } catch (\InvalidArgumentException) {
+            return false;
+        }
+    }
+
+    /**
      * A redirect target must be a path on this origin, and nothing else.
      *
      * `//evil.example` is protocol-relative. `/\evil.example` is treated the

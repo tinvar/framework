@@ -46,7 +46,7 @@ it('never hands the router a target that could be another host', function (strin
 
     expect($response->header('x-redirect'))->toBeNull()
         ->and($response->header('x-location'))->toBe($location);
-})->with(['//evil.example/x', '/\\evil.example/x', 'evil.example/x', 'javascript:alert(1)']);
+})->with(['//evil.example/x', '/\\evil.example/x', 'evil.example/x', 'javascript:alert(1)', '/..//evil.example']);
 
 it('leaves a document request\'s redirect for the browser to follow', function () {
     $response = translated(Response::redirect('/login'), []);
