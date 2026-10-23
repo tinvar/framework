@@ -12,6 +12,10 @@ use Tinvar\Http\Response;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Routing\LoadedRoute;
+use Tinvar\Attributes\Authorize;
+use Tinvar\Routing\CompiledRoute;
+use Tinvar\Routing\RouteChain;
+use Tinvar\Routing\RouteKind;
 use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\Router;
 use Tinvar\Routing\RouteRegistry;
@@ -29,6 +33,7 @@ use Tinvar\Tests\Routing\Fixtures\SiteLayout;
 use Tinvar\Tests\Routing\Fixtures\SiteNewPage;
 use Tinvar\Tests\Routing\Fixtures\Trace;
 use Tinvar\Tests\Routing\Fixtures\TypedParamPage;
+use Tinvar\Tests\Routing\Fixtures\UnguardedModelPage;
 
 require_once __DIR__ . '/../Orm/Fixtures/models.php';
 require_once __DIR__ . '/../Orm/Fixtures/schema.php';
@@ -36,8 +41,8 @@ require_once __DIR__ . '/Fixtures/routes.php';
 
 const ROUTE_CLASSES = [
     RootLayout::class, SiteLayout::class, RackShowPage::class, SiteNewPage::class,
-    HealthPage::class, TypedParamPage::class, BadReturnPage::class, OrphanCheckPage::class,
-    RackIndexPage::class, RawSubjectPage::class,
+    HealthPage::class, TypedParamPage::class, BadReturnPage::class,
+    RackIndexPage::class,
 ];
 
 function registry(): RouteRegistry
@@ -322,18 +327,49 @@ describe('authorization in the route chain', function () {
         ]);
     });
 
-    it('refuses a check naming something the route cannot resolve', function () {
-        [$router] = router();
+    // Registration is the check that cannot be skipped: an #[Authorize] naming
+    // nothing resolvable used to register fine and throw on the first request.
+    it('refuses at registration a check naming something the route cannot resolve', function () {
+        expect(fn () => (new RouteRegistry())->register(OrphanCheckPage::class))
+            ->toThrow(RoutingException::class, 'authorize-must-name-a-subject');
+    });
 
-        expect(fn () => $router->handle(Request::get('/orphan'), respondWithLoaded()))
-            ->toThrow(RoutingException::class, 'neither a model-typed parameter');
+    // An unguarded model input is the failure the build rules exist to catch,
+    // and it must fail closed at registration, not open at request time.
+    it('refuses at registration a page with an unguarded model input', function () {
+        expect(fn () => (new RouteRegistry())->register(UnguardedModelPage::class))
+            ->toThrow(RoutingException::class, 'authorize-every-model-input');
     });
 
     // A policy written for a Rack must never be handed the raw path segment.
-    it('refuses a check whose argument resolves only to a path segment', function () {
-        [$router] = router();
+    it('refuses at registration a check whose argument is not model-typed', function () {
+        expect(fn () => (new RouteRegistry())->register(RawSubjectPage::class))
+            ->toThrow(RoutingException::class, 'authorize-must-name-a-subject');
+    });
 
-        expect(fn () => $router->handle(Request::get('/raw/anything'), respondWithLoaded()))
+    // Defence in depth: registration now refuses this shape, so the runner's
+    // own guard is only reachable by bypassing the registry. It still has to
+    // fail closed -- a policy must never be handed a raw path segment.
+    it('refuses a raw path segment as a subject even when registration is bypassed', function () {
+        $route = new CompiledRoute(
+            kind: RouteKind::Page,
+            class: RawSubjectPage::class,
+            template: '/raw/{thing}',
+            view: 'raw',
+            name: 'raw',
+            segments: ['raw', '{thing}'],
+            parameters: ['thing'],
+            middleware: [],
+            checks: [new Authorize('view', 'thing')],
+        );
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $runner = new LoaderRunner(
+            new Orm($fixture->connection, new IdentityMap('test')),
+            static fn (string $c): object => new $c(),
+            new AllowAllGate(),
+        );
+
+        expect(fn () => $runner->authorize(new RouteChain($route, [], ['thing' => 'anything']), []))
             ->toThrow(RoutingException::class, 'neither a model-typed parameter');
 
         expect(Trace::$events)->not->toContain('page:raw');

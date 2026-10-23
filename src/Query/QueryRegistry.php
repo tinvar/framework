@@ -6,6 +6,7 @@ namespace Tinvar\Query;
 
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Query;
+use Tinvar\Auth\BuildRules;
 use Tinvar\Orm\Model;
 use Tinvar\Support\Str;
 
@@ -55,6 +56,19 @@ final class QueryRegistry
 
         $declaration = $attribute->newInstance();
         $name = $declaration->name ?? Str::queryName($class);
+
+        // "Enforced by BuildRules AND at registration." A query reaches a body
+        // from the socket and from /_query, so an unguarded model input here
+        // is served to a caller every policy denies, and a `shared: true`
+        // query that reads the current user caches one caller's answer for
+        // everyone. Both were registering silently; only actions were checked.
+        $violations = (new BuildRules())->check([$class]);
+        if ($violations !== []) {
+            throw new \InvalidArgumentException(
+                "{$class} fails the security model's build rules:\n  "
+                . implode("\n  ", array_map(strval(...), $violations))
+            );
+        }
 
         $this->classes[$name] = $class;
         $this->declarations[$name] = $declaration;

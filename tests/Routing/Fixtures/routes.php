@@ -292,7 +292,7 @@ final class UnbindablePage
 }
 
 /** Optional model: the route family does not always carry it. */
-#[Layout('/optional', view: 'optional/layout')]
+#[Layout('/optional', view: 'optional/layout'), Authorize('view', 'rack')]
 final class OptionalModelLayout
 {
     public function __invoke(?Rack $rack = null): RootLayoutData
@@ -354,5 +354,18 @@ final class AmbiguousParamFirstPage
     public function __invoke(string $s): RootLayoutData
     {
         return new RootLayoutData('param-first');
+    }
+}
+
+/**
+ * A page whose loader takes a model and declares no check at all. Registering
+ * it must fail: this is the fail-open shape the build rules exist to catch.
+ */
+#[Page('/unguarded/{rack}', view: 'unguarded', name: 'unguarded')]
+final class UnguardedModelPage
+{
+    public function __invoke(Rack $rack): RootLayoutData
+    {
+        return new RootLayoutData($rack->name);
     }
 }

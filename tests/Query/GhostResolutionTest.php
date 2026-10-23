@@ -110,3 +110,43 @@ it('does not resolve from a ghost that was touched and found nothing', function 
 
     expect($results[0]['error']['code'])->toBe(QueryError::NOT_FOUND);
 });
+
+/**
+ * The same guard, at the level every other resolution path uses.
+ *
+ * QueryRunner::resolveModels() was hardened for this; Orm::find() was not --
+ * and Binder (route model binding), ActionRunner and Validator all resolve
+ * through find(). So a dangling, soft-deleted or out-of-tenant foreign key
+ * resolved to a hollow model: "a missing or foreign id is a 404" did not hold,
+ * and a policy was handed a subject with no row behind it.
+ */
+it('does not resolve find() from an uninitialized ghost', function () {
+    $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+
+    $danglingSiteId = Uuid::v7();
+    $fixture->connection->execute(
+        'INSERT INTO racks (id, name, height_u, site_id) VALUES (?, ?, ?, ?)',
+        [Uuid::v7(), 'R-DANGLING', 42, $danglingSiteId],
+    );
+
+    $orm->all(Rack::class);
+    expect($orm->identityMap()->has(Site::class, $danglingSiteId))->toBeTrue();
+
+    expect($orm->find(Site::class, $danglingSiteId))
+        ->toBeNull('a ghost is a promise about a foreign key, never evidence of a row');
+});
+
+/** A real row still comes back from the map, so the map is still a cache. */
+it('still resolves find() from the map for a row that was read', function () {
+    $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+
+    $siteId = $fixture->ids['sites'][0];
+    $first = $orm->find(Site::class, $siteId);
+    $before = $fixture->connection->statementCount();
+    $second = $orm->find(Site::class, $siteId);
+
+    expect($second)->toBe($first)
+        ->and($fixture->connection->statementCount())->toBe($before, 'served from the identity map');
+});

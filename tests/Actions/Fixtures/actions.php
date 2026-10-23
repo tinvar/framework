@@ -8,6 +8,7 @@ use Tinvar\Actions\ActionResult;
 use Tinvar\Attributes\Action;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\NoAuthorization;
+use Tinvar\Auth\Authenticatable;
 use Tinvar\Tests\Orm\Fixtures\Rack;
 use Tinvar\Tests\Orm\Fixtures\Site;
 use Tinvar\Validation\FormRequest;
@@ -279,5 +280,38 @@ final class StatefulActions
         $this->last = $rack->name;
 
         return ActionResult::ok($seen);
+    }
+}
+
+/**
+ * Policies that record what they were asked, so a test can assert a check was
+ * SKIPPED rather than merely allowed. AllowAllGate cannot tell the difference,
+ * which is why the optional-model bug survived its first review.
+ */
+final class RecordingRackPolicy
+{
+    /** @var list<string> */
+    public static array $asked = [];
+
+    public static function reset(): void
+    {
+        self::$asked = [];
+    }
+
+    public function update(?Authenticatable $user, Rack|string $rack): bool
+    {
+        self::$asked[] = 'rack.update';
+
+        return true;
+    }
+}
+
+final class RecordingSitePolicy
+{
+    public function view(?Authenticatable $user, Site|string $site): bool
+    {
+        RecordingRackPolicy::$asked[] = 'site.view';
+
+        return true;
     }
 }

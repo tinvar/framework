@@ -16,6 +16,8 @@ use Tinvar\Tests\Query\Fixtures\MiscountedBatch;
 use Tinvar\Tests\Query\Fixtures\RackSummary;
 use Tinvar\Tests\Query\Fixtures\RackWindow;
 use Tinvar\Tests\Query\Fixtures\UnitLoad;
+use Tinvar\Tests\Query\Fixtures\UnguardedModelQuery;
+use Tinvar\Tests\Query\Fixtures\SharedUserQuery;
 
 require_once __DIR__ . '/../Orm/Fixtures/models.php';
 require_once __DIR__ . '/../Orm/Fixtures/schema.php';
@@ -328,4 +330,19 @@ it('returns one result per call, in the order the calls arrived', function () {
     expect(array_column($results, 'id'))->toBe([0, 1, 2])
         ->and($results[0]['value']['unit'])->toBe($fixture->ids['units'][2])
         ->and($results[1]['value']['unit'])->toBe($fixture->ids['units'][0]);
+});
+
+// "Enforced by BuildRules AND at registration." BuildRules had no caller at
+// all, and QueryRegistry checked nothing -- so both of these registered
+// silently and served data. Only #[Action] had the registration-time check.
+describe('registration enforces the build rules', function () {
+    it('refuses a query with an unguarded model input', function () {
+        expect(fn () => (new QueryRegistry())->register(UnguardedModelQuery::class))
+            ->toThrow(InvalidArgumentException::class, 'authorize-every-model-input');
+    });
+
+    it('refuses a shared query that reads the current user', function () {
+        expect(fn () => (new QueryRegistry())->register(SharedUserQuery::class))
+            ->toThrow(InvalidArgumentException::class, 'shared-query-must-not-read-the-user');
+    });
 });

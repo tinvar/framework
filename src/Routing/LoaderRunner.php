@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Routing;
 
 use Tinvar\Attributes\Authorize;
+use Tinvar\Auth\Checks;
 use Tinvar\Auth\Gate;
 use Tinvar\Data\Data;
 use Tinvar\Http\ForbiddenException;
@@ -85,7 +86,15 @@ final class LoaderRunner
      */
     public function authorize(RouteChain $chain, array $models): void
     {
+        $optional = Binder::optionalModelInputs($chain);
+
         foreach ($chain->checks() as ['route' => $route, 'check' => $check]) {
+            // A check naming a declared-optional model the path does not carry
+            // has no subject to decide about, and the loader receives null.
+            if (!Checks::applies($check, $models, $optional)) {
+                continue;
+            }
+
             // Validated here so a declaration bug reads as a routing error
             // rather than a gate failure. The gate re-derives the subject from
             // the attribute itself and never trusts a key in this map, so the

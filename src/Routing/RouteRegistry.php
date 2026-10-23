@@ -8,6 +8,7 @@ use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Layout;
 use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\Page;
+use Tinvar\Auth\BuildRules;
 
 /**
  * Routes come from attributes on classes. There are no route files.
@@ -72,6 +73,17 @@ final class RouteRegistry
         // A loader parameter the router cannot bind is a developer error that
         // would otherwise surface as a TypeError on the first request.
         Binder::assertBindable($route);
+
+        // The security model says every model-typed input of every routable
+        // entry point is covered "by BuildRules AND at registration". Only the
+        // second half survives someone not running the build step, and until
+        // now only ActionRegistry had it: a #[Page('/racks/{rack}')] whose
+        // loader took Rack $rack and declared no check registered happily and
+        // served its data under a gate that denies everything.
+        $violations = (new BuildRules())->check([$class]);
+        if ($violations !== []) {
+            throw RoutingException::buildRules($class, $violations);
+        }
 
         $this->add($route);
 

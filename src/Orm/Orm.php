@@ -223,9 +223,21 @@ final class Orm
         // a row read inside acrossTenants() would otherwise answer a later
         // scoped read for the same id. Unscoped reads bypass the caches
         // entirely: an explicit escape hatch can afford to be uncached.
+        // A #[BelongsTo] registers a lazy ghost under its foreign key before
+        // anything confirms the row exists, so a map hit is not evidence of a
+        // row: a dangling, soft-deleted or out-of-tenant FK would otherwise
+        // make find() return a hollow model, which breaks "a missing or
+        // foreign id is a 404" and hands a policy a phantom subject.
+        // isPersisted() is true only after markClean() -- hydrate from a real
+        // row, or an insert -- so it separates both ghost cases from a read.
+        // QueryRunner::resolveModels() guards the same way; every other
+        // resolution path (Binder, ActionRunner, Validator) comes through
+        // here, so the guard belongs here too.
         if (!$this->isUnscoped() && ($existing = $this->identityMap->get($class, $id))) {
             /** @var Model $existing */
-            return $existing;
+            if ($existing->isPersisted()) {
+                return $existing;
+            }
         }
         $meta = Metadata::for($class);
 

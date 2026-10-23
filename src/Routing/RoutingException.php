@@ -76,4 +76,13 @@ final class RoutingException extends \RuntimeException
     {
         return new self("Route '{$name}' needs a '{$parameter}' parameter.");
     }
+
+    /** @param list<\Tinvar\Auth\Violation> $violations */
+    public static function buildRules(string $class, array $violations): self
+    {
+        return new self(
+            "{$class} fails the security model's build rules:\n  "
+            . implode("\n  ", array_map(strval(...), $violations))
+        );
+    }
 }

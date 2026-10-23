@@ -8,6 +8,10 @@ use Tinvar\Actions\ActionException;
 use Tinvar\Actions\ActionRegistry;
 use Tinvar\Actions\ActionRunner;
 use Tinvar\Auth\AllowAllGate;
+use Tinvar\Tests\Auth\Fixtures\User as AuthUser;
+use Tinvar\Auth\PolicyRegistry;
+use Tinvar\Auth\PolicyGate;
+use Tinvar\Auth\AuthContext;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
@@ -20,6 +24,7 @@ use Tinvar\Validation\Validator;
 
 require_once __DIR__ . '/../Orm/Fixtures/models.php';
 require_once __DIR__ . '/../Orm/Fixtures/schema.php';
+require_once __DIR__ . '/../Auth/Fixtures/policies.php';
 require_once __DIR__ . '/Fixtures/actions.php';
 
 /** @return array{0: ActionRunner, 1: Fixture, 2: Orm} */
@@ -31,6 +36,37 @@ function runnerOf(string $holder): array
     $registry->register($holder);
 
     return [new ActionRunner($registry, $orm, new AllowAllGate(), new Validator($orm)), $fixture, $orm];
+}
+
+/**
+ * A runner with a REAL gate. runnerOf() uses AllowAllGate, which ignores the
+ * subject entirely -- so it cannot see a check that was handed a subject that
+ * is not there. That is exactly how the optional-model fail hid.
+ *
+ * @return array{0: ActionRunner, 1: Fixture, 2: Orm}
+ */
+function policyRunnerOf(string $holder): array
+{
+    $fixture = new Fixture(racks: 2, unitsPerRack: 1, sites: 1);
+    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+    $registry = new ActionRegistry();
+    $registry->register($holder);
+
+    $auth = new AuthContext();
+    $auth->login(new AuthUser('u-1'));
+
+    $policies = (new PolicyRegistry())->registerAll([
+        Rack::class => A\RecordingRackPolicy::class,
+        Site::class => A\RecordingSitePolicy::class,
+    ]);
+
+    A\RecordingRackPolicy::reset();
+
+    return [
+        new ActionRunner($registry, $orm, new PolicyGate($policies, $auth), new Validator($orm)),
+        $fixture,
+        $orm,
+    ];
 }
 
 // The collision check only saw parameters already processed, so the same
@@ -54,6 +90,44 @@ describe('optional model inputs', function () {
 
         expect($runner->run('OptionalActions.move', ['rack' => $fixture->ids['racks'][0]])->value)
             ->toBe('nowhere');
+    });
+
+// ActionRegistry REQUIRES a check naming every model input, and records the
+    // same input as optional. Under a real gate those two rules were mutually
+    // unsatisfiable: the check was evaluated with no subject and threw an
+    // AuthorizationException -- which is not an HttpException, so a 500.
+    it('skips a check whose optional subject the caller did not supply', function () {
+        [$runner, $fixture] = policyRunnerOf(A\OptionalActions::class);
+
+        $result = $runner->run('OptionalActions.move', ['rack' => $fixture->ids['racks'][0]]);
+
+        expect($result->value)->toBe('nowhere')
+            ->and(A\RecordingRackPolicy::$asked)->toBe(['rack.update'], 'the absent subject was never asked about');
+    });
+
+    it('still runs that check when the optional subject is supplied', function () {
+        [$runner, $fixture] = policyRunnerOf(A\OptionalActions::class);
+
+        $result = $runner->run('OptionalActions.move', [
+            'rack' => $fixture->ids['racks'][0],
+            'destination' => $fixture->ids['sites'][0],
+        ]);
+
+        expect($result->value)->toBe('LAX0')
+            ->and(A\RecordingRackPolicy::$asked)->toBe(['rack.update', 'site.view']);
+    });
+
+    // The narrow part of the rule: absence only excuses a check when the entry
+    // point itself declared that input optional. A required subject that is
+    // missing must never let a caller past the check by omitting it.
+    it('does not let a caller skip a check by omitting a required subject', function () {
+        [$runner] = policyRunnerOf(A\OptionalActions::class);
+
+        // 404, not "allowed because the subject was absent": a required model
+        // that does not resolve never reaches the gate at all.
+        expect(fn () => $runner->run('OptionalActions.move', []))
+            ->toThrow(NotFoundException::class)
+            ->and(A\RecordingRackPolicy::$asked)->toBe([]);
     });
 
     it('still resolves it when supplied', function () {

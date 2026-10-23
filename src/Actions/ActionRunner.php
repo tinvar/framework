@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Actions;
 
+use Tinvar\Auth\Checks;
 use Tinvar\Auth\Gate;
 use Tinvar\Http\ForbiddenException;
 use Tinvar\Http\NotFoundException;
@@ -156,7 +157,15 @@ final class ActionRunner
     /** @param array<string, Model> $models */
     private function authorize(CompiledAction $action, array $models): void
     {
+        $optional = array_keys($action->optionalModels);
+
         foreach ($action->checks as $check) {
+            // A check naming a declared-optional model input the caller did
+            // not supply has no subject to decide about; the body gets null.
+            if (!Checks::applies($check, $models, $optional)) {
+                continue;
+            }
+
             if (!$this->gate->allows($check, $models)) {
                 throw ForbiddenException::check($check->ability, $action->where());
             }

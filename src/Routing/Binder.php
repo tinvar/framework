@@ -67,6 +67,34 @@ final class Binder
         return $this->models;
     }
 
+
+    /**
+     * Model inputs the chain's loaders declare optional.
+     *
+     * An #[Authorize] naming one of these does not apply when the path does
+     * not carry it -- see Tinvar\Auth\Checks.
+     *
+     * @return list<string>
+     */
+    public static function optionalModelInputs(RouteChain $chain): array
+    {
+        $optional = [];
+
+        foreach ($chain->all() as $route) {
+            foreach (self::loaderParameters($route->class) as $parameter) {
+                $type = self::classTypeOf($parameter);
+                if ($type === null || !is_subclass_of($type, Model::class)) {
+                    continue;
+                }
+                if ($parameter->allowsNull() || $parameter->isDefaultValueAvailable()) {
+                    $optional[] = $parameter->getName();
+                }
+            }
+        }
+
+        return array_values(array_unique($optional));
+    }
+
     /** @return array<string, Model> */
     public function models(): array
     {

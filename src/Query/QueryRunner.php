@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Query;
 
+use Tinvar\Auth\Checks;
 use Tinvar\Auth\Gate;
 use Tinvar\Cache\QueryCache;
 use Tinvar\Data\DataBoundaryException;
@@ -225,7 +226,22 @@ final class QueryRunner
      */
     private function authorize(string $name, array $arguments): ?array
     {
+        // Declared-optional model arguments. A required one that is missing
+        // never reaches here -- admit() refuses the call first -- so this can
+        // only skip a check whose subject the query itself says may be absent.
+        $optional = [];
+        $declared = $this->registry->parametersFor($name);
+        foreach ($this->registry->modelArgumentsFor($name) as $argument => $class) {
+            if (($declared[$argument] ?? true) === false) {
+                $optional[] = $argument;
+            }
+        }
+
         foreach ($this->registry->checksFor($name) as $check) {
+            if (!Checks::applies($check, $arguments, $optional)) {
+                continue;
+            }
+
             try {
                 $allowed = $this->gate->allows($check, $arguments);
             } catch (\Throwable $e) {
