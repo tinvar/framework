@@ -113,3 +113,30 @@ describe('the example session cookie', function () {
         'trailing newline' => [Racks\Kernel::newSession(str_repeat('k', 32)) . "\n"],
     ]);
 });
+
+// Never under the project: node_modules holds a workspace symlink to the
+// example, and the renderer's sandbox checks paths as requested, so a key
+// anywhere in the tree was readable through it.
+it('generates the app key into the user state directory, outside the project', function () {
+    $home = sys_get_temp_dir() . '/tinvar-home-' . bin2hex(random_bytes(4));
+    $saved = ['TINVAR_APP_KEY_FILE' => getenv('TINVAR_APP_KEY_FILE'), 'XDG_STATE_HOME' => getenv('XDG_STATE_HOME'), 'HOME' => getenv('HOME')];
+    putenv('TINVAR_APP_KEY_FILE');
+    putenv('XDG_STATE_HOME');
+    putenv("HOME={$home}");
+
+    try {
+        $key = Racks\Kernel::appKey();
+
+        expect(trim((string) file_get_contents("{$home}/.local/state/tinvar/racks.key")))->toBe($key)
+            ->and(is_dir(\dirname(__DIR__, 4) . '/examples/racks/storage'))->toBeFalse();
+    } finally {
+        foreach ($saved as $name => $value) {
+            putenv($value === false ? $name : "{$name}={$value}");
+        }
+        @unlink("{$home}/.local/state/tinvar/racks.key");
+        @rmdir("{$home}/.local/state/tinvar");
+        @rmdir("{$home}/.local/state");
+        @rmdir("{$home}/.local");
+        @rmdir($home);
+    }
+});
