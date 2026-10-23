@@ -114,9 +114,13 @@ final class RouteRegistry
 
     private function add(CompiledRoute $route): void
     {
+        // Compared by shape, not by spelling: `/racks/{rack}` and
+        // `/racks/{id}` match exactly the same paths, and with both accepted
+        // the one that answered depended on registration order -- a page with
+        // its own checks and middleware silently shadowing another.
         $existing = $route->kind === RouteKind::Page ? $this->pages : $this->layouts;
         foreach ($existing as $other) {
-            if ($other->template === $route->template) {
+            if ($other->shape() === $route->shape()) {
                 throw RoutingException::duplicate($route->template, $other->class, $route->class);
             }
         }

@@ -13,7 +13,10 @@ final class RoutingException extends \RuntimeException
 
     public static function duplicate(string $template, string $first, string $second): self
     {
-        return new self("Two routes claim '{$template}': {$first} and {$second}.");
+        return new self(
+            "Two routes claim '{$template}': {$first} and {$second}. Routes whose parameters sit in the same "
+            . 'places match the same paths, whatever the parameters are called.',
+        );
     }
 
     public static function duplicateName(string $name, string $first, string $second): self

@@ -41,6 +41,19 @@ final readonly class CompiledRoute
     }
 
     /**
+     * The template with every parameter's name dropped: the paths a route
+     * matches depend on where its parameters sit, never on what they are
+     * called.
+     */
+    public function shape(): string
+    {
+        return '/' . implode('/', array_map(
+            static fn (string $segment): string => self::isParameter($segment) ? '{}' : $segment,
+            $this->segments,
+        ));
+    }
+
+    /**
      * Matches a normalized request path, returning its parameters.
      *
      * @return array<string, string>|null
