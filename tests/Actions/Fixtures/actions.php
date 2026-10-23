@@ -8,6 +8,7 @@ use Tinvar\Actions\ActionResult;
 use Tinvar\Attributes\Action;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\NoAuthorization;
+use Tinvar\Attributes\PublicAccess;
 use Tinvar\Auth\Authenticatable;
 use Tinvar\Tests\Orm\Fixtures\Rack;
 use Tinvar\Tests\Orm\Fixtures\Site;
@@ -336,5 +337,21 @@ final class RecordingSitePolicy
         RecordingRackPolicy::$asked[] = 'site.view';
 
         return true;
+    }
+}
+
+/** An entry point that opts out of authentication, and one that does not. */
+final class MixedAccessActions
+{
+    #[Action, PublicAccess, NoAuthorization(reason: 'a status ping, deliberately anonymous')]
+    public function status(): ActionResult
+    {
+        return ActionResult::ok('ok');
+    }
+
+    #[Action, Authorize('update', 'rack')]
+    public function rename(Rack $rack, string $name): ActionResult
+    {
+        return ActionResult::ok($name);
     }
 }

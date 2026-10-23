@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\NoTenantContext;
 use Tinvar\Orm\Orm;
+use Tinvar\Orm\ReadOnlyViolation;
 use Tinvar\Tests\Orm\Fixtures\Script;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 
@@ -238,5 +239,68 @@ describe('the tenant is fiber-local', function () {
 
             $fiber->resume();
         });
+    });
+});
+
+/**
+ * "Loaders and queries run in a read-only transaction. save(), job dispatch
+ * and event dispatch throw inside them, because hovering a link runs them."
+ *
+ * Nothing implemented this: a loader or query body could write, and Phase 2's
+ * prefetch-on-hover turns that into a mutation nobody chose.
+ */
+describe('read-only contexts', function () {
+    it('refuses a write inside one', function () {
+        $fixture = new TenantFixture();
+        $orm = tenantOrm($fixture);
+
+        $orm->actAs('acme', function () use ($orm): void {
+            $script = $orm->all(Script::class)[0];
+
+            expect(fn () => $orm->readOnly(function () use ($orm, $script): void {
+                $script->name = 'renamed';
+                $orm->save($script);
+            }))->toThrow(ReadOnlyViolation::class, 'not allowed inside');
+        });
+    });
+
+    it('allows writes again once it ends', function () {
+        $fixture = new TenantFixture();
+        $orm = tenantOrm($fixture);
+
+        $orm->actAs('acme', function () use ($orm): void {
+            $orm->readOnly(static fn (): bool => true);
+
+            $script = $orm->all(Script::class)[0];
+            $script->name = 'renamed';
+            $orm->save($script);
+
+            expect($orm->isReadOnly())->toBeFalse();
+        });
+    });
+
+    // Same reasoning as the tenant and the unscoped depth: the scheduler
+    // interleaves query bodies, so one fiber's read-only context must not
+    // become everyone's -- nor leak out of the fiber that opened it.
+    it('does not make another fiber read-only', function () {
+        $fixture = new TenantFixture();
+        $orm = tenantOrm($fixture);
+
+        $other = null;
+
+        $reader = new Fiber(function () use ($orm, &$other): void {
+            $orm->readOnly(function () use ($orm, &$other): void {
+                \Fiber::suspend();
+                $other = $orm->isReadOnly();
+            });
+        });
+
+        $reader->start();
+
+        expect($orm->isReadOnly())->toBeFalse('the main context is untouched');
+
+        $reader->resume();
+
+        expect($other)->toBeTrue('and the fiber kept its own');
     });
 });

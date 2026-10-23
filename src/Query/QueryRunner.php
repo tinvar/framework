@@ -384,7 +384,11 @@ final class QueryRunner
 
             $query = $this->registry->instanceFor($group['name']);
             $arguments = $group['args'];
-            $tasks[$key] = static fn (): mixed => $query(...$arguments);
+            // "Loaders and queries run in a read-only transaction."
+            $orm = $this->orm;
+            $tasks[$key] = static fn (): mixed => $orm->readOnly(
+                static fn (): mixed => $query(...$arguments),
+            );
         }
 
         // One fiber per batch query, carrying every call made to it this tick.
@@ -393,7 +397,10 @@ final class QueryRunner
             $query = $this->registry->instanceFor($name);
             $argumentSets = array_map(static fn (string $k): array => $groups[$k]['args'], $keys);
 
-            $tasks['batch:' . $name] = static fn (): array => $query->loadMany(array_values($argumentSets));
+            $orm = $this->orm;
+            $tasks['batch:' . $name] = static fn (): array => $orm->readOnly(
+                static fn (): array => $query->loadMany(array_values($argumentSets)),
+            );
         }
 
         $raw = $tasks === [] ? [] : $scheduler->run($tasks);

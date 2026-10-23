@@ -162,7 +162,11 @@ final class LoaderRunner
         }
 
         $arguments = $binder->argumentsFor($route, $parameters, $parentData, $request);
-        $result = $instance(...$arguments);
+
+        // "Loaders and queries run in a read-only transaction ... because
+        // hovering a link runs them." Prefetch-on-hover means this body runs
+        // for a page nobody has decided to visit.
+        $result = $this->orm->readOnly(static fn (): mixed => $instance(...$arguments));
 
         if ($result !== null && !$result instanceof Data) {
             throw new RoutingException(

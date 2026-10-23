@@ -33,11 +33,22 @@ final class Orm
     /** @var \WeakMap<\Fiber, int> */
     private \WeakMap $unscopedByFiber;
 
+    /**
+     * Depth of readOnly() calls, per fiber for the same reason as above: the
+     * render scheduler interleaves loaders and query bodies, so a single
+     * shared flag would make one fiber's read-only context everyone's.
+     */
+    private int $readOnlyMain = 0;
+
+    /** @var \WeakMap<\Fiber, int> */
+    private \WeakMap $readOnlyByFiber;
+
     public function __construct(
         private readonly Connection $connection,
         private readonly IdentityMap $identityMap = new IdentityMap(),
     ) {
         $this->unscopedByFiber = new \WeakMap();
+        $this->readOnlyByFiber = new \WeakMap();
     }
 
     public function connection(): Connection
@@ -166,6 +177,60 @@ final class Orm
             $this->identityMap->flush();
             $this->relationRows = [];
         }
+    }
+
+    /**
+     * Runs $work with writes refused.
+     *
+     * "Loaders and queries run in a read-only transaction. save(), job
+     * dispatch and event dispatch throw inside them, because hovering a link
+     * runs them." Prefetch-on-hover is the point: a loader runs for a page
+     * nobody has chosen to visit, so a write there happens without anyone
+     * deciding to.
+     *
+     * This refuses the write in PHP rather than asking the database for a
+     * READ ONLY transaction. A real one is the stronger guarantee and belongs
+     * here later; this one holds on SQLite too, names the offending call, and
+     * does not need the connection to be transactional.
+     *
+     * @template T
+     * @param \Closure(): T $work
+     * @return T
+     */
+    public function readOnly(\Closure $work): mixed
+    {
+        $this->setReadOnlyDepth($this->readOnlyDepth() + 1);
+
+        try {
+            return $work();
+        } finally {
+            $this->setReadOnlyDepth(max(0, $this->readOnlyDepth() - 1));
+        }
+    }
+
+    public function isReadOnly(): bool
+    {
+        return $this->readOnlyDepth() > 0;
+    }
+
+    private function readOnlyDepth(): int
+    {
+        $fiber = \Fiber::getCurrent();
+
+        return $fiber === null ? $this->readOnlyMain : ($this->readOnlyByFiber[$fiber] ?? $this->readOnlyMain);
+    }
+
+    private function setReadOnlyDepth(int $depth): void
+    {
+        $fiber = \Fiber::getCurrent();
+
+        if ($fiber === null) {
+            $this->readOnlyMain = $depth;
+
+            return;
+        }
+
+        $this->readOnlyByFiber[$fiber] = $depth;
     }
 
     public function isUnscoped(): bool
@@ -422,8 +487,18 @@ final class Orm
      * @param T $model
      * @return T
      */
+    /** Refuses a write inside a loader or query body. */
+    private function refuseWrite(string $what): void
+    {
+        if ($this->isReadOnly()) {
+            throw ReadOnlyViolation::write($what, 'a loader or query body');
+        }
+    }
+
     public function save(Model $model): Model
     {
+        $this->refuseWrite('save()');
+
         $meta = Metadata::for($model::class);
 
         return $model->isPersisted()
@@ -576,6 +651,8 @@ final class Orm
     /** Deletes a row, scoped to the tenant like every other write. */
     public function delete(Model $model): void
     {
+        $this->refuseWrite('delete()');
+
         $meta = Metadata::for($model::class);
         [$scope, $scopeBindings] = $this->tenantScope($meta);
 

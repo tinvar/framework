@@ -413,3 +413,54 @@ describe('the exception handler', function () {
             ->and(json_decode($response->body(), true)['errors'])->toHaveKey('position');
     });
 });
+
+// #[PublicAccess] was declared, referenced by nothing but the docblock of the
+// middleware that claimed to honour it, and the middleware 401'd regardless.
+describe('public entry points', function () {
+    $entryPoints = static fn (Request $r): ?array => match ($r->path) {
+        '/_action/MixedAccessActions.status' => [A\MixedAccessActions::class, 'status'],
+        '/_action/MixedAccessActions.rename' => [A\MixedAccessActions::class, 'rename'],
+        default => null,
+    };
+
+    it('lets an anonymous caller reach one that opts out', function () use ($entryPoints) {
+        $middleware = new RequireAuthentication(new AuthContext(), $entryPoints);
+
+        $response = $middleware->handle(
+            Request::post('/_action/MixedAccessActions.status'),
+            static fn (Request $r): Response => Response::make(200, 'ran'),
+        );
+
+        expect($response->status)->toBe(200);
+    });
+
+    it('still refuses one that does not', function () use ($entryPoints) {
+        $middleware = new RequireAuthentication(new AuthContext(), $entryPoints);
+
+        expect(fn () => $middleware->handle(
+            Request::post('/_action/MixedAccessActions.rename'),
+            static fn (Request $r): Response => Response::make(200, 'ran'),
+        ))->toThrow(HttpException::class, 'Authentication required');
+    });
+
+    // An unknown name is not a public one, and saying "no such action" to an
+    // anonymous caller would be an enumeration oracle.
+    it('treats an unknown entry point as not public', function () use ($entryPoints) {
+        $middleware = new RequireAuthentication(new AuthContext(), $entryPoints);
+
+        expect(fn () => $middleware->handle(
+            Request::post('/_action/Nope.nothing'),
+            static fn (Request $r): Response => Response::make(200, 'ran'),
+        ))->toThrow(HttpException::class, 'Authentication required');
+    });
+
+    // Without a lookup, nothing is public: the default direction matters.
+    it('is closed when no lookup is supplied', function () {
+        $middleware = new RequireAuthentication(new AuthContext());
+
+        expect(fn () => $middleware->handle(
+            Request::post('/_action/MixedAccessActions.status'),
+            static fn (Request $r): Response => Response::make(200, 'ran'),
+        ))->toThrow(HttpException::class, 'Authentication required');
+    });
+});
