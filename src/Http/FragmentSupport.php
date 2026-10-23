@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Http;
 
 use Tinvar\Auth\PanelContext;
+use Tinvar\Orm\Orm;
 use Tinvar\Render\FragmentMinter;
 use Tinvar\Support\Signer;
 
@@ -40,6 +41,7 @@ final readonly class FragmentSupport
         public \Closure $sessionId,
         public ?PanelContext $panels = null,
         public ?\Closure $allowedQueries = null,
+        public ?Orm $orm = null,
     ) {}
 
     /**
@@ -60,8 +62,14 @@ final readonly class FragmentSupport
         string $route,
         array $params,
         ?string $panel = null,
-        string $tenant = '',
+        ?string $tenant = null,
     ): FragmentMinter {
+        // From the SAME source the endpoint compares against. It defaulted
+        // to '', so every token minted as tenant-less whatever tenant the
+        // request was in -- the read side and the write side disagreeing,
+        // which is the second time that exact split has appeared here.
+        $tenant ??= $this->orm?->tenant() ?? '';
+
         // The LIVE panel by default. It used to default to '', so the read
         // side consulted the context and the write side never did: every
         // statically-bootstrapped fragment minted a panel-less token whatever

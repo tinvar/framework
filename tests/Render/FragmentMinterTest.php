@@ -17,6 +17,9 @@ use Tinvar\Render\FragmentToken;
 use Tinvar\Render\FragmentTokenError;
 use Tinvar\Support\Signer;
 
+require_once __DIR__ . '/../Orm/Fixtures/models.php';
+require_once __DIR__ . '/../Orm/Fixtures/schema.php';
+
 function minterSigner(): Signer
 {
     return new Signer('test-app-key', FragmentToken::PURPOSE);
@@ -189,4 +192,33 @@ describe('FragmentSupport owns the minter', function () {
         expect(fn () => $support->minterFor(Tinvar\Http\Request::get('/x'), 'racks.show', []))
             ->toThrow(InvalidArgumentException::class, 'session is required');
     });
+});
+
+/**
+ * The write side must read the tenant from the same place the read side
+ * compares against. minterFor() defaulted it to '', so every token minted
+ * as tenant-less whatever tenant the request was in -- the read side and the
+ * write side disagreeing, which is the second time that exact split has
+ * appeared in this feature.
+ */
+it('mints with the live tenant, from the same source the endpoint checks', function () {
+    $fixture = new Tinvar\Tests\Orm\Fixtures\Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+    $orm = new Tinvar\Orm\Orm($fixture->connection, new Tinvar\Orm\IdentityMap('test'));
+    $orm->switchTenant('acme');
+
+    $signer = minterSigner();
+    $support = new Tinvar\Http\FragmentSupport(
+        signer: $signer,
+        builds: new Tinvar\Http\BuildRegistry('b1'),
+        render: static fn (): mixed => null,
+        sessionId: static fn (Tinvar\Http\Request $r): string => 'session-abc',
+        orm: $orm,
+    );
+
+    $token = FragmentToken::decode(
+        $support->minterFor(Tinvar\Http\Request::get('/x'), 'racks.show', ['rack' => 'r-1'])->mint('C', []),
+        $signer,
+    );
+
+    expect($token->tenant)->toBe('acme');
 });

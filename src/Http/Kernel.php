@@ -226,7 +226,7 @@ final class Kernel
             );
         }
 
-        if ($fragments !== null && $fragments->panels === null && $panels !== null) {
+        if ($fragments !== null && ($fragments->panels === null || $fragments->orm === null)) {
             $fragments = new FragmentSupport(
                 signer: $fragments->signer,
                 builds: $fragments->builds,
@@ -239,6 +239,7 @@ final class Kernel
         $this->fragments_ = $fragments === null ? null : new FragmentEndpoint(
             routes: $this->routes,
             loaders: new LoaderRunner($this->orm, $resolver, $gate),
+            orm: $this->orm,
             signer: $fragments->signer,
             builds: $fragments->builds,
             render: $fragments->render,

@@ -37,7 +37,7 @@ final class RenderLog
     public array $calls = [];
 }
 
-/** @return array{0: FragmentEndpoint, 1: Fixture, 2: Signer, 3: BuildRegistry, 4: RenderLog, 5: PanelContext} */
+/** @return array{0: FragmentEndpoint, 1: Fixture, 2: Signer, 3: BuildRegistry, 4: RenderLog, 5: PanelContext, 6: Orm} */
 function fragmentEndpoint(?object $gate = null, array $globalMiddleware = []): array
 {
     $panels = new PanelContext();
@@ -54,6 +54,7 @@ function fragmentEndpoint(?object $gate = null, array $globalMiddleware = []): a
     $endpoint = new FragmentEndpoint(
         routes: $routes,
         loaders: new LoaderRunner($orm, static fn (string $c): object => new $c(), $gate ?? new AllowAllGate()),
+        orm: $orm,
         signer: $signer,
         builds: $builds,
         render: static function (FragmentToken $token, Request $request, array $models) use ($log, $panels): Response {
@@ -71,7 +72,7 @@ function fragmentEndpoint(?object $gate = null, array $globalMiddleware = []): a
         panels: $panels,
     );
 
-    return [$endpoint, $fixture, $signer, $builds, $log, $panels];
+    return [$endpoint, $fixture, $signer, $builds, $log, $panels, $orm];
 }
 
 function fragmentToken(Signer $signer, Fixture $fixture, array $overrides = []): FragmentToken
@@ -530,5 +531,45 @@ describe('the panel a fragment runs in', function () {
         });
 
         expect($log->calls[0]['panel'])->toBe('customer');
+    });
+});
+
+/**
+ * "Client-held data is bound to (user, tenant)." The panel was defended and
+ * the tenant was not carried at all; when it was added, the check read
+ * `$this->orm?->tenant()` from an Orm the Kernel never passed -- so it was
+ * null on every request and the comparison never ran. The same unwired shape
+ * as the mint closure, in the commit that fixed the mint closure.
+ */
+describe('the tenant a fragment runs in', function () {
+    it('refuses a token minted for a different tenant', function () {
+        [$endpoint, $fixture, $signer, , , , $orm] = fragmentEndpoint();
+        $orm->switchTenant('acme');
+
+        expect(fn () => $endpoint->handle(fragmentRequest(
+            $signer,
+            fragmentToken($signer, $fixture, ['tenant' => 'globex']),
+        )))->toThrow(HttpException::class, 'Fragment unavailable');
+    });
+
+    it('allows a token minted for the tenant the request is in', function () {
+        [$endpoint, $fixture, $signer, , $log, , $orm] = fragmentEndpoint();
+        $orm->switchTenant('acme');
+
+        $endpoint->handle(fragmentRequest($signer, fragmentToken($signer, $fixture, ['tenant' => 'acme'])));
+
+        expect($log->calls)->toHaveCount(1);
+    });
+
+    // An application with no tenancy mints '' and matches '', so comparing
+    // always is correct there too -- there is no state in which the check is
+    // skipped.
+    it('refuses a tenant-bearing token when the request has none', function () {
+        [$endpoint, $fixture, $signer] = fragmentEndpoint();
+
+        expect(fn () => $endpoint->handle(fragmentRequest(
+            $signer,
+            fragmentToken($signer, $fixture, ['tenant' => 'acme']),
+        )))->toThrow(HttpException::class, 'Fragment unavailable');
     });
 });

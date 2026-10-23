@@ -73,6 +73,7 @@ final class FragmentEndpoint
     public function __construct(
         private readonly RouteRegistry $routes,
         private readonly LoaderRunner $loaders,
+        private readonly Orm $orm,
         private readonly Signer $signer,
         private readonly BuildRegistry $builds,
         private readonly \Closure $render,
@@ -83,7 +84,6 @@ final class FragmentEndpoint
         private readonly ?PanelContext $panels = null,
         private readonly array $extraInner = [],
         private readonly ?\Closure $allowedQueries = null,
-        private readonly ?Orm $orm = null,
     ) {}
 
     public function matches(Request $request): bool
@@ -180,8 +180,14 @@ final class FragmentEndpoint
                 // same clause. Checked rather than applied: a token must
                 // never be able to establish a tenant, only to agree with
                 // the one the request is already in.
-                $tenant = $this->orm?->tenant();
-                if ($tenant !== null && $tenant !== '' && $tenant !== $token->tenant) {
+                //
+                // UNCONDITIONAL. The first version skipped the comparison
+                // when the live tenant was null or empty -- and the Orm was
+                // never passed in, so it was null on every request and the
+                // check never ran at all. An application with no tenancy
+                // mints '' and matches '', so comparing always is correct
+                // there too, and there is no state in which this is skipped.
+                if ($this->orm->tenant() !== $token->tenant) {
                     throw self::refuse('token was minted for a different tenant');
                 }
 
