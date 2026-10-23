@@ -46,4 +46,13 @@ interface Connection
     public function transaction(\Closure $work): mixed;
 
     public function inTransaction(): bool;
+
+    /**
+     * Rolls back a transaction still open, savepoints and all; nothing when
+     * none is. For the end of a request: whatever left one open, the next
+     * request on a worker must not start inside it.
+     *
+     * @return bool whether one was open
+     */
+    public function rollBackOpenTransaction(): bool;
 }

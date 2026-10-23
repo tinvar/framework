@@ -517,7 +517,7 @@ describe('the reset contract', function () {
     it('covers every resettable the framework owns', function () {
         [$kernel] = kernel();
 
-        expect($kernel->scope->names())->toBe(['orm', 'statements', 'auth', 'policies', 'queries']);
+        expect($kernel->scope->names())->toBe(['transaction', 'orm', 'statements', 'auth', 'policies', 'queries']);
     });
 
     // "Tenant, auth, PANEL, identity map and #[Scoped] services reset at the
@@ -537,7 +537,7 @@ describe('the reset contract', function () {
             panels: $panels,
         );
 
-        expect($kernel->scope->names())->toBe(['orm', 'statements', 'auth', 'policies', 'panels', 'queries']);
+        expect($kernel->scope->names())->toBe(['transaction', 'orm', 'statements', 'auth', 'policies', 'panels', 'queries']);
     });
 });
 

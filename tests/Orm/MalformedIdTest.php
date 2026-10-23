@@ -94,6 +94,11 @@ final class UuidColumns implements Connection
     {
         return $this->inner->inTransaction();
     }
+
+    public function rollBackOpenTransaction(): bool
+    {
+        return $this->inner->rollBackOpenTransaction();
+    }
 }
 
 final readonly class PickSiteRequest extends FormRequest

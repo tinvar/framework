@@ -76,6 +76,11 @@ final class UuidColumns implements Connection
     {
         return $this->inner->inTransaction();
     }
+
+    public function rollBackOpenTransaction(): bool
+    {
+        return $this->inner->rollBackOpenTransaction();
+    }
 }
 
 it('answers a malformed id as not found, without failing the rest of the tick', function (string $bad) {

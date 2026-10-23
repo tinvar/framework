@@ -169,7 +169,22 @@ final class PdoConnection implements Connection
             throw $e;
         }
 
-        $this->pdo->commit();
+        try {
+            $this->pdo->commit();
+        } catch (\Throwable $e) {
+            // SQLite leaves the transaction open when a COMMIT fails -- a
+            // deferred constraint, a writer it could not wait out -- and the
+            // next statement on this connection, on a worker the next
+            // request's, ran inside it. Rolled back here; a rollback that
+            // fails as well is left to the reset contract, and the commit's
+            // failure is the one reported.
+            try {
+                $this->rollBackOpenTransaction();
+            } catch (\Throwable) {
+            }
+
+            throw $e;
+        }
 
         return $result;
     }
@@ -207,6 +222,19 @@ final class PdoConnection implements Connection
     public function inTransaction(): bool
     {
         return $this->pdo->inTransaction();
+    }
+
+    public function rollBackOpenTransaction(): bool
+    {
+        if (!$this->pdo->inTransaction()) {
+            return false;
+        }
+
+        // The savepoints go with the transaction they were in.
+        $this->savepoints = 0;
+        $this->pdo->rollBack();
+
+        return true;
     }
 
     public function statementCount(): int

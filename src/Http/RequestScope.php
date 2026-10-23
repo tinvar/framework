@@ -43,6 +43,15 @@ final class RequestScope
     ): self {
         $scope = new self();
 
+        // A transaction left open -- a commit that failed and a rollback
+        // after it that failed too, or a transaction begun outside
+        // transaction() -- rolled back first, before the caches that may
+        // hold what it wrote are cleared. Left, the next request's writes on
+        // this worker joined it.
+        $scope->add('transaction', static function () use ($orm): void {
+            $orm->connection()->rollBackOpenTransaction();
+        });
+
         // The identity map and the relation-row caches: one request, one map.
         $scope->add('orm', $orm->flush(...));
 
