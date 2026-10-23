@@ -18,6 +18,7 @@ use Tinvar\Http\Endpoints\BootstrapEndpoint;
 use Tinvar\Http\Endpoints\FragmentEndpoint;
 use Tinvar\Http\Endpoints\QueryEndpoint;
 use Tinvar\Http\Middleware\CheckVersion;
+use Tinvar\Http\Middleware\TranslateRedirects;
 use Tinvar\Http\Middleware\RequireAuthentication;
 use Tinvar\Http\Middleware\ThrottleRequests;
 use Tinvar\Http\Middleware\VerifyCsrfToken;
@@ -383,9 +384,14 @@ final class Kernel
             // Version first, before anything renders: a client on another
             // build gets told to reload rather than handed a payload whose
             // client-component IDs it cannot resolve.
-            return $this->versions === null
-                ? $navigate($request)
-                : $this->versions->handle($request, $navigate);
+            $checked = fn (Request $r): Response => $this->versions === null
+                ? $navigate($r)
+                : $this->versions->handle($r, $navigate);
+
+            // Outermost, so a redirect from anywhere on the navigation path
+            // -- route middleware, the page itself -- reaches the client
+            // router in a form it can read.
+            return new TranslateRedirects()->handle($request, $checked);
         } catch (\Throwable $e) {
             return $this->exceptions->handle($e, $request);
         } finally {

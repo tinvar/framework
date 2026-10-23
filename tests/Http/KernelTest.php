@@ -935,6 +935,20 @@ describe('version skew through the kernel', function () {
         expect($response->status)->toBe(200);
     });
 
+    // A redirect from the page reached the router as an opaque response it
+    // could only answer with a full load of the URL it had asked for.
+    it('hands a client navigation a redirect it can follow', function () {
+        [$kernel, $path] = versionedKernel();
+
+        $response = $kernel->handle(
+            Request::get($path, ['RSC' => '1', 'X-Version' => 'b2']),
+            static fn (): Response => Response::redirect('/login'),
+        );
+
+        expect($response->status)->toBe(409)
+            ->and($response->header('x-redirect'))->toBe('/login');
+    });
+
     it('serves a document load whatever its version', function () {
         [$kernel, $path] = versionedKernel();
 
