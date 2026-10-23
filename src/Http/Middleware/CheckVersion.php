@@ -74,8 +74,9 @@ final class CheckVersion implements Middleware
     private static function reload(Request $request): Response
     {
         $location = $request->path;
-        if ($request->query !== []) {
-            $location .= '?' . http_build_query($request->query);
+        $query = self::queryOf($request);
+        if ($query !== '') {
+            $location .= '?' . $query;
         }
 
         return Response::make(409, '', [
@@ -83,5 +84,28 @@ final class CheckVersion implements Middleware
             'cache-control' => 'private, no-store',
             'vary' => 'RSC',
         ]);
+    }
+
+    /**
+     * The query string to send the client back to.
+     *
+     * The one the browser sent, when the adapter kept it. Rebuilding it from
+     * the parsed array is lossy: `?tag=a&tag=b` comes back as
+     * `?tag%5B0%5D=a&tag%5B1%5D=b`, a space as `+`, a bare `?flag` as
+     * `flag=` -- and the full load then asks for a different page than the
+     * one the user was on.
+     *
+     * It goes into a response header, so it is used only if every byte is
+     * visible ASCII: a browser percent-encodes everything else, and anything
+     * that is not is not a query string a browser sent.
+     */
+    private static function queryOf(Request $request): string
+    {
+        $raw = $request->rawQuery;
+        if ($raw !== null && preg_match('/^[\x21-\x7e]*$/', $raw) === 1 && !str_contains($raw, '#')) {
+            return $raw;
+        }
+
+        return $request->query === [] ? '' : http_build_query($request->query);
     }
 }

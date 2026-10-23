@@ -20,6 +20,9 @@ final class Request
      * @param array<string, string|list<string>> $query
      * @param array<string, mixed>        $body
      * @param array<string, string>       $cookies
+     * @param ?string                     $rawQuery the query string exactly as
+     *                                              received, without the `?`; null
+     *                                              when the adapter does not have it
      */
     public readonly string $method;
 
@@ -39,6 +42,7 @@ final class Request
         public readonly array $query = [],
         public readonly array $body = [],
         public readonly array $cookies = [],
+        public readonly ?string $rawQuery = null,
     ) {
         $this->method = strtoupper($method);
         $this->path = self::normalizePath($path);

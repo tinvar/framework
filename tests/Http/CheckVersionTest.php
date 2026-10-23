@@ -66,6 +66,22 @@ describe('a client navigation', function () {
         expect($response->header('x-location'))->toBe('/racks?page=2');
     });
 
+    // Rebuilt from the parsed array, ?tag=a&tag=b came back as
+    // ?tag%5B0%5D=a&tag%5B1%5D=b -- a different page.
+    it('echoes the query string exactly as the browser sent it', function (string $raw) {
+        $request = new Request('GET', '/racks', ['rsc' => '1', 'x-version' => 'b1'], ['parsed' => 'x'], rawQuery: $raw);
+
+        expect(versioned()->handle($request, passes())->header('x-location'))->toBe('/racks?' . $raw);
+    })->with(['tag=a&tag=b', 'q=a+b%20c', 'flag', 'tags[]=x&tags[]=y']);
+
+    // It lands in a response header; anything a browser would have encoded
+    // is not trusted to be a query string.
+    it('falls back to the parsed query when the raw one is not plain ASCII', function (string $raw) {
+        $request = new Request('GET', '/racks', ['rsc' => '1', 'x-version' => 'b1'], ['page' => '2'], rawQuery: $raw);
+
+        expect(versioned()->handle($request, passes())->header('x-location'))->toBe('/racks?page=2');
+    })->with(["a=1\r\nset-cookie: x=1", 'a=b c', "a=\u{e9}", 'a=1#frag']);
+
     // The location is the request's own path. Nothing a client sends can
     // turn this into a redirect somewhere else.
     it('never takes the location from anything but the request path', function () {
