@@ -57,6 +57,25 @@ final class Orm
         $this->scheduler = null;
     }
 
+    /**
+     * The only supported way to change tenant.
+     *
+     * The relation-row cache is keyed by relation and parent id, not by tenant,
+     * so it has to be dropped here or rows loaded for one tenant would answer a
+     * relation read for the next. Tenancy fails closed in this framework; a
+     * cache that silently crosses the boundary would undo that.
+     */
+    public function switchTenant(string $tenant): void
+    {
+        if ($tenant === $this->identityMap->tenant()) {
+            return;
+        }
+
+        $this->relationRows = [];
+        $this->scheduler = null;
+        $this->identityMap->switchTenant($tenant);
+    }
+
     // ---------------------------------------------------------------- reading
 
     /** @param class-string<Model> $class */

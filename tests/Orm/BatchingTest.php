@@ -50,7 +50,26 @@ describe('identity map', function () {
         $map->switchTenant('acme');
 
         expect($map->get(Rack::class, 'r1'))->toBeNull()
-            ->and($map->tenant())->toBe('acme');
+            ->and($map->tenant())->toBe('acme')
+            ->and($map->count())->toBe(0, 'rows are cleared, not just shadowed');
+    });
+
+    it('does not serve a relation cached under one tenant to the next', function () {
+        $fixture = new Fixture(racks: 2, unitsPerRack: 3);
+        $orm = ormFor($fixture);
+
+        $racks = $orm->whereIn(Rack::class, 'id', $fixture->ids['racks']);
+        expect($racks[0]->units->count())->toBe(3);
+
+        $orm->switchTenant('acme');
+        $fixture->connection->resetStatementCount();
+
+        // Same rows, new tenant: nothing may come from the previous tenant's cache.
+        $again = $orm->whereIn(Rack::class, 'id', $fixture->ids['racks']);
+        expect($again[0])->not->toBe($racks[0], 'a new tenant gets new instances')
+            ->and($again[0]->units->count())->toBe(3)
+            ->and($fixture->connection->statementCount())
+            ->toBe(2, 'racks and units were both re-read, not served from the old tenant');
     });
 });
 

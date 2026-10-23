@@ -54,13 +54,22 @@ final class IdentityMap
     }
 
     /**
-     * Switches tenant, which is also a reset: identity is scoped to a tenant, so
-     * rows from the previous one must not stay reachable.
+     * Switches tenant, which is also a reset.
+     *
+     * tinvar-spec.md, "Tenancy": "The map is cleared at every job boundary,
+     * every actAs and forEachTenant iteration, and every acrossTenants() exit."
+     *
+     * Bucket keys already carry the tenant, so rows cannot be read across one.
+     * Clearing matters for switching *back*: without it, a later switch to a
+     * tenant seen earlier in the request would serve rows cached before any
+     * intervening write. Prefer Orm::switchTenant(), which also drops the
+     * relation-row cache.
      */
     public function switchTenant(string $tenant): void
     {
         if ($tenant !== $this->tenant) {
             $this->tenant = $tenant;
+            $this->flush();
         }
     }
 
