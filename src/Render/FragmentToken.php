@@ -88,7 +88,7 @@ final readonly class FragmentToken
     ) {}
 
     /** @see TokenClaims::hashSession() -- one implementation, both tokens. */
-    public static function hashSession(Signer $signer, string $sessionId): string
+    public static function hashSession(Signer $signer, #[\SensitiveParameter] string $sessionId): string
     {
         return TokenClaims::hashSession($signer, $sessionId);
     }
@@ -155,7 +155,7 @@ final readonly class FragmentToken
     }
 
     /** Whether this token belongs to the session making the request. */
-    public function belongsTo(Signer $signer, string $sessionId): bool
+    public function belongsTo(Signer $signer, #[\SensitiveParameter] string $sessionId): bool
     {
         return $this->claims()->belongsTo($signer, $sessionId);
     }

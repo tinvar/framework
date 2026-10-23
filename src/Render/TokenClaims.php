@@ -49,7 +49,7 @@ final readonly class TokenClaims
      * page source, and one carrying a usable session id would be a
      * session-fixation primitive sitting in the DOM.
      */
-    public static function hashSession(Signer $signer, string $sessionId): string
+    public static function hashSession(Signer $signer, #[\SensitiveParameter] string $sessionId): string
     {
         return bin2hex(substr($signer->sign('session:' . $sessionId), 0, 16));
     }
@@ -122,7 +122,7 @@ final readonly class TokenClaims
         }
     }
 
-    public function belongsTo(Signer $signer, string $sessionId): bool
+    public function belongsTo(Signer $signer, #[\SensitiveParameter] string $sessionId): bool
     {
         return hash_equals($this->sessionHash, self::hashSession($signer, $sessionId));
     }

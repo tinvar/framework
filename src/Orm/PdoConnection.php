@@ -22,8 +22,19 @@ final class PdoConnection implements Connection
         $this->pdo->setAttribute(\PDO::ATTR_EMULATE_PREPARES, false);
     }
 
-    public static function postgres(string $dsn, ?string $user = null, ?string $password = null, string $name = 'default'): self
-    {
+    /**
+     * The password is sensitive: a refused connection throws from inside
+     * this frame, and its trace would otherwise carry the password. (PDO's
+     * own constructor already marks its password; a password written into
+     * the DSN is recorded there whatever this does, so pass it separately.)
+     */
+    public static function postgres(
+        string $dsn,
+        ?string $user = null,
+        #[\SensitiveParameter]
+        ?string $password = null,
+        string $name = 'default',
+    ): self {
         return new self(new \PDO($dsn, $user, $password, [\PDO::ATTR_PERSISTENT => false]), $name);
     }
 

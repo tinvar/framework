@@ -23,10 +23,16 @@ final readonly class Signer
     private string $key;
 
     /**
+     * Sensitive, so a trace through here records a placeholder rather than
+     * the application key. Anything thrown while a signer is being built --
+     * the empty-purpose refusal below, or a failure in the frame that called
+     * this -- would otherwise carry the key into every log and error page
+     * that prints a trace.
+     *
      * @param string $secret  the application key
      * @param string $purpose what this signer is for, e.g. 'fragment-token'
      */
-    public function __construct(string $secret, string $purpose)
+    public function __construct(#[\SensitiveParameter] string $secret, string $purpose)
     {
         if ($secret === '') {
             // A signer with no key would produce stable, forgeable MACs that
@@ -41,8 +47,14 @@ final readonly class Signer
         $this->key = hash_hmac(self::ALGORITHM, $purpose, $secret, binary: true);
     }
 
-    /** Raw MAC over a payload. */
-    public function sign(string $payload): string
+    /**
+     * Raw MAC over a payload.
+     *
+     * The payload is sensitive too: what gets signed includes session ids
+     * (the session binding, the session cookie), and a session id in a log
+     * is a session anyone reading the log can use.
+     */
+    public function sign(#[\SensitiveParameter] string $payload): string
     {
         return hash_hmac(self::ALGORITHM, $payload, $this->key, binary: true);
     }
@@ -53,7 +65,7 @@ final readonly class Signer
      * hash_equals, not ===: a timing difference here leaks the signature a
      * byte at a time, which is enough to forge one.
      */
-    public function verify(string $payload, string $signature): bool
+    public function verify(#[\SensitiveParameter] string $payload, string $signature): bool
     {
         return hash_equals($this->sign($payload), $signature);
     }

@@ -43,7 +43,13 @@ final class FragmentMinter
 
     private int $minted = 0;
 
-    /** @param array<string, string> $params */
+    /**
+     * The session id is sensitive: this constructor throws on a bad TTL or
+     * a missing session, and a trace of that throw would otherwise carry the
+     * id it was built with.
+     *
+     * @param array<string, string> $params
+     */
     public function __construct(
         private readonly Signer $signer,
         private readonly string $route,
@@ -51,6 +57,7 @@ final class FragmentMinter
         private readonly string $panel,
         private readonly string $tenant,
         private readonly string $build,
+        #[\SensitiveParameter]
         private readonly string $sessionId,
         private readonly int $ttl = FragmentToken::DEFAULT_TTL,
     ) {

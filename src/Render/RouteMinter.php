@@ -30,6 +30,9 @@ final readonly class RouteMinter
         private string $panel,
         private string $tenant,
         private string $build,
+        // Sensitive: the refusals below throw, and their trace would
+        // otherwise carry the session id.
+        #[\SensitiveParameter]
         private string $sessionId,
         private int $ttl = RouteToken::DEFAULT_TTL,
     ) {

@@ -147,7 +147,7 @@ final class AppKey
      * the create, exclusive so nothing already there is reused, and 0600
      * confirmed before the key is written.
      */
-    private static function writePrivately(string $path, string $contents): void
+    private static function writePrivately(string $path, #[\SensitiveParameter] string $contents): void
     {
         $handle = self::openPrivately($path, 'x');
 
@@ -243,7 +243,7 @@ final class AppKey
      * to the environment -- a docker env file, a mounted secret -- changed
      * the signing key and invalidated every token in flight.
      */
-    private static function normalised(string $key): string
+    private static function normalised(#[\SensitiveParameter] string $key): string
     {
         $key = trim($key);
 
@@ -255,8 +255,13 @@ final class AppKey
      * someone edited by hand. It is never replaced silently: a new key would
      * invalidate every token in flight, and an unexpected one is a reason to
      * stop and look.
+     *
+     * The key is a sensitive parameter here and everywhere it is passed:
+     * this method exists to throw, and a trace of that throw printed the key
+     * it was refusing -- in full through getTrace(), and its first bytes
+     * through getTraceAsString().
      */
-    private static function checked(string $key, string $source): string
+    private static function checked(#[\SensitiveParameter] string $key, string $source): string
     {
         // Visible ASCII only. A UTF-16 file, a stray NUL or an editor's
         // encoding passed the length check and silently became a different
