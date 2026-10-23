@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Orm;
 
+use Tinvar\Data\Lazy;
 use Tinvar\Support\Uuid;
 
 /**
@@ -232,7 +233,11 @@ final class Orm
         $this->setReadOnlyDepth($this->readOnlyDepth() + 1);
 
         try {
-            return $work();
+            // A Lazy made in here is resolved later, by the encoder, after
+            // this has returned -- so it takes the read-only scope with it.
+            // Otherwise a Lazy::of() closure in a loader's Data, or a mapped
+            // lazy over an array source, could write during a GET.
+            return Lazy::within(fn (\Closure $deferred): mixed => $this->readOnly($deferred), $work);
         } finally {
             $this->setReadOnlyDepth(max(0, $this->readOnlyDepth() - 1));
         }

@@ -562,10 +562,19 @@ final class QueryRunner
             return ['error' => QueryError::of(QueryError::FAILED, $value, $this->debug)];
         }
 
+        // Read-only, as the body was: encoding resolves the result's Lazy
+        // fields, which is the body's work deferred, not new work allowed to
+        // write. A Lazy made in the body carries the scope already; this
+        // covers one the body returned without making.
         try {
-            return ['value' => $this->encoder->encode($value)];
+            return ['value' => $this->orm->readOnly(fn (): mixed => $this->encoder->encode($value))];
         } catch (DataBoundaryException $e) {
             return ['error' => QueryError::of(QueryError::BAD_RESULT, $e, $this->debug)];
+        } catch (\Throwable $e) {
+            // A Lazy field failing -- a refused write among them -- is this
+            // call failing, as a throw from the body would be. Escaping, it
+            // failed every other call in the tick with it.
+            return ['error' => QueryError::of(QueryError::FAILED, $e, $this->debug)];
         }
     }
 
