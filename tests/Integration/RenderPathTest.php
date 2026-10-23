@@ -196,3 +196,51 @@ it('serves the document, or the payload alone for a client navigation', function
         ->and($payload->body())->not->toContain('self.__rsc')
         ->and($payload->body())->toContain('LAX1');
 });
+
+// "PHP sets a strict CSP with a per-request nonce and strict-dynamic ...
+// Script injected into the HTML stream doesn't run." Neither half was there:
+// no policy was sent, and React was never given the nonce, so its bootstrap
+// module and its inline Suspense reveals carried none -- under the policy,
+// the page would not hydrate.
+it('sends a CSP, and puts its nonce on every script in the document', function () {
+    [$kernel, $renderer, $seeded] = racksKernel();
+
+    try {
+        $path = '/racks/' . $seeded['racks'][0];
+        $document = $kernel->handle(Tinvar\Http\Request::get($path));
+        $payload = $kernel->handle(Tinvar\Http\Request::get($path, ['RSC' => '1', 'X-Version' => 'dev']));
+    } finally {
+        $renderer->stop();
+    }
+
+    $policy = (string) $document->header('content-security-policy');
+    expect(preg_match(
+        "#^script-src 'nonce-([A-Za-z0-9+/]{22}==)' 'strict-dynamic'; object-src 'none'; base-uri 'none'\$#",
+        $policy,
+        $m,
+    ))->toBe(1, "the policy sent: '{$policy}'");
+    $nonce = $m[1];
+
+    // Every script element, except the page metadata: a data block is never
+    // executed, so it is not a script the policy governs.
+    preg_match_all('#<script\b[^>]*>#i', $document->body(), $tags);
+    $scripts = array_values(array_filter(
+        $tags[0],
+        static fn (string $tag): bool => !str_contains($tag, 'type="application/json"'),
+    ));
+
+    expect($scripts)->not->toBeEmpty()
+        ->and(array_values(array_filter(
+            $scripts,
+            static fn (string $tag): bool => !str_contains($tag, " nonce=\"{$nonce}\""),
+        )))->toBe([], 'every script carries the nonce');
+
+    // Including the ones React writes itself, which were the ones without
+    // it: the bootstrap module, and the inline script that reveals the
+    // Suspense boundary.
+    expect(array_filter($scripts, static fn (string $tag): bool => str_contains($tag, 'type="module"')))->toHaveCount(1)
+        ->and($document->body())->toContain('$RC("B:0"');
+
+    // A payload is not a document, and gets no policy.
+    expect($payload->header('content-security-policy'))->toBeNull();
+});

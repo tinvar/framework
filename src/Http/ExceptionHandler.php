@@ -167,11 +167,13 @@ final class ExceptionHandler
             htmlspecialchars($digest, ENT_QUOTES, 'UTF-8'),
         );
 
-        return Response::make(
-            $status,
-            $html,
-            ['content-type' => 'text/html; charset=utf-8', 'cache-control' => 'private, no-store'],
-        );
+        // The one HTML response the framework builds itself, so its policy
+        // is the framework's: the page runs no script at all, and says so.
+        return Response::make($status, $html, [
+            'content-type' => 'text/html; charset=utf-8',
+            'cache-control' => 'private, no-store',
+            'content-security-policy' => "script-src 'none'; object-src 'none'; base-uri 'none'",
+        ]);
     }
 
     private static function wantsHtml(Request $request): bool

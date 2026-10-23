@@ -143,6 +143,15 @@ it('navigates between racks in place, through the RSC payload', function () use 
         ['path' => "/racks/{$b}", 'rsc' => '1', 'version' => 'dev'],
     ]);
 
+    // The page ran under its Content-Security-Policy -- hydrated, and
+    // navigated -- with nothing blocked, and every script carried the nonce.
+    expect($result['csp'] ?? null)->toBe([
+        'strictDynamic' => true,
+        'nonce' => true,
+        'unnonced' => [],
+        'violations' => [],
+    ]);
+
     // Nothing issued the CSRF cookie, so every POST was a 419. The document
     // load issues it now -- readable by script, which copies it into the
     // header -- and a POST carrying it gets past the check.
@@ -176,7 +185,8 @@ it('loads a deferred boundary when it scrolls into view', function () use ($root
         ->and($result['before'])->toBe('Loading history…')
         ->and($result['requestedBeforeScroll'])->toBe(0)
         ->and($result['after'])->toBe('Recent changes')
-        ->and($result['fragments'])->toBe(['1']);
+        ->and($result['fragments'])->toBe(['1'])
+        ->and($result['csp'] ?? null)->toBe(['nonce' => true, 'unnonced' => [], 'violations' => []]);
 
     // The fragment is session-bound, so it loading at all shows the cookie
     // round-tripped; this shows it did so with the attributes the spec's
