@@ -173,3 +173,70 @@ it('leaves a model with no TenantScoped attribute alone', function () {
 
     expect($orm->all(Tinvar\Tests\Orm\Fixtures\Rack::class))->toHaveCount(2);
 });
+
+/**
+ * "Context is fiber-local, so a suspended fiber can't leak a switch to
+ * another." That held for the auth context and for acrossTenants() depth, but
+ * NOT for the tenant itself: it was one shared value, mutated by actAs() while
+ * the render scheduler interleaves fibers.
+ *
+ * Nothing could exploit it only because Orm::switchTenant() nulled the
+ * scheduler, so no suspend point remained inside an actAs() that actually
+ * changed tenant -- safety by accident, and it silently dropped the rest of
+ * the render from Level 2 batching to Level 1.
+ */
+describe('the tenant is fiber-local', function () {
+    it('does not move another fiber tenant when one suspends inside actAs', function () {
+        $fixture = new TenantFixture();
+        $orm = tenantOrm($fixture);
+
+        $victimSaw = null;
+
+        $victim = new Fiber(function () use ($orm, &$victimSaw): void {
+            $orm->actAs('acme', function () use ($orm, &$victimSaw): void {
+                \Fiber::suspend();
+                $victimSaw = array_map(
+                    static fn (Script $s): string => $s->name,
+                    $orm->all(Script::class),
+                );
+            });
+        });
+
+        $attacker = new Fiber(function () use ($orm): void {
+            $orm->actAs('globex', function (): void {
+                \Fiber::suspend();
+            });
+        });
+
+        // The victim must read while the attacker is still INSIDE its
+        // actAs(). Letting the attacker finish first would hide the bug: its
+        // own finally restores whatever tenant was live when it started.
+        $victim->start();
+        $attacker->start();
+        $victim->resume();
+        $attacker->resume();
+
+        sort($victimSaw);
+
+        expect($victimSaw)->toBe(['acme-script-1', 'acme-script-2']);
+    });
+
+    it('leaves the main context tenant alone while a fiber acts as another', function () {
+        $fixture = new TenantFixture();
+        $orm = tenantOrm($fixture);
+
+        $orm->actAs('acme', function () use ($orm): void {
+            $fiber = new Fiber(function () use ($orm): void {
+                $orm->actAs('globex', function (): void {
+                    \Fiber::suspend();
+                });
+            });
+
+            $fiber->start();
+
+            expect($orm->tenant())->toBe('acme', 'the fiber switch did not reach the caller');
+
+            $fiber->resume();
+        });
+    });
+});

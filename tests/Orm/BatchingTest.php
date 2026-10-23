@@ -44,14 +44,28 @@ describe('identity map', function () {
             ->and($map->count())->toBe(2);
     });
 
-    it('drops every row on a tenant switch', function () {
+    it('serves no row across a tenant switch', function () {
         $map = new IdentityMap('test');
         $map->remember(Rack::class, 'r1', new stdClass());
         $map->switchTenant('acme');
 
         expect($map->get(Rack::class, 'r1'))->toBeNull()
-            ->and($map->tenant())->toBe('acme')
-            ->and($map->count())->toBe(0, 'rows are cleared, not just shadowed');
+            ->and($map->tenant())->toBe('acme');
+    });
+
+    // What clearing is actually for: switching BACK to a tenant seen earlier
+    // in the request must not serve rows cached before an intervening write.
+    // The whole map is no longer dropped, because other fibers may be using
+    // it -- the tenant being entered is.
+    it('drops the entered tenant rows, so a switch back re-reads', function () {
+        $map = new IdentityMap('test');
+        $first = new stdClass();
+        $map->remember(Rack::class, 'r1', $first);
+
+        $map->switchTenant('acme');
+        $map->switchTenant('');
+
+        expect($map->get(Rack::class, 'r1'))->toBeNull('stale rows are not served on the way back');
     });
 
     it('does not serve a relation cached under one tenant to the next', function () {

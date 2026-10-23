@@ -18,9 +18,26 @@ final class IdentityMap
     /** @var array<string, array<string, object>> bucket => id => model */
     private array $rows = [];
 
-    private string $tenant = '';
+    /**
+     * The tenant, per fiber.
+     *
+     * "Context is fiber-local, so a suspended fiber can't leak a switch to
+     * another." The tenant was a single shared value while the render
+     * scheduler interleaves fibers, so an actAs() that suspended would have
+     * moved every other fiber's tenant with it. Nothing could suspend inside
+     * one only because Orm::switchTenant() nulled the scheduler, which was an
+     * accident standing in for a guarantee -- and it silently dropped every
+     * later relation load in the render from Level 2 batching to Level 1.
+     */
+    private string $tenantMain = '';
 
-    public function __construct(private readonly string $connection = 'default') {}
+    /** @var \WeakMap<\Fiber<mixed, mixed, mixed, mixed>, string> */
+    private \WeakMap $tenantByFiber;
+
+    public function __construct(private readonly string $connection = 'default')
+    {
+        $this->tenantByFiber = new \WeakMap();
+    }
 
     /** @template T of object @param class-string<T> $class @return T|null */
     public function get(string $class, string $id): ?object
@@ -67,15 +84,46 @@ final class IdentityMap
      */
     public function switchTenant(string $tenant): void
     {
-        if ($tenant !== $this->tenant) {
-            $this->tenant = $tenant;
-            $this->flush();
+        if ($tenant === $this->tenant()) {
+            return;
         }
+
+        $fiber = \Fiber::getCurrent();
+        if ($fiber === null) {
+            $this->tenantMain = $tenant;
+        } else {
+            $this->tenantByFiber[$fiber] = $tenant;
+        }
+
+        // Only the tenant being ENTERED is dropped, not the whole map. Bucket
+        // keys carry the tenant, so this is never about reading across one: it
+        // is so a switch back to a tenant seen earlier in the request does not
+        // serve rows cached before an intervening write. Clearing everything
+        // would also throw away rows other fibers are still using.
+        $this->forgetTenant($tenant);
     }
 
     public function tenant(): string
     {
-        return $this->tenant;
+        $fiber = \Fiber::getCurrent();
+
+        if ($fiber === null) {
+            return $this->tenantMain;
+        }
+
+        return $this->tenantByFiber[$fiber] ?? $this->tenantMain;
+    }
+
+    /** Drops every bucket belonging to one tenant. */
+    private function forgetTenant(string $tenant): void
+    {
+        $prefix = "{$this->connection}|{$tenant}|";
+
+        foreach (array_keys($this->rows) as $bucket) {
+            if (str_starts_with($bucket, $prefix)) {
+                unset($this->rows[$bucket]);
+            }
+        }
     }
 
     /** Drops one row, after it has been deleted. */
@@ -97,6 +145,6 @@ final class IdentityMap
 
     private function bucket(string $class): string
     {
-        return "{$this->connection}|{$this->tenant}|{$class}";
+        return "{$this->connection}|{$this->tenant()}|{$class}";
     }
 }

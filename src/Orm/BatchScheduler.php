@@ -29,9 +29,12 @@ final class BatchScheduler
      * Two fibers awaiting the same relation on the same parent join one group,
      * so a shared row costs one statement, not two.
      */
-    public function await(RelationMeta $relation, Model $parent, string $groupKey): void
+    public function await(string $key, RelationMeta $relation, Model $parent, string $groupKey): void
     {
-        $key = $relation->key();
+        // The key comes from the caller because it carries the tenant: two
+        // fibers awaiting the same relation in DIFFERENT tenants must not join
+        // one group, or the batch would run under whichever scope was live
+        // when it flushed.
         $this->pending[$key]['relation'] = $relation;
         $this->pending[$key]['parents'][$groupKey] = $parent;
 

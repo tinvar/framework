@@ -88,8 +88,11 @@ final class Orm
             return;
         }
 
-        $this->relationRows = [];
-        $this->scheduler = null;
+        // The relation-row cache is namespaced by tenant (relationCacheKey),
+        // so a switch no longer has to drop it -- and the scheduler is left
+        // alone. Nulling it here meant any actAs() inside a render silently
+        // dropped every later relation load in that render from Level 2
+        // batching to Level 1, with no diagnostic.
         $this->identityMap->switchTenant($tenant);
     }
 
@@ -591,7 +594,7 @@ final class Orm
     /** @return list<Model> */
     public function resolveHasMany(RelationMeta $relation, Model $parent): array
     {
-        $key = $relation->key();
+        $key = $this->relationCacheKey($relation);
         $groupKey = $parent->primaryKey();
 
         if (!$this->hasRows($key, $groupKey)) {
@@ -599,7 +602,7 @@ final class Orm
             // other relation wanted in this tick. Outside one, fall back to
             // Level 1 across the result set.
             if ($this->scheduler !== null && \Fiber::getCurrent() !== null) {
-                $this->scheduler->await($relation, $parent, $groupKey);
+                $this->scheduler->await($key, $relation, $parent, $groupKey);
             } else {
                 $this->loadRelationRows($relation, $parent->resultSet()?->all() ?? [$parent]);
             }
@@ -614,7 +617,7 @@ final class Orm
     /** @return array<string, mixed>|null */
     public function resolveBelongsToRow(RelationMeta $relation, Model $parent, string $foreignKey): ?array
     {
-        $key = $relation->key();
+        $key = $this->relationCacheKey($relation);
 
         if (!$this->hasRows($key, $foreignKey)) {
             $this->loadRelationRows($relation, $parent->resultSet()?->all() ?? [$parent]);
@@ -632,7 +635,7 @@ final class Orm
      */
     public function loadRelationRows(RelationMeta $relation, array $parents): void
     {
-        $key = $relation->key();
+        $key = $this->relationCacheKey($relation);
         $groupKeys = [];
 
         foreach ($parents as $parent) {
@@ -686,6 +689,20 @@ final class Orm
     public function hasRows(string $relationKey, string $groupKey): bool
     {
         return \array_key_exists($groupKey, $this->relationRows[$relationKey] ?? []);
+    }
+
+    /**
+     * The relation-row cache key, namespaced by tenant.
+     *
+     * RelationMeta::key() identifies the relation, not whose rows they are.
+     * Unnamespaced, a relation loaded under one tenant answered the same
+     * relation read under another -- and the batch scheduler, which groups by
+     * the same key, would have merged two fibers in different tenants into one
+     * statement under whichever scope happened to be live at flush time.
+     */
+    public function relationCacheKey(RelationMeta $relation): string
+    {
+        return $this->tenant() . "\0" . $relation->key();
     }
 
     // ------------------------------------------------------------------- sql
