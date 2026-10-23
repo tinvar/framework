@@ -90,6 +90,23 @@ final class Orm
         return $this->whereIn($class, $meta->idColumn, [$id])[0] ?? null;
     }
 
+
+    /**
+     * @param class-string<Model> $class
+     * @return list<Model>
+     */
+    public function all(string $class, ?string $orderBy = null): array
+    {
+        $meta = Metadata::for($class);
+        $columns = implode(', ', array_map(static fn (string $c): string => '"' . $c . '"', $meta->selectColumns()));
+        $sql = "SELECT {$columns} FROM \"{$meta->table}\"";
+        if ($orderBy !== null) {
+            $sql .= " ORDER BY \"{$orderBy}\"";
+        }
+
+        return $this->hydrateAll($class, $this->connection->select($sql));
+    }
+
     /**
      * @param class-string<Model> $class
      * @param list<mixed> $values

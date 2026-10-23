@@ -12,7 +12,7 @@ use Tinvar\Query\BatchQuery;
 use Tinvar\Tests\Orm\Fixtures\Rack;
 use Tinvar\Tests\Orm\Fixtures\Unit;
 
-final class UnitLoadData extends Data
+final readonly class UnitLoadData extends Data
 {
     public function __construct(
         public string $unit,
@@ -20,7 +20,7 @@ final class UnitLoadData extends Data
     ) {}
 }
 
-final class RackSummaryData extends Data
+final readonly class RackSummaryData extends Data
 {
     public function __construct(
         public string $name,

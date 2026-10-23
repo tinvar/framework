@@ -59,45 +59,44 @@ final class RenderChannel
         try {
             $this->write($socket, $this->codec->encodeFrame($frame));
 
+            // No switch here on purpose. `switch` counts as a breakable level in
+            // PHP, so `break 2` inside one escapes the switch and the inner
+            // loop, then falls through to another blocking read -- which sees
+            // the renderer's EOF after `done` and reports a truncated render.
             while (!$done) {
-                while (($message = $this->codec->decodeFrame($buffer, $offset)) !== null) {
+                while (!$done && ($message = $this->codec->decodeFrame($buffer, $offset)) !== null) {
                     $type = Frame::assertFromRenderer($message);
 
-                    switch ($type) {
-                        case Frame::CHUNK:
-                            $payload = $message['b'] ?? '';
-                            if (!\is_string($payload)) {
-                                throw new ProtocolException("A 'chunk' frame must carry bytes in 'b'.");
-                            }
-                            $firstByteNs ??= hrtime(true) - $started;
-                            $bytes += \strlen($payload);
-                            $chunks++;
-                            $sink($payload);
-                            break;
+                    if ($type === Frame::CHUNK) {
+                        $payload = $message['b'] ?? '';
+                        if (!\is_string($payload)) {
+                            throw new ProtocolException("A 'chunk' frame must carry bytes in 'b'.");
+                        }
+                        $firstByteNs ??= hrtime(true) - $started;
+                        $bytes += \strlen($payload);
+                        $chunks++;
+                        $sink($payload);
+                    } elseif ($type === Frame::QUERY) {
+                        $calls = Frame::readQueryBatch($message);
+                        $queryBatches++;
+                        $queryCalls += \count($calls);
 
-                        case Frame::QUERY:
-                            $calls = Frame::readQueryBatch($message);
-                            $queryBatches++;
-                            $queryCalls += \count($calls);
+                        $at = hrtime(true);
+                        $results = $this->runner->run($calls, $allowed);
+                        $queryNs += hrtime(true) - $at;
 
-                            $at = hrtime(true);
-                            $results = $this->runner->run($calls, $allowed);
-                            $queryNs += hrtime(true) - $at;
-
-                            $this->write($socket, $this->codec->encodeFrame(Frame::result($results)));
-                            break;
-
-                        case Frame::META:
-                            $meta[] = $message;
-                            break;
-
-                        case Frame::DONE:
-                            $done = true;
-                            break 2;
-
-                        case Frame::ERROR:
-                            throw RendererException::fromErrorFrame($message);
+                        $this->write($socket, $this->codec->encodeFrame(Frame::result($results)));
+                    } elseif ($type === Frame::META) {
+                        $meta[] = $message;
+                    } elseif ($type === Frame::DONE) {
+                        $done = true;
+                    } elseif ($type === Frame::ERROR) {
+                        throw RendererException::fromErrorFrame($message);
                     }
+                }
+
+                if ($done) {
+                    break;
                 }
 
                 if ($offset > 0) {

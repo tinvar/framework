@@ -7,7 +7,7 @@ use Tinvar\Data\DataBoundaryException;
 use Tinvar\Data\Encoder;
 use Tinvar\Data\Lazy;
 
-final class UnitFixture extends Data
+final readonly class UnitFixture extends Data
 {
     public function __construct(
         public string $id,
@@ -16,38 +16,39 @@ final class UnitFixture extends Data
     ) {}
 }
 
-final class RackFixture extends Data
+final readonly class RackFixture extends Data
 {
+    /**
+     * A computed field is assigned in the constructor. A readonly class may not
+     * declare hooked properties, so `unitCount` cannot be a get hook (ADR 0004).
+     */
+    public int $unitCount;
+
     public function __construct(
         public string $id,
         public string $name,
         /** @var list<UnitFixture> */
         public array $units,
         public ?UnitFixture $primary = null,
-    ) {}
-
-    public int $unitCount {
-        get => count($this->units);
+    ) {
+        $this->unitCount = count($units);
     }
 }
 
-final class SecretiveFixture extends Data
+final readonly class SecretiveFixture extends Data
 {
-    public string $shown = 'yes';
-    private string $hidden = 'no';          // @phpstan-ignore-line
-    protected string $alsoHidden = 'no';    // @phpstan-ignore-line
-    public static string $notPayload = 'no';
-    public string $neverSet;                // uninitialized on purpose
+    public string $neverSet;   // uninitialized on purpose
+
+    public function __construct(
+        public string $shown = 'yes',
+        private string $hidden = 'no',        // @phpstan-ignore-line
+        protected string $alsoHidden = 'no',  // @phpstan-ignore-line
+    ) {}
 }
 
-final class LazyFixture extends Data
+final readonly class LazyFixture extends Data
 {
     public function __construct(public Lazy $units) {}
-}
-
-final class CyclicFixture extends Data
-{
-    public ?CyclicFixture $next = null;
 }
 
 /** Stands in for an ORM model: an ordinary object that must never cross. */
@@ -74,7 +75,10 @@ it('encodes nested Data objects and lists of them', function () {
         new UnitFixture('u2', 2, 'sw-core-02'),
     ]);
 
+    // Fields appear in declaration order, which is what the payload rows and
+    // the generated TypeScript both follow.
     expect($this->encoder->encode($rack))->toBe([
+        'unitCount' => 2,
         'id' => 'r1',
         'name' => 'R-14',
         'units' => [
@@ -82,11 +86,10 @@ it('encodes nested Data objects and lists of them', function () {
             ['id' => 'u2', 'position' => 2, 'name' => 'sw-core-02'],
         ],
         'primary' => null,
-        'unitCount' => 2,
     ]);
 });
 
-it('includes virtual properties backed by a get hook', function () {
+it('includes a computed field assigned in the constructor', function () {
     $encoded = $this->encoder->encode(new RackFixture('r1', 'R-14', [new UnitFixture('u1', 1, 'a')]));
 
     expect($encoded['unitCount'])->toBe(1);
@@ -170,10 +173,14 @@ describe('the boundary refuses everything that is not Data', function () {
 });
 
 it('refuses a cycle instead of recursing forever', function () {
-    $a = new CyclicFixture();
-    $a->next = $a;
+    // Data objects are readonly, so a cycle cannot be tied through properties.
+    // A Lazy field resolving back to its own holder still can, and the guard
+    // has to catch it rather than recursing until the stack goes.
+    $holder = null;
+    $lazy = Lazy::of(static function () use (&$holder): mixed { return $holder; });
+    $holder = new LazyFixture($lazy);
 
-    expect(fn () => $this->encoder->encode($a))
+    expect(fn () => $this->encoder->encode($holder))
         ->toThrow(DataBoundaryException::class, 'cycle');
 });
 
