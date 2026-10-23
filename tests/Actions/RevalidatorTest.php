@@ -328,3 +328,190 @@ describe('through the action endpoint', function () {
         expect(json_decode($response->body(), true)['payloads'])->toBe([]);
     });
 });
+
+/**
+ * "Each re-render runs that route's full GET pipeline: MIDDLEWARE, layout
+ * and page #[Authorize], loaders."
+ *
+ * The middleware was the part missing. FragmentEndpoint runs a route's own
+ * stack before its subtree renders and this ran only the loaders, so
+ * anything a route enforces in middleware rather than in a policy -- a panel
+ * guard, MFA, an allowlist, email verification -- applied on navigation and
+ * not here. Two re-render paths, one of them weaker.
+ */
+describe('the route pipeline', function () {
+    it('runs the route own middleware', function () {
+        [, $fixture, $signer, $panels, $orm] = revalidator();
+
+        $routes = new RouteRegistry();
+        $routes->registerAll([RootLayout::class, SiteLayout::class, RackShowPage::class]);
+
+        $revalidator = new Revalidator(
+            routes: $routes,
+            loaders: new LoaderRunner($orm, static fn (string $c): object => new $c(), new AllowAllGate()),
+            signer: $signer,
+            orm: $orm,
+            render: static fn (LoadedRoute $l, Request $r): string => 'payload',
+            panels: $panels,
+            middlewareResolver: static fn (string $class): Tinvar\Http\Middleware => new $class(),
+        );
+
+        Tinvar\Tests\Routing\Fixtures\Trace::reset();
+
+        $revalidator->rerender(
+            ['racks.show'],
+            [routeToken($signer, $fixture)],
+            Request::post('/_action/x'),
+            session(),
+        );
+
+        // RackShowPage declares #[UseMiddleware(InnerMiddleware::class)].
+        expect(Tinvar\Tests\Routing\Fixtures\Trace::$events)->toContain('middleware:inner');
+    });
+
+    // The action request is already inside the global stack; running it
+    // again would double every counter and side effect it has.
+    it('does not run the global stack a second time', function () {
+        [, $fixture, $signer, $panels, $orm] = revalidator();
+
+        $routes = new RouteRegistry();
+        $routes->registerAll([RootLayout::class, SiteLayout::class, RackShowPage::class]);
+
+        $revalidator = new Revalidator(
+            routes: $routes,
+            loaders: new LoaderRunner($orm, static fn (string $c): object => new $c(), new AllowAllGate()),
+            signer: $signer,
+            orm: $orm,
+            render: static fn (LoadedRoute $l, Request $r): string => 'payload',
+            panels: $panels,
+            middlewareResolver: static fn (string $class): Tinvar\Http\Middleware => new $class(),
+            globalMiddleware: [Tinvar\Tests\Routing\Fixtures\OuterMiddleware::class],
+        );
+
+        Tinvar\Tests\Routing\Fixtures\Trace::reset();
+
+        $revalidator->rerender(
+            ['racks.show'],
+            [routeToken($signer, $fixture)],
+            Request::post('/_action/x'),
+            session(),
+        );
+
+        expect(Tinvar\Tests\Routing\Fixtures\Trace::$events)
+            ->not->toContain('middleware:outer');
+    });
+
+    // Middleware that refuses must read as "no payload", not as an empty one.
+    it('omits the payload when middleware short-circuits', function () {
+        [, $fixture, $signer, $panels, $orm] = revalidator();
+
+        $routes = new RouteRegistry();
+        $routes->registerAll([RootLayout::class, SiteLayout::class, RackShowPage::class]);
+
+        $revalidator = new Revalidator(
+            routes: $routes,
+            loaders: new LoaderRunner($orm, static fn (string $c): object => new $c(), new AllowAllGate()),
+            signer: $signer,
+            orm: $orm,
+            render: static fn (LoadedRoute $l, Request $r): string => 'payload',
+            panels: $panels,
+            middlewareResolver: static fn (string $class): Tinvar\Http\Middleware
+                => new class implements Tinvar\Http\Middleware {
+                    public function handle(Request $request, Closure $next): Tinvar\Http\Response
+                    {
+                        throw new Tinvar\Http\ForbiddenException('not here');
+                    }
+                },
+        );
+
+        $payloads = $revalidator->rerender(
+            ['racks.show'],
+            [routeToken($signer, $fixture)],
+            Request::post('/_action/x'),
+            session(),
+        );
+
+        expect($payloads)->toBe([]);
+    });
+});
+
+/**
+ * A token is only useful if something issues one. The fragment feature
+ * shipped a token nothing could mint and it took an end-of-phase review to
+ * notice; this one is minted by the page render that the client will send
+ * it back from.
+ */
+describe('minting a route token', function () {
+    it('binds the route and params of the chain that was matched', function () {
+        [, $fixture, $signer] = revalidator();
+
+        $routes = new RouteRegistry();
+        $routes->registerAll([RootLayout::class, SiteLayout::class, RackShowPage::class]);
+        $chain = $routes->chainFor('racks.show', [
+            'site' => $fixture->ids['sites'][0],
+            'rack' => $fixture->ids['racks'][0],
+        ]);
+
+        $minter = new Tinvar\Render\RouteMinter(
+            signer: $signer,
+            panel: 'admin',
+            tenant: 'acme',
+            build: 'b1',
+            sessionId: REVALIDATE_SESSION,
+        );
+
+        $claims = RouteToken::decode($minter->mint($chain), $signer)->claims;
+
+        expect($claims->route)->toBe('racks.show')
+            ->and($claims->params['rack'])->toBe($fixture->ids['racks'][0])
+            ->and($claims->panel)->toBe('admin')
+            ->and($claims->tenant)->toBe('acme')
+            ->and($claims->belongsTo($signer, REVALIDATE_SESSION))->toBeTrue();
+    });
+
+    // A token whose route cannot be named could never be re-rendered from.
+    it('mints nothing for an unnamed route', function () {
+        [, , $signer] = revalidator();
+
+        $routes = new RouteRegistry();
+        $routes->registerAll([RootLayout::class, Tinvar\Tests\Routing\Fixtures\RackIndexPage::class]);
+
+        $minter = new Tinvar\Render\RouteMinter(
+            signer: $signer,
+            panel: '',
+            tenant: '',
+            build: 'b1',
+            sessionId: REVALIDATE_SESSION,
+        );
+
+        $unnamed = new Tinvar\Routing\RouteChain(
+            page: new Tinvar\Routing\CompiledRoute(
+                kind: Tinvar\Routing\RouteKind::Page,
+                class: RackShowPage::class,
+                template: '/anon',
+                view: 'anon',
+                name: null,
+                segments: ['anon'],
+                parameters: [],
+                middleware: [],
+                checks: [],
+            ),
+            layouts: [],
+            parameters: [],
+        );
+
+        expect($minter->mint($unnamed))->toBeNull();
+    });
+
+    it('refuses to mint with no session', function () {
+        [, , $signer] = revalidator();
+
+        expect(fn () => new Tinvar\Render\RouteMinter(
+            signer: $signer,
+            panel: '',
+            tenant: '',
+            build: 'b1',
+            sessionId: '',
+        ))->toThrow(InvalidArgumentException::class, 'session is required');
+    });
+});

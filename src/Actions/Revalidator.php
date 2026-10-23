@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace Tinvar\Actions;
 
 use Tinvar\Auth\PanelContext;
+use Tinvar\Http\Middleware;
+use Tinvar\Http\Pipeline;
 use Tinvar\Http\Request;
+use Tinvar\Http\Response;
 use Tinvar\Orm\Orm;
 use Tinvar\Render\RouteToken;
 use Tinvar\Render\TokenError;
@@ -42,6 +45,9 @@ final class Revalidator
     /**
      * @param \Closure(LoadedRoute, Request): string $render produces the payload
      *        for one re-rendered route
+     * @param (\Closure(class-string): Middleware)|null $middlewareResolver
+     * @param list<class-string> $globalMiddleware already applied by the action
+     *        stack this runs inside, so they are not applied twice
      */
     public function __construct(
         private readonly RouteRegistry $routes,
@@ -50,6 +56,8 @@ final class Revalidator
         private readonly Orm $orm,
         private readonly \Closure $render,
         private readonly ?PanelContext $panels = null,
+        private readonly ?\Closure $middlewareResolver = null,
+        private readonly array $globalMiddleware = [],
     ) {}
 
     /**
@@ -138,18 +146,47 @@ final class Revalidator
                 return null;
             }
 
+            // "Each re-render runs that route's full GET pipeline:
+            // MIDDLEWARE, layout and page #[Authorize], loaders." The
+            // middleware was the part missing: FragmentEndpoint runs a
+            // route's own stack before its subtree renders, and this ran
+            // only the loaders -- so anything a route enforces in
+            // middleware rather than in a policy (a panel guard, MFA, a
+            // network allowlist, email verification) applied on navigation
+            // and not here. Two re-render paths, one of them weaker.
+            //
+            // The global stack is excluded: the action request is already
+            // inside it, and running it twice would double every counter
+            // and every side effect it has.
+            $routeOnly = $this->middlewareResolver === null
+                ? []
+                : array_values(array_diff($chain->middleware(), $this->globalMiddleware));
+
+            $pipeline = new Pipeline(array_map(
+                fn (string $class): Middleware => ($this->middlewareResolver)($class),
+                $routeOnly,
+            ));
+
             try {
-                // "Each re-render runs that route's full GET pipeline:
-                // middleware, layout and page #[Authorize], loaders." The
-                // runner is the same one a real GET uses, so a check cannot
-                // apply on navigation and not here.
-                $loaded = $this->loaders->run($chain, $request);
+                // Response is the pipeline's currency; the payload is
+                // carried through it rather than returned from it, because
+                // middleware may short-circuit and that must read as "no
+                // payload" rather than as an empty one.
+                $payload = null;
+
+                $pipeline->run($request, function (Request $inner) use ($chain, &$payload): Response {
+                    $loaded = $this->loaders->run($chain, $inner);
+                    $payload = ($this->render)($loaded, $inner);
+
+                    return Response::make(200, '');
+                });
+
+                return $payload;
             } catch (\Throwable) {
-                // Including a denial. The write stands; the payload does not.
+                // Including a denial, from a policy or from middleware.
+                // The write stands; the payload does not.
                 return null;
             }
-
-            return ($this->render)($loaded, $request);
         };
 
         return $panel === '' || $this->panels === null

@@ -727,6 +727,56 @@ describe('post-action revalidation through the kernel', function () {
             ->and($body['payloads'])->toBe(['racks.show' => 'fresh:racks.show']);
     });
 
+    /**
+     * The other half of the loop: a page render hands its client the token
+     * it will send back. A token nothing issues is the shape three features
+     * in this codebase shipped in.
+     */
+    it('hands a page its route token', function () {
+        $fixture = new Fixture(racks: 2, unitsPerRack: 1, sites: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $signer = new Tinvar\Support\Signer('k', Tinvar\Render\RouteToken::PURPOSE);
+
+        $routes = new RouteRegistry();
+        $routes->registerAll([
+            Tinvar\Tests\Routing\Fixtures\RootLayout::class,
+            Tinvar\Tests\Routing\Fixtures\SiteLayout::class,
+            Tinvar\Tests\Routing\Fixtures\RackShowPage::class,
+        ]);
+
+        $auth = new AuthContext();
+        $auth->login(new AuthUser('u-1'));
+
+        $kernel = new Kernel(
+            orm: $orm,
+            routes: $routes,
+            queries: new QueryRegistry(),
+            actions: new ActionRegistry(),
+            auth: $auth,
+            policies: new PolicyRegistry(),
+            resolver: static fn (string $class): object => new $class(),
+            allowedQueries: static fn (Request $r): array => [],
+            gate: new Tinvar\Auth\AllowAllGate(),
+            fragments: new Tinvar\Http\FragmentSupport(
+                signer: $signer,
+                builds: new Tinvar\Http\BuildRegistry('b1'),
+                render: static fn (): mixed => null,
+                sessionId: static fn (Request $r): string => 'session-abc',
+            ),
+        );
+
+        $response = $kernel->handle(
+            Request::get('/sites/' . $fixture->ids['sites'][0] . '/racks/' . $fixture->ids['racks'][0]),
+            render(),
+        );
+
+        $token = $response->header('x-route-token');
+
+        expect($token)->not->toBeNull('a page must hand its client a token to send back')
+            ->and(Tinvar\Render\RouteToken::decode($token, $signer)->claims->route)
+            ->toBe('racks.show');
+    });
+
     // Without fragment support there is no signer and no session seam, so
     // revalidate() still names routes and simply carries no payloads.
     it('still succeeds with no payloads when revalidation is not configured', function () {

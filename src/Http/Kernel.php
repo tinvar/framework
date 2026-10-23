@@ -24,6 +24,7 @@ use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
 use Tinvar\Render\FragmentManifest;
+use Tinvar\Render\RouteMinter;
 use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\Router;
@@ -64,6 +65,9 @@ final class Kernel
 
     /** Mounted only when an application has statically-built pages to bootstrap. */
     public readonly ?BootstrapEndpoint $bootstrap_;
+
+    /** Kept so a page render can mint the route token its client sends back. */
+    private readonly ?FragmentSupport $support;
     public readonly RequestScope $scope;
     public readonly ?PanelContext $panels;
 
@@ -158,6 +162,8 @@ final class Kernel
             orm: $this->orm,
             render: $fragments->renderRoute ?? static fn (): string => '',
             panels: $panels,
+            middlewareResolver: static fn (string $class): Middleware => $resolver($class),
+            globalMiddleware: $globalMiddleware,
         );
 
         $this->actions_ = new ActionEndpoint(new ActionRunner(
@@ -274,6 +280,7 @@ final class Kernel
             ? null
             : new BootstrapEndpoint($this->routes, $manifest, $fragments);
 
+        $this->support = $fragments;
         $this->exceptions = new ExceptionHandler($log);
         $this->scope = RequestScope::standard($this->orm, $this->auth, $this->policies, $panels, $queryRunner);
     }
@@ -317,7 +324,16 @@ final class Kernel
                 );
             }
 
-            return $this->router->handle($request, $respond);
+            // The page response carries the token its client will send back
+            // when an action invalidates this route. Minted here rather than
+            // by the application, so route and params come from the chain
+            // that was actually matched.
+            return $this->router->handle($request, function (LoadedRoute $loaded, Request $passed) use ($respond): Response {
+                $response = $respond($loaded, $passed);
+                $token = $this->routeTokenFor($loaded, $passed);
+
+                return $token === null ? $response : $response->withHeader('x-route-token', $token);
+            });
         } catch (\Throwable $e) {
             return $this->exceptions->handle($e, $request);
         } finally {
@@ -376,5 +392,34 @@ final class Kernel
         }
 
         return [new ThrottleRequests($throttle, $name, $limits[$name], byAddress: $byAddress)];
+    }
+
+    /**
+     * The route token for a page that has just rendered, or null.
+     *
+     * Null for an application that configured no signing, and for a route
+     * with no name -- a token naming nothing could never be re-rendered
+     * from, so issuing one would be issuing something the revalidator
+     * always discards. A session-less visitor gets none either: a token
+     * bound to a constant hash would be every visitor's.
+     */
+    private function routeTokenFor(LoadedRoute $loaded, Request $request): ?string
+    {
+        if ($this->fragments_ === null || $this->support === null) {
+            return null;
+        }
+
+        $session = ($this->support->sessionId)($request);
+        if ($session === '') {
+            return null;
+        }
+
+        return (new RouteMinter(
+            signer: $this->support->signer,
+            panel: $this->panels?->currentOrNull() ?? '',
+            tenant: $this->orm->tenant(),
+            build: $this->support->builds->current,
+            sessionId: $session,
+        ))->mint($loaded->chain);
     }
 }
