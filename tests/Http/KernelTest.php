@@ -135,6 +135,49 @@ function throttledKernel(int $limit = 2): array
     return [$kernel, $fixture, $signIn];
 }
 
+/** @return array{0: Kernel, 1: Fixture} a kernel with bootstrap mounted */
+function bootstrapKernel(?AuthUser $user = null): array
+{
+    $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+    $signer = new Tinvar\Support\Signer('k', Tinvar\Render\FragmentToken::PURPOSE);
+
+    $routes = new RouteRegistry();
+    $routes->registerAll([
+        Tinvar\Tests\Routing\Fixtures\RootLayout::class,
+        Tinvar\Tests\Routing\Fixtures\SiteLayout::class,
+        Tinvar\Tests\Routing\Fixtures\RackShowPage::class,
+    ]);
+
+    $auth = new AuthContext();
+    $auth->login($user);
+
+    $kernel = new Kernel(
+        orm: new Orm($fixture->connection, new IdentityMap('test')),
+        routes: $routes,
+        queries: new QueryRegistry(),
+        actions: new ActionRegistry(),
+        auth: $auth,
+        policies: new PolicyRegistry(),
+        resolver: static fn (string $class): object => new $class(),
+        allowedQueries: static fn (Request $r): array => [],
+        fragments: new Tinvar\Http\FragmentSupport(
+            signer: $signer,
+            builds: new Tinvar\Http\BuildRegistry('b1'),
+            render: static fn (): mixed => null,
+            sessionId: static fn (Request $r): string => 'session-abc',
+        ),
+        manifest: (new Tinvar\Render\FragmentManifest())->declare(
+            'racks.show',
+            'history',
+            'UnitHistory',
+            [],
+            ['site' => $fixture->ids['sites'][0], 'rack' => $fixture->ids['racks'][0]],
+        ),
+    );
+
+    return [$kernel, $fixture];
+}
+
 function render(): Closure
 {
     return static fn (LoadedRoute $loaded, Request $request): Response
@@ -486,42 +529,7 @@ describe('throttling', function () {
  */
 describe('bootstrap through the kernel', function () {
     it('mounts one when an application has both a manifest and fragment support', function () {
-        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
-        $signer = new Tinvar\Support\Signer('k', Tinvar\Render\FragmentToken::PURPOSE);
-
-        $routes = new RouteRegistry();
-        $routes->registerAll([
-            Tinvar\Tests\Routing\Fixtures\RootLayout::class,
-            Tinvar\Tests\Routing\Fixtures\SiteLayout::class,
-            Tinvar\Tests\Routing\Fixtures\RackShowPage::class,
-        ]);
-
-        $auth = new AuthContext();
-        $auth->login(new AuthUser('u-1'));
-
-        $kernel = new Kernel(
-            orm: new Orm($fixture->connection, new IdentityMap('test')),
-            routes: $routes,
-            queries: new QueryRegistry(),
-            actions: new ActionRegistry(),
-            auth: $auth,
-            policies: new PolicyRegistry(),
-            resolver: static fn (string $class): object => new $class(),
-            allowedQueries: static fn (Request $r): array => [],
-            fragments: new Tinvar\Http\FragmentSupport(
-                signer: $signer,
-                builds: new Tinvar\Http\BuildRegistry('b1'),
-                render: static fn (): mixed => null,
-                sessionId: static fn (Request $r): string => 'session-abc',
-            ),
-            manifest: (new Tinvar\Render\FragmentManifest())->declare(
-                'racks.show',
-                'history',
-                'UnitHistory',
-                [],
-                ['site' => $fixture->ids['sites'][0], 'rack' => $fixture->ids['racks'][0]],
-            ),
-        );
+        [$kernel, $fixture] = bootstrapKernel(new AuthUser('u-1'));
 
         expect($kernel->bootstrap_)->not->toBeNull();
 
@@ -536,5 +544,41 @@ describe('bootstrap through the kernel', function () {
 
         expect($response->status)->toBe(200)
             ->and(json_decode($response->body(), true)['tokens'])->toHaveKey('history');
+    });
+
+    /**
+     * The endpoint exists to hand a visitor the tokens for a STATICALLY
+     * BUILT page, and such a visitor may well not be signed in. Mounting it
+     * behind the action stack 401'd exactly the traffic it was built for.
+     */
+    it('serves an anonymous visitor, which is who static pages are for', function () {
+        [$kernel, $fixture] = bootstrapKernel();
+
+        $response = $kernel->handle(
+            guardedPost(Tinvar\Http\Endpoints\BootstrapEndpoint::PATH),
+            render(),
+            json_encode([
+                'route' => 'racks.show',
+                'params' => ['site' => $fixture->ids['sites'][0], 'rack' => $fixture->ids['racks'][0]],
+            ]),
+        );
+
+        expect($response->status)->toBe(200);
+    });
+
+    // The carve-out is narrow: it drops the auth check and nothing else.
+    it('still requires a CSRF token', function () {
+        [$kernel, $fixture] = bootstrapKernel();
+
+        $response = $kernel->handle(
+            Request::post(Tinvar\Http\Endpoints\BootstrapEndpoint::PATH),
+            render(),
+            json_encode([
+                'route' => 'racks.show',
+                'params' => ['site' => $fixture->ids['sites'][0], 'rack' => $fixture->ids['racks'][0]],
+            ]),
+        );
+
+        expect($response->status)->toBe(419);
     });
 });

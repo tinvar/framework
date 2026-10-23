@@ -64,6 +64,12 @@ final class BuildRules
     private const array USER_DEPENDENT_TYPES = [
         AuthContext::class => 'the current user',
         Gate::class => 'a policy decision',
+        // The spec names Panel::current() in this rule. Panels are an
+        // injected context in this framework rather than an ambient static,
+        // which means the textual needle below can never match -- so the
+        // type has to be listed, or choosing the object form would have
+        // retired a rule the spec requires.
+        PanelContext::class => 'the current panel',
     ];
 
     /**
@@ -85,6 +91,8 @@ final class BuildRules
         '->acrossTenants(' => 'another tenant',
         '->withinReseller(' => 'another reseller',
         'Panel::current' => 'the current panel',
+        'PanelContext' => 'the current panel',
+        '->currentOrNull(' => 'the current panel',
     ];
 
     /** Attributes that make a class's __invoke a routable entry point. */

@@ -60,13 +60,21 @@ final class ExceptionHandler
         if ($e instanceof HttpException) {
             $this->log($e, $digest = self::digest($e));
 
-            return $this->respond($e->status, [
+            $response = $this->respond($e->status, [
                 'error' => [
                     'code' => $e->code_ !== '' ? $e->code_ : self::codeFor($e->status),
                     'message' => self::REASONS[$e->status] ?? self::REASONS[500],
                     'digest' => $digest,
                 ],
             ], $request);
+
+            // Some refusals have to say more than "no": a 429 without
+            // Retry-After tells a client to back off without saying how far.
+            foreach ($e->headers as $header => $value) {
+                $response = $response->withHeader($header, $value);
+            }
+
+            return $response;
         }
 
         // Everything else is a bug, not a client error. The class, the

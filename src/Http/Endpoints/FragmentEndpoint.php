@@ -56,17 +56,6 @@ final class FragmentEndpoint
     public const string CONTENT_TYPE = 'text/x-component';
 
     /**
-     * What a token minted outside any panel runs as.
-     *
-     * PanelContext refuses an empty name, because "no panel" and "a panel
-     * called nothing" are different states and conflating them is how a
-     * narrowing mechanism gets widened by accident. A token from a
-     * panel-less application is given this name so the fragment still runs
-     * inside a decided panel rather than an undecided one.
-     */
-    public const string NO_PANEL = 'none';
-
-    /**
      * @param \Closure(FragmentToken, Request, array<string, mixed>): Response $render
      *        opens a render channel for the subtree and returns its response
      * @param \Closure(Request): string $sessionId
@@ -105,14 +94,16 @@ final class FragmentEndpoint
         // The route's own middleware necessarily stays inside, because which
         // route it is only becomes known once the token verifies.
         $global = new Pipeline([
+            // Already-constructed middleware the mounting kernel adds --
+            // throttle:fragments, which needs a store the endpoint has no
+            // business knowing about. FIRST, so a refused request does not
+            // pay for session start or tenant resolution on the way to being
+            // told no.
+            ...$this->extraGlobal,
             ...array_map(
                 fn (string $class): Middleware => ($this->middlewareResolver)($class),
                 array_values(array_unique($this->globalMiddleware)),
             ),
-            // Already-constructed middleware the mounting kernel adds --
-            // throttle:fragments, which needs a store the endpoint has no
-            // business knowing about.
-            ...$this->extraGlobal,
         ]);
 
         return $global->run($request, function (Request $passed): Response {
@@ -149,16 +140,27 @@ final class FragmentEndpoint
             ));
 
             return $pipeline->run($passed, function (Request $inner) use ($chain, $token): Response {
-                // The panel the page was rendered in. It is covered by the
-                // MAC and was consulted by NOTHING: a signed field that no
-                // decision reads is either dead weight or a missing check,
-                // and here it was the second. A fragment rendering under a
-                // different panel than the one it was issued in would see a
-                // different narrowing, and its query cache keys would
-                // disagree with the page's.
-                if ($this->panels !== null) {
+                // The panel the page was rendered in, CHECKED rather than
+                // applied. within() is an unconditional set, so using the
+                // token's panel directly replaced whatever the request had
+                // established -- and a token minted while a session was in a
+                // wider panel then re-asserted that panel after the session
+                // narrowed, revoked a membership, or switched. A token is
+                // client-held state; the spec purges client-held state on a
+                // panel switch, and this was state that outlived one.
+                //
+                // So: when the request has already decided, the token must
+                // agree. When nothing has decided, the token's panel is the
+                // only answer available and is used.
+                $ambient = $this->panels?->currentOrNull();
+
+                if ($ambient !== null && $ambient !== $token->panel) {
+                    throw self::refuse('token was minted in a different panel');
+                }
+
+                if ($this->panels !== null && $token->panel !== '' && $ambient === null) {
                     return $this->panels->within(
-                        $token->panel === '' ? self::NO_PANEL : $token->panel,
+                        $token->panel,
                         fn (): Response => $this->renderWithin($chain, $inner, $token),
                     );
                 }

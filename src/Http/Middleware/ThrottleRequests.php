@@ -37,7 +37,16 @@ final class ThrottleRequests implements Middleware
         $result = $this->throttle->hit($this->name, $request, $this->limit, $this->window);
 
         if (!$result->allowed) {
-            throw new HttpException(429, "Too many {$this->name} requests.", 'too_many_requests');
+            // The headers go WITH the refusal. They were computed correctly
+            // and then dropped, because HttpException had nowhere to carry
+            // them -- so retryAfter() was dead code on the only path that
+            // would ever have used it.
+            throw new HttpException(
+                429,
+                "Too many {$this->name} requests.",
+                'too_many_requests',
+                $result->headers(),
+            );
         }
 
         $response = $next($request);

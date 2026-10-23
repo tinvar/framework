@@ -42,6 +42,17 @@ final readonly class FragmentToken
     public const int DEFAULT_TTL = 3600;
 
     /**
+     * How long a token may live across refreshes, from its FIRST mint.
+     *
+     * Each response returns a refreshed token with a full TTL, so without an
+     * absolute deadline a boundary that refreshes on a timer carries its
+     * original assertions -- the session it was minted for, and the panel
+     * that session was in -- for as long as anyone keeps asking. "One hour by
+     * default" would then describe a value that never expires.
+     */
+    public const int MAX_LIFETIME = 86400;
+
+    /**
      * @param array<string, mixed> $props  the component's props, as rendered
      * @param array<string, string> $params the originating route's parameters
      */
@@ -54,6 +65,7 @@ final readonly class FragmentToken
         public string $build,
         public string $sessionHash,
         public int $expiresAt,
+        public int $issuedAt = 0,
     ) {}
 
     /**
@@ -79,6 +91,7 @@ final readonly class FragmentToken
             'b' => $this->build,
             's' => $this->sessionHash,
             'e' => $this->expiresAt,
+            'i' => $this->issuedAt,
         ], JSON_THROW_ON_ERROR));
 
         // The version is inside the signed string, not merely prefixed to it:
@@ -150,6 +163,7 @@ final readonly class FragmentToken
             build: self::string($decoded, 'b'),
             sessionHash: self::string($decoded, 's'),
             expiresAt: \is_int($decoded['e'] ?? null) ? $decoded['e'] : 0,
+            issuedAt: \is_int($decoded['i'] ?? null) ? $decoded['i'] : 0,
         );
 
         $at = $now ?? time();
@@ -164,6 +178,13 @@ final readonly class FragmentToken
         // for was not issued by any path this framework offers.
         if ($self->expiresAt - $at > self::DEFAULT_TTL) {
             throw new FragmentTokenError('expiry is further out than a token may be issued for');
+        }
+
+        // The absolute deadline, which refreshing cannot push back. Without
+        // it, a boundary refreshing on a timer re-asserted its original
+        // session and panel indefinitely.
+        if ($self->issuedAt > 0 && $at - $self->issuedAt > self::MAX_LIFETIME) {
+            throw new FragmentTokenError('token is older than one may live across refreshes');
         }
 
         return $self;
@@ -181,6 +202,9 @@ final readonly class FragmentToken
             build: $this->build,
             sessionHash: $this->sessionHash,
             expiresAt: ($now ?? time()) + $ttl,
+            // Carried, never reset: the point of it is that refreshing
+            // cannot extend the life of the assertions inside.
+            issuedAt: $this->issuedAt,
         );
     }
 

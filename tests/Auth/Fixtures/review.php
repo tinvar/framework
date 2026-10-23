@@ -256,3 +256,19 @@ final class SharedContainerQuery
         return new WattsData($auth->check() ? 1 : 0);
     }
 }
+
+/**
+ * A shared query that reads the current panel. The spec names
+ * Panel::current() in the shared-query build rule; this is the same read
+ * through the injected context.
+ */
+#[Query(name: 'panels.shared', cache: '5m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
+final class PanelReadingSharedQuery
+{
+    public function __construct(private readonly \Tinvar\Auth\PanelContext $panels) {}
+
+    public function __invoke(): WattsData
+    {
+        return new WattsData(0);
+    }
+}

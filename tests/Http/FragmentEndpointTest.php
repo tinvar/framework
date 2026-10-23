@@ -484,14 +484,49 @@ describe('the panel a fragment runs in', function () {
         expect($panels->isSet())->toBeFalse();
     });
 
-    // PanelContext refuses an empty name, so a token from a panel-less
-    // application still runs inside a DECIDED panel rather than an undecided
-    // one -- code asking which panel it is in gets an answer either way.
-    it('runs a panel-less token inside a named no-panel', function () {
+    // A panel-less token runs with NO panel, exactly as the page render
+    // does. Inventing a name for the no-panel state -- the endpoint used
+    // 'none' -- re-introduced the conflation PanelContext refuses an empty
+    // name to prevent, one name over: an application may legitimately have a
+    // panel called 'none', and its fragments would have been run inside it.
+    it('runs a panel-less token with no panel at all', function () {
         [$endpoint, $fixture, $signer, , $log] = fragmentEndpoint();
 
         $endpoint->handle(fragmentRequest($signer, fragmentToken($signer, $fixture, ['panel' => ''])));
 
-        expect($log->calls[0]['panel'])->toBe(FragmentEndpoint::NO_PANEL);
+        expect($log->calls[0]['panel'])->toBeNull();
+    });
+
+    /**
+     * within() is an unconditional set, so the token's panel REPLACED the
+     * one the request had established. A token minted while a session was in
+     * a wider panel then re-asserted it after the session narrowed, switched
+     * panel, or lost a membership -- a client-held assertion surviving
+     * exactly the event the spec purges client-held data on.
+     */
+    it('refuses a token minted in a different panel than the request is in', function () {
+        [$endpoint, $fixture, $signer, , , $panels] = fragmentEndpoint();
+
+        $refused = $panels->within('customer', static function () use ($endpoint, $signer, $fixture): bool {
+            try {
+                $endpoint->handle(fragmentRequest($signer, fragmentToken($signer, $fixture, ['panel' => 'admin'])));
+
+                return false;
+            } catch (HttpException $e) {
+                return $e->status === 404;
+            }
+        });
+
+        expect($refused)->toBeTrue();
+    });
+
+    it('allows a token minted in the panel the request is in', function () {
+        [$endpoint, $fixture, $signer, , $log, $panels] = fragmentEndpoint();
+
+        $panels->within('customer', static function () use ($endpoint, $signer, $fixture): void {
+            $endpoint->handle(fragmentRequest($signer, fragmentToken($signer, $fixture, ['panel' => 'customer'])));
+        });
+
+        expect($log->calls[0]['panel'])->toBe('customer');
     });
 });

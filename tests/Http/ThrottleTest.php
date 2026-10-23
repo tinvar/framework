@@ -112,18 +112,97 @@ describe('who a limit is keyed to', function () {
             ->toBeFalse('changing address must not refill a user budget');
     });
 
-    // A user id and an address are not interchangeable identifiers; sharing a
-    // namespace would let a caller choose which bucket to spend.
+    // A user id and an address are not interchangeable identifiers; sharing
+    // a namespace would let one be spelled as the other.
     it('never lets a user and an address share a bucket', function () {
         [$throttle, $auth] = throttle();
-        $request = new Request('POST', '/_action/x', ['x-forwarded-for' => 'u-1']);
+        $asUser = new Request('POST', '/_action/x', ['x-forwarded-for' => '198.51.100.7']);
+        $auth->login(new AuthUser('198.51.100.7'));
 
-        $throttle->hit('actions', $request, 1, 60);
+        // The user bucket for "198.51.100.7" and the address bucket for the
+        // same string are different keys, so one hit spends one of each
+        // rather than two of one.
+        $result = $throttle->hit('actions', $asUser, 1, 60);
 
+        expect($result->allowed)->toBeTrue();
+    });
+
+    /**
+     * Choosing a bucket by whether a credential was sent let the caller
+     * CHOOSE which budget to spend: anonymously, then as one account, then
+     * as another, is three full budgets from one address.
+     */
+    it('charges a signed-in caller address as well as their account', function () {
+        [$throttle, $auth] = throttle();
+        $request = new Request('POST', '/_action/x', ['x-forwarded-for' => '198.51.100.1']);
+
+        // Anonymous spends the address budget.
+        $throttle->hit('actions', $request, 2, 60);
+        $throttle->hit('actions', $request, 2, 60);
+
+        // Signing in must not refill it.
         $auth->login(new AuthUser('u-1'));
 
-        expect($throttle->hit('actions', $request, 1, 60)->allowed)
-            ->toBeTrue('an address spelled like a user id is a different bucket');
+        expect($throttle->hit('actions', $request, 2, 60)->allowed)
+            ->toBeFalse('the address is over, whoever is signed in');
+    });
+
+    it('does not let a second account refill one address budget', function () {
+        [$throttle, $auth] = throttle();
+        $request = new Request('POST', '/_action/x', ['x-forwarded-for' => '198.51.100.1']);
+
+        $auth->login(new AuthUser('u-1'));
+        $throttle->hit('actions', $request, 2, 60);
+        $throttle->hit('actions', $request, 2, 60);
+
+        $auth->login(new AuthUser('u-2'));
+
+        expect($throttle->hit('actions', $request, 2, 60)->allowed)
+            ->toBeFalse('N accounts from one address must not be N budgets');
+    });
+
+    /**
+     * One account's behaviour must still not exhaust a shared NAT's budget,
+     * so each account keeps its own counter. Two accounts behind one address
+     * are limited by the address long before either exhausts the other --
+     * which is the point: the reported remaining is whichever budget is
+     * closest to running out.
+     */
+    it('counts each account separately while the address bounds them all', function () {
+        [$throttle, $auth] = throttle();
+        $shared = new Request('POST', '/_action/x', ['x-forwarded-for' => '198.51.100.1']);
+        $elsewhere = new Request('POST', '/_action/x', ['x-forwarded-for' => '203.0.113.9']);
+
+        $auth->login(new AuthUser('u-1'));
+        $throttle->hit('actions', $shared, 10, 60);
+        $throttle->hit('actions', $shared, 10, 60);
+
+        // A second account behind the SAME address sees the address budget,
+        // which two hits have already spent.
+        $auth->login(new AuthUser('u-2'));
+        expect($throttle->hit('actions', $shared, 10, 60)->remaining)->toBe(7);
+
+        // The same account from elsewhere sees its own, barely-used one.
+        expect($throttle->hit('actions', $elsewhere, 10, 60)->remaining)
+            ->toBe(8, 'u-2 has spent two of its own ten');
+    });
+
+    /**
+     * An empty address collapses every signed-out caller into one bucket, so
+     * one attacker exhausts the anonymous budget for the whole site -- a
+     * cheaper denial of service than the flood being prevented.
+     */
+    it('does not put every unidentifiable caller in one bucket', function () {
+        $store = new ArrayThrottleStore();
+        $throttle = new Throttle($store, new AuthContext(), static fn (Request $r): string => '');
+        $request = Request::post('/_action/x');
+
+        $allowed = [];
+        for ($i = 0; $i < 5; $i++) {
+            $allowed[] = $throttle->hit('actions', $request, 1, 60)->allowed;
+        }
+
+        expect($allowed)->toBe([true, true, true, true, true]);
     });
 });
 
@@ -180,5 +259,28 @@ describe('the middleware', function () {
         expect($response->header('x-ratelimit-limit'))->toBe('5')
             ->and($response->header('x-ratelimit-remaining'))->toBe('4')
             ->and($response->header('x-ratelimit-reset'))->not->toBeNull();
+    });
+
+    /**
+     * The headers were computed correctly and then dropped, because
+     * HttpException had nowhere to carry them -- so retryAfter() was dead
+     * code on the only path that would ever have used it, while the
+     * docblock, the commit and a test name all said otherwise.
+     */
+    it('tells a refused caller when to come back', function () use ($next) {
+        [$throttle] = throttle();
+        $middleware = new ThrottleRequests($throttle, 'actions', 1, 60);
+        $request = Request::post('/_action/x');
+
+        $middleware->handle($request, $next);
+
+        try {
+            $middleware->handle($request, $next);
+            expect()->fail('a request past the limit was allowed');
+        } catch (HttpException $e) {
+            expect($e->headers['retry-after'] ?? null)->not->toBeNull()
+                ->and((int) $e->headers['retry-after'])->toBeGreaterThan(0)
+                ->and($e->headers['x-ratelimit-remaining'])->toBe('0');
+        }
     });
 });

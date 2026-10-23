@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Http;
 
+use Tinvar\Auth\PanelContext;
 use Tinvar\Render\FragmentMinter;
 use Tinvar\Support\Signer;
 
@@ -29,6 +30,7 @@ final readonly class FragmentSupport
         public BuildRegistry $builds,
         public \Closure $render,
         public \Closure $sessionId,
+        public ?PanelContext $panels = null,
     ) {}
 
     /**
@@ -48,8 +50,14 @@ final readonly class FragmentSupport
         Request $request,
         string $route,
         array $params,
-        string $panel = '',
+        ?string $panel = null,
     ): FragmentMinter {
+        // The LIVE panel by default. It used to default to '', so the read
+        // side consulted the context and the write side never did: every
+        // statically-bootstrapped fragment minted a panel-less token whatever
+        // panel its page was in.
+        $panel ??= $this->panels?->currentOrNull() ?? '';
+
         return new FragmentMinter(
             signer: $this->signer,
             route: $route,

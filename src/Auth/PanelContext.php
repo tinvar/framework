@@ -85,17 +85,39 @@ final class PanelContext
             throw new \InvalidArgumentException('A panel name cannot be empty; use no panel instead.');
         }
 
-        $previous = $this->currentOrNull();
+        $fiber = \Fiber::getCurrent();
+
+        // Whether this fiber HAD an entry, not what it currently reads.
+        // currentOrNull() collapses "no entry, inheriting main" into main's
+        // value at that instant, and writing that back on exit CREATED an
+        // entry -- permanently detaching the fiber from later main-context
+        // changes. AuthContext::actingAs gets this right; this did not.
+        $had = $fiber !== null && isset($this->byFiber[$fiber]);
+        $previous = $fiber === null ? $this->main : ($had ? $this->byFiber[$fiber] : null);
+
         $this->set($panel);
 
         try {
             return $work();
         } finally {
-            $this->set($previous);
+            if ($fiber === null) {
+                $this->main = $previous;
+            } elseif ($had) {
+                $this->byFiber[$fiber] = $previous;
+            } else {
+                unset($this->byFiber[$fiber]);
+            }
         }
     }
 
-    /** Cleared at the end of every request and job, with the rest of the scope. */
+    /**
+     * Cleared at the end of every request and job, with the rest of the scope.
+     *
+     * A fiber suspended inside within() and resumed after a reset unwinds
+     * into the FRESH map and then removes its own entry, so it cannot leave
+     * anything behind for the next request -- the key is that fiber, and that
+     * fiber belongs to the request that is over.
+     */
     public function reset(): void
     {
         $this->main = null;

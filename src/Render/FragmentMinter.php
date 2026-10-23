@@ -101,6 +101,7 @@ final class FragmentMinter
             build: $this->build,
             sessionHash: FragmentToken::hashSession($this->signer, $this->sessionId),
             expiresAt: time() + $this->ttl,
+            issuedAt: time(),
         ))->encode($this->signer);
     }
 

@@ -81,6 +81,11 @@ final class Kernel
         'actions' => 60,
         'queries' => 240,
         'fragments' => 300,
+        // Its own bucket. A static page's bootstrap is signed-out traffic
+        // keyed by address, so charging it to `actions` would have a shared
+        // NAT's visitors spending that NAT's action budget just by loading
+        // pages.
+        'bootstrap' => 120,
     ];
 
     private readonly ExceptionHandler $exceptions;
@@ -101,6 +106,7 @@ final class Kernel
      */
     private readonly Pipeline $actionStack;
     private readonly Pipeline $queryStack;
+    private readonly Pipeline $bootstrapStack;
 
     /**
      * @param \Closure(class-string): object $resolver builds pages, layouts, queries, actions and middleware
@@ -161,22 +167,36 @@ final class Kernel
 
         $global = array_map(static fn (string $class): Middleware => $resolver($class), $globalMiddleware);
 
-        // Throttling is OUTERMOST, before CSRF and authentication: a request
-        // over the limit should cost a counter increment and nothing else,
-        // and a caller hammering an endpoint with no credentials at all is
-        // exactly the traffic worth refusing first.
+        // Throttling is OUTERMOST -- genuinely, ahead of the application's
+        // own global middleware and not merely ahead of CSRF and auth. The
+        // comment here used to claim the former while the code did the
+        // latter, so session start, tenant resolution from host and whatever
+        // database work those do were paid for by every refused request.
         $this->actionStack = new Pipeline([
-            ...$global,
             ...$this->throttleFor($throttle, 'actions', $limits),
+            ...$global,
             new VerifyCsrfToken(),
             new RequireAuthentication($this->auth, $this->entryPointFor(...)),
         ]);
 
         $this->queryStack = new Pipeline([
-            ...$global,
             ...$this->throttleFor($throttle, 'queries', $limits),
+            ...$global,
             new VerifyCsrfToken(),
             new RequireAuthentication($this->auth, $this->entryPointFor(...)),
+        ]);
+
+        // Bootstrap gets the throttle and CSRF an action gets, and NOT the
+        // authentication check. It exists to hand a visitor the tokens for a
+        // statically-built page, and such a visitor may well not be signed
+        // in -- running it behind RequireAuthentication 401'd exactly the
+        // traffic it was built for. The carve-out is deliberate and narrow:
+        // minting is not authorization, and every token it hands back still
+        // has to survive the originating route's #[Authorize] chain on use.
+        $this->bootstrapStack = new Pipeline([
+            ...$this->throttleFor($throttle, 'bootstrap', $limits),
+            ...$global,
+            new VerifyCsrfToken(),
         ]);
 
         // Fragments run their own stack: GET with no body, so CSRF does not
@@ -184,6 +204,18 @@ final class Kernel
         // inside it once the token says which route that is. The global stack
         // it is given is this kernel's, so a refusal is still throttled and
         // logged like any other request.
+        // The support object mints; it needs the same panel context the
+        // endpoint reads, or the two halves disagree.
+        if ($fragments !== null && $fragments->panels === null && $panels !== null) {
+            $fragments = new FragmentSupport(
+                signer: $fragments->signer,
+                builds: $fragments->builds,
+                render: $fragments->render,
+                sessionId: $fragments->sessionId,
+                panels: $panels,
+            );
+        }
+
         $this->fragments_ = $fragments === null ? null : new FragmentEndpoint(
             routes: $this->routes,
             loaders: new LoaderRunner($this->orm, $resolver, $gate),
@@ -229,10 +261,8 @@ final class Kernel
 
             // Before the other two, because its prefix is as specific and the
             // order should not depend on which was written first.
-            // Behind the action stack: it is a POST that mints, so it wants
-            // the CSRF and throttling an action gets.
             if ($this->bootstrap_ !== null && $this->bootstrap_->matches($request)) {
-                return $this->actionStack->run(
+                return $this->bootstrapStack->run(
                     $request,
                     fn (Request $passed): Response => $this->bootstrap_->handle($passed, $rawBody),
                 );

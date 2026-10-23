@@ -16,6 +16,9 @@ use Tinvar\Attributes\Panel;
 use Tinvar\Auth\NoPanelContext;
 use Tinvar\Auth\PanelContext;
 
+require_once __DIR__ . '/../Orm/Fixtures/models.php';
+require_once __DIR__ . '/Fixtures/review.php';
+
 describe('the current panel', function () {
     // A panel NARROWS what a request sees, so code asking which panel it is
     // in is about to restrict something. Answering with a default would
@@ -150,4 +153,68 @@ describe('the attribute', function () {
     it('needs a name', function () {
         expect(fn () => new Panel(''))->toThrow(InvalidArgumentException::class, 'needs a name');
     });
+});
+
+/**
+ * within() read $previous through currentOrNull(), which collapses "no entry,
+ * inheriting main" into main's value at that instant -- and writing it back
+ * CREATED an entry, permanently detaching the fiber from later main-context
+ * changes. The direction of failure is widening: the fiber keeps the older,
+ * wider reading while the request has narrowed.
+ */
+describe('restoring a panel', function () {
+    it('does not pin a fiber to the main panel it merely inherited', function () {
+        $panels = new PanelContext();
+        $seen = null;
+
+        $panels->within('wide', static function () use ($panels, &$seen): void {
+            $fiber = new Fiber(static function () use ($panels, &$seen): void {
+                // Inherits 'wide' without an entry of its own.
+                $panels->within('narrow', static fn (): bool => true);
+                \Fiber::suspend();
+                $seen = $panels->current();
+            });
+
+            $fiber->start();
+
+            // The request narrows after the fiber has returned from within().
+            $panels->within('narrowed-later', static function () use ($fiber): void {
+                $fiber->resume();
+            });
+        });
+
+        expect($seen)->toBe('narrowed-later', 'the fiber still follows the main context');
+    });
+
+    it('restores a fiber own panel rather than the main one', function () {
+        $panels = new PanelContext();
+        $seen = null;
+
+        $fiber = new Fiber(static function () use ($panels, &$seen): void {
+            $panels->within('mine', static function () use ($panels, &$seen): void {
+                $panels->within('deeper', static fn (): bool => true);
+                $seen = $panels->current();
+            });
+        });
+
+        $fiber->start();
+
+        expect($seen)->toBe('mine');
+    });
+});
+
+/**
+ * The spec requires a `shared: true` query to fail the build if it reads
+ * Panel::current(). Panels are an injected context here rather than an
+ * ambient static, so the rule's literal needle can never match -- choosing
+ * the object form silently retired a rule the spec requires.
+ */
+it('fails the build for a shared query that reads the panel', function () {
+    $violations = (new Tinvar\Auth\BuildRules())->check([
+        Tinvar\Tests\Auth\Fixtures\Review\PanelReadingSharedQuery::class,
+    ]);
+
+    expect($violations)->not->toBe([])
+        ->and($violations[0]->rule)
+        ->toBe(Tinvar\Auth\BuildRules::SHARED_QUERY_MUST_NOT_READ_THE_USER);
 });

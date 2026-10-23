@@ -30,7 +30,7 @@ use Tinvar\Auth\AuthContext;
  */
 final class Throttle
 {
-    /** @param \Closure(Request): string $addressOf how to identify a signed-out caller */
+    /** @param \Closure(Request): string $addressOf how to identify the caller's origin */
     public function __construct(
         private readonly ThrottleStore $store,
         private readonly AuthContext $auth,
@@ -46,7 +46,34 @@ final class Throttle
      */
     public function hit(string $name, Request $request, int $limit, int $window): ThrottleResult
     {
-        $key = $this->keyFor($name, $request);
+        // BOTH buckets when there is a user, not one or the other.
+        //
+        // Choosing a bucket by whether a credential was sent let the caller
+        // choose which budget to spend: send none and spend the address's,
+        // send one and spend that account's, and with N accounts from one
+        // address get N times the limit -- the same "pool of addresses"
+        // evasion the keying rule argues against, with accounts substituted
+        // for addresses. Counting both keeps the stated benefit (one
+        // account's behaviour cannot exhaust a NAT's budget, because the
+        // per-user limit bites first) and restores a ceiling on what one
+        // address can do.
+        $user = $this->auth->id();
+        $results = [$this->count("{$name}|ip|" . $this->addressFor($request), $limit, $window)];
+
+        if ($user !== null) {
+            $results[] = $this->count("{$name}|user|{$user}", $limit, $window);
+        }
+
+        // The strictest answer wins, and the caller is told about whichever
+        // budget is closest to running out.
+        usort($results, static fn (ThrottleResult $a, ThrottleResult $b): int
+            => [$a->allowed, $a->remaining] <=> [$b->allowed, $b->remaining]);
+
+        return $results[0];
+    }
+
+    private function count(string $key, int $limit, int $window): ThrottleResult
+    {
         [$used, $resetsAt] = $this->store->increment($key, $window);
 
         return new ThrottleResult(
@@ -58,17 +85,27 @@ final class Throttle
     }
 
     /**
-     * The bucket this caller spends from.
+     * The address to charge, never an empty one.
      *
-     * Namespaced by who, so a user id can never be spelled to look like an
-     * address or the reverse.
+     * An empty address collapses every signed-out caller into one bucket, so
+     * one attacker exhausts the anonymous budget for the whole site -- a
+     * cheaper denial of service than the flood the throttle exists to stop.
+     * The framework already refuses an empty session id in two places for
+     * the same reason: one constant means everyone shares one binding.
+     *
+     * An unidentifiable caller gets its own bucket rather than everyone's.
+     * That means it is effectively unlimited, which is the honest failure:
+     * the alternative is limiting every anonymous visitor together, and a
+     * misconfigured proxy would then look exactly like an attack.
+     *
+     * A note for whoever writes the closure: do not trust X-Forwarded-For
+     * unless the proxy count is pinned. An attacker-chosen address is an
+     * infinite supply of buckets.
      */
-    private function keyFor(string $name, Request $request): string
+    private function addressFor(Request $request): string
     {
-        $user = $this->auth->id();
+        $address = ($this->addressOf)($request);
 
-        return $user === null
-            ? "{$name}|ip|" . ($this->addressOf)($request)
-            : "{$name}|user|{$user}";
+        return $address === '' ? 'unidentified:' . bin2hex(random_bytes(8)) : $address;
     }
 }
