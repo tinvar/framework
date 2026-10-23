@@ -8,11 +8,23 @@ namespace Tinvar\Codec;
  * Pure-PHP MessagePack, covering the subset the socket protocol uses:
  * nil, bool, int64, float64, str, bin, array and map.
  *
- * ext-msgpack is faster and is preferred when loaded (see MessagePackCodec).
- * This exists so the framework never hard-requires a PECL extension.
+ * ext-msgpack is faster and encodes when loaded (see MessagePackCodec).
+ * Decoding is always this: it reads what the renderer sends, and the
+ * renderer is semi-trusted.
  */
 final class MessagePack
 {
+    /** Nesting deeper than any protocol frame has; a bomb is all brackets. */
+    public const int MAX_DEPTH = 64;
+
+    /**
+     * Array and map elements per decode. A PHP array costs far more memory
+     * than its wire bytes, so a 2 MB frame of tiny elements took 234 MB, and
+     * a frame under the size cap took the process past its memory limit --
+     * a fatal error, which no catch can answer.
+     */
+    public const int MAX_ELEMENTS = 65_536;
+
     public static function encode(mixed $value): string
     {
         return self::encodeValue($value);
@@ -21,7 +33,9 @@ final class MessagePack
     /** @param int $offset consumed position, advanced in place */
     public static function decode(string $bytes, int &$offset = 0): mixed
     {
-        return self::decodeValue($bytes, $offset);
+        $budget = self::MAX_ELEMENTS;
+
+        return self::decodeValue($bytes, $offset, 0, $budget);
     }
 
     private static function encodeValue(mixed $v): string
@@ -116,7 +130,7 @@ final class MessagePack
         return $out;
     }
 
-    private static function decodeValue(string $b, int &$o): mixed
+    private static function decodeValue(string $b, int &$o, int $depth, int &$budget): mixed
     {
         $c = self::byte($b, $o);
 
@@ -129,10 +143,10 @@ final class MessagePack
         // Ranges in ascending order: each test's lower bound is the previous
         // one's upper bound, already excluded above.
         if ($c <= 0x8f) {
-            return self::decodeMap($b, $o, $c & 0x0f);
+            return self::decodeMap($b, $o, $c & 0x0f, $depth, $budget);
         }
         if ($c <= 0x9f) {
-            return self::decodeArray($b, $o, $c & 0x0f);
+            return self::decodeArray($b, $o, $c & 0x0f, $depth, $budget);
         }
         if ($c <= 0xbf) {
             return self::take($b, $o, $c & 0x1f);
@@ -158,38 +172,61 @@ final class MessagePack
             0xd9 => self::take($b, $o, self::uint8($b, $o)),
             0xda => self::take($b, $o, self::uint16($b, $o)),
             0xdb => self::take($b, $o, self::uint32($b, $o)),
-            0xdc => self::decodeArray($b, $o, self::uint16($b, $o)),
-            0xdd => self::decodeArray($b, $o, self::uint32($b, $o)),
-            0xde => self::decodeMap($b, $o, self::uint16($b, $o)),
-            0xdf => self::decodeMap($b, $o, self::uint32($b, $o)),
+            0xdc => self::decodeArray($b, $o, self::uint16($b, $o), $depth, $budget),
+            0xdd => self::decodeArray($b, $o, self::uint32($b, $o), $depth, $budget),
+            0xde => self::decodeMap($b, $o, self::uint16($b, $o), $depth, $budget),
+            0xdf => self::decodeMap($b, $o, self::uint32($b, $o), $depth, $budget),
             default => throw CodecException::badFormat($c, $o - 1),
         };
     }
 
     /** @return list<mixed> */
-    private static function decodeArray(string $b, int &$o, int $n): array
+    private static function decodeArray(string $b, int &$o, int $n, int $depth, int &$budget): array
     {
+        self::admit($b, $o, $n, $n, $depth, $budget);
+
         $out = [];
         for ($i = 0; $i < $n; $i++) {
-            $out[] = self::decodeValue($b, $o);
+            $out[] = self::decodeValue($b, $o, $depth + 1, $budget);
         }
 
         return $out;
     }
 
     /** @return array<array-key, mixed> */
-    private static function decodeMap(string $b, int &$o, int $n): array
+    private static function decodeMap(string $b, int &$o, int $n, int $depth, int &$budget): array
     {
+        self::admit($b, $o, $n, 2 * $n, $depth, $budget);
+
         $out = [];
         for ($i = 0; $i < $n; $i++) {
-            $k = self::decodeValue($b, $o);
+            $k = self::decodeValue($b, $o, $depth + 1, $budget);
             if (!\is_int($k) && !\is_string($k)) {
                 throw new CodecException('Map keys must be int or string.');
             }
-            $out[$k] = self::decodeValue($b, $o);
+            $out[$k] = self::decodeValue($b, $o, $depth + 1, $budget);
         }
 
         return $out;
+    }
+
+    /**
+     * Refuses a container before any of it is built: too deep, more
+     * elements than the frame has budget for, or more than the bytes left
+     * could hold -- every element takes at least one.
+     */
+    private static function admit(string $b, int $o, int $n, int $values, int $depth, int &$budget): void
+    {
+        if ($depth >= self::MAX_DEPTH) {
+            throw new CodecException('Frame nests deeper than ' . self::MAX_DEPTH . ' levels.');
+        }
+        if ($values > \strlen($b) - $o) {
+            throw CodecException::truncated($o + $values, \strlen($b));
+        }
+        $budget -= $n;
+        if ($budget < 0) {
+            throw new CodecException('Frame holds more than ' . self::MAX_ELEMENTS . ' elements.');
+        }
     }
 
     private static function byte(string $b, int &$o): int
