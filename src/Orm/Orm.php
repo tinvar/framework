@@ -605,41 +605,28 @@ final class Orm
         $target = $relation->target;
         $targetMeta = Metadata::for($target);
 
+        // A ghost made under a scope belongs to it, wherever it is first
+        // touched. First touched inside acrossTenants() or as another tenant,
+        // it read its row there -- another tenant's, if the key pointed
+        // there -- and kept that row after the block ended, in scoped code
+        // that would have been refused it. So it loads under the scope it was
+        // made in. To read a relation across tenants, read its parent inside
+        // the block: a ghost made there carries no scope.
+        $scope = $this->isUnscoped() ? null : $this->captureScope();
+        $madeIn = $this->tenant();
+
         /** @var Model $ghost */
         $ghost = (new \ReflectionClass($target))->newLazyGhost(
-            function (Model $object) use ($relation, $parent, $foreignKey, $targetMeta): void {
-                $row = $this->resolveBelongsToRow($relation, $parent, $foreignKey);
-                if ($row === null) {
-                    // Throwing leaves the object UNINITIALIZED, so a later
-                    // touch tries again -- which matters when the first touch
-                    // happened under a scope that hid the row. Returning
-                    // instead marked it initialized and empty, permanently.
-                    // The miss is cached under that scope's key only, and an
-                    // unscoped load does not consult the cache, so a retry
-                    // as another tenant or inside acrossTenants() can succeed.
-                    throw DanglingRelation::for(
-                        $parent::class,
-                        $relation->property,
-                        $relation->target,
-                        $foreignKey,
-                    );
-                }
-                $targetMeta->hydrate($object, $row);
+            function (Model $object) use ($relation, $parent, $foreignKey, $targetMeta, $scope, $madeIn): void {
+                if ($scope !== null && ($this->isUnscoped() || $this->tenant() !== $madeIn)) {
+                    $scope(function () use ($object, $relation, $parent, $foreignKey, $targetMeta): void {
+                        $this->initializeGhost($object, $relation, $parent, $foreignKey, $targetMeta);
+                    });
 
-                // Through settle(), so a ghost that found its row ends up in
-                // exactly the state a hydrated row does -- attached, relations
-                // installed, and MARKED CLEAN. It used to skip markClean(), so
-                // a model reached by touching a #[BelongsTo] stayed
-                // isPersisted() === false for the rest of the request: find()'s
-                // guard re-queried it on every lookup and still handed back the
-                // same instance, and save() on it issued an INSERT for a row
-                // that already existed.
-                // The object joins the result set it is settled into, so a
-                // relation read on it afterwards has a batch to widen to
-                // rather than an empty set.
-                $set = new ResultSet();
-                $this->settle($object, $targetMeta, $row, $set);
-                $set->add($object);
+                    return;
+                }
+
+                $this->initializeGhost($object, $relation, $parent, $foreignKey, $targetMeta);
             },
         );
 
@@ -649,6 +636,46 @@ final class Orm
         return $this->isUnscoped()
             ? $ghost
             : $this->identityMap->remember($target, $foreignKey, $ghost);
+    }
+
+    /**
+     * Fills a #[BelongsTo] ghost from its row, under whatever scope the caller
+     * has put in force.
+     */
+    private function initializeGhost(Model $object, RelationMeta $relation, Model $parent, string $foreignKey, ModelMeta $targetMeta): void
+    {
+        $row = $this->resolveBelongsToRow($relation, $parent, $foreignKey);
+        if ($row === null) {
+            // Throwing leaves the object UNINITIALIZED, so a later
+            // touch tries again -- which matters when the first touch
+            // happened under a scope that hid the row. Returning
+            // instead marked it initialized and empty, permanently.
+            // The miss is cached under that scope's key only, and an
+            // unscoped load does not consult the cache, so a retry
+            // as another tenant or inside acrossTenants() can succeed.
+            throw DanglingRelation::for(
+                $parent::class,
+                $relation->property,
+                $relation->target,
+                $foreignKey,
+            );
+        }
+        $targetMeta->hydrate($object, $row);
+
+        // Through settle(), so a ghost that found its row ends up in
+        // exactly the state a hydrated row does -- attached, relations
+        // installed, and MARKED CLEAN. It used to skip markClean(), so
+        // a model reached by touching a #[BelongsTo] stayed
+        // isPersisted() === false for the rest of the request: find()'s
+        // guard re-queried it on every lookup and still handed back the
+        // same instance, and save() on it issued an INSERT for a row
+        // that already existed.
+        // The object joins the result set it is settled into, so a
+        // relation read on it afterwards has a batch to widen to
+        // rather than an empty set.
+        $set = new ResultSet();
+        $this->settle($object, $targetMeta, $row, $set);
+        $set->add($object);
     }
 
     // ------------------------------------------------------------- writing

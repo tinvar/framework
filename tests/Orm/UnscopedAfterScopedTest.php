@@ -90,23 +90,28 @@ it('reads a belongsTo inside acrossTenants that a scoped read already loaded', f
     expect($unscoped)->toBe('LAX0');
 });
 
-// "Throwing leaves the object UNINITIALIZED, so a later touch tries again --
-// which matters when the first touch happened under a scope that hid the
-// row." The miss cached under that scope answered the retry as well.
-it('finds a belongsTo inside acrossTenants after the scope hid it', function () {
+// A ghost belongs to the scope its parent was read in. Retried inside
+// acrossTenants() or as another tenant, it used to find the other tenant's
+// row -- and keep it after the block ended, in scoped code that would have
+// been refused it. It is still retried (the miss is not cached as final), but
+// under its own scope, so it stays refused.
+it('keeps refusing a belongsTo the scope hid, inside acrossTenants or as another tenant', function () {
     [$orm, $petId] = petOfAnotherTenant();
     $pet = $orm->find(Pet::class, $petId) ?? throw new \LogicException('no pet');
 
     expect(static fn (): string => $pet->owner->name)->toThrow(DanglingRelation::class);
-
-    expect($orm->acrossTenants(static fn (): string => $pet->owner->name))->toBe('globex-owner');
+    expect(static fn (): string => $orm->acrossTenants(static fn (): string => $pet->owner->name))
+        ->toThrow(DanglingRelation::class);
+    expect(static fn (): string => $orm->actAs('globex', static fn (): string => $pet->owner->name))
+        ->toThrow(DanglingRelation::class);
 });
 
-it('finds a belongsTo the scope hid once acting as the tenant that owns it', function () {
+// What acrossTenants() is for: a parent read inside it has ghosts that read
+// across tenants too.
+it('finds that belongsTo when the parent is read inside acrossTenants', function () {
     [$orm, $petId] = petOfAnotherTenant();
-    $pet = $orm->find(Pet::class, $petId) ?? throw new \LogicException('no pet');
 
-    expect(static fn (): string => $pet->owner->name)->toThrow(DanglingRelation::class);
+    $name = $orm->acrossTenants(static fn (): string => $orm->find(Pet::class, $petId)?->owner->name ?? 'none');
 
-    expect($orm->actAs('globex', static fn (): string => $pet->owner->name))->toBe('globex-owner');
+    expect($name)->toBe('globex-owner');
 });
