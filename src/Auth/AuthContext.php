@@ -26,7 +26,7 @@ final class AuthContext
      * and every policy decision and cache key in them was computed for the
      * wrong person.
      *
-     * @var \WeakMap<\Fiber, array{Authenticatable|null}>
+     * @var \WeakMap<object, array{Authenticatable|null}>
      */
     private \WeakMap $byFiber;
 

@@ -40,8 +40,7 @@ final class BatchScheduler
         // main one -- the load would run under the wrong scope however neatly
         // it was grouped. The awaiting fiber's tenant is recorded here and
         // re-entered at flush time.
-        $this->pending[$key]['relation'] = $relation;
-        $this->pending[$key]['tenant'] = $this->orm->tenant();
+        $this->pending[$key] ??= ['relation' => $relation, 'tenant' => $this->orm->tenant(), 'parents' => []];
         $this->pending[$key]['parents'][$groupKey] = $parent;
 
         \Fiber::suspend();
@@ -124,9 +123,10 @@ final class BatchScheduler
 
     /**
      * @param array<array-key, mixed>  $results
-     * @param array<array-key, \Fiber> $live
+     * @param array<array-key, \Fiber<mixed, mixed, mixed, mixed>> $live
+     * @param \Fiber<mixed, mixed, mixed, mixed> $fiber
      * @param-out array<array-key, mixed>  $results
-     * @param-out array<array-key, \Fiber> $live
+     * @param-out array<array-key, \Fiber<mixed, mixed, mixed, mixed>> $live
      */
     private function settle(int|string $id, \Fiber $fiber, array &$results, array &$live, bool $start): void
     {

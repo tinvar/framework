@@ -27,9 +27,17 @@ abstract class Factory
     /** @return T */
     abstract public function definition(): Model;
 
+    /** Every factory is built with no arguments, which is what new() relies on. */
+    final public function __construct() {}
+
     public static function new(): static
     {
-        return new static();
+        // Through static::class rather than `new static()`: the same object,
+        // but typed as the concrete factory -- RackFactory, a Factory<Rack> --
+        // where `new static()` in a static method cannot carry the class's T.
+        $class = static::class;
+
+        return new $class();
     }
 
     public function count(int $count): static

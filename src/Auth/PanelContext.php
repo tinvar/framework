@@ -35,7 +35,7 @@ final class PanelContext
 {
     private ?string $main = null;
 
-    /** @var \WeakMap<\Fiber, string> */
+    /** @var \WeakMap<object, string> */
     private \WeakMap $byFiber;
 
     public function __construct()

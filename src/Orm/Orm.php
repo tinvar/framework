@@ -30,7 +30,7 @@ final class Orm
      */
     private int $unscopedMain = 0;
 
-    /** @var \WeakMap<\Fiber, int> */
+    /** @var \WeakMap<object, int> */
     private \WeakMap $unscopedByFiber;
 
     /**
@@ -40,7 +40,7 @@ final class Orm
      */
     private int $readOnlyMain = 0;
 
-    /** @var \WeakMap<\Fiber, int> */
+    /** @var \WeakMap<object, int> */
     private \WeakMap $readOnlyByFiber;
 
     public function __construct(
@@ -417,7 +417,7 @@ final class Orm
 
         $rows = $this->connection->select(
             $this->selectSql($meta, $column, \count($values), $orderBy, scope: $scope),
-            [...array_values($values), ...$scopeBindings],
+            [...$values, ...$scopeBindings],
         );
 
         return $this->hydrateAll($class, $rows);
@@ -1019,6 +1019,7 @@ final class Orm
         return $column;
     }
 
+    /** @param list<string> $extraColumns */
     private function selectSql(
         ModelMeta $meta,
         string $column,

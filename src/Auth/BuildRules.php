@@ -334,7 +334,7 @@ final class BuildRules
 
         $models = [];
         foreach ($attribute->newInstance()->args as $argument => $class) {
-            if (\is_string($class) && is_a($class, Model::class, true)) {
+            if (is_a($class, Model::class, true)) {
                 $models[$argument] = $class;
             }
         }

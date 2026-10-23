@@ -18,7 +18,7 @@ final class PolicyRegistry
     /** @var array<class-string, object> */
     private array $instances = [];
 
-    /** @var array<class-string, string> subject => policy class, '' for none */
+    /** @var array<class-string, class-string|''> subject => policy class, '' for none */
     private array $resolved = [];
 
     /** @param \Closure(class-string): object|null $resolver */

@@ -31,7 +31,7 @@ final class IdentityMap
      */
     private string $tenantMain = '';
 
-    /** @var \WeakMap<\Fiber<mixed, mixed, mixed, mixed>, string> */
+    /** @var \WeakMap<object, string> */
     private \WeakMap $tenantByFiber;
 
     public function __construct(private readonly string $connection = 'default')
@@ -54,7 +54,9 @@ final class IdentityMap
      * Stores the model unless the row is already mapped, and returns whichever
      * instance is canonical. Callers must use the return value.
      *
-     * @template T of object @param T $model @return T
+     * @template T of object
+     * @param T $model
+     * @return T
      */
     public function remember(string $class, string $id, object $model): object
     {

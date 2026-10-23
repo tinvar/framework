@@ -35,7 +35,7 @@ final class PolicyGate implements Gate
         // A before() hook answers for every ability on that policy: the usual
         // place for "an owner may do anything here". Returning null means it
         // has no opinion and the ability method decides.
-        if (self::callable($policy, 'before')) {
+        if (method_exists($policy, 'before') && self::callable($policy, 'before')) {
             $verdict = $policy->before($user, $check->ability, $subject);
             if ($verdict !== null) {
                 return self::decision($policy, 'before', $verdict);
@@ -98,6 +98,7 @@ final class PolicyGate implements Gate
      * model, or be a class name written in the source.
      *
      * @param array<string, mixed> $arguments
+     * @return object|class-string
      */
     private function subjectFor(Authorize $check, array $arguments): object|string
     {
