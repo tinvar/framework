@@ -67,6 +67,32 @@ final class Collection implements \IteratorAggregate, \Countable, \ArrayAccess
     }
 
     /**
+     * @internal the ORM refills a loaded relation after a write, rather than
+     * reloading it: "The identity map keeps loaded relations consistent after
+     * a write, with no reload." In place, because a caller may be holding
+     * this collection rather than reading the property again.
+     *
+     * @param list<T> $items
+     */
+    public function replaceItems(array $items): void
+    {
+        $this->loaded = $items;
+    }
+
+    /**
+     * @internal for a loaded relation the ORM cannot refill, so the next read
+     * loads it again. The loader is set before the items are dropped, so the
+     * collection never has neither.
+     *
+     * @param \Closure(): list<T> $loader
+     */
+    public function unload(\Closure $loader): void
+    {
+        $this->loader = $loader;
+        $this->loaded = null;
+    }
+
+    /**
      * @return list<T>
      *
      * The loader is released only after it returns. Clearing it first looks

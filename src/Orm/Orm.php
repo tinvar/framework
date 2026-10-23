@@ -23,11 +23,12 @@ final class Orm
 
     /**
      * What a rollback has to put back: one frame per open transaction(),
-     * listing each model a write touched in it and the snapshot it had
-     * before. A nested frame that returns is folded into the one around it,
-     * since the outer rollback undoes its writes too.
+     * each a list of undo steps recorded before a write replaced what they
+     * restore -- a model's snapshot, a loaded relation's items. A nested
+     * frame that returns is folded into the one around it, since the outer
+     * rollback undoes its writes too.
      *
-     * @var list<list<array{Model, array<string, mixed>|null}>>
+     * @var list<list<\Closure(): void>>
      */
     private array $journal = [];
 
@@ -719,10 +720,11 @@ final class Orm
             array_values($values),
         );
 
-        $this->journal($model);
+        $this->journalSnapshot($model);
         $model->markClean($values);
         $model->attach($this, new ResultSet());
         $this->identityMap->remember($meta->class, $meta->keyOf($model), $model);
+        $this->followWrite($meta, $meta->keyOf($model), $values);
 
         return $model;
     }
@@ -782,8 +784,10 @@ final class Orm
             throw MissingRow::onUpdate($meta->class, $meta->keyOf($model));
         }
 
-        $this->journal($model);
-        $model->markClean($meta->writeValues($model));
+        $written = $meta->writeValues($model);
+        $this->journalSnapshot($model);
+        $model->markClean($written);
+        $this->followWrite($meta, $meta->keyOf($model), $written);
 
         return $model;
     }
@@ -806,8 +810,9 @@ final class Orm
 
         // Left marked persisted, a later save() sent an UPDATE for a row that
         // no longer exists. It now inserts the row again, as for a new model.
-        $this->journal($model);
+        $this->journalSnapshot($model);
         $model->markDeleted();
+        $this->followWrite($meta, $meta->keyOf($model), null);
     }
 
     /**
@@ -832,10 +837,11 @@ final class Orm
             // The rows written inside the transaction are gone, but the models
             // still carry the snapshots those writes took: an undone insert
             // read as persisted and an undone update as clean, so retrying the
-            // same save() wrote nothing. Restored newest first, so a model
-            // saved twice ends with the snapshot it had before either.
-            foreach (array_reverse(array_pop($this->journal)) as [$model, $snapshot]) {
-                $model->restoreSnapshot($snapshot);
+            // same save() wrote nothing. Loaded relations were refilled for
+            // writes that no longer exist, too. Undone newest first, so a
+            // model saved twice ends with the snapshot it had before either.
+            foreach (array_reverse(array_pop($this->journal)) as $undo) {
+                $undo();
             }
 
             // And the identity map still serves those models. A later read
@@ -856,11 +862,184 @@ final class Orm
     }
 
     /** Notes a model's snapshot before a write replaces it, for a rollback to put back. */
-    private function journal(Model $model): void
+    private function journalSnapshot(Model $model): void
+    {
+        $snapshot = $model->snapshot();
+        $this->journal(static fn () => $model->restoreSnapshot($snapshot));
+    }
+
+    /** @param \Closure(): void $undo run if the open transaction rolls back */
+    private function journal(\Closure $undo): void
     {
         if ($this->journal !== []) {
-            $this->journal[array_key_last($this->journal)][] = [$model, $model->snapshot()];
+            $this->journal[array_key_last($this->journal)][] = $undo;
         }
+    }
+
+    // ------------------------------------------------------- after a write
+
+    /**
+     * Brings every relation the written row belongs to up to date.
+     *
+     * "The identity map keeps loaded relations consistent after a write, with
+     * no reload." It did not: a child moved to another parent stayed in the
+     * old parent's loaded relation and never reached the new one's, and a
+     * deleted child stayed listed. The relation-row cache those relations
+     * hydrate from was as stale, so a parent read later in the request -- the
+     * Revalidator's re-render after an action -- was served the rows as they
+     * were before the write.
+     *
+     * Patched rather than dropped, because the spec promises no reload and
+     * the row as written is already in hand.
+     *
+     * @param array<string, mixed>|null $row the row as written, null once deleted
+     */
+    private function followWrite(ModelMeta $meta, string $id, ?array $row): void
+    {
+        foreach (Metadata::relationsTo($meta->class) as $relation) {
+            if ($relation->kind === RelationKind::HasMany) {
+                $this->followHasMany($relation, $meta, $id, $row);
+            } else {
+                $this->followBelongsTo($relation, $id, $row);
+            }
+        }
+    }
+
+    /**
+     * A single relation's cached row for the written model.
+     *
+     * Hydration reads it whenever a ghost for the row is made afresh -- as
+     * after a delete, which drops the model from the map -- so a deleted
+     * row was handed back as if it were still there.
+     *
+     * @param array<string, mixed>|null $row
+     */
+    private function followBelongsTo(RelationMeta $relation, string $id, ?array $row): void
+    {
+        $key = $this->relationCacheKey($relation);
+        if (!$this->hasRows($key, $id)) {
+            return;
+        }
+
+        if ($row === null) {
+            // A miss, which is what a read would now find.
+            $this->relationRows[$key][$id] = null;
+        } elseif ($this->isUnscoped()) {
+            // Possibly another tenant's row, so not cached under this one's
+            // key: dropped, and read again under the reader's scope.
+            unset($this->relationRows[$key][$id]);
+        } else {
+            $cached = $this->relationRows[$key][$id];
+            $this->relationRows[$key][$id] = [...(\is_array($cached) ? $cached : []), ...$row];
+        }
+    }
+
+    /**
+     * A collection relation the written row is a child in: out of the group
+     * that held it, into the one its foreign key names now -- the same group
+     * when the key did not change -- in the relation's order, and every
+     * loaded collection for those parents refilled from the result.
+     *
+     * @param array<string, mixed>|null $row
+     */
+    private function followHasMany(RelationMeta $relation, ModelMeta $meta, string $id, ?array $row): void
+    {
+        $key = $this->relationCacheKey($relation);
+        $column = $relation->foreignKey;
+
+        // Found by id rather than by the old foreign key, which a child that
+        // does not map the key never had.
+        $previous = null;
+        $from = null;
+        $at = null;
+        foreach ($this->relationRows[$key] ?? [] as $parentId => $rows) {
+            /** @var list<array<string, mixed>> $rows */
+            foreach ($rows as $i => $cached) {
+                if ((string) ($cached[$meta->idColumn] ?? '') === $id) {
+                    [$previous, $from, $at] = [$cached, (string) $parentId, $i];
+                    break 2;
+                }
+            }
+        }
+
+        // A child that does not map the key keeps the parent it had.
+        $to = null;
+        if ($row !== null) {
+            $parent = \array_key_exists($column, $row) ? $row[$column] : ($previous[$column] ?? null);
+            $to = $parent === null ? null : (string) $parent;
+        }
+
+        if ($from !== null && $at !== null) {
+            /** @var list<array<string, mixed>> $rows */
+            $rows = $this->relationRows[$key][$from];
+            array_splice($rows, $at, 1);
+            $this->relationRows[$key][$from] = $rows;
+        }
+
+        if ($to !== null && $this->hasRows($key, $to)) {
+            if ($this->isUnscoped()) {
+                // Possibly another tenant's row: a scoped parent must not be
+                // handed it. Dropped, so the next read loads under its scope.
+                unset($this->relationRows[$key][$to]);
+            } else {
+                /** @var list<array<string, mixed>> $rows */
+                $rows = $this->relationRows[$key][$to];
+                $written = [...($previous ?? []), ...$row, $column => $to];
+
+                // Back where it was if it stayed, so a relation with no order
+                // keeps the order the database gave it.
+                if ($to === $from && $at !== null) {
+                    array_splice($rows, $at, 0, [$written]);
+                } else {
+                    $rows[] = $written;
+                }
+
+                $orderBy = $relation->orderBy;
+                if ($orderBy !== null) {
+                    usort($rows, static fn (array $a, array $b): int => ($a[$orderBy] ?? null) <=> ($b[$orderBy] ?? null));
+                }
+
+                $this->relationRows[$key][$to] = $rows;
+            }
+        }
+
+        foreach (array_unique(array_filter([$from, $to], static fn (?string $p): bool => $p !== null)) as $parentId) {
+            $this->refillLoaded($relation, $key, $parentId);
+        }
+    }
+
+    /** Refills one parent's loaded collection from the relation-row cache. */
+    private function refillLoaded(RelationMeta $relation, string $key, string $parentId): void
+    {
+        $parent = $this->identityMap->get($relation->owner, $parentId);
+
+        // Not a ghost, whose relations are not installed yet, and read
+        // without touching it: reading a ghost's property would load it.
+        if ($parent === null || !self::holdsRow($parent)
+            || !(new \ReflectionProperty($relation->owner, $relation->property))->isInitialized($parent)) {
+            return;
+        }
+
+        $collection = Metadata::for($relation->owner)->get($parent, $relation->property);
+        if (!$collection instanceof Collection || !$collection->isLoaded()) {
+            return;   // a relation not read yet reads the patched cache when it is
+        }
+
+        $before = $collection->all();
+        $this->journal(static fn () => $collection->replaceItems($before));
+
+        if (!$this->isUnscoped() && $this->hasRows($key, $parentId)) {
+            /** @var list<array<string, mixed>> $rows */
+            $rows = $this->relationRows[$key][$parentId];
+            $collection->replaceItems($this->hydrateAll($relation->target, $rows));
+
+            return;
+        }
+
+        // Nothing cached to refill it from, or an unscoped write, whose
+        // hydration would bypass the map: loaded again when next read, under
+        // the reader's scope.
+        $collection->unload(fn (): array => $this->resolveHasMany($relation, $parent));
     }
 
     private function isSet(Model $model, ModelMeta $meta, string $property): bool

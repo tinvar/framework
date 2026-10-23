@@ -28,6 +28,28 @@ final class Metadata
         return self::$compiled[$class] ??= self::compile($class);
     }
 
+    /**
+     * Every compiled relation whose target is $class: the relations a write
+     * to one of its rows can change. Only compiled models are searched, which
+     * is enough -- a relation of a model never compiled has loaded nothing.
+     *
+     * @param class-string<Model> $class
+     * @return list<RelationMeta>
+     */
+    public static function relationsTo(string $class): array
+    {
+        $found = [];
+        foreach (self::$compiled as $meta) {
+            foreach ($meta->relations as $relation) {
+                if ($relation->target === $class) {
+                    $found[] = $relation;
+                }
+            }
+        }
+
+        return $found;
+    }
+
     /** @param class-string<Model> $class */
     private static function compile(string $class): ModelMeta
     {
