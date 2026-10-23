@@ -199,7 +199,7 @@ final class AppKey
         $dir = realpath(\dirname($file));
         if ($dir !== false) {
             $stat = stat($dir);
-            if (!\in_array($stat['uid'], $trusted, true) || ($stat['mode'] & 0022) !== 0) {
+            if ($stat === false || !\in_array($stat['uid'], $trusted, true) || ($stat['mode'] & 0022) !== 0) {
                 throw new \RuntimeException(
                     "Refusing the application key directory {$dir}: it must be owned by this user or root and "
                     . 'writable by no one else. Or set TINVAR_APP_KEY.',
@@ -210,7 +210,7 @@ final class AppKey
         $real = realpath($file);
         if ($real !== false) {
             $stat = stat($real);
-            if (!is_file($real) || !\in_array($stat['uid'], $trusted, true) || ($stat['mode'] & 0026) !== 0) {
+            if ($stat === false || !is_file($real) || !\in_array($stat['uid'], $trusted, true) || ($stat['mode'] & 0026) !== 0) {
                 throw new \RuntimeException(
                     "Refusing the application key file {$real}: it must be a regular file owned by this user or "
                     . 'root, writable by no one else and readable by no one outside its group. Or set TINVAR_APP_KEY.',

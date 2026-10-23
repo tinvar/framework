@@ -239,7 +239,10 @@ final class Binder
         }
     }
 
-    /** @return list<\ReflectionParameter> */
+    /**
+     * @param class-string $class
+     * @return list<\ReflectionParameter>
+     */
     public static function loaderParameters(string $class): array
     {
         $reflection = new \ReflectionClass($class);

@@ -64,9 +64,6 @@ final class Encoder
 
         $out = [];
         foreach ($value as $k => $item) {
-            if (!\is_int($k) && !\is_string($k)) {
-                throw DataBoundaryException::badKey($path, get_debug_type($k));
-            }
             $out[$k] = $this->walk($item, "{$path}.{$k}", $depth + 1, $seen);
         }
 

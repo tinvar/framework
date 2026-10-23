@@ -90,7 +90,8 @@ final class RenderChannel
             // PHP, so `break 2` inside one escapes the switch and the inner
             // loop, then falls through to another blocking read -- which sees
             // the renderer's EOF after `done` and reports a truncated render.
-            while (!$done) {
+            // Left by the break below, once the inner loop has seen `done`.
+            while (true) {
                 while (!$done && ($message = $this->codec->decodeFrame($buffer, $offset)) !== null) {
                     $type = Frame::assertFromRenderer($message);
 
@@ -237,7 +238,8 @@ final class RenderChannel
         );
 
         if ($socket === false) {
-            throw RendererException::cannotConnect($this->socketPath, $error !== '' ? $error : "errno {$errno}");
+            $reason = $error ?? '';
+            throw RendererException::cannotConnect($this->socketPath, $reason !== '' ? $reason : "errno {$errno}");
         }
 
         stream_set_blocking($socket, true);

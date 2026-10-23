@@ -55,7 +55,8 @@ final class Frame
     /**
      * @param array<string, mixed> $params
      * @param array<string, mixed> $loaderData  layout and page loader data, already encoded
-     * @param list<string>         $allowedQueries per-route query allowlist
+     * @param array<array-key, string> $allowedQueries per-route query allowlist; sent as a
+     *                                         list whatever its keys, so it crosses as an array
      * @param ?PageMetadata        $page for a document render; the renderer
      *                                   writes it into the HTML for the router
      * @return array<string, mixed>
@@ -88,7 +89,7 @@ final class Frame
 
     /**
      * @param array<string, mixed> $token already-verified fragment token contents
-     * @param list<string>         $allowedQueries
+     * @param array<array-key, string> $allowedQueries sent as a list whatever its keys
      * @return array<string, mixed>
      */
     public static function fragment(array $token, string $requestId, string $cspNonce, array $allowedQueries): array

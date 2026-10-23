@@ -158,8 +158,8 @@ final class ArrayStore implements Store
         }
 
         // Insertion order is oldest first.
-        while (\count($this->entries) > $this->maxEntries) {
-            $this->forget(array_key_first($this->entries));
+        while (\count($this->entries) > $this->maxEntries && ($oldest = array_key_first($this->entries)) !== null) {
+            $this->forget($oldest);
         }
     }
 

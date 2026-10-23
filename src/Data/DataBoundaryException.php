@@ -26,11 +26,6 @@ final class DataBoundaryException extends \RuntimeException
         return new self("Refused to encode {$class} at {$path}.{$hint}");
     }
 
-    public static function badKey(string $path, string $type): self
-    {
-        return new self("Map key at {$path} must be an int or string, got {$type}.");
-    }
-
     public static function cycle(string $path, string $class): self
     {
         return new self("Refused to encode a cycle at {$path}: {$class} refers back to itself.");

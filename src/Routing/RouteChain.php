@@ -23,7 +23,11 @@ final readonly class RouteChain
         public array $parameters,
     ) {}
 
-    /** Every route in the chain, outermost layout to page. */
+    /**
+     * Every route in the chain, outermost layout to page.
+     *
+     * @return list<CompiledRoute>
+     */
     public function all(): array
     {
         return [...$this->layouts, $this->page];

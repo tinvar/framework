@@ -268,7 +268,11 @@ final class ActionRegistry
             : new ($action->class)();
     }
 
-    /** True when a form request's field may legitimately be absent. */
+    /**
+     * True when a form request's field may legitimately be absent.
+     *
+     * @param class-string $class
+     */
     private static function fieldIsOptional(string $class, string $field): bool
     {
         foreach ((new \ReflectionClass($class))->getConstructor()?->getParameters() ?? [] as $parameter) {
@@ -285,7 +289,7 @@ final class ActionRegistry
      * Model-typed constructor fields of a form request.
      *
      * @param class-string<FormRequest> $class
-     * @return array<string, class-string>
+     * @return array<string, class-string<Model>>
      */
     private static function modelFieldsOf(string $class): array
     {

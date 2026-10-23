@@ -28,16 +28,15 @@ final class Duration
             throw new \InvalidArgumentException("'{$ttl}' is zero. Leave cache unset instead of caching for no time.");
         }
 
-        $seconds = $amount * self::UNITS[$m[2]];
-
-        // Guards the multiplication overflowing to a float, which would
-        // TypeError out of a method declared to return int.
-        if (!\is_int($seconds) || $seconds > self::MAX_SECONDS) {
+        // Bounded before multiplying, not after: an overflowing product
+        // becomes a float, which would TypeError out of a method declared
+        // to return int.
+        if ($amount > intdiv(self::MAX_SECONDS, self::UNITS[$m[2]])) {
             throw new \InvalidArgumentException(
                 "'{$ttl}' is longer than the " . self::MAX_SECONDS . '-second maximum.'
             );
         }
 
-        return $seconds;
+        return $amount * self::UNITS[$m[2]];
     }
 }

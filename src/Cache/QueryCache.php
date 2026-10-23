@@ -179,10 +179,10 @@ final class QueryCache
      */
     private static function namespaced(array $tags, string $tenant): array
     {
-        return array_values(array_map(
+        return array_map(
             static fn (string $tag): string => $tenant . "\0" . $tag,
             $tags,
-        ));
+        );
     }
 
     /** @param array<string, mixed> $arguments */
