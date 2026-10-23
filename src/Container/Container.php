@@ -250,6 +250,26 @@ final class Container
         return $object;
     }
 
+    /**
+     * Every property of a class, its parents' private ones included:
+     * getProperties() on a subclass omits them, so a base class's private
+     * #[Dependency] property was never filled.
+     *
+     * @param \ReflectionClass<object> $reflection
+     * @return list<\ReflectionProperty>
+     */
+    private static function propertiesOf(\ReflectionClass $reflection): array
+    {
+        $properties = $reflection->getProperties();
+        for ($parent = $reflection->getParentClass(); $parent !== false; $parent = $parent->getParentClass()) {
+            foreach ($parent->getProperties(\ReflectionProperty::IS_PRIVATE) as $private) {
+                $properties[] = $private;
+            }
+        }
+
+        return $properties;
+    }
+
     private function argumentFor(string $class, \ReflectionParameter $parameter): mixed
     {
         $type = $parameter->getType();
@@ -287,8 +307,15 @@ final class Container
      */
     private function injectProperties(\ReflectionClass $reflection, object $object): void
     {
-        foreach ($reflection->getProperties() as $property) {
+        foreach (self::propertiesOf($reflection) as $property) {
             if ($property->getAttributes(Dependency::class) === [] || $property->isStatic()) {
+                continue;
+            }
+
+            // Set already: by the constructor -- a promoted parameter carries
+            // the attribute onto its property, and a readonly one cannot be
+            // written twice -- or by the class itself. Not the container's.
+            if ($property->isInitialized($object)) {
                 continue;
             }
 

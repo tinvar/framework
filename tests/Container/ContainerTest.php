@@ -93,6 +93,25 @@ final class BadInjection
 
 abstract class Shape {}
 
+final class PromotedDependency
+{
+    public function __construct(#[Dependency] public readonly Pool $pool) {}
+}
+
+abstract class BaseWithPrivate
+{
+    #[Dependency]
+    private Pool $pool;
+
+    public function pool(): Pool
+    {
+        return $this->pool;
+    }
+}
+
+final class ChildOfBase extends BaseWithPrivate {}
+
+
 #[Dependency(Lifetime::Worker)]
 final class CapturesMeter
 {
@@ -242,6 +261,19 @@ describe('#[Dependency] properties', function () {
         expect($object->meter())->toBeInstanceOf(Meter::class)
             ->and($object->pool)->toBeInstanceOf(Pool::class)
             ->and($object->plain)->toBeNull();
+    });
+
+    // The attribute on a promoted parameter is on its property too; the
+    // container wrote the readonly property a second time and crashed.
+    it('leaves a property the constructor already set', function () {
+        $pool = new Pool(new Config());
+        $container = (new Container())->instance(Pool::class, $pool);
+
+        expect($container->get(PromotedDependency::class)->pool)->toBe($pool);
+    });
+
+    it("fills a parent class's private dependency", function () {
+        expect((new Container())->get(ChildOfBase::class)->pool())->toBeInstanceOf(Pool::class);
     });
 
     it('refuses a marked property without a class type', function () {
