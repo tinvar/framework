@@ -36,4 +36,6 @@ it('rejects malformed identifiers', function (string $candidate) {
     'v4 variant bits wrong' => ['0192f3a1-0000-7000-0000-000000000000'],
     'too short' => ['0192f3a1'],
     'not hex' => ['zzzzzzzz-0000-7000-8000-000000000000'],
+    // $ matches before a final newline; \z does not.
+    'trailing newline' => ["0192f3a1-0000-7000-8000-000000000000\n"],
 ]);
