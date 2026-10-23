@@ -33,6 +33,19 @@ final class RendererException extends \RuntimeException
     }
 
     /**
+     * The render, counted with the time spent writing it to the browser,
+     * outlasted RenderChannel::OVERALL_DEADLINE_FACTOR times its deadline.
+     * Usually a client that has stopped reading.
+     */
+    public static function overallDeadline(float $seconds): self
+    {
+        return new self(
+            sprintf('Render exceeded its %.1fs overall cap, counting the time spent writing to the client.', $seconds),
+            'render_deadline',
+        );
+    }
+
+    /**
      * A render that asked this process for more work than one render may.
      *
      * Deliberately not a renderer fault, though it surfaces here: the

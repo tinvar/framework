@@ -51,8 +51,9 @@ final class RenderChannel
      * not, which left the gap that matters most: a page looping over a
      * collection and issuing a query per item does not take fifteen seconds
      * to become a problem, it becomes one at the database. The deadline
-     * bounds how long a render may WAIT; these bound how much work it may
-     * ask this process to do.
+     * bounds how long a render may WAIT -- on the renderer and its answers,
+     * never on the browser it is written to (see OVERALL_DEADLINE_FACTOR);
+     * these bound how much work it may ask this process to do.
      */
     public const int MAX_QUERY_CALLS = 200;
     public const float MAX_QUERY_SECONDS = 5.0;
@@ -64,6 +65,21 @@ final class RenderChannel
      */
     public const int MAX_META_FRAMES = 64;
     public const int MAX_META_BYTES = 262_144;
+
+    /**
+     * The overall cap on one render's wall time, as a multiple of the
+     * deadline.
+     *
+     * The deadline leaves out the time spent handing bytes to the browser:
+     * a client reading slowly is not the render being slow, and counting
+     * it truncated pages the renderer had finished long before. But that
+     * time still holds a worker, so it is bounded too -- here, counting
+     * everything from the start of the render. It is checked between
+     * writes to the browser, so a single write that never returns is the
+     * SAPI's to stop (max_execution_time, request_terminate_timeout), as
+     * it is for any response.
+     */
+    public const int OVERALL_DEADLINE_FACTOR = 4;
 
     /**
      * @param array<string, mixed>  $frame   a render or fragment frame
@@ -99,8 +115,13 @@ final class RenderChannel
         $offset = 0;
         $done = false;
 
+        // When the deadline's clock started: the start of the render, moved
+        // later by every nanosecond spent in $sink. The deadline bounds the
+        // render, not the browser it is being written to.
+        $deadlineFrom = $started;
+
         try {
-            $this->write($socket, $this->codec->encodeFrame($frame), $started);
+            $this->write($socket, $this->codec->encodeFrame($frame), $started, $deadlineFrom);
 
             // No switch here on purpose. `switch` counts as a breakable level in
             // PHP, so `break 2` inside one escapes the switch and the inner
@@ -119,7 +140,11 @@ final class RenderChannel
                         $firstByteNs ??= hrtime(true) - $started;
                         $bytes += \strlen($payload);
                         $chunks++;
+
+                        $at = hrtime(true);
                         $sink($payload);
+                        $deadlineFrom += hrtime(true) - $at;
+                        $this->assertWithinOverallCap($started);
                     } elseif ($type === Frame::QUERY) {
                         $calls = Frame::readQueryBatch($message);
                         $queryBatches++;
@@ -146,7 +171,7 @@ final class RenderChannel
                             );
                         }
 
-                        $this->write($socket, $this->codec->encodeFrame(Frame::result($results)), $started);
+                        $this->write($socket, $this->codec->encodeFrame(Frame::result($results)), $started, $deadlineFrom);
                     } elseif ($type === Frame::MINT) {
                         // The renderer is the only side that knows which
                         // <Deferred> boundaries exist and what props they got,
@@ -189,7 +214,7 @@ final class RenderChannel
                             }
                         }
 
-                        $this->write($socket, $this->codec->encodeFrame(Frame::minted($tokens)), $started);
+                        $this->write($socket, $this->codec->encodeFrame(Frame::minted($tokens)), $started, $deadlineFrom);
                     } elseif ($type === Frame::META) {
                         $metaBytes += \strlen(json_encode($message, JSON_PARTIAL_OUTPUT_ON_ERROR) ?: '');
                         if (\count($meta) >= self::MAX_META_FRAMES || $metaBytes > self::MAX_META_BYTES) {
@@ -213,7 +238,7 @@ final class RenderChannel
                 }
 
                 $at = hrtime(true);
-                $read = $this->read($socket, $started);
+                $read = $this->read($socket, $started, $deadlineFrom);
                 $waitNs += hrtime(true) - $at;
 
                 if ($read === null) {
@@ -327,11 +352,11 @@ final class RenderChannel
      *
      * @param resource $socket
      */
-    private function write($socket, string $bytes, float $startedNs): void
+    private function write($socket, string $bytes, float $startedNs, float $deadlineFromNs): void
     {
         $total = \strlen($bytes);
         for ($written = 0; $written < $total;) {
-            $this->await($socket, $startedNs, forWrite: true);
+            $this->await($socket, $startedNs, $deadlineFromNs, forWrite: true);
 
             $n = @fwrite($socket, substr($bytes, $written));
             if ($n === false) {
@@ -344,14 +369,25 @@ final class RenderChannel
     /**
      * Waits until the socket is readable (or writable), or the deadline passes.
      *
+     * The deadline runs from $deadlineFromNs, which leaves out the time spent
+     * writing to the browser. Once it has passed, the socket is still polled
+     * -- with no timeout -- before giving up: bytes the renderer has already
+     * sent are a render that finished, and refusing to read them truncated a
+     * page that was sitting complete in the socket. The overall cap, counted
+     * from $startedNs, bounds the wait as well.
+     *
      * @param resource $socket
      */
-    private function await($socket, float $startedNs, bool $forWrite = false): void
+    private function await($socket, float $startedNs, float $deadlineFromNs, bool $forWrite = false): void
     {
-        $remaining = $this->deadlineSeconds - (hrtime(true) - $startedNs) / 1e9;
-        if ($remaining <= 0) {
-            throw RendererException::deadline($this->deadlineSeconds);
+        $now = hrtime(true);
+        $deadlineLeft = $this->deadlineSeconds - ($now - $deadlineFromNs) / 1e9;
+        $overallLeft = $this->overallSeconds() - ($now - $startedNs) / 1e9;
+        if ($overallLeft <= 0) {
+            throw $this->timedOut($deadlineLeft);
         }
+
+        $remaining = max(0.0, min($deadlineLeft, $overallLeft));
 
         $read = $forWrite ? null : [$socket];
         $write = $forWrite ? [$socket] : null;
@@ -362,7 +398,31 @@ final class RenderChannel
             throw RendererException::closedEarly();
         }
         if ($ready === 0) {
-            throw RendererException::deadline($this->deadlineSeconds);
+            throw $this->timedOut($this->deadlineSeconds - (hrtime(true) - $deadlineFromNs) / 1e9);
+        }
+    }
+
+    /**
+     * The deadline's failure when the render itself ran out of time, and
+     * the overall cap's only when the browser is what used it up.
+     */
+    private function timedOut(float $deadlineLeft): RendererException
+    {
+        return $deadlineLeft <= 0
+            ? RendererException::deadline($this->deadlineSeconds)
+            : RendererException::overallDeadline($this->overallSeconds());
+    }
+
+    private function overallSeconds(): float
+    {
+        return $this->deadlineSeconds * self::OVERALL_DEADLINE_FACTOR;
+    }
+
+    /** See OVERALL_DEADLINE_FACTOR: the bound on everything, the browser included. */
+    private function assertWithinOverallCap(float $startedNs): void
+    {
+        if ((hrtime(true) - $startedNs) / 1e9 >= $this->overallSeconds()) {
+            throw RendererException::overallDeadline($this->overallSeconds());
         }
     }
 
@@ -372,9 +432,9 @@ final class RenderChannel
      *
      * @param resource $socket
      */
-    private function read($socket, float $startedNs): ?string
+    private function read($socket, float $startedNs, float $deadlineFromNs): ?string
     {
-        $this->await($socket, $startedNs);
+        $this->await($socket, $startedNs, $deadlineFromNs);
 
         $chunk = fread($socket, self::READ_BYTES);
         if ($chunk === false || ($chunk === '' && feof($socket))) {
