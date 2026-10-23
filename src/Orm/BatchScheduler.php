@@ -28,8 +28,11 @@ final class BatchScheduler
      *
      * Two fibers awaiting the same relation on the same parent join one group,
      * so a shared row costs one statement, not two.
+     *
+     * @param array<string, Model> $parents group key => parent: the one being
+     *        read, and the rest of its result set that has not loaded it
      */
-    public function await(string $key, RelationMeta $relation, Model $parent, string $groupKey): void
+    public function await(string $key, RelationMeta $relation, array $parents): void
     {
         // The key comes from the caller because it carries the tenant: two
         // fibers awaiting the same relation in DIFFERENT tenants must not join
@@ -41,7 +44,9 @@ final class BatchScheduler
         // it was grouped. The awaiting fiber's tenant is recorded here and
         // re-entered at flush time.
         $this->pending[$key] ??= ['relation' => $relation, 'tenant' => $this->orm->tenant(), 'parents' => []];
-        $this->pending[$key]['parents'][$groupKey] = $parent;
+        foreach ($parents as $groupKey => $parent) {
+            $this->pending[$key]['parents'][$groupKey] = $parent;
+        }
 
         \Fiber::suspend();
     }

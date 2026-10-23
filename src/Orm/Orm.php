@@ -1089,7 +1089,20 @@ final class Orm
             // other relation wanted in this tick. Outside one, fall back to
             // Level 1 across the result set.
             if ($this->scheduler !== null && \Fiber::getCurrent() !== null) {
-                $this->scheduler->await($key, $relation, $parent, $groupKey);
+                // With the rest of the result set, as Level 1 widens to it.
+                // Registering this parent alone made a fiber that iterates a
+                // result set suspend once per row: 1+N statements inside a
+                // render for a loop that costs 1+1 outside one.
+                $parents = [];
+                foreach ($this->batchWith($parent) as $sibling) {
+                    $siblingKey = $sibling->primaryKey();
+                    if (!$this->hasRows($key, $siblingKey)) {
+                        $parents[$siblingKey] = $sibling;
+                    }
+                }
+                $parents[$groupKey] = $parent;
+
+                $this->scheduler->await($key, $relation, $parents);
             } else {
                 $this->loadRelationRows($relation, $this->batchWith($parent));
             }
