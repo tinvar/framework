@@ -112,6 +112,59 @@ describe('acrossTenants', function () {
 
         expect($leaked)->toBeNull('the unscoped read did not survive into a scoped one');
     });
+
+    // An explicit switch must win over an enclosing acrossTenants(), or
+    // actAs() would name a tenant and still read every tenant's rows.
+    it('re-applies scoping for an actAs nested inside it', function () {
+        $fixture = new TenantFixture();
+        $orm = tenantOrm($fixture);
+
+        $names = $orm->acrossTenants(fn (): array => $orm->actAs('acme', fn (): array => array_map(
+            static fn (Script $s): string => $s->name,
+            $orm->all(Script::class),
+        )));
+
+        expect($names)->toHaveCount(2)->each->toStartWith('acme-');
+    });
+
+    it('restores the unscoped state after that nested actAs', function () {
+        $orm = tenantOrm(new TenantFixture());
+
+        $count = $orm->acrossTenants(function () use ($orm): int {
+            $orm->actAs('acme', fn (): array => $orm->all(Script::class));
+
+            // Back under acrossTenants: every tenant again.
+            return \count($orm->all(Script::class));
+        });
+
+        expect($count)->toBe(4);
+    });
+
+    // "Context is fiber-local, so a suspended fiber can't leak a switch to
+    // another." The render scheduler interleaves fibers in one tick.
+    it('does not leak unscoped state from one fiber to another', function () {
+        $orm = tenantOrm(new TenantFixture());
+
+        $unscoped = new Fiber(function () use ($orm): bool {
+            return $orm->acrossTenants(function () use ($orm): bool {
+                Fiber::suspend();          // another fiber runs here
+
+                return $orm->isUnscoped();
+            });
+        });
+
+        $unscoped->start();
+
+        // While that fiber sits inside acrossTenants, this context is scoped.
+        expect($orm->isUnscoped())->toBeFalse();
+
+        $scoped = new Fiber(static fn (): bool => $orm->isUnscoped());
+        $scoped->start();
+        expect($scoped->getReturn())->toBeFalse('a sibling fiber is unaffected');
+
+        $unscoped->resume();
+        expect($unscoped->getReturn())->toBeTrue('its own state survived the suspend');
+    });
 });
 
 it('leaves a model with no TenantScoped attribute alone', function () {

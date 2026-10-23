@@ -56,13 +56,40 @@ final class Response
      */
     public static function redirect(string $location, int $status = 302): self
     {
-        if (!str_starts_with($location, '/') || str_starts_with($location, '//')) {
-            throw new \InvalidArgumentException(
-                'A redirect target must be a root-relative path. Use Response::location() for an external URL.'
-            );
-        }
+        self::assertSameOrigin($location);
 
         return self::make($status, '', ['location' => $location]);
+    }
+
+    /**
+     * A redirect target must be a path on this origin, and nothing else.
+     *
+     * `//evil.example` is protocol-relative. `/\evil.example` is treated the
+     * same way by browsers, so a check for `//` alone is not enough -- and a
+     * backslash anywhere is rejected rather than reasoned about, since
+     * browsers normalize it to `/` in paths.
+     */
+    private static function assertSameOrigin(string $location): void
+    {
+        $refuse = static fn (string $why): never => throw new \InvalidArgumentException(
+            "A redirect target must be a root-relative path ({$why}). "
+            . 'Use Response::location() for an allowlisted external URL.'
+        );
+
+        if (!str_starts_with($location, '/')) {
+            $refuse('it does not start with /');
+        }
+        if (str_contains($location, '\\')) {
+            $refuse('it contains a backslash');
+        }
+        if (str_starts_with($location, '//')) {
+            $refuse('it is protocol-relative');
+        }
+
+        $parts = parse_url($location);
+        if ($parts === false || isset($parts['scheme']) || isset($parts['host']) || isset($parts['user'])) {
+            $refuse('it names a scheme or host');
+        }
     }
 
     /**

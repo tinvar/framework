@@ -18,13 +18,25 @@ final class Orm
 
     private ?BatchScheduler $scheduler = null;
 
-    /** Depth of acrossTenants() calls; above zero, tenant scoping is lifted. */
-    private int $unscoped = 0;
+    /**
+     * Depth of acrossTenants() calls outside any fiber.
+     *
+     * Kept per fiber as well, below: "Context is fiber-local, so a suspended
+     * fiber can't leak a switch to another." Inside a render the scheduler
+     * interleaves fibers, so a single shared flag would lift scoping for every
+     * other query running in the same tick.
+     */
+    private int $unscopedMain = 0;
+
+    /** @var \WeakMap<\Fiber, int> */
+    private \WeakMap $unscopedByFiber;
 
     public function __construct(
         private readonly Connection $connection,
         private readonly IdentityMap $identityMap = new IdentityMap(),
-    ) {}
+    ) {
+        $this->unscopedByFiber = new \WeakMap();
+    }
 
     public function connection(): Connection
     {
@@ -98,12 +110,19 @@ final class Orm
     public function actAs(string $tenant, \Closure $work): mixed
     {
         $previous = $this->identityMap->tenant();
+        $previousUnscoped = $this->unscopedDepth();
+
+        // An explicit switch wins over an enclosing acrossTenants(). Without
+        // this, actAs() inside acrossTenants() would name a tenant and still
+        // read every tenant's rows, which is the opposite of what it says.
+        $this->setUnscopedDepth(0);
         $this->switchTenant($tenant);
 
         try {
             return $work();
         } finally {
             $this->switchTenant($previous);
+            $this->setUnscopedDepth($previousUnscoped);
         }
     }
 
@@ -120,12 +139,12 @@ final class Orm
      */
     public function acrossTenants(\Closure $work): mixed
     {
-        $this->unscoped++;
+        $this->setUnscopedDepth($this->unscopedDepth() + 1);
 
         try {
             return $work();
         } finally {
-            $this->unscoped--;
+            $this->setUnscopedDepth(max(0, $this->unscopedDepth() - 1));
             // The map is cleared on exit: rows read unscoped must not be
             // served to a later scoped read.
             $this->identityMap->flush();
@@ -135,7 +154,32 @@ final class Orm
 
     public function isUnscoped(): bool
     {
-        return $this->unscoped > 0;
+        return $this->unscopedDepth() > 0;
+    }
+
+    /** Scoping state for the fiber that is asking, or for the main context. */
+    private function unscopedDepth(): int
+    {
+        $fiber = \Fiber::getCurrent();
+
+        if ($fiber === null) {
+            return $this->unscopedMain;
+        }
+
+        return $this->unscopedByFiber[$fiber] ?? 0;
+    }
+
+    private function setUnscopedDepth(int $depth): void
+    {
+        $fiber = \Fiber::getCurrent();
+
+        if ($fiber === null) {
+            $this->unscopedMain = $depth;
+
+            return;
+        }
+
+        $this->unscopedByFiber[$fiber] = $depth;
     }
 
     /**
@@ -145,7 +189,7 @@ final class Orm
      */
     private function tenantScope(ModelMeta $meta): array
     {
-        if ($meta->tenantColumn === null || $this->unscoped > 0) {
+        if ($meta->tenantColumn === null || $this->unscopedDepth() > 0) {
             return ['', []];
         }
 

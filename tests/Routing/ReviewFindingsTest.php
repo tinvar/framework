@@ -130,6 +130,19 @@ it('refuses an unbindable loader parameter at registration', function () {
         ->toThrow(RoutingException::class, 'which the router cannot bind');
 });
 
+it('refuses a decoded control character in a path segment', function () {
+    // The raw check cannot see %0a, and a decoded newline would reach logs
+    // through a parameter value.
+    expect(fn () => Request::normalizePath('/sites/a%0aSet-Cookie:%20x/racks/y'))
+        ->toThrow(NotFoundException::class);
+});
+
+it('does not put a client-supplied id in a not-found message', function () {
+    $message = NotFoundException::model('Rack', "evil\r\nFAKE LOG LINE")->getMessage();
+
+    expect($message)->not->toContain('FAKE LOG LINE')->toContain('Rack');
+});
+
 it('binds a bool path parameter, and 404s on a value that is not one', function () {
     [$router] = routerOf([F\BoolParamPage::class]);
 
@@ -170,9 +183,23 @@ describe('response hardening', function () {
             ->toThrow(InvalidArgumentException::class);
     });
 
+    // Browsers treat /\host the same as //host, so checking for // alone is
+    // not enough.
     it('refuses an off-origin redirect', function (string $target) {
         expect(fn () => Response::redirect($target))->toThrow(InvalidArgumentException::class);
-    })->with(['absolute' => ['https://evil.example/'], 'scheme-relative' => ['//evil.example/'], 'relative' => ['x']]);
+    })->with([
+        'absolute' => ['https://evil.example/'],
+        'scheme-relative' => ['//evil.example/'],
+        'backslash-relative' => ['/\\evil.example/'],
+        'backslash anywhere' => ['/path\\evil'],
+        'relative' => ['x'],
+        'userinfo' => ['/\\\\evil.example'],
+    ]);
+
+    it('allows an ordinary same-origin path', function () {
+        expect(Response::redirect('/racks/0192f3a1?tab=power')->header('location'))
+            ->toBe('/racks/0192f3a1?tab=power');
+    });
 
     it('allows an allowlisted external target through location()', function () {
         expect(Response::location('https://partner.example/sso')->header('location'))

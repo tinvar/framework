@@ -18,9 +18,13 @@ final class NotFoundException extends HttpException
         parent::__construct(404, $message, 'not_found');
     }
 
+    /**
+     * The id is not interpolated. It comes from the request, and these
+     * messages reach logs, where a control character forges lines.
+     */
     public static function model(string $class, string $id): self
     {
-        return new self("No {$class} with id {$id} in the active scope.");
+        return new self("No {$class} with the given id in the active scope.");
     }
 
     /**

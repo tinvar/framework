@@ -142,9 +142,12 @@ final class Request
 
             // A parameter is one segment. A decoded separator, a traversal
             // step or a null byte means the request is trying to be more.
+            // Control characters are checked again after decoding: the raw
+            // check above cannot see %0a, and a decoded newline reaches logs
+            // through parameter values.
             if ($decoded === '.' || $decoded === '..'
                 || str_contains($decoded, '/')
-                || str_contains($decoded, "\0")) {
+                || preg_match('/[\x00-\x1f\x7f]/', $decoded) === 1) {
                 // The segment is not interpolated: it is client-controlled and
                 // this message reaches logs.
                 throw new NotFoundException('A path segment is not a single path segment.');
