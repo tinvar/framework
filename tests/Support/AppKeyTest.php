@@ -47,8 +47,9 @@ it('prefers the environment, and leaves the file alone', function () {
 
 // Two first requests at once: one key wins, and the other process reads it.
 it('takes the key already in place when another process got there first', function () {
-    mkdir($this->dir);
+    mkdir($this->dir, 0700);
     file_put_contents($this->file, str_repeat('w', 44) . "\n");
+    chmod($this->file, 0600);
 
     expect(AppKey::resolve('TINVAR_TEST_KEY', $this->file))->toBe(str_repeat('w', 44));
 });
@@ -77,10 +78,42 @@ it('refuses a short key from either source rather than replacing it', function (
     if ($source === 'env') {
         putenv('TINVAR_TEST_KEY=short');
     } else {
-        mkdir($this->dir);
+        mkdir($this->dir, 0700);
         file_put_contents($this->file, "short\n");
+        chmod($this->file, 0600);
     }
 
     expect(fn () => AppKey::resolve('TINVAR_TEST_KEY', $this->file))
         ->toThrow(InvalidArgumentException::class, 'at least 32 bytes');
 })->with(['env', 'file']);
+
+// Whoever can write the directory can plant a key they know; a readable
+// file is a leaked key; a symlink can point anywhere.
+describe('a key file it cannot trust', function () {
+    it('refuses a file others can read', function () {
+        mkdir($this->dir, 0700);
+        file_put_contents($this->file, str_repeat('w', 44));
+        chmod($this->file, 0644);
+
+        expect(fn () => AppKey::resolve('TINVAR_TEST_KEY', $this->file))->toThrow(RuntimeException::class, 'mode 0600');
+    });
+
+    it('refuses a directory others can write', function () {
+        mkdir($this->dir);
+        chmod($this->dir, 0777);
+
+        expect(fn () => AppKey::resolve('TINVAR_TEST_KEY', $this->file))->toThrow(RuntimeException::class, 'writable by no one else');
+    });
+
+    it('refuses a symlink in place of the file', function () {
+        mkdir($this->dir, 0700);
+        $target = $this->dir . '/elsewhere';
+        file_put_contents($target, str_repeat('w', 44));
+        chmod($target, 0600);
+        symlink($target, $this->file);
+
+        expect(fn () => AppKey::resolve('TINVAR_TEST_KEY', $this->file))->toThrow(RuntimeException::class, 'regular file');
+        unlink($this->file);
+        unlink($target);
+    });
+});

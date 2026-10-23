@@ -38,6 +38,8 @@ final class AppKey
             return self::checked($fromEnv, "\${$envName}");
         }
 
+        self::assertTrusted($file);
+
         $existing = self::read($file);
         if ($existing !== null) {
             return self::checked($existing, $file);
@@ -110,6 +112,48 @@ final class AppKey
         }
 
         fclose($handle);
+    }
+
+    /**
+     * The key file is believed only if nobody else could have put it there
+     * or read it. Someone who can write the directory can plant a key they
+     * know -- and then forge every session cookie and token -- and a
+     * readable file is a leaked key. A symlink is refused outright: it can
+     * point anywhere, at any moment.
+     *
+     * Skipped where POSIX ownership and modes do not exist (Windows), which
+     * relies on the profile's ACLs instead.
+     */
+    private static function assertTrusted(string $file): void
+    {
+        if (PHP_OS_FAMILY === 'Windows' || !\function_exists('posix_geteuid')) {
+            return;
+        }
+
+        $me = posix_geteuid();
+        $dir = \dirname($file);
+
+        clearstatcache();
+
+        $dirStat = is_link($dir) || file_exists($dir) ? lstat($dir) : false;
+        if ($dirStat !== false) {
+            if (is_link($dir) || $dirStat['uid'] !== $me || ($dirStat['mode'] & 0022) !== 0) {
+                throw new \RuntimeException(
+                    "Refusing the application key directory {$dir}: it must be a directory owned by this user "
+                    . 'and writable by no one else.',
+                );
+            }
+        }
+
+        $fileStat = is_link($file) || file_exists($file) ? lstat($file) : false;
+        if ($fileStat !== false) {
+            if (is_link($file) || $fileStat['uid'] !== $me || ($fileStat['mode'] & 0077) !== 0) {
+                throw new \RuntimeException(
+                    "Refusing the application key file {$file}: it must be a regular file owned by this user "
+                    . 'with mode 0600.',
+                );
+            }
+        }
     }
 
     private static function read(string $file): ?string
