@@ -30,6 +30,15 @@ use Tinvar\Auth\AuthContext;
  */
 final class Throttle
 {
+    /**
+     * The bucket for a caller the application could not identify.
+     *
+     * Shared on purpose; see addressFor(). It is a reserved name rather than
+     * a plausible address so it cannot collide with a real one.
+     */
+    public const string UNIDENTIFIED = "\0unidentified";
+
+
     /** @param \Closure(Request): string $addressOf how to identify the caller's origin */
     public function __construct(
         private readonly ThrottleStore $store,
@@ -44,32 +53,71 @@ final class Throttle
      * @param int    $limit  hits allowed per window
      * @param int    $window seconds
      */
+    /**
+     * Records a hit against every bucket that applies.
+     *
+     * @param string $name   the bucket, e.g. 'actions'
+     * @param int    $limit  hits allowed per window
+     * @param int    $window seconds
+     */
     public function hit(string $name, Request $request, int $limit, int $window): ThrottleResult
     {
-        // BOTH buckets when there is a user, not one or the other.
-        //
-        // Choosing a bucket by whether a credential was sent let the caller
-        // choose which budget to spend: send none and spend the address's,
-        // send one and spend that account's, and with N accounts from one
-        // address get N times the limit -- the same "pool of addresses"
-        // evasion the keying rule argues against, with accounts substituted
-        // for addresses. Counting both keeps the stated benefit (one
-        // account's behaviour cannot exhaust a NAT's budget, because the
-        // per-user limit bites first) and restores a ceiling on what one
-        // address can do.
-        $user = $this->auth->id();
-        $results = [$this->count("{$name}|ip|" . $this->addressFor($request), $limit, $window)];
+        $results = [$this->hitAddress($name, $request, $limit, $window)];
 
+        $user = $this->auth->id();
         if ($user !== null) {
-            $results[] = $this->count("{$name}|user|{$user}", $limit, $window);
+            $results[] = $this->hitUser($name, $limit, $window);
         }
 
-        // The strictest answer wins, and the caller is told about whichever
-        // budget is closest to running out.
-        usort($results, static fn (ThrottleResult $a, ThrottleResult $b): int
+        return self::strictest($results);
+    }
+
+    /**
+     * The address half, which needs nothing to have run first.
+     *
+     * Split out so it can go OUTERMOST, before session and tenant
+     * resolution: a caller hammering an endpoint should not cost a session
+     * lookup on the way to being refused.
+     */
+    public function hitAddress(string $name, Request $request, int $limit, int $window): ThrottleResult
+    {
+        return $this->count("{$name}|ip|" . $this->addressFor($request), $limit, $window);
+    }
+
+    /**
+     * The per-account half, which needs the session to have been resolved.
+     *
+     * Separate because the two cannot run in the same place. Counting both
+     * outermost looked right and silently did nothing: the auth context is
+     * populated by middleware, so a throttle ahead of it always saw an
+     * anonymous caller and the per-user limit never applied at all.
+     */
+    public function hitUser(string $name, int $limit, int $window): ?ThrottleResult
+    {
+        $user = $this->auth->id();
+
+        return $user === null ? null : $this->count("{$name}|user|{$user}", $limit, $window);
+    }
+
+    /**
+     * The strictest of several answers.
+     *
+     * The caller is told about whichever budget is closest to running out,
+     * and refused if any is spent.
+     *
+     * @param list<ThrottleResult|null> $results
+     */
+    public static function strictest(array $results): ThrottleResult
+    {
+        $present = array_values(array_filter($results));
+        if ($present === []) {
+            throw new \InvalidArgumentException('Nothing was counted, so there is no answer to give.');
+        }
+
+        usort($present, static fn (ThrottleResult $a, ThrottleResult $b): int
             => [$a->allowed, $a->remaining] <=> [$b->allowed, $b->remaining]);
 
-        return $results[0];
+        return $present[0];
     }
 
     private function count(string $key, int $limit, int $window): ThrottleResult
@@ -85,27 +133,30 @@ final class Throttle
     }
 
     /**
-     * The address to charge, never an empty one.
+     * The address to charge when the application could not name one.
      *
-     * An empty address collapses every signed-out caller into one bucket, so
-     * one attacker exhausts the anonymous budget for the whole site -- a
-     * cheaper denial of service than the flood the throttle exists to stop.
-     * The framework already refuses an empty session id in two places for
-     * the same reason: one constant means everyone shares one binding.
+     * There is a real tension here and it is worth stating rather than
+     * picking quietly. One shared bucket means a single attacker can exhaust
+     * the anonymous budget for every unidentifiable caller -- a cheaper
+     * denial of service than the flood being prevented. A unique key per
+     * request means no limit at all.
      *
-     * An unidentifiable caller gets its own bucket rather than everyone's.
-     * That means it is effectively unlimited, which is the honest failure:
-     * the alternative is limiting every anonymous visitor together, and a
-     * misconfigured proxy would then look exactly like an attack.
+     * A rate limit is a security control, and a security control that cannot
+     * identify its subject fails CLOSED. So: one shared bucket, which is
+     * deliberately conspicuous -- an application in this state will see the
+     * refusals immediately, which is the correct amount of noise for a
+     * misconfigured proxy. A per-request random key would have hidden it
+     * forever.
      *
      * A note for whoever writes the closure: do not trust X-Forwarded-For
      * unless the proxy count is pinned. An attacker-chosen address is an
-     * infinite supply of buckets.
+     * infinite supply of buckets, which is the same fail-open by another
+     * route.
      */
     private function addressFor(Request $request): string
     {
         $address = ($this->addressOf)($request);
 
-        return $address === '' ? 'unidentified:' . bin2hex(random_bytes(8)) : $address;
+        return $address === '' ? self::UNIDENTIFIED : $address;
     }
 }

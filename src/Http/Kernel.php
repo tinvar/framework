@@ -167,21 +167,25 @@ final class Kernel
 
         $global = array_map(static fn (string $class): Middleware => $resolver($class), $globalMiddleware);
 
-        // Throttling is OUTERMOST -- genuinely, ahead of the application's
-        // own global middleware and not merely ahead of CSRF and auth. The
-        // comment here used to claim the former while the code did the
-        // latter, so session start, tenant resolution from host and whatever
-        // database work those do were paid for by every refused request.
+        // The address pass is outermost -- ahead of the application's own
+        // global middleware, so a refused request does not pay for session
+        // start or tenant resolution. The account pass runs AFTER that
+        // stack, because the auth context is populated by middleware and a
+        // throttle in front of it always sees an anonymous caller: putting
+        // both outermost looked right and silently disabled the per-user
+        // limit entirely.
         $this->actionStack = new Pipeline([
-            ...$this->throttleFor($throttle, 'actions', $limits),
+            ...$this->throttleFor($throttle, 'actions', $limits, byAddress: true),
             ...$global,
+            ...$this->throttleFor($throttle, 'actions', $limits, byAddress: false),
             new VerifyCsrfToken(),
             new RequireAuthentication($this->auth, $this->entryPointFor(...)),
         ]);
 
         $this->queryStack = new Pipeline([
-            ...$this->throttleFor($throttle, 'queries', $limits),
+            ...$this->throttleFor($throttle, 'queries', $limits, byAddress: true),
             ...$global,
+            ...$this->throttleFor($throttle, 'queries', $limits, byAddress: false),
             new VerifyCsrfToken(),
             new RequireAuthentication($this->auth, $this->entryPointFor(...)),
         ]);
@@ -194,8 +198,9 @@ final class Kernel
         // minting is not authorization, and every token it hands back still
         // has to survive the originating route's #[Authorize] chain on use.
         $this->bootstrapStack = new Pipeline([
-            ...$this->throttleFor($throttle, 'bootstrap', $limits),
+            ...$this->throttleFor($throttle, 'bootstrap', $limits, byAddress: true),
             ...$global,
+            ...$this->throttleFor($throttle, 'bootstrap', $limits, byAddress: false),
             new VerifyCsrfToken(),
         ]);
 
@@ -327,12 +332,16 @@ final class Kernel
      * @param array<string, int> $limits
      * @return list<Middleware>
      */
-    private function throttleFor(?Throttle $throttle, string $name, array $limits): array
-    {
+    private function throttleFor(
+        ?Throttle $throttle,
+        string $name,
+        array $limits,
+        bool $byAddress = true,
+    ): array {
         if ($throttle === null || !isset($limits[$name])) {
             return [];
         }
 
-        return [new ThrottleRequests($throttle, $name, $limits[$name])];
+        return [new ThrottleRequests($throttle, $name, $limits[$name], byAddress: $byAddress)];
     }
 }

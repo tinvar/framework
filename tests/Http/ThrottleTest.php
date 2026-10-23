@@ -188,21 +188,69 @@ describe('who a limit is keyed to', function () {
     });
 
     /**
-     * An empty address collapses every signed-out caller into one bucket, so
-     * one attacker exhausts the anonymous budget for the whole site -- a
-     * cheaper denial of service than the flood being prevented.
+     * A rate limit is a security control, and one that cannot identify its
+     * subject fails CLOSED. Two bad options: one shared bucket lets a single
+     * attacker exhaust the anonymous budget, a unique key per request is no
+     * limit at all. The shared bucket is the safe direction AND the
+     * conspicuous one -- a misconfigured proxy shows up as refusals
+     * immediately, where a random key would hide it forever.
      */
-    it('does not put every unidentifiable caller in one bucket', function () {
-        $store = new ArrayThrottleStore();
-        $throttle = new Throttle($store, new AuthContext(), static fn (Request $r): string => '');
+    it('puts unidentifiable callers in one bucket rather than none', function () {
+        $throttle = new Throttle(new ArrayThrottleStore(), new AuthContext(), static fn (Request $r): string => '');
         $request = Request::post('/_action/x');
 
-        $allowed = [];
-        for ($i = 0; $i < 5; $i++) {
-            $allowed[] = $throttle->hit('actions', $request, 1, 60)->allowed;
-        }
+        $throttle->hit('actions', $request, 2, 60);
+        $throttle->hit('actions', $request, 2, 60);
 
-        expect($allowed)->toBe([true, true, true, true, true]);
+        expect($throttle->hit('actions', $request, 2, 60)->allowed)
+            ->toBeFalse('no limit at all is the worse failure');
+    });
+
+    // Reserved, so it cannot collide with a real address.
+    it('uses a bucket name no address can spell', function () {
+        expect(Throttle::UNIDENTIFIED)->toContain("\0");
+    });
+});
+
+/**
+ * The two halves cannot run in the same place. The auth context is populated
+ * by middleware, so a throttle ahead of it always sees an anonymous caller --
+ * putting both outermost looked right and silently disabled the per-user
+ * limit entirely.
+ */
+describe('the two passes', function () {
+    it('charges only the address before the session is resolved', function () {
+        [$throttle, $auth] = throttle();
+        $request = new Request('POST', '/_action/x', ['x-forwarded-for' => '198.51.100.1']);
+
+        // Outermost: nothing has signed anyone in yet.
+        $throttle->hitAddress('actions', $request, 2, 60);
+        $throttle->hitAddress('actions', $request, 2, 60);
+
+        // The account pass, once the session middleware has run.
+        $auth->login(new AuthUser('u-1'));
+
+        expect($throttle->hitUser('actions', 2, 60)?->allowed)
+            ->toBeTrue('the account has its own, untouched budget');
+    });
+
+    it('has nothing to charge for an anonymous caller', function () {
+        [$throttle] = throttle();
+
+        expect($throttle->hitUser('actions', 2, 60))->toBeNull();
+    });
+
+    it('reports the strictest of the two', function () {
+        [$throttle, $auth] = throttle();
+        $request = new Request('POST', '/_action/x', ['x-forwarded-for' => '198.51.100.1']);
+        $auth->login(new AuthUser('u-1'));
+
+        $address = $throttle->hitAddress('actions', $request, 10, 60);
+        $throttle->hitUser('actions', 10, 60);
+        $user = $throttle->hitUser('actions', 10, 60);
+
+        expect(Throttle::strictest([$address, $user])->remaining)
+            ->toBe(8, 'the account is further along than the address');
     });
 });
 

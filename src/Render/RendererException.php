@@ -33,6 +33,24 @@ final class RendererException extends \RuntimeException
     }
 
     /**
+     * A render that asked this process for more work than one render may.
+     *
+     * Deliberately not a renderer fault, though it surfaces here: the
+     * renderer asked, and PHP is the side that decided to stop. The message
+     * names the budget rather than the query, because which call crossed the
+     * line is an accident of ordering.
+     */
+    public static function queryBudget(string $what): self
+    {
+        return new self(
+            "This render asked for {$what}, which is more than one render may. "
+            . 'A page issuing a query per item of a collection is the usual cause; '
+            . 'batch them, or move the work into a loader.',
+            'render_query_budget',
+        );
+    }
+
+    /**
      * The renderer is the "runs third-party npm code" tier of the trust
      * boundary table, and the spec says its stacks and hints never reach the
      * browser. The code and digest are structured values this side asked for;

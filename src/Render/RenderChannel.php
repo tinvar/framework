@@ -32,7 +32,23 @@ final class RenderChannel
         private readonly float $deadlineSeconds = 15.0,
         private readonly float $connectTimeoutSeconds = 2.0,
         private readonly bool $debug = false,
+        private readonly int $maxQueryCalls = self::MAX_QUERY_CALLS,
+        private readonly float $maxQuerySeconds = self::MAX_QUERY_SECONDS,
     ) {}
+
+    /**
+     * tinvar-spec.md, "Resource limits": "Per render: 200 query calls and 5
+     * seconds of total query time."
+     *
+     * The deadline beside these was enforced from the start and these were
+     * not, which left the gap that matters most: a page looping over a
+     * collection and issuing a query per item does not take fifteen seconds
+     * to become a problem, it becomes one at the database. The deadline
+     * bounds how long a render may WAIT; these bound how much work it may
+     * ask this process to do.
+     */
+    public const int MAX_QUERY_CALLS = 200;
+    public const float MAX_QUERY_SECONDS = 5.0;
 
     /**
      * @param array<string, mixed>  $frame   a render or fragment frame
@@ -92,9 +108,24 @@ final class RenderChannel
                         $queryBatches++;
                         $queryCalls += \count($calls);
 
+                        // Checked BEFORE running them: the point of a budget
+                        // is to stop the work, not to notice afterwards that
+                        // it happened.
+                        if ($queryCalls > $this->maxQueryCalls) {
+                            throw RendererException::queryBudget(
+                                "more than {$this->maxQueryCalls} query calls"
+                            );
+                        }
+
                         $at = hrtime(true);
                         $results = $this->runner->run($calls, $allowed);
                         $queryNs += hrtime(true) - $at;
+
+                        if ($queryNs / 1e9 > $this->maxQuerySeconds) {
+                            throw RendererException::queryBudget(
+                                sprintf('more than %.1fs of query time', $this->maxQuerySeconds)
+                            );
+                        }
 
                         $this->write($socket, $this->codec->encodeFrame(Frame::result($results)));
                     } elseif ($type === Frame::MINT) {
