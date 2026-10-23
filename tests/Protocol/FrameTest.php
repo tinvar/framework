@@ -124,6 +124,36 @@ describe('the mint exchange', function () {
         'props as a list' => [['t' => 'mint', 'm' => [['id' => 0, 'component' => 'C', 'props' => ['a']]]]],
     ]);
 
+    /**
+     * Strictly an integer, as readQueryBatch already requires for the
+     * identical field. Accepting numeric strings and casting made "1", "01"
+     * and "0001" one id: each was signed and charged against the cap, one
+     * token came back, and the other boundaries waited forever.
+     */
+    it('refuses a numeric-string id', function () {
+        expect(fn () => Frame::readMintBatch([
+            't' => Frame::MINT,
+            'm' => [['id' => '01', 'component' => 'C', 'props' => []]],
+        ]))->toThrow(ProtocolException::class, 'non-negative integer');
+    });
+
+    it('refuses a negative id', function () {
+        expect(fn () => Frame::readMintBatch([
+            't' => Frame::MINT,
+            'm' => [['id' => -1, 'component' => 'C', 'props' => []]],
+        ]))->toThrow(ProtocolException::class, 'non-negative integer');
+    });
+
+    it('refuses duplicate ids in one batch', function () {
+        expect(fn () => Frame::readMintBatch([
+            't' => Frame::MINT,
+            'm' => [
+                ['id' => 1, 'component' => 'C', 'props' => []],
+                ['id' => 1, 'component' => 'D', 'props' => []],
+            ],
+        ]))->toThrow(ProtocolException::class, 'duplicate id');
+    });
+
     it('pairs each token with the request that asked for it', function () {
         expect(Frame::minted([3 => 'tok-c', 1 => 'tok-a']))
             ->toBe(['t' => Frame::MINTED, 'm' => [

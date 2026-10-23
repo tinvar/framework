@@ -156,6 +156,8 @@ final class Frame
         }
 
         $out = [];
+        $seen = [];
+
         foreach ($requests as $request) {
             if (!\is_array($request)) {
                 throw ProtocolException::malformed(self::MINT, 'each request must be a map');
@@ -165,9 +167,19 @@ final class Frame
             $component = $request['component'] ?? null;
             $props = $request['props'] ?? [];
 
-            if (!\is_int($id) && !(\is_string($id) && ctype_digit($id))) {
-                throw ProtocolException::malformed(self::MINT, "'id' must be an integer");
+            // Strictly an integer, as readQueryBatch already requires for the
+            // identical field. Accepting numeric strings and casting made
+            // "1", "01" and "0001" one id: each was signed and charged against
+            // the cap, one token came back, and the other boundaries' promises
+            // waited forever.
+            if (!\is_int($id) || $id < 0) {
+                throw ProtocolException::malformed(self::MINT, "'id' must be a non-negative integer");
             }
+            if (isset($seen[$id])) {
+                throw ProtocolException::malformed(self::MINT, "duplicate id {$id}");
+            }
+            $seen[$id] = true;
+
             if (!\is_string($component) || $component === '') {
                 throw ProtocolException::malformed(self::MINT, "'component' must be a non-empty string");
             }
@@ -175,7 +187,7 @@ final class Frame
                 throw ProtocolException::malformed(self::MINT, "'props' must be a map");
             }
 
-            $out[] = ['id' => (int) $id, 'component' => $component, 'props' => $props];
+            $out[] = ['id' => $id, 'component' => $component, 'props' => $props];
         }
 
         return $out;

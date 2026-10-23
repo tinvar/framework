@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Http;
 
+use Tinvar\Render\FragmentMinter;
 use Tinvar\Support\Signer;
 
 /**
@@ -29,4 +30,33 @@ final readonly class FragmentSupport
         public \Closure $render,
         public \Closure $sessionId,
     ) {}
+
+    /**
+     * The minter for one page render.
+     *
+     * Built HERE rather than taken as another closure, because that is the
+     * whole point: ADR 0009 promises the renderer cannot choose a token's
+     * route, params, panel, build, session or expiry, and that is a property
+     * of the framework only while the framework is what chooses them. An
+     * application supplying its own mint closure could get any of them wrong
+     * and hand the semi-trusted side exactly the control the ADR says it has
+     * not got.
+     *
+     * @param array<string, string> $params
+     */
+    public function minterFor(
+        Request $request,
+        string $route,
+        array $params,
+        string $panel = '',
+    ): FragmentMinter {
+        return new FragmentMinter(
+            signer: $this->signer,
+            route: $route,
+            params: $params,
+            panel: $panel,
+            build: $this->builds->current,
+            sessionId: ($this->sessionId)($request),
+        );
+    }
 }
