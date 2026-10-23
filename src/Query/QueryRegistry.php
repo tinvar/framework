@@ -73,6 +73,15 @@ final class QueryRegistry
         $declaration = $attribute->newInstance();
         $name = $declaration->name ?? Str::queryName($class);
 
+        // Replacing silently meant a route's allowlist entry, a cache key and
+        // a generated TypeScript function all started meaning a different
+        // class -- one with its own checks -- depending on which registered
+        // last. Two classes under one name is refused, as it is for actions.
+        $existing = $this->classes[$name] ?? null;
+        if ($existing !== null) {
+            throw new \InvalidArgumentException("Two queries are named '{$name}': {$existing} and {$class}.");
+        }
+
         // A batch has no signature to read arguments off, so #[Query(args:)]
         // is its only declaration. Without one, the runner checked no keys
         // and resolved no models: whatever the renderer sent reached
