@@ -81,18 +81,43 @@ final class Revalidator
     public const int MAX_ROUTES = 8;
 
     /**
-     * @param list<string> $invalidated route names the action revalidated
+     * The route names an action's revalidate() targets refer to: each a
+     * route name or the view of named pages, as the spec writes it --
+     * `revalidate('racks/show')`.
+     *
+     * Throws on a target that refers to nothing. Checked whether or not the
+     * client holds a token, so a typo fails the first time the action runs
+     * rather than only when someone happens to have the page open.
+     *
+     * @param list<string> $targets
+     * @return list<string>
+     */
+    public function routesFor(array $targets): array
+    {
+        $names = [];
+        foreach ($targets as $target) {
+            foreach ($this->routes->revalidationTargets($target) as $name) {
+                $names[$name] = true;
+            }
+        }
+
+        return array_keys($names);
+    }
+
+    /**
+     * @param list<string> $invalidated what the action revalidated: route
+     *        names or view paths, see routesFor()
      * @param list<string> $tokens      route tokens the client is holding
      * @param \Closure(Request): string $sessionId
      * @return array<string, string> page key => payload, for those that rendered
      */
     public function rerender(array $invalidated, array $tokens, Request $request, \Closure $sessionId): array
     {
-        if ($invalidated === [] || $tokens === []) {
+        $wanted = array_flip($this->routesFor($invalidated));
+
+        if ($wanted === [] || $tokens === []) {
             return [];
         }
-
-        $wanted = array_flip($invalidated);
 
         // Deduplicated BEFORE anything renders, and keyed by route AND
         // params. Both halves were wrong: the cap bounded tokens looked at

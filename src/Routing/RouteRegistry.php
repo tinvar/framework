@@ -252,6 +252,33 @@ final class RouteRegistry
         return $this->byName[$name] ?? throw RoutingException::unknownName($name);
     }
 
+    /**
+     * The route names a revalidation target refers to.
+     *
+     * The spec writes `revalidate('racks/show')` -- a view path -- and route
+     * tokens carry route names, so only the name form ever matched: the
+     * spec's own example re-rendered nothing, and said nothing. Both forms
+     * are accepted, a route name or the view of named pages. A target that
+     * is neither is a typo or a stale reference in the action, and is
+     * refused rather than re-rendering nothing in silence.
+     *
+     * @return list<string>
+     */
+    public function revalidationTargets(string $target): array
+    {
+        $names = isset($this->byName[$target]) ? [$target] : [];
+
+        // Only named pages: a route token is minted for nothing else, so an
+        // unnamed page's view could never be re-rendered either.
+        foreach ($this->pages as $page) {
+            if ($page->name !== null && $page->view === $target && !\in_array($page->name, $names, true)) {
+                $names[] = $page->name;
+            }
+        }
+
+        return $names !== [] ? $names : throw RoutingException::unknownRevalidationTarget($target);
+    }
+
     /** @param array<string, string|int> $parameters */
     public function url(string $name, array $parameters = []): string
     {

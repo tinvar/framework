@@ -91,6 +91,14 @@ final class RoutingException extends \RuntimeException
         return new self("No route is named '{$name}'.");
     }
 
+    public static function unknownRevalidationTarget(string $target): self
+    {
+        return new self(
+            "An action revalidates '{$target}', which is neither a route name nor the view of a named page, "
+            . "so nothing would be re-rendered. Name the route ('racks.show') or its view ('racks/show').",
+        );
+    }
+
     public static function missingParameter(string $name, string $parameter): self
     {
         return new self("Route '{$name}' needs a '{$parameter}' parameter.");

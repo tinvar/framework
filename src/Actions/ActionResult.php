@@ -20,7 +20,8 @@ use Tinvar\Data\Encoder;
 final readonly class ActionResult
 {
     /**
-     * @param list<string>         $revalidatedRoutes route names to re-render
+     * @param list<string>         $revalidatedRoutes routes to re-render, each a route
+     *        name ('racks.show') or the view of named pages ('racks/show')
      * @param list<string>         $revalidatedTags   cache tags to invalidate
      * @param array<string, mixed> $flash             a side channel, kept out of the RSC tree
      */
@@ -39,7 +40,13 @@ final readonly class ActionResult
         return new self(value: $value);
     }
 
-    /** Re-render these routes through their own full GET pipeline. */
+    /**
+     * Re-render these routes through their own full GET pipeline.
+     *
+     * Each is a route name or a view path, the form the spec writes:
+     * `revalidate('racks/show')`. One that refers to no named page is an
+     * error when the result is answered, not a re-render that never happens.
+     */
     #[\NoDiscard]
     public static function revalidate(string ...$routes): self
     {

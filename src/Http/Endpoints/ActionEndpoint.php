@@ -202,11 +202,17 @@ final class ActionEndpoint
      */
     private function rerender(array $invalidated, mixed $tokens, Request $request): array
     {
-        if ($this->revalidator === null || $this->sessionId === null || $invalidated === []) {
+        if ($this->revalidator === null || $invalidated === []) {
             return [];
         }
 
-        if (!\is_array($tokens) || !array_is_list($tokens)) {
+        // What the action named is checked before anything about the
+        // client's tokens: a target that refers to no route is the action's
+        // bug, and it must not pass in silence because this client happened
+        // to send no token.
+        $this->revalidator->routesFor($invalidated);
+
+        if ($this->sessionId === null || !\is_array($tokens) || !array_is_list($tokens)) {
             return [];
         }
 

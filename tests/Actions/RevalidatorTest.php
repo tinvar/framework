@@ -26,6 +26,7 @@ use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
+use Tinvar\Tests\Routing\Fixtures\HealthPage;
 use Tinvar\Tests\Routing\Fixtures\RackShowPage;
 use Tinvar\Tests\Routing\Fixtures\RootLayout;
 use Tinvar\Tests\Routing\Fixtures\SiteLayout;
@@ -46,7 +47,7 @@ function revalidator(?object $gate = null): array
     $panels = new PanelContext();
 
     $routes = new RouteRegistry();
-    $routes->registerAll([RootLayout::class, SiteLayout::class, RackShowPage::class]);
+    $routes->registerAll([RootLayout::class, SiteLayout::class, RackShowPage::class, HealthPage::class]);
 
     $revalidator = new Revalidator(
         routes: $routes,
@@ -214,11 +215,13 @@ describe('re-rendering after an action', function () {
     });
 
     // Neither side decides alone.
+    // A route that exists: naming one that does not is now refused outright
+    // (see RevalidationTargetsTest), which is not what this case is about.
     it('ignores a token for a route the action did not invalidate', function () {
         [$revalidator, $fixture, $signer] = revalidator();
 
         $payloads = $revalidator->rerender(
-            ['something.else'],
+            ['health'],
             [routeToken($signer, $fixture)],
             Request::post('/_action/x'),
             session(),
@@ -295,12 +298,15 @@ describe('a token this server will not act on', function () {
         expect($payloads)->toBe([]);
     });
 
-    it('omits it when the route no longer exists', function () {
+    // Deploy skew. An action can no longer name a route that does not exist
+    // -- that is refused as the action's bug -- so the skew left to tolerate
+    // is a token minted for an older shape of a route that still does.
+    it("omits it when the route's parameters changed since the page loaded", function () {
         [$revalidator, $fixture, $signer] = revalidator();
 
         $payloads = $revalidator->rerender(
-            ['gone.away'],
-            [routeToken($signer, $fixture, ['route' => 'gone.away'])],
+            ['racks.show'],
+            [routeToken($signer, $fixture, ['params' => ['site' => $fixture->ids['sites'][0]]])],
             Request::post('/_action/x'),
             session(),
         );
