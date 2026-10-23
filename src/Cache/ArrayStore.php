@@ -79,6 +79,11 @@ final class ArrayStore implements Store
         // tag it no longer carries would still invalidate it.
         $this->detach($key);
 
+        // Unset first: assigning to an existing key keeps its place in the
+        // array, and sweep() evicts by that order, oldest first. A key put
+        // again kept the place of its first write and went before keys
+        // written since it.
+        unset($this->entries[$key]);
         $this->entries[$key] = [
             'value' => $value,
             'expires' => $ttlSeconds === null ? null : $this->now() + $ttlSeconds,
