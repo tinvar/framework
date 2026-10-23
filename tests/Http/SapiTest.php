@@ -1,0 +1,83 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Nothing turned SAPI globals into a Request, so no application could be
+ * served at all -- and Request::$rawQuery, which the version check echoes,
+ * had nothing to fill it.
+ */
+
+use Tinvar\Http\NotFoundException;
+use Tinvar\Http\Response;
+use Tinvar\Http\Sapi;
+
+function server(array $extra = []): array
+{
+    return [
+        'REQUEST_METHOD' => 'GET',
+        'REQUEST_URI' => '/racks/r-1?tag=a&tag=b',
+        'QUERY_STRING' => 'tag=a&tag=b',
+        'HTTP_RSC' => '1',
+        'HTTP_X_VERSION' => 'b3',
+        'CONTENT_TYPE' => 'application/json',
+        'SERVER_NAME' => 'not-a-header',
+        ...$extra,
+    ];
+}
+
+describe('a request from globals', function () {
+    it('takes method, path, headers and the raw query', function () {
+        $request = Sapi::request(server(), ['tag' => 'b']);
+
+        expect($request->method)->toBe('GET')
+            ->and($request->path)->toBe('/racks/r-1')
+            ->and($request->header('rsc'))->toBe('1')
+            ->and($request->header('x-version'))->toBe('b3')
+            ->and($request->header('content-type'))->toBe('application/json')
+            ->and($request->header('server-name'))->toBeNull()
+            ->and($request->rawQuery)->toBe('tag=a&tag=b')
+            ->and($request->query)->toBe(['tag' => 'b']);
+    });
+
+    it('reads the path of an absolute-form target', function () {
+        expect(Sapi::request(server(['REQUEST_URI' => 'http://app.example/racks?x=1']))->path)->toBe('/racks');
+    });
+
+    // The guards live in Request; the adapter must not route around them.
+    it('refuses a path Request refuses', function () {
+        expect(fn () => Sapi::request(server(['REQUEST_URI' => '/racks/%2e%2e/admin'])))
+            ->toThrow(NotFoundException::class);
+    });
+
+    it('keeps the query to strings and lists of strings', function () {
+        $request = Sapi::request(server(), ['a' => 'x', 'b' => ['1', '2'], 'c' => ['k' => ['deep']], 'd' => ['k' => 'v']]);
+
+        expect($request->query)->toBe(['a' => 'x', 'b' => ['1', '2']]);
+    });
+
+    it('keeps only string cookies', function () {
+        $request = Sapi::request(server(), cookies: ['session' => 'abc', 'odd' => ['x']]);
+
+        expect($request->cookies)->toBe(['session' => 'abc']);
+    });
+});
+
+describe('emitting a response', function () {
+    it('writes the status, every header, then the body as it streams', function () {
+        $log = [];
+        $response = Response::stream(static function (Closure $sink): void {
+            $sink('<p>one</p>');
+            $sink('<p>two</p>');
+        }, 200, ['content-type' => 'text/html']);
+
+        Sapi::emit(
+            $response,
+            static function (int $s) use (&$log): void { $log[] = "status {$s}"; },
+            static function (string $n, string $v) use (&$log): void { $log[] = "{$n}: {$v}"; },
+            static function (string $c) use (&$log): void { $log[] = $c; },
+        );
+
+        expect($log)->toBe(['status 200', 'content-type: text/html', '<p>one</p>', '<p>two</p>']);
+    });
+});
