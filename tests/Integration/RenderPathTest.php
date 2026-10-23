@@ -80,6 +80,16 @@ it('renders the Racks Show page end to end', function () {
 
     // The RSC payload travels inline, as the spec's rendered output describes.
     expect($html)->toContain('self.__rsc');
+
+    // The router's starting point: a document load cannot read headers, so
+    // the page's URL and build travel in the document itself, slashes
+    // escaped, ahead of the payload rows.
+    expect(preg_match('#<script type="application/json" id="tinvar-page">(.*?)</script>#s', $html, $m))->toBe(1);
+    $meta = json_decode($m[1], true, flags: JSON_THROW_ON_ERROR);
+    expect($meta['url'])->toBe('/racks/' . $seeded['racks'][0])
+        ->and($meta['version'])->toBe('dev')
+        ->and($m[1])->not->toContain('"/racks')
+        ->and(strpos($html, 'tinvar-page'))->toBeLessThan(strpos($html, 'self.__rsc'));
 });
 
 it('batches every unit query into one frame and one statement', function () {
