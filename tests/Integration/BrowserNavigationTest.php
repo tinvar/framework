@@ -60,10 +60,14 @@ function runWithTimeout(array $command, string $cwd, int $seconds): string
     return $output;
 }
 
-it('navigates between racks in place, through the RSC payload', function () use ($root) {
-    $seeded = json_decode((string) file_get_contents("{$root}/examples/racks/database/seeded.json"), true);
-    [$a, $b] = [$seeded['racks'][0], $seeded['racks'][1]];
-
+/**
+ * The served app for one test: a renderer, and php -S on the front
+ * controller with deferred boundaries enabled.
+ *
+ * @param \Closure(string): void $drive given the origin
+ */
+function served(string $root, \Closure $drive): void
+{
     $renderer = Renderer::start('msgpack', 'browser-e2e');
     $port = 18_000 + random_int(0, 999);
     $server = proc_open(
@@ -71,7 +75,7 @@ it('navigates between racks in place, through the RSC payload', function () use 
         [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']],
         $pipes,
         $root,
-        [...getenv(), 'TINVAR_SOCKET' => $renderer->socketPath],
+        [...getenv(), 'TINVAR_SOCKET' => $renderer->socketPath, 'TINVAR_APP_KEY' => 'browser-test-key'],
     );
 
     try {
@@ -91,16 +95,22 @@ it('navigates between racks in place, through the RSC payload', function () use 
         // browser talking to whatever else holds the port.
         expect(proc_get_status($server)['running'])->toBeTrue("php -S did not start on port {$port}");
 
-        $output = runWithTimeout(
-            ['node', "{$root}/examples/racks/e2e/navigation.mjs", "http://127.0.0.1:{$port}", $a, $b],
-            $root,
-            60,
-        );
+        $drive("http://127.0.0.1:{$port}");
     } finally {
         proc_terminate($server);
         proc_close($server);
         $renderer->stop();
     }
+}
+
+it('navigates between racks in place, through the RSC payload', function () use ($root) {
+    $seeded = json_decode((string) file_get_contents("{$root}/examples/racks/database/seeded.json"), true);
+    [$a, $b] = [$seeded['racks'][0], $seeded['racks'][1]];
+
+    $output = '';
+    served($root, function (string $origin) use ($root, $a, $b, &$output): void {
+        $output = runWithTimeout(['node', "{$root}/examples/racks/e2e/navigation.mjs", $origin, $a, $b], $root, 60);
+    });
 
     $result = json_decode((string) $output, true);
     expect($result)->toBeArray("the browser script failed:\n{$output}");
@@ -116,4 +126,26 @@ it('navigates between racks in place, through the RSC payload', function () use 
         ['path' => "/racks/{$a}", 'rsc' => null, 'version' => null],
         ['path' => "/racks/{$b}", 'rsc' => '1', 'version' => 'dev'],
     ]);
+});
+
+// The Suspense boundary, for real: server-rendered with its fallback, its
+// subtree not rendered with the page, then -- scrolled into view -- fetched
+// from /_fragment/ with a signed token, decoded by the app's own bundle and
+// swapped in.
+it('loads a deferred boundary when it scrolls into view', function () use ($root) {
+    $seeded = json_decode((string) file_get_contents("{$root}/examples/racks/database/seeded.json"), true);
+
+    $output = '';
+    served($root, function (string $origin) use ($root, $seeded, &$output): void {
+        $output = runWithTimeout(['node', "{$root}/examples/racks/e2e/deferred.mjs", $origin, $seeded['racks'][0]], $root, 60);
+    });
+
+    $result = json_decode((string) $output, true);
+    expect($result)->toBeArray("the browser script failed:\n{$output}");
+
+    expect($result['errors'])->toBe([])
+        ->and($result['before'])->toBe('Loading history…')
+        ->and($result['requestedBeforeScroll'])->toBe(0)
+        ->and($result['after'])->toBe('Recent changes')
+        ->and($result['fragments'])->toBe(['1']);
 });
