@@ -96,7 +96,16 @@ final class Encoder
         foreach (DataShape::fieldsOf($value::class) as $property) {
             $name = $property->getName();
             if (!$property->isVirtual() && !$property->isInitialized($value)) {
-                continue;   // an uninitialized typed property is simply absent
+                // One that may be null is sent as null, which is what its
+                // generated type -- `T | null`, from the same DataShape --
+                // says it can be. Left out, a component testing for null
+                // found undefined and a key its type promised was missing.
+                // One that may not be null has no value it could be sent
+                // as, and stays absent.
+                if ($property->getType()?->allowsNull() === true) {
+                    $out[$name] = null;
+                }
+                continue;
             }
             $out[$name] = $this->walk($property->getValue($value), "{$path}.{$name}", $depth + 1, $seen);
         }
