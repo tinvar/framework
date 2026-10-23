@@ -105,7 +105,7 @@ final class BoomQuery
 }
 
 /** A batch query that returns the wrong number of results. */
-#[Query(name: 'racks.miscounted'), NoAuthorization(reason: 'fixture: exercises a malformed batch result, not access control')]
+#[Query(name: 'racks.miscounted', args: ['a' => 'int']), NoAuthorization(reason: 'fixture: exercises a malformed batch result, not access control')]
 final class MiscountedBatch implements BatchQuery
 {
     public function loadMany(array $calls): array

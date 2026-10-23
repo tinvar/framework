@@ -40,7 +40,7 @@ final class OptionalRackSummary
 final class InertQuery {}
 
 /** A batch query whose body fails. */
-#[Query(name: 'surface.batchBoom'), NoAuthorization(reason: 'fixture: exercises a failing batch, not access control')]
+#[Query(name: 'surface.batchBoom', args: ['a' => 'int']), NoAuthorization(reason: 'fixture: exercises a failing batch, not access control')]
 final class ThrowingBatch implements BatchQuery
 {
     public function loadMany(array $calls): array

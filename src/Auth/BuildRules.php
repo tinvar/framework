@@ -272,6 +272,28 @@ final class BuildRules
                 );
             }
 
+            // The same hazard on a batch query, whose per-call arguments are
+            // declared on the attribute rather than as parameters. One typed
+            // as anything but a model reaches loadMany() as the raw value the
+            // renderer sent.
+            foreach (self::batchArguments($reflection, $method) as $argument => $type) {
+                if (is_a($type, Model::class, true)) {
+                    continue;
+                }
+
+                $model = $this->tenantScopedNamedBy($argument);
+                if ($model === null) {
+                    continue;
+                }
+
+                $violations[] = new Violation(
+                    self::TENANT_SCOPED_IDS_MUST_BE_TYPED,
+                    "{$where}(\${$argument})",
+                    "is declared in #[Query(args:)] as {$type}, naming {$model}, which is #[TenantScoped]. "
+                    . 'Declare it as the model so it is resolved and scoped; a raw id is not.',
+                );
+            }
+
             if ($exempt) {
                 continue;
             }
@@ -332,23 +354,28 @@ final class BuildRules
      */
     private static function batchModelArguments(\ReflectionClass $reflection, \ReflectionMethod $method): array
     {
+        return array_filter(
+            self::batchArguments($reflection, $method),
+            static fn (string $class): bool => is_a($class, Model::class, true),
+        );
+    }
+
+    /**
+     * A batch query's per-call arguments as #[Query(args:)] declares them,
+     * models or not.
+     *
+     * @param \ReflectionClass<object> $reflection
+     * @return array<string, string> argument => declared type
+     */
+    private static function batchArguments(\ReflectionClass $reflection, \ReflectionMethod $method): array
+    {
         if ($method->getName() !== 'loadMany') {
             return [];
         }
 
         $attribute = $reflection->getAttributes(Query::class)[0] ?? null;
-        if ($attribute === null) {
-            return [];
-        }
 
-        $models = [];
-        foreach ($attribute->newInstance()->args as $argument => $class) {
-            if (is_a($class, Model::class, true)) {
-                $models[$argument] = $class;
-            }
-        }
-
-        return $models;
+        return $attribute === null ? [] : $attribute->newInstance()->args;
     }
 
     /**

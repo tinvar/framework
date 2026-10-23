@@ -145,7 +145,7 @@ describe('a query the runner cannot call', function () {
             resolver: static fn (string $class): object => new \stdClass(),
         );
 
-        expect(fn () => $runner->run([surfaceCall('surface.batchBoom')], ['surface.batchBoom']))
+        expect(fn () => $runner->run([surfaceCall('surface.batchBoom', ['a' => 1])], ['surface.batchBoom']))
             ->toThrow(\LogicException::class, 'registered as a batch but its instance is not a BatchQuery');
     });
 });
@@ -155,7 +155,7 @@ describe('a batch query that throws', function () {
         $runner = surfaceRunner(new Fixture(racks: 1, unitsPerRack: 1), [ThrowingBatch::class]);
 
         $results = $runner->run([
-            surfaceCall('surface.batchBoom', [], 0),
+            surfaceCall('surface.batchBoom', ['a' => 0], 0),
             surfaceCall('surface.batchBoom', ['a' => 1], 1),
         ], ['surface.batchBoom']);
 

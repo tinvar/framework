@@ -70,6 +70,18 @@ final class QueryRegistry
         $declaration = $attribute->newInstance();
         $name = $declaration->name ?? Str::queryName($class);
 
+        // A batch has no signature to read arguments off, so #[Query(args:)]
+        // is its only declaration. Without one, the runner checked no keys
+        // and resolved no models: whatever the renderer sent reached
+        // loadMany() as raw values, unscoped and unauthorized.
+        if (is_subclass_of($class, BatchQuery::class) && $declaration->args === []) {
+            throw new \InvalidArgumentException(
+                "{$class} is a BatchQuery with no #[Query(args:)]. Declare its per-call arguments, typing "
+                . "each model as the model -- #[Query(args: ['unit' => Unit::class])] -- so they are "
+                . 'resolved, scoped and authorized before loadMany() runs.',
+            );
+        }
+
         // "Enforced by BuildRules AND at registration." A query reaches a body
         // from the socket and from /_query, so an unguarded model input here
         // is served to a caller every policy denies, and a `shared: true`

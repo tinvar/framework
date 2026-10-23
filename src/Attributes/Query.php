@@ -12,7 +12,8 @@ final readonly class Query
      * @param string|null   $name  wire name; defaults to a dotted form of the class name
      * @param string|null   $cache TTL such as '5m'
      * @param \Closure|null $tags  cache tags, receiving the query's arguments
-     * @param array<string, class-string> $args per-call model argument types, declared by batch queries
+     * @param array<string, string> $args per-call argument types -- a model class, or a scalar type
+     *        name -- which a batch query must declare, having no signature to read them from
      */
     public function __construct(
         public ?string $name = null,
