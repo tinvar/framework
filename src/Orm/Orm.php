@@ -450,6 +450,22 @@ final class Orm
         $orderBy = $orderBy === null ? null : self::identifier($meta, $orderBy);
         [$scope, $scopeBindings] = $this->tenantScope($meta);
 
+        // find()'s guard, for every lookup by id: a value that is not a UUIDv7
+        // names no row. Postgres refuses one for a uuid column with an error
+        // quoting it, so Exists and Unique turned a malformed id into a 500,
+        // and one bad id among a tick's batched model lookups failed every
+        // query call in the tick. After the tenant check, which must fail
+        // closed whatever the values.
+        if ($column === $meta->idColumn) {
+            $values = array_values(array_filter(
+                $values,
+                static fn (mixed $value): bool => \is_string($value) && Uuid::isValid($value),
+            ));
+            if ($values === []) {
+                return [];
+            }
+        }
+
         $rows = $this->connection->select(
             $this->selectSql($meta, $column, \count($values), $orderBy, scope: $scope),
             [...$values, ...$scopeBindings],
