@@ -157,7 +157,9 @@ final class ActionEndpoint
         }
 
         if ($result->isRedirect()) {
-            // 303 after a write, so a reload does not repeat it.
+            // 303 after a write, so a reload does not repeat it. No body:
+            // ActionResult refuses a flash or a value on a redirect, which
+            // this response would have nowhere to put.
             return Response::redirect((string) $result->redirect, 303)
                 ->withHeader('x-invalidated-tags', implode(',', $result->revalidatedTags));
         }

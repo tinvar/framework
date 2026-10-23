@@ -307,12 +307,17 @@ describe('ActionResult::withValue', function () {
             ->and($result->status)->toBe(200);
     });
 
+    // A value on a redirect used to be kept here and then dropped by the
+    // endpoint, which answers a redirect with no body. It is now refused
+    // when the result is built (see RedirectCarriesNothingTest); a null value
+    // is no value, and still keeps the redirect and its status.
     it('keeps a redirect and its status', function () {
-        $result = ActionResult::redirect('/racks')->withValue('done');
+        $result = ActionResult::redirect('/racks')->withTags('rack:1')->withValue(null);
 
         expect($result->isRedirect())->toBeTrue()
             ->and($result->redirect)->toBe('/racks')
             ->and($result->status)->toBe(303)
-            ->and($result->value)->toBe('done');
+            ->and($result->revalidatedTags)->toBe(['rack:1'])
+            ->and($result->value)->toBeNull();
     });
 });

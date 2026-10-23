@@ -32,7 +32,20 @@ final readonly class ActionResult
         public array $flash = [],
         public ?string $redirect = null,
         public mixed $value = null,
-    ) {}
+    ) {
+        // A redirect is answered with a 303 and no body, and there is no
+        // session flash store to carry anything across it yet. A flash or a
+        // value on one was dropped without a word -- the "Site archived"
+        // message simply never appeared. Refused here, where every result is
+        // built, until there is somewhere for it to go.
+        if ($redirect !== null && ($flash !== [] || $value !== null)) {
+            throw new \LogicException(
+                "An ActionResult redirecting to '{$redirect}' cannot also carry a flash or a value: the "
+                . 'redirect is answered with no body, and there is no session flash store to carry them '
+                . 'across it. Return ok() with the flash and let the client navigate, or redirect alone.',
+            );
+        }
+    }
 
     #[\NoDiscard]
     public static function ok(mixed $value = null): self
