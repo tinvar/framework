@@ -39,6 +39,7 @@ final class Sapi
             $body,
             array_filter($cookies, static fn (mixed $v, mixed $k): bool => \is_string($k) && \is_string($v), ARRAY_FILTER_USE_BOTH),
             $rawQuery,
+            \is_string($server['REMOTE_ADDR'] ?? null) ? $server['REMOTE_ADDR'] : null,
         );
     }
 

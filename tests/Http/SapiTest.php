@@ -40,6 +40,15 @@ describe('a request from globals', function () {
             ->and($request->query)->toBe(['tag' => 'b']);
     });
 
+    // The peer address comes from the server. X-Forwarded-For is a header
+    // the client chose; dropping REMOTE_ADDR left only that to key on.
+    it('carries the peer address from the server, not from a header', function () {
+        $request = Sapi::request(server(['REMOTE_ADDR' => '203.0.113.7', 'HTTP_X_FORWARDED_FOR' => '10.0.0.1']));
+
+        expect($request->remoteAddress)->toBe('203.0.113.7')
+            ->and($request->header('x-forwarded-for'))->toBe('10.0.0.1');
+    });
+
     it('reads the path of an absolute-form target', function () {
         expect(Sapi::request(server(['REQUEST_URI' => 'http://app.example/racks?x=1']))->path)->toBe('/racks');
     });

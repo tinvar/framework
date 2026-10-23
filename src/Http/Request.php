@@ -43,6 +43,13 @@ final class Request
         public readonly array $body = [],
         public readonly array $cookies = [],
         public readonly ?string $rawQuery = null,
+        /**
+         * The address of the peer that connected, from the server -- never
+         * from a header. X-Forwarded-For is whatever the client chose to
+         * send unless a proxy you control overwrote it, so anything keyed on
+         * a client's identity (a throttle) belongs on this.
+         */
+        public readonly ?string $remoteAddress = null,
     ) {
         $this->method = strtoupper($method);
         $this->path = self::normalizePath($path);
