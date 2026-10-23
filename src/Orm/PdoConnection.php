@@ -59,19 +59,36 @@ final class PdoConnection implements Connection
      * The file must exist unless $create says otherwise. Opening a mistyped
      * path made a fresh, empty database there, and every query then failed
      * with "no such table" far from the cause.
+     *
+     * Transactions begin IMMEDIATE unless $immediateTransactions says
+     * otherwise. SQLite's default, DEFERRED, takes the write lock at the
+     * first write, so a transaction that reads first holds a snapshot that
+     * another worker's commit can overtake -- and then its write fails with
+     * SQLITE_BUSY_SNAPSHOT at once, which the busy timeout does not wait
+     * out, since waiting cannot make that snapshot current again. A
+     * transaction() is a write by intent, so it takes the lock up front and
+     * a second writer queues behind it under the busy timeout. postgres()
+     * is untouched: under its default READ COMMITTED each statement reads a
+     * fresh snapshot, and a second writer waits on the row lock instead.
      */
     public static function sqlite(
         string $path,
         string $name = 'default',
         bool $create = false,
         int $busyTimeoutMs = self::SQLITE_BUSY_TIMEOUT_MS,
+        bool $immediateTransactions = true,
     ): self {
         if ($path === '') {
             throw new \InvalidArgumentException('A SQLite connection needs a database path.');
         }
 
         $flags = \Pdo\Sqlite::OPEN_READWRITE | ($create ? \Pdo\Sqlite::OPEN_CREATE : 0);
-        $pdo = new \Pdo\Sqlite("sqlite:{$path}", null, null, [\Pdo\Sqlite::ATTR_OPEN_FLAGS => $flags]);
+        $pdo = new \Pdo\Sqlite("sqlite:{$path}", null, null, [
+            \Pdo\Sqlite::ATTR_OPEN_FLAGS => $flags,
+            \Pdo\Sqlite::ATTR_TRANSACTION_MODE => $immediateTransactions
+                ? \Pdo\Sqlite::TRANSACTION_MODE_IMMEDIATE
+                : \Pdo\Sqlite::TRANSACTION_MODE_DEFERRED,
+        ]);
         $connection = new self($pdo, $name);
 
         // Before anything else: the journal mode cannot change while another

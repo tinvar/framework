@@ -131,3 +131,71 @@ it('reads while another connection holds an open write', function () {
         removeDatabase($path);
     }
 });
+
+/**
+ * Overtakes $connection's read-then-write transaction with a commit from
+ * $other between the read and the write.
+ *
+ * @return array{bool, \Throwable|null} whether the other writer was refused,
+ *         and what the transaction threw
+ */
+function overtake(PdoConnection $connection, PdoConnection $other): array
+{
+    $otherRefused = false;
+
+    try {
+        $connection->transaction(function () use ($connection, $other, &$otherRefused): void {
+            $next = (int) $connection->select('SELECT COUNT(*) AS n FROM hits')[0]['n'] + 1;
+
+            try {
+                $other->execute('INSERT INTO hits (n) VALUES (100)');
+            } catch (\PDOException) {
+                $otherRefused = true;
+            }
+
+            $connection->execute('INSERT INTO hits (n) VALUES (?)', [$next]);
+        });
+    } catch (\Throwable $e) {
+        return [$otherRefused, $e];
+    }
+
+    return [$otherRefused, null];
+}
+
+// Begun deferred, a transaction that reads and then writes took its snapshot
+// at the read; a commit from another worker in between made its write fail
+// with SQLITE_BUSY_SNAPSHOT, which no busy timeout waits out -- a 500 from
+// placing an order under load. Begun IMMEDIATE, it holds the write lock from
+// the start, and the other writer queues behind it instead.
+it('begins a transaction holding the write lock, so a read-then-write is never overtaken', function () {
+    $path = scratchDatabase();
+
+    try {
+        $connection = PdoConnection::sqlite($path, create: true);
+        $connection->execute('CREATE TABLE hits (n INTEGER)');
+
+        [$otherRefused, $thrown] = overtake($connection, PdoConnection::sqlite($path, busyTimeoutMs: 0));
+
+        expect($thrown)->toBeNull()
+            ->and($otherRefused)->toBeTrue('the other writer had to wait its turn')
+            ->and($connection->select('SELECT n FROM hits'))->toBe([['n' => 1]]);
+    } finally {
+        removeDatabase($path);
+    }
+});
+
+it('begins deferred when asked to', function () {
+    $path = scratchDatabase();
+
+    try {
+        $connection = PdoConnection::sqlite($path, create: true, immediateTransactions: false);
+        $connection->execute('CREATE TABLE hits (n INTEGER)');
+
+        [$otherRefused, $thrown] = overtake($connection, PdoConnection::sqlite($path, busyTimeoutMs: 0));
+
+        expect($otherRefused)->toBeFalse()
+            ->and($thrown)->toBeInstanceOf(\PDOException::class);
+    } finally {
+        removeDatabase($path);
+    }
+});
