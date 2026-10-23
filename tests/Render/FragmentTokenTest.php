@@ -300,14 +300,16 @@ describe('the absolute lifetime', function () {
             ->toThrow(FragmentTokenError::class, 'no issue time');
     });
 
-    it('refuses one older than a token may live across refreshes', function () {
+    // Exactly at the deadline, too: refreshed() already treats it as spent,
+    // and a token decode accepted then could not be refreshed.
+    it('refuses one older than a token may live across refreshes', function (int $pastDeadline) {
         $signer = signer();
-        $encoded = token($signer, ['issuedAt' => time() - FragmentToken::MAX_LIFETIME - 1])
+        $encoded = token($signer, ['issuedAt' => time() - FragmentToken::MAX_LIFETIME - $pastDeadline])
             ->encode($signer);
 
         expect(fn () => FragmentToken::decode($encoded, $signer))
             ->toThrow(FragmentTokenError::class, 'older than');
-    });
+    })->with(['at the deadline' => 0, 'past it' => 1]);
 
     // Refreshing extends the expiry and must NOT extend the lifetime.
     it('does not let refreshing push back the deadline', function () {

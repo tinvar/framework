@@ -236,9 +236,9 @@ final class FragmentEndpoint
             ->withAddedHeader('vary', 'RSC')
             ->withAddedHeader('vary', 'Cookie');
 
-        // No refreshed token once the absolute lifetime is spent. Its
-        // absence is how the client learns to reload rather than keep
-        // refreshing something that will fail.
+        // A refresh never extends past the absolute lifetime: near the end
+        // its expiry is the deadline itself, after which the token is
+        // refused and the client reloads.
         $refreshed = $token->refreshed();
 
         return $refreshed === null

@@ -115,7 +115,9 @@ final readonly class TokenClaims
             throw new TokenError('expiry is further out than a token may be issued for');
         }
 
-        if ($at - $this->issuedAt > $maxLifetime) {
+        // The same half-open lifetime refreshed() applies: a token is dead
+        // from its deadline on, not one second after it.
+        if ($at - $this->issuedAt >= $maxLifetime) {
             throw new TokenError('token is older than one may live across refreshes');
         }
     }
