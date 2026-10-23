@@ -236,11 +236,14 @@ describe('malleability and bounds', function () {
         [$version, $payload, $mac] = explode('.', token($signer)->encode($signer));
 
         // Flip the final character to another that decodes to the same bytes.
+        // Decoded with plain base64, not Signer::decode(), which now refuses
+        // the variant itself and so cannot say it names the same bytes.
+        $raw = static fn (string $encoded): string|false => base64_decode(strtr($encoded, '-_', '+/'), true);
         $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
         $variant = null;
         foreach (str_split($alphabet) as $character) {
             $candidate = substr($mac, 0, -1) . $character;
-            if ($candidate !== $mac && Signer::decode($candidate) === Signer::decode($mac)) {
+            if ($candidate !== $mac && $raw($candidate) === $raw($mac)) {
                 $variant = $candidate;
                 break;
             }

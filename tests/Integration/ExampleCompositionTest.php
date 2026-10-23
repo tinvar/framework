@@ -158,9 +158,11 @@ describe('the example session cookie', function () {
         $cookie = Racks\Kernel::newSession($key);
         $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
         $respelled = substr($cookie, 0, -1) . $alphabet[strpos($alphabet, $cookie[-1]) ^ 1];
+        // Plain base64, not Signer::decode(), which now refuses the second
+        // spelling itself and so cannot say it names the same bytes.
+        $raw = static fn (string $cookie): string|false => base64_decode(strtr(explode('.', $cookie)[3], '-_', '+/'), true);
 
-        expect(Tinvar\Support\Signer::decode(explode('.', $respelled)[3]))
-            ->toBe(Tinvar\Support\Signer::decode(explode('.', $cookie)[3]), 'the same bytes, spelled differently')
+        expect($raw($respelled))->toBe($raw($cookie), 'the same bytes, spelled differently')
             ->and(Racks\Kernel::sessionFrom($respelled, $key))->toBeNull();
     });
 

@@ -90,6 +90,10 @@ final readonly class Signer
 
         $raw = base64_decode(strtr($encoded, '-_', '+/'), strict: true);
 
-        return $raw === false ? null : $raw;
+        // And only the spelling encode() produces. base64 ignores the unused
+        // low bits of the last character, so 'AA' and 'AB' both decoded to
+        // the same byte: the same many-spellings problem the pattern above
+        // closes for whitespace. Re-encoding gives the one canonical form.
+        return $raw === false || self::encode($raw) !== $encoded ? null : $raw;
     }
 }
