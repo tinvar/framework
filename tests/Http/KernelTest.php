@@ -958,6 +958,20 @@ describe('version skew through the kernel', function () {
             ->and($response->header('x-redirect'))->toBe('/login');
     });
 
+    // The exception handler answers from the Kernel's catch, outside the
+    // middleware that translates redirects.
+    it('translates a redirect thrown as an HttpException', function () {
+        [$kernel, $path] = versionedKernel();
+
+        $response = $kernel->handle(
+            Request::get($path, ['RSC' => '1', 'X-Version' => 'b2']),
+            static fn (): never => throw new Tinvar\Http\HttpException(302, '', headers: ['location' => '/login']),
+        );
+
+        expect($response->status)->toBe(409)
+            ->and($response->header('x-redirect'))->toBe('/login');
+    });
+
     it('serves a document load whatever its version', function () {
         [$kernel, $path] = versionedKernel();
 

@@ -337,6 +337,8 @@ final class Kernel
      */
     public function handle(Request $request, \Closure $respond, string $rawBody = ''): Response
     {
+        $navigating = false;
+
         try {
             if ($this->actions_->matches($request)) {
                 return $this->actionStack->run(
@@ -405,9 +407,15 @@ final class Kernel
             // Outermost, so a redirect from anywhere on the navigation path
             // -- route middleware, the page itself -- reaches the client
             // router in a form it can read.
+            $navigating = true;
+
             return new TranslateRedirects()->handle($request, $checked);
         } catch (\Throwable $e) {
-            return $this->exceptions->handle($e, $request);
+            $response = $this->exceptions->handle($e, $request);
+
+            // An HttpException can carry a redirect too, and it is answered
+            // here rather than inside the middleware above.
+            return $navigating ? TranslateRedirects::translate($request, $response) : $response;
         } finally {
             $this->scope->reset();
         }

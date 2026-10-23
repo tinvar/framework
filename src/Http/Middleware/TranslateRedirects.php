@@ -39,8 +39,16 @@ final class TranslateRedirects implements Middleware
 
     public function handle(Request $request, \Closure $next): Response
     {
-        $response = $next($request);
+        return self::translate($request, $next($request));
+    }
 
+    /**
+     * The translation on its own, for a response that did not come through
+     * the middleware chain -- the exception handler's, which answers from
+     * the Kernel's catch and can be a redirect too.
+     */
+    public static function translate(Request $request, Response $response): Response
+    {
         if ($request->header('rsc') !== '1' || !\in_array($response->status, self::REDIRECTS, true)) {
             return $response;
         }
