@@ -136,6 +136,12 @@ final class RenderChannel
     /** @return resource */
     private function connect()
     {
+        // Checked first so the common "renderer not running" case gives a clear
+        // error rather than a connect warning from the stream layer.
+        if (!file_exists($this->socketPath)) {
+            throw RendererException::cannotConnect($this->socketPath, 'no socket at that path');
+        }
+
         $socket = @stream_socket_client(
             'unix://' . $this->socketPath,
             $errno,
