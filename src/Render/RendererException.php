@@ -32,12 +32,24 @@ final class RendererException extends \RuntimeException
         );
     }
 
-    /** @param array<string, mixed> $frame */
-    public static function fromErrorFrame(array $frame): self
+    /**
+     * The renderer is the "runs third-party npm code" tier of the trust
+     * boundary table, and the spec says its stacks and hints never reach the
+     * browser. The code and digest are structured values this side asked for;
+     * the message is whatever that process chose to send, so it is kept unless
+     * debug is on -- the same gate QueryError::of() applies.
+     *
+     * @param array<string, mixed> $frame
+     */
+    public static function fromErrorFrame(array $frame, bool $debug = false): self
     {
         $code = \is_string($frame['code'] ?? null) ? $frame['code'] : 'render_failed';
         $digest = \is_string($frame['digest'] ?? null) ? $frame['digest'] : null;
-        $message = \is_string($frame['message'] ?? null) ? $frame['message'] : 'The renderer reported an error.';
+
+        $message = 'The renderer reported an error.';
+        if ($debug && \is_string($frame['message'] ?? null)) {
+            $message = $frame['message'];
+        }
 
         return new self($message, $code, $digest);
     }

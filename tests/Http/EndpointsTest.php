@@ -6,9 +6,11 @@ use Tinvar\Actions\ActionRegistry;
 use Tinvar\Actions\ActionRunner;
 use Tinvar\Auth\AllowAllGate;
 use Tinvar\Auth\AuthContext;
+use Tinvar\Data\DataBoundaryException;
 use Tinvar\Http\Endpoints\ActionEndpoint;
 use Tinvar\Http\Endpoints\Limits;
 use Tinvar\Http\Endpoints\QueryEndpoint;
+use Tinvar\Http\ExceptionHandler;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware\RequireAuthentication;
 use Tinvar\Http\Middleware\VerifyCsrfToken;
@@ -21,6 +23,8 @@ use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
 use Tinvar\Tests\Actions\Fixtures as A;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
+use Tinvar\Routing\RoutingException;
+use Tinvar\Validation\ValidationException;
 use Tinvar\Validation\Validator;
 
 require_once __DIR__ . '/../Orm/Fixtures/models.php';
@@ -265,7 +269,9 @@ describe('the query endpoint', function () {
             json_encode(['args' => ['rack' => $fixture->ids['racks'][0]]]),
         );
 
-        expect($response->status)->toBe(422)
+        // 404, not 403 and not a blanket 422: the name is not callable here,
+        // and saying so must not confirm that it exists somewhere else.
+        expect($response->status)->toBe(404)
             ->and(json_decode($response->body(), true)['error']['code'])->toBe('query_not_allowed');
     });
 
@@ -274,5 +280,136 @@ describe('the query endpoint', function () {
 
         expect(fn () => $query->handle(new Request('GET', '/_query/racks.summary')))
             ->toThrow(HttpException::class, 'POST only');
+    });
+});
+
+// Regressions from the phase-1 security review. Each was reproduced first.
+describe('endpoint hardening', function () {
+    // The encoder guards queries and a return-type check guards loaders, but
+    // an ActionResult went to the browser through json_encode() with nothing
+    // in the way -- and json_encode forced every lazy relation on the way out.
+    it('refuses to send a model back from an action', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $registry = new ActionRegistry();
+        $registry->register(A\LeakyActions::class);
+        $runner = new ActionRunner($registry, $orm, new AllowAllGate(), new Validator($orm));
+
+        expect(fn () => $runner->run('LeakyActions.leak', ['rack' => $fixture->ids['racks'][0]]))
+            ->toThrow(DataBoundaryException::class);
+    });
+
+    it('refuses a model smuggled through flash', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $registry = new ActionRegistry();
+        $registry->register(A\LeakyActions::class);
+        $runner = new ActionRunner($registry, $orm, new AllowAllGate(), new Validator($orm));
+
+        expect(fn () => $runner->run('LeakyActions.leakViaFlash', ['rack' => $fixture->ids['racks'][0]]))
+            ->toThrow(DataBoundaryException::class);
+    });
+
+    // PHP decodes {} to [], and array_is_list([]) is true, so the list guard
+    // made every argument-less action and query unreachable over HTTP.
+    it('accepts an empty JSON object as a body', function () {
+        [$endpoint] = actionEndpoint();
+
+        $response = $endpoint->handle(Request::post('/_action/RackActions.ping'), '{}');
+
+        expect($response->status)->toBe(200);
+    });
+
+    it('still refuses a JSON array as a body', function () {
+        expect(fn () => Limits::decodeJson('[1,2,3]'))
+            ->toThrow(HttpException::class, 'must be a JSON object');
+    });
+
+    // The field name is client-supplied; validateField() throws a
+    // LogicException quoting it, and only ValidationException was caught.
+    it('answers 422 for a Precognition field the action does not have', function () {
+        [$endpoint, $fixture] = actionEndpoint();
+
+        $request = Request::post('/_action/RackActions.moveUnit', headers: [
+            'Precognition' => 'true',
+            'Precognition-Validate-Only' => '<script>alert(1)</script>',
+        ]);
+
+        try {
+            $endpoint->handle($request, json_encode(['rack' => $fixture->ids['racks'][0]]));
+            $response = null;
+        } catch (Throwable $e) {
+            $response = (new ExceptionHandler())->handle($e, $request);
+        }
+
+        expect($response?->status)->toBe(422)
+            ->and($response?->body())->not->toContain('<script>', 'no client text echoed back')
+            ->and($response?->body())->not->toContain('alert');
+    });
+
+    it('bounds how many fields one Precognition header may name', function () {
+        [$endpoint, $fixture] = actionEndpoint();
+
+        $many = implode(',', array_fill(0, Limits::MAX_PRECOGNITION_FIELDS + 1, 'position'));
+
+        expect(fn () => $endpoint->handle(
+            Request::post('/_action/RackActions.moveUnit', headers: [
+                'Precognition' => 'true',
+                'Precognition-Validate-Only' => $many,
+            ]),
+            json_encode(['rack' => $fixture->ids['racks'][0]]),
+        ))->toThrow(HttpException::class, 'Too many fields');
+    });
+});
+
+// The endpoints raise; something has to classify what they raise. Nothing did:
+// Router::handle() had no catch, the endpoints caught only ValidationException,
+// and the carefully-written messages name classes, methods and ids.
+describe('the exception handler', function () {
+    it('maps an HttpException to its status without forwarding the message', function () {
+        $e = new HttpException(403, "'update' denied on App\\Actions\\RackActions::moveUnit().", 'forbidden');
+
+        $response = (new ExceptionHandler())->handle($e, Request::get('/'));
+        $body = json_decode($response->body(), true);
+
+        expect($response->status)->toBe(403)
+            ->and($body['error']['code'])->toBe('forbidden')
+            ->and($response->body())->not->toContain('RackActions')
+            ->and($response->body())->not->toContain('moveUnit')
+            ->and($body['error']['digest'])->not->toBeEmpty();
+    });
+
+    it('turns a declaration bug into a 500 that says nothing about it', function () {
+        $e = new RoutingException('App\\Pages\\Show::__invoke() returned string; a loader returns a Data object.');
+
+        $response = (new ExceptionHandler())->handle($e, Request::get('/'));
+
+        expect($response->status)->toBe(500)
+            ->and(json_decode($response->body(), true)['error']['code'])->toBe('internal_error')
+            ->and($response->body())->not->toContain('App\\Pages\\Show')
+            ->and($response->body())->not->toContain('Data object');
+    });
+
+    it('hands the throwable and its digest to the log, which the client never sees', function () {
+        $seen = [];
+        $handler = new ExceptionHandler(function (Throwable $e, string $digest) use (&$seen): void {
+            $seen[] = [$e->getMessage(), $digest];
+        });
+
+        $response = $handler->handle(new HttpException(404, 'No App\\Models\\Rack with the given id.'), Request::get('/'));
+
+        expect($seen)->toHaveCount(1)
+            ->and($seen[0][0])->toContain('App\\Models\\Rack')
+            ->and($seen[0][1])->toBe(json_decode($response->body(), true)['error']['digest']);
+    });
+
+    it('keeps validation errors, which are the answer', function () {
+        $response = (new ExceptionHandler())->handle(
+            new ValidationException(['position' => ['must be at most 42']]),
+            Request::get('/'),
+        );
+
+        expect($response->status)->toBe(422)
+            ->and(json_decode($response->body(), true)['errors'])->toHaveKey('position');
     });
 });

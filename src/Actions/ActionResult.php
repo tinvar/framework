@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Actions;
 
+use Tinvar\Data\Encoder;
+
 /**
  * What an action did, and what should be re-rendered because of it.
  *
@@ -115,6 +117,36 @@ final readonly class ActionResult
             $this->flash,
             $this->redirect,
             $value,
+        );
+    }
+
+/**
+     * The data boundary, applied to what an action hands back.
+     *
+     * "The PHP->renderer encoder accepts only Data objects, scalars, lists and
+     * maps, and throws on any other object, including models, in every
+     * environment." Loaders are held to that by a return-type check and
+     * queries by the encoder, but an ActionResult went to the browser through
+     * json_encode() with nothing in the way: ActionResult::ok($rack) sent the
+     * whole model graph, and json_encode forced every lazy relation on the way
+     * out -- related rows the caller never asked for, and a hidden 1+N.
+     *
+     * Applied in the runner, so every consumer of a result is covered rather
+     * than just the HTTP endpoint.
+     */
+    #[\NoDiscard]
+    public function encoded(Encoder $encoder): self
+    {
+        /** @var array<string, mixed> $flash */
+        $flash = $encoder->encode($this->flash);
+
+        return new self(
+            $this->status,
+            $this->revalidatedRoutes,
+            $this->revalidatedTags,
+            $flash,
+            $this->redirect,
+            $encoder->encode($this->value),
         );
     }
 

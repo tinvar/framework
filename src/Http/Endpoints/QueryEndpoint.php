@@ -7,6 +7,7 @@ namespace Tinvar\Http\Endpoints;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
+use Tinvar\Query\QueryError;
 use Tinvar\Query\QueryRunner;
 
 /**
@@ -49,7 +50,9 @@ final class QueryEndpoint
         $body = $rawBody === '' ? $request->body : Limits::decodeJson($rawBody, $this->maxBodyBytes);
         $args = $body['args'] ?? [];
 
-        if (!\is_array($args) || array_is_list($args)) {
+        // {} decodes to [], which array_is_list() calls a list: an
+        // argument-less query was unreachable over HTTP.
+        if (!\is_array($args) || ($args !== [] && array_is_list($args))) {
             throw new HttpException(400, 'Query arguments must be a JSON object.', 'bad_request');
         }
 
@@ -61,8 +64,11 @@ final class QueryEndpoint
 
         $result = $results[0];
 
+        // A denial, a name that is not allowed and bad arguments are different
+        // answers; collapsing them all to 422 left the client unable to tell
+        // "re-authenticate" from "fix your input".
         return Response::make(
-            isset($result['error']) ? 422 : 200,
+            isset($result['error']) ? QueryError::statusFor($result['error']['code']) : 200,
             json_encode($result, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
             ['content-type' => 'application/json', 'cache-control' => 'private, no-store', 'vary' => 'Cookie'],
         );

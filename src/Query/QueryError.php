@@ -34,4 +34,26 @@ final class QueryError
 
         return $error;
     }
+
+    /**
+     * The HTTP status one of these codes means over /_query.
+     *
+     * Over the socket a QueryError is a per-call record, which is right: one
+     * bad call in a tick of 42 must not lose the other 41. Over HTTP there is
+     * one call, and the endpoint was collapsing every code to 422 -- so a
+     * denial, an unknown name and bad input were indistinguishable. The spec's
+     * client-held-data rules need "re-authenticate and drop what you hold"
+     * (403) to be tellable from "fix your input" (422).
+     */
+    public static function statusFor(string $code): int
+    {
+        return match ($code) {
+            self::FORBIDDEN => 403,
+            self::NOT_FOUND => 404,
+            self::NOT_ALLOWED, self::UNKNOWN => 404,
+            self::BAD_ARGUMENTS => 422,
+            self::FAILED, self::BAD_RESULT, self::MISCONFIGURED => 500,
+            default => 422,
+        };
+    }
 }

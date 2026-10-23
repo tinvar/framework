@@ -95,10 +95,17 @@ final class QueryCache
     }
 
     /**
+     * Invalidate every cached entry carrying one of these tags.
+     *
+     * $tenant has no default on purpose. put() namespaces tags with the LIVE
+     * tenant, so a defaulted '' silently invalidated nothing at all -- the
+     * caller must say whose entries it means, and ActionResult carries only
+     * strings.
+     *
      * @param list<string> $tags
      * @return int entries invalidated
      */
-    public function forgetTags(array $tags, string $tenant = ''): int
+    public function forgetTags(array $tags, string $tenant): int
     {
         return $this->store->forgetTags(self::namespaced($tags, $tenant));
     }

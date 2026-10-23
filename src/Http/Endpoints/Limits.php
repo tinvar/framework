@@ -19,6 +19,15 @@ final class Limits
     public const int MAX_JSON_DEPTH = 32;
 
     /**
+     * How many fields one Precognition-Validate-Only header may name.
+     *
+     * Each named field re-runs model resolution and authorization, and the
+     * header is client-supplied, so it needs its own bound: the body limit
+     * does not cover it.
+     */
+    public const int MAX_PRECOGNITION_FIELDS = 32;
+
+    /**
      * Decodes a JSON body, refusing one that is too large or too deep.
      *
      * @return array<string, mixed>
@@ -41,7 +50,9 @@ final class Limits
             throw new HttpException(400, 'Request body is not valid JSON within the depth limit.', 'bad_json');
         }
 
-        if (!\is_array($decoded) || array_is_list($decoded)) {
+        // PHP decodes {} to [], and array_is_list([]) is true -- so the
+        // list guard was rejecting every argument-less action and query.
+        if (!\is_array($decoded) || ($decoded !== [] && array_is_list($decoded))) {
             throw new HttpException(400, 'Request body must be a JSON object.', 'bad_json');
         }
 

@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Tinvar\Actions;
 
 use Tinvar\Auth\Checks;
+use Tinvar\Cache\QueryCache;
+use Tinvar\Data\Encoder;
 use Tinvar\Auth\Gate;
 use Tinvar\Http\ForbiddenException;
 use Tinvar\Http\NotFoundException;
@@ -37,6 +39,8 @@ final class ActionRunner
         private readonly Orm $orm,
         private readonly Gate $gate,
         private readonly Validator $validator,
+        private readonly Encoder $encoder = new Encoder(),
+        private readonly ?QueryCache $cache = null,
     ) {}
 
     /**
@@ -78,7 +82,19 @@ final class ActionRunner
             throw ActionException::badReturn($action->where(), get_debug_type($result));
         }
 
-        return $result;
+        // 6. Invalidate the cached queries the action said it invalidated.
+        //    revalidateTags() only ever reached the client, as an
+        //    x-invalidated-tags header for its prefetch cache; the server-side
+        //    cache was never touched, so a #[Query(cache: '5m')] kept serving
+        //    the pre-write answer for the rest of its TTL.
+        if ($this->cache !== null && $result->revalidatedTags !== []) {
+            $this->cache->forgetTags($result->revalidatedTags, $this->orm->tenant());
+        }
+
+        // 7. The data boundary. Only Data objects, scalars, lists and maps
+        //    leave, in every environment -- an action's value and flash were
+        //    reaching the browser unchecked.
+        return $result->encoded($this->encoder);
     }
 
     /**

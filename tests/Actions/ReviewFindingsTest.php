@@ -12,6 +12,10 @@ use Tinvar\Tests\Auth\Fixtures\User as AuthUser;
 use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Auth\PolicyGate;
 use Tinvar\Auth\AuthContext;
+use Tinvar\Attributes\Query as QueryAttribute;
+use Tinvar\Cache\ArrayStore;
+use Tinvar\Cache\QueryCache;
+use Tinvar\Data\Encoder;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
@@ -252,4 +256,59 @@ it('does not put the requested action name in the error', function () {
     } catch (NotFoundException $e) {
         expect($e->getMessage())->not->toContain('FAKE-LOG-LINE');
     }
+});
+
+// revalidateTags() set an x-invalidated-tags header for the CLIENT's prefetch
+// cache and nothing else: QueryCache::forgetTags() had no caller in src/ at
+// all, so a cached query kept serving the pre-write answer for its full TTL.
+describe('tag invalidation reaches the server cache', function () {
+    it('forgets the tags an action revalidated', function () {
+        $fixture = new Fixture(racks: 2, unitsPerRack: 1, sites: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $store = new ArrayStore();
+        $cache = new QueryCache($store, new AuthContext());
+
+        $rack = $fixture->ids['racks'][0];
+        $declaration = new QueryAttribute(
+            cache: '5m',
+            tags: static function (string $rack): array { return ['rack:' . $rack]; },
+        );
+        $tenant = $orm->tenant();
+        $cache->put('racks.cached', $declaration, ['rack' => $rack], $tenant, ['n' => 1]);
+
+        expect($cache->get('racks.cached', $declaration, ['rack' => $rack], $tenant)['hit'])
+            ->toBeTrue('cached before the write');
+
+        $registry = new ActionRegistry();
+        $registry->register(A\RackActions::class);
+        $runner = new ActionRunner(
+            $registry,
+            $orm,
+            new AllowAllGate(),
+            new Validator($orm),
+            new Encoder(),
+            $cache,
+        );
+
+        $runner->run('RackActions.moveUnit', ['rack' => $rack, 'position' => 12]);
+
+        expect($cache->get('racks.cached', $declaration, ['rack' => $rack], $tenant)['hit'])
+            ->toBeFalse('the action invalidated it');
+    });
+
+    // put() namespaces tags with the live tenant, so invalidating under the
+    // wrong one silently does nothing. forgetTags() used to default to ''.
+    it('invalidates within the acting tenant, not a default one', function () {
+        $store = new ArrayStore();
+        $cache = new QueryCache($store, new AuthContext());
+
+        $declaration = new QueryAttribute(
+            cache: '5m',
+            tags: static function (string $rack): array { return ['rack:' . $rack]; },
+        );
+        $cache->put('q', $declaration, ['rack' => 'r1'], 'acme', ['n' => 1]);
+
+        expect($cache->forgetTags(['rack:r1'], 'globex'))->toBe(0, 'another tenant cannot drop it')
+            ->and($cache->forgetTags(['rack:r1'], 'acme'))->toBe(1);
+    });
 });

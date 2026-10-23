@@ -52,10 +52,39 @@ final class ActionEndpoint
 
         try {
             if ($precognitive && $only !== null && $only !== '') {
+                $fields = explode(',', $only);
+
+                // The header is client-supplied and each field re-runs model
+                // resolution and authorization, which the body limit does not
+                // bound.
+                if (\count($fields) > Limits::MAX_PRECOGNITION_FIELDS) {
+                    throw new HttpException(
+                        400,
+                        'Too many fields named in Precognition-Validate-Only.',
+                        'bad_request',
+                    );
+                }
+
                 $errors = [];
-                foreach (explode(',', $only) as $field) {
+                foreach ($fields as $field) {
                     $field = trim($field);
-                    $found = $this->runner->validateField($name, $input, $field);
+
+                    try {
+                        $found = $this->runner->validateField($name, $input, $field);
+                    } catch (\LogicException) {
+                        // validateField() refuses an unknown field rather than
+                        // returning [], which would read as "this field is
+                        // fine" -- right for an author typo, wrong for a name
+                        // a client chose. Here it is bad input, not a bug, and
+                        // the exception message quotes the client's own text
+                        // back, which the error-channel rule forbids.
+                        throw new HttpException(
+                            422,
+                            'Precognition-Validate-Only names a field this action does not have.',
+                            'unprocessable',
+                        );
+                    }
+
                     if ($found !== []) {
                         $errors[$field] = $found;
                     }

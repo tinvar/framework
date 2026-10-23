@@ -189,6 +189,22 @@ final class OptionalActions
     }
 }
 
+/** Hands a model straight back, which the data boundary must refuse. */
+final class LeakyActions
+{
+    #[Action, Authorize('update', 'rack')]
+    public function leak(Rack $rack): ActionResult
+    {
+        return ActionResult::ok($rack);
+    }
+
+    #[Action, Authorize('update', 'rack')]
+    public function leakViaFlash(Rack $rack): ActionResult
+    {
+        return ActionResult::ok('fine')->flash(['rack' => $rack]);
+    }
+}
+
 final readonly class AlphaRequest extends FormRequest
 {
     public function __construct(#[Min(3)] public string $alpha) {}

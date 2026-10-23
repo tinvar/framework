@@ -31,6 +31,7 @@ final class RenderChannel
         private readonly FrameCodec $codec = new MessagePackCodec(),
         private readonly float $deadlineSeconds = 15.0,
         private readonly float $connectTimeoutSeconds = 2.0,
+        private readonly bool $debug = false,
     ) {}
 
     /**
@@ -91,7 +92,7 @@ final class RenderChannel
                     } elseif ($type === Frame::DONE) {
                         $done = true;
                     } elseif ($type === Frame::ERROR) {
-                        throw RendererException::fromErrorFrame($message);
+                        throw RendererException::fromErrorFrame($message, $this->debug);
                     }
                 }
 

@@ -138,3 +138,25 @@ it('reports a clear error when the renderer is not there', function () {
     expect(fn () => renderRack($kernel, $seeded['racks'][0]))
         ->toThrow(RendererException::class, 'Cannot reach the renderer');
 });
+
+// The renderer is the "runs third-party npm code" tier; the spec says its
+// stacks and hints never reach the browser. fromErrorFrame() copied its
+// message verbatim with no debug gate.
+it('does not carry the renderer own error text by default', function () {
+    $e = RendererException::fromErrorFrame([
+        'code' => 'render_failed',
+        'digest' => 'abc123',
+        'message' => 'TypeError: undefined is not a function at /app/node_modules/evil/index.js:42',
+    ]);
+
+    expect($e->getMessage())->toBe('The renderer reported an error.')
+        ->and($e->getMessage())->not->toContain('node_modules')
+        ->and($e->code_)->toBe('render_failed')
+        ->and($e->digest)->toBe('abc123', 'the structured handle survives');
+});
+
+it('includes the renderer message when debug is on', function () {
+    $e = RendererException::fromErrorFrame(['message' => 'TypeError: boom'], debug: true);
+
+    expect($e->getMessage())->toBe('TypeError: boom');
+});
