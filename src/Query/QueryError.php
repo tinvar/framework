@@ -15,6 +15,7 @@ final class QueryError
     public const string FORBIDDEN = 'forbidden';
     public const string FAILED = 'query_failed';
     public const string BAD_RESULT = 'query_bad_result';
+    public const string BAD_ARGUMENTS = 'query_bad_arguments';
 
     /** @return array{code: string, digest: string, message?: string} */
     public static function of(string $code, \Throwable|string $cause, bool $debug): array

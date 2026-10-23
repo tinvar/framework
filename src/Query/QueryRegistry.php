@@ -25,6 +25,9 @@ final class QueryRegistry
     /** @var array<string, list<Authorize>> */
     private array $checks = [];
 
+    /** @var array<string, array<string, bool>> query name => parameter name => required */
+    private array $parameters = [];
+
     /** @var array<string, object> */
     private array $instances = [];
 
@@ -55,6 +58,7 @@ final class QueryRegistry
             static fn (\ReflectionAttribute $a): Authorize => $a->newInstance(),
             $reflection->getAttributes(Authorize::class),
         );
+        $this->parameters[$name] = self::parametersOf($reflection, $declaration);
 
         return $name;
     }
@@ -101,6 +105,47 @@ final class QueryRegistry
         return $this->instances[$name] ??= $this->resolver !== null
             ? ($this->resolver)($class)
             : new $class();
+    }
+
+    /**
+     * The argument names this query accepts, and whether each is required.
+     *
+     * Arguments arrive from the renderer, which the trust boundary table calls
+     * semi-trusted ("runs third-party npm code"), so they are checked against
+     * the declaration before authorization rather than spread straight into a
+     * call.
+     *
+     * @return array<string, bool>
+     */
+    public function parametersFor(string $name): array
+    {
+        return $this->parameters[$name] ?? [];
+    }
+
+    /**
+     * @param \ReflectionClass<object> $reflection
+     * @return array<string, bool>
+     */
+    private static function parametersOf(\ReflectionClass $reflection, Query $declaration): array
+    {
+        // A batch query's per-call signature is declared on the attribute:
+        // #[Query(args: ['unit' => Unit::class])].
+        if (is_subclass_of($reflection->getName(), BatchQuery::class)) {
+            return array_map(static fn (): bool => true, $declaration->args);
+        }
+
+        $invoke = $reflection->hasMethod('__invoke') ? $reflection->getMethod('__invoke') : null;
+        if ($invoke === null) {
+            return [];
+        }
+
+        $parameters = [];
+        foreach ($invoke->getParameters() as $parameter) {
+            $parameters[$parameter->getName()] = !$parameter->isDefaultValueAvailable()
+                && !$parameter->allowsNull();
+        }
+
+        return $parameters;
     }
 
     public function isBatch(string $name): bool

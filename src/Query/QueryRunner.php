@@ -44,18 +44,24 @@ final class QueryRunner
         /** @var array<string, array{name: string, args: array<string, mixed>, ids: list<int>}> $groups */
         $groups = [];
 
+        /** @var array<int, string> $groupOf call id => group key */
+        $groupOf = [];
+
         foreach ($calls as $call) {
-            $error = $this->reject($call, $allowed);
-            if ($error !== null) {
-                $errors[$call['id']] = $error;
+            $prepared = $this->prepare($call, $allowed);
+            if (isset($prepared['error'])) {
+                $errors[$call['id']] = $prepared['error'];
                 continue;
             }
 
-            // Dedupe: "Identical calls collapse into one; results are memoized
-            // for the request, matching React cache() semantics."
-            $key = $call['name'] . "\0" . self::canonical($call['args']);
-            $groups[$key] ??= ['name' => $call['name'], 'args' => $call['args'], 'ids' => []];
+            // Dedupe on the *resolved* arguments: "Identical calls collapse into
+            // one; results are memoized for the request, matching React cache()
+            // semantics."
+            $arguments = $prepared['args'];
+            $key = $call['name'] . "\0" . self::canonical($arguments);
+            $groups[$key] ??= ['name' => $call['name'], 'args' => $arguments, 'ids' => []];
             $groups[$key]['ids'][] = $call['id'];
+            $groupOf[$call['id']] = $key;
         }
 
         $values = $groups === [] ? [] : $this->execute($groups);
@@ -68,8 +74,7 @@ final class QueryRunner
                 continue;
             }
 
-            $key = $call['name'] . "\0" . self::canonical($call['args']);
-            $outcome = $values[$key];
+            $outcome = $values[$groupOf[$id]];
             $results[] = isset($outcome['error'])
                 ? ['id' => $id, 'error' => $outcome['error']]
                 : ['id' => $id, 'value' => $outcome['value']];
@@ -79,35 +84,101 @@ final class QueryRunner
     }
 
     /**
+     * Allowlist, then argument resolution, then #[Authorize] -- the spec's
+     * order, with step 2 doing real work.
+     *
      * @param array{id: int, name: string, args: array<string, mixed>} $call
      * @param list<string> $allowed
-     * @return array{code: string, digest: string, message?: string}|null
+     * @return array{args: array<string, mixed>}|array{error: array{code: string, digest: string, message?: string}}
      */
-    private function reject(array $call, array $allowed): ?array
+    private function prepare(array $call, array $allowed): array
     {
         $name = $call['name'];
 
         // "PHP rejects any other name on that route's socket, so a compromised
         // dependency can't call queries the page never uses."
         if (!\in_array($name, $allowed, true)) {
-            return QueryError::of(QueryError::NOT_ALLOWED, "'{$name}' is not on this route's allowlist", $this->debug);
+            return ['error' => QueryError::of(
+                QueryError::NOT_ALLOWED,
+                "'{$name}' is not on this route's allowlist",
+                $this->debug,
+            )];
         }
 
         if (!$this->registry->has($name)) {
-            return QueryError::of(QueryError::UNKNOWN, "no query is registered as '{$name}'", $this->debug);
+            return ['error' => QueryError::of(
+                QueryError::UNKNOWN,
+                "no query is registered as '{$name}'",
+                $this->debug,
+            )];
         }
 
+        $arguments = $this->resolveArguments($name, $call['args']);
+        if (\is_string($arguments)) {
+            return ['error' => QueryError::of(QueryError::BAD_ARGUMENTS, $arguments, $this->debug)];
+        }
+
+        // The gate sees exactly the map the body will receive, so a check named
+        // for an argument cannot be satisfied by a differently-shaped call.
         foreach ($this->registry->checksFor($name) as $check) {
-            if (!$this->gate->allows($check, $call['args'])) {
-                return QueryError::of(
+            if ($check->argument !== null && !\array_key_exists($check->argument, $arguments)) {
+                return ['error' => QueryError::of(
+                    QueryError::FORBIDDEN,
+                    "'{$name}' declares #[Authorize] for '{$check->argument}', which this call does not supply",
+                    $this->debug,
+                )];
+            }
+
+            if (!$this->gate->allows($check, $arguments)) {
+                return ['error' => QueryError::of(
                     QueryError::FORBIDDEN,
                     "'{$check->ability}' denied for '{$name}'",
                     $this->debug,
-                );
+                )];
             }
         }
 
-        return null;
+        return ['args' => $arguments];
+    }
+
+    /**
+     * Step 2 of the order: resolve arguments against the query's declaration.
+     *
+     * Returns the normalized map, or a string describing why the call is
+     * malformed. Integer keys are refused outright: spreading one would bind
+     * positionally and could satisfy a call whose named argument a gate is
+     * checking.
+     *
+     * @param array<string, mixed> $args
+     * @return array<string, mixed>|string
+     */
+    private function resolveArguments(string $name, array $args): array|string
+    {
+        $declared = $this->registry->parametersFor($name);
+
+        foreach (array_keys($args) as $key) {
+            if (!\is_string($key)) {
+                return "'{$name}' was called with a positional argument; only named arguments cross the socket";
+            }
+            if ($declared !== [] && !\array_key_exists($key, $declared)) {
+                return "'{$name}' does not declare an argument named '{$key}'";
+            }
+        }
+
+        $resolved = [];
+        foreach ($declared as $parameter => $required) {
+            if (\array_key_exists($parameter, $args)) {
+                $resolved[$parameter] = $args[$parameter];
+                continue;
+            }
+            if ($required) {
+                return "'{$name}' requires an argument named '{$parameter}'";
+            }
+        }
+
+        // A query with no declared parameters still gets its named arguments,
+        // checked for key shape above.
+        return $declared === [] ? $args : $resolved;
     }
 
     /**

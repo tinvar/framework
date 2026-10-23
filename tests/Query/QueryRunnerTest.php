@@ -14,6 +14,7 @@ use Tinvar\Tests\Query\Fixtures\BoomQuery;
 use Tinvar\Tests\Query\Fixtures\LeakyQuery;
 use Tinvar\Tests\Query\Fixtures\MiscountedBatch;
 use Tinvar\Tests\Query\Fixtures\RackSummary;
+use Tinvar\Tests\Query\Fixtures\RackWindow;
 use Tinvar\Tests\Query\Fixtures\UnitLoad;
 
 require_once __DIR__ . '/../Orm/Fixtures/models.php';
@@ -28,7 +29,10 @@ function runnerFor(Fixture $fixture, ?object $gate = null, bool $debug = false):
         BoomQuery::class, MiscountedBatch::class => new $class(),
         default => new $class($orm),
     });
-    $registry->registerAll([RackSummary::class, UnitLoad::class, LeakyQuery::class, BoomQuery::class, MiscountedBatch::class]);
+    $registry->registerAll([
+        RackSummary::class, RackWindow::class, UnitLoad::class,
+        LeakyQuery::class, BoomQuery::class, MiscountedBatch::class,
+    ]);
 
     $gate ??= new AllowAllGate();
 
@@ -137,15 +141,19 @@ describe('batching and dedupe', function () {
     });
 
     it('treats argument order as irrelevant when deduping', function () {
-        $fixture = new Fixture(racks: 1, unitsPerRack: 1);
+        $fixture = new Fixture(racks: 1, unitsPerRack: 4);
         [$runner] = runnerFor($fixture);
+        $rack = $fixture->ids['racks'][0];
+        $fixture->connection->resetStatementCount();
 
         $results = $runner->run([
-            ['id' => 0, 'name' => 'racks.unitLoad', 'args' => ['unit' => $fixture->ids['units'][0], 'z' => 1]],
-            ['id' => 1, 'name' => 'racks.unitLoad', 'args' => ['z' => 1, 'unit' => $fixture->ids['units'][0]]],
-        ], allowed: ['racks.unitLoad']);
+            ['id' => 0, 'name' => 'racks.window', 'args' => ['rack' => $rack, 'limit' => 2]],
+            ['id' => 1, 'name' => 'racks.window', 'args' => ['limit' => 2, 'rack' => $rack]],
+        ], allowed: ['racks.window']);
 
-        expect($results[0]['value'])->toBe($results[1]['value']);
+        expect($results[0]['value'])->toBe($results[1]['value'])
+            ->and($results[0]['value']['units'])->toBe(2)
+            ->and($fixture->connection->statementCount())->toBe(2, 'one find, one units load, run once');
     });
 
     it('batches relation loads reached from separate queries', function () {
@@ -165,6 +173,75 @@ describe('batching and dedupe', function () {
             ->and($results[0]['value']['units'])->toBe(3)
             // 12 finds, then one batched units statement for all of them.
             ->and($fixture->connection->statementCount())->toBeLessThanOrEqual(13);
+    });
+});
+
+describe('arguments are resolved against the declaration', function () {
+    // The renderer is semi-trusted -- it runs third-party npm code -- so
+    // argument maps are checked before they reach a gate or a call.
+
+    it('refuses a positional argument', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1);
+        [$runner] = runnerFor($fixture, debug: true);
+
+        $results = $runner->run(
+            [['id' => 0, 'name' => 'racks.window', 'args' => [0 => $fixture->ids['racks'][0], 1 => 2]]],
+            allowed: ['racks.window'],
+        );
+
+        expect($results[0]['error']['code'])->toBe(QueryError::BAD_ARGUMENTS)
+            ->and($results[0]['error']['message'])->toContain('positional');
+    });
+
+    it('refuses an argument the query does not declare', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1);
+        [$runner] = runnerFor($fixture, debug: true);
+
+        $results = $runner->run(
+            callsFor([['racks.unitLoad', ['unit' => $fixture->ids['units'][0], 'sneaky' => 1]]]),
+            allowed: ['racks.unitLoad'],
+        );
+
+        expect($results[0]['error']['code'])->toBe(QueryError::BAD_ARGUMENTS)
+            ->and($results[0]['error']['message'])->toContain('sneaky');
+    });
+
+    it('refuses a call missing a required argument', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1);
+        [$runner] = runnerFor($fixture, debug: true);
+
+        $results = $runner->run(
+            callsFor([['racks.window', ['rack' => $fixture->ids['racks'][0]]]]),
+            allowed: ['racks.window'],
+        );
+
+        expect($results[0]['error']['code'])->toBe(QueryError::BAD_ARGUMENTS)
+            ->and($results[0]['error']['message'])->toContain('limit');
+    });
+
+    it('denies a call that omits the argument an #[Authorize] names', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1);
+        [$runner] = runnerFor($fixture, debug: true);
+
+        // racks.unitLoad declares #[Authorize('view', 'unit')]; 'unit' is also
+        // its only declared parameter, so an empty call must not slip past.
+        $results = $runner->run(callsFor([['racks.unitLoad', []]]), allowed: ['racks.unitLoad']);
+
+        expect($results[0]['error']['code'])->toBeIn([QueryError::BAD_ARGUMENTS, QueryError::FORBIDDEN])
+            ->and($results[0])->not->toHaveKey('value');
+    });
+
+    it('issues no statement for a malformed call', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1);
+        [$runner] = runnerFor($fixture);
+        $fixture->connection->resetStatementCount();
+
+        $runner->run(
+            callsFor([['racks.unitLoad', ['nope' => 1]]]),
+            allowed: ['racks.unitLoad'],
+        );
+
+        expect($fixture->connection->statementCount())->toBe(0);
     });
 });
 

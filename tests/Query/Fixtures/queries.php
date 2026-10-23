@@ -86,6 +86,20 @@ final class LeakyQuery
     }
 }
 
+/** Two declared parameters, so argument-order dedupe is observable. */
+#[Query(name: 'racks.window')]
+final class RackWindow
+{
+    public function __construct(private readonly Orm $orm) {}
+
+    public function __invoke(string $rack, int $limit): RackSummaryData
+    {
+        $model = $this->orm->find(Rack::class, $rack);
+
+        return new RackSummaryData($model->name, min($limit, $model->units->count()));
+    }
+}
+
 #[Query(name: 'racks.boom')]
 final class BoomQuery
 {
