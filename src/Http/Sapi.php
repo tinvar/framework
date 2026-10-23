@@ -110,7 +110,8 @@ final class Sapi
 
     /**
      * Writes a Response through the given output functions: a status, each
-     * header, then the body as it streams.
+     * header, each cookie as a Set-Cookie line of its own, then the body as
+     * it streams.
      *
      * @param \Closure(int): void            $status
      * @param \Closure(string, string): void $header name, value
@@ -121,6 +122,9 @@ final class Sapi
         $status($response->status);
         foreach ($response->headers() as $name => $value) {
             $header($name, $value);
+        }
+        foreach ($response->cookies() as $line) {
+            $header('set-cookie', $line);
         }
         $response->sendBody($write);
     }
@@ -134,7 +138,9 @@ final class Sapi
                 http_response_code($code);
             },
             static function (string $name, string $value): void {
-                header("{$name}: {$value}", true);
+                // Every other header replaces; Set-Cookie adds, or a second
+                // cookie would silently take the first one's place.
+                header("{$name}: {$value}", $name !== 'set-cookie');
             },
             static function (string $chunk): void {
                 echo $chunk;

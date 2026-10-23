@@ -164,4 +164,14 @@ it('loads a deferred boundary when it scrolls into view', function () use ($root
         ->and($result['requestedBeforeScroll'])->toBe(0)
         ->and($result['after'])->toBe('Recent changes')
         ->and($result['fragments'])->toBe(['1']);
+
+    // The fragment is session-bound, so it loading at all shows the cookie
+    // round-tripped; this shows it did so with the attributes the spec's
+    // cookie rule requires.
+    expect($result['session'] ?? null)->toBe([
+        'path' => '/',
+        'secure' => true,
+        'httpOnly' => true,
+        'sameSite' => 'Lax',
+    ]);
 });

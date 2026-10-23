@@ -15,6 +15,17 @@ final class Response
     /** @var array<string, string> */
     private array $headers = [];
 
+    /**
+     * Set-Cookie lines, by cookie name.
+     *
+     * Apart from the headers because a response can set several cookies --
+     * a session and a CSRF token on one page -- and a header map holds one
+     * value per name, so the second cookie replaced the first.
+     *
+     * @var array<string, string>
+     */
+    private array $cookies = [];
+
     /** @var (\Closure(\Closure(string): void): void)|null */
     private ?\Closure $producer = null;
 
@@ -190,6 +201,67 @@ final class Response
         $parts[] = $value;
 
         return $this->withHeader($name, implode(', ', $parts));
+    }
+
+    /**
+     * A cookie, written with the attributes the spec's cookie rule requires.
+     *
+     * tinvar-spec.md, "HTTP": "Session and CSRF cookies use the `__Host-`
+     * prefix and are `HttpOnly` (session), `Secure` and `SameSite=Lax`." So
+     * Secure, SameSite=Lax and Path=/ are always written, and the prefix is
+     * required rather than offered: a browser holds a `__Host-` cookie to
+     * Secure, Path=/ and no Domain, which is what stops a sibling subdomain
+     * or a plain-http response from planting one -- and it does so only when
+     * the name says so.
+     *
+     * HttpOnly by default. Only a cookie script must read, the CSRF token,
+     * turns it off.
+     *
+     * @param int|null $maxAge seconds until the browser drops it; null for
+     *                         a browser-session cookie
+     */
+    public function withCookie(string $name, string $value, bool $httpOnly = true, ?int $maxAge = null): self
+    {
+        if (preg_match('/^__Host-[A-Za-z0-9!#$%&\'*+.^_`|~-]+\z/', $name) !== 1) {
+            throw new \InvalidArgumentException('A cookie name must be a __Host- prefixed token.');
+        }
+
+        // RFC 6265 cookie-octets: nothing that ends the value early, splits
+        // the header or needs quoting.
+        if (preg_match('/^[\x21\x23-\x2b\x2d-\x3a\x3c-\x5b\x5d-\x7e]*\z/', $value) !== 1) {
+            throw new \InvalidArgumentException("Cookie '{$name}' has a value with characters a cookie cannot carry.");
+        }
+
+        if ($maxAge !== null && $maxAge < 0) {
+            throw new \InvalidArgumentException("Cookie '{$name}' cannot have a negative Max-Age.");
+        }
+
+        $clone = clone $this;
+        $clone->cookies[$name] = "{$name}={$value}; Path=/; Secure"
+            . ($httpOnly ? '; HttpOnly' : '')
+            . '; SameSite=Lax'
+            . ($maxAge === null ? '' : "; Max-Age={$maxAge}");
+
+        return $clone;
+    }
+
+    /**
+     * Every cookie another response sets, set on this one too -- for a
+     * response that replaces another, as a translated redirect does, and
+     * must not drop what it was carrying.
+     */
+    public function withCookiesOf(self $other): self
+    {
+        $clone = clone $this;
+        $clone->cookies = [...$this->cookies, ...$other->cookies];
+
+        return $clone;
+    }
+
+    /** @return array<string, string> Set-Cookie lines, by cookie name */
+    public function cookies(): array
+    {
+        return $this->cookies;
     }
 
     public function header(string $name): ?string

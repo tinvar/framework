@@ -82,6 +82,6 @@ final class TranslateRedirects implements Middleware
             }
         }
 
-        return $translated;
+        return $translated->withCookiesOf($response);
     }
 }

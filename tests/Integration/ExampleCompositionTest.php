@@ -92,8 +92,11 @@ it('refuses a short app key rather than signing with it', function () {
     }
 });
 
-// A client that could pick its own session id could fix a victim's session
-// -- planting the cookie from a sibling subdomain -- and share its tokens.
+// Signing stops a client inventing a session id. It does NOT stop fixation:
+// the server hands a valid cookie to any request without one, so an attacker
+// can plant the one it was given. What bounds that is the __Host- prefix
+// (nothing outside this origin can set the cookie), the expiry under the
+// MAC, and rotating the id on every privilege change.
 describe('the example session cookie', function () {
     $key = str_repeat('k', 32);
 
@@ -111,7 +114,78 @@ describe('the example session cookie', function () {
         'other key' => [Racks\Kernel::newSession(str_repeat('x', 32))],
         'absent' => [null],
         'trailing newline' => [Racks\Kernel::newSession(str_repeat('k', 32)) . "\n"],
+        // The format before the expiry was signed into it: accepted forever.
+        'id and mac only' => [(static function (): string {
+            $id = str_repeat('b', 32);
+
+            return $id . '.' . Tinvar\Support\Signer::encode(
+                new Tinvar\Support\Signer(str_repeat('k', 32), 'session-cookie')->sign($id),
+            );
+        })()],
     ]);
+
+    // It used to be good forever: whoever was handed one could plant it
+    // in a victim's browser at any later date.
+    it('refuses a cookie once it has expired', function () use ($key) {
+        $issued = time() - Racks\Kernel::SESSION_LIFETIME;
+        $cookie = Racks\Kernel::newSession($key, now: $issued);
+
+        expect(Racks\Kernel::sessionFrom($cookie, $key, now: $issued + Racks\Kernel::SESSION_LIFETIME - 1))
+            ->toBe(explode('.', $cookie)[0])
+            ->and(Racks\Kernel::sessionFrom($cookie, $key, now: $issued + Racks\Kernel::SESSION_LIFETIME))->toBeNull()
+            ->and(Racks\Kernel::sessionFrom($cookie, $key))->toBeNull();
+    });
+
+    it('refuses a cookie issued in the future', function () use ($key) {
+        $cookie = Racks\Kernel::newSession($key, now: time() + 3600);
+
+        expect(Racks\Kernel::sessionFrom($cookie, $key))->toBeNull();
+    });
+
+    // The expiry is under the MAC, so it cannot be pushed out.
+    it('refuses a cookie whose expiry was edited', function () use ($key) {
+        [$id, $issued, $expires, $mac] = explode('.', Racks\Kernel::newSession($key));
+
+        expect(Racks\Kernel::sessionFrom("{$id}.{$issued}." . ((int) $expires + 3600) . ".{$mac}", $key))->toBeNull()
+            ->and(Racks\Kernel::sessionFrom("{$id}.0{$issued}.{$expires}.{$mac}", $key))->toBeNull();
+    });
+
+    // Strict base64 ignores the spare low bits of the last character, so
+    // decoding and comparing bytes accepted a second spelling of the MAC --
+    // two cookies for one session, which defeats anything keyed on the
+    // string.
+    it('accepts one spelling of the MAC only', function () use ($key) {
+        $cookie = Racks\Kernel::newSession($key);
+        $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+        $respelled = substr($cookie, 0, -1) . $alphabet[strpos($alphabet, $cookie[-1]) ^ 1];
+
+        expect(Tinvar\Support\Signer::decode(explode('.', $respelled)[3]))
+            ->toBe(Tinvar\Support\Signer::decode(explode('.', $cookie)[3]), 'the same bytes, spelled differently')
+            ->and(Racks\Kernel::sessionFrom($respelled, $key))->toBeNull();
+    });
+
+    // tinvar-spec.md, "HTTP": "Session and CSRF cookies use the __Host-
+    // prefix and are HttpOnly (session), Secure and SameSite=Lax."
+    it('is set as the spec cookie rule requires', function () use ($key) {
+        $now = time();
+        $cookie = Racks\Kernel::newSession($key, now: $now);
+        $line = Racks\Kernel::withSession(Tinvar\Http\Response::make(), $cookie, now: $now)->cookies()[Racks\Kernel::SESSION_COOKIE];
+
+        expect(Racks\Kernel::SESSION_COOKIE)->toStartWith('__Host-')
+            ->and($line)->toBe(Racks\Kernel::SESSION_COOKIE . "={$cookie}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=" . Racks\Kernel::SESSION_LIFETIME)
+            ->and($line)->not->toContain('Domain');
+    });
+
+    // Rotation on sign-in is what makes a planted id worthless at the
+    // moment it would become valuable.
+    it('rotates to a new id', function () use ($key) {
+        $before = Racks\Kernel::newSession($key);
+        $line = Racks\Kernel::rotateSession(Tinvar\Http\Response::make(), $key)->cookies()[Racks\Kernel::SESSION_COOKIE];
+        $after = explode(';', substr($line, \strlen(Racks\Kernel::SESSION_COOKIE) + 1))[0];
+
+        expect(Racks\Kernel::sessionFrom($after, $key))->not->toBeNull()
+            ->and(Racks\Kernel::sessionFrom($after, $key))->not->toBe(Racks\Kernel::sessionFrom($before, $key));
+    });
 });
 
 // Never under the project: node_modules holds a workspace symlink to the
