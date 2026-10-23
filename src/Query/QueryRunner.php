@@ -147,22 +147,25 @@ final class QueryRunner
             $missing = [];
 
             // The identity map holds anything read earlier in this request,
-            // keyed by tenant, so a hit is a scoped hit. Two exceptions, both
-            // of which would make the map an answer the database never gave:
+            // keyed by tenant, so a hit is a scoped hit -- but only for a
+            // model a row actually produced.
             //
-            //  - an uninitialized lazy ghost. A #[BelongsTo] registers one
-            //    from a foreign key before anything confirms the row exists,
-            //    so accepting it would resolve an id that no tenant-scoped
-            //    select has ever returned.
-            //  - an unscoped read in progress, where the map is bypassed
-            //    everywhere else for the same reason.
-            $reflection = new \ReflectionClass($class);
+            // A #[BelongsTo] registers a lazy ghost from a foreign key before
+            // anything confirms the row exists. Left untouched it is an
+            // uninitialized ghost; touched with no row behind it, the
+            // initializer returns without hydrating and leaves an initialized
+            // but empty one. isPersisted() is true only after markClean(),
+            // which happens on hydrate from a real row and after an insert --
+            // so it distinguishes both cases from a genuine read.
+            //
+            // The map is also bypassed while a read is unscoped, as it is
+            // everywhere else, for the same reason.
             $trustMap = !$this->orm->isUnscoped();
 
             foreach (array_unique($ids) as $id) {
                 $known = $trustMap ? $this->orm->identityMap()->get($class, $id) : null;
 
-                if ($known !== null && !$reflection->isUninitializedLazyObject($known)) {
+                if ($known instanceof Model && $known->isPersisted()) {
                     $resolved[$class][$id] = $known;
                     continue;
                 }

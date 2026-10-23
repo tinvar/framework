@@ -72,3 +72,41 @@ it('still resolves a model the database really returned', function () {
     expect($results[0]['value']['name'])->toBe($site->code)
         ->and($fixture->connection->statementCount())->toBe(0, 'served from the map, which had really read it');
 });
+
+/**
+ * A ghost whose row did not exist is left initialized but unhydrated, so
+ * "is it initialized?" is not the question. "Did a row produce it?" is.
+ */
+it('does not resolve from a ghost that was touched and found nothing', function () {
+    $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+
+    $danglingSiteId = Uuid::v7();
+    $fixture->connection->execute(
+        'INSERT INTO racks (id, name, height_u, site_id) VALUES (?, ?, ?, ?)',
+        [Uuid::v7(), 'R-DANGLING', 42, $danglingSiteId],
+    );
+
+    foreach ($orm->all(Rack::class) as $rack) {
+        if ($rack->name !== 'R-DANGLING') {
+            continue;
+        }
+        // Touching it runs the initializer, which finds no row and returns.
+        try {
+            $rack->site->code;
+        } catch (\Throwable) {
+            // an unhydrated ghost has no code; that is the point
+        }
+    }
+
+    $registry = new QueryRegistry(static fn (string $c): object => new $c());
+    $registry->register(Tinvar\Tests\Query\Fixtures\SiteCode::class);
+    $runner = new QueryRunner($registry, $orm, new AllowAllGate());
+
+    $results = $runner->run(
+        [['id' => 0, 'name' => 'racks.siteCode', 'args' => ['site' => $danglingSiteId]]],
+        allowed: ['racks.siteCode'],
+    );
+
+    expect($results[0]['error']['code'])->toBe(QueryError::NOT_FOUND);
+});
