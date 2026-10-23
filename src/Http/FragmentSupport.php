@@ -38,6 +38,12 @@ final readonly class FragmentSupport
      * @param \Closure(Request): string $sessionId must return a real session id; an empty
      *        one is refused, because every visitor without a session would otherwise share
      *        one binding and their tokens would be interchangeable
+     * @param Signer|null $routeSigner signs route tokens. A second signer, not
+     *        the fragment one: Signer derives a key per purpose so a value
+     *        signed for one never verifies as another, and handing one signer
+     *        to both -- before the purpose was bound into the MAC -- made every
+     *        fragment token a valid route token. Separate keys keep that from
+     *        resting on a single mechanism.
      */
     public function __construct(
         public Signer $signer,
@@ -50,22 +56,6 @@ final readonly class FragmentSupport
         public ?\Closure $renderRoute = null,
         public ?Signer $routeSigner = null,
     ) {}
-
-    /**
-     * The signer for route tokens.
-     *
-     * A SECOND signer, not the fragment one. Signer derives a key per
-     * purpose precisely so a value signed for one can never verify as
-     * another, and the composition root bypassed that by handing one signer
-     * to both -- which, before the purpose was bound into the MAC, made
-     * every fragment token a valid route token. The MAC binding closes that
-     * on its own; keeping the keys separate as well means the property does
-     * not rest on a single mechanism.
-     */
-    public function routeSigner(): ?Signer
-    {
-        return $this->routeSigner;
-    }
 
     /**
      * The minter for one page render.

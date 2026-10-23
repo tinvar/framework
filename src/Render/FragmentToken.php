@@ -119,8 +119,6 @@ final readonly class FragmentToken
             $decoded = SignedToken::decode($token, $signer, self::PURPOSE);
             $claims = TokenClaims::fromMap($decoded);
             $claims->assertFresh(self::DEFAULT_TTL, self::MAX_LIFETIME, $now);
-        } catch (FragmentTokenError $e) {
-            throw $e;
         } catch (TokenError $e) {
             // The shared layer speaks TokenError; this layer's callers catch
             // FragmentTokenError, so the reason is carried across rather

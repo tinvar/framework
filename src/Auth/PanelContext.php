@@ -124,18 +124,12 @@ final class PanelContext
         $this->byFiber = new \WeakMap();
     }
 
-    private function set(?string $panel): void
+    private function set(string $panel): void
     {
         $fiber = \Fiber::getCurrent();
 
         if ($fiber === null) {
             $this->main = $panel;
-
-            return;
-        }
-
-        if ($panel === null) {
-            unset($this->byFiber[$fiber]);
 
             return;
         }

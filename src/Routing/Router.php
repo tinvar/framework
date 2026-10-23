@@ -73,9 +73,4 @@ final class Router
             });
         });
     }
-
-    public function routes(): RouteRegistry
-    {
-        return $this->routes;
-    }
 }

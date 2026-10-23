@@ -41,9 +41,4 @@ final class DataShape
 
         return self::$cache[$class] = $fields;
     }
-
-    public static function forget(): void
-    {
-        self::$cache = [];
-    }
 }

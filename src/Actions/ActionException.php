@@ -24,11 +24,6 @@ final class ActionException extends \RuntimeException
         );
     }
 
-    public static function notAnAction(string $class, string $method): self
-    {
-        return new self("{$class}::{$method}() has no #[Action] attribute.");
-    }
-
     public static function duplicate(string $name, string $first, string $second): self
     {
         return new self("Two actions are named '{$name}': {$first} and {$second}.");

@@ -35,12 +35,6 @@ final readonly class CompiledRoute
         public string $layoutKey = '',
     ) {}
 
-    /** How many segments are literal; used to rank a static route above a dynamic one. */
-    public function staticSegmentCount(): int
-    {
-        return \count(array_filter($this->segments, static fn (string $s): bool => !self::isParameter($s)));
-    }
-
     public function depth(): int
     {
         return \count($this->segments);

@@ -47,13 +47,6 @@ final class Throttle
     ) {}
 
     /**
-     * Records a hit and says whether it is over the limit.
-     *
-     * @param string $name   the bucket, e.g. 'actions'
-     * @param int    $limit  hits allowed per window
-     * @param int    $window seconds
-     */
-    /**
      * Records a hit against every bucket that applies.
      *
      * @param string $name   the bucket, e.g. 'actions'

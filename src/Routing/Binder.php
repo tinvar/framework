@@ -94,12 +94,6 @@ final class Binder
         return array_values(array_unique($optional));
     }
 
-    /** @return array<string, Model> */
-    public function models(): array
-    {
-        return $this->models;
-    }
-
     /**
      * Builds the argument list for one loader.
      *
