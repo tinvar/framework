@@ -86,7 +86,7 @@ final class AppKey
             // can be missing and is generated afresh -- never half there.)
             $temporary = $dir . '/.' . basename($file) . '.' . bin2hex(random_bytes(6));
             self::writePrivately($temporary, $key . "\n");
-            if (!rename($temporary, $file)) {
+            if (!@rename($temporary, $file)) {
                 @unlink($temporary);
                 throw new \RuntimeException("Cannot move the application key into {$file}.");
             }
