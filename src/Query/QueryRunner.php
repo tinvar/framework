@@ -155,11 +155,11 @@ final class QueryRunner
      * One whereIn per model class, for every call in the tick.
      *
      * @param array<int, array{name: string, args: array<string, mixed>}> $accepted
-     * @return array<class-string, array<string, Model>>
+     * @return array<class-string<Model>, array<string, Model>>
      */
     private function resolveModels(array $accepted): array
     {
-        /** @var array<class-string, list<string>> $wanted */
+        /** @var array<class-string<Model>, list<string>> $wanted */
         $wanted = [];
 
         foreach ($accepted as $call) {
@@ -209,7 +209,7 @@ final class QueryRunner
             }
 
             $meta = Metadata::for($class);
-            foreach ($this->orm->whereIn($class, $meta->idColumn, array_values($missing)) as $model) {
+            foreach ($this->orm->whereIn($class, $meta->idColumn, $missing) as $model) {
                 $resolved[$class][$model->primaryKey()] = $model;
             }
         }
@@ -341,7 +341,7 @@ final class QueryRunner
      * positionally and could satisfy a call whose named argument a gate is
      * checking.
      *
-     * @param array<string, mixed> $args
+     * @param array<array-key, mixed> $args as the renderer sent them; keys unchecked
      * @return array<string, mixed>|string
      */
     private function resolveArguments(string $name, array $args): array|string
@@ -385,7 +385,7 @@ final class QueryRunner
 
     /**
      * @param array<string, array{name: string, args: array<string, mixed>, ids: list<int>}> $groups
-     * @return array<string, array{value?: mixed, error?: array{code: string, digest: string, message?: string}}>
+     * @return array<string, array{error: array{code: string, digest: string, message?: string}}|array{value: mixed}>
      */
     private function execute(array $groups): array
     {
@@ -395,7 +395,7 @@ final class QueryRunner
         $byQuery = [];
         /** @var array<string, \Closure(): mixed> $tasks */
         $tasks = [];
-        /** @var array<string, array{value?: mixed, error?: array{code: string, digest: string, message?: string}}> $cached */
+        /** @var array<string, array{error: array{code: string, digest: string, message?: string}}|array{value: mixed}> $cached */
         $cached = [];
 
         foreach ($groups as $key => $group) {
@@ -413,6 +413,9 @@ final class QueryRunner
             }
 
             $query = $this->registry->instanceFor($group['name']);
+            if (!\is_callable($query)) {
+                throw new \LogicException("Query '{$group['name']}' is not invocable: it needs __invoke() or to be a BatchQuery.");
+            }
             $arguments = $group['args'];
             // "Loaders and queries run in a read-only transaction."
             $orm = $this->orm;
@@ -423,13 +426,15 @@ final class QueryRunner
 
         // One fiber per batch query, carrying every call made to it this tick.
         foreach ($byQuery as $name => $keys) {
-            /** @var BatchQuery $query */
             $query = $this->registry->instanceFor($name);
+            if (!$query instanceof BatchQuery) {
+                throw new \LogicException("Query '{$name}' is registered as a batch but its instance is not a BatchQuery.");
+            }
             $argumentSets = array_map(static fn (string $k): array => $groups[$k]['args'], $keys);
 
             $orm = $this->orm;
             $tasks['batch:' . $name] = static fn (): array => $orm->readOnly(
-                static fn (): array => $query->loadMany(array_values($argumentSets)),
+                static fn (): array => $query->loadMany($argumentSets),
             );
         }
 
@@ -468,7 +473,7 @@ final class QueryRunner
                 continue;
             }
 
-            foreach (array_values($keys) as $index => $key) {
+            foreach ($keys as $index => $key) {
                 $outcomes[$key] = $this->settle(array_values($batch)[$index]);
                 $this->remember($name, $groups[$key]['args'], $outcomes[$key]);
             }
@@ -513,7 +518,7 @@ final class QueryRunner
      * this attempt, not about the data.
      *
      * @param array<string, mixed> $arguments
-     * @param array{value?: mixed, error?: array<string, mixed>} $outcome
+     * @param array{error: array{code: string, digest: string, message?: string}}|array{value: mixed} $outcome
      */
     private function remember(string $name, array $arguments, array $outcome): void
     {
@@ -550,6 +555,7 @@ final class QueryRunner
         }
     }
 
+    /** @return array{error: array{code: string, digest: string, message?: string}}|array{value: mixed} */
     private function settle(mixed $value): array
     {
         if ($value instanceof \Throwable) {

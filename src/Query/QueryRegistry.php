@@ -30,7 +30,7 @@ final class QueryRegistry
     /** @var array<string, array<string, bool>> query name => parameter name => required */
     private array $parameters = [];
 
-    /** @var array<string, array<string, class-string>> query name => argument => model */
+    /** @var array<string, array<string, class-string<Model>>> query name => argument => model */
     private array $modelArguments = [];
 
     /** @var array<string, object> */
@@ -82,7 +82,10 @@ final class QueryRegistry
         return $name;
     }
 
-    /** @param list<class-string> $classes @return list<string> */
+    /**
+     * @param list<class-string> $classes
+     * @return list<string> the registered names
+     */
     public function registerAll(array $classes): array
     {
         return array_map($this->register(...), $classes);
@@ -174,7 +177,7 @@ final class QueryRegistry
      * declared ... and denied calls fail individually before the batch runs".
      * A plain query's model arguments come from its __invoke signature.
      *
-     * @return array<string, class-string>
+     * @return array<string, class-string<Model>>
      */
     public function modelArgumentsFor(string $name): array
     {
@@ -188,7 +191,7 @@ final class QueryRegistry
 
     /**
      * @param \ReflectionClass<object> $reflection
-     * @return array<string, class-string>
+     * @return array<string, class-string<Model>>
      */
     private static function modelArgumentsOf(\ReflectionClass $reflection, Query $declaration): array
     {
