@@ -18,6 +18,9 @@ final class Response
     /** @var (\Closure(\Closure(string): void): void)|null */
     private ?\Closure $producer = null;
 
+    /** Set once the producer has run, so a render is never replayed. */
+    private ?string $buffered = null;
+
     private function __construct(
         public readonly int $status,
         private string $body = '',
@@ -43,20 +46,67 @@ final class Response
         return $response;
     }
 
+    /**
+     * A same-origin redirect.
+     *
+     * "ActionResult::redirect(), back() and the 419 redirect accept
+     * same-origin URLs only. External URLs go through location() with an
+     * allowlist." An absolute or scheme-relative target is refused here rather
+     * than checked by every caller.
+     */
     public static function redirect(string $location, int $status = 302): self
     {
+        if (!str_starts_with($location, '/') || str_starts_with($location, '//')) {
+            throw new \InvalidArgumentException(
+                'A redirect target must be a root-relative path. Use Response::location() for an external URL.'
+            );
+        }
+
         return self::make($status, '', ['location' => $location]);
+    }
+
+    /**
+     * An off-origin redirect, for targets the application has allowed.
+     *
+     * Separate from redirect() on purpose: the allowlist decision belongs to
+     * the caller, and making it type out a different method name is the point.
+     */
+    public static function location(string $url, int $status = 302): self
+    {
+        return self::make($status, '', ['location' => $url]);
     }
 
     public function withHeader(string $name, string $value): self
     {
+        self::assertSafeHeader($name, $value);
+
         $clone = clone $this;
         $clone->headers[strtolower($name)] = $value;
 
         return $clone;
     }
 
-    /** Appends to a comma-joined header such as Vary, without duplicating a value. */
+    /**
+     * Header values may not carry CR, LF or other control characters.
+     *
+     * A value reaching the wire with a newline in it is response splitting:
+     * everything after the break is read by the client as further headers.
+     */
+    private static function assertSafeHeader(string $name, string $value): void
+    {
+        if (preg_match('/^[A-Za-z0-9!#$%&\'*+.^_`|~-]+$/', $name) !== 1) {
+            throw new \InvalidArgumentException('Header name contains characters that are not allowed.');
+        }
+        if (preg_match('/[\x00-\x1f\x7f]/', $value) === 1) {
+            throw new \InvalidArgumentException("Header '{$name}' contains a control character.");
+        }
+    }
+
+    /**
+     * Appends to a comma-joined header such as Vary, without duplicating a
+     * value. Header values of this kind are case-insensitive, so `Vary: rsc`
+     * already covers `RSC`.
+     */
     public function withAddedHeader(string $name, string $value): self
     {
         $existing = $this->header($name);
@@ -65,8 +115,10 @@ final class Response
         }
 
         $parts = array_map(trim(...), explode(',', $existing));
-        if (in_array($value, $parts, true)) {
-            return $this;
+        foreach ($parts as $part) {
+            if (strcasecmp($part, $value) === 0) {
+                return $this;
+            }
         }
         $parts[] = $value;
 
@@ -103,11 +155,19 @@ final class Response
         }
     }
 
-    /** Buffers a streaming body. Tests and error paths want the whole thing. */
+    /**
+     * Buffers a streaming body. Tests and error paths want the whole thing.
+     *
+     * Memoized: a producer is a render, and an error path or a logger calling
+     * this after the body has already been produced must not run it again.
+     */
     public function body(): string
     {
         if ($this->producer === null) {
             return $this->body;
+        }
+        if ($this->buffered !== null) {
+            return $this->buffered;
         }
 
         $buffer = '';
@@ -115,6 +175,6 @@ final class Response
             $buffer .= $chunk;
         });
 
-        return $buffer;
+        return $this->buffered = $buffer;
     }
 }

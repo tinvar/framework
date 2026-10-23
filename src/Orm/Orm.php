@@ -18,6 +18,9 @@ final class Orm
 
     private ?BatchScheduler $scheduler = null;
 
+    /** Depth of acrossTenants() calls; above zero, tenant scoping is lifted. */
+    private int $unscoped = 0;
+
     public function __construct(
         private readonly Connection $connection,
         private readonly IdentityMap $identityMap = new IdentityMap(),
@@ -76,6 +79,84 @@ final class Orm
         $this->identityMap->switchTenant($tenant);
     }
 
+    public function tenant(): string
+    {
+        return $this->identityMap->tenant();
+    }
+
+    /**
+     * Runs $work as $tenant, restoring the previous context afterwards.
+     *
+     * "Scoped switching only ... take a closure and restore the previous
+     * context afterwards." A bare setter would leak a switch into whatever ran
+     * next on the same worker.
+     *
+     * @template T
+     * @param \Closure(): T $work
+     * @return T
+     */
+    public function actAs(string $tenant, \Closure $work): mixed
+    {
+        $previous = $this->identityMap->tenant();
+        $this->switchTenant($tenant);
+
+        try {
+            return $work();
+        } finally {
+            $this->switchTenant($previous);
+        }
+    }
+
+    /**
+     * Lifts tenant scoping for the duration of $work.
+     *
+     * The escape hatch the spec requires to be explicit and flagged by the dev
+     * toolbar. Nesting is counted so an inner call cannot re-enable scoping
+     * for an outer one.
+     *
+     * @template T
+     * @param \Closure(): T $work
+     * @return T
+     */
+    public function acrossTenants(\Closure $work): mixed
+    {
+        $this->unscoped++;
+
+        try {
+            return $work();
+        } finally {
+            $this->unscoped--;
+            // The map is cleared on exit: rows read unscoped must not be
+            // served to a later scoped read.
+            $this->identityMap->flush();
+            $this->relationRows = [];
+        }
+    }
+
+    public function isUnscoped(): bool
+    {
+        return $this->unscoped > 0;
+    }
+
+    /**
+     * The tenant predicate for a model, and its binding.
+     *
+     * @return array{string, list<string>}
+     */
+    private function tenantScope(ModelMeta $meta): array
+    {
+        if ($meta->tenantColumn === null || $this->unscoped > 0) {
+            return ['', []];
+        }
+
+        $tenant = $this->identityMap->tenant();
+        if ($tenant === '') {
+            throw new NoTenantContext($meta->class);
+        }
+
+        return ['"' . $meta->tenantColumn . '" = ?', [$tenant]];
+    }
+
     // ---------------------------------------------------------------- reading
 
     /** @param class-string<Model> $class */
@@ -98,13 +179,18 @@ final class Orm
     public function all(string $class, ?string $orderBy = null): array
     {
         $meta = Metadata::for($class);
+        [$scope, $scopeBindings] = $this->tenantScope($meta);
+
         $columns = implode(', ', array_map(static fn (string $c): string => '"' . $c . '"', $meta->selectColumns()));
         $sql = "SELECT {$columns} FROM \"{$meta->table}\"";
+        if ($scope !== '') {
+            $sql .= " WHERE {$scope}";
+        }
         if ($orderBy !== null) {
             $sql .= " ORDER BY \"{$orderBy}\"";
         }
 
-        return $this->hydrateAll($class, $this->connection->select($sql));
+        return $this->hydrateAll($class, $this->connection->select($sql, $scopeBindings));
     }
 
     /**
@@ -118,7 +204,12 @@ final class Orm
             return [];
         }
         $meta = Metadata::for($class);
-        $rows = $this->connection->select($this->selectSql($meta, $column, \count($values), $orderBy), array_values($values));
+        [$scope, $scopeBindings] = $this->tenantScope($meta);
+
+        $rows = $this->connection->select(
+            $this->selectSql($meta, $column, \count($values), $orderBy, scope: $scope),
+            [...array_values($values), ...$scopeBindings],
+        );
 
         return $this->hydrateAll($class, $rows);
     }
@@ -270,11 +361,13 @@ final class Orm
         $targetMeta = Metadata::for($relation->target);
         $childColumn = $relation->childColumn();
 
+        [$scope, $scopeBindings] = $this->tenantScope($targetMeta);
+
         $rows = $this->connection->select(
             // The join column has to come back even when the child does not
             // declare it: it is what the rows are grouped by.
-            $this->selectSql($targetMeta, $childColumn, \count($ids), $relation->orderBy, [$childColumn]),
-            $ids,
+            $this->selectSql($targetMeta, $childColumn, \count($ids), $relation->orderBy, [$childColumn], $scope),
+            [...$ids, ...$scopeBindings],
         );
 
         $grouped = [];
@@ -303,6 +396,7 @@ final class Orm
         int $count,
         ?string $orderBy,
         array $extraColumns = [],
+        string $scope = '',
     ): string {
         $select = $meta->selectColumns();
         foreach ($extraColumns as $extra) {
@@ -313,6 +407,10 @@ final class Orm
         $columns = implode(', ', array_map(static fn (string $c): string => '"' . $c . '"', $select));
         $placeholders = implode(', ', array_fill(0, $count, '?'));
         $sql = "SELECT {$columns} FROM \"{$meta->table}\" WHERE \"{$column}\" IN ({$placeholders})";
+
+        if ($scope !== '') {
+            $sql .= " AND {$scope}";
+        }
 
         if ($orderBy !== null) {
             $sql .= " ORDER BY \"{$orderBy}\"";

@@ -12,8 +12,13 @@ use Tinvar\Validation\ValidationContext;
 /**
  * No other row may already hold this value.
  *
- * `ignore` is the id of the row being edited, so an update that leaves a field
- * unchanged is not rejected by its own row.
+ * `ignoreSubject` exempts the record being edited, so an update that leaves a
+ * field unchanged is not rejected by its own row.
+ *
+ * The exempt id comes from ValidationContext::$subject -- the model the router
+ * resolved and authorized -- never from the payload. Reading it from the input
+ * would let a caller name the very row that holds the value and skip the check
+ * entirely, which is a uniqueness bypass written as a convenience.
  */
 #[\Attribute(\Attribute::TARGET_PARAMETER | \Attribute::TARGET_PROPERTY)]
 final readonly class Unique implements Rule
@@ -22,7 +27,7 @@ final readonly class Unique implements Rule
     public function __construct(
         public string $model,
         public ?string $column = null,
-        public ?string $ignore = null,
+        public bool $ignoreSubject = false,
     ) {}
 
     public function check(mixed $value, string $field, ValidationContext $context): ?string
@@ -34,13 +39,28 @@ final readonly class Unique implements Rule
         $column = Column::resolve($this->model, $this->column, self::class, $field);
         $matches = $context->orm()->whereIn($this->model, $column, [$value]);
 
-        // The row being edited does not collide with itself. `ignore` names the
-        // input field holding its id rather than carrying an id in an
-        // attribute, because an attribute is compiled once and an id is not.
-        $ignoredId = $this->ignore === null ? null : ($context->input[$this->ignore] ?? null);
+        $exempt = null;
+        if ($this->ignoreSubject) {
+            $subject = $context->subject;
+
+            if ($subject === null) {
+                throw new \LogicException(
+                    "Unique on {$field} is set to ignore the subject, but no subject was resolved. "
+                    . 'The action must bind the record being edited before validating.'
+                );
+            }
+            if (!$subject instanceof $this->model) {
+                throw new \LogicException(
+                    "Unique on {$field} ignores the subject, but the subject is " . $subject::class
+                    . ", not {$this->model}."
+                );
+            }
+
+            $exempt = $subject->primaryKey();
+        }
 
         foreach ($matches as $match) {
-            if ($ignoredId === null || $match->primaryKey() !== (string) $ignoredId) {
+            if ($match->primaryKey() !== $exempt) {
                 return "{$field} is already taken.";
             }
         }

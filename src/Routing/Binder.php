@@ -48,7 +48,14 @@ final class Binder
                 if (isset($this->models[$name])) {
                     continue;
                 }
+
                 if (!\array_key_exists($name, $parameters)) {
+                    // A layout shared across a route family may declare a model
+                    // the current path does not carry. Optional means optional.
+                    if ($parameter->allowsNull() || $parameter->isDefaultValueAvailable()) {
+                        continue;
+                    }
+
                     throw RoutingException::missingParameter($route->template, $name);
                 }
 
@@ -87,20 +94,27 @@ final class Binder
             $class = self::classTypeOf($parameter);
 
             if ($class !== null && is_subclass_of($class, Model::class)) {
-                $arguments[$name] = $this->models[$name]
-                    ?? throw RoutingException::missingParameter($route->template, $name);
-                continue;
+                if (isset($this->models[$name])) {
+                    $arguments[$name] = $this->models[$name];
+                    continue;
+                }
+                if ($parameter->isDefaultValueAvailable()) {
+                    $arguments[$name] = $parameter->getDefaultValue();
+                    continue;
+                }
+                if ($parameter->allowsNull()) {
+                    $arguments[$name] = null;
+                    continue;
+                }
+
+                throw RoutingException::missingParameter($route->template, $name);
             }
 
             // "A child page or layout can receive a parent's data by type."
-            if ($class !== null && is_subclass_of($class, Data::class)) {
-                if (!isset($parentData[$class])) {
-                    throw new RoutingException(
-                        "{$route->class} asks for {$class}, which no layout above it returned. "
-                        . 'A loader can only receive data from a layout that runs before it.'
-                    );
-                }
-                $arguments[$name] = $parentData[$class];
+            // By type means instanceof: a parameter declared as a base class
+            // or interface resolves to whatever the parent actually returned.
+            if ($class !== null && (is_subclass_of($class, Data::class) || $class === Data::class)) {
+                $arguments[$name] = self::parentDataOf($class, $parentData, $route);
                 continue;
             }
 
@@ -128,6 +142,76 @@ final class Binder
         return $arguments;
     }
 
+    /**
+     * @param array<class-string, Data> $parentData
+     */
+    private static function parentDataOf(string $class, array $parentData, CompiledRoute $route): Data
+    {
+        if (isset($parentData[$class])) {
+            return $parentData[$class];
+        }
+
+        $matches = array_values(array_filter(
+            $parentData,
+            static fn (Data $data): bool => $data instanceof $class,
+        ));
+
+        if (\count($matches) === 1) {
+            return $matches[0];
+        }
+
+        if ($matches !== []) {
+            throw new RoutingException(
+                "{$route->class} asks for {$class}, which matches " . \count($matches)
+                . ' layouts above it. Ask for the exact class instead.'
+            );
+        }
+
+        throw new RoutingException(
+            "{$route->class} asks for {$class}, which no layout above it returned. "
+            . 'A loader can only receive data from a layout that runs before it.'
+        );
+    }
+
+    /**
+     * Refuses a loader parameter the router could never bind.
+     *
+     * Checked at registration: left to runtime this surfaces as a TypeError
+     * from deep inside the loader call, on the first request to that route.
+     */
+    public static function assertBindable(CompiledRoute $route): void
+    {
+        foreach (self::loaderParameters($route->class) as $parameter) {
+            $type = $parameter->getType();
+
+            if ($type === null || $parameter->isDefaultValueAvailable()) {
+                continue;   // untyped or defaulted: the binder has an answer
+            }
+
+            if (!$type instanceof \ReflectionNamedType) {
+                throw RoutingException::unbindableParameter($route->class, $parameter->getName(), (string) $type);
+            }
+
+            $name = $type->getName();
+
+            if (!$type->isBuiltin()) {
+                $bindable = is_subclass_of($name, Model::class)
+                    || is_subclass_of($name, Data::class)
+                    || is_subclass_of($name, \BackedEnum::class)
+                    || $name === Request::class;
+
+                if (!$bindable) {
+                    throw RoutingException::unbindableParameter($route->class, $parameter->getName(), $name);
+                }
+                continue;
+            }
+
+            if (!\in_array($name, ['string', 'int', 'float', 'bool', 'mixed'], true)) {
+                throw RoutingException::unbindableParameter($route->class, $parameter->getName(), $name);
+            }
+        }
+    }
+
     /** @return list<\ReflectionParameter> */
     public static function loaderParameters(string $class): array
     {
@@ -150,16 +234,35 @@ final class Binder
         return $type->getName();
     }
 
-    private static function cast(string $value, ?\ReflectionType $type): string|int|float
+    private static function cast(string $value, ?\ReflectionType $type): string|int|float|bool|\BackedEnum
     {
         if (!$type instanceof \ReflectionNamedType) {
             return $value;
         }
 
-        return match ($type->getName()) {
+        $name = $type->getName();
+
+        if (!$type->isBuiltin() && is_subclass_of($name, \BackedEnum::class)) {
+            // A path segment outside the enum is a path that does not exist.
+            return $name::tryFrom($value) ?? throw new NotFoundException('Unrecognised path segment.');
+        }
+
+        return match ($name) {
             'int' => self::toInt($value),
-            'float' => is_numeric($value) ? (float) $value : throw new NotFoundException("'{$value}' is not a number."),
+            'float' => is_numeric($value)
+                ? (float) $value
+                : throw new NotFoundException('Path segment is not a number.'),
+            'bool' => self::toBool($value),
             default => $value,
+        };
+    }
+
+    private static function toBool(string $value): bool
+    {
+        return match (strtolower($value)) {
+            '1', 'true', 'yes', 'on' => true,
+            '0', 'false', 'no', 'off' => false,
+            default => throw new NotFoundException('Path segment is not a boolean.'),
         };
     }
 
@@ -168,7 +271,7 @@ final class Binder
         // A non-integer where an int is declared is a path that does not exist,
         // not a server error.
         if (preg_match('/^-?\d+$/', $value) !== 1) {
-            throw new NotFoundException("'{$value}' is not an integer.");
+            throw new NotFoundException('Path segment is not an integer.');
         }
 
         return (int) $value;

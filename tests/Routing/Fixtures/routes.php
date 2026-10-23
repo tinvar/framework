@@ -206,3 +206,153 @@ final class RawSubjectPage
         return new RootLayoutData($thing);
     }
 }
+
+// --- fixtures for the review findings -------------------------------------
+
+/** A page that spells the layout's parameter differently. Must be refused. */
+#[Page('/sites/{siteId}/leak', view: 'leak', name: 'leak')]
+final class MismatchedParameterPage
+{
+    public function __invoke(): RootLayoutData
+    {
+        Trace::note('page:leak');
+
+        return new RootLayoutData('UNGUARDED');
+    }
+}
+
+/** Shares a layout key with SiteLayout (both derive 'sites'). */
+#[Layout('/sites/{site}/racks', view: 'sites/inner')]
+final class CollidingKeyLayout
+{
+    public function __invoke(): SiteLayoutData
+    {
+        return new SiteLayoutData('collide');
+    }
+}
+
+abstract readonly class BasePanelData extends Data
+{
+    public function __construct(public string $label) {}
+}
+
+final readonly class ConcretePanelData extends BasePanelData {}
+
+#[Layout('/panel', view: 'panel/layout')]
+final class PanelLayout
+{
+    public function __invoke(): ConcretePanelData
+    {
+        return new ConcretePanelData('panel');
+    }
+}
+
+/** Declares the base class; "by type" must resolve it to the concrete one. */
+#[Page('/panel/show', view: 'panel/show', name: 'panel.show')]
+final class PanelShowPage
+{
+    public function __invoke(BasePanelData $panel): RootLayoutData
+    {
+        return new RootLayoutData($panel->label);
+    }
+}
+
+#[Page('/flag/{on}', view: 'flag', name: 'flag')]
+final class BoolParamPage
+{
+    public function __invoke(bool $on): RootLayoutData
+    {
+        return new RootLayoutData($on ? 'yes' : 'no');
+    }
+}
+
+enum Shade: string
+{
+    case Dark = 'dark';
+    case Light = 'light';
+}
+
+#[Page('/shade/{shade}', view: 'shade', name: 'shade')]
+final class EnumParamPage
+{
+    public function __invoke(Shade $shade): RootLayoutData
+    {
+        return new RootLayoutData($shade->value);
+    }
+}
+
+/** A loader parameter the router cannot bind: refused at registration. */
+#[Page('/unbindable', view: 'unbindable', name: 'unbindable')]
+final class UnbindablePage
+{
+    public function __invoke(\DateTimeImmutable $when): RootLayoutData
+    {
+        return new RootLayoutData('x');
+    }
+}
+
+/** Optional model: the route family does not always carry it. */
+#[Layout('/optional', view: 'optional/layout')]
+final class OptionalModelLayout
+{
+    public function __invoke(?Rack $rack = null): RootLayoutData
+    {
+        return new RootLayoutData($rack === null ? 'none' : $rack->name);
+    }
+}
+
+#[Page('/optional/list', view: 'optional/list', name: 'optional.list')]
+final class OptionalListPage
+{
+    public function __invoke(RootLayoutData $root): RootLayoutData
+    {
+        return new RootLayoutData($root->tenant);
+    }
+}
+
+/** Two layouts returning the same Data class: ambiguous by type. */
+#[Layout('/dupe', view: 'dupe/outer')]
+final class DupeOuterLayout
+{
+    public function __invoke(): SiteLayoutData
+    {
+        return new SiteLayoutData('outer');
+    }
+}
+
+#[Layout('/dupe/inner', view: 'dupe-inner/layout')]
+final class DupeInnerLayout
+{
+    public function __invoke(): SiteLayoutData
+    {
+        return new SiteLayoutData('inner');
+    }
+}
+
+#[Page('/dupe/inner/page', view: 'dupe/page', name: 'dupe.page')]
+final class DupePage
+{
+    public function __invoke(): RootLayoutData
+    {
+        return new RootLayoutData('dupe');
+    }
+}
+
+// Same depth, same literal count: precedence must not depend on order.
+#[Page('/amb/new/{x}', view: 'amb/a', name: 'amb.a')]
+final class AmbiguousLiteralFirstPage
+{
+    public function __invoke(string $x): RootLayoutData
+    {
+        return new RootLayoutData('literal-first');
+    }
+}
+
+#[Page('/amb/{s}/edit', view: 'amb/b', name: 'amb.b')]
+final class AmbiguousParamFirstPage
+{
+    public function __invoke(string $s): RootLayoutData
+    {
+        return new RootLayoutData('param-first');
+    }
+}

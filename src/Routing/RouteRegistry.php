@@ -29,6 +29,9 @@ final class RouteRegistry
     /** @var array<string, list<CompiledRoute>> page template => its layouts */
     private array $layoutCache = [];
 
+    /** @var array<string, CompiledRoute> layout key => the layout that owns it */
+    private array $byLayoutKey = [];
+
     private bool $sorted = false;
 
     /** @param class-string $class */
@@ -47,20 +50,28 @@ final class RouteRegistry
         $declaration = ($pageAttribute ?? $layoutAttribute)->newInstance();
         $name = $declaration instanceof Page ? $declaration->name : null;
 
+        // Compiled once; parameter names are derived from the same pass.
+        $segments = self::compile($declaration->path);
+
         $route = new CompiledRoute(
             kind: $kind,
             class: $class,
             template: self::normalizeTemplate($declaration->path),
             view: $declaration->view,
             name: $name,
-            segments: self::compile($declaration->path),
-            parameters: self::parametersOf($declaration->path),
+            segments: $segments,
+            parameters: self::parametersOf($declaration->path, $segments),
             middleware: self::middlewareOf($reflection),
             checks: array_map(
                 static fn (\ReflectionAttribute $a): Authorize => $a->newInstance(),
                 $reflection->getAttributes(Authorize::class),
             ),
+            layoutKey: $kind === RouteKind::Layout ? self::layoutKeyOf($declaration->view) : '',
         );
+
+        // A loader parameter the router cannot bind is a developer error that
+        // would otherwise surface as a TypeError on the first request.
+        Binder::assertBindable($route);
 
         $this->add($route);
 
@@ -80,6 +91,14 @@ final class RouteRegistry
             if ($other->template === $route->template) {
                 throw RoutingException::duplicate($route->template, $other->class, $route->class);
             }
+        }
+
+        if ($route->kind === RouteKind::Layout) {
+            $owner = $this->byLayoutKey[$route->layoutKey] ?? null;
+            if ($owner !== null) {
+                throw RoutingException::duplicateLayoutKey($route->layoutKey, $owner->class, $route->class);
+            }
+            $this->byLayoutKey[$route->layoutKey] = $route;
         }
 
         if ($route->name !== null) {
@@ -131,10 +150,24 @@ final class RouteRegistry
     /** @return list<CompiledRoute> outermost first */
     private function layoutsFor(CompiledRoute $page): array
     {
-        $wrapping = array_values(array_filter(
-            $this->layouts,
-            static fn (CompiledRoute $layout): bool => $layout->wraps($page),
-        ));
+        $wrapping = [];
+
+        foreach ($this->layouts as $layout) {
+            if (!$layout->wraps($page)) {
+                continue;
+            }
+
+            // Checked here rather than at registration because it depends on
+            // both routes existing, and they may register in either order.
+            $mismatch = $layout->parameterNameMismatch($page);
+            if ($mismatch !== null) {
+                throw RoutingException::parameterNameMismatch(
+                    $layout->class, $layout->template, $page->class, $page->template, $mismatch,
+                );
+            }
+
+            $wrapping[] = $layout;
+        }
 
         usort($wrapping, static fn (CompiledRoute $a, CompiledRoute $b): int => $a->depth() <=> $b->depth());
 
@@ -176,9 +209,9 @@ final class RouteRegistry
             return;
         }
 
-        usort($this->pages, static function (CompiledRoute $a, CompiledRoute $b): int {
-            return [$b->staticSegmentCount(), $b->depth()] <=> [$a->staticSegmentCount(), $a->depth()];
-        });
+        // Leftmost literal wins, so precedence never depends on the order the
+        // autoloader happened to hand classes over.
+        usort($this->pages, static fn (CompiledRoute $a, CompiledRoute $b): int => $a->beats($b));
 
         $this->sorted = true;
     }
@@ -205,11 +238,14 @@ final class RouteRegistry
         return $segments;
     }
 
-    /** @return list<string> */
-    private static function parametersOf(string $template): array
+    /**
+     * @param list<string> $segments
+     * @return list<string>
+     */
+    private static function parametersOf(string $template, array $segments): array
     {
         $out = [];
-        foreach (self::compile($template) as $segment) {
+        foreach ($segments as $segment) {
             if (CompiledRoute::isParameter($segment)) {
                 $name = trim($segment, '{}');
                 if (\in_array($name, $out, true)) {
@@ -238,6 +274,17 @@ final class RouteRegistry
         }
 
         return $out;
+    }
+
+    /**
+     * The key a layout publishes its data under, from its view folder:
+     * `racks/layout` becomes `racks`, matching the spec's LayoutProps<'racks'>.
+     */
+    private static function layoutKeyOf(string $view): string
+    {
+        $slash = strrpos($view, '/');
+
+        return $slash === false ? $view : substr($view, 0, $slash);
     }
 
     private static function normalizeTemplate(string $template): string

@@ -26,6 +26,47 @@ final class RoutingException extends \RuntimeException
         return new self("{$class} has neither a #[Page] nor a #[Layout] attribute.");
     }
 
+    public static function parameterNameMismatch(
+        string $layout,
+        string $layoutTemplate,
+        string $page,
+        string $pageTemplate,
+        int $index,
+    ): self {
+        return new self(
+            "{$page} ('{$pageTemplate}') sits under {$layout} ('{$layoutTemplate}') but names the parameter at "
+            . "position {$index} differently. Use the same name, or the layout cannot bind it -- and a router that "
+            . 'quietly skipped the layout would skip its #[Authorize] with it.'
+        );
+    }
+
+    public static function badParameterValue(string $route, string $parameter, string $value): self
+    {
+        $shown = $value === '' ? '(empty)' : $value;
+
+        return new self(
+            "Route '{$route}' cannot take '{$shown}' for '{$parameter}': a parameter is one path segment, "
+            . 'so it may not be empty or contain a slash.'
+        );
+    }
+
+    public static function duplicateLayoutKey(string $key, string $first, string $second): self
+    {
+        return new self(
+            "Two layouts publish their data under '{$key}': {$first} and {$second}. "
+            . 'A layout key comes from its view folder, and the renderer can only hold one per key.'
+        );
+    }
+
+    public static function unbindableParameter(string $class, string $parameter, string $type): self
+    {
+        return new self(
+            "{$class}::__invoke() declares \${$parameter} as {$type}, which the router cannot bind. "
+            . 'A loader parameter is a model, a parent layout Data object, the Request, '
+            . 'or a string, int, float, bool or backed enum taken from the path.'
+        );
+    }
+
     public static function unknownName(string $name): self
     {
         return new self("No route is named '{$name}'.");

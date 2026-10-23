@@ -32,6 +32,7 @@ final readonly class CompiledRoute
         public array $parameters,
         public array $middleware,
         public array $checks,
+        public string $layoutKey = '',
     ) {}
 
     /** How many segments are literal; used to rank a static route above a dynamic one. */
@@ -80,9 +81,15 @@ final readonly class CompiledRoute
     /**
      * True when this layout wraps $page: its segments are a structural prefix.
      *
-     * Compared by template rather than by matching the request path, so a
-     * layout at `/sites/{site}` wraps `/sites/{site}/racks/{rack}` and not
-     * `/sites/{site}x/...`.
+     * Parameters match POSITIONALLY, not by name. Comparing names here fails
+     * open: a page at `/sites/{siteId}/leak` would escape the `/sites/{site}`
+     * layout, the layout would be absent from the chain, and its #[Authorize]
+     * would never run -- the exact Next.js pitfall the spec calls out, caused
+     * by a one-character typo.
+     *
+     * A name mismatch is still a bug, but it is caught loudly at registration
+     * (RouteRegistry::assertParameterNamesAgree) rather than silently
+     * unguarding a route here.
      */
     public function wraps(self $page): bool
     {
@@ -99,12 +106,47 @@ final readonly class CompiledRoute
             if (!self::isParameter($segment) && $segment !== $theirs) {
                 return false;
             }
-            if (self::isParameter($segment) && $segment !== $theirs) {
-                return false;   // same position, different parameter name
-            }
         }
 
         return true;
+    }
+
+    /**
+     * The first index at which this route's parameter name differs from
+     * $page's, or null when they agree over the shared prefix.
+     */
+    public function parameterNameMismatch(self $page): ?int
+    {
+        foreach ($this->segments as $index => $segment) {
+            if (self::isParameter($segment) && $segment !== $page->segments[$index]) {
+                return $index;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Ranks this route against another for the same path.
+     *
+     * Leftmost literal wins, so `/sites/new/{x}` beats `/sites/{s}/edit`
+     * whatever order they registered in. Without this, precedence would depend
+     * on autoloader order, which is not something an application controls.
+     */
+    public function beats(self $other): int
+    {
+        $shared = min($this->depth(), $other->depth());
+
+        for ($index = 0; $index < $shared; $index++) {
+            $mine = self::isParameter($this->segments[$index]);
+            $theirs = self::isParameter($other->segments[$index]);
+
+            if ($mine !== $theirs) {
+                return $mine ? 1 : -1;   // a literal sorts first
+            }
+        }
+
+        return $other->depth() <=> $this->depth();
     }
 
     /** @param array<string, string|int> $parameters */
@@ -121,7 +163,18 @@ final readonly class CompiledRoute
             if (!\array_key_exists($key, $parameters)) {
                 throw RoutingException::missingParameter($this->name ?? $this->template, $key);
             }
-            $out[] = rawurlencode((string) $parameters[$key]);
+
+            $value = (string) $parameters[$key];
+
+            // A parameter is one segment. Encoding a separator would build a
+            // URL that this same router then refuses to match, so it is
+            // refused here instead of generating a link that cannot be
+            // followed.
+            if ($value === '' || str_contains($value, '/')) {
+                throw RoutingException::badParameterValue($this->name ?? $this->template, $key, $value);
+            }
+
+            $out[] = rawurlencode($value);
         }
 
         return $out === [] ? '/' : '/' . implode('/', $out);

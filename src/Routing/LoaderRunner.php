@@ -48,10 +48,23 @@ final class LoaderRunner
 
         foreach ($chain->layouts as $layout) {
             $data = $this->invoke($layout, $binder, $chain->parameters, $byType, $request);
-            if ($data !== null) {
-                $layouts[$chain->layoutKey($layout)] = $data;
-                $byType[$data::class] = $data;
+            if ($data === null) {
+                continue;
             }
+
+            // Two layouts returning the same Data class would make "receive a
+            // parent's data by type" ambiguous, and the outer one would be
+            // silently shadowed. Say so instead.
+            $returned = $data::class;
+            if (isset($byType[$returned])) {
+                throw new RoutingException(
+                    "{$layout->class} returned {$returned}, which a layout above it already returned. "
+                    . 'A child asking for that type by type could not tell them apart.'
+                );
+            }
+
+            $layouts[$layout->layoutKey] = $data;
+            $byType[$returned] = $data;
         }
 
         $page = $this->invoke($chain->page, $binder, $chain->parameters, $byType, $request);

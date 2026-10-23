@@ -66,11 +66,15 @@ final readonly class RouteChain
         return $out;
     }
 
-    /** The key a layout's data is published under, from its view path. */
+    /**
+     * The key a layout's data is published under.
+     *
+     * Derived once at compile time, where duplicates are rejected: two layouts
+     * sharing a key would otherwise overwrite each other here, and the outer
+     * one's data would vanish with no error.
+     */
     public function layoutKey(CompiledRoute $layout): string
     {
-        return str_contains($layout->view, '/')
-            ? substr($layout->view, 0, strrpos($layout->view, '/'))
-            : $layout->view;
+        return $layout->layoutKey;
     }
 }

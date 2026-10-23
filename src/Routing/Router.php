@@ -36,24 +36,33 @@ final class Router
      */
     public function handle(Request $request, \Closure $respond): Response
     {
-        $chain = $this->routes->match($request->path)
-            ?? throw NotFoundException::route($request->path);
-
-        // Global middleware first, then the chain's, outer layout to page.
-        $classes = [...$this->globalMiddleware, ...$chain->middleware()];
-        $pipeline = new Pipeline(array_map(
+        // The global stack wraps everything, including a miss. Resolving the
+        // route first would skip auth, throttling, security headers, tenant
+        // resolution and request logging for exactly the paths an attacker
+        // enumerates -- and route enumeration is what a 404 reveals.
+        $global = new Pipeline(array_map(
             fn (string $class): Middleware => ($this->middlewareResolver)($class),
-            array_values(array_unique($classes)),
+            array_values(array_unique($this->globalMiddleware)),
         ));
 
-        return $pipeline->run($request, function (Request $passed) use ($chain, $respond): Response {
-            $loaded = $this->loaders->run($chain, $passed);
+        return $global->run($request, function (Request $passed) use ($respond): Response {
+            $chain = $this->routes->match($passed->path)
+                ?? throw new NotFoundException('No route matches this path.');
 
-            $response = $respond($loaded, $passed);
+            // The chain's own middleware can only exist once a chain does.
+            $routeMiddleware = array_values(array_diff($chain->middleware(), $this->globalMiddleware));
+            $pipeline = new Pipeline(array_map(
+                fn (string $class): Middleware => ($this->middlewareResolver)($class),
+                $routeMiddleware,
+            ));
 
-            // One URL returns different bodies depending on the RSC header, so
-            // caches must key on it or skip the route entirely.
-            return $response->withAddedHeader('vary', 'RSC');
+            return $pipeline->run($passed, function (Request $inner) use ($chain, $respond): Response {
+                $loaded = $this->loaders->run($chain, $inner);
+
+                // One URL returns different bodies depending on the RSC header,
+                // so caches must key on it or skip the route entirely.
+                return $respond($loaded, $inner)->withAddedHeader('vary', 'RSC');
+            });
         });
     }
 

@@ -21,23 +21,37 @@ final class Request
      * @param array<string, mixed>        $body
      * @param array<string, string>       $cookies
      */
+    public readonly string $method;
+
+    public readonly string $path;
+
+    /**
+     * Normalization happens here, not in the factories.
+     *
+     * A server adapter builds requests with `new Request(...)` straight from
+     * the environment; if the guard lived only in the test factories, the one
+     * place that matters would be the one place without it.
+     */
     public function __construct(
-        public readonly string $method,
-        public readonly string $path,
+        string $method,
+        string $path,
         private readonly array $headers = [],
         public readonly array $query = [],
         public readonly array $body = [],
         public readonly array $cookies = [],
-    ) {}
+    ) {
+        $this->method = strtoupper($method);
+        $this->path = self::normalizePath($path);
+    }
 
     public static function get(string $path, array $headers = [], array $query = []): self
     {
-        return new self('GET', self::normalizePath($path), self::lowercase($headers), $query);
+        return new self('GET', $path, self::lowercase($headers), $query);
     }
 
     public static function post(string $path, array $body = [], array $headers = []): self
     {
-        return new self('POST', self::normalizePath($path), self::lowercase($headers), [], $body);
+        return new self('POST', $path, self::lowercase($headers), [], $body);
     }
 
     public function header(string $name, ?string $default = null): ?string
@@ -95,22 +109,49 @@ final class Request
     }
 
     /**
-     * Collapses `//`, strips a trailing slash and refuses traversal.
+     * Normalizes a client-supplied path, or refuses it.
      *
-     * A path is matched against compiled routes and never touches the file
-     * system, but normalizing here keeps `/racks/../admin` from matching
-     * anything by accident.
+     * The guard decodes each segment before inspecting it. Checking the raw
+     * path first would let `%2e%2e%2f` through, since matching decodes
+     * afterwards -- the segment would arrive at a loader, an #[Authorize]
+     * subject and the ORM as `../`. Nothing in routing touches the filesystem
+     * today, which is exactly why this is worth holding now rather than after
+     * something does.
+     *
+     * A refusal is a 404: the path is fully client-controlled, so a malformed
+     * one is a route that does not exist, not a server error.
      */
     public static function normalizePath(string $path): string
     {
-        $path = '/' . trim(explode('?', $path, 2)[0], '/');
-        $path = (string) preg_replace('#/+#', '/', $path);
+        $path = explode('#', explode('?', $path, 2)[0], 2)[0];
 
-        if (str_contains($path, '/../') || str_ends_with($path, '/..')) {
-            throw new \InvalidArgumentException("Path '{$path}' contains traversal segments.");
+        // Raw control characters never belong in a path, and a CR or LF in one
+        // forges log lines wherever the path is recorded.
+        if (preg_match('/[\x00-\x1f\x7f]/', $path) === 1) {
+            throw new NotFoundException('Path contains a control character.');
         }
 
-        return $path === '/' ? '/' : rtrim($path, '/');
+        $path = (string) preg_replace('#/+#', '/', '/' . trim($path, '/'));
+
+        if ($path === '/') {
+            return '/';
+        }
+
+        foreach (explode('/', ltrim($path, '/')) as $segment) {
+            $decoded = rawurldecode($segment);
+
+            // A parameter is one segment. A decoded separator, a traversal
+            // step or a null byte means the request is trying to be more.
+            if ($decoded === '.' || $decoded === '..'
+                || str_contains($decoded, '/')
+                || str_contains($decoded, "\0")) {
+                // The segment is not interpolated: it is client-controlled and
+                // this message reaches logs.
+                throw new NotFoundException('A path segment is not a single path segment.');
+            }
+        }
+
+        return $path;
     }
 
     /**

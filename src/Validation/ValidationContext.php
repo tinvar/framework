@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Validation;
 
+use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 
 /**
@@ -15,10 +16,15 @@ use Tinvar\Orm\Orm;
  */
 final readonly class ValidationContext
 {
-    /** @param array<string, mixed> $input the whole payload, for cross-field rules */
+    /**
+     * @param array<string, mixed> $input   the whole payload, for cross-field rules
+     * @param Model|null           $subject the record being edited, resolved
+     *        and authorized upstream from the route -- never from the payload
+     */
     public function __construct(
         public array $input,
         public ?Orm $orm = null,
+        public ?Model $subject = null,
     ) {}
 
     public function orm(): Orm

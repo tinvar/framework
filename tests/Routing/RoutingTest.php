@@ -120,10 +120,17 @@ describe('route compilation', function () {
             ->toBe('/sites/s1/racks/r1');
     });
 
-    it('url-encodes parameters so a value cannot invent a segment', function () {
-        expect(registry()->url('racks.show', ['site' => 'a/b', 'rack' => 'r 1']))
-            ->toBe('/sites/a%2Fb/racks/r%201');
+    it('url-encodes a parameter value', function () {
+        expect(registry()->url('racks.show', ['site' => 's1', 'rack' => 'r 1?x#y']))
+            ->toBe('/sites/s1/racks/r%201%3Fx%23y');
     });
+
+    // Encoding a slash would build a link this same router then refuses, so
+    // the generator rejects it rather than emitting a dead URL.
+    it('refuses a parameter value that would span segments', function (string $value) {
+        expect(fn () => registry()->url('racks.show', ['site' => $value, 'rack' => 'r1']))
+            ->toThrow(RoutingException::class, 'one path segment');
+    })->with(['slash' => ['a/b'], 'empty' => ['']]);
 
     it('refuses to build a url with a parameter missing', function () {
         expect(fn () => registry()->url('racks.show', ['site' => 's1']))
@@ -156,9 +163,34 @@ describe('matching', function () {
         expect(Request::normalizePath('/sites//abc/racks/xyz/'))->toBe('/sites/abc/racks/xyz');
     });
 
-    it('refuses a path containing traversal segments', function () {
-        expect(fn () => Request::normalizePath('/sites/../admin'))
-            ->toThrow(InvalidArgumentException::class);
+    // The guard decodes before inspecting: checking the raw path would let
+    // %2e%2e%2f through, since matching decodes afterwards.
+    it('refuses a path whose segments are not single segments', function (string $path) {
+        expect(fn () => Request::normalizePath($path))->toThrow(NotFoundException::class);
+    })->with([
+        'traversal' => ['/sites/../admin'],
+        'encoded traversal' => ['/sites/%2e%2e%2fadmin'],
+        'encoded slash' => ['/sites/a%2Fb'],
+        'dot segment' => ['/sites/./admin'],
+        'null byte' => ["/sites/a%00b"],
+    ]);
+
+    it('strips a query string and a fragment', function () {
+        expect(Request::normalizePath('/sites/a?x=1#frag'))->toBe('/sites/a');
+    });
+
+    it('normalizes in the constructor, not only in the test factories', function () {
+        expect((new Request('get', '/sites//a/'))->path)->toBe('/sites/a')
+            ->and((new Request('get', '/sites//a/'))->method)->toBe('GET');
+    });
+
+    it('does not echo the client path back in the message', function () {
+        try {
+            Request::normalizePath("/x/%2e%2e%2f\r\nSet-Cookie:%20a=1");
+            expect()->fail('a malformed path was accepted');
+        } catch (NotFoundException $e) {
+            expect($e->getMessage())->not->toContain('Set-Cookie');
+        }
     });
 });
 
