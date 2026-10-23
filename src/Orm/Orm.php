@@ -756,10 +756,20 @@ final class Orm
             $sql .= " AND {$scope}";
         }
 
-        $this->connection->execute(
+        $affected = $this->connection->execute(
             $sql,
             [...array_values($changes), $meta->keyOf($model), ...$scopeBindings],
         );
+
+        // Nothing matched: the row is gone, or the tenant predicate excluded
+        // it. Treated as success, the change was lost and the model marked
+        // clean, so a retry sent nothing either. Thrown before markClean() so
+        // the change stays pending. (This relies on the driver counting rows
+        // matched, which SQLite and Postgres do; MySQL's PDO driver counts
+        // rows changed unless MYSQL_ATTR_FOUND_ROWS is set.)
+        if ($affected === 0) {
+            throw MissingRow::onUpdate($meta->class, $meta->keyOf($model));
+        }
 
         $model->markClean($meta->writeValues($model));
 
@@ -781,6 +791,10 @@ final class Orm
 
         $this->connection->execute($sql, [$meta->keyOf($model), ...$scopeBindings]);
         $this->identityMap->forget($meta->class, $meta->keyOf($model));
+
+        // Left marked persisted, a later save() sent an UPDATE for a row that
+        // no longer exists. It now inserts the row again, as for a new model.
+        $model->markDeleted();
     }
 
     /**

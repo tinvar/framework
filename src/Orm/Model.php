@@ -113,6 +113,17 @@ abstract class Model
         $this->original = $values;
     }
 
+    /**
+     * @internal called by Orm after a delete
+     *
+     * The row is gone, so the model no longer stands for one, and a later
+     * save() inserts it as it would a new model.
+     */
+    public function markDeleted(): void
+    {
+        $this->original = null;
+    }
+
     /** @internal called by Orm during hydration */
     public function attach(Orm $orm, ResultSet $resultSet): void
     {
