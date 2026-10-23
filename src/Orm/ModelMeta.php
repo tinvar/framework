@@ -33,7 +33,21 @@ final class ModelMeta
         private readonly \Closure $readKey,
         private readonly \Closure $write,
         private readonly \Closure $read,
+        private readonly \Closure $columnReader,
     ) {}
+
+    /**
+     * The model's column values, as the database should see them.
+     *
+     * The inverse of the hydrator, and the basis of change tracking: save()
+     * compares this against the snapshot taken when the row was read.
+     *
+     * @return array<string, mixed> column => value
+     */
+    public function columnValues(Model $model): array
+    {
+        return ($this->columnReader)($model);
+    }
 
     /** @param array<string, mixed> $row */
     public function hydrate(Model $model, array $row): void

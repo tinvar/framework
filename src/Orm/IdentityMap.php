@@ -78,6 +78,12 @@ final class IdentityMap
         return $this->tenant;
     }
 
+    /** Drops one row, after it has been deleted. */
+    public function forget(string $class, string $id): void
+    {
+        unset($this->rows[$this->bucket($class)][$id]);
+    }
+
     /** Called at every request, job, actAs and acrossTenants boundary. */
     public function flush(): void
     {

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Orm;
 
+use Tinvar\Support\Uuid;
+
 /**
  * The ORM runtime for one request: a connection, an identity map, a relation-row
  * cache and, during a render, a batch scheduler.
@@ -302,6 +304,7 @@ final class Orm
                 }
                 $model->attach($this, $resultSet);
                 $this->installRelations($model, $meta, $row);
+                $model->markClean($this->writeValues($model, $meta));
             }
 
             $resultSet->add($model);
@@ -361,6 +364,195 @@ final class Orm
         return $this->isUnscoped()
             ? $ghost
             : $this->identityMap->remember($target, $foreignKey, $ghost);
+    }
+
+    // ------------------------------------------------------------- writing
+
+    /**
+     * Writes a model, inserting or updating as appropriate.
+     *
+     * "save() writes immediately, as in Laravel." Only the diff is written:
+     * original column values are snapshotted on hydrate, so an update touches
+     * the columns that changed and nothing else.
+     *
+     * @template T of Model
+     * @param T $model
+     * @return T
+     */
+    public function save(Model $model): Model
+    {
+        $meta = Metadata::for($model::class);
+
+        return $model->isPersisted()
+            ? $this->update($model, $meta)
+            : $this->insert($model, $meta);
+    }
+
+    /**
+     * @template T of Model
+     * @param T $model
+     * @return T
+     */
+    private function insert(Model $model, ModelMeta $meta): Model
+    {
+        // UUIDv7 is minted here rather than by the database, so the model has
+        // its key before the write and the identity map can hold it.
+        if (!$this->isSet($model, $meta, $meta->idProperty)) {
+            $meta->set($model, $meta->idProperty, Uuid::v7());
+        }
+
+        $values = $this->writeValues($model, $meta);
+
+        if ($meta->tenantColumn !== null) {
+            $tenant = $this->identityMap->tenant();
+            if ($tenant === '') {
+                throw new NoTenantContext($meta->class);
+            }
+            // Stamped, not taken from the model: a caller must not be able to
+            // write a row into another tenant.
+            $values[$meta->tenantColumn] = $tenant;
+        }
+
+        $columns = array_keys($values);
+        $this->connection->execute(
+            sprintf(
+                'INSERT INTO "%s" (%s) VALUES (%s)',
+                $meta->table,
+                implode(', ', array_map(static fn (string $c): string => '"' . $c . '"', $columns)),
+                implode(', ', array_fill(0, \count($columns), '?')),
+            ),
+            array_values($values),
+        );
+
+        $model->markClean($values);
+        $model->attach($this, new ResultSet());
+        $this->identityMap->remember($meta->class, $meta->keyOf($model), $model);
+
+        return $model;
+    }
+
+    /**
+     * @template T of Model
+     * @param T $model
+     * @return T
+     */
+    private function update(Model $model, ModelMeta $meta): Model
+    {
+        $changes = $model->changes();
+        unset($changes[$meta->idColumn]);
+
+        if ($changes === []) {
+            return $model;   // nothing to write
+        }
+
+        [$scope, $scopeBindings] = $this->tenantScope($meta);
+
+        $sql = sprintf(
+            'UPDATE "%s" SET %s WHERE "%s" = ?',
+            $meta->table,
+            implode(', ', array_map(
+                static fn (string $c): string => '"' . $c . '" = ?',
+                array_keys($changes),
+            )),
+            $meta->idColumn,
+        );
+
+        // The tenant predicate is on the write too: an id from another tenant
+        // must not be updatable even if one were somehow held.
+        if ($scope !== '') {
+            $sql .= " AND {$scope}";
+        }
+
+        $this->connection->execute(
+            $sql,
+            [...array_values($changes), $meta->keyOf($model), ...$scopeBindings],
+        );
+
+        $model->markClean($this->writeValues($model, $meta));
+
+        return $model;
+    }
+
+    /**
+     * Column values plus the foreign keys single relations own.
+     *
+     * A #[BelongsTo] property is not a declared column, but the key it stands
+     * for is a real column and has to be written -- otherwise an insert leaves
+     * it null and the row is unlinked.
+     *
+     * @return array<string, mixed>
+     */
+    private function writeValues(Model $model, ModelMeta $meta): array
+    {
+        $values = $meta->columnValues($model);
+
+        foreach ($meta->relations as $property => $relation) {
+            if ($relation->kind !== RelationKind::BelongsTo) {
+                continue;
+            }
+
+            $values[$relation->foreignKey] = $this->foreignKeyOf($model, $meta, $property, $relation);
+        }
+
+        return $values;
+    }
+
+    /**
+     * The key a single relation stands for, without forcing it to load.
+     *
+     * The property holds a lazy ghost until something reads it. Reading it
+     * here to ask for its id would make every hydrate issue a query for every
+     * belongsTo -- the exact 1+N the lazy ghost exists to avoid -- so an
+     * uninitialized ghost yields the key captured from the row instead.
+     */
+    private function foreignKeyOf(Model $model, ModelMeta $meta, string $property, RelationMeta $relation): mixed
+    {
+        if (!(new \ReflectionProperty($meta->class, $property))->isInitialized($model)) {
+            return $model->foreignKey($property);
+        }
+
+        $related = $meta->get($model, $property);
+
+        if ($related instanceof Model
+            && !(new \ReflectionClass($relation->target))->isUninitializedLazyObject($related)) {
+            return $related->primaryKey();
+        }
+
+        // Still a ghost: the row it stands for is the one the key names.
+        return $model->foreignKey($property) ?? ($related instanceof Model ? $related->primaryKey() : null);
+    }
+
+    /** Deletes a row, scoped to the tenant like every other write. */
+    public function delete(Model $model): void
+    {
+        $meta = Metadata::for($model::class);
+        [$scope, $scopeBindings] = $this->tenantScope($meta);
+
+        $sql = sprintf('DELETE FROM "%s" WHERE "%s" = ?', $meta->table, $meta->idColumn);
+        if ($scope !== '') {
+            $sql .= " AND {$scope}";
+        }
+
+        $this->connection->execute($sql, [$meta->keyOf($model), ...$scopeBindings]);
+        $this->identityMap->forget($meta->class, $meta->keyOf($model));
+    }
+
+    /**
+     * Wraps several writes. "Db::transaction(fn () => ...) wraps multiple
+     * writes."
+     *
+     * @template T
+     * @param \Closure(): T $work
+     * @return T
+     */
+    public function transaction(\Closure $work): mixed
+    {
+        return $this->connection->transaction($work);
+    }
+
+    private function isSet(Model $model, ModelMeta $meta, string $property): bool
+    {
+        return (new \ReflectionProperty($meta->class, $property))->isInitialized($model);
     }
 
     // ------------------------------------------------------------- relations

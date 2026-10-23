@@ -157,6 +157,16 @@ final class ActionRegistry
             throw ActionException::unbindable($where, $name, $typeName);
         }
 
+        // The record the action acts on: the model its first #[Authorize]
+        // names. Rules that exempt "the row being edited" read this.
+        $subjectArgument = null;
+        foreach ($covered as $argument) {
+            if (isset($models[$argument]) || isset($nestedModels[$argument])) {
+                $subjectArgument = $argument;
+                break;
+            }
+        }
+
         return new CompiledAction(
             name: $declaration->name ?? Str::shortName($class) . '.' . $method->getName(),
             class: $class,
@@ -167,6 +177,7 @@ final class ActionRegistry
             nestedModels: $nestedModels,
             middleware: [...$classMiddleware, ...self::middlewareOf($method->getAttributes(Middleware::class))],
             exempt: $exempt,
+            subjectArgument: $subjectArgument,
         );
     }
 

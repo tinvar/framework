@@ -20,6 +20,16 @@ abstract class Model
     /** @var array<string, mixed> foreign-key values read from the row, keyed by relation property */
     private array $foreignKeys = [];
 
+    /**
+     * Column values as they were when the row was read.
+     *
+     * "Original column values are snapshotted on hydrate; save() writes only
+     * the diff." Null means this model has never been in the database.
+     *
+     * @var array<string, mixed>|null
+     */
+    private ?array $original = null;
+
     public static function meta(): ModelMeta
     {
         return Metadata::for(static::class);
@@ -47,6 +57,50 @@ abstract class Model
     public function foreignKey(string $relationProperty): mixed
     {
         return $this->foreignKeys[$relationProperty] ?? null;
+    }
+
+    /** True once the row exists in the database. */
+    public function isPersisted(): bool
+    {
+        return $this->original !== null;
+    }
+
+    /** @return array<string, mixed> */
+    public function originalValues(): array
+    {
+        return $this->original ?? [];
+    }
+
+    /**
+     * Columns whose value differs from the snapshot.
+     *
+     * @return array<string, mixed>
+     */
+    public function changes(): array
+    {
+        if ($this->original === null) {
+            return static::meta()->columnValues($this);
+        }
+
+        $changes = [];
+        foreach (static::meta()->columnValues($this) as $column => $value) {
+            if (!\array_key_exists($column, $this->original) || $this->original[$column] !== $value) {
+                $changes[$column] = $value;
+            }
+        }
+
+        return $changes;
+    }
+
+    public function isDirty(): bool
+    {
+        return $this->changes() !== [];
+    }
+
+    /** @internal called by Orm after a read or a write @param array<string, mixed> $values */
+    public function markClean(array $values): void
+    {
+        $this->original = $values;
     }
 
     /** @internal called by Orm during hydration */

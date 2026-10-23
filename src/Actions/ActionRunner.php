@@ -52,10 +52,11 @@ final class ActionRunner
         // 3. Authorize, against the resolved models.
         $this->authorize($action, $models);
 
-        // 4. Validate. The subject a Unique(ignoreSubject:) reads comes from
-        //    here -- a model the request named but the server resolved -- not
-        //    from the payload.
-        $subject = $models === [] ? null : reset($models);
+        // 4. Validate. The subject a Unique(ignoreSubject:) reads is the model
+        //    the action's own check names -- resolved and authorized by the
+        //    server -- not the payload, and not whichever model happened to
+        //    come first in a map.
+        $subject = $this->subjectOf($action, $models);
         $arguments = $this->bind($action, $input, $models, $subject, $request);
 
         if ($precognitive) {
@@ -86,13 +87,19 @@ final class ActionRunner
         $models = $this->resolveModels($action, $input);
         $this->authorize($action, $models);
 
-        $subject = $models === [] ? null : reset($models);
+        $subject = $this->subjectOf($action, $models);
 
         foreach ($action->formRequests as $class) {
             return $this->validator->errorsFor($class, $input, $field, $subject);
         }
 
         return [];
+    }
+
+    /** @param array<string, Model> $models */
+    private function subjectOf(CompiledAction $action, array $models): ?Model
+    {
+        return $action->subjectArgument === null ? null : ($models[$action->subjectArgument] ?? null);
     }
 
     /**

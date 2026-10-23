@@ -48,6 +48,35 @@ final class PdoConnection implements Connection
         return $statement->rowCount();
     }
 
+    public function transaction(\Closure $work): mixed
+    {
+        // A nested call joins the outer transaction. Opening a second one is
+        // not possible on most drivers, and emulating it with savepoints would
+        // let an inner rollback look like success to the outer caller.
+        if ($this->pdo->inTransaction()) {
+            return $work();
+        }
+
+        $this->pdo->beginTransaction();
+
+        try {
+            $result = $work();
+        } catch (\Throwable $e) {
+            $this->pdo->rollBack();
+
+            throw $e;
+        }
+
+        $this->pdo->commit();
+
+        return $result;
+    }
+
+    public function inTransaction(): bool
+    {
+        return $this->pdo->inTransaction();
+    }
+
     public function statementCount(): int
     {
         return $this->statements;

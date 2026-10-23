@@ -89,6 +89,7 @@ final class Metadata
             readKey: self::compileKeyReader($class, $idProperty),
             write: self::compileWriter($class),
             read: self::compileReader($class),
+            columnReader: self::compileColumnReader($class, $plan),
         );
     }
 
@@ -130,6 +131,48 @@ final class Metadata
         /** @var \Closure(Model): string $bound */
         $bound = \Closure::bind(
             static fn (Model $model): string => (string) $model->{$idProperty},
+            null,
+            $class,
+        );
+
+        return $bound;
+    }
+
+    /**
+     * The inverse of the hydrator: reads each mapped property back out as the
+     * value the database stores.
+     *
+     * Bound to the model's scope like the hydrator, so private(set) fields are
+     * readable here without being readable anywhere else.
+     *
+     * @param class-string<Model> $class
+     * @param list<array{string, string, (\Closure(mixed): mixed)|null}> $plan
+     * @return \Closure(Model): array<string, mixed>
+     */
+    private static function compileColumnReader(string $class, array $plan): \Closure
+    {
+        /** @var \Closure(Model): array<string, mixed> $bound */
+        $bound = \Closure::bind(
+            static function (Model $model) use ($plan): array {
+                $values = [];
+                foreach ($plan as [$property, $column, $_cast]) {
+                    $reflection = new \ReflectionProperty($model, $property);
+                    if (!$reflection->isInitialized($model)) {
+                        continue;
+                    }
+
+                    $value = $model->{$property};
+                    $values[$column] = match (true) {
+                        $value instanceof \DateTimeInterface => $value->format('Y-m-d H:i:s'),
+                        $value instanceof \BackedEnum => $value->value,
+                        \is_array($value) => json_encode($value, JSON_THROW_ON_ERROR),
+                        \is_bool($value) => $value ? 1 : 0,
+                        default => $value,
+                    };
+                }
+
+                return $values;
+            },
             null,
             $class,
         );

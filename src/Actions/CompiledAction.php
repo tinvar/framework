@@ -15,6 +15,10 @@ final readonly class CompiledAction
      * @param array<string, class-string> $models      parameter => model class
      * @param array<string, class-string> $formRequests parameter => form request class
      * @param array<string, class-string> $nestedModels field inside a form request => model class
+     * @param string|null $subjectArgument the record this action acts on: the
+     *        model named by its first #[Authorize]. Rules that exempt "the row
+     *        being edited" read this, so it has to be a declared choice rather
+     *        than whichever model happened to be first in a map.
      * @param list<class-string>          $middleware
      */
     public function __construct(
@@ -27,6 +31,7 @@ final readonly class CompiledAction
         public array $nestedModels,
         public array $middleware,
         public bool $exempt,
+        public ?string $subjectArgument = null,
     ) {}
 
     /**
