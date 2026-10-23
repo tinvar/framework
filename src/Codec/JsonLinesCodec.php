@@ -60,7 +60,11 @@ final class JsonLinesCodec implements FrameCodec
     {
         if (\is_array($v)) {
             if (\count($v) === 1 && \is_string($v['$b64'] ?? null)) {
-                return base64_decode($v['$b64'], true) ?: '';
+                // Against false, not falsy: the single byte "0" is a chunk
+                // like any other, and `?:` turned it into nothing.
+                $bytes = base64_decode($v['$b64'], true);
+
+                return $bytes === false ? '' : $bytes;
             }
 
             return array_map(self::lowerBinary(...), $v);
