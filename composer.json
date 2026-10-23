@@ -1,0 +1,20 @@
+{
+  "name": "tinvar/framework",
+  "description": "Tinvar: a PHP 8.5 core with a React Server Components renderer.",
+  "type": "library",
+  "license": "MIT",
+  "require": {
+    "php": ">=8.5",
+    "ext-sockets": "*",
+    "ext-json": "*"
+  },
+  "suggest": {
+    "ext-msgpack": "Native MessagePack codec; the pure-PHP fallback is used when absent.",
+    "ext-pdo_pgsql": "PostgreSQL driver for the ORM."
+  },
+  "autoload": {
+    "psr-4": { "Tinvar\\": "src/" }
+  },
+  "config": { "sort-packages": true },
+  "minimum-stability": "stable"
+}
