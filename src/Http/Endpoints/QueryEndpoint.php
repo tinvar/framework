@@ -47,7 +47,7 @@ final class QueryEndpoint
             throw new HttpException(404, 'No query named in the path.', 'not_found');
         }
 
-        $body = $rawBody === '' ? $request->body : Limits::decodeJson($rawBody, $this->maxBodyBytes);
+        $body = $rawBody === '' ? Limits::form($request->body, $this->maxBodyBytes) : Limits::decodeJson($rawBody, $this->maxBodyBytes);
         $args = $body['args'] ?? [];
 
         // {} decodes to [], which array_is_list() calls a list: an

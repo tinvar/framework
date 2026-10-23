@@ -75,6 +75,44 @@ final class Limits
     }
 
     /**
+     * The same limits for a body PHP parsed itself -- a form post or a
+     * multipart one -- which arrives already decoded and so never passed
+     * through decodeJson(). A 5 MB field and 40 levels of nesting went
+     * straight to the action. Files are not in it, and are limited apart.
+     *
+     * @param array<mixed> $body
+     * @return array<mixed>
+     */
+    public static function form(array $body, int $maxBytes = self::MAX_BODY_BYTES): array
+    {
+        $bytes = 0;
+        $elements = 0;
+        $walk = static function (array $level, int $depth) use (&$walk, &$bytes, &$elements, $maxBytes): void {
+            if ($depth > self::MAX_JSON_DEPTH) {
+                throw new HttpException(400, 'Request body nests too deeply.', 'bad_json');
+            }
+            foreach ($level as $key => $value) {
+                $elements++;
+                $bytes += \strlen((string) $key);
+                if (\is_array($value)) {
+                    $walk($value, $depth + 1);
+                } elseif (\is_string($value)) {
+                    $bytes += \strlen($value);
+                }
+                if ($bytes > $maxBytes) {
+                    throw new HttpException(413, 'Request body is too large.', 'body_too_large');
+                }
+                if ($elements > self::MAX_JSON_ELEMENTS) {
+                    throw new HttpException(413, 'Request body has too many fields.', 'body_too_large');
+                }
+            }
+        };
+        $walk($body, 1);
+
+        return $body;
+    }
+
+    /**
      * The commas and colons outside strings: one per key, and one between
      * each pair of elements, so an upper bound on what decoding would build.
      * Strings are dropped first so a comma in a sentence does not count.
