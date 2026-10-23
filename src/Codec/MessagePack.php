@@ -18,7 +18,7 @@ final class MessagePack
         return self::encodeValue($value);
     }
 
-    /** @param int<0, max> $offset consumed position, advanced in place */
+    /** @param int $offset consumed position, advanced in place */
     public static function decode(string $bytes, int &$offset = 0): mixed
     {
         return self::decodeValue($bytes, $offset);
@@ -126,13 +126,15 @@ final class MessagePack
         if ($c >= 0xe0) {
             return $c - 0x100;               // negative fixint
         }
-        if ($c >= 0x80 && $c <= 0x8f) {
+        // Ranges in ascending order: each test's lower bound is the previous
+        // one's upper bound, already excluded above.
+        if ($c <= 0x8f) {
             return self::decodeMap($b, $o, $c & 0x0f);
         }
-        if ($c >= 0x90 && $c <= 0x9f) {
+        if ($c <= 0x9f) {
             return self::decodeArray($b, $o, $c & 0x0f);
         }
-        if ($c >= 0xa0 && $c <= 0xbf) {
+        if ($c <= 0xbf) {
             return self::take($b, $o, $c & 0x1f);
         }
 
@@ -217,17 +219,17 @@ final class MessagePack
 
     private static function uint16(string $b, int &$o): int
     {
-        return (int) unpack('n', self::take($b, $o, 2))[1];
+        return (int) self::unpacked('n', self::take($b, $o, 2));
     }
 
     private static function uint32(string $b, int &$o): int
     {
-        return (int) unpack('N', self::take($b, $o, 4))[1];
+        return (int) self::unpacked('N', self::take($b, $o, 4));
     }
 
     private static function uint64(string $b, int &$o): int
     {
-        $v = (int) unpack('J', self::take($b, $o, 8))[1];
+        $v = (int) self::unpacked('J', self::take($b, $o, 8));
         if ($v < 0) {
             throw new CodecException('uint64 exceeds PHP_INT_MAX and cannot be represented.');
         }
@@ -237,7 +239,7 @@ final class MessagePack
 
     private static function int(string $b, int &$o, string $fmt, int $n): int
     {
-        return (int) unpack($fmt, self::take($b, $o, $n))[1];
+        return (int) self::unpacked($fmt, self::take($b, $o, $n));
     }
 
     private static function int16(string $b, int &$o): int
@@ -249,18 +251,29 @@ final class MessagePack
 
     private static function int32(string $b, int &$o): int
     {
-        $v = (int) unpack('N', self::take($b, $o, 4))[1];
+        $v = (int) self::unpacked('N', self::take($b, $o, 4));
 
         return $v >= 0x80000000 ? $v - 0x100000000 : $v;
     }
 
     private static function int64(string $b, int &$o): int
     {
-        return (int) unpack('J', self::take($b, $o, 8))[1];
+        return (int) self::unpacked('J', self::take($b, $o, 8));
     }
 
     private static function float(string $b, int &$o, string $fmt, int $n): float
     {
-        return (float) unpack($fmt, self::take($b, $o, $n))[1];
+        return (float) self::unpacked($fmt, self::take($b, $o, $n));
+    }
+
+    /** One value from unpack(), which reports a short buffer as false. */
+    private static function unpacked(string $format, string $bytes): int|float
+    {
+        $values = unpack($format, $bytes);
+        if ($values === false) {
+            throw new CodecException("Truncated value: cannot unpack '{$format}'.");
+        }
+
+        return $values[1];
     }
 }

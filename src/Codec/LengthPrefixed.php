@@ -30,7 +30,11 @@ trait LengthPrefixed
         if ($offset + 4 > \strlen($buffer)) {
             return null;
         }
-        $n = (int) unpack('N', substr($buffer, $offset, 4))[1];
+        $header = unpack('N', substr($buffer, $offset, 4));
+        if ($header === false) {
+            throw new CodecException('Truncated frame header.');
+        }
+        $n = (int) $header[1];
         if ($n > $this->maxFrameBytes) {
             throw new CodecException("Incoming frame of {$n} bytes exceeds the {$this->maxFrameBytes}-byte cap.");
         }
