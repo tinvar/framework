@@ -10,6 +10,7 @@ use Tinvar\Http\NotFoundException;
 use Tinvar\Http\Request;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
+use Tinvar\Validation\ValidationException;
 use Tinvar\Validation\Validator;
 
 /**
@@ -52,16 +53,21 @@ final class ActionRunner
         // 3. Authorize, against the resolved models.
         $this->authorize($action, $models);
 
-        // 4. Validate. The subject a Unique(ignoreSubject:) reads is the model
-        //    the action's own check names -- resolved and authorized by the
-        //    server -- not the payload, and not whichever model happened to
-        //    come first in a map.
         $subject = $this->subjectOf($action, $models);
-        $arguments = $this->bind($action, $input, $models, $subject, $request);
 
+        // 4. Validate. A Precognition call stops here, and validates the form
+        //    requests directly: binding the whole call first would 404 on a
+        //    missing scalar, and a half-filled form is exactly the case
+        //    Precognition exists for.
         if ($precognitive) {
+            foreach ($action->formRequests as $class) {
+                $this->validator->validate($class, $input, $subject, $models, $models);
+            }
+
             return ActionResult::ok();
         }
+
+        $arguments = $this->bind($action, $input, $models, $subject, $request);
 
         // 5. Run the body.
         $instance = $this->registry->instanceFor($action);
@@ -89,11 +95,20 @@ final class ActionRunner
 
         $subject = $this->subjectOf($action, $models);
 
+        // Every form request, not just the first: an action may take more
+        // than one, and answering about a field of the second must not read
+        // as "this field does not exist".
         foreach ($action->formRequests as $class) {
-            return $this->validator->errorsFor($class, $input, $field, $subject);
+            foreach ((new \ReflectionClass($class))->getConstructor()?->getParameters() ?? [] as $parameter) {
+                if ($parameter->getName() === $field) {
+                    return $this->validator->errorsFor($class, $input, $field, $subject, $models, $models);
+                }
+            }
         }
 
-        return [];
+        // A typo would otherwise return [] and read as "this field is fine",
+        // which is the hazard Validator::errorsFor refuses one layer down.
+        throw new \LogicException("Action '{$name}' has no form-request field named '{$field}'.");
     }
 
     /** @param array<string, Model> $models */
@@ -115,6 +130,17 @@ final class ActionRunner
         // inside Data and form requests, scoped to the tenant".
         foreach ($action->allModels() as $parameter => $class) {
             $id = $input[$parameter] ?? null;
+
+            if ($id === null || $id === '') {
+                // Optional means optional, as it already does in the
+                // validator. A present but unresolvable id is still a 404.
+                if (isset($action->optionalModels[$parameter])) {
+                    continue;
+                }
+
+                throw new NotFoundException("Action '{$action->name}' needs an identifier for '{$parameter}'.");
+            }
+
             if (!\is_string($id) && !\is_int($id)) {
                 throw new NotFoundException("Action '{$action->name}' needs an identifier for '{$parameter}'.");
             }
@@ -168,6 +194,7 @@ final class ActionRunner
                     $input,
                     $subject,
                     $models,
+                    $models,
                 );
                 continue;
             }
@@ -179,8 +206,18 @@ final class ActionRunner
                 continue;
             }
 
+            if (isset($action->models[$name]) || isset($action->nestedModels[$name])) {
+                // Declared as a model but absent, and optional.
+                $arguments[$name] = $parameter->isDefaultValueAvailable()
+                    ? $parameter->getDefaultValue()
+                    : null;
+                continue;
+            }
+
             if (\array_key_exists($name, $input)) {
-                $arguments[$name] = $input[$name];
+                // Coerced, not passed through: a client sending name[]=x would
+                // otherwise turn a 422 into a TypeError from inside the call.
+                $arguments[$name] = $this->validator->coerceParameter($parameter, $action->where(), $input[$name]);
                 continue;
             }
 
@@ -189,7 +226,7 @@ final class ActionRunner
                 continue;
             }
 
-            throw new NotFoundException("Action '{$action->name}' is missing '{$name}'.");
+            throw new ValidationException([$name => ["{$name} is required."]]);
         }
 
         return $arguments;

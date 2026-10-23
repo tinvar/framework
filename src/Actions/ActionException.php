@@ -6,9 +6,12 @@ namespace Tinvar\Actions;
 
 final class ActionException extends \RuntimeException
 {
-    public static function unknown(string $name): self
+    public static function subjectless(string $where, string $ability): self
     {
-        return new self("No action is registered as '{$name}'.");
+        return new self(
+            "{$where} declares #[Authorize('{$ability}')] with no subject. Name the model-typed input it "
+            . "covers, or the class, as in Authorize('viewAny', Rack::class)."
+        );
     }
 
     public static function notAnAction(string $class, string $method): self
@@ -52,7 +55,8 @@ final class ActionException extends \RuntimeException
     {
         return new self(
             "{$where} declares \${$parameter} as {$type}, which an action cannot bind. "
-            . 'An action parameter is a model, a form request, the Request, or a scalar from the payload.'
+            . 'An action parameter is a model, a form request, the Request, or a scalar from the payload. '
+            . 'A Data object is not yet bindable as an action input.'
         );
     }
 

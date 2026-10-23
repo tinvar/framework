@@ -253,7 +253,7 @@ describe('database-backed rules', function () {
         $validator = new Validator(new Orm($fixture->connection, new IdentityMap('test')));
 
         expect(fn () => $validator->validate(UniqueIgnoringRequest::class, ['name' => 'R-01']))
-            ->toThrow(LogicException::class, 'no subject was resolved');
+            ->toThrow(LogicException::class, 'was resolved');
     });
 
     it('refuses a rule naming a column the model does not declare', function () {

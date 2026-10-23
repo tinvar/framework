@@ -441,6 +441,14 @@ final class Orm
         $changes = $model->changes();
         unset($changes[$meta->idColumn]);
 
+        // The tenant is stamped on insert and never updated. Leaving it in the
+        // diff would let a model that maps the column move its own row into
+        // another tenant, with the WHERE predicate still satisfied by the
+        // tenant it is leaving.
+        if ($meta->tenantColumn !== null) {
+            unset($changes[$meta->tenantColumn]);
+        }
+
         if ($changes === []) {
             return $model;   // nothing to write
         }
@@ -547,7 +555,18 @@ final class Orm
      */
     public function transaction(\Closure $work): mixed
     {
-        return $this->connection->transaction($work);
+        try {
+            return $this->connection->transaction($work);
+        } catch (\Throwable $e) {
+            // The rows written inside the transaction are gone, but the models
+            // are still in the identity map with snapshots describing writes
+            // that no longer exist. A later read would be served one of those
+            // rather than the database's actual state.
+            $this->identityMap->flush();
+            $this->relationRows = [];
+
+            throw $e;
+        }
     }
 
     private function isSet(Model $model, ModelMeta $meta, string $property): bool

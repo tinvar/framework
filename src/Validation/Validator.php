@@ -39,6 +39,9 @@ final class Validator
      *        and authorized; a model-typed field named here is taken from this
      *        map rather than looked up again, so validation cannot substitute
      *        a different row for the one that was checked
+     * @param array<string, Model> $subjects every resolved model, so a rule
+     *        that exempts "the row being edited" can pick the one of its own
+     *        class rather than whichever came first
      * @return T
      */
     public function validate(
@@ -46,8 +49,9 @@ final class Validator
         array $input,
         ?Model $subject = null,
         array $resolved = [],
+        array $subjects = [],
     ): FormRequest {
-        $context = new ValidationContext($input, $this->orm, $subject);
+        $context = new ValidationContext($input, $this->orm, $subject, $subjects);
 
         /** @var array<string, list<string>> $errors */
         $errors = [];
@@ -142,8 +146,14 @@ final class Validator
      * @param array<string, mixed> $input
      * @return list<string>
      */
-    public function errorsFor(string $class, array $input, string $field, ?Model $subject = null): array
-    {
+    public function errorsFor(
+        string $class,
+        array $input,
+        string $field,
+        ?Model $subject = null,
+        array $resolved = [],
+        array $subjects = [],
+    ): array {
         $plan = null;
         foreach (self::planFor($class) as $candidate) {
             if ($candidate->name === $field) {
@@ -158,10 +168,10 @@ final class Validator
             throw new \LogicException("{$class} declares no field named '{$field}'.");
         }
 
-        $context = new ValidationContext($input, $this->orm, $subject);
+        $context = new ValidationContext($input, $this->orm, $subject, $subjects);
 
         try {
-            $errors = $this->checkField($plan, $input, $context);
+            $errors = $this->checkField($plan, $input, $context, $resolved);
         } catch (NotFoundException) {
             return ["{$field} does not match an existing record."];
         }
@@ -173,8 +183,12 @@ final class Validator
      * @param array<string, mixed> $input
      * @return list<string>
      */
-    private function checkField(FieldPlan $field, array $input, ValidationContext $context): array
-    {
+    private function checkField(
+        FieldPlan $field,
+        array $input,
+        ValidationContext $context,
+        array $resolved = [],
+    ): array {
         $name = $field->name;
         $present = \array_key_exists($name, $input);
         $raw = $present ? $input[$name] : null;
@@ -184,7 +198,9 @@ final class Validator
         }
 
         try {
-            $value = $this->coerce($raw, $field);
+            $value = \array_key_exists($name, $resolved) && $field->modelClass !== null
+                ? $resolved[$name]
+                : $this->coerce($raw, $field);
         } catch (CoercionFailed $failure) {
             return [$failure->getMessage()];
         }
@@ -198,6 +214,24 @@ final class Validator
         }
 
         return $errors;
+    }
+
+    /**
+     * Coerces one value against a parameter's declared type.
+     *
+     * Action parameters get the same careful conversions as form-request
+     * fields, so a client sending `name[]=x` gets a 422 rather than a
+     * TypeError from deep inside the call.
+     */
+    public function coerceParameter(\ReflectionParameter $parameter, string $owner, mixed $raw): mixed
+    {
+        $plan = FieldPlan::of($parameter, $owner);
+
+        try {
+            return $this->coerce($raw, $plan);
+        } catch (CoercionFailed $failure) {
+            throw new ValidationException([$plan->name => [$failure->getMessage()]]);
+        }
     }
 
     private function coerce(mixed $raw, FieldPlan $field): mixed

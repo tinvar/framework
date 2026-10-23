@@ -19,6 +19,7 @@ final readonly class CompiledAction
      *        model named by its first #[Authorize]. Rules that exempt "the row
      *        being edited" read this, so it has to be a declared choice rather
      *        than whichever model happened to be first in a map.
+     * @param array<string, true> $optionalModels model inputs that may be absent
      * @param list<class-string>          $middleware
      */
     public function __construct(
@@ -32,6 +33,7 @@ final readonly class CompiledAction
         public array $middleware,
         public bool $exempt,
         public ?string $subjectArgument = null,
+        public array $optionalModels = [],
     ) {}
 
     /**

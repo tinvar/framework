@@ -202,6 +202,31 @@ final class BuildRules
                 continue;
             }
 
+            // The same hazard as a bare id in a payload, on the path that has
+            // no validation at all: a body that looks the row up itself runs
+            // unscoped and unauthorized.
+            foreach ($method->getParameters() as $parameter) {
+                $type = $parameter->getType();
+                if (!$type instanceof \ReflectionNamedType || !$type->isBuiltin()) {
+                    continue;
+                }
+                if (!\in_array($type->getName(), ['string', 'int', 'array'], true)) {
+                    continue;
+                }
+
+                $model = $this->tenantScopedNamedBy($parameter->getName());
+                if ($model === null) {
+                    continue;
+                }
+
+                $violations[] = new Violation(
+                    self::TENANT_SCOPED_IDS_MUST_BE_TYPED,
+                    "{$where}(\${$parameter->getName()})",
+                    "is a bare {$type->getName()} naming {$model}, which is #[TenantScoped]. "
+                    . 'Type it as the model so it is resolved and scoped; a raw id is not.',
+                );
+            }
+
             foreach ($parameters as $name => $models) {
                 if ($models === [] || \in_array($name, $covered, true)) {
                     continue;

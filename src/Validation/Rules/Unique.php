@@ -41,18 +41,14 @@ final readonly class Unique implements Rule
 
         $exempt = null;
         if ($this->ignoreSubject) {
-            $subject = $context->subject;
+            // Picked by class, so an action with two model inputs exempts the
+            // right row rather than whichever one came first.
+            $subject = $context->subjectOf($this->model);
 
             if ($subject === null) {
                 throw new \LogicException(
-                    "Unique on {$field} is set to ignore the subject, but no subject was resolved. "
+                    "Unique on {$field} is set to ignore the subject, but no {$this->model} was resolved. "
                     . 'The action must bind the record being edited before validating.'
-                );
-            }
-            if (!$subject instanceof $this->model) {
-                throw new \LogicException(
-                    "Unique on {$field} ignores the subject, but the subject is " . $subject::class
-                    . ", not {$this->model}."
                 );
             }
 
