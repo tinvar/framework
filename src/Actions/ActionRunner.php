@@ -188,8 +188,10 @@ final class ActionRunner
         $optional = array_keys($action->optionalModels);
 
         // Every check named an optional input and the call left them all
-        // out: nothing would be asked, and the body would still run.
-        if (Checks::noneApply($action->checks, $models, $optional)) {
+        // out: nothing would be asked, and the body would still run. Judged
+        // for the method's own checks apart from the class's, so a blanket
+        // check on the holder cannot stand in for the method's.
+        if (Checks::undecided($action->checks, $action->classLevelChecks, $models, $optional)) {
             throw ForbiddenException::undecided($action->where());
         }
 

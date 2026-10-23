@@ -280,8 +280,10 @@ final class QueryRunner
         $checks = $this->registry->checksFor($name);
 
         // Every check named an optional input and the call left them all
-        // out: nothing would be asked, and the body would still run.
-        if (Checks::noneApply($checks, $arguments, $optional)) {
+        // out: nothing would be asked, and the body would still run. The
+        // class's checks and the entry method's are judged apart, so one
+        // place's unconditional check cannot stand in for the other's.
+        if (Checks::undecided($checks, $this->registry->classLevelChecksFor($name), $arguments, $optional)) {
             return QueryError::of(
                 QueryError::FORBIDDEN,
                 "no check declared on '{$name}' applies to this call",

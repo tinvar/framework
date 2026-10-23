@@ -28,6 +28,9 @@ final class QueryRegistry
     /** @var array<string, list<Authorize>> */
     private array $checks = [];
 
+    /** @var array<string, int> how many of each query's checks, at the front, its class declared */
+    private array $classLevelChecks = [];
+
     /** @var array<string, list<class-string<\Tinvar\Http\Middleware>>> */
     private array $middleware = [];
 
@@ -102,6 +105,7 @@ final class QueryRegistry
         // to be kept, so a check written on the method passed the build
         // rules and never ran.
         $this->checks[$name] = Authorize::declaredOn($class, Query::entryMethodOf($class));
+        $this->classLevelChecks[$name] = \count($reflection->getAttributes(Authorize::class));
         $this->middleware[$name] = Middleware::declaredOn($class, Query::entryMethodOf($class));
         $this->parameters[$name] = self::parametersOf($reflection, $declaration);
         $this->modelArguments[$name] = self::modelArgumentsOf($reflection, $declaration);
@@ -138,6 +142,16 @@ final class QueryRegistry
     public function checksFor(string $name): array
     {
         return $this->checks[$name];
+    }
+
+    /**
+     * How many of checksFor(), at the front, the class declared rather than
+     * the entry method -- so each set can be judged on its own when a call
+     * leaves optional subjects out (Checks::undecided).
+     */
+    public function classLevelChecksFor(string $name): int
+    {
+        return $this->classLevelChecks[$name] ?? 0;
     }
 
     /**

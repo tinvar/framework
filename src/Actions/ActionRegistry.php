@@ -235,6 +235,7 @@ final class ActionRegistry
             exempt: $exempt,
             subjectArgument: $subjectArgument,
             optionalModels: $optional,
+            classLevelChecks: $inherited,
         );
     }
 

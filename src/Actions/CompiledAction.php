@@ -21,6 +21,9 @@ final readonly class CompiledAction
      *        than whichever model happened to be first in a map.
      * @param array<string, true> $optionalModels model inputs that may be absent
      * @param list<class-string>          $middleware
+     * @param int $classLevelChecks how many of $checks, at the front, the holder
+     *        class declared. They run like the method's own but do not decide
+     *        for it -- see Checks::undecided().
      */
     public function __construct(
         public string $name,
@@ -34,6 +37,7 @@ final readonly class CompiledAction
         public bool $exempt,
         public ?string $subjectArgument = null,
         public array $optionalModels = [],
+        public int $classLevelChecks = 0,
     ) {}
 
     /**

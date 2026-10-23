@@ -59,7 +59,8 @@ final class Checks
      * statement that this entry point needs a decision; a call that sidesteps
      * every one of them has not been decided, so it is denied rather than
      * served. Add an unconditional check -- Authorize('viewAny', Rack::class)
-     * beside Authorize('view', 'rack') -- to let the input be left out.
+     * beside Authorize('view', 'rack'), on the class or method that declares
+     * it (see undecided()) -- to let the input be left out.
      *
      * Decided here, at run time, from the same list the skip was decided
      * from, rather than as a build rule that re-derives "optional" for every
@@ -89,5 +90,30 @@ final class Checks
         }
 
         return true;
+    }
+
+    /**
+     * noneApply(), judged separately for the checks a class declares and the
+     * checks its method declares: true when either set is non-empty and
+     * nothing in it applies.
+     *
+     * Judged over the merged list, an unconditional class-level check made a
+     * method's own checks look decided. An action holder's
+     * Authorize('admin', AdminArea::class) applies to every call, so a
+     * method whose only check named an optional input the caller left out
+     * passed on the class check alone -- the method's own authorization,
+     * which this rule exists to make fail closed, was never asked anything.
+     * Each place that declares checks has to be decided by one of its own.
+     * Every applicable check, from either place, still runs and must pass.
+     *
+     * @param list<Authorize>      $checks     the class's checks first, then the method's
+     * @param int                  $classLevel how many of $checks the class declared
+     * @param array<string, Model> $models     subjects resolved for this call
+     * @param list<string>         $optional   model inputs the entry point declares optional
+     */
+    public static function undecided(array $checks, int $classLevel, array $models, array $optional): bool
+    {
+        return self::noneApply(\array_slice($checks, 0, $classLevel), $models, $optional)
+            || self::noneApply(\array_slice($checks, $classLevel), $models, $optional);
     }
 }
