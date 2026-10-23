@@ -62,57 +62,14 @@ final class Validator
         $arguments = [];
 
         foreach (self::planFor($class) as $field) {
-            $name = $field->name;
-            $present = \array_key_exists($name, $input);
-            $raw = $present ? $input[$name] : null;
-            $empty = $raw === '' || $raw === null;
+            [$value, $found] = $this->read($field, $input, $context, $resolved);
 
-            if (!$present) {
-                if ($field->hasDefault) {
-                    $arguments[$name] = $field->default;
-                    continue;
-                }
-                if ($field->nullable) {
-                    $arguments[$name] = null;
-                    continue;
-                }
-                $errors[$name][] = "{$name} is required.";
+            if ($found !== []) {
+                $errors[$field->name] = $found;
                 continue;
             }
 
-            if ($empty) {
-                // An explicit empty value clears a nullable field. Falling back
-                // to the default here would make a field with a non-null
-                // default impossible to clear from an edit form.
-                if ($field->nullable) {
-                    $arguments[$name] = null;
-                    continue;
-                }
-                if ($field->hasDefault) {
-                    $arguments[$name] = $field->default;
-                    continue;
-                }
-                $errors[$name][] = "{$name} is required.";
-                continue;
-            }
-
-            try {
-                $value = \array_key_exists($name, $resolved) && $field->modelClass !== null
-                    ? $resolved[$name]
-                    : $this->coerce($raw, $field);
-            } catch (CoercionFailed $failure) {
-                $errors[$name][] = $failure->getMessage();
-                continue;
-            }
-
-            foreach ($field->rules as $rule) {
-                $message = $rule->check($value, $name, $context);
-                if ($message !== null) {
-                    $errors[$name][] = $message;
-                }
-            }
-
-            $arguments[$name] = $value;
+            $arguments[$field->name] = $value;
         }
 
         if ($errors !== []) {
@@ -204,12 +161,46 @@ final class Validator
         ValidationContext $context,
         array $resolved = [],
     ): array {
+        return $this->read($field, $input, $context, $resolved)[1];
+    }
+
+    /**
+     * Reads one field from the input: absent, empty, or coerced and judged.
+     *
+     * The one reading of a field, for a whole form request, for one field of
+     * it, and for an action's own scalar parameters. The parameters used to
+     * be read apart, and differently: a nullable `?string $note` left out
+     * was "required" where a form-request field was null, an explicit null
+     * was "must be text", and '' for a `?int` was "must be a whole number".
+     *
+     * @param array<string, mixed> $input
+     * @param array<string, Model> $resolved
+     * @return array{mixed, list<string>} the value, meaningful only when the
+     *         list of what is wrong with it is empty
+     */
+    private function read(FieldPlan $field, array $input, ValidationContext $context, array $resolved = []): array
+    {
         $name = $field->name;
         $present = \array_key_exists($name, $input);
         $raw = $present ? $input[$name] : null;
 
-        if (!$present || $raw === '' || $raw === null) {
-            return ($field->hasDefault || $field->nullable) ? [] : ["{$name} is required."];
+        if (!$present) {
+            if ($field->hasDefault) {
+                return [$field->default, []];
+            }
+
+            return $field->nullable ? [null, []] : [null, ["{$name} is required."]];
+        }
+
+        if ($raw === '' || $raw === null) {
+            // An explicit empty value clears a nullable field. Falling back
+            // to the default here would make a field with a non-null
+            // default impossible to clear from an edit form.
+            if ($field->nullable) {
+                return [null, []];
+            }
+
+            return $field->hasDefault ? [$field->default, []] : [null, ["{$name} is required."]];
         }
 
         try {
@@ -217,7 +208,7 @@ final class Validator
                 ? $resolved[$name]
                 : $this->coerce($raw, $field);
         } catch (CoercionFailed $failure) {
-            return [$failure->getMessage()];
+            return [null, [$failure->getMessage()]];
         }
 
         $errors = [];
@@ -228,12 +219,13 @@ final class Validator
             }
         }
 
-        return $errors;
+        return [$value, $errors];
     }
 
     /**
-     * Reads one scalar action parameter from the input: coerced to its
-     * declared type, then judged by the rules written on it.
+     * Reads one scalar action parameter from the input exactly as a
+     * form-request field is read: absent, empty, or coerced to its declared
+     * type and judged by the rules written on it.
      *
      * One reader for a submit and for Precognition. The submit used to coerce
      * a parameter while Precognition never looked at one, so `heightU=tall`
@@ -254,29 +246,11 @@ final class Validator
         array $subjects = [],
         array $unsupplied = [],
     ): array {
-        $plan = FieldPlan::of($parameter, $owner);
-        $name = $plan->name;
-
-        if (!\array_key_exists($name, $input)) {
-            return $plan->hasDefault ? [$plan->default, []] : [null, ["{$name} is required."]];
-        }
-
-        try {
-            $value = $this->coerce($input[$name], $plan);
-        } catch (CoercionFailed $failure) {
-            return [null, [$failure->getMessage()]];
-        }
-
-        $context = new ValidationContext($input, $this->orm, $subject, $subjects, $unsupplied);
-        $errors = [];
-        foreach ($plan->rules as $rule) {
-            $message = $rule->check($value, $name, $context);
-            if ($message !== null) {
-                $errors[] = $message;
-            }
-        }
-
-        return [$value, $errors];
+        return $this->read(
+            FieldPlan::of($parameter, $owner),
+            $input,
+            new ValidationContext($input, $this->orm, $subject, $subjects, $unsupplied),
+        );
     }
 
     /**
