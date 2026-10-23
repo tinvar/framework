@@ -143,64 +143,87 @@ final class FragmentEndpoint
                 throw self::refuse($e->getMessage());
             }
 
-            $routeOnly = array_values(array_diff($chain->middleware(), $this->globalMiddleware));
-            $pipeline = new Pipeline([
-                // Inner middleware first: the per-user throttle belongs here,
-                // after the global stack has established a session and before
-                // the route's own work. Fragments had only the address pass,
-                // and they are the most expensive endpoint to leave without
-                // an account ceiling -- one request is a full subtree render.
-                ...$this->extraInner,
-                ...array_map(
-                    fn (string $class): Middleware => ($this->middlewareResolver)($class),
-                    $routeOnly,
-                ),
-            ]);
+            // The panel the page was rendered in, CHECKED against what the
+            // request has established and then ESTABLISHED, before the
+            // route's middleware runs -- the order the Revalidator uses.
+            //
+            // Checked, because within() is an unconditional set: using the
+            // token's panel directly replaced whatever the request had
+            // established, and a token minted while a session was in a wider
+            // panel then re-asserted that panel after the session narrowed,
+            // revoked a membership, or switched. A token is client-held
+            // state; the spec purges client-held state on a panel switch.
+            //
+            // Established before the route's middleware, because that
+            // middleware is where a panel is guarded -- membership, MFA, a
+            // network allowlist. Applied only after it, as this used to be,
+            // a guard saw no panel at all and could not refuse the one the
+            // fragment then rendered in.
+            $ambient = $this->panels?->currentOrNull();
+            if ($ambient !== null && $ambient !== $token->panel) {
+                throw self::refuse('token was minted in a different panel');
+            }
 
-            return $pipeline->run($passed, function (Request $inner) use ($chain, $token): Response {
-                // The panel the page was rendered in, CHECKED rather than
-                // applied. within() is an unconditional set, so using the
-                // token's panel directly replaced whatever the request had
-                // established -- and a token minted while a session was in a
-                // wider panel then re-asserted that panel after the session
-                // narrowed, revoked a membership, or switched. A token is
-                // client-held state; the spec purges client-held state on a
-                // panel switch, and this was state that outlived one.
-                //
-                // So: when the request has already decided, the token must
-                // agree. When nothing has decided, the token's panel is the
-                // only answer available and is used.
-                $ambient = $this->panels?->currentOrNull();
+            $run = fn (): Response => $this->throughRoute($chain, $passed, $token);
 
-                if ($ambient !== null && $ambient !== $token->panel) {
-                    throw self::refuse('token was minted in a different panel');
-                }
+            // Already in it when the request decided first; a panel-less
+            // token runs with no panel at all.
+            $panels = $this->panels;
+            if ($panels !== null && $token->panel !== '' && $ambient === null) {
+                return $panels->within($token->panel, $run);
+            }
 
-                // The same check for the tenant, which the spec names in the
-                // same clause. Checked rather than applied: a token must
-                // never be able to establish a tenant, only to agree with
-                // the one the request is already in.
-                //
-                // UNCONDITIONAL. The first version skipped the comparison
-                // when the live tenant was null or empty -- and the Orm was
-                // never passed in, so it was null on every request and the
-                // check never ran at all. An application with no tenancy
-                // mints '' and matches '', so comparing always is correct
-                // there too, and there is no state in which this is skipped.
-                if ($this->orm->tenant() !== $token->tenant) {
-                    throw self::refuse('token was minted for a different tenant');
-                }
+            return $run();
+        });
+    }
 
-                $panels = $this->panels;
-                if ($panels !== null && $token->panel !== '' && $ambient === null) {
-                    return $panels->within(
-                        $token->panel,
-                        fn (): Response => $this->renderWithin($chain, $inner, $token),
-                    );
-                }
+    /**
+     * The route's own middleware, then the subtree -- inside the token's
+     * panel, which the caller has already checked and established.
+     */
+    private function throughRoute(RouteChain $chain, Request $passed, FragmentToken $token): Response
+    {
+        $routeOnly = array_values(array_diff($chain->middleware(), $this->globalMiddleware));
+        $pipeline = new Pipeline([
+            // Inner middleware first: the per-user throttle belongs here,
+            // after the global stack has established a session and before
+            // the route's own work. Fragments had only the address pass,
+            // and they are the most expensive endpoint to leave without
+            // an account ceiling -- one request is a full subtree render.
+            ...$this->extraInner,
+            ...array_map(
+                fn (string $class): Middleware => ($this->middlewareResolver)($class),
+                $routeOnly,
+            ),
+        ]);
 
-                return $this->renderWithin($chain, $inner, $token);
-            });
+        return $pipeline->run($passed, function (Request $inner) use ($chain, $token): Response {
+            // And still the token's panel once the route's middleware
+            // has run. Middleware may set a panel of its own -- the
+            // route's panel binding, a switch the session made -- and
+            // one that disagrees with the token's means the page this
+            // token came from is not the page this request would render
+            // now. A panel-less token agrees only with no panel.
+            if ($this->panels !== null && ($this->panels->currentOrNull() ?? '') !== $token->panel) {
+                throw self::refuse('the request is in a different panel than the token was minted in');
+            }
+
+            // The same check for the tenant, which the spec names in the
+            // same clause. Checked rather than applied: a token must
+            // never be able to establish a tenant, only to agree with
+            // the one the request is already in.
+            //
+            // UNCONDITIONAL. The first version skipped the comparison
+            // when the live tenant was null or empty -- and the Orm was
+            // never passed in, so it was null on every request and the
+            // check never ran at all. An application with no tenancy
+            // mints '' and matches '', so comparing always is correct
+            // there too, and there is no state in which this is skipped.
+            if ($this->orm->tenant() !== $token->tenant) {
+                throw self::refuse('token was minted for a different tenant');
+            }
+
+            return $this->renderWithin($chain, $inner, $token);
         });
     }
 
