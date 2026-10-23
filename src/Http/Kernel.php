@@ -72,6 +72,9 @@ final class Kernel
     /** Kept so a page render can mint the route token its client sends back. */
     private readonly ?FragmentSupport $support;
 
+    /** Issues the CSRF cookie on page responses, and binds every check to the session. */
+    private readonly ?CsrfTokens $csrf;
+
     /** Null when the application declared no builds, so there is nothing to check against. */
     private readonly ?CheckVersion $versions;
     public readonly RequestScope $scope;
@@ -134,6 +137,10 @@ final class Kernel
      * @param array<string, int> $limits requests per minute, by throttle bucket
      * @param Container|null $container registered with the framework's objects, and its
      *        request-lived services cleared by the reset contract
+     * @param CsrfTokens|null $csrf the session-bound CSRF token. Given, every
+     *        page response issues the `__Host-XSRF-TOKEN` cookie and every
+     *        POST must carry its session's token; without it nothing issues
+     *        the cookie, and the application has to.
      */
     public function __construct(
         public readonly Orm $orm,
@@ -156,7 +163,10 @@ final class Kernel
         ?FragmentManifest $manifest = null,
         ?BuildRegistry $builds = null,
         ?Container $container = null,
+        ?CsrfTokens $csrf = null,
     ) {
+        $this->csrf = $csrf;
+
         // The framework's own objects, so anything the container builds can
         // take them by type. Pass $container->resolver() as $resolver.
         $container?->instance(Orm::class, $this->orm)
@@ -257,7 +267,7 @@ final class Kernel
             ...$this->throttleFor($throttle, 'actions', $limits, byAddress: true),
             ...$global,
             ...$this->throttleFor($throttle, 'actions', $limits, byAddress: false),
-            new VerifyCsrfToken(),
+            new VerifyCsrfToken(tokens: $csrf),
             new RequireAuthentication($this->auth, $this->entryPointFor(...)),
         ]);
 
@@ -265,7 +275,7 @@ final class Kernel
             ...$this->throttleFor($throttle, 'queries', $limits, byAddress: true),
             ...$global,
             ...$this->throttleFor($throttle, 'queries', $limits, byAddress: false),
-            new VerifyCsrfToken(),
+            new VerifyCsrfToken(tokens: $csrf),
             new RequireAuthentication($this->auth, $this->entryPointFor(...)),
         ]);
 
@@ -280,7 +290,7 @@ final class Kernel
             ...$this->throttleFor($throttle, 'bootstrap', $limits, byAddress: true),
             ...$global,
             ...$this->throttleFor($throttle, 'bootstrap', $limits, byAddress: false),
-            new VerifyCsrfToken(),
+            new VerifyCsrfToken(tokens: $csrf),
         ]);
 
         // Fragments run their own stack: GET with no body, so CSRF does not
@@ -418,10 +428,10 @@ final class Kernel
                 // to be in the page's own metadata too, or the first page a
                 // visitor lands on can never be revalidated by an action.
                 $token = $this->routeTokenFor($loaded, $passed);
-                $response = $respond(
+                $response = $this->withCsrfCookie($passed, $respond(
                     $loaded,
                     $token === null ? $passed : $passed->withAttribute(self::ROUTE_TOKEN, $token),
-                );
+                ));
 
                 if ($token === null) {
                     return $response;
@@ -536,6 +546,39 @@ final class Kernel
         }
 
         return [new ThrottleRequests($throttle, $name, $limits[$name], byAddress: $byAddress)];
+    }
+
+    /**
+     * The page response, setting the CSRF cookie when the request does not
+     * already carry its session's token.
+     *
+     * Nothing issued it before, so every POST endpoint answered 419 to
+     * every client. On page responses, because a page is where a client
+     * arrives before it can POST anything; and only when it would change,
+     * so a cookie is not re-sent on every navigation. A session that
+     * rotated gets its new token on the next page it loads.
+     *
+     * Readable by script -- not HttpOnly -- because the client copies it
+     * into the header; Secure, SameSite=Lax and `__Host-`, as the spec's
+     * cookie rule requires.
+     */
+    private function withCsrfCookie(Request $request, Response $response): Response
+    {
+        if ($this->csrf === null || $response->status >= 400) {
+            return $response;
+        }
+
+        $token = $this->csrf->for($request);
+        if ($token === null || hash_equals($token, $request->cookie(VerifyCsrfToken::COOKIE) ?? '')) {
+            return $response;
+        }
+
+        // Per session, so per visitor: a shared cache must neither keep the
+        // response nor hand its cookie to someone else.
+        return $response
+            ->withCookie(VerifyCsrfToken::COOKIE, $token, httpOnly: false)
+            ->withHeader('cache-control', 'private, no-store')
+            ->withAddedHeader('vary', 'Cookie');
     }
 
     /**

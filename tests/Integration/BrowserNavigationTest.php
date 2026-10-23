@@ -142,6 +142,19 @@ it('navigates between racks in place, through the RSC payload', function () use 
         ['path' => "/racks/{$a}", 'rsc' => null, 'version' => null],
         ['path' => "/racks/{$b}", 'rsc' => '1', 'version' => 'dev'],
     ]);
+
+    // Nothing issued the CSRF cookie, so every POST was a 419. The document
+    // load issues it now -- readable by script, which copies it into the
+    // header -- and a POST carrying it gets past the check.
+    expect($result['csrf'] ?? null)->toBe([
+        'path' => '/',
+        'secure' => true,
+        'httpOnly' => false,
+        'sameSite' => 'Lax',
+        'readable' => true,
+        'withToken' => 401,
+        'withoutToken' => 419,
+    ]);
 });
 
 // The Suspense boundary, for real: server-rendered with its fallback, its
