@@ -153,6 +153,14 @@ describe('fragments through the kernel', function () {
         expect($kernel->fragments_)->toBeNull();
     });
 
+    // Either alone cannot answer a bootstrap request: a manifest says which
+    // boundaries exist, FragmentSupport is what can sign for them.
+    it('mounts no bootstrap without both a manifest and fragment support', function () {
+        [$kernel] = kernel(new AuthUser('u-1'));
+
+        expect($kernel->bootstrap_)->toBeNull();
+    });
+
     it('falls through to the router when fragments are not mounted', function () {
         [$kernel] = kernel(new AuthUser('u-1'));
 
