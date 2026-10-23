@@ -51,6 +51,14 @@ final class RenderChannel
     public const float MAX_QUERY_SECONDS = 5.0;
 
     /**
+     * Meta frames (head tags, status) a render may send, and their total
+     * size. Kept for the response, so unbounded they were memory the
+     * renderer could ask this process to hold until it died.
+     */
+    public const int MAX_META_FRAMES = 64;
+    public const int MAX_META_BYTES = 262_144;
+
+    /**
      * @param array<string, mixed>  $frame   a render or fragment frame
      * @param list<string>          $allowed the route's query allowlist
      * @param \Closure(string): void $sink   receives output bytes as they arrive
@@ -71,6 +79,7 @@ final class RenderChannel
         $socket = $this->connect();
 
         $meta = [];
+        $metaBytes = 0;
         $bytes = 0;
         $chunks = 0;
         $queryCalls = 0;
@@ -84,7 +93,7 @@ final class RenderChannel
         $done = false;
 
         try {
-            $this->write($socket, $this->codec->encodeFrame($frame));
+            $this->write($socket, $this->codec->encodeFrame($frame), $started);
 
             // No switch here on purpose. `switch` counts as a breakable level in
             // PHP, so `break 2` inside one escapes the switch and the inner
@@ -107,7 +116,9 @@ final class RenderChannel
                     } elseif ($type === Frame::QUERY) {
                         $calls = Frame::readQueryBatch($message);
                         $queryBatches++;
-                        $queryCalls += \count($calls);
+                        // An empty batch still costs a round trip, so it is
+                        // not free: a stream of them was unbounded work.
+                        $queryCalls += max(1, \count($calls));
 
                         // Checked BEFORE running them: the point of a budget
                         // is to stop the work, not to notice afterwards that
@@ -128,7 +139,7 @@ final class RenderChannel
                             );
                         }
 
-                        $this->write($socket, $this->codec->encodeFrame(Frame::result($results)));
+                        $this->write($socket, $this->codec->encodeFrame(Frame::result($results)), $started);
                     } elseif ($type === Frame::MINT) {
                         // The renderer is the only side that knows which
                         // <Deferred> boundaries exist and what props they got,
@@ -171,8 +182,12 @@ final class RenderChannel
                             }
                         }
 
-                        $this->write($socket, $this->codec->encodeFrame(Frame::minted($tokens)));
+                        $this->write($socket, $this->codec->encodeFrame(Frame::minted($tokens)), $started);
                     } elseif ($type === Frame::META) {
+                        $metaBytes += \strlen(json_encode($message, JSON_PARTIAL_OUTPUT_ON_ERROR) ?: '');
+                        if (\count($meta) >= self::MAX_META_FRAMES || $metaBytes > self::MAX_META_BYTES) {
+                            throw new ProtocolException('The renderer sent more meta than one render may.');
+                        }
                         $meta[] = $message;
                     } elseif ($type === Frame::DONE) {
                         $done = true;
@@ -228,6 +243,7 @@ final class RenderChannel
         if (!file_exists($this->socketPath)) {
             throw RendererException::cannotConnect($this->socketPath, 'no socket at that path');
         }
+        $this->assertTrustedSocket();
 
         $socket = @stream_socket_client(
             'unix://' . $this->socketPath,
@@ -242,21 +258,92 @@ final class RenderChannel
             throw RendererException::cannotConnect($this->socketPath, $reason !== '' ? $reason : "errno {$errno}");
         }
 
-        stream_set_blocking($socket, true);
+        // Non-blocking, so a write can wait on the deadline too: blocking,
+        // a renderer that stopped reading held this worker forever.
+        stream_set_blocking($socket, false);
 
         return $socket;
     }
 
-    /** @param resource $socket */
-    private function write($socket, string $bytes): void
+    /**
+     * Whoever answers on this socket receives the render frame -- the
+     * loader's data for this visitor -- and writes the HTML they are served.
+     * In a directory other users can write to, such as /tmp, any of them
+     * could put a socket at this path while the renderer is down. So there
+     * the socket must be this user's or root's; and a directory others can
+     * write without the sticky bit is refused outright, since there a
+     * stranger can replace even a socket we own.
+     */
+    private function assertTrustedSocket(): void
+    {
+        if (!\function_exists('posix_geteuid')) {
+            return;
+        }
+
+        clearstatcache(true, $this->socketPath);
+        $directory = @stat(\dirname($this->socketPath));
+        $socket = @lstat($this->socketPath);
+        if ($directory === false || $socket === false) {
+            throw RendererException::cannotConnect($this->socketPath, 'cannot inspect the socket or its directory');
+        }
+
+        $shared = ($directory['mode'] & 0022) !== 0;
+        $sticky = ($directory['mode'] & 01000) !== 0;
+        if ($shared && !$sticky) {
+            throw RendererException::cannotConnect(
+                $this->socketPath,
+                'its directory is writable by other users, who could replace the socket',
+            );
+        }
+        if ($shared && !\in_array($socket['uid'], [posix_geteuid(), 0], true)) {
+            throw RendererException::cannotConnect(
+                $this->socketPath,
+                'it belongs to another user, in a directory any user can write to',
+            );
+        }
+    }
+
+    /**
+     * Writes all of $bytes, waiting for room within the render deadline.
+     *
+     * @param resource $socket
+     */
+    private function write($socket, string $bytes, float $startedNs): void
     {
         $total = \strlen($bytes);
         for ($written = 0; $written < $total;) {
+            $this->await($socket, $startedNs, forWrite: true);
+
             $n = @fwrite($socket, substr($bytes, $written));
-            if ($n === false || $n === 0) {
+            if ($n === false) {
                 throw RendererException::closedEarly();
             }
             $written += $n;
+        }
+    }
+
+    /**
+     * Waits until the socket is readable (or writable), or the deadline passes.
+     *
+     * @param resource $socket
+     */
+    private function await($socket, float $startedNs, bool $forWrite = false): void
+    {
+        $remaining = $this->deadlineSeconds - (hrtime(true) - $startedNs) / 1e9;
+        if ($remaining <= 0) {
+            throw RendererException::deadline($this->deadlineSeconds);
+        }
+
+        $read = $forWrite ? null : [$socket];
+        $write = $forWrite ? [$socket] : null;
+        $except = null;
+        $ready = @stream_select($read, $write, $except, (int) $remaining, (int) (fmod($remaining, 1.0) * 1e6));
+
+        if ($ready === false) {
+            throw RendererException::closedEarly();
+        }
+        if ($ready === 0) {
+            throw RendererException::deadline($this->deadlineSeconds);
         }
     }
 
@@ -268,22 +355,7 @@ final class RenderChannel
      */
     private function read($socket, float $startedNs): ?string
     {
-        $remaining = $this->deadlineSeconds - (hrtime(true) - $startedNs) / 1e9;
-        if ($remaining <= 0) {
-            throw RendererException::deadline($this->deadlineSeconds);
-        }
-
-        $read = [$socket];
-        $write = null;
-        $except = null;
-        $ready = @stream_select($read, $write, $except, (int) $remaining, (int) (fmod($remaining, 1.0) * 1e6));
-
-        if ($ready === false) {
-            throw RendererException::closedEarly();
-        }
-        if ($ready === 0) {
-            throw RendererException::deadline($this->deadlineSeconds);
-        }
+        $this->await($socket, $startedNs);
 
         $chunk = fread($socket, self::READ_BYTES);
         if ($chunk === false || ($chunk === '' && feof($socket))) {
