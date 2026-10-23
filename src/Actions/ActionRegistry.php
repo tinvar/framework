@@ -37,13 +37,18 @@ final class ActionRegistry
     {
         $reflection = new \ReflectionClass($class);
 
-        // Class-level #[Authorize] and #[NoAuthorization] are NOT merged into
-        // action methods. Letting them blanket every method meant one
-        // read-only check on the holder satisfied a destructive action, and a
-        // single #[NoAuthorization(reason: 'public status ping')] exempted
-        // every action added to the class afterwards -- including inherited
-        // ones. BuildRules already refuses that shape; the registry must
-        // agree, since it is the check that cannot be skipped.
+        // Class-level #[Authorize] and #[NoAuthorization] do not COVER action
+        // methods. Letting them blanket every method meant one read-only
+        // check on the holder satisfied a destructive action, and a single
+        // #[NoAuthorization(reason: 'public status ping')] exempted every
+        // action added to the class afterwards -- including inherited ones.
+        // BuildRules already refuses that shape; the registry must agree,
+        // since it is the check that cannot be skipped.
+        //
+        // A class-level #[Authorize] still RUNS on every action, ahead of the
+        // method's own (see compile()): "everything in here is admin-only"
+        // was silently dropped the moment a method declared a check of its
+        // own, which is exactly when an author stops looking.
         $classMiddleware = self::middlewareOf($reflection->getAttributes(Middleware::class));
         $classDeclares = $reflection->getAttributes(Authorize::class) !== []
             || $reflection->getAttributes(NoAuthorization::class) !== [];
@@ -100,20 +105,22 @@ final class ActionRegistry
         $class = $reflection->getName();
         $where = "{$class}::{$method->getName()}()";
 
-        $checks = array_map(
-            static fn (\ReflectionAttribute $a): Authorize => $a->newInstance(),
-            $method->getAttributes(Authorize::class),
-        );
+        // The class's checks first, then the method's, and the action must
+        // pass every one. Only the method's own count as covering an input.
+        $checks = Authorize::declaredOn($class, $method->getName());
+        $inherited = \count($reflection->getAttributes(Authorize::class));
         $exempt = $method->getAttributes(NoAuthorization::class) !== [];
 
         $covered = [];
-        foreach ($checks as $check) {
+        foreach ($checks as $index => $check) {
             // A check that names nothing resolvable is a 500 on the first
             // call. BuildRules flags it; so does this, for symmetry.
             if ($check->argument === null) {
                 throw ActionException::subjectless($where, $check->ability);
             }
-            $covered[] = $check->argument;
+            if ($index >= $inherited) {
+                $covered[] = $check->argument;
+            }
         }
 
         $models = [];
@@ -191,6 +198,19 @@ final class ActionRegistry
                     $optional[$field] = true;
                 }
             }
+        }
+
+        // Every check names an input this method takes, or a class. A class
+        // check runs on every action in the class, so one naming an input
+        // only some of them take would throw on the first call to the rest.
+        foreach ($checks as $index => $check) {
+            $argument = $check->argument ?? '';
+            if (isset($models[$argument]) || isset($nestedModels[$argument])
+                || class_exists($argument) || interface_exists($argument)) {
+                continue;
+            }
+
+            throw ActionException::unresolvedSubject($where, $check->ability, $argument, $index < $inherited);
         }
 
         // The record the action acts on: the model its first #[Authorize]

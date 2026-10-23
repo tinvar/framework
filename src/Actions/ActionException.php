@@ -12,7 +12,18 @@ final class ActionException extends \RuntimeException
             "{$class} carries a class-level #[Authorize] or #[NoAuthorization], and {$method}() declares "
             . 'neither. A class-level declaration does not cover action methods -- one read-only check on '
             . 'the class would otherwise satisfy a destructive method, and one opt-out would exempt every '
-            . 'action added later. Declare the check on the method.',
+            . 'action added later. A class-level check still runs on every action, beside the method\'s '
+            . 'own. Declare the check on the method.',
+        );
+    }
+
+    public static function unresolvedSubject(string $where, string $ability, string $argument, bool $fromClass): self
+    {
+        $declared = $fromClass ? 'inherits from its class' : 'declares';
+
+        return new self(
+            "{$where} {$declared} #[Authorize('{$ability}', '{$argument}')], but '{$argument}' is neither a "
+            . 'model-typed input of this action nor a class. It would throw on the first call.',
         );
     }
 

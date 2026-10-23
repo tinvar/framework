@@ -179,9 +179,10 @@ final class BuildRules
             // A class-level declaration covers the class's own entry point
             // (__invoke) only. Letting it blanket every method means one
             // read-only check on the class satisfies a destructive method.
-            $checks = $classLevel
-                ? Authorize::declaredOn($class, $method->getName())
-                : self::attributes($method, Authorize::class);
+            // On an action it still runs, ahead of the method's own, so its
+            // subject is checked here too -- it just covers nothing.
+            $checks = Authorize::declaredOn($class, $method->getName());
+            $inherited = $classLevel ? 0 : \count($reflection->getAttributes(Authorize::class));
 
             $exempt = $method->getAttributes(NoAuthorization::class) !== []
                 || ($classLevel && $reflection->getAttributes(NoAuthorization::class) !== []);
@@ -206,14 +207,15 @@ final class BuildRules
             }
 
             $covered = [];
-            foreach ($checks as $check) {
+            foreach ($checks as $index => $check) {
                 $argument = $check->argument;
+                $declares = $index < $inherited ? 'inherits from its class' : 'declares';
 
                 if ($argument === null) {
                     $violations[] = new Violation(
                         self::AUTHORIZE_MUST_NAME_A_SUBJECT,
                         "{$where}()",
-                        "declares #[Authorize('{$check->ability}')] with no subject. Name the model-typed "
+                        "{$declares} #[Authorize('{$check->ability}')] with no subject. Name the model-typed "
                         . "input it covers, or the class, as in Authorize('viewAny', Rack::class).",
                     );
                     continue;
@@ -225,7 +227,7 @@ final class BuildRules
                     $violations[] = new Violation(
                         self::AUTHORIZE_MUST_NAME_A_SUBJECT,
                         "{$where}()",
-                        "declares #[Authorize('{$check->ability}', '{$argument}')], but '{$argument}' is "
+                        "{$declares} #[Authorize('{$check->ability}', '{$argument}')], but '{$argument}' is "
                         . 'neither a parameter of this method nor a class. It would throw on the first request.',
                     );
                     continue;
@@ -241,7 +243,9 @@ final class BuildRules
                     continue;
                 }
 
-                $covered[] = $argument;
+                if ($index >= $inherited) {
+                    $covered[] = $argument;
+                }
             }
 
             // The same hazard as a bare id in a payload, on the path that has
@@ -809,19 +813,5 @@ final class BuildRules
         }
 
         return $models;
-    }
-
-    /**
-     * @template T of object
-     * @param \ReflectionClass<object>|\ReflectionMethod $owner
-     * @param class-string<T> $attribute
-     * @return list<T>
-     */
-    private static function attributes(\ReflectionClass|\ReflectionMethod $owner, string $attribute): array
-    {
-        return array_map(
-            static fn (\ReflectionAttribute $a): object => $a->newInstance(),
-            $owner->getAttributes($attribute),
-        );
     }
 }
