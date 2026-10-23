@@ -187,6 +187,12 @@ final class ActionRunner
     {
         $optional = array_keys($action->optionalModels);
 
+        // Every check named an optional input and the call left them all
+        // out: nothing would be asked, and the body would still run.
+        if (Checks::noneApply($action->checks, $models, $optional)) {
+            throw ForbiddenException::undecided($action->where());
+        }
+
         foreach ($action->checks as $check) {
             // A check naming a declared-optional model input the caller did
             // not supply has no subject to decide about; the body gets null.

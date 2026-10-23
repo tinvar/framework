@@ -22,9 +22,11 @@ final class NotAQuery
 
 /**
  * The rack is optional, so the check on it only applies when one is given:
- * with no rack there is no subject for the policy to judge.
+ * with no rack there is no subject for the policy to judge. The class check
+ * beside it is what decides a call that leaves the rack out -- without one,
+ * such a call would be decided by nothing, and is refused.
  */
-#[Query(name: 'surface.optionalRack'), Authorize('view', 'rack')]
+#[Query(name: 'surface.optionalRack'), Authorize('viewAny', Rack::class), Authorize('view', 'rack')]
 final class OptionalRackSummary
 {
     public function __invoke(?Rack $rack = null): RackSummaryData

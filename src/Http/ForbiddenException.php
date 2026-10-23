@@ -16,4 +16,10 @@ final class ForbiddenException extends HttpException
     {
         return new self("'{$ability}' denied on {$on}.");
     }
+
+    /** Checks were declared, and the call left out every subject they name. */
+    public static function undecided(string $on): self
+    {
+        return new self("No check declared on {$on} applies to this call.");
+    }
 }

@@ -48,4 +48,46 @@ final class Checks
 
         return !\in_array($check->argument, $optional, true);
     }
+
+    /**
+     * True when an entry point declares checks and not one of them applies
+     * to this call -- which a query or action runner must refuse.
+     *
+     * The narrow rule above has a gap when EVERY check names an optional
+     * input: leave them all out and nothing at all is asked, while the body
+     * still runs and may read null as "no filter". A declared check is a
+     * statement that this entry point needs a decision; a call that sidesteps
+     * every one of them has not been decided, so it is denied rather than
+     * served. Add an unconditional check -- Authorize('viewAny', Rack::class)
+     * beside Authorize('view', 'rack') -- to let the input be left out.
+     *
+     * Decided here, at run time, from the same list the skip was decided
+     * from, rather than as a build rule that re-derives "optional" for every
+     * runner's shape: if the two ever disagreed, the build rule would pass a
+     * call the runner then left unchecked. An entry point with no checks at
+     * all declared #[NoAuthorization], and is not affected.
+     *
+     * Not used for page and layout loaders. Their inputs come from the route
+     * template, so an absent one means a different route matched -- a layout
+     * shared by /sites/{site} and /health -- whose own checks run, not a
+     * caller leaving an argument out of the same entry point.
+     *
+     * @param list<Authorize>      $checks   every check the entry point declares
+     * @param array<string, Model> $models   subjects resolved for this call
+     * @param list<string>         $optional model inputs the entry point declares optional
+     */
+    public static function noneApply(array $checks, array $models, array $optional): bool
+    {
+        if ($checks === []) {
+            return false;
+        }
+
+        foreach ($checks as $check) {
+            if (self::applies($check, $models, $optional)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
 }

@@ -85,25 +85,44 @@ describe('registration', function () {
 });
 
 describe('an optional model argument', function () {
+    // Under a deny gate this used to answer 'all racks': the only check named
+    // the rack, so leaving it out left nothing to ask. The fixture now
+    // carries a class check, and that is what decides the call.
     it('skips the check on it when the call leaves it out', function () {
-        $runner = surfaceRunner(new Fixture(racks: 1, unitsPerRack: 1), [OptionalRackSummary::class], new DenyGate());
+        $gate = new AllowAllGate();
+        $runner = surfaceRunner(new Fixture(racks: 1, unitsPerRack: 1), [OptionalRackSummary::class], $gate);
 
         $results = $runner->run([surfaceCall('surface.optionalRack')], ['surface.optionalRack']);
 
         expect($results[0])->not->toHaveKey('error')
-            ->and($results[0]['value']['name'])->toBe('all racks');
+            ->and($results[0]['value']['name'])->toBe('all racks')
+            ->and(array_column($gate->checks, 'ability'))->toBe(['viewAny']);
     });
 
     it('still runs the check when the call names one', function () {
         $fixture = new Fixture(racks: 1, unitsPerRack: 1);
-        $runner = surfaceRunner($fixture, [OptionalRackSummary::class], new DenyGate());
+        $gate = new AllowAllGate();
+        $runner = surfaceRunner($fixture, [OptionalRackSummary::class], $gate);
 
-        $results = $runner->run(
+        $runner->run(
             [surfaceCall('surface.optionalRack', ['rack' => $fixture->ids['racks'][0]])],
             ['surface.optionalRack'],
         );
 
-        expect($results[0]['error']['code'])->toBe(QueryError::FORBIDDEN);
+        expect(array_column($gate->checks, 'ability'))->toBe(['viewAny', 'view']);
+    });
+
+    it('lets a deny gate stop it either way', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1);
+        $runner = surfaceRunner($fixture, [OptionalRackSummary::class], new DenyGate());
+
+        $results = $runner->run([
+            surfaceCall('surface.optionalRack', [], 0),
+            surfaceCall('surface.optionalRack', ['rack' => $fixture->ids['racks'][0]], 1),
+        ], ['surface.optionalRack']);
+
+        expect(array_column(array_column($results, 'error'), 'code'))
+            ->toBe([QueryError::FORBIDDEN, QueryError::FORBIDDEN]);
     });
 });
 

@@ -277,7 +277,19 @@ final class QueryRunner
             }
         }
 
-        foreach ($this->registry->checksFor($name) as $check) {
+        $checks = $this->registry->checksFor($name);
+
+        // Every check named an optional input and the call left them all
+        // out: nothing would be asked, and the body would still run.
+        if (Checks::noneApply($checks, $arguments, $optional)) {
+            return QueryError::of(
+                QueryError::FORBIDDEN,
+                "no check declared on '{$name}' applies to this call",
+                $this->debug,
+            );
+        }
+
+        foreach ($checks as $check) {
             if (!Checks::applies($check, $arguments, $optional)) {
                 continue;
             }

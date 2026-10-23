@@ -69,15 +69,19 @@ final class ObjectParameterActions
     }
 }
 
+/**
+ * The class check beside each optional one decides a call that leaves the
+ * site out. Without it, such a call is decided by nothing, and refused.
+ */
 final class OptionalSiteActions
 {
-    #[Action, Authorize('view', 'site')]
+    #[Action, Authorize('viewAny', Site::class), Authorize('view', 'site')]
     public function defaulted(?Site $site = null): ActionResult
     {
         return ActionResult::ok($site?->code ?? 'none');
     }
 
-    #[Action, Authorize('view', 'site')]
+    #[Action, Authorize('viewAny', Site::class), Authorize('view', 'site')]
     public function nullable(?Site $site): ActionResult
     {
         return ActionResult::ok($site?->code ?? 'none');
@@ -219,11 +223,25 @@ describe('binding', function () {
     })->with(['OptionalSiteActions.defaulted', 'OptionalSiteActions.nullable']);
 
     // Nothing to decide about a model that is not there -- but one that is
-    // supplied is decided about, so a deny gate still stops it.
+    // supplied is decided about. The absent case used to pass a deny gate
+    // with nothing asked; the class check beside it now decides it.
     it('skips the check on an absent optional model, and runs it on a supplied one', function () {
+        $gate = new AllowAllGate();
+        [$runner, $fixture] = surfaceRunner([OptionalSiteActions::class], $gate);
+
+        $runner->run('OptionalSiteActions.defaulted', ['site' => '']);
+        $absent = array_column($gate->checks, 'ability');
+        $runner->run('OptionalSiteActions.defaulted', ['site' => $fixture->ids['sites'][0]]);
+
+        expect($absent)->toBe(['viewAny'])
+            ->and(array_column($gate->checks, 'ability'))->toBe(['viewAny', 'viewAny', 'view']);
+    });
+
+    it('lets a deny gate stop it either way', function () {
         [$runner, $fixture] = surfaceRunner([OptionalSiteActions::class], new DenyGate());
 
-        expect($runner->run('OptionalSiteActions.defaulted', ['site' => ''])->value)->toBe('none')
+        expect(fn () => $runner->run('OptionalSiteActions.defaulted', ['site' => '']))
+            ->toThrow(ForbiddenException::class)
             ->and(fn () => $runner->run('OptionalSiteActions.defaulted', ['site' => $fixture->ids['sites'][0]]))
             ->toThrow(ForbiddenException::class);
     });
