@@ -24,7 +24,7 @@ final class ArrayThrottleStore implements ThrottleStore
      * unauthenticated traffic, which is not covered by "this is not a
      * production store".
      */
-    private const int SWEEP_AT = 10_000;
+    public const int SWEEP_AT = 10_000;
 
     /** @var array<string, array{count: int, resetsAt: int}> */
     private array $windows = [];
