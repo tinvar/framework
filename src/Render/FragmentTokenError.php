@@ -7,10 +7,8 @@ namespace Tinvar\Render;
 /**
  * A fragment token this server will not act on.
  *
- * The reason is for the log. Every cause -- bad signature, wrong session,
- * wrong build, expired, malformed -- reaches the client as one status with
- * one code, because a caller able to tell them apart could use the difference
- * to probe: "expired" says a token was once valid, "wrong session" says it
- * belongs to someone, "wrong build" says the shape is right.
+ * Extends TokenError so the two kinds of signed token share one failure
+ * family: a caller that handles one handles both, and a check written for
+ * one cannot quietly stop applying to the other.
  */
-final class FragmentTokenError extends \RuntimeException {}
+final class FragmentTokenError extends TokenError {}

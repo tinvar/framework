@@ -6,6 +6,7 @@ namespace Tinvar\Http;
 
 use Tinvar\Actions\ActionRegistry;
 use Tinvar\Actions\ActionRunner;
+use Tinvar\Actions\Revalidator;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\Gate;
 use Tinvar\Auth\PanelContext;
@@ -145,6 +146,20 @@ final class Kernel
             $globalMiddleware,
         );
 
+        // The revalidator needs the same signer and session seam the
+        // fragment endpoint uses, so it is mounted only when an application
+        // has supplied them. Without it, revalidate() still names routes
+        // and the response simply carries no payloads -- which is what a
+        // client reads as "reload that route yourself".
+        $revalidator = $fragments === null ? null : new Revalidator(
+            routes: $this->routes,
+            loaders: new LoaderRunner($this->orm, $resolver, $gate),
+            signer: $fragments->signer,
+            orm: $this->orm,
+            render: $fragments->renderRoute ?? static fn (): string => '',
+            panels: $panels,
+        );
+
         $this->actions_ = new ActionEndpoint(new ActionRunner(
             $this->actions,
             $this->orm,
@@ -152,7 +167,7 @@ final class Kernel
             new Validator($this->orm),
             new \Tinvar\Data\Encoder(),
             $cache,
-        ));
+        ), revalidator: $revalidator, sessionId: $fragments?->sessionId);
 
         $queryRunner = new QueryRunner(
             registry: $this->queries,

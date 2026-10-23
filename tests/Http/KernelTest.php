@@ -652,3 +652,96 @@ describe('bootstrap through the kernel', function () {
         expect($response->status)->toBe(419);
     });
 });
+
+/**
+ * Revalidation through the composition root.
+ *
+ * Mounted features in this codebase have three times been declared done
+ * while being unreachable from the Kernel -- the mint closure, the bootstrap
+ * endpoint, the tenant check. This drives a real action request and asserts
+ * a payload comes back, rather than asserting a property is non-null.
+ */
+describe('post-action revalidation through the kernel', function () {
+    it('re-renders a mounted route the action invalidated', function () {
+        $fixture = new Fixture(racks: 2, unitsPerRack: 1, sites: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $signer = new Tinvar\Support\Signer('k', Tinvar\Render\RouteToken::PURPOSE);
+
+        $routes = new RouteRegistry();
+        $routes->registerAll([
+            Tinvar\Tests\Routing\Fixtures\RootLayout::class,
+            Tinvar\Tests\Routing\Fixtures\SiteLayout::class,
+            Tinvar\Tests\Routing\Fixtures\RackShowPage::class,
+        ]);
+
+        $actions = new ActionRegistry();
+        $actions->register(A\RackActions::class);
+
+        $auth = new AuthContext();
+        $auth->login(new AuthUser('u-1'));
+
+        $kernel = new Kernel(
+            orm: $orm,
+            routes: $routes,
+            queries: new QueryRegistry(),
+            actions: $actions,
+            auth: $auth,
+            policies: new PolicyRegistry(),
+            resolver: static fn (string $class): object => new $class(),
+            allowedQueries: static fn (Request $r): array => [],
+            gate: new Tinvar\Auth\AllowAllGate(),
+            fragments: new Tinvar\Http\FragmentSupport(
+                signer: $signer,
+                builds: new Tinvar\Http\BuildRegistry('b1'),
+                render: static fn (): mixed => null,
+                sessionId: static fn (Request $r): string => 'session-abc',
+                renderRoute: static fn (Tinvar\Routing\LoadedRoute $l, Request $r): string
+                    => 'fresh:' . $l->chain->page->name,
+            ),
+        );
+
+        $token = (new Tinvar\Render\RouteToken(new Tinvar\Render\TokenClaims(
+            route: 'racks.show',
+            params: ['site' => $fixture->ids['sites'][0], 'rack' => $fixture->ids['racks'][0]],
+            panel: '',
+            tenant: '',
+            build: 'b1',
+            sessionHash: Tinvar\Render\TokenClaims::hashSession($signer, 'session-abc'),
+            expiresAt: time() + 3600,
+            issuedAt: time(),
+        )))->encode($signer);
+
+        $response = $kernel->handle(
+            guardedPost('/_action/RackActions.moveUnit'),
+            render(),
+            json_encode([
+                'rack' => $fixture->ids['racks'][0],
+                'position' => 12,
+                '_routes' => [$token],
+            ]),
+        );
+
+        $body = json_decode($response->body(), true);
+
+        expect($response->status)->toBe(200)
+            ->and($body['payloads'])->toBe(['racks.show' => 'fresh:racks.show']);
+    });
+
+    // Without fragment support there is no signer and no session seam, so
+    // revalidate() still names routes and simply carries no payloads.
+    it('still succeeds with no payloads when revalidation is not configured', function () {
+        [$kernel, $fixture] = kernel(new AuthUser('u-1'));
+
+        $response = $kernel->handle(
+            guardedPost('/_action/RackActions.moveUnit'),
+            render(),
+            json_encode(['rack' => $fixture->ids['racks'][0], 'position' => 12]),
+        );
+
+        $body = json_decode($response->body(), true);
+
+        expect($response->status)->toBe(200)
+            ->and($body['revalidated'])->toBe(['racks.show'])
+            ->and($body['payloads'])->toBe([]);
+    });
+});

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Http\Endpoints;
 
 use Tinvar\Actions\ActionRunner;
+use Tinvar\Actions\Revalidator;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
@@ -22,10 +23,27 @@ final class ActionEndpoint
 {
     public const string PREFIX = '/_action/';
 
+    /**
+     * @param (\Closure(Request): string)|null $sessionId needed only to verify
+     *        the route tokens a client sends for re-rendering
+     */
     public function __construct(
         private readonly ActionRunner $runner,
         private readonly int $maxBodyBytes = Limits::MAX_BODY_BYTES,
+        private readonly ?Revalidator $revalidator = null,
+        private readonly ?\Closure $sessionId = null,
     ) {}
+
+    /**
+     * How many mounted routes one action may be asked to re-render.
+     *
+     * Each is a full GET pipeline -- middleware, authorization, loaders --
+     * so an unbounded list would let one write cost many renders. A client
+     * with more mounted pages than this gets the first few re-rendered and
+     * reloads the rest, which is the same thing it does for an expired
+     * token.
+     */
+    public const int MAX_REVALIDATED_ROUTES = 8;
 
     public function matches(Request $request): bool
     {
@@ -112,6 +130,11 @@ final class ActionEndpoint
             'value' => $result->value,
             'flash' => $result->flash,
             'revalidated' => $result->revalidatedRoutes,
+            // "The response carries a fresh RSC payload for affected
+            // mounted routes." Absent for any route whose pipeline denied,
+            // whose token this server will not act on, or that the client
+            // was not holding -- the write stands either way.
+            'payloads' => $this->rerender($result->revalidatedRoutes, $input, $request),
         ])
             // "an action's response lists the server-side query tags it
             // invalidated, and the client flushes matching prefetch entries
@@ -132,6 +155,34 @@ final class ActionEndpoint
                 // beside no-store, and the spec asks for the pair together.
                 'vary' => 'Cookie',
             ],
+        );
+    }
+
+    /**
+     * Re-renders the mounted routes this action invalidated.
+     *
+     * @param list<string> $invalidated
+     * @param array<string, mixed> $input
+     * @return array<string, string>
+     */
+    private function rerender(array $invalidated, array $input, Request $request): array
+    {
+        if ($this->revalidator === null || $this->sessionId === null || $invalidated === []) {
+            return [];
+        }
+
+        $tokens = $input['_routes'] ?? [];
+        if (!\is_array($tokens) || !array_is_list($tokens)) {
+            return [];
+        }
+
+        $tokens = array_values(array_filter($tokens, \is_string(...)));
+
+        return $this->revalidator->rerender(
+            $invalidated,
+            \array_slice($tokens, 0, self::MAX_REVALIDATED_ROUTES),
+            $request,
+            $this->sessionId,
         );
     }
 }
