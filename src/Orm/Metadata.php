@@ -180,7 +180,17 @@ final class Metadata
 
                     $value = $model->{$property};
                     $values[$column] = match (true) {
-                        $value instanceof \DateTimeInterface => $value->format('Y-m-d H:i:s'),
+                        // In UTC, to the microsecond, with the offset spelled
+                        // out. 'Y-m-d H:i:s' wrote the wall-clock time in
+                        // whatever zone the value carried and dropped the
+                        // fraction, so a New York time came back hours off
+                        // and truncated. The offset is what a timestamptz
+                        // column needs to take the instant rather than the
+                        // session zone's reading of it; a timestamp column
+                        // ignores it, and gets the UTC time.
+                        $value instanceof \DateTimeInterface => \DateTimeImmutable::createFromInterface($value)
+                            ->setTimezone(new \DateTimeZone('UTC'))
+                            ->format('Y-m-d H:i:s.uP'),
                         $value instanceof \BackedEnum => $value->value,
                         \is_array($value) => json_encode($value, JSON_THROW_ON_ERROR),
                         \is_bool($value) => $value ? 1 : 0,
@@ -315,9 +325,12 @@ final class Metadata
             'array' => static fn (mixed $v): array => \is_array($v)
                 ? $v
                 : (json_decode((string) $v, true, flags: JSON_THROW_ON_ERROR) ?: []),
+            // As UTC, the zone the writer stores. A value with no offset -- a
+            // Postgres timestamp, or a row written before the offset was --
+            // was read in the default zone; one with an offset is converted.
             \DateTimeImmutable::class => static fn (mixed $v): \DateTimeImmutable => $v instanceof \DateTimeImmutable
                 ? $v
-                : new \DateTimeImmutable((string) $v),
+                : (new \DateTimeImmutable((string) $v, new \DateTimeZone('UTC')))->setTimezone(new \DateTimeZone('UTC')),
             'mixed' => null,
             default => throw MappingException::unsupportedColumnType($class, $property->getName(), $type->getName()),
         };
