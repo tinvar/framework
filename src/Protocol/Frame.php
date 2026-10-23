@@ -56,6 +56,8 @@ final class Frame
      * @param array<string, mixed> $params
      * @param array<string, mixed> $loaderData  layout and page loader data, already encoded
      * @param list<string>         $allowedQueries per-route query allowlist
+     * @param ?PageMetadata        $page for a document render; the renderer
+     *                                   writes it into the HTML for the router
      * @return array<string, mixed>
      */
     public static function render(
@@ -65,8 +67,9 @@ final class Frame
         string $requestId,
         string $cspNonce,
         array $allowedQueries,
+        ?PageMetadata $page = null,
     ): array {
-        return [
+        $frame = [
             't' => self::RENDER,
             'route' => $routeId,
             'params' => $params,
@@ -75,6 +78,12 @@ final class Frame
             'nonce' => $cspNonce,
             'allow' => array_values($allowedQueries),
         ];
+
+        if ($page !== null) {
+            $frame['page'] = $page->toArray();
+        }
+
+        return $frame;
     }
 
     /**

@@ -21,6 +21,22 @@ it('builds a render frame carrying the per-route query allowlist and CSP nonce',
         ->and($frame['nonce'])->toBe('kX9a');
 });
 
+it('carries the page metadata for a document render, and none otherwise', function () {
+    $args = [
+        'routeId' => 'racks/show',
+        'params' => [],
+        'loaderData' => [],
+        'requestId' => 'req-1',
+        'cspNonce' => 'n',
+        'allowedQueries' => [],
+    ];
+
+    $with = Frame::render(...$args, page: new Tinvar\Protocol\PageMetadata('/racks/r-1?tab=2', 'b3', 'v1.tok'));
+
+    expect($with['page'])->toBe(['url' => '/racks/r-1?tab=2', 'version' => 'b3', 'routeToken' => 'v1.tok'])
+        ->and(Frame::render(...$args))->not->toHaveKey('page');
+});
+
 it('wraps chunk bytes as binary so RSC output is not treated as text', function () {
     expect(Frame::chunk("\xff<div>")['b'])->toBeInstanceOf(Bin::class);
 });
