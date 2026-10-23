@@ -67,7 +67,16 @@ final readonly class Pattern implements Rule
             );
         }
 
-        if (@preg_match($compiled, '') === false) {
+        // A compile failure also raises a warning; the exception below says
+        // it better, so the warning is held back rather than reported twice.
+        set_error_handler(static fn (): bool => true);
+        try {
+            $compiles = preg_match($compiled, '') !== false;
+        } finally {
+            restore_error_handler();
+        }
+
+        if (!$compiles) {
             throw new \LogicException(
                 "Rule Pattern on {$field} has an invalid expression: " . preg_last_error_msg() . '. '
                 . 'The delimiter is ~, so a pattern containing ~ must escape it.',
