@@ -76,6 +76,14 @@ final class Response
             . 'Use Response::location() for an allowlisted external URL.'
         );
 
+        // Checked here, first, rather than relied on downstream. withHeader()
+        // also refuses control characters, but then the guarantee would
+        // depend on this value happening to travel through it -- and an open
+        // redirect is exactly the bug that lives in two validators
+        // disagreeing about the same string.
+        if (preg_match('/[\x00-\x20\x7f]/', $location) === 1) {
+            $refuse('it contains a control or whitespace character');
+        }
         if (!str_starts_with($location, '/')) {
             $refuse('it does not start with /');
         }
@@ -84,6 +92,14 @@ final class Response
         }
         if (str_starts_with($location, '//')) {
             $refuse('it is protocol-relative');
+        }
+
+        // `/..//host` normalizes to `//host` under RFC 3986 dot-segment
+        // removal. Browsers resolve that against this origin, so it is not a
+        // redirect off-site today -- but a target with traversal in it is
+        // never intentional, and parsers disagree about these.
+        if (\in_array('..', explode('/', $location), true)) {
+            $refuse('it contains a traversal segment');
         }
 
         $parts = parse_url($location);

@@ -194,6 +194,13 @@ describe('response hardening', function () {
         'backslash anywhere' => ['/path\\evil'],
         'relative' => ['x'],
         'userinfo' => ['/\\\\evil.example'],
+        // Refused by the origin check itself, not only by withHeader: a
+        // guarantee that depends on which path calls it is not a guarantee.
+        'CRLF' => ["/ok\r\nSet-Cookie: a=1"],
+        'tab' => ["/\t//evil.example"],
+        'null byte' => ["/ok\x00"],
+        'embedded space' => ['/a //evil.example'],
+        'traversal' => ['/..//evil.example'],
     ]);
 
     it('allows an ordinary same-origin path', function () {
