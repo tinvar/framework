@@ -31,26 +31,46 @@ final readonly class ValidationContext
     ) {}
 
     /**
-     * The resolved model of a given class, if exactly one was resolved.
+     * The resolved model of a given class, or null when none was resolved.
+     * Throws when more than one was.
      *
      * A rule that exempts "the row being edited" needs the record of its own
      * class; taking whichever model came first breaks as soon as an action has
      * two, and silently exempts the wrong row when they share a class.
      *
+     * The subject is counted with the rest, not preferred: it is the model
+     * the first #[Authorize] names, which may be a 'view'-checked source
+     * rather than the record being edited. Two distinct models of the class
+     * leave no way to tell which one is, so this fails closed.
+     *
      * @param class-string<Model> $class
      */
     public function subjectOf(string $class): ?Model
     {
+        // Keyed by object: the identity map makes one row one object, and the
+        // subject is normally also in $subjects, so neither counts twice.
+        $found = [];
+        $names = [];
+        foreach ($this->subjects as $name => $model) {
+            if ($model instanceof $class) {
+                $found[spl_object_id($model)] = $model;
+                $names[] = $name;
+            }
+        }
         if ($this->subject instanceof $class) {
-            return $this->subject;
+            $found[spl_object_id($this->subject)] = $this->subject;
         }
 
-        $matches = array_values(array_filter(
-            $this->subjects,
-            static fn (Model $model): bool => $model instanceof $class,
-        ));
+        if (\count($found) > 1) {
+            sort($names);
 
-        return \count($matches) === 1 ? $matches[0] : null;
+            throw new \LogicException(
+                \count($found) . " {$class} models were resolved (" . implode(', ', $names) . '), so which '
+                . "one is being edited is ambiguous. Name it instead: ignoreSubject: '<parameter>'.",
+            );
+        }
+
+        return $found === [] ? null : array_values($found)[0];
     }
 
     public function orm(): Orm
