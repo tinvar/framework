@@ -205,7 +205,7 @@ final class ServeCommand
                     'TINVAR_SOCKET' => $socket,
                 ],
             );
-            $this->waitFor(static fn (): bool => self::answers($plan['host'], $plan['port']), $server, 'FrankenPHP', 30);
+            $this->waitFor(static fn (): bool => PortFinder::answers($plan['host'], $plan['port']), $server, 'FrankenPHP', 30);
         } catch (ServeException $e) {
             ($this->err)($e->getMessage());
             $this->terminate($children);
@@ -355,31 +355,6 @@ final class ServeCommand
             }
             proc_close($process);
         }
-    }
-
-    /** Whether something accepts a connection on host and port. */
-    private static function answers(string $host, int $port): bool
-    {
-        // Listening on every interface is reached through loopback.
-        $connect = match ($host) {
-            '0.0.0.0' => '127.0.0.1',
-            '::' => '::1',
-            default => $host,
-        };
-
-        set_error_handler(static fn (): bool => true);
-        try {
-            $socket = fsockopen(PortFinder::hostForUrl($connect), $port, $errno, $error, 0.2);
-        } finally {
-            restore_error_handler();
-        }
-
-        if ($socket === false) {
-            return false;
-        }
-        fclose($socket);
-
-        return true;
     }
 
     /** One worker per core, which is what a machine of this size can run at once. */

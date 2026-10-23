@@ -10,12 +10,12 @@ use Random\Randomizer;
  * The address `tinvar serve` listens on: the host and port asked for, or a
  * free port picked at random between 6000 and 7000.
  *
- * "Free" is decided by binding the port, not by guessing: a port is tried by
- * opening a listener on it and closing it again. Random rather than the
- * first free one, so two servers started together -- a test run beside a
- * developer's own -- do not race for the same port. There is still a window
- * between the check and the server binding; a server that loses it fails to
- * start and says so, rather than quietly sharing a port.
+ * "Free" is decided by trying the port, not by guessing: nothing answers a
+ * connection on it, and a listener can open on it and close again. Random
+ * rather than the first free one, so two servers started together -- a test
+ * run beside a developer's own -- do not race for the same port. There is
+ * still a window between the check and the server binding; a server that
+ * loses it fails to start and says so, rather than quietly sharing a port.
  */
 final class PortFinder
 {
@@ -98,9 +98,18 @@ final class PortFinder
         return filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false ? "[{$host}]" : $host;
     }
 
-    /** Whether a TCP listener can open on host and port right now. */
+    /** Whether a TCP listener can open on host and port right now, with nothing else already serving it. */
     public static function bind(string $host, int $port): bool
     {
+        // Asked first, because binding alone cannot tell. PHP's listeners set
+        // SO_REUSEADDR, and under it macOS lets a specific address bind a
+        // port a wildcard listener holds, and the reverse: a port another
+        // server was serving on every interface read as free, and two
+        // servers shared it.
+        if (self::answers($host, $port)) {
+            return false;
+        }
+
         // Refusals are the answer here, not warnings.
         set_error_handler(static fn (): bool => true);
         try {
@@ -115,5 +124,40 @@ final class PortFinder
         fclose($server);
 
         return true;
+    }
+
+    /**
+     * Whether something accepts a connection on host and port.
+     *
+     * Every interface is asked through loopback, where any listener on the
+     * port answers; an IPv6 one, through IPv4 loopback as well, since it
+     * takes IPv4 connections too unless told otherwise.
+     */
+    public static function answers(string $host, int $port): bool
+    {
+        $packed = @inet_pton($host);
+        $addresses = match (true) {
+            $packed === @inet_pton('0.0.0.0') => ['127.0.0.1'],
+            $packed === @inet_pton('::') => ['::1', '127.0.0.1'],
+            default => [$host],
+        };
+
+        foreach ($addresses as $address) {
+            // Refused is the usual answer, not a warning.
+            set_error_handler(static fn (): bool => true);
+            try {
+                $socket = fsockopen(self::hostForUrl($address), $port, $errno, $error, 0.2);
+            } finally {
+                restore_error_handler();
+            }
+
+            if ($socket !== false) {
+                fclose($socket);
+
+                return true;
+            }
+        }
+
+        return false;
     }
 }

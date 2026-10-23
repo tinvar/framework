@@ -110,3 +110,40 @@ it('sees a port another listener holds as taken', function () {
 
     expect(PortFinder::bind('127.0.0.1', $port))->toBeTrue();
 });
+
+/**
+ * PHP's listeners set SO_REUSEADDR, under which macOS lets a specific address
+ * bind a port a wildcard listener already holds: a port another server was
+ * serving on every interface read as free, and two servers shared it.
+ *
+ * @return array{resource, int} the listener, and the port it holds
+ */
+function hold(string $address): array
+{
+    $held = stream_socket_server("tcp://{$address}:0");
+    expect($held)->not->toBeFalse("could not listen on {$address}");
+    $name = (string) stream_socket_get_name($held, false);
+
+    return [$held, (int) substr($name, strrpos($name, ':') + 1)];
+}
+
+it('sees a port held on every interface as taken on one', function (string $wildcard) {
+    [$held, $port] = hold($wildcard);
+
+    try {
+        expect(PortFinder::bind('127.0.0.1', $port))->toBeFalse();
+    } finally {
+        fclose($held);
+    }
+})->with(['IPv4' => '0.0.0.0', 'IPv6' => '[::]']);
+
+it('sees a port held on loopback as taken on every interface', function () {
+    [$held, $port] = hold('127.0.0.1');
+
+    try {
+        expect(PortFinder::bind('0.0.0.0', $port))->toBeFalse()
+            ->and(PortFinder::bind('::', $port))->toBeFalse();
+    } finally {
+        fclose($held);
+    }
+});
