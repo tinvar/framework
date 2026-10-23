@@ -6,6 +6,7 @@ namespace Tinvar\Data;
 
 use Tinvar\Attributes\From;
 use Tinvar\Attributes\MapsFrom;
+use Tinvar\Orm\Model;
 
 /**
  * Builds a Data object from a model, another object or an array.
@@ -111,15 +112,33 @@ final class Mapper
         // what Lazy exists to put off. When resolved: read, unwrap a Lazy
         // the source already held, and convert. A Lazy<T> may hold one Data
         // object or a list of them; the value decides which.
-        return Lazy::of(static function () use ($class, $field, $source): mixed {
-            $value = self::read($source, $field['source']);
+        // Under the scope the mapping ran in, not whichever is in force when
+        // the encoder gets to it: a relation mapped inside actAs('acme') and
+        // read later under another tenant read that tenant's rows.
+        $scope = $source instanceof Model ? $source->orm()?->captureScope() : null;
 
-            return self::convert(
-                $class,
-                ['kind' => 'either'] + $field,
-                $value instanceof Lazy ? $value->resolve() : $value,
-            );
+        return Lazy::of(static function () use ($class, $field, $source, $scope): mixed {
+            if ($scope !== null) {
+                return $scope(static fn (): mixed => self::resolveDeferred($class, $field, $source));
+            }
+
+            return self::resolveDeferred($class, $field, $source);
         });
+    }
+
+    /**
+     * @param array{name: string, source: string, kind: string, target: class-string<Data>|null, default: bool, nullable: bool} $field
+     * @param object|array<array-key, mixed> $source
+     */
+    private static function resolveDeferred(string $class, array $field, object|array $source): mixed
+    {
+        $value = self::read($source, $field['source']);
+
+        return self::convert(
+            $class,
+            ['kind' => 'either'] + $field,
+            $value instanceof Lazy ? $value->resolve() : $value,
+        );
     }
 
     /**

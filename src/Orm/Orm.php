@@ -243,6 +243,31 @@ final class Orm
         return $this->readOnlyDepth() > 0;
     }
 
+    /**
+     * The read scope in force now -- tenant, unscoped or not, read-only or
+     * not -- as a closure that runs work under it later.
+     *
+     * For work deferred past the code that set the scope up: a Lazy field
+     * mapped inside actAs('acme') is read when the encoder resolves it, by
+     * which point the tenant may be another, or scoping lifted.
+     *
+     * @return \Closure(\Closure(): mixed): mixed
+     */
+    public function captureScope(): \Closure
+    {
+        $tenant = $this->tenant();
+        $unscoped = $this->isUnscoped();
+        $readOnly = $this->isReadOnly();
+
+        return function (\Closure $work) use ($tenant, $unscoped, $readOnly): mixed {
+            $run = $readOnly
+                ? fn (): mixed => $this->readOnly(static fn (): mixed => $work())
+                : static fn (): mixed => $work();
+
+            return $unscoped ? $this->acrossTenants($run) : $this->actAs($tenant, $run);
+        };
+    }
+
     private function readOnlyDepth(): int
     {
         $fiber = \Fiber::getCurrent();
