@@ -228,7 +228,12 @@ final class Kernel
 
         $this->queries_ = new QueryEndpoint($queryRunner, $allowedQueries);
 
-        $global = array_map(self::middlewareFrom($resolver), $globalMiddleware);
+        // Built once, here, and kept for the worker's life by the endpoint
+        // stacks below: a request-lived service resolved into one of them
+        // would carry the first request's state into every later one, so
+        // the container refuses that while they are assembled.
+        $buildGlobal = static fn (): array => array_map(self::middlewareFrom($resolver), $globalMiddleware);
+        $global = $container === null ? $buildGlobal() : $container->longLived('the Kernel\'s endpoint stacks', $buildGlobal);
 
         // The address pass is outermost -- ahead of the application's own
         // global middleware, so a refused request does not pay for session

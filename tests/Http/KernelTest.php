@@ -1063,3 +1063,33 @@ describe('the kernel with a container', function () {
             ->and($container->get(KernelRequestService::class))->not->toBe($during);
     });
 });
+
+final class KernelCapturingMiddleware implements Tinvar\Http\Middleware
+{
+    public function __construct(public KernelRequestService $service) {}
+
+    public function handle(Request $request, Closure $next): Response
+    {
+        return $next($request);
+    }
+}
+
+// The endpoint stacks are built once, at boot, and kept for the worker's
+// life: a request-lived service in one would serve every later request.
+it('refuses global middleware that would hold a request-lived service', function () {
+    $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+    $container = new Tinvar\Container\Container();
+
+    expect(fn () => new Kernel(
+        orm: new Orm($fixture->connection, new IdentityMap('test')),
+        routes: new RouteRegistry(),
+        queries: new QueryRegistry(),
+        actions: new ActionRegistry(),
+        auth: new AuthContext(),
+        policies: new PolicyRegistry(),
+        resolver: $container->resolver(),
+        allowedQueries: static fn (Request $r): array => [],
+        globalMiddleware: [KernelCapturingMiddleware::class],
+        container: $container,
+    ))->toThrow(Tinvar\Container\ContainerException::class, "the Kernel's endpoint stacks outlives the request");
+});
