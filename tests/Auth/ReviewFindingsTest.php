@@ -262,3 +262,31 @@ describe('build rules see the shapes that evaded them', function () {
         expect((new BuildRules())->check([R\GuardedBatchQuery::class]))->toBe([]);
     });
 });
+
+/**
+ * `shared: true` drops the user from the cache key, so a body that varies by
+ * user would serve one caller's answer to another.
+ */
+describe('shared queries may not read the user', function () {
+    it('accepts a shared query that reads nothing user-dependent', function () {
+        expect((new BuildRules())->check([R\SharedCleanQuery::class]))->toBe([]);
+    });
+
+    it('flags one that reads the current user', function () {
+        $violations = (new BuildRules())->check([R\SharedLeakyQuery::class]);
+
+        expect($violations)->not->toBeEmpty()
+            ->and($violations[0]->rule)->toBe(BuildRules::SHARED_QUERY_MUST_NOT_READ_THE_USER);
+    });
+
+    it('flags one that escapes tenant scoping', function () {
+        $violations = (new BuildRules())->check([R\SharedUnscopedQuery::class]);
+
+        expect(array_map(static fn ($v): string => $v->rule, $violations))
+            ->toContain(BuildRules::SHARED_QUERY_MUST_NOT_READ_THE_USER);
+    });
+
+    it('leaves a per-user query alone, since its key separates callers', function () {
+        expect((new BuildRules())->check([R\PerUserQuery::class]))->toBe([]);
+    });
+});

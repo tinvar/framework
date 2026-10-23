@@ -55,6 +55,24 @@ final class BuildRules
     public const string TENANT_SCOPED_IDS_MUST_BE_TYPED = 'tenant-scoped-ids-must-be-typed';
     public const string AUTHORIZE_MUST_NAME_A_SUBJECT = 'authorize-must-name-a-subject';
     public const string ENTRY_POINT_MUST_NOT_BE_STATIC = 'entry-point-must-not-be-static';
+    public const string SHARED_QUERY_MUST_NOT_READ_THE_USER = 'shared-query-must-not-read-the-user';
+
+    /**
+     * What a `shared: true` query may not touch.
+     *
+     * Each would make the answer depend on something the cache key no longer
+     * carries, so two users would read one entry.
+     */
+    private const array USER_DEPENDENT = [
+        'auth()' => 'the current user',
+        '->user(' => 'the current user',
+        'AuthContext' => 'the current user',
+        '->can(' => 'a policy decision',
+        'can(' => 'a policy decision',
+        'Panel::current' => 'the current panel',
+        'acrossTenants' => 'another tenant',
+        'withinReseller' => 'another reseller',
+    ];
 
     /** Attributes that make a class's __invoke a routable entry point. */
     private const array CLASS_MARKERS = [Page::class, Layout::class, Query::class];
@@ -83,6 +101,7 @@ final class BuildRules
 
         foreach ($entryPoints as $class) {
             $violations = [...$violations, ...$this->checkEntryPoint($class)];
+            $violations = [...$violations, ...self::checkSharedQuery($class)];
         }
 
         foreach ($payloads as $class) {
@@ -343,6 +362,55 @@ final class BuildRules
         }
 
         return $methods;
+    }
+
+    /**
+     * `shared: true` drops the user from the cache key, so the body must not
+     * be able to vary by user.
+     *
+     * This reads the class's own source, not its call graph. Following the
+     * graph needs a static analyser; saying so is better than implying a
+     * guarantee this does not give. It catches the direct case, which is the
+     * one people write.
+     *
+     * @param class-string $class
+     * @return list<Violation>
+     */
+    private static function checkSharedQuery(string $class): array
+    {
+        $reflection = new \ReflectionClass($class);
+        $attribute = $reflection->getAttributes(Query::class)[0] ?? null;
+
+        if ($attribute === null || !$attribute->newInstance()->shared) {
+            return [];
+        }
+
+        $file = $reflection->getFileName();
+        $start = $reflection->getStartLine();
+        $end = $reflection->getEndLine();
+
+        if ($file === false || $start === false || $end === false) {
+            return [];
+        }
+
+        $source = implode('', \array_slice(file($file) ?: [], $start - 1, $end - $start + 1));
+        $violations = [];
+
+        foreach (self::USER_DEPENDENT as $needle => $what) {
+            if (!str_contains($source, $needle)) {
+                continue;
+            }
+
+            $violations[] = new Violation(
+                self::SHARED_QUERY_MUST_NOT_READ_THE_USER,
+                $class,
+                "is #[Query(shared: true)] but mentions '{$needle}', which reads {$what}. "
+                . 'A shared query drops the user from its cache key, so two users read one entry. '
+                . 'Either stop reading it, or drop shared.',
+            );
+        }
+
+        return $violations;
     }
 
     /**

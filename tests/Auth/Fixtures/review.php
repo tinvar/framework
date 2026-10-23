@@ -157,3 +157,50 @@ final class GuardedBatchQuery implements BatchQuery
         return array_map(static fn (): WattsData => new WattsData(1), $calls);
     }
 }
+
+// --- shared-query build rule ---------------------------------------------
+
+#[Query(name: 'review.sharedClean', cache: '1m', shared: true)]
+final class SharedCleanQuery
+{
+    public function __invoke(): WattsData
+    {
+        return new WattsData(42);
+    }
+}
+
+/** Shared, but the body reads the current user. */
+#[Query(name: 'review.sharedLeaky', cache: '1m', shared: true)]
+final class SharedLeakyQuery
+{
+    public function __construct(private readonly \Tinvar\Auth\AuthContext $auth) {}
+
+    public function __invoke(): WattsData
+    {
+        return new WattsData($this->auth->check() ? 1 : 0);
+    }
+}
+
+/** Shared, and escapes tenant scoping. */
+#[Query(name: 'review.sharedUnscoped', cache: '1m', shared: true)]
+final class SharedUnscopedQuery
+{
+    public function __construct(private readonly \Tinvar\Orm\Orm $orm) {}
+
+    public function __invoke(): WattsData
+    {
+        return $this->orm->acrossTenants(static fn (): WattsData => new WattsData(1));
+    }
+}
+
+/** Reads the user, but is not shared, so the key separates callers. */
+#[Query(name: 'review.perUser', cache: '1m')]
+final class PerUserQuery
+{
+    public function __construct(private readonly \Tinvar\Auth\AuthContext $auth) {}
+
+    public function __invoke(): WattsData
+    {
+        return new WattsData($this->auth->check() ? 1 : 0);
+    }
+}

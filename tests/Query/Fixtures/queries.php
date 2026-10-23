@@ -131,3 +131,13 @@ final class CachedSummary
         return new RackSummaryData($rack->name, $rack->units->count());
     }
 }
+
+/** Takes a Site, so a Site ghost in the identity map could short-circuit it. */
+#[Query(name: 'racks.siteCode')]
+final class SiteCode
+{
+    public function __invoke(\Tinvar\Tests\Orm\Fixtures\Site $site): RackSummaryData
+    {
+        return new RackSummaryData($site->code, 0);
+    }
+}

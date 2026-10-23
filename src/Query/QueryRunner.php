@@ -146,16 +146,28 @@ final class QueryRunner
         foreach ($wanted as $class => $ids) {
             $missing = [];
 
-            // The identity map already holds anything read earlier in this
-            // request, and it is keyed by tenant -- so this is a scoped hit,
-            // not a shortcut around scoping.
+            // The identity map holds anything read earlier in this request,
+            // keyed by tenant, so a hit is a scoped hit. Two exceptions, both
+            // of which would make the map an answer the database never gave:
+            //
+            //  - an uninitialized lazy ghost. A #[BelongsTo] registers one
+            //    from a foreign key before anything confirms the row exists,
+            //    so accepting it would resolve an id that no tenant-scoped
+            //    select has ever returned.
+            //  - an unscoped read in progress, where the map is bypassed
+            //    everywhere else for the same reason.
+            $reflection = new \ReflectionClass($class);
+            $trustMap = !$this->orm->isUnscoped();
+
             foreach (array_unique($ids) as $id) {
-                $known = $this->orm->identityMap()->get($class, $id);
-                if ($known !== null) {
+                $known = $trustMap ? $this->orm->identityMap()->get($class, $id) : null;
+
+                if ($known !== null && !$reflection->isUninitializedLazyObject($known)) {
                     $resolved[$class][$id] = $known;
-                } else {
-                    $missing[] = $id;
+                    continue;
                 }
+
+                $missing[] = $id;
             }
 
             if ($missing === []) {
