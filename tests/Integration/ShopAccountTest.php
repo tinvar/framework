@@ -12,6 +12,7 @@ namespace Tinvar\Tests\Integration\ShopAccount;
 
 use Shop\Actions\AccountActions;
 use Shop\Auth\NextPath;
+use Shop\Auth\Passwords;
 use Shop\Auth\Sessions;
 use Shop\Auth\SignInThrottle;
 use Shop\Database\Seeder;
@@ -294,6 +295,55 @@ it('signs in from a form posted before JavaScript loads', function () {
 
     expect($response->status)->toBe(200)
         ->and(sessionRow($pdo, $visitor->sessionId())['customer_id'] ?? null)->toBe(demoId($pdo));
+});
+
+/** @return array{string, int} a stored hash's algorithm and cost */
+function costOf(string $hash): array
+{
+    $info = password_get_info($hash);
+
+    return [(string) $info['algo'], (int) ($info['options']['cost'] ?? 0)];
+}
+
+// The decoy was pinned at cost 4, the seeded accounts' cost. Against accounts
+// at the default cost an unknown email was refused two hundred times faster
+// than a known one, and the time taken said which emails had accounts.
+it('checks an unknown email against a hash as costly as the accounts\' own', function () {
+    [$visitor, $pdo] = shop();
+
+    expect(costOf((new Passwords($visitor->kernel->orm))->decoy()))->toBe([PASSWORD_BCRYPT, Seeder::PASSWORD_COST]);
+
+    // Most accounts at another cost, as a real shop's would be.
+    $update = $pdo->prepare('UPDATE customers SET password_hash = ? WHERE email <> ?');
+    $update->execute([password_hash('x', PASSWORD_BCRYPT, ['cost' => 6]), DemoAccount::EMAIL]);
+
+    expect(costOf((new Passwords($visitor->kernel->orm))->decoy()))->toBe([PASSWORD_BCRYPT, 6]);
+});
+
+it('rehashes a password on sign-in when the hashing policy has moved on since', function () {
+    [$visitor, $pdo] = shop();
+    $visitor->get('/sign-in');
+    $pdo->prepare('UPDATE customers SET password_hash = ? WHERE email = ?')
+        ->execute([password_hash(DemoAccount::PASSWORD, PASSWORD_BCRYPT, ['cost' => 5]), DemoAccount::EMAIL]);
+
+    expect(signIn($visitor)->status)->toBe(200);
+
+    $stored = (string) $pdo->query("SELECT password_hash FROM customers WHERE email = 'demo@shop.test'")->fetchColumn();
+
+    expect(password_needs_rehash($stored, PASSWORD_DEFAULT))->toBeFalse()
+        ->and(password_verify(DemoAccount::PASSWORD, $stored))->toBeTrue();
+});
+
+// Rehashed, the load test's twenty thousand sign-ins would each pay for a
+// hash at the default cost, and then measure bcrypt rather than the shop.
+it('leaves a seeded credential at the seeded cost', function () {
+    [$visitor, $pdo] = shop();
+    $visitor->get('/sign-in');
+    $before = (string) $pdo->query("SELECT password_hash FROM customers WHERE email = 'demo@shop.test'")->fetchColumn();
+
+    signIn($visitor);
+
+    expect($pdo->query("SELECT password_hash FROM customers WHERE email = 'demo@shop.test'")->fetchColumn())->toBe($before);
 });
 
 it('signs in whatever the email\'s case', function () {
