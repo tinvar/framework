@@ -40,7 +40,18 @@ final class BuildRegistry
      */
     private const string SHAPE = '/^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/';
 
-    /** @var array<string, true> retained build IDs */
+    /**
+     * Retained build IDs, OLDEST FIRST.
+     *
+     * The order is recorded rather than inferred. Build IDs are opaque
+     * strings -- hashes, timestamps, incrementing counters -- and comparing
+     * them lexically gets it wrong in ways that fail open: strcmp puts
+     * "build-10" BELOW "build-9", so a floor of "build-9" would admit the
+     * newer build and refuse the older one, which is precisely backwards for
+     * a control whose job is to keep clients off pre-fix code.
+     *
+     * @var list<string>
+     */
     private array $retained = [];
 
     /** @var array<string, true> explicitly revoked, which outranks retention */
@@ -48,15 +59,23 @@ final class BuildRegistry
 
     private ?string $floor = null;
 
-    /** @param list<string> $retained builds still served, current one included */
+    /**
+     * @param list<string> $retained older builds still served, OLDEST FIRST.
+     *        The current build is always the newest and is appended.
+     */
     public function __construct(public readonly string $current, array $retained = [])
     {
         self::assertShape($current);
-        $this->retained[$current] = true;
 
         foreach ($retained as $build) {
             self::assertShape($build);
-            $this->retained[$build] = true;
+            if (!\in_array($build, $this->retained, true)) {
+                $this->retained[] = $build;
+            }
+        }
+
+        if (!\in_array($current, $this->retained, true)) {
+            $this->retained[] = $current;
         }
     }
 
@@ -76,13 +95,24 @@ final class BuildRegistry
             return false;
         }
 
-        if (!isset($this->retained[$build])) {
+        $position = array_search($build, $this->retained, true);
+        if ($position === false) {
             return false;
+        }
+
+        if ($this->floor === null) {
+            return true;
         }
 
         // The floor is a security boundary, not a tidiness one: a build below
         // it is one a fix has landed since, so retention does not save it.
-        return $this->floor === null || strcmp($build, $this->floor) >= 0;
+        // Compared by POSITION, never by string. A floor naming a build this
+        // registry does not know has no position to compare against, so
+        // everything is refused rather than everything admitted -- an unknown
+        // ordering fails closed.
+        $floorPosition = array_search($this->floor, $this->retained, true);
+
+        return $floorPosition !== false && $position >= $floorPosition;
     }
 
     /** `tinvar build:revoke <id>`. Outranks retention. */
@@ -94,7 +124,13 @@ final class BuildRegistry
         return $this;
     }
 
-    /** The minimum-build floor: anything ordering below this is refused. */
+    /**
+     * The minimum-build floor: anything retained BEFORE this one is refused.
+     *
+     * Named by build, compared by position. A floor naming an unknown build
+     * refuses everything, which is the safe direction for a control that
+     * exists to force clients off code with a known hole in it.
+     */
     public function floor(string $build): self
     {
         self::assertShape($build);
@@ -103,18 +139,22 @@ final class BuildRegistry
         return $this;
     }
 
+    /** Appends a build as the newest retained one. */
     public function retain(string $build): self
     {
         self::assertShape($build);
-        $this->retained[$build] = true;
+
+        if (!\in_array($build, $this->retained, true)) {
+            $this->retained[] = $build;
+        }
 
         return $this;
     }
 
-    /** @return list<string> */
+    /** @return list<string> oldest first */
     public function retained(): array
     {
-        return array_keys($this->retained);
+        return $this->retained;
     }
 
     private static function assertShape(string $build): void

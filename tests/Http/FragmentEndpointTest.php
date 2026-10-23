@@ -301,6 +301,36 @@ describe('the build registry', function () {
             ->and($builds->accepts('b3'))->toBeTrue();
     });
 
+    /**
+     * Order is RECORDED, never inferred from the string.
+     *
+     * This compared with strcmp, which puts 'build-10' below 'build-9'. With a
+     * floor of 'build-9' that admitted the newer build and refused the older
+     * one -- backwards, for a control whose whole job is keeping clients off
+     * pre-fix code.
+     */
+    it('orders by position, not lexically', function () {
+        $builds = (new BuildRegistry('build-10', ['build-8', 'build-9']))->floor('build-9');
+
+        expect($builds->accepts('build-8'))->toBeFalse('older than the floor')
+            ->and($builds->accepts('build-9'))->toBeTrue('the floor itself')
+            ->and($builds->accepts('build-10'))->toBeTrue('newer than the floor, though it sorts below it');
+    });
+
+    // An ordering it cannot establish must not admit anything.
+    it('refuses everything when the floor names a build it does not know', function () {
+        $builds = (new BuildRegistry('b2', ['b1']))->floor('b-unknown');
+
+        expect($builds->accepts('b1'))->toBeFalse()
+            ->and($builds->accepts('b2'))->toBeFalse();
+    });
+
+    it('keeps the current build newest, whatever order it was given in', function () {
+        $builds = new BuildRegistry('b3', ['b1', 'b2']);
+
+        expect($builds->retained())->toBe(['b1', 'b2', 'b3']);
+    });
+
     it('refuses a missing version', function () {
         expect((new BuildRegistry('b1'))->accepts(null))->toBeFalse();
     });
