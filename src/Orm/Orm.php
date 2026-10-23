@@ -379,8 +379,9 @@ final class Orm
     }
 
     /**
-     * @param class-string<Model> $class
-     * @return list<Model>
+     * @template T of Model
+     * @param class-string<T> $class
+     * @return list<T>
      */
     public function all(string $class, ?string $orderBy = null): array
     {
@@ -401,9 +402,10 @@ final class Orm
     }
 
     /**
-     * @param class-string<Model> $class
+     * @template T of Model
+     * @param class-string<T> $class
      * @param list<mixed> $values
-     * @return list<Model>
+     * @return list<T>
      */
     public function whereIn(string $class, string $column, array $values, ?string $orderBy = null): array
     {
@@ -437,9 +439,10 @@ final class Orm
     }
 
     /**
-     * @param class-string<Model> $class
+     * @template T of Model
+     * @param class-string<T> $class
      * @param list<array<string, mixed>> $rows
-     * @return list<Model>
+     * @return list<T>
      */
     public function hydrateAll(string $class, array $rows): array
     {
@@ -456,7 +459,6 @@ final class Orm
             $model = $unscoped ? null : $this->identityMap->get($class, $id);
 
             if ($model === null) {
-                /** @var Model $model */
                 $model = $reflection->newInstanceWithoutConstructor();
                 $meta->hydrate($model, $row);
                 if (!$unscoped) {
