@@ -23,6 +23,9 @@ final class Encoder
     /** Matches the JSON depth cap the spec sets on the action and query endpoints. */
     public const int MAX_DEPTH = 32;
 
+    /** The one map key a JavaScript object cannot hold as plain data. */
+    public const string RESERVED_KEY = '__proto__';
+
     public function encode(mixed $value): mixed
     {
         return $this->walk($value, '$', 0, []);
@@ -64,6 +67,13 @@ final class Encoder
 
         $out = [];
         foreach ($value as $k => $item) {
+            // Map keys are often user data, a settings map saved from a form.
+            // The renderer's MessagePack decoder throws on this one key, so it
+            // would fail every render of that data for good, and any code that
+            // copies the map by assignment would set a prototype instead.
+            if ($k === self::RESERVED_KEY) {
+                throw DataBoundaryException::reservedKey($path, $k);
+            }
             $out[$k] = $this->walk($item, "{$path}.{$k}", $depth + 1, $seen);
         }
 

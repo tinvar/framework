@@ -40,4 +40,12 @@ final class DataBoundaryException extends \RuntimeException
     {
         return new self("Refused to encode {$type} at {$path}; it has no representation on the wire.");
     }
+
+    public static function reservedKey(string $path, string $key): self
+    {
+        return new self(
+            "Refused to encode the map key '{$key}' at {$path}: the renderer cannot hold it as data. "
+            . 'Rename the key, or carry the map as a list of pairs.',
+        );
+    }
 }
