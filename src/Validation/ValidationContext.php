@@ -22,13 +22,35 @@ final readonly class ValidationContext
      *        and authorized upstream from the route -- never from the payload
      * @param array<string, Model> $subjects every resolved model, so a rule can
      *        pick the one of its own class
+     * @param array<string, class-string<Model>> $unsupplied model inputs the
+     *        entry point declares that this call left out -- an optional
+     *        `?Site $site = null` on a create, say -- so a rule can tell "no
+     *        record is being edited" from "the action never binds one"
      */
     public function __construct(
         public array $input,
         public ?Orm $orm = null,
         public ?Model $subject = null,
         public array $subjects = [],
+        public array $unsupplied = [],
     ) {}
+
+    /**
+     * Whether a model input of this class -- or under this name, when one is
+     * given -- was declared and left out of this call.
+     *
+     * @param class-string<Model> $class
+     */
+    public function leftOut(string $class, ?string $name = null): bool
+    {
+        foreach ($this->unsupplied as $input => $declared) {
+            if (($name === null || $input === $name) && is_a($declared, $class, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     /**
      * The resolved model of a given class, or null when none was resolved.

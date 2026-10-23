@@ -54,7 +54,17 @@ final readonly class Unique implements Rule
                 ? ($context->subjects[$this->ignoreSubject] ?? null)
                 : $context->subjectOf($this->model);
 
-            if ($subject === null) {
+            // The create path of a save action: `?Site $site = null` left out
+            // means no record is being edited, so there is nothing to exempt
+            // and every holder of the value counts. Only a DECLARED input the
+            // call left out reads this way; an action that never binds the
+            // record at all is still the misconfiguration below.
+            $leftOut = $subject === null && $context->leftOut(
+                $this->model,
+                \is_string($this->ignoreSubject) ? $this->ignoreSubject : null,
+            );
+
+            if ($subject === null && !$leftOut) {
                 $named = \is_string($this->ignoreSubject)
                     ? "no '{$this->ignoreSubject}' was resolved"
                     : "no single {$this->model} was resolved";
@@ -65,13 +75,13 @@ final readonly class Unique implements Rule
                 );
             }
 
-            if (!$subject instanceof $this->model) {
+            if ($subject !== null && !$subject instanceof $this->model) {
                 throw new \LogicException(
                     "Unique on {$field} exempts " . $subject::class . ", not {$this->model}.",
                 );
             }
 
-            $exempt = $subject->primaryKey();
+            $exempt = $subject?->primaryKey();
         }
 
         foreach ($matches as $match) {

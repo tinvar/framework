@@ -131,7 +131,15 @@ final class ActionRunner
                 if ($parameter->getName() === $field) {
                     $declared = true;
                     $errors = self::mergeErrors($errors, [
-                        $field => $this->validator->errorsFor($class, $input, $field, $subject, $models, $models),
+                        $field => $this->validator->errorsFor(
+                            $class,
+                            $input,
+                            $field,
+                            $subject,
+                            $models,
+                            $models,
+                            self::unsupplied($action, $models),
+                        ),
                     ]);
                 }
             }
@@ -142,7 +150,14 @@ final class ActionRunner
         $scalar = self::scalarParameters($action)[$field] ?? null;
         if ($scalar !== null) {
             $declared = true;
-            [, $found] = $this->validator->parameter($scalar, $action->where(), $input, $subject, $models);
+            [, $found] = $this->validator->parameter(
+                $scalar,
+                $action->where(),
+                $input,
+                $subject,
+                $models,
+                self::unsupplied($action, $models),
+            );
             $errors = self::mergeErrors($errors, [$field => $found]);
         }
 
@@ -179,17 +194,32 @@ final class ActionRunner
         $built = [];
         $scalars = [];
         $errors = [];
+        $unsupplied = self::unsupplied($action, $models);
 
         foreach ($action->formRequests as $parameter => $class) {
             try {
-                $built[$parameter] = $this->validator->validate($class, $input, $subject, $models, $models);
+                $built[$parameter] = $this->validator->validate(
+                    $class,
+                    $input,
+                    $subject,
+                    $models,
+                    $models,
+                    $unsupplied,
+                );
             } catch (ValidationException $e) {
                 $errors = self::mergeErrors($errors, $e->errors);
             }
         }
 
         foreach (self::scalarParameters($action) as $name => $parameter) {
-            [$value, $found] = $this->validator->parameter($parameter, $action->where(), $input, $subject, $models);
+            [$value, $found] = $this->validator->parameter(
+                $parameter,
+                $action->where(),
+                $input,
+                $subject,
+                $models,
+                $unsupplied,
+            );
             if ($found === []) {
                 $scalars[$name] = $value;
             }
@@ -201,6 +231,18 @@ final class ActionRunner
         }
 
         return [$built, $scalars];
+    }
+
+    /**
+     * The model inputs the action declares that this call left out: the
+     * optional ones, and required form fields not sent yet.
+     *
+     * @param array<string, Model> $models
+     * @return array<string, class-string<Model>>
+     */
+    private static function unsupplied(CompiledAction $action, array $models): array
+    {
+        return array_diff_key($action->allModels(), $models);
     }
 
     /**

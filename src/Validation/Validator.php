@@ -43,6 +43,8 @@ final class Validator
      * @param array<string, Model> $subjects every resolved model, so a rule
      *        that exempts "the row being edited" can pick the one of its own
      *        class rather than whichever came first
+     * @param array<string, class-string<Model>> $unsupplied declared model
+     *        inputs the call left out, see ValidationContext
      * @return T
      */
     public function validate(
@@ -51,8 +53,9 @@ final class Validator
         ?Model $subject = null,
         array $resolved = [],
         array $subjects = [],
+        array $unsupplied = [],
     ): FormRequest {
-        $context = new ValidationContext($input, $this->orm, $subject, $subjects);
+        $context = new ValidationContext($input, $this->orm, $subject, $subjects, $unsupplied);
 
         /** @var array<string, list<string>> $errors */
         $errors = [];
@@ -153,6 +156,7 @@ final class Validator
      * @param array<string, mixed>      $input
      * @param array<string, Model>      $resolved
      * @param array<string, Model>      $subjects
+     * @param array<string, class-string<Model>> $unsupplied
      * @return list<string>
      */
     public function errorsFor(
@@ -162,6 +166,7 @@ final class Validator
         ?Model $subject = null,
         array $resolved = [],
         array $subjects = [],
+        array $unsupplied = [],
     ): array {
         $plan = null;
         foreach (self::planFor($class) as $candidate) {
@@ -177,7 +182,7 @@ final class Validator
             throw new \LogicException("{$class} declares no field named '{$field}'.");
         }
 
-        $context = new ValidationContext($input, $this->orm, $subject, $subjects);
+        $context = new ValidationContext($input, $this->orm, $subject, $subjects, $unsupplied);
 
         try {
             $errors = $this->checkField($plan, $input, $context, $resolved);
@@ -237,6 +242,7 @@ final class Validator
      *
      * @param array<string, mixed> $input
      * @param array<string, Model> $subjects
+     * @param array<string, class-string<Model>> $unsupplied
      * @return array{mixed, list<string>} the value, meaningful only when the
      *         list of what is wrong with it is empty
      */
@@ -246,6 +252,7 @@ final class Validator
         array $input,
         ?Model $subject = null,
         array $subjects = [],
+        array $unsupplied = [],
     ): array {
         $plan = FieldPlan::of($parameter, $owner);
         $name = $plan->name;
@@ -260,7 +267,7 @@ final class Validator
             return [null, [$failure->getMessage()]];
         }
 
-        $context = new ValidationContext($input, $this->orm, $subject, $subjects);
+        $context = new ValidationContext($input, $this->orm, $subject, $subjects, $unsupplied);
         $errors = [];
         foreach ($plan->rules as $rule) {
             $message = $rule->check($value, $name, $context);
