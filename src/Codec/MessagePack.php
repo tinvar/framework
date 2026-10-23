@@ -270,9 +270,13 @@ final class MessagePack
     private static function unpacked(string $format, string $bytes): int|float
     {
         $values = unpack($format, $bytes);
+        // take() always hands over exactly the bytes the format reads, so
+        // this cannot happen; it is here because unpack() is typed to allow it.
+        // @codeCoverageIgnoreStart
         if ($values === false) {
             throw new CodecException("Truncated value: cannot unpack '{$format}'.");
         }
+        // @codeCoverageIgnoreEnd
 
         return $values[1];
     }

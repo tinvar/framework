@@ -30,11 +30,9 @@ trait LengthPrefixed
         if ($offset + 4 > \strlen($buffer)) {
             return null;
         }
-        $header = unpack('N', substr($buffer, $offset, 4));
-        if ($header === false) {
-            throw new CodecException('Truncated frame header.');
-        }
-        $n = (int) $header[1];
+        // Big-endian u32, read directly: the four bytes are known to exist.
+        $n = (\ord($buffer[$offset]) << 24) | (\ord($buffer[$offset + 1]) << 16)
+            | (\ord($buffer[$offset + 2]) << 8) | \ord($buffer[$offset + 3]);
         if ($n > $this->maxFrameBytes) {
             throw new CodecException("Incoming frame of {$n} bytes exceeds the {$this->maxFrameBytes}-byte cap.");
         }
