@@ -65,6 +65,37 @@ final class Visitor
     }
 
     /**
+     * An action as the shop's client sends it: the header copied from the
+     * CSRF cookie this visitor was last given, whatever session that was.
+     *
+     * @param array<string, mixed> $body
+     */
+    public function actionFromCookie(string $name, array $body): Response
+    {
+        $token = $this->cookies['__Host-XSRF-TOKEN'] ?? '';
+
+        return $this->keep($this->kernel->handle(
+            new Request(
+                'POST',
+                "/_action/{$name}",
+                ['content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
+                [],
+                [],
+                $this->cookies,
+                null,
+                $this->address,
+            ),
+            json_encode($body, JSON_THROW_ON_ERROR),
+        ));
+    }
+
+    /** The CSRF cookie a page would have issued for the session this visitor holds now. */
+    public function receiveCsrfCookie(): void
+    {
+        $this->cookies['__Host-XSRF-TOKEN'] = $this->csrfToken();
+    }
+
+    /**
      * A form posted before JavaScript loads: urlencoded, with the token in
      * the hidden field rather than a header.
      *
@@ -397,6 +428,29 @@ it('pauses an account for everyone once guesses from many addresses reach its ce
 
     expect($before)->toBe(200, 'below the ceiling')
         ->and(signIn($from(201))->status)->toBe(429, 'at it, from an address that never guessed');
+});
+
+// A page used to be the only thing that issued the CSRF cookie, and only a
+// page that succeeded. Sign in to land on a 404 and the cookie still held the
+// old session's token, so signing out from that page's header was a 419.
+it('hands over the new session\'s CSRF token with its cookie, so the next page need not', function () {
+    [$visitor] = shop();
+    $visitor->get('/sign-in');
+    $visitor->receiveCsrfCookie();
+
+    expect($visitor->actionFromCookie('account.signIn', [
+        'email' => DemoAccount::EMAIL,
+        'password' => DemoAccount::PASSWORD,
+        'next' => '/products/no-such-product',
+    ])->status)->toBe(200);
+
+    expect($visitor->get('/products/no-such-product')->status)->toBe(404)
+        ->and($visitor->actionFromCookie('account.signOut', [])->status)->toBe(200, 'signed out from the 404')
+        ->and($visitor->actionFromCookie('account.signIn', [
+            'email' => DemoAccount::EMAIL,
+            'password' => DemoAccount::PASSWORD,
+            'next' => '/',
+        ])->status)->toBe(200, 'and in again, with the token the sign-out handed over');
 });
 
 it('signs out under a new, signed-out session, and the old one stops working', function () {

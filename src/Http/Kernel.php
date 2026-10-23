@@ -624,7 +624,9 @@ final class Kernel
      * every client. On page responses, because a page is where a client
      * arrives before it can POST anything; and only when it would change,
      * so a cookie is not re-sent on every navigation. A session that
-     * rotated gets its new token on the next page it loads.
+     * rotated would get its new token on the next page it loads -- unless
+     * that page fails, which issues nothing -- so an application that
+     * rotates the session sets the new token with the new session cookie.
      *
      * Readable by script -- not HttpOnly -- because the client copies it
      * into the header; Secure, SameSite=Lax and `__Host-`, as the spec's
