@@ -497,6 +497,15 @@ describe('responses', function () {
             ->toBe('RSC');
     });
 
+    // A payload names client components by build; one cached before a
+    // deploy must not reach a client on the new build.
+    it('varies an RSC payload on X-Version too', function () {
+        [$router] = router();
+
+        expect($router->handle(Request::get('/health', ['RSC' => '1']), respondWithLoaded())->header('vary'))
+            ->toBe('RSC, X-Version');
+    });
+
     it('does not duplicate Vary when the responder already set it', function () {
         [$router] = router();
 

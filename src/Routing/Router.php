@@ -61,7 +61,15 @@ final class Router
 
                 // One URL returns different bodies depending on the RSC header,
                 // so caches must key on it or skip the route entirely.
-                return $respond($loaded, $inner)->withAddedHeader('vary', 'RSC');
+                $response = $respond($loaded, $inner)->withAddedHeader('vary', 'RSC');
+
+                // A payload refers to client components by build, so one
+                // cached for the old build must not be handed to a client on
+                // the new one after a deploy. Only payloads: a document load
+                // is the same whatever the client was running.
+                return $inner->header('rsc') === '1'
+                    ? $response->withAddedHeader('vary', 'X-Version')
+                    : $response;
             });
         });
     }
