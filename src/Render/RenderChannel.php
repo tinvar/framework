@@ -34,6 +34,13 @@ final class RenderChannel
         private readonly bool $debug = false,
         private readonly int $maxQueryCalls = self::MAX_QUERY_CALLS,
         private readonly float $maxQuerySeconds = self::MAX_QUERY_SECONDS,
+        /**
+         * Users besides this one and root who may own the socket and its
+         * directory: the renderer's own user, where it runs as one.
+         *
+         * @var list<int>
+         */
+        private readonly array $trustedSocketOwners = [],
     ) {}
 
     /**
@@ -270,9 +277,13 @@ final class RenderChannel
      * loader's data for this visitor -- and writes the HTML they are served.
      * In a directory other users can write to, such as /tmp, any of them
      * could put a socket at this path while the renderer is down. So there
-     * the socket must be this user's or root's; and a directory others can
-     * write without the sticky bit is refused outright, since there a
-     * stranger can replace even a socket we own.
+     * the socket must be a trusted user's; and a directory others can write
+     * without the sticky bit is refused outright, since there a stranger can
+     * replace even a socket we own. A directory owned by anyone untrusted is
+     * refused too: its owner can do as they like inside it.
+     *
+     * Trusted: this user, root, and $trustedSocketOwners. The directory's
+     * own ancestors are the deployment's to secure.
      */
     private function assertTrustedSocket(): void
     {
@@ -287,6 +298,11 @@ final class RenderChannel
             throw RendererException::cannotConnect($this->socketPath, 'cannot inspect the socket or its directory');
         }
 
+        $trusted = [posix_geteuid(), 0, ...$this->trustedSocketOwners];
+        if (!\in_array($directory['uid'], $trusted, true)) {
+            throw RendererException::cannotConnect($this->socketPath, 'its directory belongs to another user');
+        }
+
         $shared = ($directory['mode'] & 0022) !== 0;
         $sticky = ($directory['mode'] & 01000) !== 0;
         if ($shared && !$sticky) {
@@ -295,7 +311,7 @@ final class RenderChannel
                 'its directory is writable by other users, who could replace the socket',
             );
         }
-        if ($shared && !\in_array($socket['uid'], [posix_geteuid(), 0], true)) {
+        if (($shared || $directory['uid'] !== posix_geteuid()) && !\in_array($socket['uid'], $trusted, true)) {
             throw RendererException::cannotConnect(
                 $this->socketPath,
                 'it belongs to another user, in a directory any user can write to',
