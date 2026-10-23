@@ -23,9 +23,6 @@ final class Encoder
     /** Matches the JSON depth cap the spec sets on the action and query endpoints. */
     public const int MAX_DEPTH = 32;
 
-    /** @var array<class-string, list<\ReflectionProperty>> */
-    private array $plans = [];
-
     public function encode(mixed $value): mixed
     {
         return $this->walk($value, '$', 0, []);
@@ -89,7 +86,7 @@ final class Encoder
         $seen[$id] = true;
 
         $out = [];
-        foreach ($this->planFor($value::class) as $property) {
+        foreach (DataShape::fieldsOf($value::class) as $property) {
             $name = $property->getName();
             if (!$property->isVirtual() && !$property->isInitialized($value)) {
                 continue;   // an uninitialized typed property is simply absent
@@ -100,28 +97,4 @@ final class Encoder
         return $out;
     }
 
-    /**
-     * Public, non-static properties in declaration order, reflected once per class.
-     *
-     * Only public properties cross. A Data object's private state is not payload,
-     * which is what keeps the boundary narrow by construction.
-     *
-     * @param class-string $class
-     * @return list<\ReflectionProperty>
-     */
-    private function planFor(string $class): array
-    {
-        if (isset($this->plans[$class])) {
-            return $this->plans[$class];
-        }
-
-        $plan = [];
-        foreach ((new \ReflectionClass($class))->getProperties(\ReflectionProperty::IS_PUBLIC) as $property) {
-            if (!$property->isStatic()) {
-                $plan[] = $property;
-            }
-        }
-
-        return $this->plans[$class] = $plan;
-    }
 }
