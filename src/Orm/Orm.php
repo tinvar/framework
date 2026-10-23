@@ -137,8 +137,12 @@ final class Orm
         // Namespacing is not the same as freshness, though. The entered
         // tenant's relation rows are dropped alongside its identity-map
         // buckets, for the reason the map does it: a switch BACK must not
-        // serve rows cached before an intervening write.
-        $this->forgetRelationRows($tenant);
+        // serve rows cached before an intervening write. And, as the map
+        // does, only on a switch the main context makes: these rows are
+        // shared by every fiber in a render.
+        if (\Fiber::getCurrent() === null) {
+            $this->forgetRelationRows($tenant);
+        }
         $this->identityMap->switchTenant($tenant);
     }
 

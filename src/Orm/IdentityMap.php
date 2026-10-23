@@ -87,6 +87,8 @@ final class IdentityMap
      * tenant seen earlier in the request would serve rows cached before any
      * intervening write. Prefer Orm::switchTenant(), which also drops the
      * relation-row cache.
+     *
+     * Only a switch the main context makes is a reset; see below.
      */
     public function switchTenant(string $tenant): void
     {
@@ -106,7 +108,15 @@ final class IdentityMap
         // is so a switch back to a tenant seen earlier in the request does not
         // serve rows cached before an intervening write. Clearing everything
         // would also throw away rows other fibers are still using.
-        $this->forgetTenant($tenant);
+        //
+        // For the same reason, a fiber's switch drops nothing. The buckets
+        // are shared by every fiber in the render, and the tenant a fiber
+        // enters -- or returns to when its actAs() exits -- is usually one
+        // other fibers are reading in: dropping it handed them a second
+        // object for a row they already held, mid-render.
+        if ($fiber === null) {
+            $this->forgetTenant($tenant);
+        }
     }
 
     public function tenant(): string

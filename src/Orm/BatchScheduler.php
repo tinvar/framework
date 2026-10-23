@@ -85,7 +85,7 @@ final class BatchScheduler
                 // that fiber's scope and the rows are cached under its
                 // namespace. The key is passed in rather than recomputed, for
                 // the same reason.
-                $this->orm->actAs($group['tenant'], function () use ($group, $key): void {
+                $this->loadAs($group['tenant'], function () use ($group, $key): void {
                     $this->orm->loadRelationRows(
                         $group['relation'],
                         array_values($group['parents']),
@@ -95,6 +95,32 @@ final class BatchScheduler
             } catch (\Throwable) {
                 continue;
             }
+        }
+    }
+
+    /**
+     * Runs a batched load as $tenant, in a fiber of its own.
+     *
+     * flush() runs in the main context, where an actAs() is a main-context
+     * switch, and those are resets (ADR 0008): entering the awaiting fiber's
+     * tenant dropped that tenant's rows, and switching back dropped the main
+     * tenant's -- mid-render, under fibers still holding them, so a row they
+     * looked up again came back as a second object. A tenant entered inside
+     * a fiber is that fiber's alone, and the switch drops nothing.
+     *
+     * @param \Closure(): void $load
+     */
+    private function loadAs(string $tenant, \Closure $load): void
+    {
+        $fiber = new \Fiber(function () use ($tenant, $load): void {
+            $this->orm->actAs($tenant, $load);
+        });
+        $fiber->start();
+
+        // Nothing in a load suspends. If something did, no flush would ever
+        // resume it, and the rows it was loading would silently never arrive.
+        if (!$fiber->isTerminated()) {
+            throw new \LogicException('A batched relation load suspended; it has to run to completion.');
         }
     }
 
