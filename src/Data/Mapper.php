@@ -48,8 +48,22 @@ use Tinvar\Orm\Model;
  */
 final class Mapper
 {
-    /** @var list<object|null> the sources being mapped, outermost first */
+    /**
+     * The sources being mapped, outermost first: this stack for the main
+     * context, and one per fiber below.
+     *
+     * Per fiber because the render scheduler runs each query call in its own
+     * fiber and suspends it mid-mapping on a relation read, while the next
+     * call maps. One shared stack read every other call's sources as its own:
+     * the same row mapped by two calls was a cycle, and forty calls in a tick
+     * were forty levels deep.
+     *
+     * @var list<object|null>
+     */
     private static array $mapping = [];
+
+    /** @var \WeakMap<object, list<object|null>>|null keyed by Fiber, so a finished one's stack goes with it */
+    private static ?\WeakMap $mappingByFiber = null;
 
     /** @var array<class-string<Data>, Plan> */
     private static array $plans = [];
@@ -77,22 +91,62 @@ final class Mapper
         // of memory: a fatal error, uncatchable, taking the worker down with
         // every request it held. A source already being mapped, or a graph
         // deeper than the encoder would ever write, is refused instead.
-        if (\count(self::$mapping) >= Encoder::MAX_DEPTH) {
+        $fiber = \Fiber::getCurrent();
+        $mapping = self::mappingIn($fiber);
+
+        if (\count($mapping) >= Encoder::MAX_DEPTH) {
             throw DataMappingException::tooDeep($class, Encoder::MAX_DEPTH);
         }
         if (\is_object($source)) {
-            foreach (self::$mapping as $active) {
+            foreach ($mapping as $active) {
                 if ($active === $source) {
                     throw DataMappingException::cycle($class, $source::class);
                 }
             }
         }
 
-        self::$mapping[] = \is_object($source) ? $source : null;
+        $mapping[] = \is_object($source) ? $source : null;
+        self::setMappingIn($fiber, $mapping);
         try {
             return self::mapOne($class, $source);
         } finally {
-            array_pop(self::$mapping);
+            // A nested map() has put its fiber's stack back as it found it by
+            // now, so this one ends where it started.
+            array_pop($mapping);
+            self::setMappingIn($fiber, $mapping);
+        }
+    }
+
+    /**
+     * @param \Fiber<mixed, mixed, mixed, mixed>|null $fiber
+     * @return list<object|null>
+     */
+    private static function mappingIn(?\Fiber $fiber): array
+    {
+        if ($fiber === null) {
+            return self::$mapping;
+        }
+
+        return self::$mappingByFiber[$fiber] ?? [];
+    }
+
+    /**
+     * @param \Fiber<mixed, mixed, mixed, mixed>|null $fiber
+     * @param list<object|null>                       $mapping
+     */
+    private static function setMappingIn(?\Fiber $fiber, array $mapping): void
+    {
+        if ($fiber === null) {
+            self::$mapping = $mapping;
+
+            return;
+        }
+
+        self::$mappingByFiber ??= new \WeakMap();
+        if ($mapping === []) {
+            unset(self::$mappingByFiber[$fiber]);
+        } else {
+            self::$mappingByFiber[$fiber] = $mapping;
         }
     }
 
