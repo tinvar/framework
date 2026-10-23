@@ -28,6 +28,14 @@ final class ContainerException extends \LogicException
         );
     }
 
+    public static function captive(string $class, string $holder): self
+    {
+        return new self(
+            "{$class} lives for one request, but {$holder} outlives the request and would keep it, carrying "
+            . "one request's state into the next. Take it per request, or give {$class} a longer lifetime.",
+        );
+    }
+
     public static function wrongType(string $abstract, string $built): self
     {
         return new self("The binding for {$abstract} built a {$built}, which is not one.");

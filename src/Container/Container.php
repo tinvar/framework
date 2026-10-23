@@ -38,6 +38,12 @@ final class Container
     /** @var list<string> classes being built, outermost first */
     private array $building = [];
 
+    /** @var list<Lifetime> the lifetime of each class being built */
+    private array $buildingLifetimes = [];
+
+    /** Set while something long-lived -- the Kernel at boot -- is being assembled. */
+    private ?string $longLived = null;
+
     /**
      * Registers an object the container hands out as-is.
      *
@@ -123,12 +129,16 @@ final class Container
             throw ContainerException::cycle($class, $this->building);
         }
 
+        $lifetime = $this->lifetimeOf($class);
+        $this->assertNotCaptive($class, $lifetime);
+
         $this->building[] = $class;
+        $this->buildingLifetimes[] = $lifetime;
         try {
-            $lifetime = $this->lifetimeOf($class);
             $object = isset($this->bindings[$class]) ? ($this->bindings[$class])($this) : $this->build($class);
         } finally {
             array_pop($this->building);
+            array_pop($this->buildingLifetimes);
         }
 
         match ($lifetime) {
@@ -138,6 +148,51 @@ final class Container
         };
 
         return $object;
+    }
+
+    /**
+     * Runs $assemble with request-lived services refused: whatever is built
+     * inside it is kept past the request -- the Kernel's endpoint stacks
+     * are built once at boot -- and a request-lived service captured there
+     * would carry one request's state into every later one.
+     *
+     * @template T
+     * @param \Closure(): T $assemble
+     * @return T
+     */
+    public function longLived(string $holder, \Closure $assemble): mixed
+    {
+        $previous = $this->longLived;
+        $this->longLived = $holder;
+        try {
+            return $assemble();
+        } finally {
+            $this->longLived = $previous;
+        }
+    }
+
+    /**
+     * A request-lived service may not be held by anything that outlives the
+     * request: a Worker-lived object in the graph being built, or the
+     * long-lived assembly in progress. Held, it keeps the instance -- and
+     * the user, tenant or data it was built for -- after endRequest() has
+     * dropped the container's copy.
+     */
+    private function assertNotCaptive(string $class, Lifetime $lifetime): void
+    {
+        if ($lifetime !== Lifetime::Request) {
+            return;
+        }
+
+        if ($this->longLived !== null) {
+            throw ContainerException::captive($class, $this->longLived);
+        }
+
+        foreach ($this->buildingLifetimes as $index => $holder) {
+            if ($holder === Lifetime::Worker) {
+                throw ContainerException::captive($class, $this->building[$index]);
+            }
+        }
     }
 
     /** @param class-string $class */

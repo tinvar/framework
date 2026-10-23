@@ -93,6 +93,31 @@ final class BadInjection
 
 abstract class Shape {}
 
+#[Dependency(Lifetime::Worker)]
+final class CapturesMeter
+{
+    public function __construct(public Meter $meter) {}
+}
+
+final class Middle
+{
+    public function __construct(public Meter $meter) {}
+}
+
+#[Dependency(Lifetime::Worker)]
+final class CapturesThroughMiddle
+{
+    public function __construct(public Middle $middle) {}
+}
+
+#[Dependency(Lifetime::Worker)]
+final class InjectsMeter
+{
+    #[Dependency]
+    public Meter $meter;
+}
+
+
 describe('autowiring', function () {
     it('builds a class from its constructor types, all the way down', function () {
         $page = (new Container())->get(Page::class);
@@ -217,5 +242,36 @@ describe('as the resolver closure', function () {
     it('refuses a name that is not a class', function () {
         expect(fn () => (new Container())->resolver()('No\\Such\\Thing'))
             ->toThrow(ContainerException::class, 'No class No\\Such\\Thing.');
+    });
+});
+
+
+/**
+ * A request-lived service held by something that outlives the request keeps
+ * that request's state -- its user, its tenant, its data -- after
+ * endRequest() has dropped the container's copy.
+ */
+describe('captive dependencies', function () {
+    it('refuses a request service in a worker service', function (string $class) {
+        expect(fn () => (new Container())->get($class))
+            ->toThrow(ContainerException::class, Meter::class . ' lives for one request, but ');
+    })->with([
+        'by constructor' => [CapturesMeter::class],
+        'through a transient in between' => [CapturesThroughMiddle::class],
+        'by property' => [InjectsMeter::class],
+    ]);
+
+    it('refuses a request service while something long-lived is assembled', function () {
+        $container = new Container();
+
+        expect(fn () => $container->longLived('the boot', fn () => $container->get(Meter::class)))
+            ->toThrow(ContainerException::class, 'but the boot outlives the request');
+    });
+
+    it('allows worker and transient services while long-lived things are assembled', function () {
+        $container = new Container();
+
+        expect($container->longLived('the boot', fn () => $container->get(Pool::class)))->toBeInstanceOf(Pool::class)
+            ->and($container->get(Meter::class))->toBeInstanceOf(Meter::class);
     });
 });
