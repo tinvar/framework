@@ -95,7 +95,7 @@ final class RackWindow
     }
 }
 
-#[Query(name: 'racks.boom')]
+#[Query(name: 'racks.boom'), NoAuthorization(reason: 'fixture: exercises a failing body, not access control')]
 final class BoomQuery
 {
     public function __invoke(): never
@@ -105,7 +105,7 @@ final class BoomQuery
 }
 
 /** A batch query that returns the wrong number of results. */
-#[Query(name: 'racks.miscounted')]
+#[Query(name: 'racks.miscounted'), NoAuthorization(reason: 'fixture: exercises a malformed batch result, not access control')]
 final class MiscountedBatch implements BatchQuery
 {
     public function loadMany(array $calls): array

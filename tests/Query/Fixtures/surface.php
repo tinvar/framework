@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Query\Fixtures\Surface;
 
 use Tinvar\Attributes\Authorize;
+use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Query;
 use Tinvar\Query\BatchQuery;
 use Tinvar\Tests\Orm\Fixtures\Rack;
@@ -37,7 +38,7 @@ final class OptionalRackSummary
 final class InertQuery {}
 
 /** A batch query whose body fails. */
-#[Query(name: 'surface.batchBoom')]
+#[Query(name: 'surface.batchBoom'), NoAuthorization(reason: 'fixture: exercises a failing batch, not access control')]
 final class ThrowingBatch implements BatchQuery
 {
     public function loadMany(array $calls): array
@@ -47,7 +48,7 @@ final class ThrowingBatch implements BatchQuery
 }
 
 /** Cached, with no tags to record. */
-#[Query(name: 'surface.untagged', cache: '5m')]
+#[Query(name: 'surface.untagged', cache: '5m'), NoAuthorization(reason: 'fixture: exercises the query cache, not access control')]
 final class UntaggedCachedQuery
 {
     public static int $runs = 0;
@@ -67,7 +68,7 @@ final class UntaggedCachedQuery
     tags: static function (): array {
         return [42];
     },
-)]
+), NoAuthorization(reason: 'fixture: exercises the query cache, not access control')]
 final class MistaggedCachedQuery
 {
     public function __invoke(): RackSummaryData

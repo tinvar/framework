@@ -69,6 +69,16 @@ final class QueryRunner
     }
 
     /**
+     * The #[Middleware] a query declares, for an HTTP call to run around it.
+     *
+     * @return list<class-string<\Tinvar\Http\Middleware>>
+     */
+    public function middlewareFor(string $name): array
+    {
+        return $this->registry->middlewareFor($name);
+    }
+
+    /**
      * @param list<array{id: int, name: string, args: array<string, mixed>}> $calls
      * @param list<string> $allowed per-route query allowlist from the render frame
      * @return list<array{id: int, value?: mixed, error?: array{code: string, digest: string, message?: string}}>

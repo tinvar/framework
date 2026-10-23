@@ -6,6 +6,7 @@ namespace Tinvar\Tests\Auth\Surface;
 
 use Tinvar\Attributes\Action;
 use Tinvar\Attributes\Authorize;
+use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Page;
 use Tinvar\Attributes\PublicAccess;
 use Tinvar\Attributes\Query;
@@ -104,7 +105,7 @@ final class UserReader
 
 abstract class AbstractClock {}
 
-#[Query(name: 'surface.union', cache: '1m', shared: true)]
+#[Query(name: 'surface.union', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
 final class SharedUnionQuery
 {
     public function __construct(private readonly Plain|UserReader $dependency) {}
@@ -115,7 +116,7 @@ final class SharedUnionQuery
     }
 }
 
-#[Query(name: 'surface.untyped', cache: '1m', shared: true)]
+#[Query(name: 'surface.untyped', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
 final class SharedUntypedQuery
 {
     public function __construct(private $untyped = null) {}
@@ -126,7 +127,7 @@ final class SharedUntypedQuery
     }
 }
 
-#[Query(name: 'surface.abstract', cache: '1m', shared: true)]
+#[Query(name: 'surface.abstract', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
 final class SharedAbstractQuery
 {
     public function __construct(private readonly AbstractClock $clock) {}

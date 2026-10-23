@@ -47,6 +47,13 @@ use Tinvar\Validation\FormRequest;
  *     A static entry point has no instance to resolve dependencies on, and the
  *     runners do not call one.
  *
+ *   query-must-declare-authorization
+ *     "Every routable entry point declares its checks with #[Authorize]", and
+ *     a query is routable on its own: POST /_query runs "the query's panel
+ *     stack", never the chain of a page that renders it. A query with no
+ *     model input used to need no check at all, so one meant only for an
+ *     admin page answered any signed-in caller.
+ *
  * The panel-binding rule needs panels, which are a later phase.
  */
 final class BuildRules
@@ -56,6 +63,7 @@ final class BuildRules
     public const string AUTHORIZE_MUST_NAME_A_SUBJECT = 'authorize-must-name-a-subject';
     public const string ENTRY_POINT_MUST_NOT_BE_STATIC = 'entry-point-must-not-be-static';
     public const string SHARED_QUERY_MUST_NOT_READ_THE_USER = 'shared-query-must-not-read-the-user';
+    public const string QUERY_MUST_DECLARE_AUTHORIZATION = 'query-must-declare-authorization';
 
     /**
      * Types a `shared: true` query may not reach by injection, directly or
@@ -119,6 +127,7 @@ final class BuildRules
 
         foreach ($entryPoints as $class) {
             $violations = [...$violations, ...$this->checkEntryPoint($class)];
+            $violations = [...$violations, ...self::checkQueryDeclaresAuthorization($class)];
             $violations = [...$violations, ...self::checkSharedQuery($class)];
         }
 
@@ -376,6 +385,48 @@ final class BuildRules
         }
 
         return array_values($methods);
+    }
+
+    /**
+     * A query says who may call it, whether or not it takes a model.
+     *
+     * The model-input rule cannot catch this: a query with no model input has
+     * nothing for it to demand a check on. Such a query used to borrow its
+     * protection from the page that rendered it -- which /_query never runs,
+     * and whose route the caller names. Declaring a check, or an explicit
+     * #[NoAuthorization] with a reason, is what makes the query safe on the
+     * path where no page is involved.
+     *
+     * @param class-string $class
+     * @return list<Violation>
+     */
+    private static function checkQueryDeclaresAuthorization(string $class): array
+    {
+        $reflection = new \ReflectionClass($class);
+        if ($reflection->getAttributes(Query::class) === []) {
+            return [];
+        }
+
+        $entry = Query::entryMethodOf($class);
+        if (Authorize::declaredOn($class, $entry) !== []) {
+            return [];
+        }
+
+        $exempt = $reflection->getAttributes(NoAuthorization::class) !== []
+            || ($reflection->hasMethod($entry)
+                && $reflection->getMethod($entry)->getAttributes(NoAuthorization::class) !== []);
+        if ($exempt) {
+            return [];
+        }
+
+        return [new Violation(
+            self::QUERY_MUST_DECLARE_AUTHORIZATION,
+            $class,
+            'is a #[Query] with no #[Authorize] and no #[NoAuthorization]. Over /_query it answers any '
+            . "caller whose route lists it, and no page's checks run there. Declare who may call it, as in "
+            . "Authorize('viewAny', Rack::class), or #[NoAuthorization(reason: '...')] if every signed-in "
+            . 'user may.',
+        )];
     }
 
     /**

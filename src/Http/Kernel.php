@@ -232,7 +232,12 @@ final class Kernel
             debug: $debug,
         );
 
-        $this->queries_ = new QueryEndpoint($queryRunner, $allowedQueries);
+        $this->queries_ = new QueryEndpoint(
+            $queryRunner,
+            $allowedQueries,
+            middlewareResolver: self::middlewareFrom($resolver),
+            globalMiddleware: $globalMiddleware,
+        );
 
         // Built once, here, and kept for the worker's life by the endpoint
         // stacks below: a request-lived service resolved into one of them

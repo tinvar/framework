@@ -7,6 +7,7 @@ namespace Tinvar\Tests\Auth\Fixtures\Review;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Column;
 use Tinvar\Attributes\Id;
+use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Page;
 use Tinvar\Attributes\Query;
 use Tinvar\Attributes\Table;
@@ -160,7 +161,7 @@ final class GuardedBatchQuery implements BatchQuery
 
 // --- shared-query build rule ---------------------------------------------
 
-#[Query(name: 'review.sharedClean', cache: '1m', shared: true)]
+#[Query(name: 'review.sharedClean', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
 final class SharedCleanQuery
 {
     public function __invoke(): WattsData
@@ -170,7 +171,7 @@ final class SharedCleanQuery
 }
 
 /** Shared, but the body reads the current user. */
-#[Query(name: 'review.sharedLeaky', cache: '1m', shared: true)]
+#[Query(name: 'review.sharedLeaky', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
 final class SharedLeakyQuery
 {
     public function __construct(private readonly \Tinvar\Auth\AuthContext $auth) {}
@@ -182,7 +183,7 @@ final class SharedLeakyQuery
 }
 
 /** Shared, and escapes tenant scoping. */
-#[Query(name: 'review.sharedUnscoped', cache: '1m', shared: true)]
+#[Query(name: 'review.sharedUnscoped', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
 final class SharedUnscopedQuery
 {
     public function __construct(private readonly \Tinvar\Orm\Orm $orm) {}
@@ -194,7 +195,7 @@ final class SharedUnscopedQuery
 }
 
 /** Reads the user, but is not shared, so the key separates callers. */
-#[Query(name: 'review.perUser', cache: '1m')]
+#[Query(name: 'review.perUser', cache: '1m'), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
 final class PerUserQuery
 {
     public function __construct(private readonly \Tinvar\Auth\AuthContext $auth) {}
@@ -217,7 +218,7 @@ final class Greeter
 }
 
 /** Shared, and reaches the user indirectly. A text grep misses this. */
-#[Query(name: 'review.sharedIndirect', cache: '1m', shared: true)]
+#[Query(name: 'review.sharedIndirect', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
 final class SharedIndirectQuery
 {
     public function __construct(private readonly Greeter $greeter) {}
@@ -234,7 +235,7 @@ interface Clockish
 }
 
 /** Shared, taking an interface: the type walk cannot see what it will be. */
-#[Query(name: 'review.sharedInterface', cache: '1m', shared: true)]
+#[Query(name: 'review.sharedInterface', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
 final class SharedInterfaceQuery
 {
     public function __construct(private readonly Clockish $clock) {}
@@ -246,7 +247,7 @@ final class SharedInterfaceQuery
 }
 
 /** Shared, reaching the user through a container rather than injection. */
-#[Query(name: 'review.sharedContainer', cache: '1m', shared: true)]
+#[Query(name: 'review.sharedContainer', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
 final class SharedContainerQuery
 {
     public function __invoke(): WattsData

@@ -5,10 +5,11 @@ declare(strict_types=1);
 namespace Tinvar\Attributes;
 
 /**
- * Middleware for a page, layout or action.
+ * Middleware for a page, layout, action or query.
  *
  * Repeatable, and applied after any global stack. Middleware is PHP only: the
- * renderer never runs it and never sees a client request.
+ * renderer never runs it and never sees a client request. A query's runs on
+ * an HTTP call to /_query; a render's request context is its page's chain.
  */
 #[\Attribute(\Attribute::TARGET_CLASS | \Attribute::TARGET_METHOD | \Attribute::IS_REPEATABLE)]
 final readonly class Middleware

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Query;
 
 use Tinvar\Attributes\Authorize;
+use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\Query;
 use Tinvar\Auth\BuildRules;
 use Tinvar\Orm\Model;
@@ -26,6 +27,9 @@ final class QueryRegistry
 
     /** @var array<string, list<Authorize>> */
     private array $checks = [];
+
+    /** @var array<string, list<class-string<\Tinvar\Http\Middleware>>> */
+    private array $middleware = [];
 
     /** @var array<string, array<string, bool>> query name => parameter name => required */
     private array $parameters = [];
@@ -86,6 +90,7 @@ final class QueryRegistry
         // to be kept, so a check written on the method passed the build
         // rules and never ran.
         $this->checks[$name] = Authorize::declaredOn($class, Query::entryMethodOf($class));
+        $this->middleware[$name] = Middleware::declaredOn($class, Query::entryMethodOf($class));
         $this->parameters[$name] = self::parametersOf($reflection, $declaration);
         $this->modelArguments[$name] = self::modelArgumentsOf($reflection, $declaration);
 
@@ -121,6 +126,18 @@ final class QueryRegistry
     public function checksFor(string $name): array
     {
         return $this->checks[$name];
+    }
+
+    /**
+     * The #[Middleware] a query declares, on its class and its entry method.
+     * None for a name that is not registered: the runner refuses that name,
+     * and there is nothing to have declared.
+     *
+     * @return list<class-string<\Tinvar\Http\Middleware>>
+     */
+    public function middlewareFor(string $name): array
+    {
+        return $this->middleware[$name] ?? [];
     }
 
     /** @return class-string|null */
