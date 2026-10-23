@@ -136,7 +136,8 @@ final class Binder
             // By type means instanceof: a parameter declared as a base class
             // or interface resolves to whatever the parent actually returned.
             if ($class !== null && (is_subclass_of($class, Data::class) || $class === Data::class)) {
-                $arguments[$name] = self::parentDataOf($class, $parentData, $route);
+                $data = self::parentDataOf($class, $parentData, $route, $parameter);
+                $arguments[$name] = $data ?? ($parameter->isDefaultValueAvailable() ? $parameter->getDefaultValue() : null);
                 continue;
             }
 
@@ -165,10 +166,22 @@ final class Binder
     }
 
     /**
+     * The parent data a loader asks for by type, or null when none was
+     * returned and the parameter says it can do without.
+     *
+     * "Loaders are optional" and a layout loader may return null -- a banner
+     * only while one is scheduled -- so a child declaring `?BannerData
+     * $banner = null` is saying exactly that. Refusing it turned the layout's
+     * quiet day into a 500 on every page under it.
+     *
      * @param array<class-string, Data> $parentData
      */
-    private static function parentDataOf(string $class, array $parentData, CompiledRoute $route): Data
-    {
+    private static function parentDataOf(
+        string $class,
+        array $parentData,
+        CompiledRoute $route,
+        \ReflectionParameter $parameter,
+    ): ?Data {
         if (isset($parentData[$class])) {
             return $parentData[$class];
         }
@@ -187,6 +200,10 @@ final class Binder
                 "{$route->class} asks for {$class}, which matches " . \count($matches)
                 . ' layouts above it. Ask for the exact class instead.',
             );
+        }
+
+        if ($parameter->allowsNull() || $parameter->isDefaultValueAvailable()) {
+            return null;
         }
 
         throw new RoutingException(
