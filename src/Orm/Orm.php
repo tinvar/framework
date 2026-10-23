@@ -414,6 +414,9 @@ final class Orm
     /**
      * @template T of Model
      * @param class-string<T> $class
+     * @param string|null     $orderBy any column the model maps, hidden ones
+     *        included: a caller passing request input allowlists it first
+     *        (see identifier())
      * @return list<T>
      */
     public function all(string $class, ?string $orderBy = null): array
@@ -437,7 +440,12 @@ final class Orm
     /**
      * @template T of Model
      * @param class-string<T> $class
-     * @param list<mixed> $values
+     * @param string          $column  any column the model maps, hidden ones
+     *        included: filtering by request input is an oracle for a hidden
+     *        column as much as sorting is, so a caller allowlists it first
+     *        (see identifier())
+     * @param list<mixed>     $values
+     * @param string|null     $orderBy the same, for the sort
      * @return list<T>
      */
     public function whereIn(string $class, string $column, array $values, ?string $orderBy = null): array
@@ -1048,6 +1056,15 @@ final class Orm
      * tinvar-spec.md, "Identifiers from users": "The query builder rejects
      * identifiers that don't come from compiled metadata, so no one can sort
      * by a hidden column."
+     *
+     * This is the half of that guarantee the builder can give: no identifier
+     * outside the compiled metadata reaches SQL. It cannot tell a column the
+     * page shows from a mapped one no Data class exposes, so it does not stop
+     * a sort by a hidden column on its own. The other half is the caller's:
+     * a sort or filter field from a request is a backed enum or an #[In] list
+     * before it gets here. Nothing in the framework passes request input as
+     * an identifier: its sorts come from #[HasMany], and the columns Exists
+     * and Unique filter by come from their attributes.
      *
      * Two checks, deliberately. Membership is the real one. The shape check
      * behind it means that even a caller passing something from compiled

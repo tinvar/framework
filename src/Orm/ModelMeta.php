@@ -98,9 +98,14 @@ final class ModelMeta
     /**
      * Every column name this model may be queried by.
      *
-     * The query builder refuses anything outside this set, so a sort or filter
-     * field that reached a query from a request cannot name a hidden column --
-     * or inject SQL through the identifier.
+     * The query builder refuses anything outside this set, so an identifier
+     * cannot inject SQL or name a column the model does not map. It is not an
+     * allowlist for request input: every mapped column is in it, including
+     * ones no Data class exposes -- a password hash, an API token -- and
+     * sorting by one of those reveals its order, which is enough to recover
+     * it. A sort or filter field from a request has to be narrowed first, to
+     * a backed enum or an #[In] list of the columns the page shows
+     * (tinvar-spec.md, "Identifiers from users").
      *
      * @return list<string>
      */
