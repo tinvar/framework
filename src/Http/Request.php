@@ -145,8 +145,16 @@ final class Request
             // Control characters are checked again after decoding: the raw
             // check above cannot see %0a, and a decoded newline reaches logs
             // through parameter values.
+            //
+            // A backslash is refused the same way. Browsers treat it as a
+            // separator in http URLs, so "/\evil.example/x" echoed back as a
+            // relative location resolves to https://evil.example/x -- an open
+            // redirect anywhere a path is reflected, which the version check's
+            // X-Location does. Response::assertSameOrigin already refuses it;
+            // the path a request is built from has to agree.
             if ($decoded === '.' || $decoded === '..'
                 || str_contains($decoded, '/')
+                || str_contains($decoded, '\\')
                 || preg_match('/[\x00-\x1f\x7f]/', $decoded) === 1) {
                 // The segment is not interpolated: it is client-controlled and
                 // this message reaches logs.

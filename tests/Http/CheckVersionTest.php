@@ -102,3 +102,13 @@ describe('what is never refused for its version', function () {
         expect(versioned()->handle($request, passes())->status)->toBe(200);
     });
 });
+
+/**
+ * "/\evil.example/x" echoed back as a relative X-Location resolves to
+ * https://evil.example/x in a browser. The path is refused before it can be
+ * reflected, as Response::assertSameOrigin already refuses it on redirects.
+ */
+it('never reflects a backslash path into X-Location', function (string $path) {
+    expect(fn () => Request::get($path, ['RSC' => '1', 'X-Version' => 'b1']))
+        ->toThrow(Tinvar\Http\NotFoundException::class);
+})->with(['/\\evil.example/x', '/%5Cevil.example/x', '/racks/a\\b']);
