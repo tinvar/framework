@@ -32,19 +32,29 @@ final class ApcuThrottleStore implements ThrottleStore
     /** @var \Closure(string, int, int): (int|false) increment a key, with a TTL, and return the new value */
     private readonly \Closure $inc;
 
+    /** @var \Closure(string): mixed a key's value, or false when there is none */
+    private readonly \Closure $fetch;
+
+    /** @var \Closure(string, int, int): bool replace a key's value only if it is still the one read */
+    private readonly \Closure $cas;
+
     /**
      * @param string $prefix  set apart from anything else the application keeps in APCu
      * @param (\Closure(): int)|null $clock for tests; defaults to time()
      * @param (\Closure(string, int, int): bool)|null $add for tests; defaults to apcu_add()
      * @param (\Closure(string, int, int): (int|false))|null $inc for tests; defaults to apcu_inc()
+     * @param (\Closure(string): mixed)|null $fetch for tests; defaults to apcu_fetch()
+     * @param (\Closure(string, int, int): bool)|null $cas for tests; defaults to apcu_cas()
      */
     public function __construct(
         private readonly string $prefix = 'tinvar:throttle:',
         private readonly ?\Closure $clock = null,
         ?\Closure $add = null,
         ?\Closure $inc = null,
+        ?\Closure $fetch = null,
+        ?\Closure $cas = null,
     ) {
-        if (($add === null || $inc === null) && !self::available()) {
+        if (($add === null || $inc === null || $fetch === null || $cas === null) && !self::available()) {
             throw new \RuntimeException(
                 'APCu is not available: load the apcu extension, and set apc.enable_cli=1 to use it from the CLI.',
             );
@@ -56,6 +66,8 @@ final class ApcuThrottleStore implements ThrottleStore
 
             return apcu_inc($key, $step, $success, $ttl);
         };
+        $this->fetch = $fetch ?? static fn (string $key): mixed => apcu_fetch($key);
+        $this->cas = $cas ?? static fn (string $key, int $old, int $new): bool => apcu_cas($key, $old, $new);
     }
 
     /** Whether APCu is loaded and enabled in this SAPI. */
@@ -67,12 +79,7 @@ final class ApcuThrottleStore implements ThrottleStore
     public function increment(string $key, int $window): array
     {
         $window = max(1, $window);
-        $now = $this->clock === null ? time() : ($this->clock)();
-        $start = intdiv($now, $window) * $window;
-
-        // Hashed: a key is built from caller identity and can be long, and
-        // APCu's entry names are not where addresses should be listed.
-        $entry = $this->prefix . hash('xxh128', $key) . ':' . $window . ':' . $start;
+        [$entry, $start] = $this->entry($key, $window);
 
         // A second past the window, so the entry outlives every hit counted
         // in it; after that it is garbage APCu collects on its own.
@@ -92,5 +99,41 @@ final class ApcuThrottleStore implements ThrottleStore
         // the operator sees, where answering "allowed" would be a limit that
         // quietly stopped existing.
         throw new \RuntimeException('APCu would not count a throttle hit; it may be full or disabled.');
+    }
+
+    public function release(string $key, int $window, int $hits = 1): void
+    {
+        [$entry] = $this->entry($key, max(1, $window));
+
+        // Compare-and-swap rather than apcu_dec: a decrement creates an
+        // entry that is not there, which would open a window at -1 -- a
+        // spare hit for whoever comes next. Retried while other requests
+        // move the count under it; if it never holds still, the hits stay
+        // counted, which errs on the side of the limit.
+        for ($attempt = 0; $attempt < 16; $attempt++) {
+            $count = ($this->fetch)($entry);
+            if (!\is_int($count) || $count <= 0) {
+                return;
+            }
+            if (($this->cas)($entry, $count, max(0, $count - max(0, $hits)))) {
+                return;
+            }
+        }
+    }
+
+    /**
+     * The APCu entry counting a key's current window, and when that window
+     * started.
+     *
+     * @return array{string, int}
+     */
+    private function entry(string $key, int $window): array
+    {
+        $now = $this->clock === null ? time() : ($this->clock)();
+        $start = intdiv($now, $window) * $window;
+
+        // Hashed: a key is built from caller identity and can be long, and
+        // APCu's entry names are not where addresses should be listed.
+        return [$this->prefix . hash('xxh128', $key) . ':' . $window . ':' . $start, $start];
     }
 }

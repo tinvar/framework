@@ -55,9 +55,34 @@ final class FakeApcu
         };
     }
 
+    public function fetch(): \Closure
+    {
+        return fn (string $key): int|false => isset($this->entries[$key]) && $this->entries[$key]['expires'] > $this->now
+            ? $this->entries[$key]['value']
+            : false;
+    }
+
+    public function cas(): \Closure
+    {
+        return function (string $key, int $old, int $new): bool {
+            if (($this->fetch())($key) !== $old) {
+                return false;
+            }
+            $this->entries[$key]['value'] = $new;
+
+            return true;
+        };
+    }
+
     public function store(): ApcuThrottleStore
     {
-        return new ApcuThrottleStore(clock: fn (): int => $this->now, add: $this->add(), inc: $this->inc());
+        return new ApcuThrottleStore(
+            clock: fn (): int => $this->now,
+            add: $this->add(),
+            inc: $this->inc(),
+            fetch: $this->fetch(),
+            cas: $this->cas(),
+        );
     }
 }
 
@@ -149,11 +174,51 @@ it('answers the throttle store contract as the array store does', function (Thro
     })()],
 ]);
 
+// A budget that counts only failures counts every attempt first and takes
+// back the ones that succeeded.
+it('takes back hits in the current window, never below zero', function (ThrottleStore $store) {
+    $store->increment('released', 60);
+    $store->increment('released', 60);
+    $store->increment('released', 60);
+    $store->release('released', 60);
+
+    expect($store->increment('released', 60)[0])->toBe(3);
+
+    $store->release('released', 60, PHP_INT_MAX);
+    expect($store->increment('released', 60)[0])->toBe(1, 'cleared');
+
+    $store->release('never-counted', 60);
+    expect($store->increment('never-counted', 60)[0])->toBe(1, 'no window was opened below zero');
+})->with([
+    'array' => [fn (): ThrottleStore => new ArrayThrottleStore()],
+    'apcu, in memory' => [fn (): ThrottleStore => (static function (): ApcuThrottleStore {
+        $apcu = new FakeApcu();
+        $apcu->now = time();
+
+        return $apcu->store();
+    })()],
+]);
+
+it('takes nothing back from a window that has passed', function () {
+    $apcu = new FakeApcu();
+    $store = $apcu->store();
+
+    $store->increment('k', 60);
+    $apcu->now += 60;
+    $store->release('k', 60);
+
+    expect($store->increment('k', 60)[0])->toBe(1)
+        ->and($store->increment('k', 60)[0])->toBe(2);
+});
+
 describe('against APCu itself', function () {
     it('counts with real atomic increments', function () {
         $store = new ApcuThrottleStore('tinvar:test:' . bin2hex(random_bytes(4)) . ':');
 
         expect($store->increment('k', 60)[0])->toBe(1)
             ->and($store->increment('k', 60)[0])->toBe(2);
+
+        $store->release('k', 60);
+        expect($store->increment('k', 60)[0])->toBe(2);
     });
 })->skip(!ApcuThrottleStore::available(), 'APCu is not loaded (or apc.enable_cli is off) in this PHP.');

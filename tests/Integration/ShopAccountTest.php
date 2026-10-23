@@ -30,7 +30,8 @@ final class Visitor
     /** @var array<string, string> */
     public array $cookies = [];
 
-    public function __construct(public readonly Kernel $kernel) {}
+    /** @param string $address where this visitor connects from */
+    public function __construct(public readonly Kernel $kernel, public readonly string $address = '127.0.0.1') {}
 
     public function get(string $url): Response
     {
@@ -38,7 +39,7 @@ final class Visitor
         parse_str((string) $query, $parsed);
 
         return $this->keep($this->kernel->handle(
-            new Request('GET', $path, ['accept' => 'text/html'], $parsed, [], $this->cookies, $query, '127.0.0.1'),
+            new Request('GET', $path, ['accept' => 'text/html'], $parsed, [], $this->cookies, $query, $this->address),
         ));
     }
 
@@ -60,7 +61,7 @@ final class Visitor
                 [],
                 [...$this->cookies, '__Host-XSRF-TOKEN' => $token],
                 null,
-                '127.0.0.1',
+                $this->address,
             ),
             json_encode($body, JSON_THROW_ON_ERROR),
         ));
@@ -216,6 +217,95 @@ it('pauses sign-in for an account after too many attempts, and says how long for
     expect($refused->status)->toBe(429)
         ->and((int) $refused->header('retry-after'))->toBeGreaterThan(0)
         ->and(json_decode($refused->body(), true)['error']['code'])->toBe('too_many_attempts');
+});
+
+// Every attempt used to count, from anywhere: ten wrong guesses by someone
+// who knew only an email address kept its owner out for fifteen minutes.
+it('does not let wrong guesses from one address keep the account\'s owner out from another', function () {
+    [$attacker] = shop();
+    $owner = new Visitor($attacker->kernel, '203.0.113.9');
+    $attacker->get('/sign-in');
+    $owner->get('/sign-in');
+
+    for ($i = 0; $i < SignInThrottle::PER_ACCOUNT; $i++) {
+        signIn($attacker, 'wrong');
+    }
+
+    expect(signIn($attacker)->status)->toBe(429, 'the guessing address is paused')
+        ->and(signIn($owner)->status)->toBe(200, 'the owner, elsewhere, is not');
+});
+
+// One subscriber is handed a whole /64, so it is one address here as it is
+// to the throttle.
+it('counts an IPv6 guesser\'s failures by its /64', function () {
+    [$visitor] = shop();
+    $guesser = new Visitor($visitor->kernel, '2001:db8:0:1::1');
+    $neighbour = new Visitor($visitor->kernel, '2001:db8:0:1::2');
+    $elsewhere = new Visitor($visitor->kernel, '2001:db8:0:2::1');
+    foreach ([$guesser, $neighbour, $elsewhere] as $visitor) {
+        $visitor->get('/sign-in');
+    }
+
+    for ($i = 0; $i < SignInThrottle::PER_ACCOUNT; $i++) {
+        signIn($guesser, 'wrong');
+    }
+
+    expect(signIn($neighbour)->status)->toBe(429)
+        ->and(signIn($elsewhere)->status)->toBe(200);
+});
+
+it('counts only failures, so signing in often never pauses anyone', function () {
+    [$visitor] = shop();
+    $visitor->get('/sign-in');
+
+    $statuses = [];
+    for ($i = 0; $i <= SignInThrottle::PER_ACCOUNT; $i++) {
+        $statuses[] = signIn($visitor)->status;
+    }
+
+    expect(array_unique($statuses))->toBe([200]);
+});
+
+it('clears an address\'s failures on an account when it signs in', function () {
+    [$visitor] = shop();
+    $visitor->get('/sign-in');
+
+    for ($round = 0; $round < 2; $round++) {
+        for ($i = 1; $i < SignInThrottle::PER_ACCOUNT; $i++) {
+            expect(signIn($visitor, 'wrong')->status)->toBe(422);
+        }
+        expect(signIn($visitor)->status)->toBe(200, "round {$round}");
+    }
+});
+
+// The per-address budget alone would let a guesser with many addresses try
+// ten passwords from each; the ceiling across all of them bounds that.
+it('pauses an account for everyone once guesses from many addresses reach its ceiling', function () {
+    [$visitor] = shop();
+    $kernel = $visitor->kernel;
+    $from = static function (int $n) use ($kernel): Visitor {
+        $visitor = new Visitor($kernel, "198.51.100.{$n}");
+        $visitor->get('/sign-in');
+
+        return $visitor;
+    };
+    $addresses = intdiv(SignInThrottle::ACCOUNT_CEILING, SignInThrottle::PER_ACCOUNT);
+
+    for ($n = 1; $n < $addresses; $n++) {
+        $guesser = $from($n);
+        for ($i = 0; $i < SignInThrottle::PER_ACCOUNT; $i++) {
+            signIn($guesser, 'wrong');
+        }
+    }
+    $before = signIn($from(200))->status;
+
+    $last = $from($addresses);
+    for ($i = 0; $i < SignInThrottle::PER_ACCOUNT; $i++) {
+        signIn($last, 'wrong');
+    }
+
+    expect($before)->toBe(200, 'below the ceiling')
+        ->and(signIn($from(201))->status)->toBe(429, 'at it, from an address that never guessed');
 });
 
 it('signs out under a new, signed-out session, and the old one stops working', function () {

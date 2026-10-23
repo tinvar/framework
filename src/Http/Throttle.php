@@ -151,8 +151,11 @@ final class Throttle
      * unless the proxy count is pinned. An attacker-chosen address is an
      * infinite supply of buckets, which is the same fail-open by another
      * route.
+     *
+     * Public so a budget the application keeps itself -- one keyed by an
+     * account AND an address -- names the caller as these do.
      */
-    private function addressFor(Request $request): string
+    public function addressFor(Request $request): string
     {
         $address = ($this->addressOf)($request);
         if ($address === '') {

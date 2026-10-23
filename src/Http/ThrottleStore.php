@@ -25,4 +25,19 @@ interface ThrottleStore
      *         window resets as a unix timestamp
      */
     public function increment(string $key, int $window): array;
+
+    /**
+     * Takes back hits counted against a key in its current window.
+     *
+     * For a budget that counts only some outcomes -- a sign-in counts its
+     * failures. Whether an attempt fails is known only after it ran, and
+     * checking a count before running would let concurrent attempts all
+     * pass a check none of them had counted yet; so an attempt is counted
+     * first, atomically, and taken back here once it turns out not to count.
+     *
+     * Never below zero, and never a window of its own: taking back from a
+     * window that has passed, or was never started, does nothing. Pass
+     * PHP_INT_MAX to clear the key's window.
+     */
+    public function release(string $key, int $window, int $hits = 1): void;
 }

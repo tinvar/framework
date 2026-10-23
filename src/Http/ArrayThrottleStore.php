@@ -61,6 +61,17 @@ final class ArrayThrottleStore implements ThrottleStore
         return [$current['count'], $current['resetsAt']];
     }
 
+    public function release(string $key, int $window, int $hits = 1): void
+    {
+        $now = $this->clock === null ? time() : ($this->clock)();
+        $current = $this->windows[$key] ?? null;
+        if ($current === null || $current['resetsAt'] <= $now) {
+            return;
+        }
+
+        $this->windows[$key]['count'] = max(0, $current['count'] - max(0, $hits));
+    }
+
     /** Clears every window. Request teardown has no business calling this. */
     public function flush(): void
     {
