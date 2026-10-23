@@ -70,7 +70,8 @@ it('creates the key file private even under a permissive umask', function () {
 it('leaves no temporary file behind', function () {
     AppKey::resolve('TINVAR_TEST_KEY', $this->file);
 
-    expect(glob($this->dir . '/.*.key.*') ?: [])->toBe([]);
+    $leftovers = array_filter(glob($this->dir . '/.*.key.*') ?: [], static fn (string $f): bool => !str_ends_with($f, '.lock'));
+    expect($leftovers)->toBe([]);
 });
 
 // Never replaced silently: a new key would invalidate every token in flight.
@@ -116,4 +117,67 @@ describe('a key file it cannot trust', function () {
         unlink($this->file);
         unlink($target);
     });
+});
+
+// The same key text in either place is the same key: moving it from the
+// file to the environment must not change what signs.
+it('reads a key the same from the environment and from the file', function () {
+    $key = base64_encode(random_bytes(32));
+    putenv("TINVAR_TEST_KEY=\u{FEFF}{$key}\r\n");
+    $fromEnv = AppKey::resolve('TINVAR_TEST_KEY', $this->file);
+    putenv('TINVAR_TEST_KEY');
+
+    mkdir($this->dir, 0700);
+    file_put_contents($this->file, "\u{FEFF}{$key}\n");
+    chmod($this->file, 0600);
+
+    expect($fromEnv)->toBe($key)
+        ->and(AppKey::resolve('TINVAR_TEST_KEY', $this->file))->toBe($key);
+});
+
+it('names an unreadable key file rather than warning and generating', function () {
+    mkdir($this->dir, 0700);
+    file_put_contents($this->file, str_repeat('w', 44));
+    chmod($this->file, 0000);
+
+    try {
+        expect(fn () => AppKey::resolve('TINVAR_TEST_KEY', $this->file))->toThrow(RuntimeException::class);
+    } finally {
+        chmod($this->file, 0600);
+    }
+})->skip(fn () => function_exists('posix_geteuid') && posix_geteuid() === 0, 'root reads anything');
+
+it('clears temporary key files a crash left behind', function () {
+    mkdir($this->dir, 0700);
+    $stale = $this->dir . '/.app.key.deadbeef';
+    file_put_contents($stale, 'old');
+    touch($stale, time() - 3600);
+
+    AppKey::resolve('TINVAR_TEST_KEY', $this->file);
+
+    expect(file_exists($stale))->toBeFalse();
+});
+
+// Several processes starting at once must all end up with one key.
+it('gives concurrent first starts one key between them', function () {
+    $autoload = dirname(__DIR__, 4) . '/vendor/autoload.php';
+    $script = sprintf(
+        'require %s; echo Tinvar\\Support\\AppKey::resolve("TINVAR_UNSET_KEY", %s);',
+        var_export($autoload, true),
+        var_export($this->file, true),
+    );
+
+    $processes = [];
+    for ($i = 0; $i < 8; $i++) {
+        $processes[] = proc_open([PHP_BINARY, '-r', $script], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        $outputs[$i] = $pipes;
+    }
+    $keys = [];
+    foreach ($processes as $i => $process) {
+        $keys[] = stream_get_contents($outputs[$i][1]);
+        proc_close($process);
+    }
+
+    expect(array_unique($keys))->toHaveCount(1)
+        ->and($keys[0])->toBe(trim((string) file_get_contents($this->file)));
 });

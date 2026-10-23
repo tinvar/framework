@@ -34,8 +34,8 @@ final class AppKey
     public static function resolve(string $envName, string $file): string
     {
         $fromEnv = getenv($envName);
-        if (\is_string($fromEnv) && $fromEnv !== '') {
-            return self::checked($fromEnv, "\${$envName}");
+        if (\is_string($fromEnv) && self::normalised($fromEnv) !== '') {
+            return self::checked(self::normalised($fromEnv), "\${$envName}");
         }
 
         self::assertTrusted($file);
@@ -54,28 +54,82 @@ final class AppKey
         if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
             throw new \RuntimeException("Cannot create {$dir} to store the application key.");
         }
+        self::assertTrusted($file);
 
-        $key = base64_encode(random_bytes(self::BYTES));
+        // One process generates at a time; the rest wait and then read what
+        // it wrote. A lock, not link(): link() fails outright on filesystems
+        // without hard links -- FAT, exFAT, some network and container
+        // mounts -- and every start there failed.
+        $lock = self::openPrivately($dir . '/.' . basename($file) . '.lock', 'c');
+        try {
+            if (!flock($lock, LOCK_EX)) {
+                throw new \RuntimeException("Cannot lock {$dir} to generate the application key.");
+            }
 
-        // Written in full under a private name, then linked into place.
-        // link() fails if the target exists, so of two processes generating
-        // at once exactly one key wins, and the other -- finding the file
-        // there -- reads that one rather than signing with its own. A plain
-        // write could leave a reader seeing a half-written file.
-        $temporary = $dir . '/.' . basename($file) . '.' . bin2hex(random_bytes(6));
-        self::writePrivately($temporary, $key . "\n");
+            $existing = self::read($file);
+            if ($existing !== null) {
+                return self::checked($existing, $file);
+            }
 
-        $won = @link($temporary, $file);
-        unlink($temporary);
+            self::sweepTemporaries($dir, basename($file));
 
-        if ($won) {
+            $key = base64_encode(random_bytes(self::BYTES));
+
+            // Written in full under a private name, flushed to disk, then
+            // renamed into place: a reader never sees a half-written file,
+            // and a power cut cannot leave an empty one in its place.
+            $temporary = $dir . '/.' . basename($file) . '.' . bin2hex(random_bytes(6));
+            self::writePrivately($temporary, $key . "\n");
+            if (!rename($temporary, $file)) {
+                @unlink($temporary);
+                throw new \RuntimeException("Cannot move the application key into {$file}.");
+            }
+
             return $key;
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
+
+    /**
+     * Temporary key files a crash left behind, older than a minute. Each
+     * holds a key, so they are not left to accumulate.
+     */
+    private static function sweepTemporaries(string $dir, string $name): void
+    {
+        foreach (glob($dir . '/.' . $name . '.*') ?: [] as $leftover) {
+            if (str_ends_with($leftover, '.lock')) {
+                continue;
+            }
+            $modified = @filemtime($leftover);
+            if ($modified !== false && $modified < time() - 60) {
+                @unlink($leftover);
+            }
+        }
+    }
+
+    /**
+     * Opens a file created private from its first byte -- under a 0077
+     * umask, so it is never readable by others, not even for an instant.
+     *
+     * @param 'x'|'c' $mode exclusive create, or create-or-open
+     * @return resource
+     */
+    private static function openPrivately(string $path, string $mode)
+    {
+        $previous = umask(0077);
+        try {
+            $handle = @fopen($path, $mode);
+        } finally {
+            umask($previous);
         }
 
-        $winner = self::read($file)
-            ?? throw new \RuntimeException("Cannot read the application key from {$file}.");
+        if ($handle === false) {
+            throw new \RuntimeException("Cannot create {$path} for the application key.");
+        }
 
-        return self::checked($winner, $file);
+        return $handle;
     }
 
     /**
@@ -87,22 +141,13 @@ final class AppKey
      */
     private static function writePrivately(string $path, string $contents): void
     {
-        $previous = umask(0077);
-        try {
-            $handle = @fopen($path, 'x');
-        } finally {
-            umask($previous);
-        }
-
-        if ($handle === false) {
-            throw new \RuntimeException("Cannot create {$path} for the application key.");
-        }
+        $handle = self::openPrivately($path, 'x');
 
         try {
             if (!chmod($path, 0600) || (fileperms($path) & 0077) !== 0) {
                 throw new \RuntimeException("Cannot make {$path} private; refusing to write the application key into it.");
             }
-            if (fwrite($handle, $contents) !== \strlen($contents)) {
+            if (fwrite($handle, $contents) !== \strlen($contents) || !fflush($handle) || !fsync($handle)) {
                 throw new \RuntimeException("Cannot write the application key to {$path}.");
             }
         } catch (\Throwable $e) {
@@ -158,13 +203,31 @@ final class AppKey
 
     private static function read(string $file): ?string
     {
+        clearstatcache(true, $file);
         if (!is_file($file)) {
             return null;
         }
 
-        $contents = file_get_contents($file);
+        // There but unreadable is an error to name, not a cue to generate:
+        // generating would only fail at the same place, after a PHP warning
+        // that under the CLI server lands in the response.
+        $contents = is_readable($file) ? @file_get_contents($file) : false;
+        if ($contents === false) {
+            throw new \RuntimeException("Cannot read the application key from {$file}.");
+        }
 
-        return $contents === false ? null : trim($contents);
+        return self::normalised($contents);
+    }
+
+    /**
+     * The key without surrounding whitespace or a byte-order mark, whichever
+     * source it came from. Treated differently, moving a key from the file
+     * to the environment -- a docker env file, a mounted secret -- changed
+     * the signing key and invalidated every token in flight.
+     */
+    private static function normalised(string $key): string
+    {
+        return trim(str_starts_with($key, "\u{FEFF}") ? substr($key, 3) : $key);
     }
 
     /**
@@ -177,7 +240,8 @@ final class AppKey
     {
         if (\strlen($key) < self::MIN_LENGTH) {
             throw new \InvalidArgumentException(
-                "The application key from {$source} must be at least " . self::MIN_LENGTH . ' bytes.',
+                "The application key from {$source} must be at least " . self::MIN_LENGTH . ' bytes'
+                . ($source[0] === '$' ? '.' : '; delete the file to have a new one generated.'),
             );
         }
 
