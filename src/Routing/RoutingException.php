@@ -86,6 +86,14 @@ final class RoutingException extends \RuntimeException
         );
     }
 
+    public static function unfillableParameter(string $class, string $template, string $parameter, string $type): self
+    {
+        return new self(
+            "{$class}::__invoke() requires {$type} \${$parameter}, which only the path could fill, and '{$template}' "
+            . "has no {{$parameter}} segment. Add one to the template, or make the parameter optional.",
+        );
+    }
+
     public static function unknownName(string $name): self
     {
         return new self("No route is named '{$name}'.");

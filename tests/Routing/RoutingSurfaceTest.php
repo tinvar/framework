@@ -270,11 +270,11 @@ describe('route model binding', function () {
             ->and($loaded->models['rack'])->toBe(Seen::$models['page']);
     });
 
+    // Refused at registration now, from the layout's own template, rather
+    // than on the first request under it (see UnfillableParametersTest).
     it('refuses a required model that no path under the layout carries', function () {
-        [$router] = surfaceRouter([RequiredModelLayout::class, RequiredModelPage::class]);
-
-        expect(fn () => surfaceLoad($router, '/needs/page'))
-            ->toThrow(RoutingException::class, "Route '/needs' needs a 'rack' parameter");
+        expect(fn () => surfaceRouter([RequiredModelLayout::class, RequiredModelPage::class]))
+            ->toThrow(RoutingException::class, "'/needs' has no {rack} segment");
     });
 
     it('hands a nullable model with no default null when the path does not carry it', function () {
@@ -288,12 +288,14 @@ describe('route model binding', function () {
 
     // The runner always resolves the chain first, so this is the binder's own
     // guard for a caller that skipped that step.
+    // A route whose template carries the model, since one that does not is
+    // now refused at registration and never reaches the binder.
     it('refuses to bind a required model nobody resolved', function () {
         $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
         $binder = new Binder(new Orm($fixture->connection, new IdentityMap('test')));
-        $route = (new RouteRegistry())->register(RequiredModelLayout::class);
+        $route = (new RouteRegistry())->register(SharedRackLayout::class);
 
-        expect(fn () => $binder->argumentsFor($route, [], [], Request::get('/needs')))
+        expect(fn () => $binder->argumentsFor($route, [], [], Request::get('/shared/x')))
             ->toThrow(RoutingException::class, "needs a 'rack' parameter");
     });
 });
@@ -311,11 +313,11 @@ describe('binding loader arguments', function () {
         expect(surfacePageValue($router, '/defaulted'))->toBe('full');
     });
 
+    // Refused at registration now: the template has no segment for it, so
+    // no request could ever fill it.
     it('refuses a parameter that is neither in the path, a model, layout data nor the request', function () {
-        [$router] = surfaceRouter([UnboundPage::class]);
-
-        expect(fn () => surfaceLoad($router, '/unbound'))
-            ->toThrow(RoutingException::class, 'Cannot bind $missing on ' . UnboundPage::class);
+        expect(fn () => surfaceRouter([UnboundPage::class]))
+            ->toThrow(RoutingException::class, 'requires string $missing');
     });
 
     it('passes an untyped path parameter through as the raw string', function () {

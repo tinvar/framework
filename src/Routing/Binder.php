@@ -217,14 +217,26 @@ final class Binder
      *
      * Checked at registration: left to runtime this surfaces as a TypeError
      * from deep inside the loader call, on the first request to that route.
+     *
+     * That includes a parameter of a bindable type that only the path can
+     * fill and the route's template does not carry: `/racks` taking `Rack
+     * $rack`, or `/units` taking `int $limit`. Judged against the route's
+     * OWN template, for a layout too: a layout runs under every page below
+     * it, so a model only some of them carry is optional -- `?Site $site =
+     * null`, which the binder already hands null -- not required.
      */
     public static function assertBindable(CompiledRoute $route): void
     {
         foreach (self::loaderParameters($route->class) as $parameter) {
             $type = $parameter->getType();
 
-            if ($type === null || $parameter->isDefaultValueAvailable()) {
-                continue;   // untyped or defaulted: the binder has an answer
+            if ($parameter->isDefaultValueAvailable()) {
+                continue;   // defaulted: the binder has an answer
+            }
+
+            if ($type === null || ($type instanceof \ReflectionNamedType && $type->getName() === 'mixed')) {
+                self::assertCarried($route, $parameter, $type === null ? 'untyped' : 'mixed');
+                continue;
             }
 
             if (!$type instanceof \ReflectionNamedType) {
@@ -242,12 +254,36 @@ final class Binder
                 if (!$bindable) {
                     throw RoutingException::unbindableParameter($route->class, $parameter->getName(), $name);
                 }
+
+                // A nullable model is handed null when the path lacks it; an
+                // enum, like a scalar, has nothing but the path to come from.
+                if (is_subclass_of($name, Model::class) && !$type->allowsNull()) {
+                    self::assertCarried($route, $parameter, $name);
+                }
+                if (is_subclass_of($name, \BackedEnum::class)) {
+                    self::assertCarried($route, $parameter, $name);
+                }
                 continue;
             }
 
-            if (!\in_array($name, ['string', 'int', 'float', 'bool', 'mixed'], true)) {
+            if (!\in_array($name, ['string', 'int', 'float', 'bool'], true)) {
                 throw RoutingException::unbindableParameter($route->class, $parameter->getName(), $name);
             }
+
+            self::assertCarried($route, $parameter, $name);
+        }
+    }
+
+    /** Refuses a parameter only the path could fill, when the template has no segment for it. */
+    private static function assertCarried(CompiledRoute $route, \ReflectionParameter $parameter, string $type): void
+    {
+        if (!\in_array($parameter->getName(), $route->parameters, true)) {
+            throw RoutingException::unfillableParameter(
+                $route->class,
+                $route->template,
+                $parameter->getName(),
+                $type,
+            );
         }
     }
 
