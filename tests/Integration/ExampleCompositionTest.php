@@ -134,6 +134,7 @@ it('generates the app key into the user state directory, outside the project', f
             putenv($value === false ? $name : "{$name}={$value}");
         }
         @unlink("{$home}/.local/state/tinvar/racks.key");
+        @unlink("{$home}/.local/state/tinvar/.racks.key.lock");
         @rmdir("{$home}/.local/state/tinvar");
         @rmdir("{$home}/.local/state");
         @rmdir("{$home}/.local");
