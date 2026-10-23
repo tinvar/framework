@@ -108,12 +108,15 @@ function served(string $root, \Closure $drive): void
         proc_terminate($server);
         proc_close($server);
         $renderer->stop();
-
-        // Generated, and kept for the run: every request read this one.
-        expect(is_file($keyFile))->toBeTrue('no application key was generated');
-        unlink($keyFile);
-        rmdir(\dirname($keyFile));
+        $generated = is_file($keyFile);
+        @unlink($keyFile);
+        @unlink(\dirname($keyFile) . '/.app.key.lock');
+        @rmdir(\dirname($keyFile));
     }
+
+    // After the finally, so a failure above is reported as itself rather
+    // than as a missing key.
+    expect($generated)->toBeTrue('no application key was generated');
 }
 
 it('navigates between racks in place, through the RSC payload', function () use ($root) {
