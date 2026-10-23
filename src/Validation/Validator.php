@@ -7,6 +7,7 @@ namespace Tinvar\Validation;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
+use Tinvar\Support\Str;
 
 /**
  * Builds a FormRequest from raw input, or throws with every error at once.
@@ -284,12 +285,11 @@ final class Validator
         if (\is_int($raw)) {
             return $raw;
         }
-        // Deliberately strict: '12abc', '1e3' and ' 12' are not integers.
-        if (\is_string($raw) && preg_match('/^-?\d+\z/', $raw) === 1) {
-            return (int) $raw;
-        }
+        // Deliberately strict: '12abc', '1e3' and ' 12' are not integers, and
+        // neither is one too long for an int, which a cast clamps to its end.
+        $int = \is_string($raw) ? Str::wholeNumber($raw) : null;
 
-        throw new CoercionFailed("{$field} must be a whole number.");
+        return $int ?? throw new CoercionFailed("{$field} must be a whole number.");
     }
 
     /** As strict as toInt: '1e3' and ' 12' are not numbers a form should send. */
@@ -327,7 +327,7 @@ final class Validator
         // array became 'Array' with a warning and true became '1'.
         $value = match (true) {
             $intBacked && \is_int($raw) => $raw,
-            $intBacked && \is_string($raw) && preg_match('/^-?\d+\z/', $raw) === 1 => (int) $raw,
+            $intBacked && \is_string($raw) => Str::wholeNumber($raw),
             !$intBacked && \is_string($raw) => $raw,
             !$intBacked && \is_int($raw) => (string) $raw,
             default => null,

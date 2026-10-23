@@ -16,6 +16,28 @@ final class Str
         );
     }
 
+    /**
+     * The int a string spells, or null if it spells none: digits with an
+     * optional minus sign and nothing else -- no padding, no plus, no
+     * exponent -- and within PHP's int range.
+     *
+     * The range is the part a shape check misses. (int) clamps, so an
+     * over-long number became PHP_INT_MAX or PHP_INT_MIN: a value nobody
+     * sent, and one that clears any Min or Max on the side it lands on.
+     * FILTER_VALIDATE_INT refuses it instead. It also refuses leading zeros,
+     * which are stripped first, because '007' has always meant 7 here.
+     */
+    public static function wholeNumber(string $value): ?int
+    {
+        if (preg_match('/^-?\d+\z/', $value) !== 1) {
+            return null;
+        }
+
+        $int = filter_var(preg_replace('/^(-?)0+(?=\d)/', '$1', $value), FILTER_VALIDATE_INT);
+
+        return \is_int($int) ? $int : null;
+    }
+
     /** @param class-string $class */
     public static function shortName(string $class): string
     {

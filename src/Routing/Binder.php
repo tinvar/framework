@@ -9,6 +9,7 @@ use Tinvar\Http\NotFoundException;
 use Tinvar\Http\Request;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
+use Tinvar\Support\Str;
 
 /**
  * Route model binding, resolved through the identity map.
@@ -308,11 +309,8 @@ final class Binder
     private static function toInt(string $value): int
     {
         // A non-integer where an int is declared is a path that does not exist,
-        // not a server error.
-        if (preg_match('/^-?\d+\z/', $value) !== 1) {
-            throw new NotFoundException('Path segment is not an integer.');
-        }
-
-        return (int) $value;
+        // not a server error. So is one too long for an int: a cast clamped it
+        // to PHP_INT_MAX or PHP_INT_MIN, a value the path never named.
+        return Str::wholeNumber($value) ?? throw new NotFoundException('Path segment is not an integer.');
     }
 }
