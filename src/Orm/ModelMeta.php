@@ -120,9 +120,4 @@ final class ModelMeta
 
         return $known;
     }
-
-    public function relation(string $property): ?RelationMeta
-    {
-        return $this->relations[$property] ?? null;
-    }
 }

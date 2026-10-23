@@ -28,11 +28,6 @@ final class Metadata
         return self::$compiled[$class] ??= self::compile($class);
     }
 
-    public static function forget(): void
-    {
-        self::$compiled = [];
-    }
-
     /** @param class-string<Model> $class */
     private static function compile(string $class): ModelMeta
     {

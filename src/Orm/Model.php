@@ -65,12 +65,6 @@ abstract class Model
         return $this->original !== null;
     }
 
-    /** @return array<string, mixed> */
-    public function originalValues(): array
-    {
-        return $this->original ?? [];
-    }
-
     /**
      * Columns whose value differs from the snapshot.
      *

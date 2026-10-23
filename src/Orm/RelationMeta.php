@@ -25,14 +25,6 @@ final readonly class RelationMeta
         return "{$this->owner}::{$this->property}";
     }
 
-    /** The column on the parent whose value links to the child rows. */
-    public function parentColumn(): string
-    {
-        return $this->kind === RelationKind::HasMany
-            ? Metadata::for($this->owner)->idColumn
-            : $this->foreignKey;
-    }
-
     /** The column on the child side that is matched with whereIn. */
     public function childColumn(): string
     {
