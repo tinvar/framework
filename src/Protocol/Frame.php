@@ -19,19 +19,38 @@ final class Frame
     public const string RENDER = 'render';
     public const string FRAGMENT = 'fragment';
     public const string RESULT = 'result';
+    public const string MINTED = 'minted';
 
     // renderer -> PHP
     public const string CHUNK = 'chunk';
     public const string QUERY = 'query';
     public const string META = 'meta';
+    public const string MINT = 'mint';
     public const string DONE = 'done';
     public const string ERROR = 'error';
 
     /** @var list<string> */
-    public const array PHP_TO_RENDERER = [self::RENDER, self::FRAGMENT, self::RESULT];
+    public const array PHP_TO_RENDERER = [self::RENDER, self::FRAGMENT, self::RESULT, self::MINTED];
 
     /** @var list<string> */
-    public const array RENDERER_TO_PHP = [self::CHUNK, self::QUERY, self::META, self::DONE, self::ERROR];
+    public const array RENDERER_TO_PHP = [
+        self::CHUNK,
+        self::QUERY,
+        self::META,
+        self::MINT,
+        self::DONE,
+        self::ERROR,
+    ];
+
+    /**
+     * How many fragment tokens one render may ask to have signed.
+     *
+     * The renderer is semi-trusted -- it "runs third-party npm code" -- and
+     * minting is the one thing it can ask PHP to do with the signing key. The
+     * cap bounds what a compromised renderer can extract: a page with more
+     * than this many <Deferred> boundaries is a page that should be split.
+     */
+    public const int MAX_MINTS_PER_RENDER = 64;
 
     /**
      * @param array<string, mixed> $params
@@ -90,6 +109,76 @@ final class Frame
     public static function chunk(string $bytes): array
     {
         return ['t' => self::CHUNK, 'b' => new Bin($bytes)];
+    }
+
+    /**
+     * Fragment tokens PHP has signed, answering a `mint` frame.
+     *
+     * @param array<int, string> $tokens request id => encoded token
+     * @return array<string, mixed>
+     */
+    public static function minted(array $tokens): array
+    {
+        $out = [];
+        foreach ($tokens as $id => $token) {
+            $out[] = ['id' => $id, 'token' => $token];
+        }
+
+        return ['t' => self::MINTED, 'm' => $out];
+    }
+
+    /**
+     * Pulls the `{id, component, props}` requests out of a mint frame.
+     *
+     * The renderer asks for a token because it is the side that knows which
+     * <Deferred> boundaries exist and what props they were given -- facts
+     * that only exist while the tree renders. It supplies ONLY those two
+     * fields. Route, params, panel, build, session and expiry are PHP's, and
+     * are never taken from this frame: a compromised renderer must not be
+     * able to mint a token for another route, another session or a longer
+     * life than the framework issues.
+     *
+     * @param array<string, mixed> $frame
+     * @return list<array{id: int, component: string, props: array<string, mixed>}>
+     */
+    public static function readMintBatch(array $frame): array
+    {
+        $requests = $frame['m'] ?? null;
+        if (!\is_array($requests) || !array_is_list($requests)) {
+            throw ProtocolException::malformed(self::MINT, "'m' must be a list of requests");
+        }
+
+        if (\count($requests) > self::MAX_MINTS_PER_RENDER) {
+            throw ProtocolException::malformed(
+                self::MINT,
+                'more than ' . self::MAX_MINTS_PER_RENDER . ' tokens requested in one render',
+            );
+        }
+
+        $out = [];
+        foreach ($requests as $request) {
+            if (!\is_array($request)) {
+                throw ProtocolException::malformed(self::MINT, 'each request must be a map');
+            }
+
+            $id = $request['id'] ?? null;
+            $component = $request['component'] ?? null;
+            $props = $request['props'] ?? [];
+
+            if (!\is_int($id) && !(\is_string($id) && ctype_digit($id))) {
+                throw ProtocolException::malformed(self::MINT, "'id' must be an integer");
+            }
+            if (!\is_string($component) || $component === '') {
+                throw ProtocolException::malformed(self::MINT, "'component' must be a non-empty string");
+            }
+            if (!\is_array($props) || array_is_list($props) && $props !== []) {
+                throw ProtocolException::malformed(self::MINT, "'props' must be a map");
+            }
+
+            $out[] = ['id' => (int) $id, 'component' => $component, 'props' => $props];
+        }
+
+        return $out;
     }
 
     /**

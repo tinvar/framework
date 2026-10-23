@@ -38,9 +38,13 @@ final class RenderChannel
      * @param array<string, mixed>  $frame   a render or fragment frame
      * @param list<string>          $allowed the route's query allowlist
      * @param \Closure(string): void $sink   receives output bytes as they arrive
+     * @param (\Closure(string, array<string, mixed>): string)|null $mint
+     *        signs a fragment token for one <Deferred> boundary; null means
+     *        this render may not mint any
      */
-    public function render(array $frame, array $allowed, \Closure $sink): RenderResult
+    public function render(array $frame, array $allowed, \Closure $sink, ?\Closure $mint = null): RenderResult
     {
+        $minted = 0;
         $started = hrtime(true);
         $socket = $this->connect();
 
@@ -87,6 +91,32 @@ final class RenderChannel
                         $queryNs += hrtime(true) - $at;
 
                         $this->write($socket, $this->codec->encodeFrame(Frame::result($results)));
+                    } elseif ($type === Frame::MINT) {
+                        // The renderer is the only side that knows which
+                        // <Deferred> boundaries exist and what props they got,
+                        // and it holds no key -- so it asks. It supplies the
+                        // component and the props and NOTHING else: route,
+                        // params, panel, build, session and expiry are chosen
+                        // by PHP in the closure below, so a compromised
+                        // renderer cannot mint a token for another route,
+                        // another session, or a longer life.
+                        $requests = Frame::readMintBatch($message);
+
+                        $minted += \count($requests);
+                        if ($mint === null || $minted > Frame::MAX_MINTS_PER_RENDER) {
+                            throw new ProtocolException(
+                                $mint === null
+                                    ? 'The renderer asked to mint a fragment token, which this render may not do.'
+                                    : 'The renderer asked to mint more fragment tokens than one render may.',
+                            );
+                        }
+
+                        $tokens = [];
+                        foreach ($requests as $request) {
+                            $tokens[$request['id']] = $mint($request['component'], $request['props']);
+                        }
+
+                        $this->write($socket, $this->codec->encodeFrame(Frame::minted($tokens)));
                     } elseif ($type === Frame::META) {
                         $meta[] = $message;
                     } elseif ($type === Frame::DONE) {

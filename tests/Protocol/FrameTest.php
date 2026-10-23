@@ -78,3 +78,57 @@ describe('query batches are shape-checked before reaching the registry', functio
         'args not a map' => [[['id' => 0, 'name' => 'q', 'args' => 'x']]],
     ]);
 });
+
+/**
+ * Minting is the one thing the renderer can ask PHP to do with the signing
+ * key, and the renderer is the semi-trusted tier -- it "runs third-party npm
+ * code". What it may influence is therefore bounded deliberately.
+ */
+describe('the mint exchange', function () {
+    it('lets the renderer ask and PHP answer', function () {
+        expect(Frame::RENDERER_TO_PHP)->toContain(Frame::MINT)
+            ->and(Frame::PHP_TO_RENDERER)->toContain(Frame::MINTED)
+            ->and(Frame::RENDERER_TO_PHP)->not->toContain(Frame::MINTED)
+            ->and(Frame::PHP_TO_RENDERER)->not->toContain(Frame::MINT);
+    });
+
+    it('reads the component and props a boundary declared', function () {
+        $requests = Frame::readMintBatch([
+            't' => Frame::MINT,
+            'm' => [['id' => 0, 'component' => 'UnitHistory', 'props' => ['unit' => 'u-1']]],
+        ]);
+
+        expect($requests)->toBe([['id' => 0, 'component' => 'UnitHistory', 'props' => ['unit' => 'u-1']]]);
+    });
+
+    // The cap bounds what a compromised renderer can extract from the key.
+    it('refuses more requests than one render may make', function () {
+        $many = array_map(
+            static fn (int $i): array => ['id' => $i, 'component' => 'X', 'props' => []],
+            range(0, Frame::MAX_MINTS_PER_RENDER),
+        );
+
+        expect(fn () => Frame::readMintBatch(['t' => Frame::MINT, 'm' => $many]))
+            ->toThrow(ProtocolException::class, 'more than');
+    });
+
+    it('refuses a malformed request', function (array $frame) {
+        expect(fn () => Frame::readMintBatch($frame))->toThrow(ProtocolException::class);
+    })->with([
+        'not a list' => [['t' => 'mint', 'm' => ['a' => 1]]],
+        'missing m' => [['t' => 'mint']],
+        'request not a map' => [['t' => 'mint', 'm' => ['nope']]],
+        'no component' => [['t' => 'mint', 'm' => [['id' => 0, 'props' => []]]]],
+        'empty component' => [['t' => 'mint', 'm' => [['id' => 0, 'component' => '', 'props' => []]]]],
+        'non-integer id' => [['t' => 'mint', 'm' => [['id' => 'x', 'component' => 'C', 'props' => []]]]],
+        'props as a list' => [['t' => 'mint', 'm' => [['id' => 0, 'component' => 'C', 'props' => ['a']]]]],
+    ]);
+
+    it('pairs each token with the request that asked for it', function () {
+        expect(Frame::minted([3 => 'tok-c', 1 => 'tok-a']))
+            ->toBe(['t' => Frame::MINTED, 'm' => [
+                ['id' => 3, 'token' => 'tok-c'],
+                ['id' => 1, 'token' => 'tok-a'],
+            ]]);
+    });
+});
