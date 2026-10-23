@@ -80,7 +80,7 @@ describe('a client navigation', function () {
         $request = new Request('GET', '/racks', ['rsc' => '1', 'x-version' => 'b1'], ['page' => '2'], rawQuery: $raw);
 
         expect(versioned()->handle($request, passes())->header('x-location'))->toBe('/racks?page=2');
-    })->with(["a=1\r\nset-cookie: x=1", 'a=b c', "a=\u{e9}", 'a=1#frag']);
+    })->with(["a=1\r\nset-cookie: x=1", 'a=b c', "a=\u{e9}", 'a=1#frag', "a=1\n"]);
 
     // The location is the request's own path. Nothing a client sends can
     // turn this into a redirect somewhere else.

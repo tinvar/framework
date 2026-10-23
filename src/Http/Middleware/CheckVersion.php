@@ -102,7 +102,7 @@ final class CheckVersion implements Middleware
     private static function queryOf(Request $request): string
     {
         $raw = $request->rawQuery;
-        if ($raw !== null && preg_match('/^[\x21-\x7e]*$/', $raw) === 1 && !str_contains($raw, '#')) {
+        if ($raw !== null && preg_match('/^[\x21-\x7e]*\z/', $raw) === 1 && !str_contains($raw, '#')) {
             return $raw;
         }
 
