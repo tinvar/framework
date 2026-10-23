@@ -19,6 +19,16 @@ final class Limits
     public const int MAX_JSON_DEPTH = 32;
 
     /**
+     * Keys and elements in one body, counted before it is decoded.
+     *
+     * PHP's arrays are not hash-randomised, so a megabyte of keys chosen to
+     * collide took seconds of CPU to decode -- before the action or query
+     * name was even looked at, and so for anyone who could reach the
+     * endpoint. Ten thousand is far beyond any form or argument list.
+     */
+    public const int MAX_JSON_ELEMENTS = 10_000;
+
+    /**
      * How many fields one Precognition-Validate-Only header may name.
      *
      * Each named field re-runs model resolution and authorization, and the
@@ -42,6 +52,10 @@ final class Limits
             return [];
         }
 
+        if (self::separators($body) > self::MAX_JSON_ELEMENTS) {
+            throw new HttpException(413, 'Request body has too many fields.', 'body_too_large');
+        }
+
         try {
             $decoded = json_decode($body, true, self::MAX_JSON_DEPTH, JSON_THROW_ON_ERROR);
         } catch (\JsonException $e) {
@@ -58,5 +72,23 @@ final class Limits
 
         /** @var array<string, mixed> */
         return $decoded;
+    }
+
+    /**
+     * The commas and colons outside strings: one per key, and one between
+     * each pair of elements, so an upper bound on what decoding would build.
+     * Strings are dropped first so a comma in a sentence does not count.
+     * Malformed JSON may be miscounted; it is refused by the decoder anyway.
+     */
+    private static function separators(string $body): int
+    {
+        $structure = preg_replace('/"(?:[^"\\\\]++|\\\\.)*+"/s', '', $body);
+        if ($structure === null) {
+            // The pattern could not run to the end (a backtrack or JIT
+            // limit): too strange to decode, rather than too small to count.
+            throw new HttpException(400, 'Request body is not valid JSON within the depth limit.', 'bad_json');
+        }
+
+        return substr_count($structure, ',') + substr_count($structure, ':');
     }
 }
