@@ -26,6 +26,13 @@ namespace Tinvar\Render;
  * This is the same shape as the route and query allowlists elsewhere in the
  * framework: the client names something, and the server looks it up rather
  * than trusting the description that came with it.
+ *
+ * It also says which ROUTES contain a boundary at all, rendered statically or
+ * not. ADR 0009: "A page with no deferred boundaries cannot be talked into
+ * minting" -- which holds only if a render is handed a minter when its route
+ * has a boundary to mint for, and otherwise none, so a mint frame from it is
+ * a protocol violation. A dynamically rendered page's boundaries are known
+ * only as it renders, so for those the manifest records the route alone.
  */
 final class FragmentManifest
 {
@@ -44,6 +51,9 @@ final class FragmentManifest
      */
     private array $byPage = [];
 
+    /** @var array<string, true> routes whose renders contain a boundary, by name */
+    private array $deferring = [];
+
     /**
      * @param array<string, list<array{
      *     id: string,
@@ -51,9 +61,16 @@ final class FragmentManifest
      *     props?: array<string, mixed>,
      *     params?: array<string, string>
      * }>> $boundaries route name => the boundaries that route's built pages contain
+     * @param list<string> $routes routes whose pages contain a <Deferred>
+     *        boundary however they are rendered -- what a dynamic render
+     *        needs, before it may mint
      */
-    public function __construct(array $boundaries = [])
+    public function __construct(array $boundaries = [], array $routes = [])
     {
+        foreach ($routes as $route) {
+            $this->declareRoute($route);
+        }
+
         foreach ($boundaries as $route => $list) {
             foreach ($list as $boundary) {
                 $this->declare(
@@ -130,8 +147,38 @@ final class FragmentManifest
         }
 
         $this->byPage[$page][] = ['id' => $id, 'component' => $component, 'props' => $props];
+        $this->deferring[$route] = true;
 
         return $this;
+    }
+
+    /**
+     * A route whose pages contain a <Deferred> boundary, so a render of it
+     * may mint fragment tokens.
+     *
+     * By route rather than by page, unlike declare(): a dynamic page's
+     * boundaries and props exist only while it renders. The renderer names
+     * them then; this says only that the route has any, so the renders of
+     * every other route get no minter at all.
+     */
+    public function declareRoute(string $route): self
+    {
+        if ($route === '') {
+            throw new \InvalidArgumentException('A route that defers needs a name to be found by.');
+        }
+
+        $this->deferring[$route] = true;
+
+        return $this;
+    }
+
+    /**
+     * Whether a render of this route may mint: it was declared, or one of
+     * its statically-built pages has a boundary.
+     */
+    public function defersOn(string $route): bool
+    {
+        return isset($this->deferring[$route]);
     }
 
     /**
@@ -171,6 +218,11 @@ final class FragmentManifest
         return $this->byPage[self::pageKey($route, $params)] ?? [];
     }
 
+    /**
+     * Whether any statically-built page has a boundary -- what the bootstrap
+     * endpoint serves. A route declared by name alone is rendered
+     * dynamically and mints as it renders, so it needs no bootstrap.
+     */
     public function hasAny(): bool
     {
         return $this->byPage !== [];

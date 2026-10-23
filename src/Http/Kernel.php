@@ -27,6 +27,7 @@ use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
 use Tinvar\Render\FragmentManifest;
+use Tinvar\Render\FragmentMinter;
 use Tinvar\Render\RouteMinter;
 use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\LoadedRoute;
@@ -74,6 +75,9 @@ final class Kernel
 
     /** Issues the CSRF cookie on page responses, and binds every check to the session. */
     private readonly ?CsrfTokens $csrf;
+
+    /** Which routes contain a <Deferred> boundary, so which renders may mint. */
+    private readonly ?FragmentManifest $manifest;
 
     /** Null when the application declared no builds, so there is nothing to check against. */
     private readonly ?CheckVersion $versions;
@@ -130,6 +134,13 @@ final class Kernel
     public const string ROUTE_TOKEN = 'tinvar.route_token';
 
     /**
+     * The request attribute carrying the page's FragmentMinter, for the
+     * responder to hand the render channel. Absent unless the route has a
+     * <Deferred> boundary to mint for -- see minterFor().
+     */
+    public const string FRAGMENT_MINTER = 'tinvar.fragment_minter';
+
+    /**
      * @param \Closure(class-string): object $resolver builds pages, layouts, queries, actions and middleware
      * @param \Closure(Request): list<string> $allowedQueries the route's query allowlist
      * @param list<class-string<Middleware>> $globalMiddleware
@@ -166,6 +177,7 @@ final class Kernel
         ?CsrfTokens $csrf = null,
     ) {
         $this->csrf = $csrf;
+        $this->manifest = $manifest;
 
         // The framework's own objects, so anything the container builds can
         // take them by type. Pass $container->resolver() as $resolver.
@@ -428,10 +440,14 @@ final class Kernel
                 // to be in the page's own metadata too, or the first page a
                 // visitor lands on can never be revalidated by an action.
                 $token = $this->routeTokenFor($loaded, $passed);
-                $response = $this->withCsrfCookie($passed, $respond(
-                    $loaded,
-                    $token === null ? $passed : $passed->withAttribute(self::ROUTE_TOKEN, $token),
-                ));
+                $minter = $this->minterFor($loaded, $passed);
+                if ($token !== null) {
+                    $passed = $passed->withAttribute(self::ROUTE_TOKEN, $token);
+                }
+                if ($minter !== null) {
+                    $passed = $passed->withAttribute(self::FRAGMENT_MINTER, $minter);
+                }
+                $response = $this->withCsrfCookie($passed, $respond($loaded, $passed));
 
                 if ($token === null) {
                     return $response;
@@ -579,6 +595,32 @@ final class Kernel
             ->withCookie(VerifyCsrfToken::COOKIE, $token, httpOnly: false)
             ->withHeader('cache-control', 'private, no-store')
             ->withAddedHeader('vary', 'Cookie');
+    }
+
+    /**
+     * The minter for a page render, or null when the render may not mint.
+     *
+     * ADR 0009: "A page with no deferred boundaries cannot be talked into
+     * minting." Every named page with a session used to get a minter, so a
+     * compromised renderer could have the signing key used from any page
+     * at all. Now only a route the manifest says contains a boundary gets
+     * one; every other render passes none, and a mint frame from it is a
+     * protocol violation.
+     *
+     * Null too without fragment support, without a name -- the fragment
+     * endpoint finds the originating route by name -- and without a
+     * session, which the minter refuses to sign for.
+     */
+    private function minterFor(LoadedRoute $loaded, Request $request): ?FragmentMinter
+    {
+        $name = $loaded->chain->page->name;
+        if ($this->support === null || $this->manifest === null || $name === null
+            || !$this->manifest->defersOn($name)
+            || ($this->support->sessionId)($request) === '') {
+            return null;
+        }
+
+        return $this->support->minterFor($request, route: $name, params: $loaded->chain->parameters);
     }
 
     /**
