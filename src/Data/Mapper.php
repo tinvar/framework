@@ -390,12 +390,36 @@ final class Mapper
             if ($name !== null && preg_match('/@param\s+(.+?)\s+(?:\.\.\.)?\$(\w+)\b/', $line, $m) === 1 && $m[2] === $name) {
                 return trim($m[1]);
             }
-            if ($name === null && preg_match('/@var\s+(.+?)(?:\s+\$\w+)?\s*(?:\*\/)?\s*$/', $line, $m) === 1) {
-                return trim($m[1]);
+            if ($name === null && preg_match('/@var\s+(\S.*?)\s*(?:\*\/)?\s*$/', $line, $m) === 1) {
+                return self::leadingType($m[1]);
             }
         }
 
         return null;
+    }
+
+    /**
+     * The type at the start of a tag's text: up to the first whitespace that
+     * is not inside <>, {} or (). Everything after it -- a `$name`, or a
+     * description -- was read as part of the type, so `list<X> in display
+     * order` named no class and the field went unmapped. Brackets are
+     * tracked because `array<string, X>` has a space of its own.
+     */
+    private static function leadingType(string $text): string
+    {
+        $depth = 0;
+
+        foreach (str_split($text) as $i => $char) {
+            if ($char === '<' || $char === '{' || $char === '(') {
+                $depth++;
+            } elseif ($char === '>' || $char === '}' || $char === ')') {
+                $depth = max(0, $depth - 1);
+            } elseif ($depth === 0 && ctype_space($char)) {
+                return substr($text, 0, $i);
+            }
+        }
+
+        return $text;
     }
 
     private static function lazyInner(?string $hint): ?string
