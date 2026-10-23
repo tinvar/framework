@@ -52,14 +52,31 @@ final class PolicyRegistry
         return $this->policyClassFor($subject) !== null;
     }
 
-    /** @param class-string $subject */
+    /**
+     * The policy object for a subject.
+     *
+     * Built with `new`, a policy has no dependencies, and one instance until
+     * the next reset() is enough. Built by the application's resolver, it may
+     * hold services -- or a user it copied out of AuthContext -- and how long
+     * those live is the resolver's to decide. The registry lives as long as
+     * whatever holds it, the worker's life in the Kernel, and kept such a
+     * policy until something remembered to call reset(): its Request-lived
+     * services and its user then answered for the next caller, and for any
+     * actingAs() begun after it was built. So the resolver is asked every
+     * time, as QueryRegistry::instanceFor() does: a container keeps what
+     * should be kept.
+     *
+     * @param class-string $subject
+     */
     public function for(string $subject): object
     {
         $class = $this->policyClassFor($subject) ?? throw AuthorizationException::noPolicy($subject);
 
-        return $this->instances[$class] ??= $this->resolver !== null
-            ? ($this->resolver)($class)
-            : new $class();
+        if ($this->resolver !== null) {
+            return ($this->resolver)($class);
+        }
+
+        return $this->instances[$class] ??= new $class();
     }
 
     /**
