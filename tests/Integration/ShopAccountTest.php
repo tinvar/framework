@@ -94,7 +94,7 @@ function shop(): array
         if (getmypid() !== $owner) {
             return;
         }
-        foreach (['', '-wal', '-shm'] as $suffix) {
+        foreach (['', '-wal', '-shm', '-throttle', '-throttle-wal', '-throttle-shm'] as $suffix) {
             if (is_file($path . $suffix)) {
                 unlink($path . $suffix);
             }

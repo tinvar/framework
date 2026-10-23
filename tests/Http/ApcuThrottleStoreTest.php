@@ -13,6 +13,7 @@ namespace Tinvar\Tests\Http\ApcuThrottleStore;
 
 use Tinvar\Http\ApcuThrottleStore;
 use Tinvar\Http\ArrayThrottleStore;
+use Tinvar\Http\SqliteThrottleStore;
 use Tinvar\Http\ThrottleStore;
 
 /** APCu's add and increment, in memory, with TTLs honoured against the given clock. */
@@ -172,6 +173,7 @@ it('answers the throttle store contract as the array store does', function (Thro
 
         return $apcu->store();
     })()],
+    'sqlite, in memory' => [fn (): ThrottleStore => new SqliteThrottleStore(':memory:')],
 ]);
 
 // A budget that counts only failures counts every attempt first and takes
@@ -197,6 +199,7 @@ it('takes back hits in the current window, never below zero', function (Throttle
 
         return $apcu->store();
     })()],
+    'sqlite, in memory' => [fn (): ThrottleStore => new SqliteThrottleStore(':memory:')],
 ]);
 
 it('takes nothing back from a window that has passed', function () {
