@@ -6,7 +6,8 @@
 # where to listen (TINVAR_HOST, TINVAR_PORT -- loopback only), the app
 # (TINVAR_APP_ROOT), the dev server's port (TINVAR_VITE_PORT), and the live
 # hub's keys and audience (TINVAR_LIVE_*), which the app hands ServeCommand
-# as it does for its own Caddyfile.
+# as it does for its own Caddyfile -- with the origin of a hub of its own
+# when TINVAR_LIVE_HUB_URL names one.
 {
 	admin off
 	persist_config off
@@ -31,8 +32,10 @@ http://:{$TINVAR_PORT} {
 	# 0030): FrankenPHP's built-in Mercure, which the front controller
 	# publishes to in-process, letting in only a subscriber with an access
 	# token PHP signed, read from its cookie. Live updates work in dev as
-	# they do from a build.
-	mercure {
+	# they do from a build -- through a hub of its own, too, when one is
+	# named, with this one out of the way (ADR 0048).
+	@builtinhub expression "'{$TINVAR_LIVE_HUB_UPSTREAM}' == ''"
+	mercure @builtinhub {
 		transport local
 		issuer tinvar {
 			publisher {
@@ -44,6 +47,14 @@ http://:{$TINVAR_PORT} {
 		}
 		resource_identifier {$TINVAR_LIVE_AUDIENCE:https://live.tinvar.invalid/.well-known/mercure}
 		cookie_name __Secure-tinvar-live
+	}
+
+	@remotehub {
+		path /.well-known/mercure /.well-known/mercure/*
+		expression "'{$TINVAR_LIVE_HUB_UPSTREAM}' != ''"
+	}
+	handle @remotehub {
+		reverse_proxy {$TINVAR_LIVE_HUB_UPSTREAM}
 	}
 
 	# The dev server's modules and its HMR socket, on this same origin. Vite
