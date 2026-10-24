@@ -33,6 +33,16 @@ final class Orm
     private array $journal = [];
 
     /**
+     * What waits for the outermost transaction to commit: one frame per open
+     * transaction(), alongside the journal's. A nested frame that returns is
+     * folded into the one around it, since only the outermost commit makes
+     * its writes visible; one that rolls back is dropped with its writes.
+     *
+     * @var list<list<\Closure(): void>>
+     */
+    private array $afterCommit = [];
+
+    /**
      * Depth of acrossTenants() calls outside any fiber.
      *
      * Kept per fiber as well, below: "Context is fiber-local, so a suspended
@@ -884,10 +894,14 @@ final class Orm
         $this->refuseWrite('transaction()');
 
         $this->journal[] = [];
+        $this->afterCommit[] = [];
 
         try {
             $result = $this->connection->transaction($work);
         } catch (\Throwable $e) {
+            // Nothing it was waiting to announce happened.
+            array_pop($this->afterCommit);
+
             // The rows written inside the transaction are gone, but the models
             // still carry the snapshots those writes took: an undone insert
             // read as persisted and an undone update as clean, so retrying the
@@ -912,7 +926,66 @@ final class Orm
             array_push($this->journal[array_key_last($this->journal)], ...$frame);
         }
 
+        // And what waited on it waits on the outer one, which may still roll
+        // back. Only the outermost commit is a commit anyone else can read.
+        $waiting = array_pop($this->afterCommit);
+        if ($this->afterCommit !== []) {
+            array_push($this->afterCommit[array_key_last($this->afterCommit)], ...$waiting);
+        } else {
+            self::runAll($waiting);
+        }
+
         return $result;
+    }
+
+    /**
+     * Runs $callback once the writes made so far are committed: at once with
+     * no transaction() open, after the outermost one commits otherwise, and
+     * never if it rolls back.
+     *
+     * For what tells someone else about a write -- a live invalidation (see
+     * Tinvar\Live\Invalidator), a job, a mail. Told before the commit, they
+     * ask for the data and read it as it was, or are told of a write that
+     * is then rolled back; either way what they hold is wrong and nothing
+     * corrects it.
+     *
+     * Only transactions opened here are seen. One begun on the connection
+     * around this class commits when its caller says, which nothing here
+     * can know.
+     *
+     * A callback should not throw: one that does after a commit makes
+     * transaction() throw for writes that are in, and a caller that retries
+     * on failure writes them twice. Every callback still runs, and the first
+     * failure is rethrown once they have.
+     *
+     * @param \Closure(): void $callback
+     */
+    public function afterCommit(\Closure $callback): void
+    {
+        if ($this->afterCommit === []) {
+            $callback();
+
+            return;
+        }
+
+        $this->afterCommit[array_key_last($this->afterCommit)][] = $callback;
+    }
+
+    /** @param list<\Closure(): void> $callbacks */
+    private static function runAll(array $callbacks): void
+    {
+        $failure = null;
+        foreach ($callbacks as $callback) {
+            try {
+                $callback();
+            } catch (\Throwable $e) {
+                $failure ??= $e;
+            }
+        }
+
+        if ($failure !== null) {
+            throw $failure;
+        }
     }
 
     /** Notes a model's snapshot before a write replaces it, for a rollback to put back. */
