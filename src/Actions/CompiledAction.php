@@ -26,6 +26,8 @@ final readonly class CompiledAction
      *        for it -- see Checks::undecided().
      * @param class-string<\Tinvar\Tenancy\TenantSource>|null $tenantFrom what its
      *        #[TenantFrom] names, on the method or the holder class
+     * @param list<\Tinvar\Attributes\Panel> $panels every #[Panel] it declares, the
+     *        holder's first
      */
     public function __construct(
         public string $name,
@@ -41,6 +43,7 @@ final readonly class CompiledAction
         public array $optionalModels = [],
         public int $classLevelChecks = 0,
         public ?string $tenantFrom = null,
+        public array $panels = [],
     ) {}
 
     /**

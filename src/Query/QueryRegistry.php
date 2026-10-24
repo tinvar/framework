@@ -6,9 +6,11 @@ namespace Tinvar\Query;
 
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Middleware;
+use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\Query;
 use Tinvar\Attributes\TenantFrom;
 use Tinvar\Auth\BuildRules;
+use Tinvar\Auth\PanelBinding;
 use Tinvar\Orm\Model;
 use Tinvar\Support\Str;
 
@@ -37,6 +39,9 @@ final class QueryRegistry
 
     /** @var array<string, class-string<\Tinvar\Tenancy\TenantSource>|null> */
     private array $tenantFrom = [];
+
+    /** @var array<string, list<Panel>> */
+    private array $panels = [];
 
     /** @var array<string, array<string, bool>> query name => parameter name => required */
     private array $parameters = [];
@@ -153,6 +158,12 @@ final class QueryRegistry
         $this->classLevelChecks[$name] = Authorize::classLevelCount($class);
         $this->middleware[$name] = Middleware::declaredOn($class, Query::entryMethodOf($class));
         $this->tenantFrom[$name] = TenantFrom::declaredOn($class, Query::entryMethodOf($class));
+        $this->panels[$name] = Panel::declaredOn($class, Query::entryMethodOf($class));
+        try {
+            PanelBinding::of($this->panels[$name]);
+        } catch (\LogicException $e) {
+            throw new \InvalidArgumentException("{$class}: {$e->getMessage()}", 0, $e);
+        }
         $this->parameters[$name] = self::parametersOf($reflection, $declaration);
         $this->nullWhenAbsent[$name] = self::nullWhenAbsentOf($reflection);
         $this->modelArguments[$name] = self::modelArgumentsOf($reflection, $declaration);
@@ -223,6 +234,17 @@ final class QueryRegistry
     public function tenantSourceFor(string $name): ?string
     {
         return $this->tenantFrom[$name] ?? null;
+    }
+
+    /**
+     * A query's #[Panel] declarations, for a call over HTTP; a call from a
+     * render runs in its page's panel.
+     *
+     * @return list<Panel>
+     */
+    public function panelsFor(string $name): array
+    {
+        return $this->panels[$name] ?? [];
     }
 
     /** @return class-string|null */

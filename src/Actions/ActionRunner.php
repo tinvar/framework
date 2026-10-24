@@ -68,6 +68,25 @@ final class ActionRunner
     }
 
     /**
+     * An action's #[Panel] declarations, with its holder class -- whose
+     * namespace places it when it declares none.
+     *
+     * @return array{list<\Tinvar\Attributes\Panel>, class-string}|null null for a name not registered
+     */
+    public function panelsFor(string $name): ?array
+    {
+        if (!$this->registry->has($name)) {
+            return null;
+        }
+        $action = $this->registry->get($name);
+
+        /** @var class-string $class */
+        $class = $action->class;
+
+        return [$action->panels, $class];
+    }
+
+    /**
      * @param array<string, mixed> $input
      * @param bool $precognitive validate-only: authorization and the form
      *        request run, the body does not

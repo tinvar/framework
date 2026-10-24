@@ -46,7 +46,8 @@ final class ActionEndpoint
      *        errors for the page it is sent back to; without one, such a post
      *        that fails validation gets the framework's 422 page instead
      * @param EntryContext|null $entry what the action's declarations put around
-     *        it -- its tenant -- ahead of its own middleware
+     *        it -- its tenant, its panel and the panel's stack -- ahead of its
+     *        own middleware
      */
     public function __construct(
         private readonly ActionRunner $runner,
@@ -145,9 +146,18 @@ final class ActionEndpoint
         // it resolves models and authorizes too. Compiled and never run, a
         // middleware an author put on an action was silently ignored.
         //
-        // Its tenant ahead of that, as a page's is: model arguments are
-        // resolved scoped to it, and the pages it re-renders are held to it.
-        $entry = $this->entry?->stackFor($this->runner->tenantSourceFor($name)) ?? [];
+        // Its tenant and its panel's stack ahead of that, as a page's are:
+        // model arguments are resolved scoped to the tenant, and "the full
+        // middleware stack of the action's panel (guard, MFA, network
+        // allowlist, email verification)" is step one of every call.
+        $entry = [];
+        if ($this->entry !== null) {
+            $panels = $this->runner->panelsFor($name);
+            $entry = $this->entry->stackFor(
+                $this->runner->tenantSourceFor($name),
+                $panels === null ? null : $this->entry->panelFor(...$panels),
+            );
+        }
         $own = array_values(array_diff($this->runner->middlewareFor($name), $this->globalMiddleware));
         if ($entry === [] && $own === []) {
             return $this->dispatch($request, $name, $rawBody);

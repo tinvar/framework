@@ -47,7 +47,7 @@ final class BootstrapEndpoint
 
     /**
      * @param EntryContext|null $entry says which tenant the page's route runs
-     *        as, which every token minted for it is bound to
+     *        as, and in which panel, which every token minted for it is bound to
      */
     public function __construct(
         private readonly RouteRegistry $routes,
@@ -148,6 +148,10 @@ final class BootstrapEndpoint
             return self::json(['tokens' => []]);
         }
 
+        // Its panel likewise: /_bootstrap is in none, and a token minted in
+        // none would be refused by a route that is in one.
+        $panel = $this->entry?->panelForChain($chain)?->name;
+
         // A visitor arriving at a statically-served page may have no
         // session yet, and that is the ordinary case rather than an error --
         // but a token with no session to bind to is one every visitor would
@@ -155,7 +159,7 @@ final class BootstrapEndpoint
         // condition cleanly; this one let the exception out as a 500,
         // remotely triggerable without authentication.
         try {
-            $minter = $this->fragments->minterFor($request, $route, $params, tenant: $tenant);
+            $minter = $this->fragments->minterFor($request, $route, $params, panel: $panel, tenant: $tenant);
         } catch (\InvalidArgumentException) {
             throw new HttpException(
                 409,

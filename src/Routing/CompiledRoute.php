@@ -26,6 +26,7 @@ final readonly class CompiledRoute
      *                                                    for the default (ADR 0019)
      * @param class-string<\Tinvar\Tenancy\TenantSource>|null $tenantFrom the source its
      *                                                    #[TenantFrom] names, or null for none
+     * @param list<\Tinvar\Attributes\Panel> $panels  every #[Panel] it declares
      */
     public function __construct(
         public RouteKind $kind,
@@ -40,6 +41,7 @@ final readonly class CompiledRoute
         public string $layoutKey = '',
         public ?bool $encryptHistory = null,
         public ?string $tenantFrom = null,
+        public array $panels = [],
     ) {}
 
     public function depth(): int

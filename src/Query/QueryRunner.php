@@ -95,6 +95,19 @@ final class QueryRunner
     }
 
     /**
+     * A query's #[Panel] declarations, with its class -- whose namespace
+     * places it when it declares none; see QueryRegistry::panelsFor().
+     *
+     * @return array{list<\Tinvar\Attributes\Panel>, class-string}|null null for a name not registered
+     */
+    public function panelsFor(string $name): ?array
+    {
+        $class = $this->registry->classFor($name);
+
+        return $class === null ? null : [$this->registry->panelsFor($name), $class];
+    }
+
+    /**
      * @param list<array{id: int, name: string, args: array<string, mixed>}> $calls
      * @param list<string> $allowed per-route query allowlist from the render frame
      * @return list<array{id: int, value?: mixed, error?: array{code: string, digest: string, message?: string}}>

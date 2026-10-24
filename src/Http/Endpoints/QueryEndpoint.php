@@ -43,7 +43,8 @@ final class QueryEndpoint
      * @param list<class-string> $globalMiddleware already run by the stack this
      *        endpoint is mounted in, so not run a second time
      * @param EntryContext|null $entry what the query's declarations put around
-     *        it -- its tenant -- ahead of its own middleware
+     *        it -- its tenant, its panel and the panel's stack -- ahead of its
+     *        own middleware
      */
     public function __construct(
         private readonly QueryRunner $runner,
@@ -82,9 +83,17 @@ final class QueryEndpoint
         // everything that touches the query. It was compiled into nothing:
         // a query that declared MFA was served over HTTP without it.
         //
-        // Its tenant ahead of that: "Resolve model arguments, scoped to the
-        // tenant" is step two of every query call.
-        $entry = $this->entry?->stackFor($this->runner->tenantSourceFor($name)) ?? [];
+        // Its tenant and its panel's stack ahead of that: an HTTP call gets
+        // "the query's panel middleware", and "Resolve model arguments,
+        // scoped to the tenant" is the step after.
+        $entry = [];
+        if ($this->entry !== null) {
+            $panels = $this->runner->panelsFor($name);
+            $entry = $this->entry->stackFor(
+                $this->runner->tenantSourceFor($name),
+                $panels === null ? null : $this->entry->panelFor(...$panels),
+            );
+        }
         $own = array_values(array_diff($this->runner->middlewareFor($name), $this->globalMiddleware));
         if ($entry === [] && $own === []) {
             return $this->dispatch($request, $name, $rawBody);

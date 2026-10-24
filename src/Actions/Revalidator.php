@@ -58,7 +58,8 @@ final class Revalidator
      *        failed for a reason that is NOT a denial -- without it, a broken
      *        loader looks exactly like a permission result
      * @param EntryContext|null $entry what each route's declarations put around
-     *        it -- its tenant -- as navigation runs it
+     *        it -- its tenant, its panel and the panel's stack -- as navigation
+     *        runs it
      */
     public function __construct(
         private readonly RouteRegistry $routes,
@@ -248,9 +249,10 @@ final class Revalidator
             // and every side effect it has.
             $routeOnly = array_values(array_diff($chain->middleware(), $this->globalMiddleware));
 
-            // The route's tenant ahead of its middleware, as on navigation.
+            // The route's tenant and panel stack ahead of its middleware, as
+            // on navigation.
             $pipeline = new Pipeline([
-                ...($this->entry?->stackFor($chain->tenantSource()) ?? []),
+                ...($this->entry?->stackForChain($chain) ?? []),
                 ...array_map(
                     fn (string $class): Middleware => ($this->middlewareResolver)($class),
                     $routeOnly,

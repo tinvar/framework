@@ -40,8 +40,8 @@ final class Router
      *        `segments` alone: one that ignored them would be handed a frame
      *        missing the data of every segment not recomputed.
      * @param EntryContext|null $entry what the chain's declarations put around
-     *        it -- its tenant -- ahead of its own middleware; without one, a
-     *        #[TenantFrom] is never resolved
+     *        it -- its tenant, its panel and the panel's stack -- ahead of its
+     *        own middleware; without one, neither is resolved
      */
     public function __construct(
         private readonly RouteRegistry $routes,
@@ -88,11 +88,12 @@ final class Router
             }
 
             // The chain's own middleware can only exist once a chain does --
-            // and its tenant ahead of it, so the middleware, the model
-            // binding and every loader run as the tenant the chain names.
+            // and its tenant and panel ahead of it, so the middleware, the
+            // model binding and every loader run as the tenant the chain
+            // names, inside its panel and behind the panel's stack.
             $routeMiddleware = array_values(array_diff($chain->middleware(), $this->globalMiddleware));
             $pipeline = new Pipeline([
-                ...($this->entry?->stackFor($chain->tenantSource()) ?? []),
+                ...($this->entry?->stackForChain($chain) ?? []),
                 ...array_map(
                     fn (string $class): Middleware => ($this->middlewareResolver)($class),
                     $routeMiddleware,

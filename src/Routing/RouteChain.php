@@ -76,6 +76,26 @@ final readonly class RouteChain
     }
 
     /**
+     * Every #[Panel] in the chain, outermost layout to page.
+     *
+     * All of them, since each narrows: a route group in the admin panel
+     * requiring one permission and a page in it requiring another needs
+     * both. Two naming different panels never reach here -- RouteRegistry
+     * refuses the pair -- so they name one.
+     *
+     * @return list<\Tinvar\Attributes\Panel>
+     */
+    public function panels(): array
+    {
+        $out = [];
+        foreach ($this->all() as $route) {
+            $out = [...$out, ...$route->panels];
+        }
+
+        return $out;
+    }
+
+    /**
      * Every declared check in the chain, paired with the route that declared it.
      *
      * @return list<array{route: CompiledRoute, check: \Tinvar\Attributes\Authorize}>

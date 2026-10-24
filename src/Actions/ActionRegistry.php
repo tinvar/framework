@@ -8,7 +8,9 @@ use Tinvar\Attributes\Action;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\NoAuthorization;
+use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\TenantFrom;
+use Tinvar\Auth\PanelBinding;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Http\Request;
 use Tinvar\Orm\Model;
@@ -263,7 +265,28 @@ final class ActionRegistry
             optionalModels: $optional,
             classLevelChecks: $inherited,
             tenantFrom: self::tenantFromOf($where, $class, $method->getName()),
+            panels: self::panelsOf($where, $class, $method->getName()),
         );
+    }
+
+    /**
+     * An action's #[Panel] declarations, its holder's and its method's,
+     * which must name one panel.
+     *
+     * @param class-string $class
+     * @return list<Panel>
+     */
+    private static function panelsOf(string $where, string $class, string $method): array
+    {
+        $panels = Panel::declaredOn($class, $method);
+
+        try {
+            PanelBinding::of($panels);
+        } catch (\LogicException $e) {
+            throw new ActionException("{$where}: {$e->getMessage()}", 0, $e);
+        }
+
+        return $panels;
     }
 
     /**

@@ -9,7 +9,9 @@ use Tinvar\Actions\ActionRunner;
 use Tinvar\Actions\Revalidator;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\Gate;
+use Tinvar\Auth\Memberships;
 use Tinvar\Auth\PanelContext;
+use Tinvar\Auth\PanelRegistry;
 use Tinvar\Auth\PolicyGate;
 use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Cache\QueryCache;
@@ -206,6 +208,13 @@ final class Kernel
      *        #[EncryptHistory] -- carries its session's key, and the client
      *        router seals what it remembers for the page with it; without
      *        them, nothing is encrypted (ADR 0019).
+     * @param PanelRegistry|null $panelRegistry the application's panels: each one's
+     *        guard and stack, and the namespaces in it. Every #[Panel] must name
+     *        one of them; with none, declaring a panel is refused.
+     * @param Memberships|null $memberships the application's membership model.
+     *        Given, every request into a panel needs a membership of it in the
+     *        request's tenant, and `requires:` and `permission:` are held to it;
+     *        without it, declaring either is refused.
      */
     public function __construct(
         public readonly Orm $orm,
@@ -233,7 +242,14 @@ final class Kernel
         ?FlashStore $flashes = null,
         ?PreviousUrlStore $previousUrls = null,
         ?HistoryKeys $historyKeys = null,
+        ?PanelRegistry $panelRegistry = null,
+        ?Memberships $memberships = null,
     ) {
+        // Panels need somewhere to be current. An application defining them
+        // and passing no context gets one, rather than panels that resolve
+        // and are put nowhere.
+        $panels ??= $panelRegistry === null ? null : new PanelContext();
+
         $this->csrf = $csrf;
         $this->flashes = $flashes;
         $this->previousUrls = $previousUrls;
@@ -273,10 +289,14 @@ final class Kernel
         $cache ??= new QueryCache(new \Tinvar\Cache\ArrayStore(), $this->auth, $panels);
 
         // What every entry point's declarations put around it -- the tenant
-        // its #[TenantFrom] names -- shared by every path that runs one, so
-        // a page, its fragments, its re-render and an action all resolve it
-        // the same way.
-        $entry = new EntryContext($this->orm, $resolver);
+        // its #[TenantFrom] names, the panel its #[Panel] or namespace puts
+        // it in, and that panel's stack -- shared by every path that runs
+        // one, so a page, its fragments, its re-render and an action all
+        // resolve them the same way. Checked now: a panel nobody defined, or
+        // a requirement nothing can hold, is refused here rather than found
+        // by whoever first reaches it.
+        $entry = new EntryContext($this->orm, $resolver, $panels, $panelRegistry, $memberships, $this->auth);
+        $entry->check($this->routes, $this->actions, $this->queries);
 
         $this->router = new Router(
             $this->routes,

@@ -89,7 +89,8 @@ final class FragmentEndpoint
      * @param (\Closure(list<FragmentToken>, Request, array<string, mixed>, list<string>): Response)|null $renderGroup
      *        renders a group's subtrees in one render; see FragmentSupport
      * @param EntryContext|null $entry what the originating route's declarations put
-     *        around it -- its tenant -- as a page render runs it
+     *        around it -- its tenant, its panel and the panel's stack -- as a
+     *        page render runs it
      */
     public function __construct(
         private readonly RouteRegistry $routes,
@@ -215,6 +216,14 @@ final class FragmentEndpoint
                 throw self::refuse('token was minted in a different panel');
             }
 
+            // And held to the panel the route itself is in, before that
+            // panel's stack runs: a token naming another panel, or none, was
+            // minted for a page this route is not.
+            $routePanel = $this->entry?->panelForChain($chain);
+            if ($routePanel !== null && $routePanel->name !== $token->panel) {
+                throw self::refuse('token was minted outside the panel its route is in');
+            }
+
             $run = fn (): Response => $this->throughRoute($chain, $passed, $tokens);
 
             // Already in it when the request decided first; a panel-less
@@ -245,10 +254,11 @@ final class FragmentEndpoint
             // and they are the most expensive endpoint to leave without
             // an account ceiling -- one request is a full subtree render.
             ...$this->extraInner,
-            // Then the route's tenant, as a page render resolves it: from
-            // the request, never from the token, which the check below
-            // holds to it.
-            ...($this->entry?->stackFor($chain->tenantSource()) ?? []),
+            // Then the route's tenant, as a page render resolves it -- from
+            // the request, never from the token, which the check below holds
+            // to it -- and its panel's stack: "the originating route's full
+            // middleware" includes the guard, MFA and allowlist in front of it.
+            ...($this->entry?->stackForChain($chain) ?? []),
             ...array_map(
                 fn (string $class): Middleware => ($this->middlewareResolver)($class),
                 $routeOnly,

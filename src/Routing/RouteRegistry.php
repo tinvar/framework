@@ -9,8 +9,10 @@ use Tinvar\Attributes\EncryptHistory;
 use Tinvar\Attributes\Layout;
 use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\Page;
+use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\TenantFrom;
 use Tinvar\Auth\BuildRules;
+use Tinvar\Auth\PanelBinding;
 use Tinvar\Support\Str;
 
 /**
@@ -93,6 +95,7 @@ final class RouteRegistry
             layoutKey: $kind === RouteKind::Layout ? self::layoutKeyOf($declaration->view) : '',
             encryptHistory: $encryptHistory,
             tenantFrom: self::tenantFromOf($class),
+            panels: self::panelsOf($class),
         );
 
         // A loader parameter the router cannot bind is a developer error that
@@ -145,17 +148,22 @@ final class RouteRegistry
             foreach ($this->layouts as $layout) {
                 self::assertParameterNamesAgree($layout, $route);
                 self::assertTenantSourcesAgree($layout, $route);
+                self::assertPanelsAgree($layout, $route);
             }
         } else {
             foreach ($this->pages as $page) {
                 self::assertParameterNamesAgree($route, $page);
                 self::assertTenantSourcesAgree($route, $page);
+                self::assertPanelsAgree($route, $page);
             }
             // A group inside a group: a page under both runs as one tenant,
-            // so the two have to agree whether or not a page exists yet.
+            // in one panel, so the two have to agree whether or not a page
+            // exists yet.
             foreach ($this->layouts as $layout) {
                 self::assertTenantSourcesAgree($layout, $route);
                 self::assertTenantSourcesAgree($route, $layout);
+                self::assertPanelsAgree($layout, $route);
+                self::assertPanelsAgree($route, $layout);
             }
         }
 
@@ -323,6 +331,54 @@ final class RouteRegistry
             $inner->template,
             $inner->tenantFrom,
         ));
+    }
+
+    /**
+     * Refuses a route group and a route inside it declared in different
+     * panels: a page is in one, and whichever lost would be a page its
+     * author believed was behind a guard it is not behind.
+     */
+    private static function assertPanelsAgree(CompiledRoute $outer, CompiledRoute $inner): void
+    {
+        if ($outer->panels === [] || $inner->panels === [] || !$outer->wraps($inner)) {
+            return;
+        }
+
+        $theirs = $outer->panels[0]->name;
+        $ours = $inner->panels[0]->name;
+        if ($theirs === $ours) {
+            return;
+        }
+
+        throw new RoutingException(\sprintf(
+            "%s (%s) is in panel '%s', and %s (%s) inside it in panel '%s'. A route is in one panel.",
+            $outer->class,
+            $outer->template,
+            $theirs,
+            $inner->class,
+            $inner->template,
+            $ours,
+        ));
+    }
+
+    /**
+     * A route's #[Panel] declarations, on its class or its loader, which
+     * must name one panel.
+     *
+     * @param class-string $class
+     * @return list<Panel>
+     */
+    private static function panelsOf(string $class): array
+    {
+        $panels = Panel::declaredOn($class, '__invoke');
+
+        try {
+            PanelBinding::of($panels);
+        } catch (\LogicException $e) {
+            throw new RoutingException("{$class}: {$e->getMessage()}", 0, $e);
+        }
+
+        return $panels;
     }
 
     /**
