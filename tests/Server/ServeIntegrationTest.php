@@ -58,6 +58,10 @@ function serve(string $root, string $keyFile): array
             ...array_diff_key(getenv(), ['TINVAR_APP_KEY' => true]),
             'SHOP_DATABASE' => Shop::database(),
             'TINVAR_APP_KEY_FILE' => $keyFile,
+            // Left over from a dev shell: a serve without --dev keeps both from
+            // FrankenPHP, so neither turns dev mode on nor points a proxy anywhere.
+            'TINVAR_DEV' => '1',
+            'TINVAR_VITE_PORT' => '1',
         ],
     );
     stream_set_blocking($pipes[1], false);
@@ -157,6 +161,8 @@ it('serves the shop on a free port it chose, and stops cleanly', function () use
     // The catalog, rendered by a worker through the renderer.
     expect($status)->toBe(200)
         ->and($headers['content-security-policy'] ?? '')->toStartWith("script-src 'nonce-")
+        // Production's policy, though TINVAR_DEV=1 was in the shell.
+        ->and($headers['content-security-policy'] ?? '')->not->toContain('unsafe-eval')
         ->and($headers)->not->toHaveKey('x-powered-by')
         ->and($body)->toContain('Pellwick Supply')
         ->toContain('data-availability=');

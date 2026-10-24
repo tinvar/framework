@@ -1,0 +1,35 @@
+# `tinvar serve --dev`: FrankenPHP in front of Vite's dev server.
+#
+# Every app is served this one way in dev, so this is the framework's, not
+# the app's: the app's own Caddyfile is how it is served from a build, and
+# dev has no build. Started by ServeCommand with the variables read here:
+# where to listen (TINVAR_HOST, TINVAR_PORT -- loopback only), the app
+# (TINVAR_APP_ROOT) and the dev server's port (TINVAR_VITE_PORT).
+{
+	admin off
+	persist_config off
+	auto_https off
+
+	# No worker: every request runs the front controller afresh, so an edit
+	# to the PHP is in the very next response, as an edit to a component is.
+	frankenphp
+}
+
+http://:{$TINVAR_PORT} {
+	bind {$TINVAR_HOST}
+
+	# The dev server's modules and its HMR socket, on this same origin. Vite
+	# serves everything under this base, so nothing of the app can collide
+	# with it: /_ is the framework's prefix. The upstream is loopback, and
+	# this file is read only by `serve --dev`, which production never runs.
+	handle /_vite/* {
+		reverse_proxy 127.0.0.1:{$TINVAR_VITE_PORT}
+	}
+
+	handle {
+		root * {$TINVAR_APP_ROOT}/public
+		rewrite * /index.php
+		header -X-Powered-By
+		php
+	}
+}

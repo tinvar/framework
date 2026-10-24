@@ -4,13 +4,22 @@ declare(strict_types=1);
 
 namespace Tinvar\Server;
 
+use Tinvar\Support\DevMode;
 use Tinvar\Support\PrivateDirectory;
 
 /**
  * `tinvar serve`: an app's renderer and FrankenPHP, started together and
  * stopped together.
  *
- *   tinvar serve [--host=HOST] [--port=PORT] [--app=DIR] [--workers=N] [--frankenphp=PATH]
+ *   tinvar serve [--dev] [--host=HOST] [--port=PORT] [--app=DIR] [--workers=N] [--frankenphp=PATH]
+ *
+ * With --dev, Vite's dev server is the renderer ("Dev mode: Vite's dev server
+ * is the renderer, with HMR and no separate build"): no build is needed, the
+ * renderer renders the app from source, and FrankenPHP -- in classic mode, so
+ * an edit to the PHP is in the next response too -- proxies the dev server's
+ * modules and HMR socket under /_vite/ on its own origin, by the framework's
+ * resources/Caddyfile.dev. Refused, loudly, wherever the environment says
+ * production, and on any address but loopback.
  *
  * The app is a directory with a Caddyfile and a build: the command knows
  * nothing about any particular app. It passes the app what it decided as
@@ -38,6 +47,19 @@ final class ServeCommand
     public const int USAGE = 64;
 
     private const array OPTIONS = ['host', 'port', 'app', 'workers', 'frankenphp'];
+
+    /** Options that take no value. */
+    private const array FLAGS = ['dev'];
+
+    /**
+     * What only `serve --dev` hands FrankenPHP: kept out of the environment of
+     * every serve that is not, so none left over in a shell or an env file
+     * turns dev mode on, or points a proxy at whatever holds the port.
+     */
+    private const array DEV_ENV = ['TINVAR_DEV', 'TINVAR_VITE_PORT', 'TINVAR_DEFERRED_MANIFEST'];
+
+    /** The addresses dev mode may listen on. */
+    private const array LOOPBACK = ['127.0.0.1', '::1'];
 
     /** Variables the renderer may see; it refuses to start holding anything secret. */
     private const array RENDERER_ENV = ['PATH', 'TZ', 'LANG', 'LC_ALL'];
@@ -104,19 +126,38 @@ final class ServeCommand
      * without a process to clean up.
      *
      * @param list<string> $arguments
-     * @return array{host: string, port: int, app: string, entry: string, renderer: string, frankenphp: string, workers: int}
+     * @return array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string}
      */
     public function plan(array $arguments): array
     {
         $options = self::parse($arguments);
+        $dev = isset($options['dev']);
+
+        // First, before anything is looked at: dev mode never runs where the
+        // environment says production.
+        if ($dev) {
+            $marker = DevMode::productionMarker(array_filter(getenv(), \is_string(...)));
+            if ($marker !== null) {
+                throw new ServeException(
+                    "tinvar serve --dev is refused: {$marker}=production. Dev mode runs Vite's dev server unsandboxed "
+                    . 'and shows raw errors to the browser; it never runs in production. Serve a build there.',
+                );
+            }
+        }
 
         $host = $options['host'] ?? self::DEFAULT_HOST;
         PortFinder::assertHost($host);
+        if ($dev && !\in_array($host, self::LOOPBACK, true)) {
+            throw new ServeException("tinvar serve --dev listens on loopback only (127.0.0.1 or ::1); refusing {$host}.");
+        }
 
-        $app = $this->app($options['app'] ?? null);
-        $entry = "{$app}/dist/rsc/index.js";
-        if (!is_file($entry)) {
+        $app = $this->app($options['app'] ?? null, requireCaddyfile: !$dev);
+        $entry = $dev ? null : "{$app}/dist/rsc/index.js";
+        if ($entry !== null && !is_file($entry)) {
             throw new ServeException("{$app} is not built: there is no {$entry}. Build it first (npx vite build in {$app}).");
+        }
+        if ($dev && !is_file("{$app}/public/index.php")) {
+            throw new ServeException("{$app} has no public/index.php, which dev mode runs for every request.");
         }
 
         $workers = $options['workers'] ?? null;
@@ -124,16 +165,31 @@ final class ServeCommand
             throw new ServeException("--workers must be a whole number from 1 to 256; got '{$workers}'.");
         }
 
+        $frankenphp = FrankenPhp::locate($this->projectRoot, $options['frankenphp'] ?? null);
+        $renderer = $this->rendererBin($dev ? 'dev-renderer.js' : 'renderer.js');
+
+        // Last: choosing a port binds it for a moment, which is only worth
+        // doing once everything else is known to be there.
+        $port = $this->ports->find($host, $options['port'] ?? null);
+        $vitePort = null;
+        if ($dev) {
+            // Its own, which is never the one PHP's server takes.
+            do {
+                $vitePort = $this->ports->find($host);
+            } while ($vitePort === $port);
+        }
+
         return [
             'host' => $host,
-            'frankenphp' => FrankenPhp::locate($this->projectRoot, $options['frankenphp'] ?? null),
+            'frankenphp' => $frankenphp,
             'app' => $app,
             'entry' => $entry,
-            'renderer' => $this->rendererBin(),
+            'renderer' => $renderer,
             'workers' => $workers === null ? self::cpus() : (int) $workers,
-            // Last: choosing a port binds it for a moment, which is only
-            // worth doing once everything else is known to be there.
-            'port' => $this->ports->find($host, $options['port'] ?? null),
+            'port' => $port,
+            'dev' => $dev,
+            'vitePort' => $vitePort,
+            'caddyfile' => $dev ? \dirname(__DIR__, 2) . '/resources/Caddyfile.dev' : "{$app}/Caddyfile",
         ];
     }
 
@@ -145,9 +201,13 @@ final class ServeCommand
     {
         $options = [];
         foreach ($arguments as $argument) {
+            if (preg_match('/^--([a-z]+)\z/', $argument, $m) === 1 && \in_array($m[1], self::FLAGS, true)) {
+                $options[$m[1]] = '';
+                continue;
+            }
             if (preg_match('/^--([a-z]+)=(.*)\z/s', $argument, $m) !== 1 || !\in_array($m[1], self::OPTIONS, true)) {
                 throw new ServeException(
-                    "Unknown argument '{$argument}'. Usage: tinvar serve [--host=HOST] [--port=PORT] [--app=DIR] "
+                    "Unknown argument '{$argument}'. Usage: tinvar serve [--dev] [--host=HOST] [--port=PORT] [--app=DIR] "
                     . '[--workers=N] [--frankenphp=PATH]',
                 );
             }
@@ -157,8 +217,12 @@ final class ServeCommand
         return $options;
     }
 
-    /** The app's directory: --app, or the working directory if it has a Caddyfile. */
-    private function app(?string $given): string
+    /**
+     * The app's directory: --app, or the working directory if it has a
+     * Caddyfile -- which dev mode, serving every app by the framework's own,
+     * does not ask for.
+     */
+    private function app(?string $given, bool $requireCaddyfile = true): string
     {
         $cwd = $this->workingDirectory ?? (string) getcwd();
         $candidate = $given === null ? $cwd : (str_starts_with($given, '/') ? $given : "{$cwd}/{$given}");
@@ -167,7 +231,7 @@ final class ServeCommand
         if ($app === false || !is_dir($app)) {
             throw new ServeException("No app at {$candidate}.");
         }
-        if (!is_file("{$app}/Caddyfile")) {
+        if ($requireCaddyfile && !is_file("{$app}/Caddyfile")) {
             throw new ServeException(
                 $given === null
                     ? 'No app to serve here: run from an app directory with a Caddyfile, or pass --app=DIR.'
@@ -178,11 +242,11 @@ final class ServeCommand
         return $app;
     }
 
-    private function rendererBin(): string
+    private function rendererBin(string $bin): string
     {
         foreach ([
-            "{$this->projectRoot}/node_modules/@tinvar/renderer/bin/renderer.js",
-            "{$this->projectRoot}/packages/renderer/bin/renderer.js",
+            "{$this->projectRoot}/node_modules/@tinvar/renderer/bin/{$bin}",
+            "{$this->projectRoot}/packages/renderer/bin/{$bin}",
         ] as $candidate) {
             if (is_file($candidate)) {
                 return $candidate;
@@ -192,24 +256,56 @@ final class ServeCommand
         throw new ServeException('The renderer is not installed: run npm ci in ' . $this->projectRoot . '.');
     }
 
-    /** @param array{host: string, port: int, app: string, entry: string, renderer: string, frankenphp: string, workers: int} $plan */
+    /** @param array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string} $plan */
     private function serve(array $plan): int
     {
         // One killed outright had no chance to remove its own.
         PrivateDirectory::removeAbandoned('tinvar-serve');
         $directory = PrivateDirectory::create('tinvar-serve', owner: getmypid() ?: null);
         $socket = "{$directory}/renderer.sock";
+        $deferred = "{$directory}/deferred.json";
         $children = [];
 
         $this->trapSignals();
 
+        $rendererEnv = array_intersect_key(getenv(), array_flip(self::RENDERER_ENV));
+        // What FrankenPHP is told on top of this process's environment and the
+        // application's (serverEnvironment, asked as FrankenPHP starts).
+        $phpEnv = [
+            'TINVAR_HOST' => $plan['host'],
+            'TINVAR_PORT' => (string) $plan['port'],
+            'TINVAR_APP_ROOT' => $plan['app'],
+            'TINVAR_WORKERS' => (string) $plan['workers'],
+            'TINVAR_SOCKET' => $socket,
+        ];
+
         try {
-            $children['the renderer'] = $renderer = $this->spawn(
-                ['node', $plan['renderer'], $socket, $plan['entry'], '--exit-with-stdin'],
-                $plan['app'],
-                [...array_intersect_key(getenv(), array_flip(self::RENDERER_ENV)), 'NODE_ENV' => 'production'],
-            );
-            $this->waitFor(static fn (): bool => file_exists($socket), $renderer, 'The renderer', 20);
+            if ($plan['dev']) {
+                // The dev server keeps the views' <Deferred> components up to
+                // date beside the socket, as a build writes them, so a route
+                // mints in dev exactly when its build would let it.
+                $children['the dev renderer'] = $renderer = $this->spawn(
+                    ['node', $plan['renderer'], $socket, $plan['app'], "--port={$plan['vitePort']}", "--deferred={$deferred}", '--exit-with-stdin'],
+                    $plan['app'],
+                    [...$rendererEnv, 'NODE_ENV' => 'development'],
+                );
+                // Longer than a built renderer's start: Vite optimizes the
+                // app's dependencies the first time.
+                $this->waitFor(static fn (): bool => file_exists($socket), $renderer, 'The dev renderer', 90);
+                $phpEnv = [
+                    ...$phpEnv,
+                    'TINVAR_DEV' => '1',
+                    'TINVAR_VITE_PORT' => (string) $plan['vitePort'],
+                    'TINVAR_DEFERRED_MANIFEST' => $deferred,
+                ];
+            } else {
+                $children['the renderer'] = $renderer = $this->spawn(
+                    ['node', $plan['renderer'], $socket, (string) $plan['entry'], '--exit-with-stdin'],
+                    $plan['app'],
+                    [...$rendererEnv, 'NODE_ENV' => 'production'],
+                );
+                $this->waitFor(static fn (): bool => file_exists($socket), $renderer, 'The renderer', 20);
+            }
 
             // FrankenPHP watches nothing of its parent's, so it runs under a
             // PHP process that watches standard input for it.
@@ -220,19 +316,15 @@ final class ServeCommand
                     $plan['frankenphp'],
                     'run',
                     '--config',
-                    "{$plan['app']}/Caddyfile",
+                    $plan['caddyfile'],
                     '--adapter',
                     'caddyfile',
                 ],
                 $plan['app'],
                 [
-                    ...getenv(),
+                    ...array_diff_key(getenv(), array_flip(self::DEV_ENV)),
                     ...($this->serverEnvironment === null ? [] : ($this->serverEnvironment)()),
-                    'TINVAR_HOST' => $plan['host'],
-                    'TINVAR_PORT' => (string) $plan['port'],
-                    'TINVAR_APP_ROOT' => $plan['app'],
-                    'TINVAR_WORKERS' => (string) $plan['workers'],
-                    'TINVAR_SOCKET' => $socket,
+                    ...$phpEnv,
                 ],
             );
             $this->waitFor(static fn (): bool => PortFinder::answers($plan['host'], $plan['port']), $server, 'FrankenPHP', 30);
@@ -245,12 +337,19 @@ final class ServeCommand
         }
 
         ($this->out)(sprintf('Listening on http://%s:%d', PortFinder::hostForUrl($plan['host']), $plan['port']));
-        ($this->err)(sprintf(
-            'Serving %s with %d FrankenPHP workers and a renderer at %s. Ctrl+C stops both.',
-            $plan['app'],
-            $plan['workers'],
-            $socket,
-        ));
+        ($this->err)($plan['dev']
+            ? sprintf(
+                'Serving %s in dev: Vite\'s dev server on port %d renders it from source, its modules and HMR '
+                . 'proxied under /_vite/; FrankenPHP runs the PHP afresh on every request. Ctrl+C stops both.',
+                $plan['app'],
+                $plan['vitePort'],
+            )
+            : sprintf(
+                'Serving %s with %d FrankenPHP workers and a renderer at %s. Ctrl+C stops both.',
+                $plan['app'],
+                $plan['workers'],
+                $socket,
+            ));
 
         $status = $this->supervise($children);
         $this->terminate($children);

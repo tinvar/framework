@@ -53,6 +53,7 @@ function project(): string
     chmod("{$root}/tools/frankenphp", 0700);
     mkdir("{$root}/packages/renderer/bin", 0700, true);
     file_put_contents("{$root}/packages/renderer/bin/renderer.js", '');
+    file_put_contents("{$root}/packages/renderer/bin/dev-renderer.js", '');
 
     return $root;
 }
@@ -149,6 +150,93 @@ it('refuses a port in use before starting anything', function () {
                 'Port 6100 on 127.0.0.1 is in use or not available to this user. Stop whatever holds it, choose '
                 . 'another --port, or leave --port off to pick a free one.',
             ]);
+    });
+});
+
+describe('--dev', function () {
+    /** An app as dev mode serves it: its source and a front controller, and no build. */
+    function devApp(): string
+    {
+        $app = app(built: false);
+        mkdir("{$app}/public", 0700);
+        file_put_contents("{$app}/public/index.php", "<?php\n");
+
+        return $app;
+    }
+
+    /** Runs $body with these variables set, then puts them back. */
+    function withEnvironment(array $variables, \Closure $body): mixed
+    {
+        $saved = [];
+        foreach ($variables as $name => $value) {
+            $saved[$name] = getenv($name);
+            putenv("{$name}={$value}");
+        }
+        try {
+            return $body();
+        } finally {
+            foreach ($saved as $name => $value) {
+                putenv($value === false ? $name : "{$name}={$value}");
+            }
+        }
+    }
+
+    it('plans Vite\'s dev server as the renderer, with no build, behind the framework\'s own Caddyfile', function () {
+        withoutEnvironmentBinary(function () {
+            $root = project();
+            $app = devApp();
+            [$command] = command($root);
+
+            $plan = $command->plan(['--dev', "--app={$app}"]);
+
+            expect($plan['dev'])->toBeTrue()
+                ->and($plan['entry'])->toBeNull()
+                ->and($plan['renderer'])->toBe("{$root}/packages/renderer/bin/dev-renderer.js")
+                ->and($plan['caddyfile'])->toEndWith('/packages/framework/resources/Caddyfile.dev')
+                ->and($plan['caddyfile'])->toBeFile()
+                ->and($plan['vitePort'])->toBeInt()->not->toBe($plan['port'])
+                ->and($plan['host'])->toBe('127.0.0.1');
+        });
+    });
+
+    it('needs no Caddyfile of the app\'s, since every app is served the one way in dev', function () {
+        withoutEnvironmentBinary(function () {
+            $app = devApp();
+            unlink("{$app}/Caddyfile");
+            [$command] = command(project());
+
+            expect($command->plan(['--dev', "--app={$app}"])['app'])->toBe(realpath($app));
+        });
+    });
+
+    // Loudly, before anything is looked at or started.
+    it('is refused wherever the environment says production', function (string $marker) {
+        withoutEnvironmentBinary(function () use ($marker) {
+            [$command, $errors] = command(project());
+
+            $status = withEnvironment([$marker => 'production'], fn () => $command->run(['--dev', '--app=' . devApp()]));
+
+            expect($status)->toBe(ServeCommand::USAGE)
+                ->and(implode("\n", $errors->getArrayCopy()))->toContain("tinvar serve --dev is refused: {$marker}=production");
+        });
+    })->with(['NODE_ENV', 'TINVAR_ENV', 'APP_ENV']);
+
+    it('listens on loopback only', function (string $host) {
+        withoutEnvironmentBinary(function () use ($host) {
+            [$command, $errors] = command(project());
+
+            expect($command->run(['--dev', '--app=' . devApp(), "--host={$host}"]))->toBe(ServeCommand::USAGE)
+                ->and(implode("\n", $errors->getArrayCopy()))->toContain('listens on loopback only');
+        });
+    })->with(['0.0.0.0', '192.168.1.20', '::']);
+
+    it('needs the front controller it runs for every request', function () {
+        withoutEnvironmentBinary(function () {
+            [$command, $errors] = command(project());
+
+            expect($command->run(['--dev', '--app=' . app(built: false)]))->toBe(ServeCommand::USAGE)
+                ->and(implode("\n", $errors->getArrayCopy()))->toContain('has no public/index.php');
+        });
     });
 });
 
