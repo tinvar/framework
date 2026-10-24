@@ -62,6 +62,12 @@ describe('the redactor', function () {
     })->with([
         'an address' => ['No customer with email ada.lovelace+shop@example.co.uk.', 'No customer with email [email].'],
         'a URL\'s password' => ['Could not reach smtp://orders:hunter22@mail.example.com:587', 'Could not reach smtp://orders:[redacted]@mail.example.com:587'],
+        'a URL\'s password with no user' => ['redis://:s3cret@cache:6379/0', 'redis://:[redacted]@cache:6379/0'],
+        'a URL\'s password with a slash' => ['postgres://u:pa/ss@db/shop', 'postgres://u:[redacted]@db/shop'],
+        'a URL\'s password with an at' => ['https://u:p@ss@host/x', 'https://u:[redacted]@host/x'],
+        'a URL\'s password with a colon' => ['amqp://guest:a:b:c@mq', 'amqp://guest:[redacted]@mq'],
+        'a URL\'s user with an at' => ['smtp://orders@pellwick.test:hunter22@mail', 'smtp://[email]:[redacted]@mail'],
+        'a URL with a port and no credentials' => ['GET https://shop.test:8443/orders', 'GET https://shop.test:8443/orders'],
         'a bearer token' => ['sent Authorization: Bearer sk_live_abcdef123456', 'sent Authorization: Bearer [redacted]'],
         'basic credentials' => ['Authorization: Basic YWxhZGRpbjpvcGVuc2VzYW1l', 'Authorization: Basic [redacted]'],
         'basic credentials, lowercase' => ['authorization: basic dXNlcjpwYXNz', 'authorization: basic [redacted]'],

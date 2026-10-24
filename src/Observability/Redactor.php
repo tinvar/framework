@@ -57,8 +57,12 @@ final class Redactor
      * @var array<string, string> pattern => replacement
      */
     private const array VALUES = [
-        // user:password@ in a URL: an SMTP or database URL quoted in a message.
-        '~\b([a-z][a-z0-9+.\-]*://[^\s/:@]+):[^\s/@]+@~i' => '$1:' . self::REDACTED . '@',
+        // user:password@ in a URL: an SMTP or database URL quoted in a
+        // message. The user may be empty (`redis://:secret@`), and the
+        // password is everything up to the last @ -- a / an @ or a : in it
+        // included -- since a password is any string, whatever URLs allow.
+        // A URL whose path holds an @ has its port and path taken with it.
+        '~\b([a-z][a-z0-9+.\-]*://[^\s/:]*):\S*@~i' => '$1:' . self::REDACTED . '@',
         // An Authorization header's credentials: a bearer token, or Basic's
         // base64, the scheme in any case. The base64 has to look like it --
         // a digit, `+`, `/` or `=`, or a capital after its first letter, as
