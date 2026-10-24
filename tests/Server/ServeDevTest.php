@@ -5,8 +5,8 @@ declare(strict_types=1);
 /**
  * `tinvar serve --dev` for real: Vite's dev server renders the shop from
  * source, FrankenPHP proxies its modules and HMR socket on its own origin,
- * and an edit to a server component and to a client component shows up in
- * Chromium with no reload.
+ * an edit to a server component and to a client component shows up in
+ * Chromium with no reload, and live updates arrive through the hub.
  *
  * Against a copy of the shop's frontend, which the browser script edits:
  * the shop's own sources are what other tests build from, and an edit there
@@ -18,6 +18,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Server\ServeDev;
 
+use Shop\DemoAccount;
+use Shop\StaffAccount;
 use Tinvar\Bench\Shop;
 use Tinvar\Server\FrankenPhp;
 use Tinvar\Server\ServeException;
@@ -192,6 +194,12 @@ it('serves the shop from source, and shows an edited component without a reload'
             [$clientStatus, $clientHeaders] = fetch("{$url}/_vite/@vite/client");
             [$missing, , $missingBody] = fetch("{$url}/no-such-shelf", ['Accept: text/html']);
             $output = runWithTimeout(['node', "{$root}/examples/shop/e2e/dev-hmr.mjs", $url, $copy], $root, 150);
+            // Live updates through the dev Caddyfile's hub, as from a build.
+            $live = runWithTimeout(
+                ['node', "{$root}/examples/shop/e2e/live.mjs", $url, DemoAccount::EMAIL, DemoAccount::PASSWORD, StaffAccount::EMAIL, StaffAccount::PASSWORD],
+                $root,
+                150,
+            );
         } finally {
             $code = $stop();
         }
@@ -236,6 +244,20 @@ it('serves the shop from source, and shows an edited component without a reload'
             'reloaded' => false,
             'typed' => 'kept@shop.test',
         ]);
+
+        // An order placed in one tab shows in the customer's other tab and in
+        // staff's list, refetched in place, through the hub in dev too.
+        $updated = json_decode($live, true);
+        expect($updated)->toBeArray("the live script failed:\n{$live}");
+        \assert(\is_array($updated));
+        expect($updated['errors'])->toBe([])
+            ->and($updated['other']['after']['first'])->toBe($updated['number'])
+            ->and($updated['other']['documents'])->toBe(0)
+            ->and($updated['admin']['after']['first'])->toBe($updated['number'])
+            ->and($updated['other']['live'])->toBe([
+                ['path' => '/_live/subscribe', 'status' => 200],
+                ['path' => '/.well-known/mercure', 'status' => 200],
+            ]);
 
         expect($code)->toBe(0);
 

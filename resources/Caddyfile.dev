@@ -4,7 +4,9 @@
 # the app's: the app's own Caddyfile is how it is served from a build, and
 # dev has no build. Started by ServeCommand with the variables read here:
 # where to listen (TINVAR_HOST, TINVAR_PORT -- loopback only), the app
-# (TINVAR_APP_ROOT) and the dev server's port (TINVAR_VITE_PORT).
+# (TINVAR_APP_ROOT), the dev server's port (TINVAR_VITE_PORT), and the live
+# hub's keys and audience (TINVAR_LIVE_*), which the app hands ServeCommand
+# as it does for its own Caddyfile.
 {
 	admin off
 	persist_config off
@@ -17,6 +19,25 @@
 
 http://:{$TINVAR_PORT} {
 	bind {$TINVAR_HOST}
+
+	# The live hub, as an app's own Caddyfile runs it (Tinvar\Live, ADR
+	# 0030): FrankenPHP's built-in Mercure, which the front controller
+	# publishes to in-process, letting in only a subscriber with an access
+	# token PHP signed, read from its cookie. Live updates work in dev as
+	# they do from a build.
+	mercure {
+		transport local
+		issuer tinvar {
+			publisher {
+				jwt {env.TINVAR_LIVE_PUBLISHER_KEY} HS256
+			}
+			subscriber {
+				jwt {env.TINVAR_LIVE_SUBSCRIBER_KEY} HS256
+			}
+		}
+		resource_identifier {$TINVAR_LIVE_AUDIENCE:https://live.tinvar.invalid/.well-known/mercure}
+		cookie_name __Secure-tinvar-live
+	}
 
 	# The dev server's modules and its HMR socket, on this same origin. Vite
 	# serves everything under this base, so nothing of the app can collide
