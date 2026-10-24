@@ -14,11 +14,11 @@ namespace Tinvar\Orm;
  * wrote by hand -- that forgot the predicate: the database still returns
  * only the tenant's rows, and none at all when no tenant is set.
  *
- *     foreach (RowLevelSecurity::forModel(Rack::class, type: 'uuid') as $sql) {
- *         $pdo->exec($sql);
- *     }
+ * A migration applies it (ADR 0029): Table::tenant() on a table it makes,
+ * Schema::tenantPolicy() on one that has its tenant column already, and
+ * `make:migration` writes whichever a #[TenantScoped] table lacks.
  *
- * in a migration. The policy is FORCEd, so the table's owner -- often the
+ * The policy is FORCEd, so the table's owner -- often the
  * application's own role -- is held to it too; a superuser or a role with
  * BYPASSRLS is not, whatever this does, so the application must not
  * connect as one.
