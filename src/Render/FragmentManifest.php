@@ -31,8 +31,10 @@ namespace Tinvar\Render;
  * not. ADR 0009: "A page with no deferred boundaries cannot be talked into
  * minting" -- which holds only if a render is handed a minter when its route
  * has a boundary to mint for, and otherwise none, so a mint frame from it is
- * a protocol violation. A dynamically rendered page's boundaries are known
- * only as it renders, so for those the manifest records the route alone.
+ * a protocol violation. A dynamically rendered page's props are known only as
+ * it renders, so for those the manifest records the route, and the components
+ * its boundaries name when the build could read them. FragmentManifestProducer
+ * writes both from the renderer build; nothing is declared by hand.
  */
 final class FragmentManifest
 {
@@ -53,6 +55,26 @@ final class FragmentManifest
 
     /** @var array<string, true> routes whose renders contain a boundary, by name */
     private array $deferring = [];
+
+    /**
+     * The components each route's renders may name: a list when the build
+     * read every boundary's, null when it could not. A route with no entry
+     * may name any. See componentsFor().
+     *
+     * @var array<string, list<string>|null>
+     */
+    private array $components = [];
+
+    /**
+     * The params of each built page, by the same key as $byPage, so the
+     * manifest can be written back out.
+     *
+     * @var array<string, array<string, string>>
+     */
+    private array $pageParams = [];
+
+    /** The shape toArray() writes, so a later one can be told apart. */
+    public const int FORMAT = 1;
 
     /**
      * @param array<string, list<array{
@@ -85,7 +107,9 @@ final class FragmentManifest
     }
 
     /**
-     * Reads a manifest the build wrote.
+     * Reads a manifest the build wrote: what toArray() produces -- `tinvar
+     * build:fragments` writes one -- or, from before the build wrote any,
+     * the bare map of route to built boundaries the constructor takes.
      *
      * A missing file is an empty manifest rather than an error: an
      * application with no static pages has nothing to declare, and failing to
@@ -114,8 +138,120 @@ final class FragmentManifest
             throw new \RuntimeException("The fragment manifest at {$path} is not an object.");
         }
 
-        /** @var array<string, list<array{id: string, component: string, props?: array<string, mixed>}>> $decoded */
-        return new self($decoded);
+        // The bare map has a list for every key; `format` as a number is
+        // the written form's, and no route's boundaries.
+        if (!\array_key_exists('format', $decoded) || \is_array($decoded['format'])) {
+            /** @var array<string, list<array{id: string, component: string, props?: array<string, mixed>}>> $decoded */
+            return new self($decoded);
+        }
+
+        return self::fromArray($decoded, $path);
+    }
+
+    /**
+     * What toArray() wrote, checked as it is read: this decides which
+     * renders may use the signing key, so a field read leniently -- a
+     * component list that is really an object -- is a check that silently
+     * does not apply.
+     *
+     * @param array<array-key, mixed> $data
+     */
+    private static function fromArray(array $data, string $path): self
+    {
+        $routes = $data['routes'] ?? [];
+        $pages = $data['pages'] ?? [];
+
+        if ($data['format'] !== self::FORMAT || !\is_array($routes) || !\is_array($pages)) {
+            throw new \RuntimeException("The fragment manifest at {$path} is not one this version of Tinvar reads.");
+        }
+
+        $manifest = new self();
+        foreach ($routes as $route => $components) {
+            if (!\is_string($route) || ($components !== null && (!\is_array($components) || !array_is_list($components)))) {
+                throw new \RuntimeException("The fragment manifest at {$path} lists a route that is not a name with a list or null.");
+            }
+            $names = null;
+            if ($components !== null) {
+                $names = [];
+                foreach ($components as $component) {
+                    if (!\is_string($component)) {
+                        throw new \RuntimeException("The fragment manifest at {$path} names a component that is not a string.");
+                    }
+                    $names[] = $component;
+                }
+            }
+            $manifest->declareRoute($route, $names);
+        }
+
+        foreach ($pages as $route => $boundaries) {
+            if (!\is_string($route) || !\is_array($boundaries) || !array_is_list($boundaries)) {
+                throw new \RuntimeException("The fragment manifest at {$path} lists a page that is not a route with a list of boundaries.");
+            }
+            foreach ($boundaries as $boundary) {
+                if (!\is_array($boundary) || !\is_string($boundary['id'] ?? null) || !\is_string($boundary['component'] ?? null)
+                    || !\is_array($boundary['props'] ?? []) || !\is_array($boundary['params'] ?? [])) {
+                    throw new \RuntimeException("The fragment manifest at {$path} has a boundary without a string id and component.");
+                }
+                /** @var array<string, mixed> $props */
+                $props = $boundary['props'] ?? [];
+                /** @var array<string, string|int> $params */
+                $params = $boundary['params'] ?? [];
+                $manifest->declare($route, $boundary['id'], $boundary['component'], $props, $params);
+            }
+        }
+
+        return $manifest;
+    }
+
+    /**
+     * The manifest as fromFile() reads it: every route that defers, with the
+     * components its renders may name (null for any), and every built page's
+     * boundaries with the params it was built for.
+     *
+     * @return array{
+     *     format: int,
+     *     routes: array<string, list<string>|null>,
+     *     pages: array<string, list<array{id: string, component: string, props: array<string, mixed>, params: array<string, string>}>>
+     * }
+     */
+    public function toArray(): array
+    {
+        $routes = [];
+        foreach (array_keys($this->deferring) as $route) {
+            $routes[$route] = $this->componentsFor($route);
+        }
+        ksort($routes);
+
+        $pages = [];
+        foreach ($this->byPage as $key => $boundaries) {
+            $route = explode("\0", $key, 2)[0];
+            foreach ($boundaries as $boundary) {
+                $pages[$route][] = [...$boundary, 'params' => $this->pageParams[$key] ?? []];
+            }
+        }
+        ksort($pages);
+
+        return ['format' => self::FORMAT, 'routes' => $routes, 'pages' => $pages];
+    }
+
+    /**
+     * Writes the manifest where fromFile() will read it, whole: written under
+     * a private name and renamed into place, so a worker starting meanwhile
+     * reads the old manifest or the new one, never half of either.
+     */
+    public function write(string $path): void
+    {
+        $directory = \dirname($path);
+        if (!is_dir($directory) && !@mkdir($directory, 0o755, true) && !is_dir($directory)) {
+            throw new \RuntimeException("Cannot create {$directory} for the fragment manifest.");
+        }
+
+        $json = json_encode($this->toArray(), JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+        $temporary = $directory . '/.' . basename($path) . '.' . bin2hex(random_bytes(6));
+        if (@file_put_contents($temporary, $json) !== \strlen($json) || !@rename($temporary, $path)) {
+            @unlink($temporary);
+            throw new \RuntimeException("Cannot write the fragment manifest to {$path}.");
+        }
     }
 
     /**
@@ -147,6 +283,7 @@ final class FragmentManifest
         }
 
         $this->byPage[$page][] = ['id' => $id, 'component' => $component, 'props' => $props];
+        $this->pageParams[$page] = self::paramStrings($params);
         $this->deferring[$route] = true;
 
         return $this;
@@ -160,13 +297,26 @@ final class FragmentManifest
      * boundaries and props exist only while it renders. The renderer names
      * them then; this says only that the route has any, so the renders of
      * every other route get no minter at all.
+     *
+     * @param list<string>|null $components the components its boundaries
+     *        name, as the build read them; null when it could not read them
+     *        all, which allows any. Declared twice, a route allows what
+     *        either declaration does.
      */
-    public function declareRoute(string $route): self
+    public function declareRoute(string $route, ?array $components = null): self
     {
         if ($route === '') {
             throw new \InvalidArgumentException('A route that defers needs a name to be found by.');
         }
 
+        if (!\array_key_exists($route, $this->components)) {
+            $this->components[$route] = $components === null ? null : array_values(array_unique($components));
+        } else {
+            $existing = $this->components[$route];
+            $this->components[$route] = $existing === null || $components === null
+                ? null
+                : array_values(array_unique([...$existing, ...$components]));
+        }
         $this->deferring[$route] = true;
 
         return $this;
@@ -179,6 +329,32 @@ final class FragmentManifest
     public function defersOn(string $route): bool
     {
         return isset($this->deferring[$route]);
+    }
+
+    /**
+     * The components a render of this route may mint for, or null for any.
+     *
+     * A list only when the build read every boundary the route's module
+     * graph reaches. ADR 0009 names what this narrows: a renderer running
+     * hostile code could have tokens signed "for subtrees the page did not
+     * contain". With the boundary set known ahead of the render, a token can
+     * name only a component the page does.
+     *
+     * @return list<string>|null
+     */
+    public function componentsFor(string $route): ?array
+    {
+        return $this->components[$route] ?? null;
+    }
+
+    /**
+     * Every route whose renders may mint, by name.
+     *
+     * @return list<string>
+     */
+    public function routes(): array
+    {
+        return array_keys($this->deferring);
     }
 
     /**
