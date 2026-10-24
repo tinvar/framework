@@ -25,8 +25,11 @@ final class MimeMessage
             $headers[] = 'Reply-To: ' . $message->replyTo->toHeader();
         }
         // Checked when the Unsubscribe was made: nothing in them breaks a line.
+        // Folded between its entries past 78 characters, so a long one-click
+        // URL and an address never run a line past SMTP's 998 bytes.
         foreach ($message->unsubscribe?->headers() ?? [] as $name => $value) {
-            $headers[] = "{$name}: {$value}";
+            $line = "{$name}: {$value}";
+            $headers[] = \strlen($line) > 78 ? str_replace('>, <', ">,\r\n <", $line) : $line;
         }
         $headers = [
             ...$headers,

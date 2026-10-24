@@ -103,10 +103,27 @@ describe('the headers', function () {
 
         $url = URL;
         expect($transport->sent[0]->unsubscribe)->toBe($message->unsubscribe)
-            ->and($mime)->toContain("\r\nList-Unsubscribe: <{$url}>, <mailto:unsubscribe@shop.example>\r\n")
+            // Folded between its entries, a line each.
+            ->and($mime)->toContain("\r\nList-Unsubscribe: <{$url}>,\r\n <mailto:unsubscribe@shop.example>\r\n")
             ->and($mime)->toContain("\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n")
             ->and($logged['listUnsubscribe'])->toBe("<{$url}>, <mailto:unsubscribe@shop.example>")
             ->and($logged['listUnsubscribePost'])->toBe('List-Unsubscribe=One-Click');
+    });
+
+    it('never run a line past what SMTP carries, however long the URL', function () {
+        $url = 'https://shop.example/_mail/unsubscribe/' . str_repeat('a', Unsubscribe::MAX_URL_BYTES - 40);
+        $message = new Message(
+            new Address('news@shop.example'),
+            [new Address('ada@example.test')],
+            'This week',
+            '<p>Hi</p>',
+            'Hi',
+            unsubscribe: new Unsubscribe($url, new Address(str_repeat('u', 60) . '@' . str_repeat('s', 60) . '.example')),
+        );
+
+        $lines = explode("\r\n", MimeMessage::build($message, 'shop.example'));
+
+        expect(max(array_map(\strlen(...), $lines)))->toBeLessThanOrEqual(998);
     });
 
     it('are left out of a message that says nothing of unsubscribing', function () {
