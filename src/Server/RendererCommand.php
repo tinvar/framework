@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Tinvar\Server;
 
+use Tinvar\Render\RendererException;
 use Tinvar\Render\RendererHealth;
+use Tinvar\Render\SocketTrust;
 use Tinvar\Support\PrivateDirectory;
 
 /**
@@ -117,6 +119,11 @@ final class RendererCommand
             ($this->err)($e->getMessage());
 
             return self::USAGE;
+        } catch (RendererException $e) {
+            // A pool directory the trust checks refuse: said, not a crash.
+            ($this->err)($e->getMessage());
+
+            return self::FAILED;
         }
     }
 
@@ -270,9 +277,13 @@ final class RendererCommand
      * The pool's directory and its supervisor's pid, or null for the pid
      * when there is no pool running there to signal -- said why.
      *
-     * The pid file is checked against the process it names: a pool killed
-     * outright leaves its file behind, and its pid may since belong to
-     * anything else this user runs.
+     * The pid file is only as trustworthy as its directory -- whoever can
+     * write there can name any process in it -- so the directory is held to
+     * the checks a render holds it to first. Then the file is checked
+     * against the process it names: a pool killed outright leaves its file
+     * behind, and its pid may since belong to anything else this user runs.
+     * Only a pool supervisor's command line passes, not any that mentions
+     * renderer.js -- an editor open on it, or a single renderer, does.
      *
      * @param array<string, string> $options
      * @return array{string, int|null}
@@ -287,16 +298,29 @@ final class RendererCommand
             return [$directory, null];
         }
 
+        new SocketTrust()->assertPool($directory);
+
         $text = trim((string) file_get_contents($pidFile));
         $pid = preg_match('/^[1-9][0-9]{0,9}\z/', $text) === 1 ? (int) $text : 0;
-        $command = $pid > 0 ? trim((string) shell_exec("ps -o args= -p {$pid} 2>/dev/null")) : '';
-        if ($pid === 0 || !self::running($pid) || !str_contains($command, 'renderer.js')) {
+        // -ww: the whole command line, however long its paths.
+        $command = $pid > 0 ? trim((string) shell_exec("ps -ww -o args= -p {$pid} 2>/dev/null")) : '';
+        if ($pid === 0 || !self::running($pid) || !self::isSupervisor($command)) {
             ($this->err)("The renderer pool in {$directory} is not running" . ($pid > 0 ? " (pid {$pid} is not its supervisor)." : '.'));
 
             return [$directory, null];
         }
 
         return [$directory, $pid];
+    }
+
+    /**
+     * Whether a command line is a pool supervisor's: renderer.js run with
+     * --processes, as renderer:start and serve both run it.
+     */
+    private static function isSupervisor(string $command): bool
+    {
+        return preg_match('#(^|[\s/])renderer\.js\s#', $command) === 1
+            && preg_match('#\s--processes=[1-9][0-9]*(\s|$)#', $command) === 1;
     }
 
     /**

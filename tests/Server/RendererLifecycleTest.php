@@ -119,6 +119,24 @@ function lifecycle(string $root): array
     ];
 }
 
+/**
+ * A process that sleeps with $arguments after its own, so ps lists them as
+ * its command line.
+ *
+ * @param list<string> $arguments
+ * @return resource
+ */
+function bystander(array $arguments)
+{
+    $process = proc_open([PHP_BINARY, '-r', 'sleep(30);', ...$arguments], [0 => ['file', '/dev/null', 'r']], $pipes);
+    if (!\is_resource($process)) {
+        throw new \RuntimeException('Could not start a bystander process.');
+    }
+    usleep(100_000);
+
+    return $process;
+}
+
 /** An app whose render takes $ms to come back: a render that is in flight for as long as a test needs. */
 function slowApp(int $ms): string
 {
@@ -361,6 +379,71 @@ describe('what the lifecycle commands refuse', function () use ($root) {
 
         expect($status)->toBe(RendererCommand::FAILED)
             ->and(implode("\n", $err->getArrayCopy()))->toContain('is not its supervisor');
+    });
+
+    // ps names it with renderer.js in its arguments, and it is still not a
+    // pool's supervisor: an editor open on the file, a single renderer, a
+    // test runner. A stale pid file that names one must not get it signalled.
+    it('signals no process that merely mentions renderer.js', function () use ($root) {
+        $dir = '/tmp/tvlife-' . bin2hex(random_bytes(4));
+        mkdir($dir, 0700);
+        $bystander = bystander(['/somewhere/bin/renderer.js', '/tmp/one.sock', '/somewhere/dist/rsc/index.js']);
+        file_put_contents("{$dir}/renderer.pid", (string) proc_get_status($bystander)['pid']);
+        try {
+            [$command, , $err] = lifecycle($root);
+            $status = $command->run('renderer:stop', ['--graceful', "--socket={$dir}"]);
+            usleep(200_000);
+            $alive = proc_get_status($bystander)['running'];
+        } finally {
+            proc_terminate($bystander, SIGKILL);
+            proc_close($bystander);
+            unlink("{$dir}/renderer.pid");
+            rmdir($dir);
+        }
+
+        expect($status)->toBe(RendererCommand::FAILED)
+            ->and($alive)->toBeTrue()
+            ->and(implode("\n", $err->getArrayCopy()))->toContain('is not its supervisor');
+    });
+
+    // Whoever can write the directory can write the pid file: in one other
+    // users can write, it names whatever they like.
+    it('trusts no pid file in a directory other users can write', function () use ($root) {
+        $dir = '/tmp/tvlife-' . bin2hex(random_bytes(4));
+        mkdir($dir, 0700);
+        chmod($dir, 0777);
+        $lookalike = bystander(['/somewhere/bin/renderer.js', $dir, '/somewhere/dist/rsc/index.js', '--processes=2']);
+        file_put_contents("{$dir}/renderer.pid", (string) proc_get_status($lookalike)['pid']);
+        try {
+            [$command, , $err] = lifecycle($root);
+            $status = $command->run('renderer:stop', ["--socket={$dir}"]);
+            usleep(200_000);
+            $alive = proc_get_status($lookalike)['running'];
+        } finally {
+            proc_terminate($lookalike, SIGKILL);
+            proc_close($lookalike);
+            unlink("{$dir}/renderer.pid");
+            rmdir($dir);
+        }
+
+        expect($status)->toBe(RendererCommand::FAILED)
+            ->and($alive)->toBeTrue()
+            ->and(implode("\n", $err->getArrayCopy()))->toContain('writable by other users');
+    });
+
+    it('reports a pool directory it may not trust, rather than crashing on it', function () use ($root) {
+        $dir = '/tmp/tvlife-' . bin2hex(random_bytes(4));
+        mkdir($dir, 0700);
+        chmod($dir, 0777);
+        try {
+            [$command, , $err] = lifecycle($root);
+            $status = $command->run('renderer:check', ["--socket={$dir}"]);
+        } finally {
+            rmdir($dir);
+        }
+
+        expect($status)->toBe(RendererCommand::FAILED)
+            ->and(implode("\n", $err->getArrayCopy()))->toContain('writable by other users');
     });
 
     it('refuses a timeout that is not a number of seconds', function () use ($root) {
