@@ -51,14 +51,13 @@ final readonly class NoticePageData extends Data
     public function __construct(public string $text) {}
 }
 
-/** Declares no return type, so nothing says what it returns until it runs. */
+/** The notices area, whose data its pages take by type. */
 #[Layout('/notices', view: 'notices/layout')]
-final class UntypedLayout
+final class NoticesLayout
 {
-    /** @phpstan-ignore missingType.return */
-    public function __invoke()
+    public function __invoke(): BannerData
     {
-        Trace::note('layout:untyped');
+        Trace::note('layout:notices');
 
         return new BannerData('banner');
     }
@@ -94,19 +93,56 @@ final class AmbiguousPage
     }
 }
 
-/** Allows or denies everything, and remembers what it was asked. */
+/** A page whose loader refuses by hand, as a loader may. */
+#[Page('/notices/hidden', view: 'notices/hidden', name: 'notices.hidden')]
+final class HiddenNoticePage
+{
+    public function __invoke(BannerData $banner): NoticePageData
+    {
+        Trace::note('page:hidden');
+
+        throw new ForbiddenException('Not this notice.');
+    }
+}
+
+/** A layout whose loader is where the area's access rule lives. */
+#[Layout('/guarded', view: 'guarded/layout')]
+final class GuardedLayout
+{
+    public function __invoke(): BannerData
+    {
+        Trace::note('layout:guarded');
+
+        throw new ForbiddenException('Not this guarded area.');
+    }
+}
+
+#[Page('/guarded/inside', view: 'guarded/inside', name: 'guarded.inside')]
+final class GuardedPage
+{
+    public function __invoke(): NoticePageData
+    {
+        Trace::note('page:guarded');
+
+        return new NoticePageData('inside');
+    }
+}
+
+/** Allows every check but those it is told to deny, and remembers what it was asked. */
 final class RecordingGate implements Gate
 {
     /** @var list<string> */
     public array $asked = [];
 
-    public function __construct(private readonly bool $allow = true) {}
+    /** @param list<string> $deny `ability:argument` */
+    public function __construct(private readonly array $deny = []) {}
 
     public function allows(Authorize $check, array $arguments): bool
     {
-        $this->asked[] = $check->ability . ':' . ($check->argument ?? '');
+        $asked = $check->ability . ':' . ($check->argument ?? '');
+        $this->asked[] = $asked;
 
-        return $this->allow;
+        return !\in_array($asked, $this->deny, true);
     }
 }
 
@@ -119,7 +155,8 @@ function router(Gate $gate, bool $partialReloads = true): array
     $routes = new RouteRegistry();
     $routes->registerAll([
         RootLayout::class, SiteLayout::class, RackShowPage::class,
-        UntypedLayout::class, NoticePage::class,
+        NoticesLayout::class, NoticePage::class, HiddenNoticePage::class,
+        GuardedLayout::class, GuardedPage::class,
         PageKeyedLayout::class, AmbiguousPage::class,
     ]);
 
@@ -202,12 +239,18 @@ describe('what is recomputed', function () {
     });
 });
 
-describe('which loaders run', function () {
-    it('runs the recomputed segment\'s loader and those it takes data from', function () {
+/**
+ * Fail closed. Everything a full request runs before it renders runs on a
+ * partial reload too: every route's middleware, every #[Authorize], and
+ * every loader -- a loader's body can hold access logic of its own, and a
+ * client choosing `only` must never choose which of that runs. What is left
+ * out is the rendering of the segments not named, and their data.
+ */
+describe('what still runs', function () {
+    it('every loader in the chain, whatever is recomputed', function (string $only) {
         [$router, $fixture] = router(new RecordingGate());
 
-        // The page takes SiteLayoutData, which takes RootLayoutData.
-        [, $loaded] = ask($router, rackPath($fixture), [...RACK, 'X-Only' => 'page']);
+        ask($router, rackPath($fixture), [...RACK, 'X-Only' => $only]);
 
         expect(Trace::$events)->toBe([
             'middleware:outer',
@@ -216,48 +259,9 @@ describe('which loaders run', function () {
             'layout:site',
             'page:rack-show',
         ]);
-        // Run for their data, not rendered: none of it is handed on.
-        expect($loaded?->layouts)->toBe([])
-            ->and($loaded?->page)->not->toBeNull();
-    });
+    })->with(['page', 'page.rack', 'root', 'sites.code', 'elsewhere']);
 
-    it('does not run a page that is not recomputed', function () {
-        [$router, $fixture] = router(new RecordingGate());
-
-        [, $loaded] = ask($router, rackPath($fixture), [...RACK, 'X-Only' => 'sites']);
-
-        expect(Trace::$events)->not->toContain('page:rack-show')
-            ->and(Trace::$events)->toContain('layout:root')
-            ->and($loaded?->page)->toBeNull()
-            ->and(array_keys($loaded->layouts ?? []))->toBe(['sites']);
-    });
-
-    it('runs nothing a recomputed loader does not need', function () {
-        [$router, $fixture] = router(new RecordingGate());
-
-        [, $loaded] = ask($router, rackPath($fixture), [...RACK, 'X-Only' => 'root']);
-
-        expect(array_values(array_filter(Trace::$events, static fn (string $e): bool => !str_starts_with($e, 'middleware:'))))
-            ->toBe(['layout:root'])
-            ->and(array_keys($loaded->layouts ?? []))->toBe(['root']);
-    });
-
-    // Skipping a loader that was needed would fail the request; running one
-    // that was not only costs time.
-    it('runs a layout whose return type says nothing, when something below takes data', function () {
-        [$router] = router(new RecordingGate());
-
-        [, $loaded] = ask($router, '/notices/latest', ['X-Page' => 'notices/latest', 'X-Only' => 'page']);
-
-        // The root layout returns a type nothing below takes, so it is the
-        // one left out.
-        expect(Trace::$events)->toBe(['middleware:outer', 'layout:untyped', 'page:notice'])
-            ->and($loaded?->page)->toEqual(new NoticePageData('notice under banner'));
-    });
-
-    // "Authorization always runs": a refresh of one segment is a refresh of a
-    // page the session must be allowed to see.
-    it('runs every check in the chain, whatever is recomputed', function () {
+    it('every check in the chain, whatever is recomputed', function () {
         $gate = new RecordingGate();
         [$router, $fixture] = router($gate);
 
@@ -266,12 +270,54 @@ describe('which loaders run', function () {
         expect($gate->asked)->toBe(['view:site', 'view:rack']);
     });
 
-    it('is refused as the whole page is, before any loader runs', function () {
-        [$router, $fixture] = router(new RecordingGate(allow: false));
+    it('a layout\'s #[Authorize], which refuses the reload before any loader runs', function () {
+        [$router, $fixture] = router(new RecordingGate(deny: ['view:site']));
 
-        expect(static fn () => ask($router, rackPath($fixture), [...RACK, 'X-Only' => 'root']))
+        expect(static fn () => ask($router, rackPath($fixture), [...RACK, 'X-Only' => 'page.rack']))
             ->toThrow(ForbiddenException::class);
-        expect(Trace::$events)->not->toContain('layout:root');
+        expect(Trace::$events)->not->toContain('layout:root')
+            ->and(Trace::$events)->not->toContain('page:rack-show');
+    });
+
+    it('a layout loader that refuses by hand, when only the page is named', function () {
+        [$router] = router(new RecordingGate());
+
+        expect(static fn () => ask($router, '/guarded/inside', ['X-Page' => 'guarded/inside', 'X-Only' => 'page.text']))
+            ->toThrow(ForbiddenException::class, 'Not this guarded area.');
+        expect(Trace::$events)->toContain('layout:guarded')
+            ->and(Trace::$events)->not->toContain('page:guarded');
+    });
+
+    it('a page loader that refuses by hand, when only a layout is named', function () {
+        [$router] = router(new RecordingGate());
+
+        expect(static fn () => ask($router, '/notices/hidden', ['X-Page' => 'notices/hidden', 'X-Only' => 'notices']))
+            ->toThrow(ForbiddenException::class, 'Not this notice.');
+    });
+});
+
+describe('what is handed on', function () {
+    it('only the recomputed segments\' data', function () {
+        [$router, $fixture] = router(new RecordingGate());
+
+        [, $page] = ask($router, rackPath($fixture), [...RACK, 'X-Only' => 'page']);
+        [, $layout] = ask($router, rackPath($fixture), [...RACK, 'X-Only' => 'sites']);
+
+        expect($page?->layouts)->toBe([])
+            ->and($page?->page)->not->toBeNull()
+            ->and($layout?->page)->toBeNull()
+            ->and(array_keys($layout->layouts ?? []))->toBe(['sites']);
+    });
+
+    // "A child page or layout can receive a parent's data by type": with
+    // every loader run, a recomputed page always gets the data it takes.
+    it('a page computed from its layout\'s data, though only the page is named', function () {
+        [$router] = router(new RecordingGate());
+
+        [, $loaded] = ask($router, '/notices/latest', ['X-Page' => 'notices/latest', 'X-Only' => 'page']);
+
+        expect($loaded?->page)->toEqual(new NoticePageData('notice under banner'))
+            ->and($loaded?->layouts)->toBe([]);
     });
 });
 

@@ -7,7 +7,7 @@ namespace Tinvar\Routing;
 use Tinvar\Http\Request;
 
 /**
- * Which segments of a route a partial reload recomputes.
+ * Which segments of a route a partial reload re-renders.
  *
  * tinvar-spec.md, "Protocol": `X-Only` / `X-Except` (dot paths) "re-run only
  * named loader fields and queries", and `X-Page` makes "partial requests
@@ -17,12 +17,17 @@ use Tinvar\Http\Request;
  * be rendered again from data computed now, and one loader computes all of
  * its segment's fields at once.
  *
+ * It selects what is rendered and sent, never what runs. Every middleware,
+ * check and loader in the chain runs as it does for the whole page: a
+ * loader's body can hold access logic, and a client choosing `only` must not
+ * choose which of that runs (LoaderRunner).
+ *
  * A path is `<segment>[.<field>...]`, where the segment is a layout's key
  * (the `'shop'` of `LayoutProps<'shop'>`) or `page`. Naming any field of a
- * segment, or the segment itself, in `X-Only` recomputes that segment.
+ * segment, or the segment itself, in `X-Only` re-renders that segment.
  * `X-Except` leaves out only a segment it names whole: a field excepted from
- * a segment that is recomputed anyway is recomputed with it, because
- * recomputing more than was asked is always correct, and less never is.
+ * a segment that is re-rendered anyway is sent with it, because sending more
+ * than was asked is always correct, and less never is.
  *
  * Anything this cannot read -- no `X-Page`, another page's, a malformed or
  * oversized list -- is not a partial reload at all, and the page renders in
@@ -42,7 +47,7 @@ final readonly class PartialReload
     /** A segment key -- a view folder, so it may hold slashes -- then field names. */
     private const string PATH = '/^[A-Za-z0-9_\/-]+(\.[A-Za-z0-9_]+)*\z/';
 
-    /** @param list<string> $segments recomputed, outermost first */
+    /** @param list<string> $segments re-rendered, outermost first */
     private function __construct(public array $segments) {}
 
     /**

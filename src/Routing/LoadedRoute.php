@@ -15,7 +15,7 @@ final readonly class LoadedRoute
      * @param array<string, Model> $models  route parameter name => bound model
      * @param array<string, string> $parameters
      * @param list<string>|null    $segments the segments a partial reload
-     *        recomputed, outermost first, for the renderer to render alone;
+     *        re-renders, outermost first, for the renderer to render alone;
      *        null for the whole page. Only those segments' data is here --
      *        `page` is null when the page was not one of them.
      */
