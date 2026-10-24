@@ -29,6 +29,12 @@ use Tinvar\Http\Request;
  * a segment that is re-rendered anyway is sent with it, because sending more
  * than was asked is always correct, and less never is.
  *
+ * Two field marks reach past the segment (ADR 0045). A field path names an
+ * #[Optional] field too, which is resolved only when named so -- the paths
+ * are kept for the encoder. And a segment whose data has an #[Always] field
+ * is re-rendered whatever the paths say, which only the loaders' results
+ * can tell, so LoaderRunner adds it with including().
+ *
  * Anything this cannot read -- no `X-Page`, another page's, a malformed or
  * oversized list -- is not a partial reload at all, and the page renders in
  * full. That is the safe answer to every doubt: a full page is what the
@@ -47,8 +53,17 @@ final readonly class PartialReload
     /** A segment key -- a view folder, so it may hold slashes -- then field names. */
     private const string PATH = '/^[A-Za-z0-9_\/-]+(\.[A-Za-z0-9_]+)*\z/';
 
-    /** @param list<string> $segments re-rendered, outermost first */
-    private function __construct(public array $segments) {}
+    /**
+     * @param list<string> $segments re-rendered, outermost first
+     * @param list<string> $only     every path X-Only named, as named: which #[Optional]
+     *        fields are resolved (PayloadContext::requests(), ADR 0045)
+     * @param list<string> $except   every path X-Except named
+     */
+    private function __construct(
+        public array $segments,
+        public array $only = [],
+        public array $except = [],
+    ) {}
 
     /**
      * The partial reload a request asks for on this chain, or null for a
@@ -95,7 +110,27 @@ final readonly class PartialReload
             }
         }
 
-        return new self($segments);
+        return new self($segments, $only ?? [], $except ?? []);
+    }
+
+    /**
+     * The same reload with $segment re-rendered too, in its place in the
+     * chain: a segment whose data has an #[Always] field (ADR 0045).
+     *
+     * @param list<string> $chain every segment of the route, outermost first
+     */
+    public function including(string $segment, array $chain): self
+    {
+        if ($this->includes($segment)) {
+            return $this;
+        }
+
+        $segments = array_values(array_filter(
+            $chain,
+            fn (string $key): bool => $key === $segment || $this->includes($key),
+        ));
+
+        return new self($segments, $this->only, $this->except);
     }
 
     public function includes(string $segment): bool

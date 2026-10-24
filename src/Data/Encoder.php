@@ -47,6 +47,13 @@ final class Encoder
     /** The key a Scroll is sent under, holding its dot path. */
     public const string SCROLL_KEY = '$scroll';
 
+    /**
+     * The key an #[Optional] field nobody asked for is sent under, holding
+     * the dot path a partial reload names it by: `{"$optional": "page.history"}`.
+     * ADR 0045.
+     */
+    public const string OPTIONAL_KEY = '$optional';
+
     /** What a matchOn may name: one property of an item. */
     private const string PROPERTY = '/^[A-Za-z_][A-Za-z0-9_]*\z/';
 
@@ -139,6 +146,19 @@ final class Encoder
         $rescued = DataShape::rescued($value::class);
         $once = DataShape::once($value::class);
         $merged = DataShape::merged($value::class);
+        $optional = DataShape::optional($value::class);
+
+        // An #[Always] field decides which segments a partial reload renders,
+        // and that is decided from the Data a loader returned, before any of
+        // it is encoded. Anywhere deeper the mark could never take effect, so
+        // it is refused rather than ignored.
+        if ($path !== '$' && DataShape::always($value::class) !== []) {
+            throw new \LogicException(
+                $value::class . " is met at {$path} and has an #[Always] field, which only the Data a layout's "
+                . "or page's loader returns may have: it is what says the loader's segment is rendered on every "
+                . 'partial reload. Move the field to that Data class.',
+            );
+        }
 
         // The key each once field is sent and held under, naming its
         // subject. Worked out before any field is read: a held one is never
@@ -169,6 +189,18 @@ final class Encoder
                     $out[$name] = null;
                 }
                 continue;
+            }
+
+            // Optional and not asked for by name: the resolver is never run,
+            // and the field is sent as the path a partial reload would name
+            // it by. Before anything else, a held once key included -- an
+            // optional field is not there to be held until it is asked for.
+            if (isset($optional[$name])) {
+                $dot = $scope->dotPath("{$path}.{$name}");
+                if (!$scope->context->requests($dot)) {
+                    $out[$name] = [self::OPTIONAL_KEY => $dot];
+                    continue;
+                }
             }
 
             // Held by the browser: the resolver is never run and nothing is

@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Tinvar\Data;
 
+use Tinvar\Attributes\Always;
 use Tinvar\Attributes\Merge;
 use Tinvar\Attributes\Once;
+use Tinvar\Attributes\Optional;
 use Tinvar\Attributes\Rescue;
 use Tinvar\Cache\Duration;
 
@@ -29,6 +31,12 @@ final class DataShape
 
     /** @var array<class-string, array<string, Merge>> */
     private static array $merged = [];
+
+    /** @var array<class-string, array<string, true>> */
+    private static array $optional = [];
+
+    /** @var array<class-string, array<string, true>> */
+    private static array $always = [];
 
     /**
      * Public, non-static properties in declaration order.
@@ -230,5 +238,72 @@ final class DataShape
         }
 
         return self::$merged[$class] = $merged;
+    }
+
+    /**
+     * The fields marked #[Optional], by name: resolved only for a partial
+     * reload that names them (ADR 0045).
+     *
+     * Read here for the reason rescued() is: the encoder sends these as an
+     * Unrequested marker and codegen types them so. Only a Lazy field can be
+     * optional -- any other value is produced before encoding, so leaving it
+     * out would skip nothing it cost -- and a field cannot be both optional
+     * and #[Always]: one is never sent unless asked for, the other always is.
+     *
+     * @param class-string $class
+     * @return array<string, true>
+     */
+    public static function optional(string $class): array
+    {
+        if (isset(self::$optional[$class])) {
+            return self::$optional[$class];
+        }
+
+        $optional = [];
+        foreach (self::fieldsOf($class) as $property) {
+            if ($property->getAttributes(Optional::class) === []) {
+                continue;
+            }
+
+            $where = "{$class}::\${$property->getName()}";
+            $type = $property->getType();
+            if (!$type instanceof \ReflectionNamedType || $type->getName() !== Lazy::class) {
+                throw new \LogicException(
+                    "{$where} is #[Optional], which only a Lazy field can be: its value is produced "
+                    . 'before encoding, so there would be nothing left to skip.',
+                );
+            }
+            if ($property->getAttributes(Always::class) !== []) {
+                throw new \LogicException("{$where} is both #[Optional] and #[Always]: never sent unless asked for, and always sent.");
+            }
+
+            $optional[$property->getName()] = true;
+        }
+
+        return self::$optional[$class] = $optional;
+    }
+
+    /**
+     * The fields marked #[Always], by name. A segment whose data has one is
+     * re-rendered on every partial reload of its page (ADR 0045), so this is
+     * read off the Data class a loader returned, before anything renders.
+     *
+     * @param class-string $class
+     * @return array<string, true>
+     */
+    public static function always(string $class): array
+    {
+        if (isset(self::$always[$class])) {
+            return self::$always[$class];
+        }
+
+        $always = [];
+        foreach (self::fieldsOf($class) as $property) {
+            if ($property->getAttributes(Always::class) !== []) {
+                $always[$property->getName()] = true;
+            }
+        }
+
+        return self::$always[$class] = $always;
     }
 }

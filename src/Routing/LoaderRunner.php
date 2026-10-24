@@ -8,6 +8,7 @@ use Tinvar\Attributes\Authorize;
 use Tinvar\Auth\Checks;
 use Tinvar\Auth\Gate;
 use Tinvar\Data\Data;
+use Tinvar\Data\DataShape;
 use Tinvar\Data\PayloadContext;
 use Tinvar\Http\ForbiddenException;
 use Tinvar\Http\Request;
@@ -81,6 +82,7 @@ final class LoaderRunner
         /** @var array<class-string, Data> $byType */
         $byType = [];
         $layouts = [];
+        $keys = [...array_map(static fn (CompiledRoute $layout): string => $layout->layoutKey, $chain->layouts), PartialReload::PAGE];
 
         // Every loader runs on a partial reload too, layouts and page alike.
         // A loader's body can hold access logic of its own -- a 403 thrown by
@@ -106,6 +108,7 @@ final class LoaderRunner
             }
 
             $byType[$returned] = $data;
+            $partial = self::always($partial, $data, $layout->layoutKey, $keys);
 
             // Not re-rendered, so not sent.
             if ($partial === null || $partial->includes($layout->layoutKey)) {
@@ -114,6 +117,9 @@ final class LoaderRunner
         }
 
         $page = $this->invoke($chain->page, $binder, $chain->parameters, $byType, $request, PartialReload::PAGE, $provided);
+        if ($page !== null) {
+            $partial = self::always($partial, $page, PartialReload::PAGE, $keys);
+        }
 
         return new LoadedRoute(
             chain: $chain,
@@ -124,9 +130,28 @@ final class LoaderRunner
             segments: $partial?->segments,
             // Everything the loaders could read from the URL: what a #[Once]
             // field's default key is scoped to, so what one customer's page
-            // rendered is never claimed for another's (ADR 0020).
-            context: new PayloadContext(route: PayloadContext::routeOf($chain->page->class, $chain->parameters, $request->query)),
+            // rendered is never claimed for another's (ADR 0020). And the
+            // paths a partial reload named, which say which #[Optional]
+            // fields it asked for -- only a partial reload's, so a full
+            // render never resolves one (ADR 0045).
+            context: new PayloadContext(
+                route: PayloadContext::routeOf($chain->page->class, $chain->parameters, $request->query),
+                only: $partial === null ? [] : $partial->only,
+                except: $partial === null ? [] : $partial->except,
+            ),
         );
+    }
+
+    /**
+     * The partial reload with $segment added when its data has an #[Always]
+     * field: "included even in partial requests", whether X-Only named it or
+     * X-Except left it out, as Inertia's always props are (ADR 0045).
+     *
+     * @param list<string> $keys the route's segments, outermost first
+     */
+    private static function always(?PartialReload $partial, Data $data, string $segment, array $keys): ?PartialReload
+    {
+        return $partial === null || DataShape::always($data::class) === [] ? $partial : $partial->including($segment, $keys);
     }
 
     /**
