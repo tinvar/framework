@@ -153,12 +153,14 @@ it('navigates from the catalog to a product and back, through the RSC payload', 
         ->and($result['availability'])->toBe(24, 'every card awaited its availability query')
         ->and($result['reloaded'])->toBe(1, 'one document load; the rest were client visits');
 
-    // One document load, then a client navigation that asked for the
-    // payload and named the build the page metadata gave it, then back.
+    // One document load; then the product page prefetched while the pointer
+    // rested on its card -- the payload, for the build the page metadata
+    // named, said to be a prefetch -- and the click answered from it, with
+    // no request of its own; then back.
     expect($result['requests'])->toBe([
-        ['path' => '/', 'rsc' => null, 'version' => null],
-        ['path' => $result['path'], 'rsc' => '1', 'version' => 'dev'],
-        ['path' => '/', 'rsc' => '1', 'version' => 'dev'],
+        ['path' => '/', 'rsc' => null, 'version' => null, 'purpose' => null],
+        ['path' => $result['path'], 'rsc' => '1', 'version' => 'dev', 'purpose' => 'prefetch'],
+        ['path' => '/', 'rsc' => '1', 'version' => 'dev', 'purpose' => null],
     ]);
 
     // The page ran under its Content-Security-Policy -- hydrated, and
@@ -247,6 +249,20 @@ it('signs in, reads orders and an order, places an order and signs out', functio
         ->and($result['order']['requestedBeforeScroll'])->toBe(0)
         ->and($result['order']['shipping'])->toBeTrue()
         ->and($result['fragments'])->toBe(['1', '1']);
+
+    // The open order's status poll, fifteen seconds on: a background partial
+    // reload of the page's own segment, merged into the page that was up --
+    // the layout kept, the same document, no new history entry.
+    expect($result['partial'])->toBe([
+        'only' => 'page.order',
+        'page' => 'shop/order',
+        'status' => 200,
+        'partial' => '1',
+        'heading' => $result['placed']['heading'],
+        'layout' => true,
+        'sameDocument' => true,
+        'newEntries' => 0,
+    ]);
 
     expect($result['actions'])->toBe(['account.signIn', 'account.signIn', 'orders.place', 'account.signOut'])
         ->and($result['placed']['heading'])->toStartWith('Order PW-')
