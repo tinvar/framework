@@ -120,6 +120,27 @@ final class Frame
     }
 
     /**
+     * A <Deferred group>'s subtrees in one render, whose payload's root is
+     * the list of them in the order given. The same frame type as a lone
+     * fragment -- the renderer treats both as payload-only and unable to
+     * mint -- told apart by `tokens` in place of `token`.
+     *
+     * @param list<array<string, mixed>> $tokens already-verified fragment token contents
+     * @param array<array-key, string> $allowedQueries sent as a list whatever its keys
+     * @return array<string, mixed>
+     */
+    public static function fragments(array $tokens, string $requestId, string $cspNonce, array $allowedQueries): array
+    {
+        return [
+            't' => self::FRAGMENT,
+            'tokens' => $tokens,
+            'rid' => $requestId,
+            'nonce' => $cspNonce,
+            'allow' => array_values($allowedQueries),
+        ];
+    }
+
+    /**
      * One reply per call in the batch, in any order; `id` pairs them up.
      * Errors are classified codes in production, never exception messages.
      *

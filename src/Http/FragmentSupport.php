@@ -44,6 +44,13 @@ final readonly class FragmentSupport
      *        to both -- before the purpose was bound into the MAC -- made every
      *        fragment token a valid route token. Separate keys keep that from
      *        resting on a single mechanism.
+     * @param (\Closure(list<\Tinvar\Render\FragmentToken>, Request, array<string, mixed>, list<string>): Response)|null $renderGroup
+     *        renders the boundaries of one <Deferred group> in ONE render, as
+     *        an RSC payload whose root is the list of their subtrees in token
+     *        order -- so their queries batch together, as one page's do.
+     *        Separate from $render, whose payload's root is the subtree
+     *        itself, which a client from before groups still expects. Without
+     *        it, a group request is a configuration error, not a refusal.
      */
     public function __construct(
         public Signer $signer,
@@ -55,6 +62,7 @@ final readonly class FragmentSupport
         public ?Orm $orm = null,
         public ?\Closure $renderRoute = null,
         public ?Signer $routeSigner = null,
+        public ?\Closure $renderGroup = null,
     ) {}
 
     /**

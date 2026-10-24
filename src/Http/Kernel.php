@@ -382,8 +382,14 @@ final class Kernel
                 orm: $fragments->orm ?? $this->orm,
                 renderRoute: $fragments->renderRoute,
                 routeSigner: $fragments->routeSigner,
+                renderGroup: $fragments->renderGroup,
             );
         }
+
+        // A group request renders a subtree per token, so it is charged per
+        // token: one request carrying sixteen is sixteen renders, and the
+        // budget is a budget of renders (ADR 0018).
+        $perToken = FragmentEndpoint::tokenCount(...);
 
         $this->fragments_ = $fragments === null ? null : new FragmentEndpoint(
             routes: $this->routes,
@@ -396,9 +402,10 @@ final class Kernel
             allowedQueries: $fragments->allowedQueries,
             middlewareResolver: self::middlewareFrom($resolver),
             globalMiddleware: $globalMiddleware,
-            extraGlobal: $this->throttleFor($throttle, 'fragments', $limits, byAddress: true),
+            extraGlobal: $this->throttleFor($throttle, 'fragments', $limits, byAddress: true, cost: $perToken),
             panels: $panels,
-            extraInner: $this->throttleFor($throttle, 'fragments', $limits, byAddress: false),
+            extraInner: $this->throttleFor($throttle, 'fragments', $limits, byAddress: false, cost: $perToken),
+            renderGroup: $fragments->renderGroup,
         );
 
         // Both, or neither: a manifest says which boundaries exist, and
@@ -634,6 +641,7 @@ final class Kernel
      * and is not, so an application has to say what store it means.
      *
      * @param array<string, int> $limits
+     * @param (\Closure(Request): int)|null $cost hits a request counts as; one by default
      * @return list<Middleware>
      */
     private function throttleFor(
@@ -641,12 +649,13 @@ final class Kernel
         string $name,
         array $limits,
         bool $byAddress = true,
+        ?\Closure $cost = null,
     ): array {
         if ($throttle === null || ($limits[$name] ?? 0) <= 0) {
             return [];
         }
 
-        return [new ThrottleRequests($throttle, $name, $limits[$name], byAddress: $byAddress)];
+        return [new ThrottleRequests($throttle, $name, $limits[$name], byAddress: $byAddress, cost: $cost)];
     }
 
     /**
