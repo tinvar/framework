@@ -130,3 +130,36 @@ it('refuses an answer that is not one', function (array $frames, string $excepti
     'a frame PHP sends' => [[['t' => Frame::HEALTH]], ProtocolException::class, "may not send a 'health' frame"],
     'nothing' => [[], RendererException::class, 'closed the connection without answering'],
 ]);
+
+// The timeout bounded each read, not the answer: a renderer sending its
+// answer a byte at a time, each within the timeout, held renderer:check for
+// as long as it liked -- 4 KiB of answer at three seconds a byte is hours.
+it('gives up on an answer that trickles in past the timeout', function () {
+    $dir = scratchDirectory();
+    $server = stream_socket_server("unix://{$dir}/r.sock") ?: throw new \RuntimeException('no socket');
+    $pid = pcntl_fork();
+    if ($pid === 0) {
+        $client = @stream_socket_accept($server, 5);
+        if ($client !== false) {
+            fread($client, 65536);
+            $answer = new MessagePackCodec()->encodeFrame(['t' => Frame::HEALTHY, 'pid' => 7, 'inFlight' => 0, 'served' => 0]);
+            foreach (str_split($answer) as $byte) {
+                fwrite($client, $byte);
+                usleep(200_000);
+            }
+            fclose($client);
+        }
+        exit(0);
+    }
+    fclose($server);
+
+    $started = microtime(true);
+    try {
+        expect(fn () => new RendererHealth(timeoutSeconds: 0.5)->check("{$dir}/r.sock"))
+            ->toThrow(RendererException::class, 'no answer within 0.5s');
+    } finally {
+        removeDirectory($dir, $pid);
+    }
+
+    expect(microtime(true) - $started)->toBeLessThan(1.5);
+});

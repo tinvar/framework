@@ -78,6 +78,12 @@ final class RendererHealth
             throw RendererException::cannotConnect($socketPath, $reason !== '' ? $reason : "errno {$errno}");
         }
 
+        // The timeout is for the whole answer. Set once on the stream, it
+        // bounded each read, and an answer sent a byte at a time, each in
+        // time, could hold this command for as long as the renderer liked.
+        $deadline = microtime(true) + $this->timeoutSeconds;
+        $late = fn (): RendererException => RendererException::cannotConnect($socketPath, sprintf('no answer within %.1fs', $this->timeoutSeconds));
+
         try {
             stream_set_timeout($socket, (int) $this->timeoutSeconds, (int) (fmod($this->timeoutSeconds, 1.0) * 1e6));
             fwrite($socket, $this->codec->encodeFrame(Frame::health()));
@@ -85,9 +91,14 @@ final class RendererHealth
             $buffer = '';
             $offset = 0;
             while (($frame = $this->codec->decodeFrame($buffer, $offset)) === null) {
+                $left = $deadline - microtime(true);
+                if ($left <= 0) {
+                    throw $late();
+                }
+                stream_set_timeout($socket, (int) $left, max(1, (int) (fmod($left, 1.0) * 1e6)));
                 $chunk = fread($socket, 4096);
                 if (stream_get_meta_data($socket)['timed_out']) {
-                    throw RendererException::cannotConnect($socketPath, sprintf('no answer within %.1fs', $this->timeoutSeconds));
+                    throw $late();
                 }
                 if ($chunk === false || $chunk === '') {
                     throw RendererException::cannotConnect($socketPath, 'it closed the connection without answering');
