@@ -52,13 +52,15 @@ interface TestableApplication extends Application
     public function respond(LoadedRoute $loaded, Request $request, ?\Closure $rendered = null): Response;
 
     /**
-     * The cookies a browser signed in as $user sends: a session made for them
-     * as signing in would make it, with no password asked.
+     * The cookies a browser signed in as $user sends with $request: a session
+     * made for them as signing in would make it, with no password asked --
+     * for the host $request goes to, where an application binds a session
+     * to one.
      *
      * @return array<string, string>
      * @throws \InvalidArgumentException for a user the application cannot sign in
      */
-    public function signedIn(Authenticatable $user): array;
+    public function signedIn(Authenticatable $user, Request $request): array;
 
     /**
      * The last failure the Kernel classified while serving a request, or null:

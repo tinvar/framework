@@ -431,12 +431,7 @@ final readonly class Client
         parse_str($query ?? '', $parsed);
         /** @var array<string, mixed> $parsed */
 
-        $cookies = $this->cookies;
-        if ($this->user !== null && $method === 'GET') {
-            $cookies = [...$cookies, ...$this->app->signedIn($this->user)];
-        }
-
-        return new Request(
+        $build = fn (array $cookies): Request => new Request(
             $method,
             $path === '' ? '/' : $path,
             [...['accept' => 'text/html'], ...$this->headers, ...$headers],
@@ -446,6 +441,13 @@ final readonly class Client
             $query,
             '127.0.0.1',
         );
+
+        $request = $build($this->cookies);
+        if ($this->user === null || $method !== 'GET') {
+            return $request;
+        }
+
+        return $build([...$this->cookies, ...$this->app->signedIn($this->user, $request)]);
     }
 
     /**

@@ -167,6 +167,19 @@ it('acts as a signed-in customer through the session the application makes for t
                     ->has('avatarUrl'))));
 });
 
+// Sessions belong to the host they were made on: a customer signed in for
+// one host is signed in there, and nowhere else.
+it('signs in for the host a request goes to', function () {
+    $demo = customer();
+
+    actingAs($demo)->withHeaders(['host' => 'shop.test'])->get('/orders')->assertPage(Orders::class);
+
+    $elsewhere = new \Tinvar\Testing\Client(testing()->app)
+        ->withCookies(testing()->app->signedIn($demo, \Tinvar\Http\Request::get('/', ['host' => 'admin.shop.test'])))
+        ->withHeaders(['host' => 'shop.test']);
+    $elsewhere->get('/orders')->assertRedirect('/sign-in?next=%2Forders');
+});
+
 it('re-runs a page as a partial reload and asserts what was sent again', function () {
     actingAs(customer())->get('/orders')
         ->assertPage(Orders::class, fn (AssertablePage $page) => $page
@@ -305,7 +318,7 @@ it('refuses to run where the environment says production', function () {
 
     try {
         expect(fn () => Testing::use($app))->toThrow(\LogicException::class, 'TINVAR_ENV=production')
-            ->and(fn () => $app->signedIn($demo))->toThrow(\LogicException::class, 'TINVAR_ENV=production');
+            ->and(fn () => $app->signedIn($demo, \Tinvar\Http\Request::get('/')))->toThrow(\LogicException::class, 'TINVAR_ENV=production');
     } finally {
         putenv('TINVAR_ENV');
     }
