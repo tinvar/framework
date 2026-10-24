@@ -32,7 +32,8 @@ const KEY = 'shop-migrations-test-key-32-bytes!!!';
 
 const TABLES = [
     'auth_epochs', 'customers', 'failed_jobs', 'flashes', 'handoff_nonces', 'jobs', 'order_lines', 'orders', 'previous_urls',
-    'products', 'receipts', 'schedule_runs', 'sessions', 'staff', 'tinvar_migrations', 'uploads', 'webhook_deliveries',
+    'products', 'receipts', 'schedule_runs', 'sessions', 'staff', 'tinvar_build_history', 'tinvar_migrations', 'uploads',
+    'webhook_deliveries',
 ];
 
 /** A database path in a directory of its own, removed when the process ends. */
@@ -84,6 +85,7 @@ it('makes every table the shop uses, and leaves nothing the models describe for 
         '2026_10_24_000005_create_webhook_deliveries',
         '2026_10_24_000006_bind_sessions_to_hosts_and_keep_handoff_codes',
         '2026_10_24_000007_create_uploads_and_receipts',
+        '2026_10_24_000008_create_build_history',
     ])
         ->and(tables($connection))->toBe(TABLES)
         ->and(new MigrationGenerator($connection, new SqliteDialect())->generate([Product::class, Customer::class, Order::class, OrderLine::class, Receipt::class], '2026-10-24'))->toBeNull()
@@ -96,9 +98,9 @@ it('rolls all the way back to nothing, and up again', function () {
     $migrator = Migrations::migrator($connection);
     $migrator->migrate();
 
-    expect($migrator->rollback())->toHaveCount(7)
+    expect($migrator->rollback())->toHaveCount(8)
         ->and(tables($connection))->toBe(['tinvar_migrations'])
-        ->and($migrator->migrate())->toHaveCount(7)
+        ->and($migrator->migrate())->toHaveCount(8)
         ->and(tables($connection))->toBe(TABLES);
 });
 
@@ -124,7 +126,7 @@ it('adopts a database built before the shop had migrations, and keeps what is in
 
     $ran = Migrations::migrate($connection);
 
-    expect($ran)->toHaveCount(7)
+    expect($ran)->toHaveCount(8)
         ->and(tables($connection))->toBe(TABLES)
         ->and($connection->select('SELECT name FROM customers'))->toBe([['name' => 'Ada']])
         ->and(array_column(new SqliteDialect()->indexes($connection, 'previous_urls'), 'name'))->toContain('previous_urls_expires_at')
@@ -183,8 +185,8 @@ describe('from the command line', function () {
 
         expect([$firstStatus, $status])->toBe([0, 0], "{$firstErr}\n{$err}")
             ->and([$firstOut, $out])->toContain("Nothing to migrate.\n")
-            ->and(implode('', [$firstOut, $out]))->toContain('Ran 7 migration(s).')
-            ->and($connection->select('SELECT COUNT(*) AS n, MAX(batch) AS batch FROM ' . Migrator::TABLE))->toBe([['n' => 7, 'batch' => 1]])
+            ->and(implode('', [$firstOut, $out]))->toContain('Ran 8 migration(s).')
+            ->and($connection->select('SELECT COUNT(*) AS n, MAX(batch) AS batch FROM ' . Migrator::TABLE))->toBe([['n' => 8, 'batch' => 1]])
             ->and(file_exists("{$database}-migrate.lock"))->toBeFalse();
     });
 
@@ -209,7 +211,7 @@ describe('from the command line', function () {
         $connection = PdoConnection::sqlite($database);
 
         expect($status)->toBe(0, $err)
-            ->and($err)->toContain("Migrated {$database}: 7 migration(s).")
+            ->and($err)->toContain("Migrated {$database}: 8 migration(s).")
             ->and($out)->toContain('24 products, 3 customers')
             ->and(Migrations::migrator($connection)->pending())->toBe([])
             ->and($connection->select('SELECT COUNT(*) AS n FROM staff'))->toBe([['n' => 1]]);
