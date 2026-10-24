@@ -308,6 +308,18 @@ describe('what is recorded', function () {
         expect($urls->writes)->toBe(['/notes']);
     });
 
+    // The query is the client's, as sent; one a redirect would refuse would
+    // only be refused again when read back.
+    it('records nothing a redirect back could not go to', function () {
+        $urls = new SessionUrls();
+        $kernel = kernel($urls);
+        $kernel->handle(visit('/notes'), page());
+
+        $kernel->handle(visit('/notes/drafts', query: 'next=/\\evil.example'), page());
+
+        expect($urls->writes)->toBe(['/notes']);
+    });
+
     it('keeps one URL per session', function () {
         $urls = new SessionUrls();
         $kernel = kernel($urls);

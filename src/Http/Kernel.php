@@ -862,8 +862,11 @@ final class Kernel
             return;
         }
 
+        // Only a URL that can be gone back to: the query is the client's, as
+        // sent, and one redirect() would refuse -- a backslash in it, say --
+        // would only be refused again when it was read back.
         $url = PreviousUrl::of($request);
-        if (\strlen($url) > PreviousUrl::MAX_BYTES) {
+        if (\strlen($url) > PreviousUrl::MAX_BYTES || !Response::isSameOriginTarget($url)) {
             return;
         }
 
