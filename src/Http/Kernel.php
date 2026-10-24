@@ -44,6 +44,7 @@ use Tinvar\Render\TokenError;
 use Tinvar\Data\PayloadContext;
 use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\LoadedRoute;
+use Tinvar\Routing\RouteChain;
 use Tinvar\Routing\Router;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Validation\Validator;
@@ -283,6 +284,12 @@ final class Kernel
      * @param ErrorShell|null $errorShell the page PHP writes on its own when a
      *        failed document request's #[ErrorPage] cannot be rendered -- the
      *        renderer being what failed, usually; a plain one unless given
+     * @param bool $dev built for dev (see DevMode): a failed document request that
+     *        is a bug rather than an answer gets the DevOverlay over its error
+     *        page -- class, message, file and line, stack, classification -- and
+     *        one with no error page of its own gets the shell to carry it. Never
+     *        in production: everything it shows is what production keeps from
+     *        the browser.
      */
     public function __construct(
         public readonly Orm $orm,
@@ -316,6 +323,7 @@ final class Kernel
         array $renderFailed = [],
         bool $throwOnRenderError = false,
         ?ErrorShell $errorShell = null,
+        private readonly bool $dev = false,
     ) {
         $this->renderFailed = $renderFailed;
         $this->throwOnRenderError = $throwOnRenderError;
@@ -904,8 +912,9 @@ final class Kernel
     /** @param \Closure(LoadedRoute, Request): Response $respond */
     private function drawErrorPage(Request $request, Response $response, \Closure $respond, ?\Throwable $failure): Response
     {
+        $overlaid = $this->dev && $failure !== null && DevOverlay::shows($failure);
         $chain = $this->routes->errorChain($response->status);
-        if ($chain === null) {
+        if ($chain === null && !$overlaid) {
             return $response;
         }
 
@@ -914,7 +923,34 @@ final class Kernel
         // a classified failure and its response always agree on it, and a
         // returned refusal has nothing else to go on.
         $error = new HttpError($response->status, $error->code, $error->reason, $error->digest);
+        $page = $chain === null
+            // In dev, a failure with no error page of its own still has its
+            // overlay: the framework's bare page allows no script to carry it.
+            ? $this->carried($response, $this->errorShell->respond($error, $request))
+            : $this->renderedErrorPage($chain, $error, $request, $response, $respond, $failure);
 
+        if (!$overlaid) {
+            return $page;
+        }
+
+        $overlay = DevOverlay::render($failure, $error->digest, DevOverlay::nonceOf($page->header('content-security-policy')));
+
+        return Response::make($page->status, DevOverlay::into($page->body(), $overlay), $page->headers())->withCookiesOf($page);
+    }
+
+    /**
+     * The error page rendered by the renderer, or the shell when it cannot be.
+     *
+     * @param \Closure(LoadedRoute, Request): Response $respond
+     */
+    private function renderedErrorPage(
+        RouteChain $chain,
+        HttpError $error,
+        Request $request,
+        Response $response,
+        \Closure $respond,
+        ?\Throwable $failure,
+    ): Response {
         $rendererUnusable = $failure instanceof ProtocolException
             || ($failure instanceof RendererException && !$failure->failure()->leavesRendererUsable());
 
