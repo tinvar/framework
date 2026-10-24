@@ -30,8 +30,8 @@ use Tinvar\Support\Signer;
 const KEY = 'shop-migrations-test-key-32-bytes!!!';
 
 const TABLES = [
-    'auth_epochs', 'customers', 'failed_jobs', 'flashes', 'jobs', 'order_lines', 'orders', 'previous_urls', 'products',
-    'schedule_runs', 'sessions', 'staff', 'tinvar_migrations', 'webhook_deliveries',
+    'auth_epochs', 'customers', 'failed_jobs', 'flashes', 'handoff_nonces', 'jobs', 'order_lines', 'orders', 'previous_urls',
+    'products', 'schedule_runs', 'sessions', 'staff', 'tinvar_migrations', 'webhook_deliveries',
 ];
 
 /** A database path in a directory of its own, removed when the process ends. */
@@ -81,6 +81,7 @@ it('makes every table the shop uses, and leaves nothing the models describe for 
         '2026_10_24_000003_create_auth_epochs_and_staff',
         '2026_10_24_000004_create_jobs_and_schedule_runs',
         '2026_10_24_000005_create_webhook_deliveries',
+        '2026_10_24_000039_bind_sessions_to_hosts_and_keep_handoff_codes',
     ])
         ->and(tables($connection))->toBe(TABLES)
         ->and(new MigrationGenerator($connection, new SqliteDialect())->generate([Product::class, Customer::class, Order::class, OrderLine::class], '2026-10-24'))->toBeNull()
