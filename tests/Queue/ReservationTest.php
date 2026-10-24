@@ -19,13 +19,14 @@ use Tinvar\Attributes\Queue as QueueOptions;
 use Tinvar\Container\Lifetime;
 use Tinvar\Jobs\Job;
 use Tinvar\Queue\ArrayQueue;
-use Tinvar\Queue\DatabaseQueue;
 use Tinvar\Queue\PendingJob;
 use Tinvar\Queue\Queue;
 use Tinvar\Queue\ReservedJob;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\Journal;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
+
+use function Tinvar\Tests\Jobs\Fixtures\databaseQueue;
 
 require_once __DIR__ . '/../Jobs/Fixtures/jobs.php';
 
@@ -54,7 +55,7 @@ function queues(): array
 {
     return [
         'in memory' => [static fn (TenantFixture $f): Queue => new ArrayQueue()],
-        'SQLite' => [static fn (TenantFixture $f): Queue => DatabaseQueue::install($f->connection)],
+        'SQLite' => [static fn (TenantFixture $f): Queue => databaseQueue($f->connection)],
     ];
 }
 

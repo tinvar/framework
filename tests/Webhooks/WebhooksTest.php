@@ -40,6 +40,8 @@ use Tinvar\Webhooks\WebhookCall;
 use Tinvar\Webhooks\WebhookEndpoint;
 use Tinvar\Webhooks\WebhookSignature;
 
+use function Tinvar\Tests\Jobs\Fixtures\schemaOf;
+
 require_once __DIR__ . '/../Jobs/Fixtures/jobs.php';
 
 const KEY = 'webhooks-test-key-of-thirty-two-bytes';
@@ -236,7 +238,11 @@ it('refuses a replayed delivery, and accepts the sender\'s retry of one whose ha
         ->and(fn () => $s->send($retry, $failing))->toThrow(\RuntimeException::class, 'handler failed');
 })->with([
     'in memory' => [static fn (Harness $h): NonceStore => new ArrayNonceStore()],
-    'in the database' => [static fn (Harness $h): NonceStore => DatabaseNonceStore::install($h->fixture->connection)],
+    'in the database' => [static function (Harness $h): NonceStore {
+        DatabaseNonceStore::define(schemaOf($h->fixture->connection));
+
+        return new DatabaseNonceStore($h->fixture->connection);
+    }],
 ]);
 
 it('answers a webhook ahead of the global stack, and resets the request after it', function () {

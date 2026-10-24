@@ -27,12 +27,13 @@ use Tinvar\Query\QueryError;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
 use Tinvar\Queue\ArrayQueue;
-use Tinvar\Queue\DatabaseQueue;
 use Tinvar\Queue\SyncQueue;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\RecordContext;
 use Tinvar\Tests\Jobs\Fixtures\Sleeps;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
+
+use function Tinvar\Tests\Jobs\Fixtures\databaseQueue;
 
 require_once __DIR__ . '/Fixtures/jobs.php';
 
@@ -152,7 +153,7 @@ it('writes a database queue\'s job inside the transaction around it, so it rolls
     $path = sys_get_temp_dir() . '/tinvar-jobs-outbox-' . bin2hex(random_bytes(4)) . '.sqlite';
     try {
         $connection = PdoConnection::sqlite($path, 'outbox', create: true);
-        $queue = DatabaseQueue::install($connection);
+        $queue = databaseQueue($connection);
         $h = new Harness($queue, new TenantFixture());
         $dispatcher = new Dispatcher($queue, $orm = new Orm($connection, new IdentityMap('outbox')), $h->signer, $h->auth);
 

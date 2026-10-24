@@ -21,6 +21,8 @@ use Tinvar\Tests\Jobs\Fixtures\RecordContext;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 use Tinvar\Tests\Support\Fixtures\Databases;
 
+use function Tinvar\Tests\Jobs\Fixtures\databaseQueue;
+
 require_once __DIR__ . '/../Jobs/Fixtures/jobs.php';
 require_once __DIR__ . '/../Support/Fixtures/databases.php';
 
@@ -31,9 +33,7 @@ require_once __DIR__ . '/../Support/Fixtures/databases.php';
  */
 function behavesAsAQueue(PdoConnection $connection, \Closure $connect): void
 {
-    $queue = DatabaseQueue::install($connection);
-    // Installing again changes nothing: it is what every boot does.
-    DatabaseQueue::install($connection);
+    $queue = databaseQueue($connection);
 
     $queue->push(new PendingJob('a', 'default', 'payload-a', 100));
     $queue->push(new PendingJob('b', 'default', 'payload-b', 200));
@@ -110,7 +110,7 @@ it('queues, reserves, releases and fails on Postgres', function () {
 
 it('runs jobs through a worker on a SQLite queue, retrying and failing them', function () {
     $fixture = new TenantFixture();
-    $queue = DatabaseQueue::install($fixture->connection);
+    $queue = databaseQueue($fixture->connection);
     $h = new Harness($queue, $fixture);
 
     $h->orm->actAs('acme', fn () => $h->dispatcher->dispatch(new RecordContext(note: 'db')));

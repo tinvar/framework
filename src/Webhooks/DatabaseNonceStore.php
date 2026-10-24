@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Tinvar\Webhooks;
 
 use Tinvar\Orm\Connection;
+use Tinvar\Orm\Schema\Schema;
+use Tinvar\Orm\Schema\Table;
 
 /**
  * Nonces in a table of the application's database, so every worker and
@@ -20,14 +22,21 @@ final readonly class DatabaseNonceStore implements NonceStore
         }
     }
 
-    public static function install(Connection $connection, string $table = 'webhook_nonces'): self
+    /**
+     * The store's table, for the application's migration to make. A scope
+     * is kept as its hash: a webhook's class and a tenant can be long, and
+     * a key only has to tell them apart.
+     */
+    public static function define(Schema $schema, string $table = 'webhook_nonces', bool $ifNotExists = false): void
     {
-        $store = new self($connection, $table);
-        $connection->execute(
-            "CREATE TABLE IF NOT EXISTS {$table} (scope TEXT NOT NULL, nonce TEXT NOT NULL, expires_at BIGINT NOT NULL, PRIMARY KEY (scope, nonce))",
-        );
+        new self($schema->connection(), $table);
 
-        return $store;
+        $schema->create($table, static function (Table $nonces): void {
+            $nonces->string('scope', 64);
+            $nonces->string('nonce', 128);
+            $nonces->bigInteger('expires_at');
+            $nonces->primary(['scope', 'nonce']);
+        }, $ifNotExists);
     }
 
     public function claim(string $scope, string $nonce, int $expiresAt, int $now): bool
@@ -36,12 +45,12 @@ final readonly class DatabaseNonceStore implements NonceStore
 
         return $this->connection->execute(
             "INSERT INTO {$this->table} (scope, nonce, expires_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-            [$scope, $nonce, $expiresAt],
+            [hash('sha256', $scope), $nonce, $expiresAt],
         ) === 1;
     }
 
     public function release(string $scope, string $nonce): void
     {
-        $this->connection->execute("DELETE FROM {$this->table} WHERE scope = ? AND nonce = ?", [$scope, $nonce]);
+        $this->connection->execute("DELETE FROM {$this->table} WHERE scope = ? AND nonce = ?", [hash('sha256', $scope), $nonce]);
     }
 }

@@ -332,3 +332,17 @@ final class Harness
         return $this->worker->run(new \Tinvar\Queue\WorkerOptions(stopWhenEmpty: true, signals: false));
     }
 }
+
+/** The schema builder over $connection, as a migration is handed it. */
+function schemaOf(\Tinvar\Orm\Connection $connection): \Tinvar\Orm\Schema\Schema
+{
+    return new \Tinvar\Orm\Schema\Schema($connection, \Tinvar\Orm\Schema\Dialect::for($connection));
+}
+
+/** A database queue on $connection, its tables made as the application's migration makes them. */
+function databaseQueue(\Tinvar\Orm\Connection $connection): \Tinvar\Queue\DatabaseQueue
+{
+    \Tinvar\Queue\DatabaseQueue::define(schemaOf($connection));
+
+    return new \Tinvar\Queue\DatabaseQueue($connection);
+}

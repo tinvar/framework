@@ -40,6 +40,8 @@ use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\Journal;
 use Tinvar\Tests\Orm\Fixtures\Script;
 
+use function Tinvar\Tests\Jobs\Fixtures\schemaOf;
+
 require_once __DIR__ . '/../Jobs/Fixtures/jobs.php';
 
 final class TwoTenants implements TenantDirectory
@@ -305,7 +307,8 @@ it('refuses forEachTenant() from work already running as a tenant', function () 
 
 it('claims a task\'s minute once across schedulers sharing a database', function () {
     $h = new Harness();
-    $store = DatabaseScheduleStore::install($h->fixture->connection);
+    DatabaseScheduleStore::define(schemaOf($h->fixture->connection));
+    $store = new DatabaseScheduleStore($h->fixture->connection);
     $other = new DatabaseScheduleStore($h->fixture->connection);
 
     expect($store->claim('Task', 600))->toBeTrue()

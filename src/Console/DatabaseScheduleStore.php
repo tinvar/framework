@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Tinvar\Console;
 
 use Tinvar\Orm\Connection;
+use Tinvar\Orm\Schema\Schema;
+use Tinvar\Orm\Schema\Table;
 
 /**
  * Claims in a table of the application's database, so schedulers on
@@ -24,12 +26,16 @@ final readonly class DatabaseScheduleStore implements ScheduleStore
         }
     }
 
-    public static function install(Connection $connection, string $table = 'schedule_runs'): self
+    /** The store's table, for the application's migration to make. */
+    public static function define(Schema $schema, string $table = 'schedule_runs', bool $ifNotExists = false): void
     {
-        $store = new self($connection, $table);
-        $connection->execute("CREATE TABLE IF NOT EXISTS {$table} (task TEXT NOT NULL, minute BIGINT NOT NULL, PRIMARY KEY (task, minute))");
+        new self($schema->connection(), $table);
 
-        return $store;
+        $schema->create($table, static function (Table $runs): void {
+            $runs->string('task');
+            $runs->bigInteger('minute');
+            $runs->primary(['task', 'minute']);
+        }, $ifNotExists);
     }
 
     public function claim(string $task, int $minute): bool

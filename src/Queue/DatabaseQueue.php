@@ -6,6 +6,8 @@ namespace Tinvar\Queue;
 
 use Tinvar\Orm\Connection;
 use Tinvar\Orm\PdoConnection;
+use Tinvar\Orm\Schema\Schema;
+use Tinvar\Orm\Schema\Table;
 
 /**
  * A queue in two tables of the application's own database, SQLite or
@@ -20,8 +22,8 @@ use Tinvar\Orm\PdoConnection;
  * Reserving takes one row by a conditional update, which only one worker
  * can win: on Postgres the candidate is locked with SKIP LOCKED, so workers
  * do not queue behind one another; SQLite's transactions hold its one write
- * lock, so they take turns. The tables are made by install() until the
- * framework has migrations.
+ * lock, so they take turns. The tables are the application's to make, in
+ * a migration that calls define().
  */
 final class DatabaseQueue implements Queue
 {
@@ -41,38 +43,39 @@ final class DatabaseQueue implements Queue
     }
 
     /**
-     * Makes the queue's tables where they are missing: the same statements
-     * on SQLite and Postgres, which both take BIGINT and TEXT.
+     * The queue's two tables, for the application's migration to make:
+     *
+     *     return new class extends Migration {
+     *         public function up(Schema $schema): void { DatabaseQueue::define($schema); }
+     *     };
+     *
+     * $ifNotExists leaves tables already there as they are, as a migration
+     * adopting an existing database asks of every table it makes.
      */
-    public static function install(Connection $connection, string $table = 'jobs', string $failedTable = 'failed_jobs'): self
+    public static function define(Schema $schema, string $table = 'jobs', string $failedTable = 'failed_jobs', bool $ifNotExists = false): void
     {
-        $queue = new self($connection, $table, $failedTable);
+        // Checked as the constructor checks them, before anything is made.
+        new self($schema->connection(), $table, $failedTable);
 
-        $connection->execute(
-            "CREATE TABLE IF NOT EXISTS {$table} (
-                id TEXT PRIMARY KEY,
-                queue TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                attempts BIGINT NOT NULL DEFAULT 0,
-                available_at BIGINT NOT NULL,
-                reserved_until BIGINT,
-                token TEXT,
-                queued_at BIGINT NOT NULL
-            )",
-        );
-        // What reserve() asks: the next row of one queue that is available.
-        $connection->execute("CREATE INDEX IF NOT EXISTS {$table}_queue_available ON {$table} (queue, available_at)");
-        $connection->execute(
-            "CREATE TABLE IF NOT EXISTS {$failedTable} (
-                id TEXT PRIMARY KEY,
-                queue TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                error TEXT NOT NULL,
-                failed_at BIGINT NOT NULL
-            )",
-        );
-
-        return $queue;
+        $schema->create($table, static function (Table $jobs) use ($table): void {
+            $jobs->string('id')->primary();
+            $jobs->string('queue', 64);
+            $jobs->text('payload');
+            $jobs->integer('attempts')->default(0);
+            $jobs->bigInteger('available_at');
+            $jobs->bigInteger('reserved_until')->nullable();
+            $jobs->string('token', 64)->nullable();
+            $jobs->bigInteger('queued_at');
+            // What reserve() asks: the next row of one queue that is available.
+            $jobs->index(['queue', 'available_at'], "{$table}_queue_available");
+        }, $ifNotExists);
+        $schema->create($failedTable, static function (Table $failed): void {
+            $failed->string('id')->primary();
+            $failed->string('queue', 64);
+            $failed->text('payload');
+            $failed->text('error');
+            $failed->bigInteger('failed_at');
+        }, $ifNotExists);
     }
 
     public function push(PendingJob $job): void
