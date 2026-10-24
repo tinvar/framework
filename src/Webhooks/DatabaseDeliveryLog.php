@@ -78,8 +78,8 @@ final readonly class DatabaseDeliveryLog implements DeliveryLog
     public function recent(string $tenant, int $limit = 50): array
     {
         return array_map(self::attempt(...), $this->connection->select(
-            "SELECT * FROM {$this->table} WHERE tenant = ? ORDER BY attempted_at DESC, id DESC LIMIT ?",
-            [$tenant, max(0, $limit)],
+            "SELECT * FROM {$this->table} WHERE tenant = ? ORDER BY attempted_at DESC, id DESC LIMIT " . max(0, $limit),
+            [$tenant],
         ));
     }
 

@@ -254,7 +254,9 @@ it('refuses a subscription pointing where outbound requests may not go, and neve
     expect($s->sent())->toBe([])
         ->and($s->queue()->failed())->toHaveCount(1)
         ->and($s->queue()->failed()[0]->error)->toContain('refused')
-        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->reason], $s->log->attempts($id)))->toBe([[DeliveryAttempt::REFUSED, 'metadata']]);
+        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->reason], $s->log->attempts($id)))->toBe([[DeliveryAttempt::REFUSED, null]])
+        // The operator's record says why.
+        ->and($s->queue()->failed()[0]->error)->toContain('(metadata)');
 });
 
 it('stops when the subscription is gone by the time the delivery runs', function () {

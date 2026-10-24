@@ -98,7 +98,10 @@ final readonly class DeliverWebhook implements Job
                 readBody: false,
             ));
         } catch (OutboundRefused $e) {
-            $record(DeliveryAttempt::REFUSED, null, $e->reason, 0);
+            // Refused, and not why: that a name the tenant chose resolves to
+            // a loopback, private or metadata address is the network's to
+            // know. The reason is in the failed job, for the operator.
+            $record(DeliveryAttempt::REFUSED, null, null, 0);
 
             throw new JobRefused('destination_refused', "Webhook delivery {$this->delivery} is refused: {$e->getMessage()}", $e);
         } catch (OutboundFailed $e) {

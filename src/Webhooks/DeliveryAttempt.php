@@ -12,7 +12,10 @@ namespace Tinvar\Webhooks;
  * there is: the outcome, the status the receiver answered with, a reason
  * code when it did not answer, and how long it took. No body, no response
  * header and no message is kept -- what a receiver says back stays with
- * the receiver.
+ * the receiver. A refused destination keeps no reason either: which kind
+ * of address a tenant's URL resolved to inside the network (loopback,
+ * private, metadata) would let them map it, so that is in the failed job,
+ * for the operator, alone.
  */
 final readonly class DeliveryAttempt
 {

@@ -173,7 +173,7 @@ it('refuses to send the order webhook to the shop\'s own machine, and does not t
         work($kernel);
 
         expect($kernel->orm->connection()->select('SELECT outcome, status, reason FROM webhook_deliveries'))->toBe([
-            ['outcome' => 'refused', 'status' => null, 'reason' => 'loopback'],
+            ['outcome' => 'refused', 'status' => null, 'reason' => null],
         ])
             ->and($kernel->queue->size(DeliverWebhook::QUEUE))->toBe(0)
             ->and($kernel->queue->failed())->toHaveCount(1)
