@@ -35,12 +35,23 @@ final class Addresses
         ['100.100.100.200/32', 'metadata', true],
         ['127.0.0.0/8', 'loopback', false],
         ['169.254.0.0/16', 'link_local', false],
+        // The instance metadata services and the provider-run endpoints
+        // beside them, each its own hard rule, so allowing the range
+        // around one never reaches it: the IMDS of AWS, GCP, Azure,
+        // Oracle, DigitalOcean, OpenStack and most others; AWS's time
+        // sync and DNS resolver; ECS task metadata; EKS pod identity;
+        // Tencent's metadata; Azure's wire server; Oracle's and
+        // Alibaba's own addresses.
         ['169.254.169.254/32', 'metadata', true],
+        ['169.254.169.123/32', 'metadata', true],
+        ['169.254.169.253/32', 'metadata', true],
         ['169.254.170.2/32', 'metadata', true],
         ['169.254.170.23/32', 'metadata', true],
+        ['169.254.0.23/32', 'metadata', true],
         ['168.63.129.16/32', 'metadata', true],
         ['172.16.0.0/12', 'private', false],
         ['192.0.0.0/24', 'special', false],
+        ['192.0.0.192/32', 'metadata', true],
         ['192.0.2.0/24', 'documentation', false],
         ['192.88.99.0/24', 'special', false],
         ['192.168.0.0/16', 'private', false],
@@ -68,8 +79,13 @@ final class Addresses
         ['2002::/16', '6to4', true],
         ['3fff::/20', 'documentation', false],
         ['fc00::/7', 'unique_local', false],
-        ['fd00:ec2::23/128', 'metadata', true],
+        // AWS's IMDS, time sync, DNS resolver and EKS pod identity, and
+        // GCP's metadata server, over IPv6.
         ['fd00:ec2::254/128', 'metadata', true],
+        ['fd00:ec2::123/128', 'metadata', true],
+        ['fd00:ec2::253/128', 'metadata', true],
+        ['fd00:ec2::23/128', 'metadata', true],
+        ['fd20:ce::254/128', 'metadata', true],
         ['fe80::/10', 'link_local', false],
         ['fec0::/10', 'site_local', false],
         ['ff00::/8', 'multicast', true],

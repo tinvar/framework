@@ -119,6 +119,36 @@ it('opens a soft range by allow, never a hard one, and lets deny win over both',
         ->and($policy->refusal('192.168.1.1'))->toBe('private');
 });
 
+it('keeps every metadata address hard, however wide the allowed range around it', function (string $address) {
+    // Every soft range there is, and the mapped block, allowed wholesale.
+    $policy = new OutboundPolicy(allow: ['169.254.0.0/16', '192.0.0.0/24', '100.64.0.0/10', 'fc00::/7', '::ffff:0:0/96', '0.0.0.0/0', '::/0']);
+
+    expect($policy->refusal($address))->toBe('metadata')
+        ->and($policy->refusal("::ffff:{$address}"))->toBe(str_contains($address, ':') ? 'address_invalid' : 'ipv4_mapped')
+        ->and(fn () => new PinnedHttp($policy, new StaticResolver(['imds.invalid' => [$address]]))->send(OutboundRequest::get('http://imds.invalid/')))
+        ->toThrow(fn (OutboundRefused $e) => expect($e->reason)->toBe('metadata'));
+
+    if (!str_contains($address, ':')) {
+        expect(fn () => new PinnedHttp($policy)->send(OutboundRequest::get("http://[::ffff:{$address}]/latest/meta-data/")))
+            ->toThrow(fn (OutboundRefused $e) => expect($e->reason)->toBe('ipv4_mapped'));
+    }
+})->with([
+    'the IMDS most providers share' => ['169.254.169.254'],
+    'AWS time sync' => ['169.254.169.123'],
+    'AWS DNS resolver' => ['169.254.169.253'],
+    'ECS task metadata' => ['169.254.170.2'],
+    'EKS pod identity' => ['169.254.170.23'],
+    'Tencent metadata' => ['169.254.0.23'],
+    'Azure wire server' => ['168.63.129.16'],
+    'Oracle' => ['192.0.0.192'],
+    'Alibaba' => ['100.100.100.200'],
+    'AWS IMDS over IPv6' => ['fd00:ec2::254'],
+    'AWS time sync over IPv6' => ['fd00:ec2::123'],
+    'AWS DNS resolver over IPv6' => ['fd00:ec2::253'],
+    'EKS pod identity over IPv6' => ['fd00:ec2::23'],
+    'GCP over IPv6' => ['fd20:ce::254'],
+]);
+
 it('reads every deny along a class\'s lineage, and allow off the class alone', function () {
     $platform = OutboundPolicy::of(Platform::class);
     $tenanted = OutboundPolicy::of(Tenanted::class);
