@@ -133,6 +133,55 @@ describe('the store', function () {
 });
 
 /**
+ * How the sweep each recorded visit runs finds expired rows, under the write
+ * lock: by an index on expires_at. Without one it read the whole table to
+ * find them -- every live session's row, on every visit, 11.7 ms at 300,000.
+ *
+ * @return list<string>
+ */
+function sweepPlan(\PDO $pdo): array
+{
+    $plan = $pdo->query(
+        'EXPLAIN QUERY PLAN DELETE FROM previous_urls WHERE session IN '
+        . '(SELECT session FROM previous_urls WHERE expires_at <= 0 LIMIT ' . PreviousUrls::SWEEP_BATCH . ')',
+    )?->fetchAll(\PDO::FETCH_COLUMN, 3) ?: [];
+
+    return array_map(strval(...), $plan);
+}
+
+describe('the sweep', function () {
+    it('finds expired rows by an index, in the table the schema makes', function () {
+        $pdo = new \PDO('sqlite::memory:');
+        $pdo->exec((string) file_get_contents(Shop::root() . '/database/schema.sql'));
+
+        expect(implode("\n", sweepPlan($pdo)))->toMatch('/USING (COVERING )?INDEX previous_urls_expires_at \(expires_at<\?\)/');
+    });
+
+    it('makes that index in a database seeded before it', function () {
+        [$urls, $pdo] = store();
+
+        $urls->put(from(Kernel::newSession(KEY)), '/orders');
+
+        expect(implode("\n", sweepPlan($pdo)))->toMatch('/USING (COVERING )?INDEX previous_urls_expires_at \(expires_at<\?\)/');
+    });
+
+    // A backlog -- the shop down for a day, every session expired -- is
+    // swept a batch per visit, never all at once under the write lock.
+    it('deletes a batch of expired rows per visit recorded, not all of them', function () {
+        [$urls, $pdo] = store();
+        $insert = $pdo->prepare('INSERT INTO previous_urls VALUES (?, ?, ?)');
+        for ($i = 0; $i < 250; $i++) {
+            $insert->execute([hash('sha256', "gone-{$i}"), '/', time() - 60]);
+        }
+
+        $urls->put(from(Kernel::newSession(KEY)), '/orders');
+
+        expect((int) $pdo->query('SELECT COUNT(*) FROM previous_urls WHERE expires_at <= ' . time())?->fetchColumn())
+            ->toBe(250 - PreviousUrls::SWEEP_BATCH);
+    });
+});
+
+/**
  * The served shop, renderer and all, with a browser of one. Skipped when the
  * shop cannot be built.
  */
