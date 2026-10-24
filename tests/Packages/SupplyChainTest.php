@@ -1,0 +1,345 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * The supply chain, checked with nothing fetched.
+ *
+ * "Packages are enabled only from an explicit allowlist in typed config,
+ * with a lockfile. An undeclared package with framework metadata fails the
+ * build." "Dependencies are pinned by integrity hash. Downstream app test
+ * suites ... run in framework CI only on trusted branches, never on pull
+ * requests from forks" (tinvar-spec.md).
+ */
+
+namespace Tinvar\Tests\Packages\SupplyChain;
+
+use Tinvar\Packages\AllowedPackage;
+use Tinvar\Packages\Ecosystem;
+use Tinvar\Packages\Lockfiles;
+use Tinvar\Packages\PackageLock;
+use Tinvar\Packages\PackagePolicy;
+use Tinvar\Packages\SupplyChain;
+use Tinvar\Packages\TreeHash;
+use Tinvar\Tests\Packages\Fixtures\Workspace;
+
+require_once __DIR__ . '/Fixtures/Workspace.php';
+
+beforeEach(function () {
+    $this->workspace = new Workspace();
+});
+
+afterEach(function () {
+    $this->workspace->remove();
+});
+
+/** @return list<string> */
+function violations(Workspace $workspace, ?PackagePolicy $policy = null): array
+{
+    return (new SupplyChain($workspace->write()->root, $policy ?? new PackagePolicy()))->check();
+}
+
+function billing(): PackagePolicy
+{
+    return new PackagePolicy(packages: [new AllowedPackage('acme/billing', Ecosystem::Composer)]);
+}
+
+function lockFor(Workspace $workspace, PackagePolicy $policy): void
+{
+    $lockfiles = new Lockfiles($workspace->root);
+    PackageLock::of($policy, [...$lockfiles->composer(), ...$lockfiles->npm()])->write($workspace->root);
+}
+
+it('passes a tree that is pinned, in step and declares nothing', function () {
+    expect(violations($this->workspace))->toBe([]);
+});
+
+it('passes the repository itself under the shop policy', function () {
+    $root = \dirname(__DIR__, 4);
+
+    expect((new SupplyChain($root, \Shop\Kernel::packages()))->check())->toBe([]);
+})->skip(fn () => !is_dir(\dirname(__DIR__, 4) . '/node_modules'), 'needs npm ci');
+
+describe('framework packages', function () {
+    it('refuses a Composer package with framework metadata the policy does not name', function () {
+        $this->workspace->composer('acme/billing', ['extra' => ['tinvar' => ['codemods' => []]]]);
+
+        expect(violations($this->workspace))
+            ->toBe(['composer.lock acme/billing carries framework metadata and is not in PackagePolicy::$packages.']);
+    });
+
+    // The lock recorded none, the files installed under vendor/ do: either
+    // is enough for something to treat it as Tinvar's.
+    it('refuses one whose installed composer.json alone carries it', function () {
+        $this->workspace->composer('acme/billing');
+        $this->workspace->write();
+        $this->workspace->json('vendor/acme/billing/composer.json', ['name' => 'acme/billing', 'extra' => ['tinvar' => true]]);
+
+        expect((new SupplyChain($this->workspace->root, new PackagePolicy()))->check())
+            ->toBe(['composer.lock acme/billing carries framework metadata and is not in PackagePolicy::$packages.']);
+    });
+
+    it('refuses an npm package with framework metadata the policy does not name', function () {
+        $this->workspace->npm('@acme/widgets', installed: ['tinvar' => ['codemods' => []]]);
+
+        expect(violations($this->workspace))
+            ->toBe(['package-lock.json node_modules/@acme/widgets carries framework metadata and is not in PackagePolicy::$packages.']);
+    });
+
+    it('refuses an allowed package that tinvar.lock does not pin', function () {
+        $this->workspace->composer('acme/billing', ['extra' => ['tinvar' => []]]);
+
+        expect(violations($this->workspace, billing()))
+            ->toBe(['acme/billing is not in tinvar.lock: review it, then run tinvar packages:lock.']);
+    });
+
+    it('passes an allowed package once it is locked', function () {
+        $this->workspace->composer('acme/billing', ['extra' => ['tinvar' => []]]);
+        lockFor($this->workspace->write(), billing());
+
+        expect(violations($this->workspace, billing()))->toBe([]);
+    });
+
+    it('refuses an allowed package whose installed files changed since it was locked', function () {
+        $this->workspace->composer('acme/billing', ['extra' => ['tinvar' => []]]);
+        lockFor($this->workspace->write(), billing());
+        $this->workspace->file('vendor/acme/billing/src/Thing.php', "<?php\nexec('curl evil');\n");
+
+        expect((new SupplyChain($this->workspace->root, billing()))->check())->toBe([
+            'acme/billing is not what tinvar.lock pins (its installed files changed): review the change, then run tinvar packages:lock.',
+        ]);
+    });
+
+    it('refuses an allowed package moved to another version or commit', function () {
+        $this->workspace->composer('acme/billing', ['extra' => ['tinvar' => []]]);
+        lockFor($this->workspace->write(), billing());
+
+        $other = str_repeat('b', 40);
+        array_pop($this->workspace->composerPackages);
+        $this->workspace->composer('acme/billing', [
+            'version' => '1.1.0',
+            'extra' => ['tinvar' => []],
+            'dist' => ['type' => 'zip', 'url' => "https://api.github.com/repos/acme/billing/zipball/{$other}", 'reference' => $other],
+        ]);
+
+        expect(violations($this->workspace, billing()))->toBe([
+            'acme/billing is not what tinvar.lock pins (version 1.0.0 is now 1.1.0, its lockfile pin changed): review the change, then run tinvar packages:lock.',
+        ]);
+    });
+
+    it('refuses an allowed package that is not installed', function () {
+        expect(violations($this->workspace, billing()))
+            ->toBe(['acme/billing is allowed but not in the composer lockfile.']);
+    });
+
+    it('refuses a lock entry for a package the policy no longer allows', function () {
+        $this->workspace->composer('acme/billing', ['extra' => ['tinvar' => []]]);
+        lockFor($this->workspace->write(), billing());
+        array_pop($this->workspace->composerPackages);
+
+        expect(violations($this->workspace))->toBe([
+            'tinvar.lock pins composer:acme/billing, which PackagePolicy::$packages does not allow: run tinvar packages:lock.',
+        ]);
+    });
+
+    it('hashes a link as its target, without following it', function () {
+        $this->workspace->file('pkg/a.php', 'a');
+        $before = TreeHash::of($this->workspace->root . '/pkg');
+        symlink('/etc/hosts', $this->workspace->root . '/pkg/link');
+        $linked = TreeHash::of($this->workspace->root . '/pkg');
+        unlink($this->workspace->root . '/pkg/link');
+        symlink('/etc/passwd', $this->workspace->root . '/pkg/link');
+
+        expect($linked)->not->toBe($before)
+            ->and(TreeHash::of($this->workspace->root . '/pkg'))->not->toBe($linked);
+    });
+});
+
+describe('pins', function () {
+    it('refuses an npm package with no sha512 integrity', function () {
+        $this->workspace->npm('old', ['integrity' => 'sha1-abc=']);
+        $this->workspace->npm('none', ['integrity' => null]);
+
+        expect(violations($this->workspace))->toBe([
+            'package-lock.json node_modules/old has no sha512 integrity.',
+            'package-lock.json node_modules/none has no sha512 integrity.',
+        ]);
+    });
+
+    it('refuses an npm package from a host the policy does not name, or over http', function () {
+        $this->workspace->npm('elsewhere', ['resolved' => 'https://registry.npmjs.org.evil.example/elsewhere.tgz']);
+        $this->workspace->npm('plain', ['resolved' => 'http://registry.npmjs.org/plain/-/plain-1.3.0.tgz']);
+
+        expect(violations($this->workspace))->toBe([
+            'package-lock.json node_modules/elsewhere resolves from https://registry.npmjs.org.evil.example/elsewhere.tgz, which PackagePolicy::$registries does not allow.',
+            'package-lock.json node_modules/plain resolves from http://registry.npmjs.org/plain/-/plain-1.3.0.tgz, which PackagePolicy::$registries does not allow.',
+        ]);
+    });
+
+    it('accepts a host the policy names', function () {
+        $this->workspace->npm('kit', ['resolved' => 'https://design.example/packages/kit-1.0.0.tgz']);
+
+        expect(violations($this->workspace, new PackagePolicy(registries: [PackagePolicy::NPM_REGISTRY, 'https://design.example/packages/'])))
+            ->toBe([]);
+    });
+
+    it('refuses a Composer package pinned to a tag rather than a commit', function () {
+        $this->workspace->composer('acme/tagged', [
+            'source' => ['type' => 'git', 'url' => 'https://github.com/acme/tagged.git', 'reference' => 'v1.0.0'],
+            'dist' => ['type' => 'zip', 'url' => 'https://api.github.com/repos/acme/tagged/zipball/v1.0.0', 'reference' => 'v1.0.0', 'shasum' => ''],
+        ]);
+
+        expect(violations($this->workspace))->toBe(['composer.lock acme/tagged is not pinned to a commit or checksum.']);
+    });
+
+    it('refuses a Composer package from a host the policy does not name', function () {
+        $this->workspace->composer('acme/mirror', [
+            'dist' => ['type' => 'zip', 'url' => 'https://mirror.example/acme/mirror.zip', 'reference' => Workspace::COMMIT],
+        ]);
+
+        expect(violations($this->workspace))->toBe([
+            'composer.lock acme/mirror downloads from https://mirror.example/acme/mirror.zip, which PackagePolicy::$composerSources does not allow.',
+        ]);
+    });
+
+    it('refuses a path package outside the project', function () {
+        $this->workspace->composer('acme/local', ['dist' => ['type' => 'path', 'url' => '../elsewhere', 'reference' => null]]);
+        $this->workspace->composer('acme/inside', ['dist' => ['type' => 'path', 'url' => 'packages/inside', 'reference' => null]]);
+
+        expect(violations($this->workspace))->toBe(['composer.lock acme/local is a path package outside the project.']);
+    });
+
+    it('refuses composer.lock out of step with composer.json', function () {
+        $this->workspace->write();
+        $this->workspace->composerJson['require']['acme/extra'] = '^2.0';
+        $this->workspace->json('composer.json', $this->workspace->composerJson);
+
+        expect((new SupplyChain($this->workspace->root, new PackagePolicy()))->check())
+            ->toBe(['composer.lock is out of date with composer.json: run composer update --lock, and review what it changes.']);
+    });
+
+    it('refuses package-lock.json out of step with package.json', function () {
+        $this->workspace->write();
+        $this->workspace->packageJson['dependencies']['left-pad'] = '^1.3.0';
+        $this->workspace->json('package.json', $this->workspace->packageJson);
+
+        expect((new SupplyChain($this->workspace->root, new PackagePolicy()))->check())
+            ->toBe(['package-lock.json is out of date with package.json (dependencies): run npm install, and review what it changes.']);
+    });
+
+    it('refuses a version 1 package lock, which records no install scripts', function () {
+        $this->workspace->write();
+        $this->workspace->json('package-lock.json', ['lockfileVersion' => 1, 'dependencies' => []]);
+
+        expect((new SupplyChain($this->workspace->root, new PackagePolicy()))->check())
+            ->toBe(['package-lock.json must be lockfileVersion 2 or later; run npm install with npm 7 or later.']);
+    });
+
+    it('refuses a missing lockfile', function () {
+        $this->workspace->write();
+        unlink($this->workspace->root . '/composer.lock');
+
+        expect((new SupplyChain($this->workspace->root, new PackagePolicy()))->check())->toBe(['composer.lock is missing.']);
+    });
+});
+
+describe('install scripts and plugins', function () {
+    it('refuses an npm package that runs an install script the policy does not allow', function () {
+        $this->workspace->npm('native', ['hasInstallScript' => true]);
+
+        expect(violations($this->workspace))->toBe([
+            'package-lock.json node_modules/native runs a script when installed, and PackagePolicy::$installScripts does not allow it.',
+        ])->and(violations($this->workspace, new PackagePolicy(installScripts: ['native' => 'Builds its binding.'])))->toBe([]);
+    });
+
+    it('asks why an install script is allowed', function () {
+        new PackagePolicy(installScripts: ['native' => ' ']);
+    })->throws(\InvalidArgumentException::class, 'Say why native may run an install script');
+
+    it('refuses a Composer plugin allow-plugins does not name, and allowing them all', function () {
+        $this->workspace->composer('acme/plugin', ['type' => 'composer-plugin']);
+        expect(violations($this->workspace))->toBe(['acme/plugin is a Composer plugin, and config.allow-plugins does not name it.']);
+
+        $this->workspace->composerJson['config']['allow-plugins'] = true;
+        expect(violations($this->workspace))->toBe([
+            'composer.json allows every Composer plugin: name each one under config.allow-plugins.',
+            'acme/plugin is a Composer plugin, and config.allow-plugins does not name it.',
+        ]);
+
+        $this->workspace->composerJson['config']['allow-plugins'] = ['acme/*' => true];
+        expect(violations($this->workspace))->toBe([
+            "composer.json allows plugins by the pattern 'acme/*': name each one.",
+            'acme/plugin is a Composer plugin, and config.allow-plugins does not name it.',
+        ]);
+
+        $this->workspace->composerJson['config']['allow-plugins'] = ['acme/plugin' => false];
+        expect(violations($this->workspace))->toBe([]);
+    });
+
+    it('refuses turning off https for Composer', function () {
+        $this->workspace->composerJson['config']['secure-http'] = false;
+
+        expect(violations($this->workspace))
+            ->toBe(['composer.json turns off secure-http or TLS: packages must download over https.']);
+    });
+
+    it('refuses a registry prefix a lookalike host could match', function () {
+        new PackagePolicy(registries: ['https://registry.npmjs.org']);
+    })->throws(\InvalidArgumentException::class, 'not an https URL prefix ending in a slash');
+});
+
+describe('workflows', function () {
+    it('refuses an action pinned by tag, and passes one pinned by commit', function () {
+        $this->workspace->workflows['ci.yml'] = <<<'YAML'
+        on: [push]
+        jobs:
+          test:
+            steps:
+              - uses: actions/checkout@v6
+              - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+              - uses: ./local-action
+              - uses: docker://alpine:3
+        YAML;
+
+        expect(violations($this->workspace))->toBe([
+            '.github/workflows/ci.yml:5 uses actions/checkout@v6, which is not pinned to a full commit.',
+            '.github/workflows/ci.yml:8 uses docker://alpine:3, which is not pinned to a full commit.',
+        ]);
+    });
+
+    it('refuses the triggers that run a fork\'s code with the repository\'s secrets', function () {
+        $this->workspace->workflows['a.yml'] = "on:\n  pull_request_target:\n    types: [opened]\n";
+        $this->workspace->workflows['b.yaml'] = "on: [push, workflow_run]\n# pull_request_target in a comment is fine\n";
+
+        expect(violations($this->workspace))->toBe([
+            ".github/workflows/a.yml:2 triggers on a fork's behalf with the repository's secrets (pull_request_target or workflow_run).",
+            ".github/workflows/b.yaml:1 triggers on a fork's behalf with the repository's secrets (pull_request_target or workflow_run).",
+        ]);
+    });
+
+    // The workflow this repository runs: the downstream suites have the
+    // secrets, so they are held to pushes to main.
+    it('runs the downstream suites only for a push to main', function () {
+        $workflow = (string) file_get_contents(\dirname(__DIR__, 4) . '/.github/workflows/ci.yml');
+
+        expect($workflow)->toContain("if: github.event_name == 'push' && github.ref == 'refs/heads/main'")
+            ->and(preg_match('/^  downstream:\n(?:    .*\n|\n)*?    if: github\.event_name == \'push\'/m', $workflow))->toBe(1);
+    });
+});
+
+it('enables nothing while the tree fails', function () {
+    $this->workspace->npm('native', ['hasInstallScript' => true]);
+
+    (new SupplyChain($this->workspace->write()->root, new PackagePolicy()))->enabled();
+})->throws(\RuntimeException::class, 'The supply-chain check fails');
+
+/*
+ * The advisory databases, over the real lockfiles. Needs the network, so it
+ * runs only when asked: TINVAR_NETWORK_TESTS=1.
+ */
+it('finds no advisories against the locked packages', function () {
+    $root = \dirname(__DIR__, 4);
+    exec('php ' . escapeshellarg($root . '/bin/tinvar') . ' audit 2>&1', $output, $status);
+
+    expect($status)->toBe(0, implode("\n", $output));
+})->skip(fn () => getenv('TINVAR_NETWORK_TESTS') !== '1', 'needs the network; set TINVAR_NETWORK_TESTS=1');
