@@ -14,6 +14,8 @@ use Tinvar\Http\Request;
 use Tinvar\Live\Invalidator;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
+use Tinvar\Uploads\Upload;
+use Tinvar\Uploads\UploadBinder;
 use Tinvar\Validation\FormRequest;
 use Tinvar\Validation\ValidationException;
 use Tinvar\Validation\Validator;
@@ -33,6 +35,12 @@ use Tinvar\Validation\Validator;
  * Steps 2 and 3 come before 4 on purpose: validation can touch the database
  * through Exists and Unique, and nothing should query on behalf of a caller
  * who is not allowed to be here.
+ *
+ * An `Upload` parameter is input like any other, judged in step 4: the
+ * reference the form sent is held to everything its ticket bound it to
+ * (UploadBinder), so a Precognition call reports it and claims nothing.
+ * The uploads are claimed only once everything else has passed, just before
+ * the body, and given back if the body throws.
  */
 final class ActionRunner
 {
@@ -46,7 +54,17 @@ final class ActionRunner
         // Tells every other client listening that the tags were invalidated,
         // once the action's writes are committed (Tinvar\Live).
         private readonly ?Invalidator $live = null,
+        // Hands `Upload` parameters the uploads they were called with; an
+        // action declaring one is refused without it.
+        private readonly ?UploadBinder $uploads = null,
     ) {}
+
+    /**
+     * One answer for every way an upload reference can fail -- expired,
+     * claimed, another person's, another record's -- so trying an id
+     * learns nothing about it.
+     */
+    public const string UPLOAD_REFUSED = 'This upload has run out or was not made for this form. Choose the file again.';
 
     /**
      * The #[Middleware] an action declares, on its class and its method.
@@ -107,19 +125,31 @@ final class ActionRunner
 
         $subject = $this->subjectOf($action, $models);
 
-        // 4. Validate, every form request and scalar parameter before
-        //    anything is reported. A Precognition call stops here.
-        [$requests, $scalars] = $this->validateInputs($action, $input, $subject, $models);
+        // 4. Validate, every form request, scalar parameter and upload
+        //    before anything is reported. A Precognition call stops here.
+        [$requests, $scalars, $uploads] = $this->validateInputs($action, $input, $subject, $models, $request);
 
         if ($precognitive) {
             return ActionResult::ok();
         }
 
-        $arguments = $this->bind($action, $models, $requests, $scalars, $request);
+        $arguments = $this->bind($action, $models, $requests, $scalars, $request, $uploads);
 
-        // 5. Run the body.
-        $instance = $this->registry->instanceFor($action);
-        $result = $instance->{$action->method}(...$arguments);
+        // 5. Run the body, with its uploads claimed for it alone: claimed
+        //    now, when nothing else can refuse the call, and given back if
+        //    the body throws, so the file waits for the customer to try
+        //    again rather than being lost with the failed attempt.
+        $claimed = $this->claim($uploads);
+        try {
+            $instance = $this->registry->instanceFor($action);
+            $result = $instance->{$action->method}(...$arguments);
+        } catch (\Throwable $e) {
+            foreach ($claimed as $upload) {
+                $this->uploads?->release($upload);
+            }
+
+            throw $e;
+        }
 
         if (!$result instanceof ActionResult) {
             throw ActionException::badReturn($action->where(), get_debug_type($result));
@@ -152,7 +182,7 @@ final class ActionRunner
      * @param array<string, mixed> $input
      * @return list<string>
      */
-    public function validateField(string $name, array $input, string $field): array
+    public function validateField(string $name, array $input, string $field, ?Request $request = null): array
     {
         $action = $this->registry->get($name);
         [$models, $unsent] = $this->resolveModels($action, $input);
@@ -182,6 +212,14 @@ final class ActionRunner
                     ]);
                 }
             }
+        }
+
+        // An upload is a field of the form too, judged as a submit judges it
+        // -- and claimed by nothing, since nothing runs.
+        if (isset($action->uploads[$field])) {
+            [, $found] = $this->verifyUpload($action, $field, $input, $models, $request);
+
+            return $found;
         }
 
         // The action's own scalar parameters are fields of the same form: a
@@ -225,13 +263,14 @@ final class ActionRunner
      *
      * @param array<string, mixed> $input
      * @param array<string, Model> $models
-     * @return array{array<string, FormRequest>, array<string, mixed>} the
-     *         requests built and the scalars read, each by parameter
+     * @return array{array<string, FormRequest>, array<string, mixed>, array<string, Upload|null>} the
+     *         requests built, the scalars read and the uploads verified, each by parameter
      */
-    private function validateInputs(CompiledAction $action, array $input, ?Model $subject, array $models): array
+    private function validateInputs(CompiledAction $action, array $input, ?Model $subject, array $models, ?Request $request): array
     {
         $built = [];
         $scalars = [];
+        $uploads = [];
         $errors = [];
         $unsupplied = self::unsupplied($action, $models);
 
@@ -265,11 +304,73 @@ final class ActionRunner
             $errors = self::mergeErrors($errors, [$name => $found]);
         }
 
+        foreach (array_keys($action->uploads) as $name) {
+            [$upload, $found] = $this->verifyUpload($action, $name, $input, $models, $request);
+            if ($found === []) {
+                $uploads[$name] = $upload;
+            }
+            $errors = self::mergeErrors($errors, [$name => $found]);
+        }
+
         if ($errors !== []) {
             throw new ValidationException($errors);
         }
 
-        return [$built, $scalars];
+        return [$built, $scalars, $uploads];
+    }
+
+    /**
+     * One upload parameter's value: the upload its reference names, held to
+     * its ticket's binding; null for an optional one left out.
+     *
+     * @param array<string, mixed> $input
+     * @param array<string, Model> $models
+     * @return array{Upload|null, list<string>} the upload, and what was wrong with it
+     */
+    private function verifyUpload(CompiledAction $action, string $field, array $input, array $models, ?Request $request): array
+    {
+        if ($this->uploads === null) {
+            throw new \LogicException(
+                "{$action->where()} takes an upload, and the Kernel was given no Uploads to hand it one with.",
+            );
+        }
+
+        $reference = $input[$field] ?? null;
+        if ($reference === null || $reference === '') {
+            return isset($action->optionalUploads[$field]) ? [null, []] : [null, ["{$field} is required."]];
+        }
+
+        $upload = $this->uploads->verify($action, $field, $reference, $models, $request);
+
+        return $upload === null ? [null, [self::UPLOAD_REFUSED]] : [$upload, []];
+    }
+
+    /**
+     * Claims every upload the call was given, or none: one that another
+     * call claimed first gives the rest back and refuses this one, as an
+     * upload that failed verification does.
+     *
+     * @param array<string, Upload|null> $uploads
+     * @return list<Upload> what was claimed
+     */
+    private function claim(array $uploads): array
+    {
+        $claimed = [];
+        foreach ($uploads as $field => $upload) {
+            if ($upload === null) {
+                continue;
+            }
+            if ($this->uploads?->claim($upload) !== true) {
+                foreach ($claimed as $taken) {
+                    $this->uploads?->release($taken);
+                }
+
+                throw new ValidationException([$field => [self::UPLOAD_REFUSED]]);
+            }
+            $claimed[] = $upload;
+        }
+
+        return $claimed;
     }
 
     /**
@@ -297,7 +398,7 @@ final class ActionRunner
             $name = $parameter->getName();
             $type = $parameter->getType();
 
-            if (isset($action->models[$name]) || isset($action->formRequests[$name])) {
+            if (isset($action->models[$name]) || isset($action->formRequests[$name]) || isset($action->uploads[$name])) {
                 continue;
             }
             if ($type instanceof \ReflectionNamedType && $type->isBuiltin()) {
@@ -443,6 +544,7 @@ final class ActionRunner
      * @param array<string, Model>       $models
      * @param array<string, FormRequest> $requests already validated, by parameter
      * @param array<string, mixed>       $scalars  already coerced and judged, by parameter
+     * @param array<string, Upload|null> $uploads  already verified, by parameter
      * @return array<string, mixed>
      */
     private function bind(
@@ -451,6 +553,7 @@ final class ActionRunner
         array $requests,
         array $scalars,
         ?Request $request,
+        array $uploads = [],
     ): array {
         $arguments = [];
 
@@ -465,6 +568,11 @@ final class ActionRunner
 
             if (isset($requests[$name])) {
                 $arguments[$name] = $requests[$name];
+                continue;
+            }
+
+            if (isset($action->uploads[$name])) {
+                $arguments[$name] = $uploads[$name] ?? ($parameter->isDefaultValueAvailable() ? $parameter->getDefaultValue() : null);
                 continue;
             }
 

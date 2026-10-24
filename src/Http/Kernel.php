@@ -51,6 +51,12 @@ use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\RouteChain;
 use Tinvar\Routing\Router;
 use Tinvar\Routing\RouteRegistry;
+use Tinvar\Uploads\FileEndpoint;
+use Tinvar\Uploads\FileUrls;
+use Tinvar\Uploads\UploadBinder;
+use Tinvar\Uploads\UploadEndpoint;
+use Tinvar\Uploads\Uploads;
+use Tinvar\Uploads\UploadTickets;
 use Tinvar\Validation\Validator;
 use Tinvar\Webhooks\WebhookEndpoint;
 
@@ -91,6 +97,17 @@ final class Kernel
 
     /** Mounted only when an application supplies live updates. */
     public readonly ?SubscribeEndpoint $live_;
+
+    /** /_upload and /_file, mounted only when an application supplies Uploads. */
+    public readonly ?UploadEndpoint $uploads_;
+    public readonly ?FileEndpoint $files_;
+
+    /**
+     * What a loader issues upload tickets and file URLs with, also in the
+     * container by type; null without Uploads.
+     */
+    public readonly ?UploadTickets $uploadTickets;
+    public readonly ?FileUrls $fileUrls;
 
     /**
      * What a page's loaders read, by segment, for its live token -- given
@@ -153,6 +170,10 @@ final class Kernel
         // Three steps per move between hosts, and a move is a person
         // following a link: a minute's budget is twenty moves.
         'handoff' => 60,
+        // Each one a file written to disk: fewer than actions.
+        'uploads' => 30,
+        // Images on a page, each its own request.
+        'files' => 600,
     ];
 
     private readonly ExceptionHandler $exceptions;
@@ -200,6 +221,8 @@ final class Kernel
     private readonly Pipeline $bootstrapStack;
     private readonly Pipeline $liveStack;
     private readonly Pipeline $handoffStack;
+    private readonly Pipeline $uploadStack;
+    private readonly Pipeline $fileStack;
 
     /**
      * The request attribute carrying the page's route token, for the
@@ -318,6 +341,11 @@ final class Kernel
      * @param HandoffEndpoint|null $handoff moving a session between the application's
      *        hosts (ADR 0039): mounted at /_handoff/*, behind the global stack -- which
      *        starts the session and signs its user in -- and the handoff throttle
+     * @param Uploads|null $uploads where uploaded files and their records are kept, and
+     *        the keys their tickets are signed with. Given, /_upload and /_file are
+     *        mounted, actions are handed their `Upload` parameters, and UploadTickets
+     *        and FileUrls are in the container; without them, an action taking an
+     *        upload is refused when called
      */
     public function __construct(
         public readonly Orm $orm,
@@ -356,6 +384,7 @@ final class Kernel
         ?Events $events = null,
         ?DevToolbar $toolbar = null,
         private readonly ?HandoffEndpoint $handoff = null,
+        ?Uploads $uploads = null,
     ) {
         if ($toolbar !== null && !$dev) {
             throw new \InvalidArgumentException(
@@ -423,6 +452,9 @@ final class Kernel
             ->instance(TagsRead::class, $this->tagsRead);
         if ($panels !== null) {
             $container?->instance(PanelContext::class, $panels);
+        }
+        if ($uploads !== null) {
+            $container?->instance(Uploads::class, $uploads);
         }
 
         $this->panels = $panels;
@@ -505,6 +537,7 @@ final class Kernel
                 $encoder,
                 $cache,
                 $live?->invalidator($this->orm, $this->report(...)),
+                $uploads === null ? null : new UploadBinder($uploads, $this->auth, $this->orm, $panels),
             ),
             revalidator: $revalidator,
             sessionId: $fragments?->sessionId,
@@ -614,6 +647,47 @@ final class Kernel
             ...$this->throttleFor($throttle, 'handoff', $limits, byAddress: true),
             ...$this->throttleFor($throttle, 'handoff', $limits, byAddress: false),
         ]);
+
+        // An upload gets an action's stack: it writes, so CSRF and its own
+        // throttle; and authentication, with no opt-out -- a ticket is
+        // issued to a signed-in user and bound to them, so nobody else has
+        // one to use. The action's tenant and panel stack run inside, once
+        // the ticket says which action it is for.
+        $this->uploadStack = new Pipeline([
+            ...$this->floodGuardFor($throttle, 'uploads', $limits),
+            ...$global,
+            new VerifyCsrfToken(tokens: $csrf),
+            ...$this->throttleFor($throttle, 'uploads', $limits, byAddress: true),
+            ...$this->throttleFor($throttle, 'uploads', $limits, byAddress: false),
+            new RequireAuthentication($this->auth),
+        ]);
+
+        // A file is a GET with no body, so no CSRF; the session, for the
+        // token's binding, and its throttle. Its token says who may use it.
+        $this->fileStack = new Pipeline([
+            ...$this->floodGuardFor($throttle, 'files', $limits),
+            ...$global,
+            ...$this->throttleFor($throttle, 'files', $limits, byAddress: true),
+            ...$this->throttleFor($throttle, 'files', $limits, byAddress: false),
+        ]);
+
+        $this->uploads_ = $uploads === null ? null : new UploadEndpoint(
+            uploads: $uploads,
+            actions: $this->actions,
+            entry: $entry,
+            auth: $this->auth,
+            orm: $this->orm,
+            middlewareResolver: self::middlewareFrom($resolver),
+            panels: $panels,
+            globalMiddleware: $globalMiddleware,
+        );
+        $this->files_ = $uploads === null ? null : new FileEndpoint($uploads, $this->auth);
+        $this->uploadTickets = $uploads === null ? null : new UploadTickets($this->actions, $entry, $this->auth, $uploads);
+        $this->fileUrls = $uploads === null ? null : new FileUrls($uploads, $this->auth);
+        if ($this->uploadTickets !== null && $this->fileUrls !== null) {
+            $container?->instance(UploadTickets::class, $this->uploadTickets)
+                ->instance(FileUrls::class, $this->fileUrls);
+        }
 
         // Fragments run their own stack: GET with no body, so CSRF does not
         // apply, and the endpoint composes the originating ROUTE's middleware
@@ -881,6 +955,24 @@ final class Kernel
                 return $this->liveStack->run(
                     $request,
                     fn (Request $passed): Response => $this->live_->handle($passed, $rawBody),
+                );
+            }
+
+            if ($this->uploads_ !== null && $this->uploads_->matches($request)) {
+                UploadEndpoint::assertMethod($request);
+
+                return $this->uploadStack->run(
+                    $request,
+                    fn (Request $passed): Response => $this->uploads_->handle($passed),
+                );
+            }
+
+            if ($this->files_ !== null && $this->files_->matches($request)) {
+                FileEndpoint::assertMethod($request);
+
+                return $this->fileStack->run(
+                    $request,
+                    fn (Request $passed): Response => $this->files_->handle($passed),
                 );
             }
 

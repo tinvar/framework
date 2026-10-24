@@ -202,7 +202,7 @@ final class ActionEndpoint
                     $field = trim($field);
 
                     try {
-                        $found = $this->runner->validateField($name, $input, $field);
+                        $found = $this->runner->validateField($name, $input, $field, $request);
                     } catch (\LogicException) {
                         // validateField() refuses an unknown field rather than
                         // returning [], which would read as "this field is

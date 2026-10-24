@@ -10,11 +10,15 @@ use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\TenantFrom;
+use Tinvar\Attributes\Uploaded;
 use Tinvar\Auth\PanelBinding;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Http\Request;
 use Tinvar\Orm\Model;
+use Tinvar\Storage\StorageKey;
 use Tinvar\Support\Str;
+use Tinvar\Uploads\FileTypes;
+use Tinvar\Uploads\Upload;
 use Tinvar\Validation\FormRequest;
 
 /**
@@ -140,6 +144,8 @@ final class ActionRegistry
         $models = [];
         $formRequests = [];
         $nestedModels = [];
+        $uploads = [];
+        $optionalUploads = [];
 
         // A name the action and one of its form requests both declare is one
         // input, resolved once. It is optional only if EVERY declaration of
@@ -160,6 +166,13 @@ final class ActionRegistry
 
             if ($parameter->isVariadic()) {
                 throw ActionException::unbindable($where, $name, 'a variadic parameter');
+            }
+
+            // A declaration on anything but an Upload would be one nothing
+            // reads: the author meant a limit, and there would be none.
+            $uploaded = $parameter->getAttributes(Uploaded::class);
+            if ($uploaded !== [] && (!$type instanceof \ReflectionNamedType || $type->getName() !== Upload::class)) {
+                throw new ActionException("{$where}: \${$name} carries #[Uploaded] and is not typed Upload.");
             }
 
             if (!$type instanceof \ReflectionNamedType) {
@@ -200,6 +213,21 @@ final class ActionRegistry
                 continue;
             }
 
+            // "Uploaded files are referenced only by a server-issued upload
+            // ticket": the parameter takes the upload /_upload stored under
+            // one, and what may be uploaded to it is declared beside it --
+            // there is no default, so no upload is ever taken unlimited.
+            if ($typeName === Upload::class) {
+                if ($uploaded === []) {
+                    throw new ActionException("{$where}: \${$name} takes an Upload and declares no #[Uploaded] saying what may be uploaded to it.");
+                }
+                $uploads[$name] = $uploaded[0]->newInstance();
+                if ($type->allowsNull() || $parameter->isDefaultValueAvailable()) {
+                    $optionalUploads[$name] = true;
+                }
+                continue;
+            }
+
             throw ActionException::unbindable($where, $name, $typeName);
         }
 
@@ -227,6 +255,10 @@ final class ActionRegistry
         }
 
         $optional = array_diff_key($optional, $required);
+
+        foreach ($uploads as $name => $declared) {
+            self::checkUpload($where, $name, $declared, $models, $optional);
+        }
 
         // Every check names an input this method takes, or a class. A class
         // check runs on every action in the class, so one naming an input
@@ -266,7 +298,55 @@ final class ActionRegistry
             classLevelChecks: $inherited,
             tenantFrom: self::tenantFromOf($where, $class, $method->getName()),
             panels: self::panelsOf($where, $class, $method->getName()),
+            uploads: $uploads,
+            optionalUploads: $optionalUploads,
         );
+    }
+
+    /**
+     * An #[Uploaded] declaration that can be held to: attached to a record
+     * the action always takes, under a prefix a key can carry, taking only
+     * types the framework recognises, up to a size.
+     *
+     * @param array<string, class-string<Model>> $models the action's own model parameters
+     * @param array<string, true> $optional the model inputs that may be absent
+     */
+    private static function checkUpload(string $where, string $name, Uploaded $declared, array $models, array $optional): void
+    {
+        // The record is the action's own parameter, resolved and authorized
+        // before the upload is looked at, and always there: an upload bound
+        // to a record could not be checked against one that was left out.
+        if (!isset($models[$declared->to]) || isset($optional[$declared->to])) {
+            throw new ActionException(
+                "{$where}: \${$name} is attached to '{$declared->to}', which is not a required model parameter of the action.",
+            );
+        }
+
+        if (!StorageKey::isValidPrefix($declared->prefix)) {
+            throw new ActionException(
+                "{$where}: \${$name}'s prefix '{$declared->prefix}' is not one a storage key can carry: "
+                . 'lowercase letters, digits, _ and -, in segments split by /.',
+            );
+        }
+
+        if ($declared->types === []) {
+            throw new ActionException("{$where}: \${$name} names no types it takes.");
+        }
+        foreach ($declared->types as $type) {
+            if (!FileTypes::known($type)) {
+                throw new ActionException(\sprintf(
+                    "%s: \$%s takes '%s', which uploads do not recognise; they take %s.",
+                    $where,
+                    $name,
+                    $type,
+                    implode(', ', array_keys(FileTypes::EXTENSIONS)),
+                ));
+            }
+        }
+
+        if ($declared->maxBytes < 1) {
+            throw new ActionException("{$where}: \${$name} takes files of at most {$declared->maxBytes} bytes, which is none.");
+        }
     }
 
     /**

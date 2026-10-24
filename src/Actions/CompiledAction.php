@@ -28,6 +28,9 @@ final readonly class CompiledAction
      *        #[TenantFrom] names, on the method or the holder class
      * @param list<\Tinvar\Attributes\Panel> $panels every #[Panel] it declares, the
      *        holder's first
+     * @param array<string, \Tinvar\Attributes\Uploaded> $uploads its `Upload` parameters,
+     *        each with what may be uploaded to it
+     * @param array<string, true> $optionalUploads upload parameters that may be left out
      */
     public function __construct(
         public string $name,
@@ -44,6 +47,8 @@ final readonly class CompiledAction
         public int $classLevelChecks = 0,
         public ?string $tenantFrom = null,
         public array $panels = [],
+        public array $uploads = [],
+        public array $optionalUploads = [],
     ) {}
 
     /**
