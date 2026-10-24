@@ -818,7 +818,13 @@ final class Kernel
             if ($this->handoff !== null && $this->handoff->matches($request)) {
                 HandoffEndpoint::assertMethod($request);
 
-                return $this->handoffStack->run($request, fn (Request $passed): Response => $this->handoff->handle($passed));
+                // A client navigation reaches a handoff when a guard sends it
+                // to one; the step answers with a redirect to another host,
+                // which the router can follow only as a document load.
+                return TranslateRedirects::translate(
+                    $request,
+                    $this->handoffStack->run($request, fn (Request $passed): Response => $this->handoff->handle($passed)),
+                );
             }
 
             // Each endpoint's method is checked before its stack runs: a

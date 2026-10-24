@@ -410,6 +410,20 @@ describe('hosts', function () {
             ->and($browser->get('https://id.platform.test/_handoff/authorize?origin=https%3A%2F%2Facme.example%3A8443&state=' . str_repeat('a', 22) . '&challenge=' . str_repeat('b', 43) . '&return=%2F')->status)->toBe(404);
     });
 
+    // A guard on the target sends a client navigation to start a handoff;
+    // the router reads the next host as a document load, not a fetch.
+    it('answers a client router\'s navigation with a document load of the platform host', function () {
+        $app = new App();
+
+        $response = $app->kernel->handle(
+            new Request('GET', HandoffEndpoint::START, ['host' => 'acme.example', 'rsc' => '1'], ['return' => '/whoami'], [], ['__Host-sid' => 'session-1']),
+            static fn (): Response => Response::make(500),
+        );
+
+        expect($response->status)->toBe(409)
+            ->and((string) $response->header('x-location'))->toStartWith('https://id.platform.test/_handoff/authorize?');
+    });
+
     it('is followed with GET alone', function () {
         $app = new App();
 
