@@ -75,8 +75,8 @@ function runWithTimeout(array $command, string $cwd, int $seconds): string
  * document, its payloads, its fragments -- land on either renderer, and a
  * visit that only worked when one process saw all of it would fail here.
  *
- * @param \Closure(string, string): void $drive given the origin, and the file
- *        php -S writes its error log to
+ * @param \Closure(string, string, Renderer): void $drive given the origin, the
+ *        file the shop writes its log to (SHOP_LOG), and the renderers
  * @param array<string, string> $env more of the server's environment
  */
 function served(string $root, \Closure $drive, array $env = []): void
@@ -85,6 +85,9 @@ function served(string $root, \Closure $drive, array $env = []): void
     $port = 18_000 + random_int(0, 999);
     $keyFile = sys_get_temp_dir() . '/tinvar-e2e-' . bin2hex(random_bytes(4)) . '/app.key';
     $errorLog = (string) tempnam(sys_get_temp_dir(), 'tinvar-e2e-log-');
+    // A file of its own: php -S writes its standard error without
+    // appending, over whatever another writer appended.
+    $appLog = (string) tempnam(sys_get_temp_dir(), 'tinvar-e2e-app-');
     $server = proc_open(
         [PHP_BINARY, '-S', "127.0.0.1:{$port}", "{$root}/examples/shop/public/index.php"],
         [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', $errorLog, 'w']],
@@ -98,6 +101,7 @@ function served(string $root, \Closure $drive, array $env = []): void
             'TINVAR_SOCKET' => $renderer->socketPath,
             'TINVAR_APP_KEY_FILE' => $keyFile,
             'SHOP_DATABASE' => Shop::database(),
+            'SHOP_LOG' => $appLog,
             ...$env,
         ],
     );
@@ -119,12 +123,13 @@ function served(string $root, \Closure $drive, array $env = []): void
         // browser talking to whatever else holds the port.
         expect(proc_get_status($server)['running'])->toBeTrue("php -S did not start on port {$port}");
 
-        $drive("http://127.0.0.1:{$port}", $errorLog);
+        $drive("http://127.0.0.1:{$port}", $appLog, $renderer);
     } finally {
         proc_terminate($server);
         proc_close($server);
         $renderer->stop();
         @unlink($errorLog);
+        @unlink($appLog);
         $generated = is_file($keyFile);
         if ($generated) {
             unlink($keyFile);
@@ -480,13 +485,15 @@ it('puts the reader back at the order they opened, after reading the orders to t
 it('shows the shipping panel\'s rescue slot when its fragment fails, and logs what the slot quotes', function () use ($root) {
     $output = '';
     $log = '';
-    served($root, function (string $origin, string $errorLog) use ($root, &$output, &$log): void {
+    $rendererLog = '';
+    served($root, function (string $origin, string $appLog, Renderer $renderer) use ($root, &$output, &$log, &$rendererLog): void {
         $output = runWithTimeout(
             ['node', "{$root}/examples/shop/e2e/rescue.mjs", $origin, DemoAccount::EMAIL, DemoAccount::PASSWORD],
             $root,
             90,
         );
-        $log = (string) file_get_contents($errorLog);
+        $log = (string) file_get_contents($appLog);
+        $rendererLog = $renderer->log();
     }, ['SHOP_TEST_FAIL' => 'shipping-updates']);
 
     $result = json_decode((string) $output, true);
@@ -506,10 +513,35 @@ it('shows the shipping panel\'s rescue slot when its fragment fails, and logs wh
         ->and($result['retried'])->toBe(['before' => 1, 'after' => 2, 'stillRescued' => true]);
 
     // Reported to the exception handler: the reference the visitor sees is
-    // in the log, beside the exception that caused it.
+    // in the log, beside the exception that caused it -- one JSON line each,
+    // filed under the id of the fragment request that failed (ADR 0041).
     $reference = $result['rescue']['reference'];
-    expect($log)->toContain("[shop] {$reference} RuntimeException: Shipping updates failed on purpose")
-        ->and($log)->toContain("[shop] {$reference} Tinvar\\Render\\RendererException");
+    $records = array_values(array_filter(
+        array_map(static fn (string $line): mixed => json_decode($line, true), explode("\n", trim($log))),
+        static fn (mixed $record): bool => \is_array($record) && ($record['digest'] ?? null) === $reference,
+    ));
+    // The panel failed twice, before and after its retry, under the same
+    // digest: each time, the query's failure and the rescued subtree are
+    // two lines of one request.
+    $byRequest = [];
+    foreach ($records as $record) {
+        expect($record['request_id'] ?? '')->toMatch('/^[0-9a-f]{32}$/');
+        $byRequest[$record['request_id']][] = $record['message'];
+    }
+    $starting = static fn (array $messages, string $prefix): bool => array_filter($messages, static fn (string $m): bool => str_starts_with($m, $prefix)) !== [];
+    $both = array_filter($byRequest, static fn (array $messages): bool => $starting($messages, 'RuntimeException: Shipping updates failed on purpose')
+        && $starting($messages, 'Tinvar\\Render\\RendererException'));
+    expect($both)->not->toBe([], "the log:\n{$log}");
+
+    // And the renderer logged its side of it under the same id: the spec's
+    // "shared request ID in both logs".
+    $renderers = array_values(array_filter(
+        array_map(static fn (string $line): mixed => json_decode($line, true), explode("\n", $rendererLog)),
+        static fn (mixed $line): bool => \is_array($line) && ($line['source'] ?? null) === 'renderer' && ($line['digest'] ?? null) === $reference,
+    ));
+    expect($renderers)->not->toBe([], "the renderer's log:\n{$rendererLog}")
+        ->and($renderers[0]['message'])->toBe('fragment error')
+        ->and(array_keys($byRequest))->toContain($renderers[0]['request_id'] ?? null);
 
     // Nothing failed but the panel. The browser logs the error row React
     // rendered for it; nothing else.
