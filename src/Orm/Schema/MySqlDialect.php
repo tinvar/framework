@@ -267,8 +267,17 @@ final class MySqlDialect extends Dialect
         $connection->select("SELECT RELEASE_LOCK(CONCAT('tinvar_migrations:', SHA1(COALESCE(DATABASE(), '')))) AS released");
     }
 
+    /** Every view and table in the database, the tables with foreign key checks off while they go. */
     public function dropAllTables(Connection $connection): array
     {
+        $views = array_map(
+            static fn (array $row): string => self::text($row, 'name'),
+            $connection->select('SELECT table_name AS name FROM information_schema.views WHERE table_schema = DATABASE() ORDER BY table_name'),
+        );
+        foreach ($views as $view) {
+            $connection->execute('DROP VIEW IF EXISTS ' . $this->quoteOne($view));
+        }
+
         $tables = $this->tables($connection);
         $connection->execute('SET FOREIGN_KEY_CHECKS = 0');
 
@@ -280,6 +289,6 @@ final class MySqlDialect extends Dialect
             $connection->execute('SET FOREIGN_KEY_CHECKS = 1');
         }
 
-        return $tables;
+        return [...$views, ...$tables];
     }
 }

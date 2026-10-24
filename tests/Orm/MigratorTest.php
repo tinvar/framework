@@ -286,9 +286,11 @@ describe('fresh', function () {
         $migrator->migrate();
         $connection->execute("INSERT INTO a VALUES ('0192f3a1-0000-7000-8000-000000000001')");
         $connection->execute('CREATE TABLE stray (x INTEGER)');
+        $connection->execute('CREATE VIEW strays AS SELECT x FROM stray');
 
         expect($migrator->fresh())->toHaveCount(2)
             ->and(tables($connection))->toBe(['a', 'b', 'tinvar_migrations'])
+            ->and($connection->select("SELECT name FROM sqlite_master WHERE type = 'view'"))->toBe([])
             ->and($connection->select('SELECT COUNT(*) AS n FROM a'))->toBe([['n' => 0]])
             ->and($connection->select('PRAGMA foreign_keys'))->toBe([['foreign_keys' => 1]]);
     });

@@ -322,17 +322,32 @@ final class PostgresDialect extends Dialect
     }
 
     /**
-     * Every table in the current schema, at once and with CASCADE, so the
-     * foreign keys and views between them go too. Other schemas -- another
-     * application's, or the extensions' -- are not touched.
+     * Every view, materialized view and table in the current schema, each
+     * kind at once and with CASCADE, so the foreign keys between them go
+     * too. Other schemas -- another application's, or the extensions' --
+     * are not touched, and nor are the schema's sequences and types: a type
+     * there may be an extension's, citext's, which the tables made with it
+     * need again.
      */
     public function dropAllTables(Connection $connection): array
     {
+        $dropped = [];
+        foreach ([
+            'VIEW' => 'SELECT table_name AS name FROM information_schema.views WHERE table_schema = current_schema() ORDER BY table_name',
+            'MATERIALIZED VIEW' => 'SELECT matviewname AS name FROM pg_matviews WHERE schemaname = current_schema() ORDER BY matviewname',
+        ] as $kind => $query) {
+            $names = array_map(static fn (array $row): string => self::text($row, 'name'), $connection->select($query));
+            if ($names !== []) {
+                $connection->execute("DROP {$kind} IF EXISTS " . implode(', ', array_map($this->quoteOne(...), $names)) . ' CASCADE');
+                $dropped = [...$dropped, ...$names];
+            }
+        }
+
         $tables = $this->tables($connection);
         if ($tables !== []) {
             $connection->execute('DROP TABLE IF EXISTS ' . implode(', ', array_map($this->quoteOne(...), $tables)) . ' CASCADE');
         }
 
-        return $tables;
+        return [...$dropped, ...$tables];
     }
 }

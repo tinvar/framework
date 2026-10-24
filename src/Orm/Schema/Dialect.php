@@ -109,7 +109,7 @@ abstract class Dialect
 
     abstract public function unlock(Connection $connection): void;
 
-    /** @return list<string> the tables dropped */
+    /** @return list<string> the views and tables dropped */
     abstract public function dropAllTables(Connection $connection): array;
 
     /** The dialect for a connection's driver. */

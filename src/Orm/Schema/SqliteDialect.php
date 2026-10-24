@@ -418,18 +418,25 @@ final class SqliteDialect extends Dialect
     }
 
     /**
-     * Every table, with foreign keys off while they go -- SQLite refuses to
-     * drop a table another still references -- and back as they were.
-     * PRAGMA foreign_keys does nothing inside a transaction, so this runs
-     * outside one.
+     * Every view, then every table, with foreign keys off while they go --
+     * SQLite refuses to drop a table another still references -- and back
+     * as they were. PRAGMA foreign_keys does nothing inside a transaction,
+     * so this runs outside one. Triggers and indexes go with their tables.
      */
     public function dropAllTables(Connection $connection): array
     {
+        $views = array_map(
+            static fn (array $row): string => self::text($row, 'name'),
+            $connection->select("SELECT name FROM sqlite_master WHERE type = 'view' ORDER BY name"),
+        );
         $tables = $this->tables($connection);
         $enforced = self::text($connection->select('PRAGMA foreign_keys')[0] ?? [], 'foreign_keys') === '1';
         $connection->execute('PRAGMA foreign_keys = OFF');
 
         try {
+            foreach ($views as $view) {
+                $connection->execute('DROP VIEW IF EXISTS ' . $this->quoteOne($view));
+            }
             foreach ($tables as $table) {
                 $connection->execute('DROP TABLE IF EXISTS ' . $this->quoteOne($table));
             }
@@ -439,7 +446,7 @@ final class SqliteDialect extends Dialect
             }
         }
 
-        return $tables;
+        return [...$views, ...$tables];
     }
 
     /** The table's own CREATE TABLE statement, taken apart; null when there is no such table. */

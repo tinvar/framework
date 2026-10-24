@@ -322,6 +322,9 @@ describe('fresh on Postgres', function () {
         inSchema(static function (PdoConnection $connection, MigrationFiles $files, string $schema): void {
             $files->add('2026_10_24_000001_create_a', "\$schema->create('a', function (Table \$t): void { \$t->uuid('id')->primary(); });");
             $connection->execute('CREATE TABLE stray (a_id uuid)');
+            // Views that depend on no table, which no CASCADE would reach.
+            $connection->execute('CREATE VIEW answer AS SELECT 42 AS n');
+            $connection->execute('CREATE MATERIALIZED VIEW answers AS SELECT 42 AS n');
             $connection->execute("CREATE SCHEMA {$schema}_other");
             $connection->execute("CREATE TABLE {$schema}_other.kept (x integer)");
 
@@ -330,6 +333,7 @@ describe('fresh on Postgres', function () {
 
                 expect($ran)->toBe(['2026_10_24_000001_create_a'])
                     ->and(new PostgresDialect()->tables($connection))->toBe(['a', 'tinvar_migrations'])
+                    ->and($connection->select("SELECT to_regclass('answer') IS NULL AND to_regclass('answers') IS NULL AS gone"))->toBe([['gone' => true]])
                     ->and($connection->select("SELECT to_regclass('{$schema}_other.kept') IS NOT NULL AS kept"))->toBe([['kept' => true]]);
             } finally {
                 $connection->execute("DROP SCHEMA {$schema}_other CASCADE");
