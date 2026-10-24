@@ -70,7 +70,10 @@ it('renders the catalog end to end', function () {
     expect($html)->toStartWith('<!DOCTYPE html>')
         ->toMatch('#<link rel="stylesheet"[^>]* href="/assets/index-[\w-]+\.css"#')
         ->toContain('Pellwick Supply')
-        ->toContain('<title>Catalog · Pellwick Supply</title>');
+        ->toContain('">Catalog · Pellwick Supply</title>');
+    // One title: the page's, through the shop's template, PHP's fallback
+    // and the default given way to it.
+    expect(substr_count($html, '<title'))->toBe(1);
 
     // A card per product, each a link, and a client chunk referenced.
     expect(substr_count($html, 'data-product-name=""'))->toBe(24)

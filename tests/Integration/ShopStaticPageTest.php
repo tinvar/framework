@@ -200,7 +200,7 @@ describe('the built catalog', function () {
         preg_match_all('#<script\b[^>]*\bnonce="([^"]+)"#', $html, $scripts);
 
         expect($built)->toBe(['/'])
-            ->and($html)->toContain('<title>Catalog · Pellwick Supply</title>')
+            ->and($html)->toContain('">Catalog · Pellwick Supply</title>')
             ->and(substr_count($html, 'data-product-name=""'))->toBe(24)
             // Signed out: the header offers sign-in, as it does to anyone.
             ->and($html)->toContain('/sign-in')

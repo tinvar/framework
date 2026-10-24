@@ -155,6 +155,15 @@ it('navigates from the catalog to a product and back, through the RSC payload', 
         ->and($result['availability'])->toBe(24, 'every card awaited its availability query')
         ->and($result['reloaded'])->toBe(1, 'one document load; the rest were client visits');
 
+    // One title, through the shop's template, on the document and after each
+    // client visit; and PHP's fallback description, which no page replaces,
+    // once.
+    expect($result['head'])->toBe([
+        'first' => ['titles' => ['Catalog · Pellwick Supply'], 'descriptions' => 1],
+        'second' => ['titles' => ["{$result['name']} · Pellwick Supply"], 'descriptions' => 1],
+        'back' => ['titles' => ['Catalog · Pellwick Supply'], 'descriptions' => 1],
+    ]);
+
     // One document load; then the product page prefetched while the pointer
     // rested on its card -- the payload, for the build the page metadata
     // named, said to be a prefetch -- and the click answered from it, with

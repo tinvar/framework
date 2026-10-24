@@ -127,7 +127,8 @@ it('answers a path nothing matches inside the header, for the customer signed in
             ->and($text)->toContain(DemoAccount::NAME)
             ->and($text)->not->toContain('Sign in')
             ->and($text)->toContain($visitor->logged[0])
-            ->and($response->body())->toContain('<title>Nothing lives at this address · Pellwick Supply</title>');
+            ->and($response->body())->toContain('">Nothing lives at this address · Pellwick Supply</title>')
+            ->and(substr_count($response->body(), '<title'))->toBe(1);
     });
 });
 
@@ -170,7 +171,8 @@ it('draws 419, 429 and 500 as system pages: the mark, the reference, the way bac
         expect($response->status)->toBe($status)
             ->and($text)->toContain($title)
             ->and($text)->toContain('Reference')
-            ->and($body)->toContain('<title>' . $title . ' · Pellwick Supply</title>')
+            ->and($body)->toContain('">' . $title . ' · Pellwick Supply</title>')
+            ->and(substr_count($body, '<title'))->toBe(1)
             // The mark, and none of the header's navigation.
             ->and($body)->toContain('Pellwick Supply')
             ->and($body)->not->toContain('<header')

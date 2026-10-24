@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Protocol;
 
 use Tinvar\Codec\Bin;
+use Tinvar\Render\HeadTag;
 
 /**
  * The socket protocol's frame table (tinvar-spec.md, "Socket protocol").
@@ -87,6 +88,8 @@ final class Frame
      * @param array<string, mixed> $flash what a form posted without script left
      *                                   for this page: its errors, its input, a
      *                                   flash -- see FlashStore
+     * @param list<HeadTag>        $head the application's fallback title and meta
+     *                                   tags, which a component's own replace
      * @return array<string, mixed>
      */
     public static function render(
@@ -100,6 +103,7 @@ final class Frame
         ?array $segments = null,
         ?string $csrfToken = null,
         array $flash = [],
+        array $head = [],
     ): array {
         $frame = [
             't' => self::RENDER,
@@ -126,6 +130,9 @@ final class Frame
         }
         if ($flash !== []) {
             $frame['flash'] = $flash;
+        }
+        if ($head !== []) {
+            $frame['head'] = array_map(static fn (HeadTag $tag): array => $tag->toFrame(), $head);
         }
 
         return $frame;
