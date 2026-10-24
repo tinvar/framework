@@ -142,10 +142,36 @@ it('drops everything and migrates afresh', function () {
     $run->files->add('2026_10_24_000001_create_notes', CREATE_NOTES);
     $run('migrate');
 
-    expect($run('migrate:fresh'))->toBe(0)
+    expect($run('migrate:fresh', ['--force']))->toBe(0)
         ->and($run->out)->toContain('dropped   notes')
         ->and(end($run->out))->toBe('Dropped every table and ran 1 migration(s).');
 });
+
+// Every row goes with every table: a stray command must not get that far.
+it('refuses to drop everything without --force', function () {
+    $run = run();
+    $run->files->add('2026_10_24_000001_create_notes', CREATE_NOTES);
+    $run('migrate');
+
+    expect($run('migrate:fresh'))->not->toBe(0)
+        ->and(implode("\n", $run->err))->toContain('--force')
+        ->and($run->out)->not->toContain('dropped   notes');
+});
+
+it('refuses to drop everything in production, even with --force', function (string $variable) {
+    $run = run();
+    $run->files->add('2026_10_24_000001_create_notes', CREATE_NOTES);
+    $run('migrate');
+    putenv("{$variable}=production");
+
+    try {
+        expect($run('migrate:fresh', ['--force']))->not->toBe(0)
+            ->and(implode("\n", $run->err))->toContain('production')
+            ->and($run->out)->not->toContain('dropped   notes');
+    } finally {
+        putenv($variable);
+    }
+})->with(['TINVAR_ENV', 'APP_ENV']);
 
 describe('make:migration', function () {
     it('writes the migration the models call for, named for now, and creates the directory', function () {

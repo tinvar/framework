@@ -74,7 +74,10 @@ final class MigrateCommand
                 'migrate' => $this->migrate(self::options($command, $arguments, ['lock-timeout'])),
                 'migrate:rollback' => $this->rollback(self::options($command, $arguments, ['step', 'lock-timeout'])),
                 'migrate:status' => $this->status(self::options($command, $arguments, [])),
-                'migrate:fresh' => $this->fresh(self::options($command, $arguments, ['lock-timeout'])),
+                'migrate:fresh' => $this->fresh(
+                    \in_array('--force', $arguments, true),
+                    self::options($command, array_values(array_diff($arguments, ['--force'])), ['lock-timeout']),
+                ),
                 'make:migration' => $this->make($arguments),
                 default => throw new \InvalidArgumentException("Unknown command '{$command}'."),
             };
@@ -155,8 +158,20 @@ final class MigrateCommand
     }
 
     /** @param array<string, string> $options */
-    private function fresh(array $options): int
+    private function fresh(bool $force, array $options): int
     {
+        // Every table dropped, every row with it: never in production, and
+        // nowhere without saying so. A command typed into the wrong shell,
+        // or a script pointed at the wrong DSN, must stop here.
+        foreach (['TINVAR_ENV', 'APP_ENV'] as $variable) {
+            if (getenv($variable) === 'production') {
+                throw new MigrationRefused("migrate:fresh drops every table, and {$variable} says this is production. It is refused here.");
+            }
+        }
+        if (!$force) {
+            throw new MigrationRefused('migrate:fresh drops every table and every row in them. Run it again with --force to do that.');
+        }
+
         $ran = $this->migrator(true, $options)->fresh();
         ($this->out)(\sprintf('Dropped every table and ran %d migration(s).', \count($ran)));
 
