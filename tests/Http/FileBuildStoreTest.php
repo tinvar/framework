@@ -57,7 +57,7 @@ it('parses once while nothing changes', function () {
 });
 
 // Same second, same length: an mtime-and-size signature would miss this, and
-// a worker would keep b1 unrevoked. A rename gives the file a new inode.
+// a worker would keep b1 unrevoked.
 it('sees a change made within the same second that leaves the size alike', function () {
     $path = path();
     $writer = new FileBuildStore($path);
@@ -69,6 +69,37 @@ it('sees a change made within the same second that leaves the size alike', funct
     $writer->update(static fn (BuildHistory $h): BuildHistory => $h->flooredAt('b2'));
 
     expect($worker->read()->floor)->toBe('b2');
+});
+
+// The security review's case. A rename can be given an inode an earlier
+// write freed, and mtime and ctime count whole seconds, so the history a
+// worker cached and the one written after it could match on every field a
+// stat() reports. Simulated at its worst: the second revocation written over
+// the first in place -- the same inode -- at the same length, with the mtime
+// put back. A stat() signature called the file unchanged, and b1, which the
+// operator had moved on from revoking b2 to revoking, stayed accepted.
+it('sees a second revocation of the same length over the same inode in the same second', function () {
+    $path = path();
+    $writer = new FileBuildStore($path);
+    $writer->update(static fn (BuildHistory $h): BuildHistory => $h
+        ->released('b1', 1)->released('b2', 2)->released('b3', 3)->revoking('b2'));
+
+    $worker = new FileBuildStore($path);
+    expect($worker->read()->revoked)->toBe(['b2']);
+
+    clearstatcache(true, $path);
+    $before = stat($path);
+    $second = json_encode(
+        new BuildHistory($worker->read()->builds, ['b1'])->toArray(),
+        JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES,
+    ) . "\n";
+    file_put_contents($path, $second);
+    touch($path, $before['mtime']);
+    clearstatcache(true, $path);
+    $after = stat($path);
+
+    expect([$after['ino'], $after['size'], $after['mtime']])->toBe([$before['ino'], $before['size'], $before['mtime']])
+        ->and($worker->read()->revoked)->toBe(['b1']);
 });
 
 it('applies each change to what is on disk, not to what it last read', function () {

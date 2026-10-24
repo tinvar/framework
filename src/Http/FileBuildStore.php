@@ -8,12 +8,16 @@ namespace Tinvar\Http;
  * A BuildHistory kept in one JSON file: the default store, for an
  * application served from one machine.
  *
- * Read per request and cheap to: the file is parsed once per worker and then
- * only when it changes, which a stat() answers. Every write replaces the file
- * by renaming a complete one over it, so the inode changes with every change
- * -- a signature that does not depend on the clock's resolution, where two
- * writes within one second of the same length would leave the mtime and size
- * alike and a worker on the old revocation list.
+ * Read on every check, and parsed only when its bytes differ from the bytes
+ * last parsed. Compared whole, not by a stat() signature: mtime and ctime
+ * count whole seconds, and a write renamed into place can be given an inode
+ * freed by an earlier one, so a revocation written within the second of the
+ * last read, at the same length, left every field of the signature alike --
+ * and a worker that had cached the history before it went on accepting the
+ * build. The same bytes are the same history by construction, so this cannot
+ * miss a change. Reading a history of thirty releases, under 3 KB, and
+ * comparing it costs about 10 microseconds against a stat()'s one -- a
+ * fiftieth of a percent of a 5 ms render, to make a revocation certain.
  *
  * Not a secret, but not anyone's to write: whoever can write the file can
  * lift a revocation. Keep it where only the deploying user can, beside the
@@ -22,8 +26,8 @@ namespace Tinvar\Http;
  */
 final class FileBuildStore implements BuildStore
 {
-    /** The stat signature of the file last parsed, or null for none. */
-    private ?string $seen = null;
+    /** The bytes the cached history was parsed from, or null for none. */
+    private ?string $bytes = null;
 
     private ?BuildHistory $history = null;
 
@@ -41,25 +45,23 @@ final class FileBuildStore implements BuildStore
 
     public function read(): BuildHistory
     {
-        clearstatcache(true, $this->path);
-        $stat = is_file($this->path) ? @stat($this->path) : false;
+        $raw = $this->contents();
 
-        if ($stat === false) {
-            $this->seen = null;
+        if ($raw === null) {
+            $this->bytes = null;
 
             return $this->history = $this->empty ??= new BuildHistory();
         }
 
-        $signature = "{$stat['dev']}:{$stat['ino']}:{$stat['size']}:{$stat['mtime']}:{$stat['ctime']}";
-        if ($signature === $this->seen && $this->history !== null) {
+        if ($raw === $this->bytes && $this->history !== null) {
             return $this->history;
         }
 
         // Parsed before it is remembered: a file that fails to parse is
         // tried again on the next read rather than cached as broken, so the
         // moment it is fixed every worker has it.
-        $history = $this->parse();
-        $this->seen = $signature;
+        $history = $this->parse($raw);
+        $this->bytes = $raw;
 
         return $this->history = $history;
     }
@@ -83,8 +85,8 @@ final class FileBuildStore implements BuildStore
 
             // Fresh from disk, never the cached copy: another command may
             // have written since this process last looked.
-            clearstatcache(true, $this->path);
-            $next = $change(is_file($this->path) ? $this->parse() : new BuildHistory());
+            $raw = $this->contents();
+            $next = $change($raw === null ? new BuildHistory() : $this->parse($raw));
 
             $this->write($directory, $next);
 
@@ -95,13 +97,33 @@ final class FileBuildStore implements BuildStore
         }
     }
 
-    private function parse(): BuildHistory
+    /**
+     * The file's bytes, or null when there is no file -- nothing recorded
+     * yet, which is an empty history rather than an error. One that exists
+     * and cannot be read is an error, which a registry fails closed on.
+     */
+    private function contents(): ?string
     {
-        $raw = @file_get_contents($this->path);
-        if ($raw === false) {
-            throw new \RuntimeException("Cannot read the build history at {$this->path}.");
+        clearstatcache(true, $this->path);
+        if (!is_file($this->path)) {
+            return null;
         }
 
+        $raw = @file_get_contents($this->path);
+        if ($raw !== false) {
+            return $raw;
+        }
+
+        clearstatcache(true, $this->path);
+        if (!is_file($this->path)) {
+            return null;
+        }
+
+        throw new \RuntimeException("Cannot read the build history at {$this->path}.");
+    }
+
+    private function parse(string $raw): BuildHistory
+    {
         try {
             return BuildHistory::fromArray(json_decode($raw, true, 8, JSON_THROW_ON_ERROR));
         } catch (\JsonException|\UnexpectedValueException $e) {
