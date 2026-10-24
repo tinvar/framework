@@ -9,6 +9,7 @@ use Tinvar\Http\Middleware;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Orm\Orm;
+use Tinvar\Tenancy\SubtreeSource;
 use Tinvar\Tenancy\TenantSource;
 
 /**
@@ -28,6 +29,15 @@ use Tinvar\Tenancy\TenantSource;
  * the session -- is the same 404 rather than a switch: "The tenant resolved
  * from a host only constrains." A host that could switch a session into
  * its tenant would make the Host header a way in.
+ *
+ * Constrains, not names: "the session's tenant must be that tenant or a
+ * descendant". So a request running as a tenant below the one a host
+ * names, by the application's TenantTree (handed to the Orm), goes on as
+ * the session's tenant -- the narrower of the two, and the one whose
+ * membership the panel then asks for. Only a source that says it bounds
+ * (SubtreeSource) is read that way; a signed link names its tenant exactly.
+ * The tenant the request runs as is still one tenant, so every token minted
+ * under it is bound to that one and no other.
  */
 final readonly class ResolveTenant implements Middleware
 {
@@ -45,7 +55,8 @@ final readonly class ResolveTenant implements Middleware
 
     /**
      * The tenant $source places the request in, held to the one it is
-     * already in.
+     * already in: that one, when it is the same or below a bounding
+     * source's answer.
      *
      * @throws HttpException 404 when there is none, or it is not the request's
      */
@@ -58,11 +69,18 @@ final readonly class ResolveTenant implements Middleware
         }
 
         $current = $orm->tenant();
-        if ($current !== '' && $current !== $tenant) {
-            throw self::unknown("{$named} places this request in a tenant other than the one it is running as.");
+        if ($current === '' || $current === $tenant) {
+            return $tenant;
         }
 
-        return $tenant;
+        // Below the host's tenant: the session's, which the host bounds.
+        // Walked up from the session's tenant, so a tree that loops or a
+        // tenant with no record refuses rather than admits.
+        if ($source instanceof SubtreeSource && $orm->tenants()?->contains($tenant, $current) === true) {
+            return $current;
+        }
+
+        throw self::unknown("{$named} places this request in a tenant other than the one it is running as, and not above it.");
     }
 
     private static function unknown(string $why): HttpException

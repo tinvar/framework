@@ -17,7 +17,10 @@ use Tinvar\Http\Request;
  * A host is a claim, not a credential -- anyone can send any Host header --
  * so what it settles is which tenant's data the request may see, and no
  * more. "The tenant resolved from a host only constrains": a session still
- * has to hold a membership there to see anything a panel guards.
+ * has to hold a membership there to see anything a panel guards, and a
+ * request already running as a tenant -- the session's -- goes on as that
+ * one when it is the host's or below it (SubtreeSource), and is refused
+ * otherwise.
  *
  * Normalized before the application is asked: lowercase, without its port
  * or a trailing dot, so `Acme.Shop.test.:443` and `acme.shop.test` are one
@@ -25,7 +28,7 @@ use Tinvar\Http\Request;
  * not a host name -- an address literal, a stray character -- belongs to no
  * tenant.
  */
-final readonly class Host implements TenantSource
+final readonly class Host implements SubtreeSource
 {
     public function __construct(private TenantHosts $hosts) {}
 

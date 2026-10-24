@@ -29,6 +29,8 @@ use Tinvar\Routing\RouteRegistry;
 use Tinvar\Routing\RoutingException;
 use Tinvar\Tenancy\Host;
 use Tinvar\Tenancy\Signature;
+use Tinvar\Tenancy\TenantHierarchy;
+use Tinvar\Tenancy\TenantTree;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 use Tinvar\Tests\Tenancy\Fixtures\App;
 use Tinvar\Tests\Tenancy\Fixtures\SessionTenant;
@@ -37,6 +39,26 @@ use Tinvar\Tests\Tenancy\Fixtures\SignIn;
 use const Tinvar\Tests\Tenancy\Fixtures\SESSION;
 
 require_once __DIR__ . '/Fixtures/app.php';
+
+/** acme and globex, both under a reseller. */
+final class ResellerOverBoth implements TenantTree
+{
+    public function parentOf(string $tenant): ?string
+    {
+        return \in_array($tenant, ['acme', 'globex'], true) ? 'reseller' : null;
+    }
+
+    public function descendantsOf(string $tenant): array
+    {
+        return $tenant === 'reseller' ? ['acme', 'globex'] : [];
+    }
+}
+
+/** The two-tenant application, under a reseller, with a session's tenant read from a header. */
+function underReseller(): App
+{
+    return new App(new TenantFixture()->connection, [SignIn::class, SessionTenant::class], tenants: new TenantHierarchy(new ResellerOverBoth()));
+}
 
 function app(?TenantFixture $fixture = null, array $global = [SignIn::class], ?FragmentManifest $manifest = null): App
 {
@@ -117,6 +139,57 @@ describe('failing closed', function () {
 
         expect(page($app, '/t/scripts', 'acme.test', ['x-session-tenant' => 'acme'])['tenant'])->toBe('acme')
             ->and($app->get('/t/scripts', 'acme.test', ['x-session-tenant' => 'globex'])->status)->toBe(404);
+    });
+});
+
+// "The tenant resolved from a host only constrains: the session's tenant
+// must be that tenant or a descendant." With the application's tree, a
+// session running below the host's tenant goes on as its own.
+describe('a host over a tenant hierarchy', function () {
+    it('runs a session below the host\'s tenant as the session\'s own', function () {
+        $app = underReseller();
+
+        expect(page($app, '/t/scripts', 'reseller.test', ['x-session-tenant' => 'acme']))
+            ->toBe(['tenant' => 'acme', 'names' => ['acme-script-1', 'acme-script-2']])
+            ->and(page($app, '/t/scripts', 'reseller.test', ['x-session-tenant' => 'globex'])['tenant'])->toBe('globex')
+            ->and(page($app, '/t/scripts', 'reseller.test')['tenant'])->toBe('reseller');
+    });
+
+    it('refuses a session above the host\'s tenant, or beside it', function () {
+        $app = underReseller();
+
+        expect($app->get('/t/scripts', 'acme.test', ['x-session-tenant' => 'reseller'])->status)->toBe(404)
+            ->and($app->get('/t/scripts', 'acme.test', ['x-session-tenant' => 'globex'])->status)->toBe(404);
+    });
+
+    it('holds a session to the host\'s tenant exactly with no tree', function () {
+        $app = app(global: [SignIn::class, SessionTenant::class]);
+
+        expect($app->get('/t/scripts', 'reseller.test', ['x-session-tenant' => 'acme'])->status)->toBe(404);
+    });
+
+    // A signed link names the tenant whose data it was signed to show.
+    it('keeps a signed link to the tenant it names, even above the session\'s', function () {
+        $app = underReseller();
+        $url = parse_url($app->urls->sign('/links/scripts', 'reseller'));
+        parse_str($url['query'] ?? '', $query);
+
+        expect($app->get($url['path'] ?? '', 'acme.test', ['x-session-tenant' => 'acme'], $query)->status)->toBe(404);
+    });
+
+    // Every token is bound to the one tenant the request runs as.
+    it('binds what it mints to the session\'s tenant, and takes back only that', function () {
+        $app = underReseller();
+
+        $claims = RouteToken::decode((string) $app->get('/t/scripts', 'reseller.test', ['x-session-tenant' => 'acme'])
+            ->header('x-route-token'), $app->routeSigner)->claims;
+        $acme = $app->get(FragmentEndpoint::PREFIX . $app->fragmentToken('acme'), 'reseller.test', ['x-session-tenant' => 'acme']);
+        $parent = $app->get(FragmentEndpoint::PREFIX . $app->fragmentToken('reseller'), 'reseller.test', ['x-session-tenant' => 'acme']);
+
+        expect($claims->tenant)->toBe('acme')
+            ->and($acme->status)->toBe(200)
+            ->and($parent->status)->toBe(404)
+            ->and($app->fragments)->toBe(['acme']);
     });
 });
 

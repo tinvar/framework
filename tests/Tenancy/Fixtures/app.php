@@ -40,6 +40,7 @@ use Tinvar\Support\Signer;
 use Tinvar\Tenancy\Host;
 use Tinvar\Tenancy\Signature;
 use Tinvar\Tenancy\SignedUrls;
+use Tinvar\Tenancy\TenantHierarchy;
 use Tinvar\Tenancy\TenantHosts;
 use Tinvar\Tests\Orm\Fixtures\Script;
 
@@ -54,12 +55,12 @@ const SESSION = 'session-abc';
 
 const KEY = 'tenancy-test-key';
 
-/** acme.test and globex.test, and nothing else. */
+/** acme.test, globex.test, and reseller.test -- above both, given a tree -- and nothing else. */
 final class Hosts implements TenantHosts
 {
     public function tenantForHost(string $host): ?string
     {
-        return ['acme.test' => 'acme', 'globex.test' => 'globex'][$host] ?? null;
+        return ['acme.test' => 'acme', 'globex.test' => 'globex', 'reseller.test' => 'reseller'][$host] ?? null;
     }
 }
 
@@ -252,9 +253,13 @@ final class App
     public array $fragments = [];
 
     /** @param list<class-string<Middleware>> $global */
-    public function __construct(Connection $connection, array $global = [SignIn::class], ?FragmentManifest $manifest = null)
-    {
-        $this->orm = new Orm($connection, new IdentityMap('tenant-test'));
+    public function __construct(
+        Connection $connection,
+        array $global = [SignIn::class],
+        ?FragmentManifest $manifest = null,
+        ?TenantHierarchy $tenants = null,
+    ) {
+        $this->orm = new Orm($connection, new IdentityMap('tenant-test'), $tenants);
         $this->auth = new AuthContext();
         $this->fragmentSigner = new Signer(KEY, FragmentToken::PURPOSE);
         $this->routeSigner = new Signer(KEY, RouteToken::PURPOSE);
