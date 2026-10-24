@@ -82,15 +82,16 @@ final class Orm
     private \WeakMap $subtreeByFiber;
 
     /**
-     * Whether a membership has granted reads across the tenant's subtree:
-     * set by the panel stack (RequirePanelMembership) for a panel defined
-     * with `subtree: true`, after its check. Inherited by a fiber from the
-     * main context, as the tenant is -- the render's fibers run inside the
-     * request the grant was made for.
+     * The tenant a membership granted reads across the subtree of, or null
+     * for none: set by the panel stack (RequirePanelMembership) for a panel
+     * defined with `subtree: true`, after its check, to the tenant the
+     * membership was held in. Inherited by a fiber from the main context,
+     * as the tenant is -- the render's fibers run inside the request the
+     * grant was made for.
      */
-    private bool $subtreeGrantMain = false;
+    private ?string $subtreeGrantMain = null;
 
-    /** @var \WeakMap<object, bool> */
+    /** @var \WeakMap<object, string> */
     private \WeakMap $subtreeGrantByFiber;
 
     /**
@@ -176,7 +177,7 @@ final class Orm
         $this->readOnlyByFiber = new \WeakMap();
         $this->subtreeMain = null;
         $this->subtreeByFiber = new \WeakMap();
-        $this->subtreeGrantMain = false;
+        $this->subtreeGrantMain = null;
         $this->subtreeGrantByFiber = new \WeakMap();
 
         // A transaction still open here was left in a fiber nobody resumes.
@@ -335,7 +336,8 @@ final class Orm
      */
     public function withinSubtree(\Closure $work): mixed
     {
-        if (!$this->isSubtreeGranted()) {
+        $granted = $this->subtreeGrant();
+        if ($granted === null) {
             throw new \LogicException(
                 'withinSubtree() reads below the tenant in force, which only a membership grants: run it in a panel '
                 . 'defined with `subtree: true`, whose membership check grants it.',
@@ -350,11 +352,22 @@ final class Orm
             throw new \LogicException('withinSubtree() reads below the tenant in force, and there is none.');
         }
 
+        // The grant is the membership's, held in one tenant: it reaches that
+        // tenant's subtree, from it or from a tenant below it, and no other.
+        // actAs() into a tenant elsewhere reads that tenant -- and widens
+        // nothing there.
+        if ($root !== $granted && !$this->tenants->contains($granted, $root)) {
+            throw new \LogicException(
+                "withinSubtree() was granted below '{$granted}', and the tenant in force is not in its subtree.",
+            );
+        }
+
         return $this->inSubtree([$root, $this->tenants->subtree($root)], $work);
     }
 
     /**
-     * Runs $work with withinSubtree() allowed: the grant a membership gives.
+     * Runs $work with withinSubtree() allowed across the subtree of the
+     * tenant in force now: the grant a membership held in it gives.
      *
      * Called by the panel stack, after the membership check, for a panel
      * whose definition says its memberships reach the subtree; anything
@@ -369,12 +382,16 @@ final class Orm
     {
         $fiber = \Fiber::getCurrent();
         $had = $fiber !== null && isset($this->subtreeGrantByFiber[$fiber]);
-        $previous = $fiber === null ? $this->subtreeGrantMain : ($had && $this->subtreeGrantByFiber[$fiber]);
+        $previous = $fiber === null ? $this->subtreeGrantMain : ($had ? $this->subtreeGrantByFiber[$fiber] : null);
 
+        // No tenant, nothing to reach below: granted nowhere.
+        $tenant = $this->tenant();
         if ($fiber === null) {
-            $this->subtreeGrantMain = true;
+            $this->subtreeGrantMain = $tenant === '' ? null : $tenant;
+        } elseif ($tenant === '') {
+            unset($this->subtreeGrantByFiber[$fiber]);
         } else {
-            $this->subtreeGrantByFiber[$fiber] = true;
+            $this->subtreeGrantByFiber[$fiber] = $tenant;
         }
 
         try {
@@ -382,7 +399,7 @@ final class Orm
         } finally {
             if ($fiber === null) {
                 $this->subtreeGrantMain = $previous;
-            } elseif ($had) {
+            } elseif ($previous !== null) {
                 $this->subtreeGrantByFiber[$fiber] = $previous;
             } else {
                 unset($this->subtreeGrantByFiber[$fiber]);
@@ -392,6 +409,12 @@ final class Orm
 
     /** Whether a membership granted withinSubtree() to the work running now. */
     public function isSubtreeGranted(): bool
+    {
+        return $this->subtreeGrant() !== null;
+    }
+
+    /** The tenant whose subtree a membership granted the work running now, or null. */
+    private function subtreeGrant(): ?string
     {
         $fiber = \Fiber::getCurrent();
 

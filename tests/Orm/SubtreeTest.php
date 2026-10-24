@@ -147,13 +147,28 @@ describe('withinSubtree()', function () {
             }))->toThrow(\LogicException::class, 'only a membership grants');
     });
 
+    // The grant is a membership's, held in one tenant: from a tenant below
+    // it, it reaches that tenant's subtree; from a tenant elsewhere, which
+    // code may actAs() and read, it widens nothing.
+    it('reaches only the subtree of the tenant the grant was made in', function () {
+        $orm = new Tenants()->orm();
+        $granted = static fn (string $tenant): array => $orm->actAs('reseller', static fn (): array => $orm->grantSubtree(
+            static fn (): array => $orm->actAs($tenant, static fn (): array => $orm->withinSubtree(static fn (): array => names($orm))),
+        ));
+
+        expect($granted('acme'))->toBe(['acme-script', 'acme-west-script'])
+            ->and(fn () => $granted('other'))->toThrow(\LogicException::class, "granted below 'reseller'")
+            ->and($orm->grantSubtree(static fn (): bool => $orm->isSubtreeGranted()))->toBeFalse();
+    });
+
     it('needs a tenant tree, and a tenant to read below', function () {
         $flat = new Tenants()->orm(null);
         $orm = new Tenants()->orm();
 
         expect(fn () => across($flat, 'reseller', static fn (): array => names($flat)))->toThrow(\LogicException::class, 'no tenant tree')
+            // Granted with no tenant in force is granted nowhere.
             ->and(fn () => $orm->grantSubtree(static fn (): mixed => $orm->withinSubtree(static fn (): array => names($orm))))
-            ->toThrow(\LogicException::class, 'there is none');
+            ->toThrow(\LogicException::class, 'only a membership grants');
     });
 
     it('narrows to the tenant actAs() names, and lifts entirely inside acrossTenants()', function () {
