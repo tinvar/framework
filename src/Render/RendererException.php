@@ -6,12 +6,27 @@ namespace Tinvar\Render;
 
 final class RendererException extends \RuntimeException
 {
+    /**
+     * @param string|null $stack the renderer's stack for the failure, kept only under
+     *        debug -- for the dev overlay -- as the message is
+     * @param string|null $sourceFile the application file the stack points at first
+     * @param int|null    $sourceLine and the line in it
+     */
     public function __construct(
         string $message,
         public readonly string $code_ = 'render_failed',
         public readonly ?string $digest = null,
+        public readonly ?string $stack = null,
+        public readonly ?string $sourceFile = null,
+        public readonly ?int $sourceLine = null,
     ) {
         parent::__construct($message);
+    }
+
+    /** What kind of failure this was; see RenderFailure. */
+    public function failure(): RenderFailure
+    {
+        return RenderFailure::of($this->code_);
     }
 
     public static function cannotConnect(string $path, string $reason): self
@@ -74,7 +89,11 @@ final class RendererException extends \RuntimeException
      */
     public static function fromErrorFrame(array $frame, bool $debug = false): self
     {
-        $code = \is_string($frame['code'] ?? null) ? $frame['code'] : 'render_failed';
+        // A code of the shape this side writes, or none: it reaches the log
+        // and the overlay, and a renderer is not to write either freely.
+        $code = \is_string($frame['code'] ?? null) && preg_match('/^[a-z_]{1,64}$/D', $frame['code']) === 1
+            ? $frame['code']
+            : 'render_failed';
         $digest = \is_string($frame['digest'] ?? null) ? $frame['digest'] : null;
 
         $message = 'The renderer reported an error.';
@@ -82,6 +101,14 @@ final class RendererException extends \RuntimeException
             $message = $frame['message'];
         }
 
-        return new self($message, $code, $digest);
+        // Where it happened, under the same gate: "Renderer stacks, source
+        // locations and hints go to logs in production, never to the
+        // browser." Read only for the dev overlay, and bounded, since a
+        // renderer that sent a megabyte of stack would have it held here.
+        $stack = $debug && \is_string($frame['stack'] ?? null) ? substr($frame['stack'], 0, 16384) : null;
+        $file = $debug && \is_string($frame['file'] ?? null) ? substr($frame['file'], 0, 1024) : null;
+        $line = $debug && \is_int($frame['line'] ?? null) && $frame['line'] > 0 ? $frame['line'] : null;
+
+        return new self($message, $code, $digest, $stack, $file, $line);
     }
 }

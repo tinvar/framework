@@ -32,8 +32,12 @@ use Tinvar\Live\TagsRead;
 use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
+use Tinvar\Protocol\ProtocolException;
 use Tinvar\Render\FragmentManifest;
 use Tinvar\Render\FragmentMinter;
+use Tinvar\Render\RenderFailed;
+use Tinvar\Render\RenderFailure;
+use Tinvar\Render\RendererException;
 use Tinvar\Render\RouteMinter;
 use Tinvar\Render\RouteToken;
 use Tinvar\Render\TokenError;
@@ -143,6 +147,12 @@ final class Kernel
     ];
 
     private readonly ExceptionHandler $exceptions;
+
+    /** @var list<\Closure(RenderFailed): void> */
+    private readonly array $renderFailed;
+
+    /** Whether a failed render escapes handle() rather than becoming an error page. */
+    private readonly bool $throwOnRenderError;
 
     /** What every entry point's declarations put around it; see EntryContext. */
     private readonly EntryContext $entry;
@@ -254,6 +264,13 @@ final class Kernel
      *        every page render is handed a LiveMinter, /_live/subscribe is
      *        mounted, and what an action invalidates is published once it
      *        commits; without them, nothing is live.
+     * @param list<\Closure(RenderFailed): void> $renderFailed told of every render that
+     *        fails -- the renderer threw, timed out, could not be reached or broke the
+     *        protocol -- before the request is answered with an error page
+     * @param bool $throwOnRenderError the spec's `throw_on_error`, for tests: a failed
+     *        render escapes handle() as itself, after the listeners have heard of it,
+     *        instead of being answered with an error page that a test reads as a
+     *        response like any other
      */
     public function __construct(
         public readonly Orm $orm,
@@ -284,7 +301,12 @@ final class Kernel
         ?PanelRegistry $panelRegistry = null,
         ?Memberships $memberships = null,
         ?LiveUpdates $live = null,
+        array $renderFailed = [],
+        bool $throwOnRenderError = false,
     ) {
+        $this->renderFailed = $renderFailed;
+        $this->throwOnRenderError = $throwOnRenderError;
+
         // Panels need somewhere to be current. An application defining them
         // and passing no context gets one, rather than panels that resolve
         // and are put nowhere.
@@ -782,6 +804,7 @@ final class Kernel
 
             return new TranslateRedirects()->handle($request, $checked);
         } catch (\Throwable $e) {
+            $this->renderFailed($e, $request);
             $response = $this->exceptions->handle($e, $request);
 
             // An HttpException can carry a redirect too, and it is answered
@@ -789,6 +812,40 @@ final class Kernel
             return $navigating ? TranslateRedirects::translate($request, $response) : $response;
         } finally {
             $this->scope->reset();
+        }
+    }
+
+    /**
+     * Tells the listeners when $e is a failed render, and rethrows it under
+     * throw_on_error.
+     *
+     * The digest handed over is the one the response will carry, computed the
+     * same way, so a listener's alert and the visitor's reference name the
+     * same log line. A listener that throws is reported and the rest still
+     * run: one broken metrics hook must not decide what the visitor is shown.
+     */
+    private function renderFailed(\Throwable $e, Request $request): void
+    {
+        $failure = match (true) {
+            $e instanceof RendererException => $e->failure(),
+            $e instanceof ProtocolException => RenderFailure::ProtocolViolation,
+            default => null,
+        };
+        if ($failure === null) {
+            return;
+        }
+
+        $event = new RenderFailed($e, $failure, $request, ExceptionHandler::digest($e));
+        foreach ($this->renderFailed as $listener) {
+            try {
+                $listener($event);
+            } catch (\Throwable $thrown) {
+                $this->report($thrown);
+            }
+        }
+
+        if ($this->throwOnRenderError) {
+            throw $e;
         }
     }
 
