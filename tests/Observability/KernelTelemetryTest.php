@@ -163,6 +163,21 @@ it('files a request under one id: the response header, the render, the access lo
         ->and($access[0]['duration_ms'])->toBeNumeric();
 });
 
+// A fragment's token is in its path, and the path is in the access line
+// and the root span: neither may carry it.
+it('writes no signed token from a path to the log or the trace', function () {
+    [$kernel, , $sink, , $exported] = kernel();
+    $token = 'v1.eyJjIjoiU2hpcHBpbmdVcGRhdGVzIiwicCI6e319.' . str_repeat('Mac_', 11);
+
+    $kernel->handle(get("/_fragment/{$token}/{$token}"), respond());
+    $kernel->terminate();
+
+    $access = array_values(array_filter($sink->records(), static fn (array $r): bool => $r['message'] === 'request'))[0];
+    expect($access['path'])->toBe('/_fragment/[token]/[token]')
+        ->and(json_encode($sink->records()))->not->toContain('eyJjIjoi')
+        ->and($exported->spans[0]->attributes['url.path'] ?? null)->toBe('/_fragment/[token]/[token]');
+});
+
 it('gives every request an id of its own', function () {
     [$kernel] = kernel();
 
