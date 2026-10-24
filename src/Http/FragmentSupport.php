@@ -77,6 +77,8 @@ final readonly class FragmentSupport
      * not got.
      *
      * @param array<string, string> $params
+     * @param list<string>|null $components the components the route's
+     *        boundaries name, from the fragment manifest; null for any
      */
     public function minterFor(
         Request $request,
@@ -84,6 +86,7 @@ final readonly class FragmentSupport
         array $params,
         ?string $panel = null,
         ?string $tenant = null,
+        ?array $components = null,
     ): FragmentMinter {
         // From the SAME source the endpoint compares against. It defaulted
         // to '', so every token minted as tenant-less whatever tenant the
@@ -105,6 +108,7 @@ final readonly class FragmentSupport
             tenant: $tenant,
             build: $this->builds->current,
             sessionId: ($this->sessionId)($request),
+            components: $components,
         );
     }
 }

@@ -49,6 +49,9 @@ final class FragmentMinter
      * id it was built with.
      *
      * @param array<string, string> $params
+     * @param list<string>|null $components the components this route's
+     *        boundaries name, as the build read them (FragmentManifest::
+     *        componentsFor()); null signs for any
      */
     public function __construct(
         private readonly Signer $signer,
@@ -60,6 +63,7 @@ final class FragmentMinter
         #[\SensitiveParameter]
         private readonly string $sessionId,
         private readonly int $ttl = FragmentToken::DEFAULT_TTL,
+        private readonly ?array $components = null,
     ) {
         // decode() hard-rejects an expiry further out than DEFAULT_TTL, so a
         // configured TTL above it would mint tokens that fail verification
@@ -94,6 +98,15 @@ final class FragmentMinter
     {
         if (preg_match(self::COMPONENT_SHAPE, $component) !== 1) {
             throw new FragmentTokenError('component is not a valid component id');
+        }
+
+        // ADR 0009's residual exposure: a renderer running hostile code could
+        // have tokens signed "for subtrees the page did not contain". The
+        // build now says which components this route's boundaries name, so
+        // the renderer's half of a token is checked against it -- one
+        // boundary refused, the page carrying on, like any bad mint.
+        if ($this->components !== null && !\in_array($component, $this->components, true)) {
+            throw new FragmentTokenError('component is not one this route renders');
         }
 
         // Checked here rather than trusted from the frame: props arrive from

@@ -997,7 +997,14 @@ final class Kernel
             return null;
         }
 
-        return $this->support->minterFor($request, route: $name, params: $loaded->chain->parameters);
+        // And only for the components the build found the route's
+        // boundaries naming, where it could read them all.
+        return $this->support->minterFor(
+            $request,
+            route: $name,
+            params: $loaded->chain->parameters,
+            components: $this->manifest->componentsFor($name),
+        );
     }
 
     /**
