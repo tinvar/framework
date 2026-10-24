@@ -346,8 +346,11 @@ final class ServeCommand
                     [...$rendererEnv, 'NODE_ENV' => 'development'],
                 );
                 // Longer than a built renderer's start: Vite optimizes the
-                // app's dependencies the first time.
-                $this->waitFor(static fn (): bool => file_exists($socket), $renderer, 'The dev renderer', 90);
+                // app's dependencies the first time, and the socket appears
+                // only once the ssr environment and every client component
+                // are loaded -- the shop's some 2,000 modules, which took 45
+                // to 55 s on a loaded machine and 90 s on one far past it.
+                $this->waitFor(static fn (): bool => file_exists($socket), $renderer, 'The dev renderer', 180);
                 $phpEnv = [
                     ...$phpEnv,
                     'TINVAR_DEV' => '1',
