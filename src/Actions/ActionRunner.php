@@ -14,6 +14,7 @@ use Tinvar\Http\Request;
 use Tinvar\Live\Invalidator;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
+use Tinvar\Render\StaticPages;
 use Tinvar\Uploads\Upload;
 use Tinvar\Uploads\UploadBinder;
 use Tinvar\Validation\FormRequest;
@@ -57,6 +58,9 @@ final class ActionRunner
         // Hands `Upload` parameters the uploads they were called with; an
         // action declaring one is refused without it.
         private readonly ?UploadBinder $uploads = null,
+        // Takes the static pages showing what the tags name out of service,
+        // once the action's writes are committed.
+        private readonly ?StaticPages $static = null,
     ) {}
 
     /**
@@ -158,6 +162,28 @@ final class ActionRunner
         //    for other people -- told: the response's X-Invalidated-Tags
         //    reaches only the client that ran the action.
         $this->live?->invalidate($result->revalidatedTags, $this->orm->tenant());
+
+        //    And the static pages showing them, out of service until they
+        //    are built again -- after the commit, so no build in between
+        //    reads the old rows and serves them as fresh. Only outside a
+        //    tenant: a static page is rendered as no tenant's, and a tenant's
+        //    tags name that tenant's rows, so one tenant's action is no
+        //    reason to take everyone's pages down.
+        if ($this->static !== null && $result->revalidatedTags !== [] && $this->orm->tenant() === '') {
+            $static = $this->static;
+            $tags = $result->revalidatedTags;
+            $this->orm->afterCommit(static function () use ($static, $tags): void {
+                // The writes are committed and the answer is the action's: a
+                // page that could not be taken down is logged, as a live
+                // update that could not be published is, and serves on until
+                // its next revalidation.
+                try {
+                    $static->invalidate($tags);
+                } catch (\Throwable $e) {
+                    error_log('[tinvar] a static page could not be taken out of service: ' . $e->getMessage());
+                }
+            });
+        }
 
         // 7. The data boundary. Only Data objects, scalars, lists and maps
         //    leave, in every environment -- an action's value and flash were

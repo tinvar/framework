@@ -76,6 +76,15 @@ final class FragmentManifest
     /** The shape toArray() writes, so a later one can be told apart. */
     public const int FORMAT = 1;
 
+    /** The file this was read from, when it was: what refreshed() reads again. */
+    private ?string $path = null;
+
+    /** The bytes the latest manifest refreshed() returns was parsed from. */
+    private ?string $bytes = null;
+
+    /** What refreshed() last read, while the file still holds it. */
+    private ?self $latest = null;
+
     /**
      * @param array<string, list<array{
      *     id: string,
@@ -120,7 +129,10 @@ final class FragmentManifest
     public static function fromFile(string $path): self
     {
         if (!is_file($path)) {
-            return new self();
+            $manifest = new self();
+            $manifest->path = $path;
+
+            return $manifest;
         }
 
         $raw = file_get_contents($path);
@@ -128,6 +140,53 @@ final class FragmentManifest
             throw new \RuntimeException("Cannot read the fragment manifest at {$path}.");
         }
 
+        $manifest = self::parse($raw, $path);
+        $manifest->path = $path;
+        $manifest->bytes = $raw;
+
+        return $manifest;
+    }
+
+    /**
+     * The manifest as its file holds it now, for what a static page's
+     * boundaries are -- which `tinvar static:revalidate` rewrites while the
+     * workers run (StaticBuilder::rebuild()).
+     *
+     * Read on every call and parsed only when the bytes differ from those
+     * last parsed, as FileBuildStore reads the build history. Only the
+     * built pages are asked of it: which routes may mint, and for which
+     * components, is the build's and stays as the worker booted with it.
+     * A manifest made in memory is its own latest.
+     */
+    public function refreshed(): self
+    {
+        if ($this->path === null) {
+            return $this;
+        }
+
+        if (!is_file($this->path)) {
+            $this->bytes = null;
+
+            return $this->latest = new self();
+        }
+
+        $raw = file_get_contents($this->path);
+        if ($raw === false) {
+            throw new \RuntimeException("Cannot read the fragment manifest at {$this->path}.");
+        }
+
+        if ($raw === $this->bytes) {
+            return $this->latest ?? $this;
+        }
+
+        $latest = self::parse($raw, $this->path);
+        $this->bytes = $raw;
+
+        return $this->latest = $latest;
+    }
+
+    private static function parse(string $raw, string $path): self
+    {
         try {
             $decoded = json_decode($raw, true, 32, JSON_THROW_ON_ERROR);
         } catch (\JsonException $e) {
@@ -252,6 +311,20 @@ final class FragmentManifest
             @unlink($temporary);
             throw new \RuntimeException("Cannot write the fragment manifest to {$path}.");
         }
+    }
+
+    /**
+     * Drops one built page's boundaries, for StaticBuilder::rebuild() to
+     * declare the ones it built again in their place. The route still defers.
+     *
+     * @param array<string, string|int> $params the params the page was built for
+     */
+    public function forget(string $route, array $params = []): self
+    {
+        $page = self::pageKey($route, $params);
+        unset($this->byPage[$page], $this->pageParams[$page]);
+
+        return $this;
     }
 
     /**

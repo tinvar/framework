@@ -335,3 +335,29 @@ describe('the manifest', function () {
         }
     });
 });
+
+// A page revalidated in place draws its boundaries again, and the manifest's
+// file is rewritten while the workers run (StaticBuilder::rebuild()): the
+// endpoint mints what the file holds now, not what it booted with.
+it('mints from the manifest as its file holds it now', function () {
+    $directory = sys_get_temp_dir() . '/tinvar-bootstrap-refresh-' . bin2hex(random_bytes(4));
+    mkdir($directory, 0700);
+    $path = "{$directory}/fragments.json";
+    $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+    $built = ['site' => $fixture->ids['sites'][0], 'rack' => $fixture->ids['racks'][0]];
+    new FragmentManifest()->declare('racks.show', 'old', 'UnitHistory', ['unit' => 'u-1'], $built)->write($path);
+    [$endpoint, , $signer] = bootstrapEndpoint(FragmentManifest::fromFile($path));
+    $body = json_encode(['route' => 'racks.show', 'params' => $built], JSON_THROW_ON_ERROR);
+
+    try {
+        $before = json_decode($endpoint->handle(Request::post(BootstrapEndpoint::PATH), $body)->body(), true)['tokens'];
+        new FragmentManifest()->declare('racks.show', 'new', 'UnitHistory', ['unit' => 'u-2'], $built)->write($path);
+        $after = json_decode($endpoint->handle(Request::post(BootstrapEndpoint::PATH), $body)->body(), true)['tokens'];
+    } finally {
+        exec('rm -rf ' . escapeshellarg($directory));
+    }
+
+    expect(array_keys($before))->toBe(['old'])
+        ->and(array_keys($after))->toBe(['new'])
+        ->and(FragmentToken::decode($after['new'], $signer)->props)->toBe(['unit' => 'u-2']);
+});

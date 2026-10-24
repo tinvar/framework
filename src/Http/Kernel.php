@@ -44,6 +44,7 @@ use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
 use Tinvar\Protocol\ProtocolException;
 use Tinvar\Render\FragmentManifest;
+use Tinvar\Render\StaticPages;
 use Tinvar\Render\FragmentMinter;
 use Tinvar\Render\RenderFailed;
 use Tinvar\Render\RenderFailure;
@@ -380,6 +381,8 @@ final class Kernel
      *        given: an entry point in a panel only the platform's hosts may carry is
      *        refused, as a 404, on any other host -- a tenant's custom domain, or a host
      *        the application does not know
+     * @param StaticPages|null $staticPages the static pages an action's invalidated
+     *        tags take out of service, once its writes commit
      */
     public function __construct(
         public readonly Orm $orm,
@@ -423,6 +426,7 @@ final class Kernel
         private readonly ?Probes $probes = null,
         private readonly ?UnsubscribeEndpoint $unsubscribe = null,
         ?Realms $realms = null,
+        ?StaticPages $staticPages = null,
     ) {
         if ($toolbar !== null && !$dev) {
             throw new \InvalidArgumentException(
@@ -601,6 +605,7 @@ final class Kernel
                 $cache,
                 $live?->invalidator($this->orm, $this->report(...)),
                 $uploads === null ? null : new UploadBinder($uploads, $this->auth, $this->orm, $panels),
+                $staticPages,
             ),
             revalidator: $revalidator,
             sessionId: $fragments?->sessionId,

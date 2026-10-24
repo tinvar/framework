@@ -7,6 +7,7 @@ namespace Tinvar\Render;
 use Tinvar\Attributes\StaticPage;
 use Tinvar\Http\Request;
 use Tinvar\Routing\RouteRegistry;
+use Tinvar\Support\Signer;
 
 /**
  * `tinvar build:static`: every #[StaticPage] rendered to a file a server
@@ -29,6 +30,11 @@ use Tinvar\Routing\RouteRegistry;
  * A page's <Deferred> boundaries are recorded by a StaticMinter and declared
  * in the FragmentManifest under the page's route and params, which is what
  * mounts /_bootstrap and what it mints from.
+ *
+ * build() writes the whole set, aside, and moves it into place at once;
+ * rebuild() replaces pages one at a time where they are, for revalidation
+ * (StaticPages), each through the same request as nobody and the same
+ * checks.
  */
 final class StaticBuilder
 {
@@ -58,7 +64,7 @@ final class StaticBuilder
      * Every page to build: each #[StaticPage] route, once per set of params
      * it lists.
      *
-     * @return list<array{route: string, params: array<string, string>, path: string}>
+     * @return list<array{route: string, params: array<string, string>, path: string, revalidate: int|null, tags: list<string>}>
      */
     public function pages(): array
     {
@@ -81,7 +87,8 @@ final class StaticBuilder
                 );
             }
 
-            foreach ($attributes[0]->newInstance()->params as $given) {
+            $static = $attributes[0]->newInstance();
+            foreach ($static->params as $given) {
                 $params = [];
                 foreach ($given as $name => $value) {
                     $value = (string) $value;
@@ -93,7 +100,13 @@ final class StaticBuilder
                     $params[(string) $name] = $value;
                 }
 
-                $pages[] = ['route' => $page->name, 'params' => $params, 'path' => $this->routes->url($page->name, $params)];
+                $pages[] = [
+                    'route' => $page->name,
+                    'params' => $params,
+                    'path' => $this->routes->url($page->name, $params),
+                    'revalidate' => $static->revalidateAfter,
+                    'tags' => $static->tags,
+                ];
             }
         }
 
@@ -122,28 +135,13 @@ final class StaticBuilder
         try {
             $built = [];
             foreach ($this->pages() as $page) {
-                $minter = new StaticMinter($page['route'], $page['params'], $manifest->componentsFor($page['route']));
-                // No cookies, no address: a visitor the server has never met.
-                $html = ($this->render)(new Request('GET', $page['path'], ['accept' => 'text/html']), $minter->closure());
+                [$html, $boundaries] = $this->renderPage($page, $manifest);
 
-                if ($minter->refused() !== []) {
-                    throw new \RuntimeException(
-                        "{$page['path']} has boundaries a page render would refuse: " . implode('; ', $minter->refused()),
-                    );
-                }
-                self::assertNothingPerVisitor($html, $page['path']);
-
-                foreach ($minter->boundaries() as $boundary) {
+                foreach ($boundaries as $boundary) {
                     $manifest->declare($page['route'], $boundary['id'], $boundary['component'], $boundary['props'], $page['params']);
                 }
 
-                $file = $staging . rtrim($page['path'], '/') . '/index.html';
-                if (!is_dir(\dirname($file)) && !@mkdir(\dirname($file), 0o755, true)) {
-                    throw new \RuntimeException("Cannot create the directory for {$page['path']}.");
-                }
-                if (@file_put_contents($file, $html) !== \strlen($html)) {
-                    throw new \RuntimeException("Cannot write {$file}.");
-                }
+                self::write(self::fileOf($staging, $page['path']), $html, $page['path']);
                 $built[] = $page['path'];
             }
 
@@ -169,6 +167,161 @@ final class StaticBuilder
             self::remove($staging);
 
             throw $e;
+        }
+    }
+
+    /**
+     * Builds pages again where they are, one at a time: revalidation.
+     *
+     * Each page is rendered exactly as build() renders it -- as nobody,
+     * through its whole request path, its document checked for anything of
+     * anyone's -- and written beside its file and renamed over it, so a
+     * server reads the old page or the new one, never half. One that fails
+     * is left serving as it was, and the rest go on.
+     *
+     * Its boundaries are declared in the manifest at $manifestPath, read
+     * fresh and written back before the page is moved in, so /_bootstrap --
+     * which reads the file as it stands (FragmentManifest::refreshed()) --
+     * knows every boundary the new page places. The boundaries of the page
+     * it replaces are kept beside them until the next rebuild, so a visitor
+     * who loaded the old page a moment before still gets its tokens; their
+     * ids are drawn from what they name (StaticMinter::idOf()), so the two
+     * pages' cannot be confused. Rebuilds take turns under a lock beside the
+     * directory.
+     *
+     * @param list<string>|null $paths the pages to build again, by path; every
+     *        one when null. A path that is no static page is reported as failed.
+     * @return array{built: list<string>, failed: array<string, string>} what
+     *         was built, and why each that was not
+     */
+    public function rebuild(string $directory, string $manifestPath, ?array $paths = null): array
+    {
+        $directory = rtrim($directory, '/');
+        if (!is_dir($directory) && !@mkdir($directory, 0o755, true) && !is_dir($directory)) {
+            throw new \RuntimeException("Cannot create {$directory} to build static pages in.");
+        }
+
+        $lock = @fopen($directory . '.lock', 'c');
+        if ($lock === false || !flock($lock, LOCK_EX)) {
+            throw new \RuntimeException("Cannot lock {$directory}.lock to build static pages in place.");
+        }
+
+        try {
+            $pages = $this->pages();
+            $failed = [];
+            foreach ($paths ?? [] as $path) {
+                if (!\in_array($path, array_column($pages, 'path'), true)) {
+                    $failed[$path] = 'no #[StaticPage] is built at this path';
+                }
+            }
+
+            $built = [];
+            foreach ($pages as $page) {
+                if ($paths !== null && !\in_array($page['path'], $paths, true)) {
+                    continue;
+                }
+
+                try {
+                    $manifest = FragmentManifest::fromFile($manifestPath);
+                    [$html, $boundaries] = $this->renderPage($page, $manifest);
+                    $file = self::fileOf($directory, $page['path']);
+
+                    // What the page now serving places, kept for the visitor
+                    // who loaded it just before it is replaced.
+                    $serving = is_file($file) ? self::placedIn((string) @file_get_contents($file), $page['route'], $page['params']) : [];
+                    $fresh = array_column($boundaries, 'id');
+                    $kept = array_filter(
+                        $manifest->boundariesFor($page['route'], $page['params']),
+                        static fn (array $b): bool => \in_array($b['id'], $serving, true) && !\in_array($b['id'], $fresh, true),
+                    );
+
+                    $manifest->forget($page['route'], $page['params']);
+                    foreach ([...$boundaries, ...$kept] as $boundary) {
+                        $manifest->declare($page['route'], $boundary['id'], $boundary['component'], $boundary['props'], $page['params']);
+                    }
+                    $manifest->write($manifestPath);
+
+                    $temporary = \dirname($file) . '/.index.html.' . bin2hex(random_bytes(6));
+                    self::write($temporary, $html, $page['path']);
+                    if (!@rename($temporary, $file)) {
+                        @unlink($temporary);
+                        throw new \RuntimeException("Cannot move the new page into {$file}.");
+                    }
+                    $built[] = $page['path'];
+                } catch (\Throwable $e) {
+                    $failed[$page['path']] = $e::class . ': ' . $e->getMessage();
+                }
+            }
+
+            return ['built' => $built, 'failed' => $failed];
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
+
+    /**
+     * Where a page's file is under a directory of built pages.
+     */
+    public static function fileOf(string $directory, string $path): string
+    {
+        return rtrim($directory, '/') . rtrim($path, '/') . '/index.html';
+    }
+
+    /**
+     * One page, rendered as a visitor the server has never met and checked:
+     * its document, and the boundaries it placed.
+     *
+     * @param array{route: string, params: array<string, string>, path: string} $page
+     * @return array{string, list<array{id: string, component: string, props: array<string, mixed>}>}
+     */
+    private function renderPage(array $page, FragmentManifest $manifest): array
+    {
+        $minter = new StaticMinter($page['route'], $page['params'], $manifest->componentsFor($page['route']));
+        // No cookies, no address: a visitor the server has never met.
+        $html = ($this->render)(new Request('GET', $page['path'], ['accept' => 'text/html']), $minter->closure());
+
+        if ($minter->refused() !== []) {
+            throw new \RuntimeException(
+                "{$page['path']} has boundaries a page render would refuse: " . implode('; ', $minter->refused()),
+            );
+        }
+        self::assertNothingPerVisitor($html, $page['path']);
+
+        return [$html, $minter->boundaries()];
+    }
+
+    /**
+     * The ids of the boundaries a built document places for its own page:
+     * the `b` of each placeholder naming this route and these params.
+     *
+     * @param array<string, string> $params
+     * @return list<string>
+     */
+    private static function placedIn(string $html, string $route, array $params): array
+    {
+        preg_match_all('/' . preg_quote(StaticMinter::PREFIX, '/') . '([A-Za-z0-9_-]+)/', $html, $matches);
+
+        $ids = [];
+        foreach ($matches[1] as $encoded) {
+            $placeholder = json_decode((string) Signer::decode($encoded), true);
+            if (\is_array($placeholder) && ($placeholder['r'] ?? null) === $route && ($placeholder['p'] ?? null) == $params
+                && \is_string($placeholder['b'] ?? null)) {
+                $ids[] = $placeholder['b'];
+            }
+        }
+
+        return array_values(array_unique($ids));
+    }
+
+    private static function write(string $file, string $html, string $path): void
+    {
+        if (!is_dir(\dirname($file)) && !@mkdir(\dirname($file), 0o755, true) && !is_dir(\dirname($file))) {
+            throw new \RuntimeException("Cannot create the directory for {$path}.");
+        }
+        if (@file_put_contents($file, $html) !== \strlen($html)) {
+            @unlink($file);
+            throw new \RuntimeException("Cannot write {$file}.");
         }
     }
 

@@ -78,9 +78,9 @@ namespace Tinvar\Tests\Render\StaticBuilder {
     describe('the pages to build', function () {
         it('lists each #[StaticPage] route once per set of params', function () {
             expect(new StaticBuilder(routes(), static fn (): string => '')->pages())->toEqualCanonicalizing([
-                ['route' => 'static.home', 'params' => [], 'path' => '/home'],
-                ['route' => 'static.doc', 'params' => ['doc' => 'intro'], 'path' => '/docs/intro'],
-                ['route' => 'static.doc', 'params' => ['doc' => 'guide-2'], 'path' => '/docs/guide-2'],
+                ['route' => 'static.home', 'params' => [], 'path' => '/home', 'revalidate' => null, 'tags' => []],
+                ['route' => 'static.doc', 'params' => ['doc' => 'intro'], 'path' => '/docs/intro', 'revalidate' => 600, 'tags' => ['docs']],
+                ['route' => 'static.doc', 'params' => ['doc' => 'guide-2'], 'path' => '/docs/guide-2', 'revalidate' => 600, 'tags' => ['docs']],
             ]);
         });
 
@@ -130,13 +130,14 @@ namespace Tinvar\Tests\Render\StaticBuilder {
 
             new StaticBuilder(routes(), renderer(new \ArrayObject()))->build($out, $manifest);
 
+            $id = StaticMinter::idOf('Toc', ['depth' => 2]);
             expect($manifest->boundariesFor('static.doc', ['doc' => 'intro']))
-                ->toBe([['id' => '0', 'component' => 'Toc', 'props' => ['depth' => 2]]])
+                ->toBe([['id' => $id, 'component' => 'Toc', 'props' => ['depth' => 2]]])
                 ->and($manifest->hasAny())->toBeTrue('so the Kernel mounts /_bootstrap');
 
             preg_match('/b1\.[A-Za-z0-9_-]+/', (string) file_get_contents("{$out}/docs/intro/index.html"), $m);
             expect(json_decode((string) base64_decode(strtr(substr($m[0], 3), '-_', '+/')), true))
-                ->toBe(['r' => 'static.doc', 'p' => ['doc' => 'intro'], 'b' => '0']);
+                ->toBe(['r' => 'static.doc', 'p' => ['doc' => 'intro'], 'b' => $id]);
         });
 
         it('replaces the pages a previous build left', function () {
@@ -196,15 +197,22 @@ namespace Tinvar\Tests\Render\StaticBuilder {
     });
 
     describe('the static minter', function () {
-        it('signs nothing and numbers the boundaries in the order they asked', function () {
+        // Named by what they are, so a page revalidated with other props
+        // cannot have an id mean one boundary in the old page and another in
+        // the new; two alike are one.
+        it('signs nothing and names each boundary by its component and props', function () {
             $minter = new StaticMinter('static.doc', ['doc' => 'intro']);
 
             $first = $minter->mint('Toc', []);
             $minter->mint('Notes', ['open' => true]);
+            $again = $minter->mint('Toc', []);
 
             expect($first)->toStartWith(StaticMinter::PREFIX)
                 ->and($first)->not->toContain('v1.')
-                ->and(array_column($minter->boundaries(), 'id'))->toBe(['0', '1']);
+                ->and($again)->toBe($first)
+                ->and(array_column($minter->boundaries(), 'id'))->toBe([StaticMinter::idOf('Toc', []), StaticMinter::idOf('Notes', ['open' => true])])
+                ->and(StaticMinter::idOf('Notes', ['open' => false]))->not->toBe(StaticMinter::idOf('Notes', ['open' => true]))
+                ->and(StaticMinter::idOf('Toc', []))->toMatch('/^[0-9a-f]{16}$/');
         });
 
         it('refuses what a page render would, and keeps why', function () {
@@ -225,7 +233,7 @@ namespace Tinvar\Tests\Render\StaticBuilder\Pages {
     #[Page('/home', view: 'home', name: 'static.home'), StaticPage]
     final class HomePage {}
 
-    #[Page('/docs/{doc}', view: 'doc', name: 'static.doc'), StaticPage(params: [['doc' => 'intro'], ['doc' => 'guide-2']])]
+    #[Page('/docs/{doc}', view: 'doc', name: 'static.doc'), StaticPage(params: [['doc' => 'intro'], ['doc' => 'guide-2']], revalidate: '10m', tags: ['docs'])]
     final class DocPage {}
 
     #[Page('/private', view: 'private', name: 'static.private')]

@@ -114,7 +114,11 @@ final class BootstrapEndpoint
         // a token for a combination that was never rendered -- and the
         // fragment endpoint authorizes the route chain against the params,
         // not the props, so nothing downstream would have caught it.
-        $boundaries = $this->manifest->boundariesFor($route, $params);
+        //
+        // As the manifest's file holds it now, not as this worker booted: a
+        // page revalidated in place (StaticBuilder::rebuild()) may have drawn
+        // its boundaries again, and its placeholders name the new ones.
+        $boundaries = $this->manifest->refreshed()->boundariesFor($route, $params);
         if ($boundaries === []) {
             // Empty rather than 404: a page with no deferred boundaries and a
             // route that was never built statically are the same answer here,

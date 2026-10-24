@@ -21,6 +21,13 @@ use Tinvar\Support\Signer;
  * The placeholder is `b1.` and base64url JSON of the route, the params and
  * the boundary id: no MAC, no session, nothing secret. Editing one can only
  * ask /_bootstrap about another page, which answers from the manifest.
+ *
+ * The id is drawn from what it names -- the component and its props -- not
+ * from the order the page asked: a page revalidated in place may draw its
+ * boundaries again with other props, and for as long as the page served
+ * before it and the page built now are both being bootstrapped, each id has
+ * to name exactly the boundary its own page was built with. Two boundaries
+ * alike are one, and share a token.
  */
 final class StaticMinter
 {
@@ -85,8 +92,14 @@ final class StaticMinter
             throw $e;
         }
 
-        $id = (string) \count($this->boundaries);
-        $this->boundaries[] = ['id' => $id, 'component' => $component, 'props' => $props];
+        $id = self::idOf($component, $props);
+        $known = false;
+        foreach ($this->boundaries as $boundary) {
+            $known = $known || $boundary['id'] === $id;
+        }
+        if (!$known) {
+            $this->boundaries[] = ['id' => $id, 'component' => $component, 'props' => $props];
+        }
 
         return self::PREFIX . Signer::encode(json_encode(
             ['r' => $this->route, 'p' => (object) $this->params, 'b' => $id],
@@ -95,7 +108,19 @@ final class StaticMinter
     }
 
     /**
-     * Every boundary the page rendered, in the order it asked.
+     * The id a boundary is recorded and placed under: 64 bits of the hash of
+     * its component and props, which the rules above have already held to
+     * the size a token can carry.
+     *
+     * @param array<string, mixed> $props
+     */
+    public static function idOf(string $component, array $props): string
+    {
+        return substr(hash('sha256', $component . "\0" . json_encode($props, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)), 0, 16);
+    }
+
+    /**
+     * Every boundary the page rendered, in the order it first asked.
      *
      * @return list<array{id: string, component: string, props: array<string, mixed>}>
      */
