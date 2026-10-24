@@ -11,10 +11,21 @@ namespace Tinvar\Auth;
  * map and #[Scoped] services reset at the end of each request and job, under a
  * tested reset contract." Switching is scoped to a closure for the same reason
  * tenant switching is -- a bare setter leaks into whatever runs next.
+ *
+ * With the user, an **auth epoch**: a value the application keeps per user
+ * and changes whenever what the user may see changes without the session id
+ * changing -- a role granted or taken away, impersonation started or stopped
+ * -- and hands in with the user. "Client-held data ... is bound to (user,
+ * tenant). It is cleared ... on role change, impersonation start and stop"
+ * (tinvar-spec.md): the route token, the #[Once] binding and the history key
+ * name the user and the epoch, so a change of either purges what the client
+ * holds and stops it being claimed, as a change of session does.
  */
 final class AuthContext
 {
     private ?Authenticatable $user = null;
+
+    private string $epoch = '';
 
     /**
      * Per-fiber overrides.
@@ -26,7 +37,7 @@ final class AuthContext
      * and every policy decision and cache key in them was computed for the
      * wrong person.
      *
-     * @var \WeakMap<object, array{Authenticatable|null}>
+     * @var \WeakMap<object, array{Authenticatable|null, string}>
      */
     private \WeakMap $byFiber;
 
@@ -51,15 +62,36 @@ final class AuthContext
         return $this->user()?->authIdentifier();
     }
 
+    /**
+     * The auth epoch the application handed in with the user: '' when it
+     * keeps none, or nobody is signed in.
+     */
+    public function epoch(): string
+    {
+        $fiber = \Fiber::getCurrent();
+
+        if ($fiber !== null && isset($this->byFiber[$fiber])) {
+            return $this->byFiber[$fiber][1];
+        }
+
+        return $this->epoch;
+    }
+
     public function check(): bool
     {
         return $this->user() !== null;
     }
 
-    /** Set once per request, by the authentication middleware. */
-    public function login(?Authenticatable $user): void
+    /**
+     * Set once per request, by the authentication middleware.
+     *
+     * @param string $epoch the user's auth epoch, which the application changes on a role
+     *        change and on impersonation starting or stopping
+     */
+    public function login(?Authenticatable $user, string $epoch = ''): void
     {
         $this->user = $user;
+        $this->epoch = $user === null ? '' : $epoch;
     }
 
     /**
@@ -67,24 +99,25 @@ final class AuthContext
      * @param \Closure(): T $work
      * @return T
      */
-    public function actingAs(?Authenticatable $user, \Closure $work): mixed
+    public function actingAs(?Authenticatable $user, \Closure $work, string $epoch = ''): mixed
     {
+        $epoch = $user === null ? '' : $epoch;
         $fiber = \Fiber::getCurrent();
 
         if ($fiber === null) {
-            $previous = $this->user;
-            $this->user = $user;
+            [$previous, $previousEpoch] = [$this->user, $this->epoch];
+            [$this->user, $this->epoch] = [$user, $epoch];
 
             try {
                 return $work();
             } finally {
-                $this->user = $previous;
+                [$this->user, $this->epoch] = [$previous, $previousEpoch];
             }
         }
 
         $had = isset($this->byFiber[$fiber]);
         $previous = $had ? $this->byFiber[$fiber] : null;
-        $this->byFiber[$fiber] = [$user];
+        $this->byFiber[$fiber] = [$user, $epoch];
 
         try {
             return $work();
@@ -101,6 +134,7 @@ final class AuthContext
     public function reset(): void
     {
         $this->user = null;
+        $this->epoch = '';
         $this->byFiber = new \WeakMap();
     }
 }

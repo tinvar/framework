@@ -616,8 +616,8 @@ final class Kernel
                         : $response->withHeader('cache-control', 'private, no-cache')->withAddedHeader('vary', 'Cookie');
                 }
 
-                // The token carries a session hash, a tenant and a panel, so
-                // the response holding it is per-visitor. A shared cache
+                // The token carries a session and user hash, a tenant and a
+                // panel, so the response holding it is per-visitor. A shared cache
                 // keyed on URL could otherwise hand one visitor's to
                 // another -- inert, since the binding holds, but it is
                 // still disclosure.
@@ -891,9 +891,9 @@ final class Kernel
      * route says it needs a user, a page's middleware does -- so a page is
      * encrypted when it is rendered for a signed-in user, unless it opts
      * out; and a page that says #[EncryptHistory] is encrypted for anyone
-     * with a session. Bound to the same session, tenant and panel the route
-     * token is, read at the same moment, so the key changes exactly when the
-     * client's binding does (ADR 0019).
+     * with a session. Bound to the same session, user, auth epoch, tenant and
+     * panel the route token is, read at the same moment, so the key changes
+     * exactly when the client's binding does (ADR 0019).
      */
     private function historyKeyFor(LoadedRoute $loaded, Request $request): ?string
     {
@@ -901,7 +901,13 @@ final class Kernel
             return null;
         }
 
-        return $this->historyKeys->for($request, $this->orm->tenant(), $this->panels?->currentOrNull() ?? '');
+        return $this->historyKeys->for(
+            $request,
+            $this->orm->tenant(),
+            $this->panels?->currentOrNull() ?? '',
+            $this->auth->id() ?? '',
+            $this->auth->epoch(),
+        );
     }
 
     /**
@@ -938,7 +944,10 @@ final class Kernel
      * be drawn with the last session's content in it. So the list counts
      * only beside `X-Once-Binding`, the route token of a page the content
      * was kept with, and only when that token verifies and names the same
-     * session, tenant, panel and build as the token this response carries.
+     * session, user and auth epoch, tenant, panel and build as the token this
+     * response carries. The user and epoch because a role change or an
+     * impersonation can keep the session id: what was drawn under the old
+     * role is not to be claimed under the new one.
      * Without a token of its own a response honours nothing: the browser
      * keeps once content under that binding, and could not file it.
      *
@@ -967,6 +976,7 @@ final class Kernel
         }
 
         $same = hash_equals($ours->sessionHash, $theirs->sessionHash)
+            && hash_equals($ours->authHash, $theirs->authHash)
             && $ours->tenant === $theirs->tenant
             && $ours->panel === $theirs->panel
             && $ours->build === $theirs->build;
@@ -1038,6 +1048,8 @@ final class Kernel
             tenant: $this->orm->tenant(),
             build: $this->support->builds->current,
             sessionId: $session,
+            user: $this->auth->id(),
+            authEpoch: $this->auth->epoch(),
         ))->mint($loaded->chain);
     }
 }

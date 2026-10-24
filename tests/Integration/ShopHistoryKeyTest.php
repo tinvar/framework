@@ -11,6 +11,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopHistoryKey;
 
+use Shop\Auth\AuthEpochs;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Tinvar\Bench\Renderer;
@@ -19,6 +20,9 @@ use Tinvar\Http\CsrfTokens;
 use Tinvar\Http\HistoryKeys;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
+use Tinvar\Orm\IdentityMap;
+use Tinvar\Orm\Orm;
+use Tinvar\Orm\PdoConnection;
 use Tinvar\Support\Signer;
 
 const KEY = 'shop-history-key-test-key-32-bytes!!';
@@ -70,11 +74,13 @@ final class Visitor
         ));
     }
 
-    /** The key the shop derives for this visitor's session now. */
-    public function historyKey(): ?string
+    /** The key the shop derives for this visitor's session now, signed in as the demo customer or no one. */
+    public function historyKey(bool $signedIn = true): ?string
     {
+        [$user, $epoch] = $signedIn ? demo() : ['', ''];
+
         return new HistoryKeys(new Signer(KEY, HistoryKeys::PURPOSE), self::session(...))
-            ->for(new Request('GET', '/', cookies: $this->cookies));
+            ->for(new Request('GET', '/', cookies: $this->cookies), user: $user, epoch: $epoch);
     }
 
     private static function session(Request $r): string
@@ -90,6 +96,16 @@ final class Visitor
 
         return $response;
     }
+}
+
+/** @return array{string, string} the demo customer's id, and the auth epoch the shop keeps for them */
+function demo(): array
+{
+    $pdo = new \PDO('sqlite:' . Shop::database());
+    $id = (string) $pdo->query('SELECT id FROM customers WHERE email = ' . $pdo->quote(DemoAccount::EMAIL))?->fetchColumn();
+    $epoch = $pdo->query('SELECT epoch FROM auth_epochs WHERE customer_id = ' . $pdo->quote($id))?->fetchColumn();
+
+    return [$id, (string) ($epoch === false || $epoch === null ? 0 : $epoch)];
 }
 
 /** @return array<string, mixed> the page metadata a document carries */
@@ -113,8 +129,13 @@ it('hands a signed-in customer\'s pages their session\'s key, and a signed-out v
         $document = $visitor->get('/');
         $payload = $visitor->payload('/orders');
 
+        // A role changed, the session id kept: the shop moves the customer's
+        // epoch, and the key moves with it.
+        new AuthEpochs(new Orm(PdoConnection::sqlite(Shop::database(), 'shop'), new IdentityMap('shop')))->bump(demo()[0]);
+        $promoted = $visitor->payload('/orders');
+
         $visitor->action('account.signOut', []);
-        $afterSignOut = $visitor->historyKey();
+        $afterSignOut = $visitor->historyKey(signedIn: false);
         $signedOutAgain = $visitor->payload('/');
     } finally {
         $renderer->stop();
@@ -131,6 +152,12 @@ it('hands a signed-in customer\'s pages their session\'s key, and a signed-out v
         ->and($document->header(HistoryKeys::HEADER))->toBeNull()
         ->and($payload->header(HistoryKeys::HEADER))->toBe($key)
         ->and($payload->header('cache-control'))->toBe('private, no-store');
+
+    // Moving the customer's auth epoch in the same session -- a role change,
+    // an impersonation -- is another key: what was sealed under the old role
+    // does not open under the new.
+    expect($promoted->header(HistoryKeys::HEADER))->toBeString()
+        ->and($promoted->header(HistoryKeys::HEADER))->not->toBe($key);
 
     // Signing out gives the session a new id, and the key goes with the old
     // one: nothing sealed under it opens again.

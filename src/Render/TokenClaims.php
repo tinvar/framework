@@ -39,6 +39,7 @@ final readonly class TokenClaims
         public string $sessionHash,
         public int $expiresAt,
         public int $issuedAt,
+        public string $authHash = '',
     ) {}
 
     /**
@@ -54,10 +55,36 @@ final readonly class TokenClaims
         return bin2hex(substr($signer->sign('session:' . $sessionId), 0, 16));
     }
 
-    /** @return array<string, mixed> the signed map, by short key */
+    /**
+     * The user binding: who is signed in, and the auth epoch the application
+     * keeps for them, as one keyed hash -- never the user's id, which page
+     * source would otherwise carry.
+     *
+     * "Client-held data ... is bound to (user, tenant)", and cleared on "role
+     * change, impersonation start and stop". The session hash alone stood in
+     * for the user, on the grounds that a session id is rotated whenever who
+     * it belongs to changes; a role change or an impersonation that keeps the
+     * session id kept everything drawn under the old role, and the server
+     * went on honouring #[Once] claims made for it. The epoch is what the
+     * application changes at those moments (AuthContext). Signed out, the
+     * user is '' and so is the epoch.
+     */
+    public static function hashAuth(Signer $signer, ?string $user, string $epoch): string
+    {
+        $user ??= '';
+
+        return bin2hex(substr($signer->sign(\sprintf('auth:%d:%s|%d:%s', \strlen($user), $user, \strlen($epoch), $epoch)), 0, 16));
+    }
+
+    /**
+     * The signed map, by short key. The user binding only where there is
+     * one: a fragment token binds to the session alone, and is as it was.
+     *
+     * @return array<string, mixed>
+     */
     public function toMap(): array
     {
-        return [
+        $map = [
             'r' => $this->route,
             'a' => $this->params,
             'n' => $this->panel,
@@ -67,6 +94,8 @@ final readonly class TokenClaims
             'e' => $this->expiresAt,
             'i' => $this->issuedAt,
         ];
+
+        return $this->authHash === '' ? $map : [...$map, 'u' => $this->authHash];
     }
 
     /**
@@ -86,6 +115,9 @@ final readonly class TokenClaims
             sessionHash: self::string($decoded, 's'),
             expiresAt: \is_int($decoded['e'] ?? null) ? $decoded['e'] : 0,
             issuedAt: \is_int($decoded['i'] ?? null) ? $decoded['i'] : 0,
+            // Absent from a fragment token, which binds to the session alone;
+            // '' then, which no route token's user binding ever is.
+            authHash: \is_string($decoded['u'] ?? null) ? $decoded['u'] : '',
         );
     }
 
@@ -155,6 +187,7 @@ final readonly class TokenClaims
             sessionHash: $this->sessionHash,
             expiresAt: min($at + $ttl, $deadline),
             issuedAt: $this->issuedAt,
+            authHash: $this->authHash,
         );
     }
 

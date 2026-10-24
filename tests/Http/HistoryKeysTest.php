@@ -158,6 +158,18 @@ describe('the key', function () {
             ->and(keys()->for(in('session-a'), 'tenant-1shop', ''))->not->toBe($base);
     });
 
+    // A role change or an impersonation can keep the session id: the user
+    // and the auth epoch the application keeps for them are in it too, so
+    // what was sealed under the old role does not open under the new.
+    it('is another key for another user, or another auth epoch, in the same session', function () {
+        $base = keys()->for(in('session-a'), 'tenant-1', 'shop', 'u-1', '3');
+
+        expect(keys()->for(in('session-a'), 'tenant-1', 'shop', 'u-2', '3'))->not->toBe($base)
+            ->and(keys()->for(in('session-a'), 'tenant-1', 'shop', 'u-1', '4'))->not->toBe($base)
+            ->and(keys()->for(in('session-a'), 'tenant-1', 'shop', 'u-13', ''))->not->toBe($base)
+            ->and(keys()->for(in('session-a'), 'tenant-1', 'shop', 'u-1', '3'))->toBe($base);
+    });
+
     it('is none without a session: one key for every visitor without one would be anyone\'s', function () {
         expect(keys()->for(new Request('GET', '/')))->toBeNull();
     });
@@ -179,7 +191,7 @@ describe('which pages carry it', function () {
 
         $kernel->handle(visit('/account'), page($seen));
 
-        expect($seen?->attribute(Kernel::HISTORY_KEY))->toBe(keys()->for(in('session-a')));
+        expect($seen?->attribute(Kernel::HISTORY_KEY))->toBe(keys()->for(in('session-a'), user: 'u-1'));
     });
 
     it('hands none to a page rendered for a visitor who is not signed in', function () {
@@ -228,11 +240,25 @@ describe('which pages carry it', function () {
     });
 });
 
+describe('a role change in the same session', function () {
+    it('hands the page another key once the application moves the user\'s auth epoch', function () {
+        [$kernel, $auth] = kernel(keys());
+        $auth->login(new AuthUser('u-1'), '1');
+        $kernel->handle(visit('/account'), page($before));
+        $auth->login(new AuthUser('u-1'), '2');
+        $kernel->handle(visit('/account'), page($after));
+
+        expect($before?->attribute(Kernel::HISTORY_KEY))->toBe(keys()->for(in('session-a'), user: 'u-1', epoch: '1'))
+            ->and($after?->attribute(Kernel::HISTORY_KEY))->toBe(keys()->for(in('session-a'), user: 'u-1', epoch: '2'))
+            ->and($after?->attribute(Kernel::HISTORY_KEY))->not->toBe($before?->attribute(Kernel::HISTORY_KEY));
+    });
+});
+
 describe('how it reaches the client', function () {
     // A document cannot read headers; its page metadata carries the key.
     it('goes to a client navigation as a header, and to a document only through its metadata', function () {
         [$kernel, $auth] = kernel(keys());
-        $key = keys()->for(in('session-a'));
+        $key = keys()->for(in('session-a'), user: 'u-1');
 
         $auth->login(new AuthUser('u-1'));
         $payload = $kernel->handle(visit('/account', CLIENT), page());
@@ -251,7 +277,7 @@ describe('how it reaches the client', function () {
 
         $response = $kernel->handle(visit('/account', [...CLIENT, 'purpose' => 'prefetch']), page());
 
-        expect($response->header(HistoryKeys::HEADER))->toBe(keys()->for(in('session-a')));
+        expect($response->header(HistoryKeys::HEADER))->toBe(keys()->for(in('session-a'), user: 'u-1'));
     });
 
     it('is never left for a shared cache to keep', function () {

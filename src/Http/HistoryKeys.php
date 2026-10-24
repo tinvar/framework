@@ -8,7 +8,8 @@ use Tinvar\Support\Signer;
 
 /**
  * The key a session's client encrypts its history with: a MAC of the
- * session's id, tenant and panel, under a key of its own.
+ * session's id, the signed-in user and their auth epoch, the tenant and the
+ * panel, under a key of its own.
  *
  * tinvar-spec.md, "Security": "History encryption: on by default for
  * authenticated routes, including remembered form state, using
@@ -20,8 +21,10 @@ use Tinvar\Support\Signer;
  * Derived, not stored, as CsrfTokens are: the server needs no state to issue
  * one, a reload is handed the same key again for as long as the session
  * lasts, and a session gets a new key exactly when it gets a new id -- on
- * sign-in and sign-out -- or moves to another tenant or panel, the same three
- * things the session binding of a route token names. No script can work one
+ * sign-in and sign-out -- when its user's auth epoch changes -- a role
+ * changed, impersonation started or stopped, with the session id kept -- or
+ * when it moves to another tenant or panel: the things the binding of a
+ * route token names. No script can work one
  * out: it takes the application key, and it is handed only to a request
  * carrying the session's cookie. After a sign-out, or under another session,
  * what was sealed before cannot be opened by anything the server will hand
@@ -51,27 +54,35 @@ final readonly class HistoryKeys
     ) {}
 
     /**
-     * The key for the request's session in a tenant and panel -- 32 bytes,
-     * base64url -- or null when it has no session: one key for every
-     * session-less visitor would be a key anyone has.
+     * The key for the request's session in a tenant and panel, for a user
+     * at an auth epoch -- 32 bytes, base64url -- or null when it has no
+     * session: one key for every session-less visitor would be a key anyone
+     * has.
+     *
+     * @param string $user  the signed-in user's identifier, '' for none
+     * @param string $epoch the auth epoch the application keeps for them (AuthContext)
      */
-    public function for(Request $request, string $tenant = '', string $panel = ''): ?string
+    public function for(Request $request, string $tenant = '', string $panel = '', string $user = '', string $epoch = ''): ?string
     {
         $session = ($this->sessionId)($request);
         if ($session === '') {
             return null;
         }
 
-        // Each part with its length, so no two triples ever read as the same
-        // string, whatever they contain.
+        // Each part with its length, so no two sets of parts ever read as
+        // the same string, whatever they contain.
         return Signer::encode($this->signer->sign(\sprintf(
-            'history:%d:%s|%d:%s|%d:%s',
+            'history:%d:%s|%d:%s|%d:%s|%d:%s|%d:%s',
             \strlen($session),
             $session,
             \strlen($tenant),
             $tenant,
             \strlen($panel),
             $panel,
+            \strlen($user),
+            $user,
+            \strlen($epoch),
+            $epoch,
         )));
     }
 }

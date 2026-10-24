@@ -19,9 +19,9 @@ use Tinvar\Support\Signer;
  *
  * Like FragmentMinter, this exists so the binding fields are the
  * FRAMEWORK's. Route and params come from the chain that was actually
- * matched, not from anything a caller passed; panel, tenant, build, session
- * and expiry come from the request being served. A page cannot mint itself
- * a token for a different route.
+ * matched, not from anything a caller passed; panel, tenant, build, session,
+ * user, auth epoch and expiry come from the request being served. A page
+ * cannot mint itself a token for a different route.
  */
 final readonly class RouteMinter
 {
@@ -35,6 +35,11 @@ final readonly class RouteMinter
         #[\SensitiveParameter]
         private string $sessionId,
         private int $ttl = RouteToken::DEFAULT_TTL,
+        // Who is signed in, and the auth epoch the application keeps for
+        // them (AuthContext): client-held data is bound to the user, and
+        // cleared on a role change or impersonation the session id survives.
+        private ?string $user = null,
+        private string $authEpoch = '',
     ) {
         if ($this->sessionId === '') {
             // One constant hash would make every visitor's token
@@ -74,6 +79,7 @@ final readonly class RouteMinter
             sessionHash: TokenClaims::hashSession($this->signer, $this->sessionId),
             expiresAt: $now + $this->ttl,
             issuedAt: $now,
+            authHash: TokenClaims::hashAuth($this->signer, $this->user, $this->authEpoch),
         )))->encode($this->signer);
     }
 }

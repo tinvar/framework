@@ -16,7 +16,7 @@ namespace Tinvar\Data;
  * header would not: a held key sends less, and a reset sends the same items
  * marked to replace. So both are read on the client's word -- except that a
  * held key is only taken from a client whose held content was rendered for
- * this session, tenant and panel, which the Kernel checks before it gets
+ * this session, user, tenant and panel, which the Kernel checks before it gets
  * here.
  */
 final readonly class PayloadContext
