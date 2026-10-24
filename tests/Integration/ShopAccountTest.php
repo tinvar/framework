@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Integration\ShopAccount;
 
 use Shop\Actions\AccountActions;
+use Shop\Actions\OrderActions;
 use Shop\Auth\NextPath;
 use Shop\Auth\Passwords;
 use Shop\Auth\Sessions;
@@ -573,6 +574,23 @@ it('places an order at the product\'s price, and refuses one it cannot fill', fu
         ->and($visitor->action('orders.place', ['product' => $teacup['id'], 'quantity' => 0])->status)->toBe(422)
         ->and(json_decode($visitor->action('orders.place', ['product' => $soldOut, 'quantity' => 1])->body(), true)['errors'])
         ->toHaveKey('quantity');
+});
+
+// "An action's response lists the server-side query tags it invalidated
+// (X-Invalidated-Tags), and the client flushes matching prefetch entries
+// automatically" -- so a list of orders prefetched before the order is not
+// the one shown after it.
+it('says placing an order invalidated the customer\'s orders', function () {
+    [$visitor, $pdo] = shop();
+    $visitor->get('/sign-in');
+    signIn($visitor);
+    $teacup = (string) $pdo->query("SELECT id FROM products WHERE sku = 'PW-1001'")->fetchColumn();
+
+    $placed = $visitor->action('orders.place', ['product' => $teacup, 'quantity' => 1]);
+    $refused = $visitor->action('orders.place', ['product' => $teacup, 'quantity' => 0]);
+
+    expect($placed->header('x-invalidated-tags'))->toBe(OrderActions::ORDERS_TAG)
+        ->and($refused->header('x-invalidated-tags'))->toBeNull('nothing was written, so nothing is stale');
 });
 
 // The seeded credentials follow from the customer's number, so a load test
