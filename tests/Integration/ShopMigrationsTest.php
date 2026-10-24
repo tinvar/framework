@@ -60,11 +60,12 @@ function tables(PdoConnection $connection): array
  * Runs a command in a process of its own.
  *
  * @param list<string> $command
+ * @param array<string, string> $environment added to this process's
  * @return array{int, string, string} its exit status, standard output and standard error
  */
-function run(array $command): array
+function run(array $command, array $environment = []): array
 {
-    $process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, \dirname(__DIR__, 4));
+    $process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, \dirname(__DIR__, 4), $environment === [] ? null : [...getenv(), ...$environment]);
     \assert(\is_resource($process));
     $out = (string) stream_get_contents($pipes[1]);
     $err = (string) stream_get_contents($pipes[2]);
@@ -201,16 +202,44 @@ describe('from the command line', function () {
             ->and($out)->toContain('yes  1      2026_10_24_000003_create_auth_epochs_and_staff');
     });
 
-    it('builds a database with the seed script, which migrates and then seeds', function () {
+    it('builds a database with the seed script, which is db:seed: it migrates and then seeds', function () {
         $database = database();
 
         [$status, $out, $err] = run(['examples/shop/bin/seed', '--customers=2', "--database={$database}"]);
         $connection = PdoConnection::sqlite($database);
 
         expect($status)->toBe(0, $err)
-            ->and($err)->toContain("Migrated {$database}: 8 migration(s).")
+            ->and($out)->toContain('Dropped every table and ran 8 migration(s).')
             ->and($out)->toContain('24 products, 3 customers')
             ->and(Migrations::migrator($connection)->pending())->toBe([])
             ->and($connection->select('SELECT COUNT(*) AS n FROM staff'))->toBe([['n' => 1]]);
+    });
+
+    it('seeds again from nothing, and refuses to seed what is seeded already', function () {
+        $database = database();
+        run(['examples/shop/bin/seed', '--customers=2', "--database={$database}"]);
+        $connection = PdoConnection::sqlite($database);
+        $connection->execute("UPDATE customers SET name = 'Changed'");
+
+        [$again, , $againErr] = run([PHP_BINARY, 'bin/tinvar', 'db:seed', "--database={$database}"]);
+        [$fresh, , $freshErr] = run(['examples/shop/bin/seed', '--customers=1', "--database={$database}"]);
+
+        expect($again)->toBe(1)
+            ->and($againErr)->toContain('seeded already')
+            ->and($fresh)->toBe(0, $freshErr)
+            ->and($connection->select('SELECT COUNT(*) AS n FROM customers'))->toBe([['n' => 3]])
+            ->and($connection->select("SELECT COUNT(*) AS n FROM customers WHERE name = 'Changed'"))->toBe([['n' => 0]]);
+    });
+
+    // A seeded database has accounts whose passwords are in this
+    // repository; one in production would be a way in.
+    it('refuses to seed where the environment says production', function () {
+        $database = database();
+
+        [$status, , $err] = run([PHP_BINARY, 'bin/tinvar', 'db:seed', "--database={$database}"], ['APP_ENV' => 'production']);
+
+        expect($status)->toBe(1)
+            ->and($err)->toContain('APP_ENV says this is production')
+            ->and(file_exists($database))->toBeFalse();
     });
 });
