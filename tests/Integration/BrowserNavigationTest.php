@@ -239,6 +239,36 @@ it('signs in, reads orders and an order, places an order and signs out', functio
         'account' => true,
     ]);
 
+    // The other two scrolled in: the second page, a background partial
+    // reload of the page segment merged into the table that was up, the
+    // figures above it held by the browser and so left out (ADR 0020).
+    expect($result['infinite'])->toBe([
+        'only' => 'page.orders',
+        'held' => 'orders.summary',
+        'partial' => '1',
+        'rows' => 12,
+        'range' => 'Showing 1–12 of 12PreviousNext',
+        'summary' => true,
+        'sameDocument' => true,
+        'newEntries' => 0,
+    ]);
+
+    // A filter replaces the list rather than adding to it, and so does
+    // going back to all of them: the first page alone.
+    expect($result['reset'])->toBe([
+        'reset' => 'page.orders',
+        'only' => 'page.orders',
+        'held' => 'orders.summary',
+        'url' => '?status=delivered',
+        'rows' => 7,
+        'range' => 'Showing 1–7 of 7PreviousNext',
+        'all' => ['rows' => 10, 'range' => 'Showing 1–10 of 12PreviousNext'],
+    ]);
+
+    // Placing an order invalidated the tag the figures were kept under, so
+    // the orders page after it claimed nothing and counted the new order.
+    expect($result['afterOrder'])->toBe(['held' => null, 'lastPlaced' => true]);
+
     // The order page rendered without its shipping updates, which loaded
     // from /_fragment/ only once scrolled to. The order placed later has
     // one line, so its panel starts within the boundary's buffer of the
