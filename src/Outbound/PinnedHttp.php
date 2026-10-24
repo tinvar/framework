@@ -57,6 +57,9 @@ final readonly class PinnedHttp implements OutboundHttp
      * @param float $timeout seconds a request may take, its lookups included, unless it says otherwise
      * @param float $connectTimeout seconds a connection may take to open
      * @param int $maxResponseBytes the largest body read unless a request says otherwise
+     * @param (\Closure(string): string)|null $reportedAddress for tests: the address curl says it is connected
+     *        to passes through this on its way to the check. Curl's own word is checked as well, so this can
+     *        fail a connection to the vetted address and never pass one to another
      */
     public function __construct(
         private OutboundPolicy $policy = new OutboundPolicy(),
@@ -64,6 +67,7 @@ final readonly class PinnedHttp implements OutboundHttp
         private float $timeout = self::DEFAULT_TIMEOUT,
         private float $connectTimeout = 5.0,
         private int $maxResponseBytes = 1_048_576,
+        private ?\Closure $reportedAddress = null,
     ) {
         if ($timeout <= 0 || $connectTimeout <= 0 || $maxResponseBytes < 0) {
             throw new \InvalidArgumentException('Timeouts are positive, and the response cap is not negative.');
@@ -161,6 +165,7 @@ final readonly class PinnedHttp implements OutboundHttp
         $stoppedAtBody = false;
         $connectedTo = null;
         $expected = (string) inet_pton($address);
+        $observe = $this->reportedAddress;
 
         // A header given an empty value is written `Name;`: `Name:` is how
         // curl is told to send no such header at all.
@@ -186,8 +191,9 @@ final readonly class PinnedHttp implements OutboundHttp
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
             CURLOPT_HTTPHEADER => $lines,
-            CURLOPT_PREREQFUNCTION => static function (\CurlHandle $handle, string $ip) use ($expected, &$connectedTo): int {
-                if (@inet_pton($ip) !== $expected) {
+            CURLOPT_PREREQFUNCTION => static function (\CurlHandle $handle, string $ip) use ($expected, $observe, &$connectedTo): int {
+                $observed = $observe === null ? $ip : $observe($ip);
+                if (@inet_pton($ip) !== $expected || @inet_pton($observed) !== $expected) {
                     $connectedTo = $ip;
 
                     return CURL_PREREQFUNC_ABORT;

@@ -326,6 +326,38 @@ it('refuses a rebinding answer given to the first lookup, and connects to nothin
     expect($requests)->toBe([]);
 });
 
+// Nothing short of a curl that ignores CURLOPT_RESOLVE connects anywhere
+// but the vetted address, so the address curl reports is made to differ:
+// the check, the abort and the reason were otherwise never run by a test.
+it('stops a transfer connected to an address other than the one it vetted, before a byte is sent', function (string $reported) {
+    needsFork();
+    $server = Server::start([Server::reply(200, 'as vetted'), Server::reply(200, 'never')]);
+    $resolver = new StaticResolver(['hooks.invalid' => ['127.0.0.1']]);
+    $url = "http://hooks.invalid:{$server->port}/in?token=s3cret";
+
+    try {
+        $passed = new PinnedHttp(local(), $resolver, reportedAddress: static fn (string $ip): string => $ip)->send(OutboundRequest::post($url, '{}'));
+        expect(fn () => new PinnedHttp(local(), $resolver, reportedAddress: static fn (): string => $reported)->send(OutboundRequest::post($url, '{}')))
+            ->toThrow(fn (OutboundFailed $e) => expect($e->reason)->toBe(OutboundFailed::ADDRESS_CHANGED)
+                ->and($e->status)->toBeNull()
+                ->and($e->getMessage())->not->toContain($reported)
+                ->and($e->getMessage())->not->toContain('s3cret'));
+    } finally {
+        $requests = $server->stop();
+    }
+
+    // The connection is made -- it is how curl learns the address -- and
+    // nothing is sent on it: the server, if it is quick enough to log the
+    // second connection at all, logs it without a request line.
+    expect($passed->body)->toBe('as vetted')
+        ->and(array_values(array_filter(array_column($requests, 'method'))))->toBe(['POST']);
+})->with([
+    'another loopback address' => ['127.0.0.2'],
+    'the metadata service' => ['169.254.169.254'],
+    'the vetted address, IPv4-mapped' => ['::ffff:127.0.0.1'],
+    'nothing an address' => ['not an address'],
+]);
+
 it('refuses loopback unless the policy allows it, and the server never hears of it', function () {
     needsFork();
     $server = Server::start([Server::reply(200)]);
