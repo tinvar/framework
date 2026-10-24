@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * `tinvar serve` for real: the shop, the renderer and FrankenPHP in worker
+ * `tinvar serve` for real: the shop, a pool of renderers and FrankenPHP in worker
  * mode, on a port the command chose. Started with no --port, read the URL
  * it prints, fetch pages from it, stop it with SIGTERM.
  *
@@ -50,7 +50,7 @@ function serve(string $root, string $keyFile): array
     });
 
     $process = proc_open(
-        [PHP_BINARY, "{$root}/bin/tinvar", 'serve', "--app={$root}/examples/shop", '--workers=2'],
+        [PHP_BINARY, "{$root}/bin/tinvar", 'serve', "--app={$root}/examples/shop", '--workers=2', '--renderers=2'],
         [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $log, 'w']],
         $pipes,
         $root,
@@ -132,11 +132,14 @@ function fetch(string $url, array $headers = []): array
 
 it('serves the shop on a free port it chose, and stops cleanly', function () use ($root) {
     $keyFile = sys_get_temp_dir() . '/tinvar-serve-key-' . bin2hex(random_bytes(4)) . '/app.key';
-    [, $url, $stop] = serve($root, $keyFile);
+    [, $url, $stop, $log] = serve($root, $keyFile);
 
     try {
         $port = (int) parse_url($url, PHP_URL_PORT);
         [$status, $headers, $body] = fetch("{$url}/", ['Accept: text/html']);
+        $output = (string) file_get_contents($log);
+        preg_match('#renderers in (/\S+)\. Ctrl\+C#', $output, $pool);
+        $sockets = glob(($pool[1] ?? '/nonexistent') . '/*.sock') ?: [];
         preg_match('#/assets/index-[\w-]+\.css#', $body, $css);
         [$assetStatus, $assetHeaders] = fetch($url . ($css[0] ?? '/assets/missing.css'));
         [$redirect, $redirectHeaders] = fetch("{$url}/orders", ['Accept: text/html']);
@@ -158,7 +161,13 @@ it('serves the shop on a free port it chose, and stops cleanly', function () use
     expect($url)->toStartWith('http://127.0.0.1:')
         ->and($port)->toBeGreaterThanOrEqual(6000)->toBeLessThanOrEqual(7000);
 
-    // The catalog, rendered by a worker through the renderer.
+    // Two sandboxed renderers, each on a socket of its own in the directory
+    // the workers were given.
+    expect($output)->toMatch('#Serving \S+ with 2 FrankenPHP workers and 2 renderers in /tmp/tinvar-serve-\w+\.#')
+        ->and($output)->toContain('a pool of 2 listening in')
+        ->and(array_map(basename(...), $sockets))->toBe(['renderer-0-1.sock', 'renderer-1-2.sock']);
+
+    // The catalog, rendered by a worker through one of the renderers.
     expect($status)->toBe(200)
         ->and($headers['content-security-policy'] ?? '')->toStartWith("script-src 'nonce-")
         // Production's policy, though TINVAR_DEV=1 was in the shell.
@@ -194,7 +203,7 @@ it('takes its children with it when it is killed outright', function () use ($ro
     $keyFile = sys_get_temp_dir() . '/tinvar-serve-key-' . bin2hex(random_bytes(4)) . '/app.key';
     [$process, $url, $stop, $log] = serve($root, $keyFile);
     $port = (int) parse_url($url, PHP_URL_PORT);
-    preg_match('#a renderer at (/\S+)/renderer\.sock#', (string) file_get_contents($log), $m);
+    preg_match('#renderers? in (/\S+)\. Ctrl\+C#', (string) file_get_contents($log), $m);
     $directory = $m[1] ?? '';
 
     try {

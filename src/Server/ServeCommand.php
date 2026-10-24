@@ -8,11 +8,11 @@ use Tinvar\Support\DevMode;
 use Tinvar\Support\PrivateDirectory;
 
 /**
- * `tinvar serve`: an app's renderer and FrankenPHP, started together and
+ * `tinvar serve`: an app's renderers and FrankenPHP, started together and
  * stopped together.
  *
- *   tinvar serve [--dev] [--host=HOST] [--port=PORT] [--app=DIR] [--workers=N] [--frankenphp=PATH]
- *                [--worker] [--schedule]
+ *   tinvar serve [--dev] [--host=HOST] [--port=PORT] [--app=DIR] [--workers=N] [--renderers=N]
+ *                [--frankenphp=PATH] [--worker] [--schedule]
  *
  * With --dev, Vite's dev server is the renderer ("Dev mode: Vite's dev server
  * is the renderer, with HMR and no separate build"): no build is needed, the
@@ -25,14 +25,18 @@ use Tinvar\Support\PrivateDirectory;
  * The app is a directory with a Caddyfile and a build: the command knows
  * nothing about any particular app. It passes the app what it decided as
  * environment variables its Caddyfile reads -- TINVAR_HOST, TINVAR_PORT,
- * TINVAR_APP_ROOT, TINVAR_WORKERS, and TINVAR_SOCKET, the renderer the PHP
+ * TINVAR_APP_ROOT, TINVAR_WORKERS, and TINVAR_SOCKET, the renderers the PHP
  * workers talk to -- so the Caddyfile says how the app is served and this
  * says where.
  *
- * The renderer's socket goes in a fresh private directory under /tmp: short
- * enough for macOS's 104-byte limit, and one no other user can reach into.
- * The renderer gets a scrubbed environment, as it requires; FrankenPHP gets
- * this process's, since the application reads its settings from it.
+ * The renderers are a pool (ADR 0028): one supervising process and N
+ * sandboxed renderers, one socket each, in a fresh private directory under
+ * /tmp -- short enough for macOS's 104-byte limit, and one no other user can
+ * reach into. TINVAR_SOCKET names the directory, and each render goes to one
+ * of the sockets in it. In dev mode Vite's dev server is the one renderer,
+ * on one socket there. The renderers get a scrubbed environment, as they
+ * require; FrankenPHP gets this process's, since the application reads its
+ * settings from it.
  *
  * `--worker` and `--schedule` start the application's queue worker
  * (`queue:work`) and scheduler (`schedule:work`) beside them, through the
@@ -56,7 +60,10 @@ final class ServeCommand
     /** Exit status for a bad invocation, as sysexits(3) has it. */
     public const int USAGE = 64;
 
-    private const array OPTIONS = ['host', 'port', 'app', 'workers', 'frankenphp'];
+    private const array OPTIONS = ['host', 'port', 'app', 'workers', 'renderers', 'frankenphp'];
+
+    /** More would be more processes than any machine this runs on has cores for. */
+    public const int MAX_RENDERERS = 64;
 
     /** Options that take no value: dev mode, and the background children to start beside the server. */
     private const array FLAGS = ['dev', 'worker', 'schedule'];
@@ -142,7 +149,7 @@ final class ServeCommand
      * without a process to clean up.
      *
      * @param list<string> $arguments
-     * @return array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string, background: list<string>}
+     * @return array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string, background: list<string>, renderers: int}
      */
     public function plan(array $arguments): array
     {
@@ -180,6 +187,17 @@ final class ServeCommand
         if ($workers !== null && (preg_match('/^[1-9][0-9]{0,2}\z/', $workers) !== 1 || (int) $workers > 256)) {
             throw new ServeException("--workers must be a whole number from 1 to 256; got '{$workers}'.");
         }
+        $workers = $workers === null ? self::cpus() : (int) $workers;
+
+        $renderers = $options['renderers'] ?? null;
+        if ($renderers !== null && (preg_match('/^[1-9][0-9]?\z/', $renderers) !== 1 || (int) $renderers > self::MAX_RENDERERS)) {
+            throw new ServeException('--renderers must be a whole number from 1 to ' . self::MAX_RENDERERS . "; got '{$renderers}'.");
+        }
+        // Dev mode renders through Vite's one dev server, from source; a pool
+        // is of built renderers.
+        if ($dev && $renderers !== null) {
+            throw new ServeException("--renderers runs a pool of built renderers; --dev renders through Vite's one dev server.");
+        }
 
         $frankenphp = FrankenPhp::locate($this->projectRoot, $options['frankenphp'] ?? null);
         $renderer = $this->rendererBin($dev ? 'dev-renderer.js' : 'renderer.js');
@@ -201,7 +219,8 @@ final class ServeCommand
             'app' => $app,
             'entry' => $entry,
             'renderer' => $renderer,
-            'workers' => $workers === null ? self::cpus() : (int) $workers,
+            'workers' => $workers,
+            'renderers' => $dev ? 1 : ($renderers === null ? self::defaultRenderers(self::cpus(), $workers) : (int) $renderers),
             'background' => $this->background($options),
             'port' => $port,
             'dev' => $dev,
@@ -225,7 +244,7 @@ final class ServeCommand
             if (preg_match('/^--([a-z]+)=(.*)\z/s', $argument, $m) !== 1 || !\in_array($m[1], self::OPTIONS, true)) {
                 throw new ServeException(
                     "Unknown argument '{$argument}'. Usage: tinvar serve [--dev] [--host=HOST] [--port=PORT] [--app=DIR] "
-                    . '[--workers=N] [--frankenphp=PATH] [--worker] [--schedule]',
+                    . '[--workers=N] [--renderers=N] [--frankenphp=PATH] [--worker] [--schedule]',
                 );
             }
             $options[$m[1]] = $m[2];
@@ -283,19 +302,10 @@ final class ServeCommand
 
     private function rendererBin(string $bin): string
     {
-        foreach ([
-            "{$this->projectRoot}/node_modules/@tinvar/renderer/bin/{$bin}",
-            "{$this->projectRoot}/packages/renderer/bin/{$bin}",
-        ] as $candidate) {
-            if (is_file($candidate)) {
-                return $candidate;
-            }
-        }
-
-        throw new ServeException('The renderer is not installed: run npm ci in ' . $this->projectRoot . '.');
+        return RendererBinary::script($this->projectRoot, $bin);
     }
 
-    /** @param array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string, background: list<string>} $plan */
+    /** @param array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string, background: list<string>, renderers: int} $plan */
     private function serve(array $plan): int
     {
         // One killed outright had no chance to remove its own.
@@ -315,7 +325,8 @@ final class ServeCommand
             'TINVAR_PORT' => (string) $plan['port'],
             'TINVAR_APP_ROOT' => $plan['app'],
             'TINVAR_WORKERS' => (string) $plan['workers'],
-            'TINVAR_SOCKET' => $socket,
+            // The pool's directory; dev mode's one socket in it.
+            'TINVAR_SOCKET' => $plan['dev'] ? $socket : $directory,
         ];
 
         try {
@@ -338,12 +349,19 @@ final class ServeCommand
                     'TINVAR_DEFERRED_MANIFEST' => $deferred,
                 ];
             } else {
-                $children['the renderer'] = $renderer = $this->spawn(
-                    ['node', $plan['renderer'], $socket, (string) $plan['entry'], '--exit-with-stdin'],
+                // The pool's directory is the private one: PHP lists it for
+                // sockets, and it holds nothing else they could be confused with.
+                $children['the renderers'] = $renderer = $this->spawn(
+                    ['node', $plan['renderer'], $directory, (string) $plan['entry'], '--exit-with-stdin', "--processes={$plan['renderers']}"],
                     $plan['app'],
                     [...$rendererEnv, 'NODE_ENV' => 'production'],
                 );
-                $this->waitFor(static fn (): bool => file_exists($socket), $renderer, 'The renderer', 20);
+                $this->waitFor(
+                    static fn (): bool => self::socketsIn($directory) >= $plan['renderers'],
+                    $renderer,
+                    'The renderers',
+                    30,
+                );
             }
 
             // FrankenPHP's environment, which the queue worker and scheduler
@@ -396,10 +414,12 @@ final class ServeCommand
                 $plan['vitePort'],
             )
             : sprintf(
-                'Serving %s with %d FrankenPHP workers and a renderer at %s. Ctrl+C stops both.',
+                'Serving %s with %d FrankenPHP workers and %d %s in %s. Ctrl+C stops both.',
                 $plan['app'],
                 $plan['workers'],
-                $socket,
+                $plan['renderers'],
+                $plan['renderers'] === 1 ? 'renderer' : 'renderers',
+                $directory,
             ));
 
         $status = $this->supervise($children, $plan['app'], $environment);
@@ -592,8 +612,35 @@ final class ServeCommand
         }
     }
 
+    /** How many renderers are listening in a pool's directory. */
+    private static function socketsIn(string $directory): int
+    {
+        return \count(array_filter(scandir($directory) ?: [], static fn (string $name): bool => str_ends_with($name, '.sock')));
+    }
+
+    /**
+     * Renderers when none are asked for: half the cores, at least one, and
+     * never more than there are PHP workers.
+     *
+     * Not cores minus workers: workers default to one per core, which would
+     * leave none, and a worker rendering a document is mostly waiting on the
+     * socket -- on ten cores, one renderer kept its thread at 100% while ten
+     * workers used half a core between them. Renderers are what document
+     * renders need cores for. Measured there with ten workers, 1 -> 2 -> 4
+     * renderers took the catalog from about 450 to 640 to 770 documents a
+     * second, and 6 and 8 added a few percent each while taking cores from
+     * the workers and everything else on the machine (bench/results, ADR
+     * 0028): half is where the curve has flattened. And each worker has at
+     * most one render in flight, so a renderer past the worker count could
+     * never be busy.
+     */
+    public static function defaultRenderers(int $cores, int $workers): int
+    {
+        return max(1, min($workers, intdiv($cores, 2)));
+    }
+
     /** One worker per core, which is what a machine of this size can run at once. */
-    private static function cpus(): int
+    public static function cpus(): int
     {
         $count = 0;
         if (\function_exists('shell_exec')) {

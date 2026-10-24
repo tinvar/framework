@@ -93,14 +93,34 @@ it('plans to serve the app it is given, on 127.0.0.1 and a port it chose', funct
         $app = app();
         [$command] = command($root);
 
-        $plan = $command->plan(["--app={$app}", '--workers=3']);
+        $plan = $command->plan(["--app={$app}", '--workers=3', '--renderers=2']);
 
         expect($plan['host'])->toBe('127.0.0.1')
             ->and($plan['port'])->toBeGreaterThanOrEqual(6000)->toBeLessThanOrEqual(7000)
             ->and($plan['app'])->toBe(realpath($app))
             ->and($plan['entry'])->toBe(realpath($app) . '/dist/rsc/index.js')
             ->and($plan['frankenphp'])->toBe("{$root}/tools/frankenphp")
-            ->and($plan['workers'])->toBe(3);
+            ->and($plan['workers'])->toBe(3)
+            ->and($plan['renderers'])->toBe(2);
+    });
+});
+
+// ADR 0028: a document render's CPU is nearly all the renderer's, so the
+// cores go to renderers -- half of them, where the measured gains flattened
+// -- and never more renderers than workers to keep them busy.
+it('runs half as many renderers as cores, and never more than there are workers', function () {
+    expect(ServeCommand::defaultRenderers(10, 10))->toBe(5)
+        ->and(ServeCommand::defaultRenderers(16, 16))->toBe(8)
+        ->and(ServeCommand::defaultRenderers(10, 2))->toBe(2)
+        ->and(ServeCommand::defaultRenderers(1, 1))->toBe(1)
+        ->and(ServeCommand::defaultRenderers(3, 3))->toBe(1);
+});
+
+it('defaults its renderers from the cores and the workers it plans', function () {
+    withoutEnvironmentBinary(function () {
+        [$command] = command(project());
+
+        expect($command->plan(['--app=' . app(), '--workers=1'])['renderers'])->toBe(1);
     });
 });
 
@@ -157,6 +177,8 @@ it('refuses, with a usage status, what it cannot serve', function (\Closure $arg
     'a bad host' => [fn (): array => ['--app=' . app(), '--host=not a host'], '--host must be an IP address'],
     'a bad port' => [fn (): array => ['--app=' . app(), '--port=70000'], '--port must be a whole number'],
     'a bad worker count' => [fn (): array => ['--app=' . app(), '--workers=0'], '--workers must be a whole number'],
+    'no renderers' => [fn (): array => ['--app=' . app(), '--renderers=0'], '--renderers must be a whole number from 1 to 64'],
+    'too many renderers' => [fn (): array => ['--app=' . app(), '--renderers=65'], '--renderers must be a whole number from 1 to 64'],
     'a missing binary' => [fn (): array => ['--app=' . app(), '--frankenphp=/no/such/frankenphp'], 'not an executable file'],
 ]);
 
