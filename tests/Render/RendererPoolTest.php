@@ -248,6 +248,30 @@ describe('trusting a pool', function () {
         'shared and sticky, as /tmp is' => [01777],
     ]);
 
+    // The supervisor refuses a pool directory reached through a symlink, and
+    // so must PHP. Planted in a shared directory such as /tmp, the link is
+    // its maker's to point at any directory of this user's or root's -- its
+    // sockets then sent renders -- and to repoint between the checks and
+    // the listing.
+    it('refuses a pool directory that is a symbolic link', function (string $suffix) {
+        $dir = poolDirectory();
+        $pid = fakeRenderer("{$dir}/renderer-0-1.sock", 'live');
+        $link = '/tmp/tvlink-' . bin2hex(random_bytes(4));
+        symlink($dir, $link);
+
+        try {
+            expect(fn () => renderOnce(channel($link . $suffix)))
+                ->toThrow(RendererException::class, 'the pool directory is a symbolic link');
+        } finally {
+            unlink($link);
+            cleanUpPool($dir, [$pid]);
+        }
+    })->with([
+        'as named' => [''],
+        // lstat() follows a link at the last step when the path ends in a slash.
+        'with a trailing slash' => ['/'],
+    ]);
+
     it('renders from a pool directory only this user can write', function () {
         $dir = poolDirectory();
         $pid = fakeRenderer("{$dir}/renderer-0-1.sock", 'live');

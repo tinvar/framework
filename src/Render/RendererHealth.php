@@ -34,11 +34,12 @@ final class RendererHealth
     public function checkAll(string $path): array
     {
         $sockets = new RendererSockets($path);
-        if ($sockets->isPool()) {
+        $pool = $sockets->isPool();
+        if ($pool) {
             $this->trust->assertPool($path);
         }
 
-        $candidates = $sockets->candidates();
+        $candidates = $sockets->candidates($pool);
         sort($candidates);
 
         $answers = [];

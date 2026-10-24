@@ -91,6 +91,13 @@ final class SocketTrust
      * renderer renders may be sent to. A directory anyone else can write --
      * even /tmp, sticky as it is -- would let them add one of their own, so
      * a pool's must be a trusted user's and writable by no one else.
+     *
+     * And it must be the directory itself, not a symlink to one, as the
+     * supervisor also insists. Through a link, the directory checked is
+     * wherever the link leads at that moment: planted in a shared directory
+     * such as /tmp, the link is a stranger's to point at any directory of
+     * this user's or root's, whose sockets would then be sent renders, and
+     * to repoint between this check and the listing.
      */
     public function assertPool(string $directory): void
     {
@@ -98,8 +105,17 @@ final class SocketTrust
             return;
         }
 
+        // Without a trailing slash, which would have lstat() follow a link
+        // at the last step after all.
+        $directory = rtrim($directory, '/') ?: '/';
         clearstatcache(true, $directory);
-        $stat = @stat($directory);
+        $stat = @lstat($directory);
+        if ($stat !== false && ($stat['mode'] & 0170000) === 0120000) {
+            throw RendererException::cannotConnect(
+                $directory,
+                'the pool directory is a symbolic link, which whoever made it could point anywhere',
+            );
+        }
         if ($stat === false || ($stat['mode'] & 0170000) !== 0040000) {
             throw RendererException::cannotConnect($directory, 'cannot inspect the pool directory, or it is not a directory');
         }

@@ -40,11 +40,15 @@ final class RendererSockets
      * The sockets to try for one render, in order: the renderer whose turn it
      * is, then each of the others, for when it refuses.
      *
+     * $pool is the caller's own isPool() answer, the one it made its trust
+     * checks on. Asked again here, a path that became a directory in between
+     * was listed with the pool's checks never made.
+     *
      * @return list<string>
      */
-    public function candidates(): array
+    public function candidates(bool $pool): array
     {
-        if (!$this->isPool()) {
+        if (!$pool) {
             return [$this->path];
         }
 

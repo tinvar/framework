@@ -365,7 +365,7 @@ final class RenderChannel
             $this->trust->assertPool($this->socketPath);
         }
 
-        $candidates = $this->sockets->candidates();
+        $candidates = $this->sockets->candidates($pool);
         if ($candidates === []) {
             throw RendererException::cannotConnect($this->socketPath, 'no renderer is listening in that directory');
         }
