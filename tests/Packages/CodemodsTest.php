@@ -92,7 +92,7 @@ it('writes what a codemod changed to a patch, and leaves the app alone', functio
 
     expect($result->ran)->toBe(['acme/billing codemods/upgrade.php'])
         ->and($result->failed)->toBe([])
-        ->and($result->flagged)->toBe([])
+        ->and($result->flagged)->toBe(['src/Added.php:1: new PHP file'])
         ->and($result->patch)->toContain("--- a/src/OrderPage.php\n+++ b/src/OrderPage.php")
         ->and($result->patch)->toContain("-        return 'old';\n+        return 'new';")
         ->and($result->patch)->toContain("+++ b/src/Added.php")
@@ -112,12 +112,13 @@ it('flags a change that drops an authorization check', function () {
         ->and($result->flagged)->toBe([
             "src/OrderPage.php:11: -    #[Authorize('view', 'order')]",
             'src/OrderPage.php:11: +    #[\Tinvar\Attributes\PublicAccess]',
+            "src/OrderPage.php:12: authorization of App\\OrderPage::load() was #[\\Tinvar\\Attributes\\Authorize('view', 'order')], now #[\\Tinvar\\Attributes\\PublicAccess]",
         ]);
 });
 
-// An alias can hide the name; in a file that uses an authorization
-// attribute, any attribute that changes is flagged.
-it('flags an attribute change in a file that uses one, whatever it is called', function () {
+// An alias can hide the name: any line of an attribute block that changes
+// is flagged, whatever the attribute is called.
+it('flags an attribute change, whatever it is called', function () {
     $codemods = withCodemod($this, <<<'PHP'
     <?php
     $file = $argv[1] . '/src/OrderPage.php';
@@ -126,6 +127,179 @@ it('flags an attribute change in a file that uses one, whatever it is called', f
 
     expect($codemods->run($this->app, allowed: true)->flagged)
         ->toBe(["src/OrderPage.php:10: -    #[Page('/orders/{order}')]", "src/OrderPage.php:10: +    #[Page('/o/{order}')]"]);
+});
+
+// PHP's class names are case-insensitive, and an import can rename one.
+it('flags an authorization attribute in any case and under any alias, in a file that had none', function () {
+    $this->workspace->file('app/src/OrderList.php', <<<'PHP'
+    <?php
+
+    namespace App;
+
+    use Tinvar\Attributes\Page;
+
+    final class OrderList
+    {
+        #[Page('/orders')]
+        public function load(): string
+        {
+            return 'list';
+        }
+    }
+
+    PHP);
+    $codemods = withCodemod($this, <<<'PHP'
+    <?php
+    $file = $argv[1] . '/src/OrderList.php';
+    file_put_contents($file, str_replace(
+        ["use Tinvar\\Attributes\\Page;\n", "#[Page('/orders')]"],
+        ["use Tinvar\\Attributes\\Page;\nuse Tinvar\\Attributes\\publicaccess as Open;\n", "#[Page('/orders'), Open]"],
+        file_get_contents($file),
+    ));
+    PHP);
+
+    expect($codemods->run($this->app, allowed: true)->flagged)->toBe([
+        'src/OrderList.php:6: +use Tinvar\Attributes\publicaccess as Open;',
+        "src/OrderList.php:9: -    #[Page('/orders')]",
+        "src/OrderList.php:10: +    #[Page('/orders'), Open]",
+        'src/OrderList.php:11: authorization of App\OrderList::load() was none, now #[\Tinvar\Attributes\publicaccess]',
+    ]);
+});
+
+// The line that changed names nothing: the group's prefix sits on a line of
+// its own, and `Authorize` below it now resolves somewhere else.
+it('flags an import that sends an authorization attribute somewhere else', function () {
+    $this->workspace->file('app/src/Refunds.php', <<<'PHP'
+    <?php
+
+    namespace App;
+
+    use Tinvar\Attributes\{
+        Authorize,
+        Page,
+    };
+
+    final class Refunds
+    {
+        #[Page('/refunds/{order}')]
+        #[Authorize('refund', 'order')]
+        public function load(Order $order): string
+        {
+            return 'refunds';
+        }
+    }
+
+    PHP);
+    $codemods = withCodemod($this, <<<'PHP'
+    <?php
+    $file = $argv[1] . '/src/Refunds.php';
+    file_put_contents($file, str_replace('use Tinvar\Attributes\{', 'use App\Shim\{', file_get_contents($file)));
+    PHP);
+
+    expect($codemods->run($this->app, allowed: true)->flagged)->toBe([
+        'src/Refunds.php:5: -use Tinvar\Attributes\{',
+        'src/Refunds.php:5: +use App\Shim\{',
+        "src/Refunds.php:14: authorization of App\\Refunds::load() was #[\\Tinvar\\Attributes\\Authorize('refund', 'order')], now #[\\App\\Shim\\Authorize('refund', 'order')]",
+    ]);
+});
+
+it('flags an argument changed inside an attribute written over several lines', function () {
+    $this->workspace->file('app/src/Refunds.php', <<<'PHP'
+    <?php
+
+    namespace App;
+
+    use Tinvar\Attributes\Authorize;
+
+    final class Refunds
+    {
+        #[Authorize(
+            'refund',
+            'order',
+        )]
+        public function load(Order $order): string
+        {
+            return 'refunds';
+        }
+    }
+
+    PHP);
+    $codemods = withCodemod($this, <<<'PHP'
+    <?php
+    $file = $argv[1] . '/src/Refunds.php';
+    file_put_contents($file, str_replace("        'refund',\n", "        'browse',\n", file_get_contents($file)));
+    PHP);
+
+    expect($codemods->run($this->app, allowed: true)->flagged)->toBe([
+        "src/Refunds.php:10: -        'refund',",
+        "src/Refunds.php:10: +        'browse',",
+        "src/Refunds.php:13: authorization of App\\Refunds::load() was #[\\Tinvar\\Attributes\\Authorize('refund', 'order')], now #[\\Tinvar\\Attributes\\Authorize('browse', 'order')]",
+    ]);
+});
+
+// Neither added line is an attribute, or names one: only comparing what
+// the method declares, before against after, sees the check go.
+it('flags an authorization check commented out by lines that never name it', function () {
+    $codemods = withCodemod($this, <<<'PHP'
+    <?php
+    $file = $argv[1] . '/src/OrderPage.php';
+    file_put_contents($file, str_replace("    #[Authorize('view', 'order')]\n", "    /*\n    #[Authorize('view', 'order')]\n    */\n", file_get_contents($file)));
+    PHP);
+
+    expect($codemods->run($this->app, allowed: true)->flagged)->toBe([
+        "src/OrderPage.php:14: authorization of App\\OrderPage::load() was #[\\Tinvar\\Attributes\\Authorize('view', 'order')], now none",
+    ]);
+});
+
+// ClassAttributes reads a class's checks off its ancestors and traits too.
+it('flags a class that now inherits from somewhere else', function () {
+    $this->workspace->file('app/src/Report.php', <<<'PHP'
+    <?php
+
+    namespace App;
+
+    final class Report extends AdminPage
+    {
+        public function load(): string
+        {
+            return 'report';
+        }
+    }
+
+    PHP);
+    $codemods = withCodemod($this, <<<'PHP'
+    <?php
+    $file = $argv[1] . '/src/Report.php';
+    file_put_contents($file, str_replace('extends AdminPage', 'extends Page', file_get_contents($file)));
+    PHP);
+
+    expect($codemods->run($this->app, allowed: true)->flagged)->toBe([
+        'src/Report.php:5: authorization of App\Report was extends \App\AdminPage, now extends \App\Page',
+    ]);
+});
+
+it('flags a PHP file a codemod deletes, and what it took with it', function () {
+    $codemods = withCodemod($this, "<?php unlink(\$argv[1] . '/src/OrderPage.php');\n");
+
+    expect($codemods->run($this->app, allowed: true)->flagged)->toBe([
+        'src/OrderPage.php:1: deleted PHP file',
+        "src/OrderPage.php:12: authorization of App\\OrderPage::load() was #[\\Tinvar\\Attributes\\Authorize('view', 'order')], now none",
+    ]);
+});
+
+// What does not parse cannot be compared: every line it changes is flagged.
+it('flags every changed line of a file that no longer parses', function () {
+    $codemods = withCodemod($this, <<<'PHP'
+    <?php
+    $file = $argv[1] . '/src/OrderPage.php';
+    file_put_contents($file, str_replace("return 'old';", "return 'old'", file_get_contents($file)));
+    PHP);
+
+    expect($codemods->run($this->app, allowed: true)->flagged)->toBe([
+        'src/OrderPage.php:1: not valid PHP after the codemods, so every line they change is flagged',
+        "src/OrderPage.php:14: -        return 'old';",
+        "src/OrderPage.php:14: +        return 'old'",
+    ]);
 });
 
 // Inside a hunk a line is a change by its first character alone: a removed

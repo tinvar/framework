@@ -36,14 +36,26 @@ namespace Tinvar\Packages;
  * and it is killed at a time limit.
  *
  * The real app is never touched. What the scripts changed comes back as a
- * unified diff, and every changed line that names an authorization
- * attribute -- or changes an attribute in a file that uses one, where an
- * alias could hide the name -- is flagged.
+ * unified diff, with these flagged:
+ *
+ *   - any PHP file added or deleted;
+ *   - in a PHP file, every changed line of an attribute block, a `use` or a
+ *     namespace declaration, whatever it names, and every class or method
+ *     whose authorization attributes, parent or traits differ once names
+ *     are resolved (AuthorizationMap); in one that does not parse, every
+ *     changed line;
+ *   - in any file, every changed line that names an authorization
+ *     attribute.
  */
 final class Codemods
 {
-    /** What the flag is about: the attributes declarative authorization is made of. */
-    private const string AUTHORIZATION = '/\b(Authorize|PublicAccess|Public|NoAuthorization)\b/';
+    /**
+     * What the flag is about: the attributes declarative authorization is
+     * made of, in any case, as PHP reads class names -- all but `Public`,
+     * which in any other case is the keyword half the lines of a class start
+     * with. AuthorizationMap reads it as an attribute in any case.
+     */
+    private const string AUTHORIZATION = '/\b(?i:Authorize|PublicAccess|NoAuthorization)\b|\bPublic\b/';
 
     private const array DISABLED = [
         'exec', 'shell_exec', 'system', 'passthru', 'proc_open', 'popen', 'pcntl_exec', 'pcntl_fork',
@@ -368,14 +380,32 @@ final class Codemods
             }
             $patch .= $hunk;
 
-            $whole = ($old === null ? '' : (string) file_get_contents($old)) . ($new === null ? '' : (string) file_get_contents($new));
-            $usesAuthorization = preg_match(self::AUTHORIZATION, $whole) === 1;
+            $before = $old === null ? null : (string) file_get_contents($old);
+            $now = $new === null ? null : (string) file_get_contents($new);
+            // A file PHP could run is read by its tokens. A null map is one
+            // that does not parse, which nothing can be compared against.
+            $was = $is = AuthorizationMap::empty();
+            $whole = false;
+            if (self::isPhp($path, $before) || self::isPhp($path, $now)) {
+                $whole = $before === null || $now === null;
+                if ($whole) {
+                    $flagged[] = "{$path}:1: " . ($before === null ? 'new' : 'deleted') . ' PHP file';
+                }
+                $was = self::read($before);
+                $is = self::read($now);
+                if (!$whole && ($was === null || $is === null)) {
+                    $flagged[] = "{$path}:1: not valid PHP " . ($is === null ? 'after' : 'before')
+                        . ' the codemods, so every line they change is flagged';
+                }
+            }
+
             // A removed line is numbered as it stood, an added one as it
             // will stand. The `---`/`+++` header comes before the first hunk
-            // and only there: inside one, a removed "-- x" reads "--- x".
+            // and only there: inside one, a removed "-- x" reads "--- x". A
+            // file added or deleted whole is flagged whole, above.
             $oldLine = $newLine = 0;
             $inHunk = false;
-            foreach (explode("\n", $hunk) as $text) {
+            foreach ($whole ? [] : explode("\n", $hunk) as $text) {
                 if (preg_match('/^@@ -(\d+)(?:,\d+)? \+(\d+)/', $text, $match) === 1) {
                     $oldLine = (int) $match[1] - 1;
                     $newLine = (int) $match[2] - 1;
@@ -394,13 +424,45 @@ final class Codemods
                 if (!$removed && !$added) {
                     continue;
                 }
-                if (preg_match(self::AUTHORIZATION, $text) === 1 || ($usesAuthorization && str_contains($text, '#['))) {
+                $flag = $was === null || $is === null
+                    || ($removed ? $was->covers($oldLine) : $is->covers($newLine))
+                    || preg_match(self::AUTHORIZATION, $text) === 1;
+                if ($flag) {
                     $flagged[] = "{$path}:" . max($removed ? $oldLine : $newLine, 1) . ': ' . trim($text);
+                }
+            }
+
+            // What each class and method declares, before against after:
+            // what no single changed line shows, such as an attribute
+            // commented out by lines that name nothing.
+            if ($was !== null && $is !== null) {
+                foreach (array_unique([...array_keys($is->entries), ...array_keys($was->entries)]) as $key) {
+                    if ($was->signature($key) !== $is->signature($key)) {
+                        $entry = $is->entries[$key] ?? $was->entries[$key];
+                        $flagged[] = "{$path}:{$entry['line']}: authorization of {$entry['label']} was {$was->describe($key)}, now {$is->describe($key)}";
+                    }
                 }
             }
         }
 
         return [$patch, $flagged];
+    }
+
+    /** Whether PHP would run $path: by its name, or by an open tag in it. */
+    private static function isPhp(string $path, ?string $contents): bool
+    {
+        return preg_match('/\.(php\d?|phtml|phar|inc)$/i', $path) === 1
+            || ($contents !== null && preg_match('/<\?(php|=|\s)/i', $contents) === 1);
+    }
+
+    /** @return AuthorizationMap|null null when $code is not valid PHP */
+    private static function read(?string $code): ?AuthorizationMap
+    {
+        try {
+            return $code === null ? AuthorizationMap::empty() : AuthorizationMap::of($code);
+        } catch (\CompileError) {
+            return null;
+        }
     }
 
     private static function temporaryDirectory(): string
