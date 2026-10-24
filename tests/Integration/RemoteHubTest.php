@@ -169,7 +169,10 @@ it('takes an update over HTTP and hands it only to the subscriber its topic was 
         // Asking for both topics, granted one.
         [$granted, $status] = subscribe($url, [TOPIC, OTHER], $access);
         [$anonymous, $refused] = subscribe($url, [TOPIC], null);
-        expect($status)->toBe(200)->and($refused)->toBe(401);
+        // What an app server's proxy passes on for a subscriber with no grant.
+        [$emptied, $emptiedRefused] = subscribe($url, [TOPIC], '');
+        expect($status)->toBe(200)->and($refused)->toBe(401)->and($emptiedRefused)->toBe(401);
+        fclose($emptied);
 
         $hub->publish(TOPIC, '{"topic":"' . TOPIC . '","tag":"orders:customer:42"}');
         $hub->publish(OTHER, '{"topic":"' . OTHER . '","tag":"orders:customer:7"}');

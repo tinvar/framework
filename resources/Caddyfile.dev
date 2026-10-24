@@ -54,7 +54,14 @@ http://:{$TINVAR_PORT} {
 		expression "'{$TINVAR_LIVE_HUB_UPSTREAM}' != ''"
 	}
 	handle @remotehub {
-		reverse_proxy {$TINVAR_LIVE_HUB_UPSTREAM}
+		reverse_proxy {$TINVAR_LIVE_HUB_UPSTREAM} {
+			# Its own cookie and nothing else: the session's and the CSRF
+			# token's are this server's, and a service apart has no use for
+			# either. No Authorization, which the hub would read before the
+			# cookie.
+			header_up -Authorization
+			header_up Cookie "__Secure-tinvar-live={http.request.cookie.__Secure-tinvar-live}"
+		}
 	}
 
 	# The dev server's modules and its HMR socket, on this same origin. Vite
