@@ -369,9 +369,11 @@ it('keeps what a signed-in customer typed sealed in the tab, opens it for their 
     // kept in the clear.
     expect($result['storage'])->toBe(['sealed' => 1, 'entries' => [], 'plaintext' => false]);
 
-    // It opens again for the same session: back to the page, and a reload.
+    // It opens again for the same session: back to the page, and a reload --
+    // whose document carried the key, which the router took out of the page
+    // metadata once it had imported it, keeping only the CryptoKey.
     expect($result['back'])->toBe('7')
-        ->and($result['reloadedKey'])->toBe('string')
+        ->and($result['reloadedKey'])->toBe(['served' => true, 'afterStart' => 'undefined'])
         ->and($result['reloaded'])->toBe('7');
 
     // Signing out wiped it from the tab.
