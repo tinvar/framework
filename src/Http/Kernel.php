@@ -79,6 +79,9 @@ final class Kernel
     /** Where a browser's own form post leaves its errors for the page it goes back to. */
     private readonly ?FlashStore $flashes;
 
+    /** Where each session's previous URL is kept between its requests. */
+    private readonly ?PreviousUrlStore $previousUrls;
+
     /** Which routes contain a <Deferred> boundary, so which renders may mint. */
     private readonly ?FragmentManifest $manifest;
 
@@ -180,6 +183,10 @@ final class Kernel
      *        store. Given, a form posted without script that fails validation
      *        is sent back with its errors, and the page reads them; without
      *        it, that post gets the framework's 422 page.
+     * @param PreviousUrlStore|null $previousUrls the application's
+     *        session-scoped store for the previous URL. Given, every document
+     *        load and client visit that renders a page is recorded in it, and
+     *        Request::previousUrl() reads it back; without it, that is null.
      */
     public function __construct(
         public readonly Orm $orm,
@@ -205,9 +212,11 @@ final class Kernel
         ?CsrfTokens $csrf = null,
         bool $partialReloads = false,
         ?FlashStore $flashes = null,
+        ?PreviousUrlStore $previousUrls = null,
     ) {
         $this->csrf = $csrf;
         $this->flashes = $flashes;
+        $this->previousUrls = $previousUrls;
         $this->manifest = $manifest;
 
         // Over the defaults, not instead of them: tightening one bucket by
@@ -476,6 +485,7 @@ final class Kernel
     public function handle(Request $request, \Closure $respond, string $rawBody = ''): Response
     {
         $navigating = false;
+        $request = $this->withPreviousUrl($request);
 
         try {
             // Each endpoint's method is checked before its stack runs: a
@@ -560,6 +570,7 @@ final class Kernel
                 }
                 [$passed, $flashed] = $this->withFormState($passed);
                 $response = $this->withCsrfCookie($passed, $respond($loaded, $passed));
+                $this->recordVisit($passed, $response);
 
                 // Read, so gone: the cookie that said it was waiting goes too.
                 if ($flashed) {
@@ -787,6 +798,58 @@ final class Kernel
         $flash = $this->flashes->pull($request);
 
         return [$flash === [] ? $request : $request->withAttribute(self::FLASH, $flash), true];
+    }
+
+    /**
+     * The request, able to say the URL its session visited before it.
+     *
+     * Attached to every request -- an action sending its caller back reads it
+     * as much as a page does -- and read only when something asks. Bound to
+     * the request as it arrived: what the session visited before this request,
+     * whatever this request goes on to do to the session.
+     */
+    private function withPreviousUrl(Request $request): Request
+    {
+        $store = $this->previousUrls;
+        if ($store === null) {
+            return $request;
+        }
+
+        return $request->withAttribute(
+            PreviousUrl::ATTRIBUTE,
+            new PreviousUrl(static fn (): ?string => $store->get($request)),
+        );
+    }
+
+    /**
+     * Records a page the session has just been shown as its previous URL --
+     * when the request was a visit (see PreviousUrl::records()).
+     *
+     * The URL already recorded is read first, so a reload of the page already
+     * recorded writes nothing; and so that anything asking after this, for
+     * this request, is still told the visit before it.
+     *
+     * A store that fails is reported and the page goes out regardless: which
+     * page was last is bookkeeping, and not worth the page someone asked for.
+     */
+    private function recordVisit(Request $request, Response $response): void
+    {
+        if ($this->previousUrls === null || !PreviousUrl::records($request, $response)) {
+            return;
+        }
+
+        $url = PreviousUrl::of($request);
+        if (\strlen($url) > PreviousUrl::MAX_BYTES) {
+            return;
+        }
+
+        try {
+            if ($request->previousUrl() !== $url) {
+                $this->previousUrls->put($request, $url);
+            }
+        } catch (\Throwable $e) {
+            $this->report($e);
+        }
     }
 
     /**

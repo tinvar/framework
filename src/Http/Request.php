@@ -107,6 +107,29 @@ final class Request
         return $this->header('purpose') === 'prefetch';
     }
 
+    /**
+     * True for a request the client router sent without the person asking:
+     * a poll. It re-asks for the page already up, so it is no visit.
+     */
+    public function isBackground(): bool
+    {
+        return $this->header('x-background') === '1';
+    }
+
+    /**
+     * The URL this request's session visited before it: a path and query on
+     * this origin, for a "back" link or a redirect back. Null when the
+     * session has none, and when the application keeps no PreviousUrlStore.
+     *
+     * Read from the store the first time it is asked, and only then.
+     */
+    public function previousUrl(): ?string
+    {
+        $previous = $this->attributes[PreviousUrl::ATTRIBUTE] ?? null;
+
+        return $previous instanceof PreviousUrl ? $previous->url() : null;
+    }
+
     public function attribute(string $key, mixed $default = null): mixed
     {
         return $this->attributes[$key] ?? $default;

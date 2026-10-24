@@ -63,24 +63,35 @@ final class Flash
      * origin. Only its path and query are kept, so back is somewhere on this
      * site whatever the header named -- a form on another site that posted
      * here is sent back to that path HERE -- and anything redirect() would
-     * refuse falls back to the root.
+     * refuse is not used.
+     *
+     * Without a Referer to use -- a `no-referrer` policy, or a browser or
+     * extension that strips it -- the session's previous URL stands in: the
+     * page it last loaded, which for a form posted without script is the page
+     * the form was on. Only then the root.
      */
     public static function back(Request $request): string
     {
+        return self::fromReferer($request) ?? $request->previousUrl() ?? '/';
+    }
+
+    /** The path and query Referer names, or null when it names none redirect() would take. */
+    private static function fromReferer(Request $request): ?string
+    {
         $referer = $request->header('referer');
         if ($referer === null || $referer === '') {
-            return '/';
+            return null;
         }
 
         $parts = parse_url($referer);
         if ($parts === false) {
-            return '/';
+            return null;
         }
 
         $path = $parts['path'] ?? '/';
         $target = isset($parts['query']) ? "{$path}?{$parts['query']}" : $path;
 
-        return Response::isSameOriginTarget($target) ? $target : '/';
+        return Response::isSameOriginTarget($target) ? $target : null;
     }
 
     /**
