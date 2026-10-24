@@ -236,6 +236,33 @@ it('preloads the client components each page renders, and no others, under the c
     }
 });
 
+// Head links resolve by key as titles do (ADR 0036): the product page's
+// canonical URL is its own, once, and the document's icon -- a <HeadLink>
+// at the document's depth -- once on every page.
+it('writes one canonical link and one icon into the head', function () {
+    [$kernel, $renderer] = shopKernel();
+
+    try {
+        [$catalog] = renderCatalog($kernel);
+        expect(preg_match('#href="(/products/[\w-]+)"#', $catalog, $m))->toBe(1);
+        $html = '';
+        $kernel->render(Request::get("{$m[1]}?ref=catalog", ['accept' => 'text/html']), function (string $bytes) use (&$html): void {
+            $html .= $bytes;
+        });
+    } finally {
+        $renderer->stop();
+    }
+
+    $catalogHead = substr($catalog, 0, (int) strpos($catalog, '</head>'));
+    $head = substr($html, 0, (int) strpos($html, '</head>'));
+
+    expect(substr_count($catalogHead, 'rel="icon"'))->toBe(1)
+        ->and($catalogHead)->not->toContain('rel="canonical"')
+        ->and(substr_count($head, 'rel="icon"'))->toBe(1)
+        ->and(preg_match_all('#<link rel="canonical" href="([^"]+)"#', $head, $canonical))->toBe(1)
+        ->and($canonical[1][0])->toBe($m[1]);
+});
+
 // The front controller's path: one Request in, the document or -- for a
 // client navigation -- the payload alone out.
 it('serves the document, or the payload alone for a client navigation', function () {

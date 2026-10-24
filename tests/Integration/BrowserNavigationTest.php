@@ -171,11 +171,15 @@ it('navigates from the catalog to a product and back, through the RSC payload', 
 
     // One title, through the shop's template, on the document and after each
     // client visit; and PHP's fallback description, which no page replaces,
-    // once.
+    // once. The document's icon throughout, and the product's canonical URL
+    // only on the product, put in by a client visit and taken out by a back.
+    $head = static fn (string $title, array $canonicals): array => [
+        'titles' => [$title], 'descriptions' => 1, 'canonicals' => $canonicals, 'icons' => 1,
+    ];
     expect($result['head'])->toBe([
-        'first' => ['titles' => ['Catalog · Pellwick Supply'], 'descriptions' => 1],
-        'second' => ['titles' => ["{$result['name']} · Pellwick Supply"], 'descriptions' => 1],
-        'back' => ['titles' => ['Catalog · Pellwick Supply'], 'descriptions' => 1],
+        'first' => $head('Catalog · Pellwick Supply', []),
+        'second' => $head("{$result['name']} · Pellwick Supply", [$result['path']]),
+        'back' => $head('Catalog · Pellwick Supply', []),
     ]);
 
     // One document load; then the product page prefetched while the pointer
