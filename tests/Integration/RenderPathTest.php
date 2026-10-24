@@ -75,6 +75,15 @@ it('renders the catalog end to end', function () {
     // and the default given way to it.
     expect(substr_count($html, '<title'))->toBe(1);
 
+    // What the head preloads, reported over the socket for the Link header:
+    // the client entry, then the client components' chunk.
+    $preloaded = \Tinvar\Render\ModulePreload::modulesOf($result->meta);
+    expect($preloaded)->not->toBe([])
+        ->and($preloaded[0])->toMatch('#^/assets/index-[\w-]+\.js$#');
+    foreach ($preloaded as $module) {
+        expect($html)->toContain("href=\"{$module}\"");
+    }
+
     // A card per product, each a link, and a client chunk referenced.
     expect(substr_count($html, 'data-product-name=""'))->toBe(24)
         ->and($html)->toMatch('#assets/index-[\w-]+\.js#');

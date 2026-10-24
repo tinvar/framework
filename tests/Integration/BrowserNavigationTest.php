@@ -155,6 +155,10 @@ it('navigates from the catalog to a product and back, through the RSC payload', 
         ->and($result['availability'])->toBe(24, 'every card awaited its availability query')
         ->and($result['reloaded'])->toBe(1, 'one document load; the rest were client visits');
 
+    // The page's modules preloaded by its Link header too -- the client entry
+    // first -- under the same policy, with nothing refused (the errors above).
+    expect($result['link'])->toMatch('#^</assets/index-[\w-]+\.js>; rel=modulepreload(, </assets/[\w-]+\.js>; rel=modulepreload)*$#');
+
     // One title, through the shop's template, on the document and after each
     // client visit; and PHP's fallback description, which no page replaces,
     // once.
