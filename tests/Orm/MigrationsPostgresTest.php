@@ -278,6 +278,45 @@ describe('row-level security by migration', function () {
     })->skip(fn () => Databases::postgresMissing() ?? false);
 });
 
+describe('make:migration on Postgres', function () {
+    it('changes a column the model has changed, converting its values, and changes it back', function () {
+        inSchema(static function (PdoConnection $connection, MigrationFiles $files): void {
+            $connection->execute('CREATE TABLE sites (id uuid PRIMARY KEY, code text)');
+            $connection->execute(
+                'CREATE TABLE racks (id uuid PRIMARY KEY, name varchar(100) NOT NULL, height_u text NOT NULL, '
+                . 'site_id uuid NOT NULL REFERENCES sites (id))',
+            );
+            $connection->execute('CREATE INDEX racks_site_id_name ON racks (site_id, name)');
+            $connection->execute(
+                'CREATE TABLE units (id uuid PRIMARY KEY, position integer NOT NULL, name text NOT NULL, rack_id uuid NOT NULL REFERENCES racks (id))',
+            );
+            $connection->execute('CREATE INDEX units_rack_id_position ON units (rack_id, position)');
+            $connection->execute("INSERT INTO sites VALUES ('00000000-0000-7000-8000-000000000001', 'LAX')");
+            $connection->execute("INSERT INTO racks VALUES ('00000000-0000-7000-8000-000000000002', 'R-01', '42', '00000000-0000-7000-8000-000000000001')");
+            $generator = new MigrationGenerator($connection, new PostgresDialect());
+            $models = [\Tinvar\Tests\Orm\Fixtures\Site::class, \Tinvar\Tests\Orm\Fixtures\Rack::class, \Tinvar\Tests\Orm\Fixtures\Unit::class];
+
+            $source = (string) $generator->generate($models, '2026-10-24');
+
+            expect($source)->toContain("\$table->text('code')->change();")
+                ->and($source)->toContain("\$table->text('code')->nullable()->change();")
+                ->and($source)->toContain("\$table->integer('height_u')->change();")
+                ->and($source)->toContain("\$table->text('height_u')->change();")
+                // A varchar(100) holds a string as well as a varchar(255) does.
+                ->and($source)->not->toContain("'name')->");
+
+            file_put_contents("{$files->directory}/2026_10_24_000001_change.php", $source);
+            $migrator = new Migrator($connection, $files->directory);
+            $migrator->migrate();
+
+            expect($connection->select('SELECT height_u FROM racks'))->toBe([['height_u' => 42]])
+                ->and($generator->generate($models, '2026-10-24'))->toBeNull()
+                ->and($migrator->rollback())->toBe(['2026_10_24_000001_change'])
+                ->and($connection->select('SELECT height_u FROM racks'))->toBe([['height_u' => '42']]);
+        });
+    })->skip(fn () => Databases::postgresMissing() ?? false);
+});
+
 describe('fresh on Postgres', function () {
     it('drops every table in the schema, whatever references what, and no other schema\'s', function () {
         inSchema(static function (PdoConnection $connection, MigrationFiles $files, string $schema): void {

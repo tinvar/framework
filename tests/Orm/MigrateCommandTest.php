@@ -36,6 +36,11 @@ final class Run
     /** @var list<string> */
     public array $err = [];
 
+    /** @var list<string> what make:migration asked */
+    public array $asked = [];
+
+    public bool $answer = false;
+
     public function __construct(public readonly MigrationFiles $files, public string $directory = '') {}
 
     /** @param list<string> $arguments */
@@ -56,6 +61,11 @@ final class Run
                 $this->err[] = $line;
             },
             static fn (): int => $now,
+            function (string $question): bool {
+                $this->asked[] = $question;
+
+                return $this->answer;
+            },
         )->run($command, $arguments);
     }
 }
@@ -226,4 +236,17 @@ describe('make:migration', function () {
         expect($run('make:migration', ['backfill', '--blank']))->toBe(MigrateCommand::FAILED)
             ->and($run->err[0])->toEndWith('2026_10_26_120000_backfill.php already exists.');
     });
+
+    it('asks whoever runs it before it reads a column as another renamed', function (bool $answer, string $written) {
+        $run = run();
+        PdoConnection::sqlite($run->files->database())->execute('CREATE TABLE notes (id TEXT PRIMARY KEY, text TEXT NOT NULL)');
+        $run->answer = $answer;
+
+        expect($run('make:migration', ['rename_text']))->toBe(0)
+            ->and($run->asked)->toBe(["Is the column notes.text, on no model, the model's body renamed? Renamed, it keeps its values."])
+            ->and((string) file_get_contents("{$run->files->directory}/2026_10_26_120000_rename_text.php"))->toContain($written);
+    })->with([
+        'told it is' => [true, "\$table->renameColumn('text', 'body');"],
+        'told it is not' => [false, "\$table->string('body');"],
+    ]);
 });

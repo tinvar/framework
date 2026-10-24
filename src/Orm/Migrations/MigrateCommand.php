@@ -41,6 +41,9 @@ final class MigrateCommand
     /** @var \Closure(): int */
     private readonly \Closure $clock;
 
+    /** @var \Closure(string): bool */
+    private readonly \Closure $ask;
+
     /**
      * @param \Closure(bool): Connection $connect opens the database; given true where the
      *        command may create it (migrate, fresh), false where it must already be there
@@ -48,6 +51,9 @@ final class MigrateCommand
      * @param (\Closure(string): void)|null $out a line for standard output
      * @param (\Closure(string): void)|null $err a line for standard error
      * @param (\Closure(): int)|null $clock the time now, for tests: it names a new migration
+     * @param (\Closure(string): bool)|null $ask a yes-or-no question for whoever runs make:migration --
+     *        whether a column is another renamed -- answered no where nobody is there to ask:
+     *        by default, unless standard input is a terminal
      */
     public function __construct(
         private readonly \Closure $connect,
@@ -56,6 +62,7 @@ final class MigrateCommand
         ?\Closure $out = null,
         ?\Closure $err = null,
         ?\Closure $clock = null,
+        ?\Closure $ask = null,
     ) {
         $this->out = $out ?? static function (string $line): void {
             fwrite(STDOUT, $line . "\n");
@@ -64,6 +71,14 @@ final class MigrateCommand
             fwrite(STDERR, $line . "\n");
         };
         $this->clock = $clock ?? time(...);
+        $this->ask = $ask ?? static function (string $question): bool {
+            if (!\defined('STDIN') || !stream_isatty(STDIN)) {
+                return false;
+            }
+            fwrite(STDERR, "{$question} [y/N] ");
+
+            return \in_array(strtolower(trim((string) fgets(STDIN))), ['y', 'yes'], true);
+        };
     }
 
     /** @param list<string> $arguments what follows the command */
@@ -160,22 +175,29 @@ final class MigrateCommand
     /** @param array<string, string> $options */
     private function fresh(bool $force, array $options): int
     {
-        // Every table dropped, every row with it: never in production, and
-        // nowhere without saying so. A command typed into the wrong shell,
-        // or a script pointed at the wrong DSN, must stop here.
-        foreach (['TINVAR_ENV', 'APP_ENV'] as $variable) {
-            if (getenv($variable) === 'production') {
-                throw new MigrationRefused("migrate:fresh drops every table, and {$variable} says this is production. It is refused here.");
-            }
-        }
-        if (!$force) {
-            throw new MigrationRefused('migrate:fresh drops every table and every row in them. Run it again with --force to do that.');
-        }
+        $this->refuseFresh('migrate:fresh', $force);
 
         $ran = $this->migrator(true, $options)->fresh();
         ($this->out)(\sprintf('Dropped every table and ran %d migration(s).', \count($ran)));
 
         return 0;
+    }
+
+    /**
+     * Every table dropped, every row with it: never in production, and
+     * nowhere without saying so. A command typed into the wrong shell, or a
+     * script pointed at the wrong DSN, must stop here.
+     */
+    private function refuseFresh(string $command, bool $force): void
+    {
+        foreach (['TINVAR_ENV', 'APP_ENV'] as $variable) {
+            if (getenv($variable) === 'production') {
+                throw new MigrationRefused("{$command} drops every table, and {$variable} says this is production. It is refused here.");
+            }
+        }
+        if (!$force) {
+            throw new MigrationRefused("{$command} drops every table and every row in them. Run it again with --force to do that.");
+        }
     }
 
     /** @param list<string> $arguments */
@@ -218,7 +240,7 @@ final class MigrateCommand
                 ));
             }
 
-            $generator = new MigrationGenerator($migrator->connection(), $migrator->dialect());
+            $generator = new MigrationGenerator($migrator->connection(), $migrator->dialect(), $this->ask);
             $source = $generator->generate($this->models, gmdate('Y-m-d', $now));
             foreach ($generator->warnings as $warning) {
                 ($this->err)("warning: {$warning}");

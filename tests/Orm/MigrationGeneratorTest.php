@@ -19,6 +19,7 @@ use Tinvar\Attributes\Table;
 use Tinvar\Attributes\TenantScoped;
 use Tinvar\Orm\Collection;
 use Tinvar\Orm\IdentityMap;
+use Tinvar\Orm\Migrations\MigrationFailed;
 use Tinvar\Orm\Migrations\MigrationGenerator;
 use Tinvar\Orm\Migrations\Migrator;
 use Tinvar\Orm\Model;
@@ -195,7 +196,7 @@ it('writes a migration the ORM can then read and write through', function () {
 
 it('adds what an existing table lacks, names what it has that no model maps, and drops nothing', function () {
     [, $connection, $generator] = setUp();
-    $connection->execute('CREATE TABLE gen_sites (id TEXT PRIMARY KEY, code TEXT NOT NULL, legacy TEXT)');
+    $connection->execute('CREATE TABLE gen_sites (id TEXT PRIMARY KEY, code TEXT NOT NULL, legacy INTEGER)');
 
     $source = (string) $generator->generate([Site::class], '2026-10-24');
 
@@ -226,9 +227,9 @@ it('says when a column it adds needs a default the rows already there do not hav
 
 it('adds the indexes a relation loads by to a table that lacks them, and the tenant column with its own', function () {
     [, $connection, $generator] = setUp();
-    $connection->execute('CREATE TABLE gen_sites (id TEXT PRIMARY KEY, code TEXT NOT NULL, floors INTEGER NOT NULL, note TEXT)');
+    $connection->execute('CREATE TABLE gen_sites (id TEXT PRIMARY KEY, code TEXT NOT NULL, floors INTEGER NOT NULL DEFAULT 1, note TEXT)');
     $connection->execute(
-        'CREATE TABLE gen_racks (id TEXT PRIMARY KEY, name TEXT NOT NULL, active INTEGER NOT NULL, load REAL NOT NULL, tags TEXT NOT NULL, '
+        'CREATE TABLE gen_racks (id TEXT PRIMARY KEY, name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, load REAL NOT NULL, tags TEXT NOT NULL, '
         . 'layout TEXT NOT NULL, installed_at TEXT NOT NULL, site_id TEXT NOT NULL, backup_site_id TEXT)',
     );
     // A longer index starting with the column does the shorter one's work.
@@ -251,10 +252,177 @@ it('adds the indexes a relation loads by to a table that lacks them, and the ten
 
 it('finds nothing to write for a database that has everything', function () {
     [, $connection, $generator] = setUp();
-    $connection->execute('CREATE TABLE gen_sites (id TEXT PRIMARY KEY, code TEXT NOT NULL, floors INTEGER NOT NULL, note TEXT, legacy TEXT)');
+    $connection->execute('CREATE TABLE gen_sites (id TEXT PRIMARY KEY, code VARCHAR(40) NOT NULL, floors INTEGER NOT NULL DEFAULT (1), note TEXT, legacy TEXT)');
 
-    // A column no model maps is said beside a change, and is not one.
+    // A column no model maps is said beside a change, and is not one; a
+    // type spelled another way, of the same family, is no change either.
     expect($generator->generate([Site::class], '2026-10-24'))->toBeNull();
+});
+
+/** The `//` comments in $source, as one line of text: what they say, however they wrap. */
+function comments(string $source): string
+{
+    preg_match_all('~^ *// (.*)$~m', $source, $lines);
+
+    return implode(' ', $lines[1]);
+}
+
+/** Writes $source as a migration, runs it, and hands back the migrator that ran it. */
+function migrated(MigrationFiles $files, PdoConnection $connection, string $source, string $name = '2026_10_24_000001_change'): Migrator
+{
+    file_put_contents("{$files->directory}/{$name}.php", $source);
+    $migrator = new Migrator($connection, $files->directory);
+    expect($migrator->migrate())->toBe([$name]);
+
+    return $migrator;
+}
+
+describe('a table that has changed on the model', function () {
+    it('changes a column whose type, nullability or default the model has changed, and changes it back', function () {
+        [$files, $connection, $generator] = setUp();
+        $connection->execute("CREATE TABLE gen_sites (id TEXT PRIMARY KEY, code TEXT, floors TEXT NOT NULL DEFAULT '2', note TEXT NOT NULL)");
+        $connection->execute("INSERT INTO gen_sites VALUES ('s1', 'LAX', '3', 'n')");
+
+        $source = (string) $generator->generate([Site::class], '2026-10-24');
+
+        expect($source)->toContain(<<<'PHP'
+                    $schema->table('gen_sites', function (Table $table): void {
+                        $table->text('code')->change();
+                        $table->integer('floors')->default(1)->change();
+                        $table->text('note')->nullable()->change();
+                    });
+            PHP)
+            ->toContain(<<<'PHP'
+                    $schema->table('gen_sites', function (Table $table): void {
+                        $table->text('code')->nullable()->change();
+                        $table->text('floors')->default('2')->change();
+                        $table->text('note')->change();
+                    });
+            PHP)
+            ->and(comments($source))->toContain('gen_sites.code takes NULL in the database and not on the model: a row holding NULL fails this')
+            ->toContain('gen_sites.floors is text in the database and integer on the model.');
+
+        $migrator = migrated($files, $connection, $source);
+        $columns = $migrator->dialect()->columns($connection, 'gen_sites');
+
+        expect($columns['floors'])->toMatchArray(['type' => 'INTEGER', 'nullable' => false, 'default' => 1])
+            ->and($columns['note']['nullable'])->toBeTrue()
+            ->and($connection->select('SELECT floors FROM gen_sites'))->toBe([['floors' => 3]])
+            ->and($generator->generate([Site::class], '2026-10-24'))->toBeNull()
+            ->and($migrator->rollback())->toBe(['2026_10_24_000001_change'])
+            ->and($migrator->dialect()->columns($connection, 'gen_sites')['floors'])->toMatchArray(['type' => 'TEXT', 'default' => '2']);
+    });
+
+    it('fails the change, and leaves the table as it was, where a row has a NULL the column no longer takes', function () {
+        [$files, $connection, $generator] = setUp();
+        $connection->execute('CREATE TABLE gen_sites (id TEXT PRIMARY KEY, code TEXT, floors INTEGER NOT NULL DEFAULT 1, note TEXT)');
+        $connection->execute("INSERT INTO gen_sites VALUES ('s1', NULL, 1, NULL)");
+        file_put_contents("{$files->directory}/2026_10_24_000001_change.php", (string) $generator->generate([Site::class], '2026-10-24'));
+
+        expect(fn () => new Migrator($connection, $files->directory)->migrate())->toThrow(MigrationFailed::class, 'NOT NULL')
+            ->and($connection->select('SELECT sql FROM sqlite_master WHERE name = ?', ['gen_sites'])[0]['sql'])
+            ->toBe('CREATE TABLE gen_sites (id TEXT PRIMARY KEY, code TEXT, floors INTEGER NOT NULL DEFAULT 1, note TEXT)')
+            ->and($connection->select('SELECT * FROM gen_sites'))->toHaveCount(1);
+    });
+
+    it('asks before it renames a column, and renames it, keeping its values, when told it is one', function () {
+        [$files, $connection] = setUp();
+        $connection->execute('CREATE TABLE gen_sites (id TEXT PRIMARY KEY, code TEXT NOT NULL, floors INTEGER NOT NULL DEFAULT 1, remark TEXT)');
+        $connection->execute("INSERT INTO gen_sites VALUES ('s1', 'LAX', 1, 'kept')");
+        $asked = [];
+        $generator = new MigrationGenerator($connection, new SqliteDialect(), static function (string $question) use (&$asked): bool {
+            $asked[] = $question;
+
+            return true;
+        });
+
+        $source = (string) $generator->generate([Site::class], '2026-10-24');
+
+        expect($asked)->toBe(["Is the column gen_sites.remark, on no model, the model's note renamed? Renamed, it keeps its values."])
+            ->and($source)->toContain("\$table->renameColumn('remark', 'note');")
+            ->and($source)->toContain("\$table->renameColumn('note', 'remark');")
+            ->and($source)->not->toContain("\$table->string('note')");
+
+        $migrator = migrated($files, $connection, $source);
+
+        expect($connection->select('SELECT note FROM gen_sites'))->toBe([['note' => 'kept']])
+            ->and($generator->generate([Site::class], '2026-10-24'))->toBeNull()
+            ->and($migrator->rollback())->toBe(['2026_10_24_000001_change'])
+            ->and($connection->select('SELECT remark FROM gen_sites'))->toBe([['remark' => 'kept']]);
+    });
+
+    it('adds the column, and names the one it may be a rename of, when nobody says it is one', function () {
+        [, $connection, $generator] = setUp();
+        $connection->execute('CREATE TABLE gen_sites (id TEXT PRIMARY KEY, code TEXT NOT NULL, floors INTEGER NOT NULL DEFAULT 1, remark TEXT)');
+
+        $source = (string) $generator->generate([Site::class], '2026-10-24');
+
+        expect($source)->toContain("\$table->string('note')->nullable();")
+            ->and($source)->not->toContain("        \$table->renameColumn(")
+            ->and(comments($source))->toContain(
+                "gen_sites.remark is in the database and on no model, and gen_sites.note, alike in type and nullability, is on a model "
+                . "and not in the database. If note is remark renamed, \$table->renameColumn('remark', 'note') in place of adding it keeps its values",
+            );
+    });
+
+    it('renames a table the models name differently, when told it is one', function () {
+        [$files, $connection] = setUp();
+        $connection->execute('CREATE TABLE old_sites (id TEXT PRIMARY KEY, code TEXT NOT NULL, floors INTEGER NOT NULL DEFAULT 1, note TEXT)');
+        $connection->execute("INSERT INTO old_sites VALUES ('s1', 'LAX', 2, NULL)");
+        $generator = new MigrationGenerator($connection, new SqliteDialect(), static fn (string $question): bool => true);
+
+        $source = (string) $generator->generate([Site::class], '2026-10-24');
+
+        expect($source)->toContain("        \$schema->rename('old_sites', 'gen_sites');")
+            ->and($source)->toContain("        \$schema->rename('gen_sites', 'old_sites');")
+            ->and($source)->not->toContain('$schema->create(');
+
+        $migrator = migrated($files, $connection, $source);
+
+        expect($connection->select('SELECT code, floors FROM gen_sites'))->toBe([['code' => 'LAX', 'floors' => 2]])
+            ->and($migrator->rollback())->toBe(['2026_10_24_000001_change'])
+            ->and($migrator->dialect()->tables($connection))->toBe(['old_sites', 'tinvar_migrations']);
+    });
+
+    it('names an index no relation loads by any more, and drops none', function () {
+        [, $connection, $generator] = setUp();
+        $connection->execute('CREATE TABLE gen_sites (id TEXT PRIMARY KEY, code TEXT NOT NULL, floors INTEGER NOT NULL DEFAULT 1, note TEXT)');
+        $connection->execute(
+            'CREATE TABLE gen_racks (id TEXT PRIMARY KEY, name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, load REAL NOT NULL, tags TEXT NOT NULL, '
+            . 'layout TEXT NOT NULL, installed_at TEXT NOT NULL, site_id TEXT NOT NULL, backup_site_id TEXT, tenant_id TEXT NOT NULL)',
+        );
+        foreach (['gen_racks_tenant_id (tenant_id)', 'gen_racks_backup_site_id (backup_site_id)', 'gen_racks_site_id_installed_at (site_id, installed_at)', 'by_install (site_id, installed_at)'] as $index) {
+            $connection->execute(str_replace(' (', ' ON gen_racks (', "CREATE INDEX {$index}"));
+        }
+
+        $source = (string) $generator->generate(MODELS, '2026-10-24');
+
+        expect(comments($source))->toContain(
+            "gen_racks.gen_racks_site_id_installed_at is an index over (site_id, installed_at), which no relation of the models "
+            . "loads by now. If nothing else uses it: \$table->dropIndex('gen_racks_site_id_installed_at').",
+        )
+            ->and($source)->toContain("\$table->index(['site_id', 'name']);")
+            ->and($source)->not->toContain('by_install')
+            ->and($source)->not->toContain("        \$table->dropIndex('gen_racks_site_id_installed_at')");
+    });
+
+    it('carries a literal default into the column it changes, and never one the database computes', function () {
+        [$files, $connection, $generator] = setUp();
+        $connection->execute("CREATE TABLE gen_sites (id TEXT PRIMARY KEY, code TEXT DEFAULT (datetime('now')), floors INTEGER NOT NULL DEFAULT 1, note TEXT NOT NULL DEFAULT 'it''s ?> here')");
+
+        $source = (string) $generator->generate([Site::class], '2026-10-24');
+        $path = "{$files->directory}/2026_10_24_000001_change.php";
+        file_put_contents($path, $source);
+        [$status, $said] = lint($path);
+
+        expect($status)->toBe(0, $said)
+            ->and(smuggled($source))->toBe([])
+            ->and($source)->toContain("\$table->text('code')->change();")
+            ->and($source)->toContain("\$table->text('code')->nullable()->change();")
+            ->and($source)->toContain("\$table->text('note')->nullable()->default('it\\'s ?> here')->change();")
+            ->and(comments($source))->toContain('gen_sites.code has a default the database computes, which this does not copy')
+            ->and($source)->not->toContain('datetime');
+    });
 });
 
 it('writes an empty migration for a backfill, which loads and runs', function () {
@@ -296,9 +464,31 @@ describe('names the database gives', function () {
         'a carriage return' => "x\rsystem('id');",
     ]);
 
+    // SQLite keeps a declared type as written, whatever it is; the
+    // migration changing the column back would carry it into the file.
+    it('writes no type the database gives that could be anything but a type, and warns of it', function () {
+        [$files, $connection, $generator] = setUp();
+        $type = "evil?>\nsystem('id')";
+        $connection->execute('CREATE TABLE gen_sites (id TEXT PRIMARY KEY, code TEXT NOT NULL, floors INTEGER NOT NULL DEFAULT 1, note "' . str_replace('"', '""', $type) . '" NOT NULL)');
+
+        $source = (string) $generator->generate([Site::class], '2026-10-24');
+        $path = "{$files->directory}/2026_10_24_000001_change.php";
+        file_put_contents($path, $source);
+        [$status, $said] = lint($path);
+
+        expect($status)->toBe(0, $said)
+            ->and(smuggled($source))->toBe([])
+            ->and($source)->not->toContain('evil')
+            ->and($source)->toContain("\$table->string('note')->nullable()->change();")
+            ->and($generator->warnings)->toBe([
+                'gen_sites.note is ' . json_encode($type, JSON_UNESCAPED_SLASHES)
+                . ' in the database, which is not a type make:migration writes, so down() does not change it back; write that by hand.',
+            ]);
+    });
+
     it('writes a plain identifier the database gives only as a quoted literal in a comment', function () {
         [$files, $connection, $generator] = setUp();
-        $connection->execute('CREATE TABLE gen_sites (id TEXT PRIMARY KEY, code TEXT NOT NULL, legacy_flag TEXT)');
+        $connection->execute('CREATE TABLE gen_sites (id TEXT PRIMARY KEY, code TEXT NOT NULL, legacy_flag INTEGER)');
 
         $source = (string) $generator->generate([Site::class], '2026-10-24');
 
