@@ -348,18 +348,72 @@ describe('workflows', function () {
         YAML;
 
         expect(violations($this->workspace))->toBe([
-            '.github/workflows/ci.yml:5 uses actions/checkout@v6, which is not pinned to a full commit.',
-            '.github/workflows/ci.yml:8 uses docker://alpine:3, which is not pinned to a full commit.',
+            '.github/workflows/ci.yml jobs.test.steps[0] uses actions/checkout@v6, which is not pinned to a full commit.',
+            '.github/workflows/ci.yml jobs.test.steps[3] uses docker://alpine:3, which is not pinned to a full commit.',
         ]);
     });
 
+    // Only `on` triggers a workflow: the word anywhere else, in a comment or
+    // an `if:`, is not one.
     it('refuses the triggers that run a fork\'s code with the repository\'s secrets', function () {
         $this->workspace->workflows['a.yml'] = "on:\n  pull_request_target:\n    types: [opened]\n";
         $this->workspace->workflows['b.yaml'] = "on: [push, workflow_run]\n# pull_request_target in a comment is fine\n";
+        $this->workspace->workflows['c.yml'] = "on: push\njobs:\n  t:\n    if: github.event_name != 'workflow_run'\n    steps: []\n";
 
         expect(violations($this->workspace))->toBe([
-            ".github/workflows/a.yml:2 triggers on a fork's behalf with the repository's secrets (pull_request_target or workflow_run).",
-            ".github/workflows/b.yaml:1 triggers on a fork's behalf with the repository's secrets (pull_request_target or workflow_run).",
+            ".github/workflows/a.yml triggers on pull_request_target, which runs on a fork's behalf with the repository's secrets.",
+            ".github/workflows/b.yaml triggers on workflow_run, which runs on a fork's behalf with the repository's secrets.",
+        ]);
+    });
+
+    it('reads a uses however YAML spells it, in a step or a job', function () {
+        $this->workspace->workflows['ci.yml'] = <<<'YAML'
+        "on": push
+        jobs:
+          test:
+            steps:
+              - "uses": actions/checkout@v6
+              - {name: node, uses: actions/setup-node@v5}
+              - uses: >-
+                  actions/cache@v4
+          call:
+            uses: acme/workflows/.github/workflows/test.yml@main
+        YAML;
+
+        expect(violations($this->workspace))->toBe([
+            '.github/workflows/ci.yml jobs.test.steps[0] uses actions/checkout@v6, which is not pinned to a full commit.',
+            '.github/workflows/ci.yml jobs.test.steps[1] uses actions/setup-node@v5, which is not pinned to a full commit.',
+            '.github/workflows/ci.yml jobs.test.steps[2] uses actions/cache@v4, which is not pinned to a full commit.',
+            '.github/workflows/ci.yml jobs.call uses acme/workflows/.github/workflows/test.yml@main, which is not pinned to a full commit.',
+        ]);
+    });
+
+    // A double-quoted scalar can spell a character by its code, or break a
+    // word over two lines: neither line holds the word.
+    it('reads a trigger however YAML spells it', function () {
+        $this->workspace->workflows['a.yml'] = <<<'YAML'
+        "on": ["pull_request\x5Ftarget"]
+        YAML;
+        $this->workspace->workflows['b.yml'] = <<<'YAML'
+        on: "workflow_\
+          run"
+        YAML;
+
+        expect(violations($this->workspace))->toBe([
+            ".github/workflows/a.yml triggers on pull_request_target, which runs on a fork's behalf with the repository's secrets.",
+            ".github/workflows/b.yml triggers on workflow_run, which runs on a fork's behalf with the repository's secrets.",
+        ]);
+    });
+
+    it('refuses a workflow it cannot read', function () {
+        $this->workspace->workflows['a.yml'] = "on: push\non: push\n";
+        $this->workspace->workflows['b.yml'] = "on: 1\n";
+        $this->workspace->workflows['c.yml'] = "on: push\njobs:\n  test:\n    steps:\n      - actions/checkout@v6\n";
+
+        expect(violations($this->workspace))->toBe([
+            '.github/workflows/a.yml is not YAML the check can read: Duplicate key "on" detected at line 2 (near "on: push").',
+            '.github/workflows/b.yml has triggers the check cannot read: an event, a list of events or a map of them.',
+            '.github/workflows/c.yml jobs.test.steps[0] is not a mapping the check can read.',
         ]);
     });
 

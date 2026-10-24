@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Tinvar\Packages;
 
+use Symfony\Component\Yaml\Exception\ParseException;
+use Symfony\Component\Yaml\Yaml;
+
 /**
  * The supply-chain half of `tinvar check`: what the project installs, held
  * to its PackagePolicy and its lockfiles, with nothing fetched.
@@ -23,14 +26,17 @@ namespace Tinvar\Packages;
  *     sha512 integrity, which `npm ci` verifies on install; every Composer
  *     package by a full commit, from an allowed https host; each lockfile in
  *     step with the manifest beside it, so what was reviewed in the
- *     manifest is what the lock installs. Every action a GitHub workflow
- *     uses is pinned the same way, by commit -- a tag can be moved.
+ *     manifest is what the lock installs. Every action and reusable
+ *     workflow a GitHub workflow uses is pinned the same way, by commit --
+ *     a tag can be moved.
  *
  *   trusted-ci-only
  *     "Downstream app test suites run in framework CI only on trusted
  *      branches, never on pull requests from forks." No workflow is
  *     triggered by `pull_request_target` or `workflow_run`, the two events
  *     that run with the repository's secrets on behalf of a fork's code.
+ *     Workflows are parsed as YAML (symfony/yaml, a dev dependency) for
+ *     both rules, and one that cannot be read fails.
  *
  * And one more the spec's intent covers: an npm package may run a script
  * when it is installed only if the policy says why (Composer runs no
@@ -311,42 +317,137 @@ final class SupplyChain
         return $violations;
     }
 
-    /** @return list<string> */
+    /**
+     * Each workflow parsed as YAML, the way GitHub reads it, rather than
+     * line by line: a quoted key, a flow mapping, a block scalar or an
+     * escaped character in a double-quoted one each hid a `uses` or a
+     * trigger from a line's regex. What the parser refuses -- a duplicate
+     * key, a tag, a second document -- fails, as does a shape GitHub would
+     * not run, since the check cannot say what it would do.
+     *
+     * @return list<string>
+     */
     private function workflows(): array
     {
-        $files = [
-            ...(glob($this->root . '/.github/workflows/*.yml') ?: []),
-            ...(glob($this->root . '/.github/workflows/*.yaml') ?: []),
-        ];
+        $directory = $this->root . '/.github/workflows';
+        $files = array_values(array_filter(
+            is_dir($directory) ? scandir($directory) ?: [] : [],
+            static fn (string $file): bool => preg_match('/\.ya?ml$/i', $file) === 1,
+        ));
+        if ($files === []) {
+            return [];
+        }
+        // A dev dependency, which an application may not have installed.
+        if (!class_exists(Yaml::class)) {
+            return ['.github/workflows cannot be checked without a YAML parser: composer require --dev symfony/yaml.'];
+        }
 
         $violations = [];
         foreach ($files as $file) {
-            $name = '.github/workflows/' . basename($file);
-            $lines = file($file, \FILE_IGNORE_NEW_LINES) ?: [];
-            foreach ($lines as $number => $line) {
-                $line = preg_replace('/(^|\s)#.*$/', '$1', $line) ?? $line;
-                $at = $name . ':' . ($number + 1);
+            $name = '.github/workflows/' . $file;
+            try {
+                $workflow = Yaml::parse((string) file_get_contents($directory . '/' . $file), Yaml::PARSE_EXCEPTION_ON_INVALID_TYPE);
+            } catch (ParseException $e) {
+                $violations[] = "{$name} is not YAML the check can read: {$e->getMessage()}";
 
-                if (preg_match('/^\s*(-\s*)?uses:\s*[\'"]?([^\'"\s]+)/', $line, $match) === 1) {
-                    $uses = $match[2];
-                    $pinned = str_starts_with($uses, './')
-                        || preg_match('/^docker:\/\/[^@]+@sha256:[0-9a-f]{64}$/', $uses) === 1
-                        || preg_match('/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.\/-]+@[0-9a-f]{40}$/', $uses) === 1;
-                    if (!$pinned) {
-                        $violations[] = "{$at} uses {$uses}, which is not pinned to a full commit.";
+                continue;
+            }
+            if (!\is_array($workflow)) {
+                $violations[] = "{$name} is not a mapping the check can read.";
+
+                continue;
+            }
+
+            foreach (self::field($workflow, 'on') as $on) {
+                $events = match (true) {
+                    \is_string($on) => [$on],
+                    \is_array($on) && array_is_list($on) => $on,
+                    \is_array($on) => array_map(strval(...), array_keys($on)),
+                    default => [null],
+                };
+                foreach ($events as $event) {
+                    if (!\is_string($event)) {
+                        $violations[] = "{$name} has triggers the check cannot read: an event, a list of events or a map of them.";
+
+                        break;
+                    }
+                    if (\in_array(strtolower($event), ['pull_request_target', 'workflow_run'], true)) {
+                        $violations[] = "{$name} triggers on {$event}, which runs on a fork's behalf with the repository's secrets.";
                     }
                 }
+            }
 
-                // Anywhere at all, not just under `on:` -- reading YAML's
-                // three spellings of a trigger list by line is guesswork,
-                // and a false alarm costs a rename where a miss costs secrets.
-                if (preg_match('/\b(pull_request_target|workflow_run)\b/', $line) === 1) {
-                    $violations[] = "{$at} triggers on a fork's behalf with the repository's secrets (pull_request_target or workflow_run).";
+            // A step's `uses` runs an action; a job's calls a reusable
+            // workflow.
+            foreach (self::field($workflow, 'jobs') as $jobs) {
+                if (!\is_array($jobs)) {
+                    $violations[] = "{$name} jobs is not a mapping the check can read.";
+
+                    continue;
+                }
+                foreach ($jobs as $id => $job) {
+                    if (!\is_array($job)) {
+                        $violations[] = "{$name} jobs.{$id} is not a mapping the check can read.";
+
+                        continue;
+                    }
+                    foreach (self::field($job, 'uses') as $uses) {
+                        $violations = [...$violations, ...self::unpinned("{$name} jobs.{$id}", $uses)];
+                    }
+                    foreach (self::field($job, 'steps') as $steps) {
+                        if (!\is_array($steps)) {
+                            $violations[] = "{$name} jobs.{$id}.steps is not a list the check can read.";
+
+                            continue;
+                        }
+                        foreach ($steps as $index => $step) {
+                            if (!\is_array($step)) {
+                                $violations[] = "{$name} jobs.{$id}.steps[{$index}] is not a mapping the check can read.";
+
+                                continue;
+                            }
+                            foreach (self::field($step, 'uses') as $uses) {
+                                $violations = [...$violations, ...self::unpinned("{$name} jobs.{$id}.steps[{$index}]", $uses)];
+                            }
+                        }
+                    }
                 }
             }
         }
 
         return $violations;
+    }
+
+    /**
+     * Every value under $key in a decoded mapping, matching its name in any
+     * case: two spellings of one key can both be there.
+     *
+     * @param array<mixed> $mapping
+     * @return list<mixed>
+     */
+    private static function field(array $mapping, string $key): array
+    {
+        $values = [];
+        foreach ($mapping as $name => $value) {
+            if (strtolower((string) $name) === $key) {
+                $values[] = $value;
+            }
+        }
+
+        return $values;
+    }
+
+    /** @return list<string> the violation, when $uses is not pinned to a commit or a digest */
+    private static function unpinned(string $at, mixed $uses): array
+    {
+        if (!\is_string($uses)) {
+            return ["{$at} uses something that is not a string."];
+        }
+        $pinned = str_starts_with($uses, './')
+            || preg_match('/^docker:\/\/[^@]+@sha256:[0-9a-f]{64}$/', $uses) === 1
+            || preg_match('/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.\/-]+@[0-9a-f]{40}$/', $uses) === 1;
+
+        return $pinned ? [] : ["{$at} uses {$uses}, which is not pinned to a full commit."];
     }
 
     /**
