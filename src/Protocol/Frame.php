@@ -75,6 +75,10 @@ final class Frame
      *                                         list whatever its keys, so it crosses as an array
      * @param ?PageMetadata        $page for a document render; the renderer
      *                                   writes it into the HTML for the router
+     * @param array<array-key, string>|null $segments for a partial reload, the
+     *                                   segments to render alone -- `$loaderData`
+     *                                   holds only theirs (ADR 0015); sent as a
+     *                                   list whatever its keys
      * @return array<string, mixed>
      */
     public static function render(
@@ -85,6 +89,7 @@ final class Frame
         string $cspNonce,
         array $allowedQueries,
         ?PageMetadata $page = null,
+        ?array $segments = null,
     ): array {
         $frame = [
             't' => self::RENDER,
@@ -98,6 +103,10 @@ final class Frame
 
         if ($page !== null) {
             $frame['page'] = $page->toArray();
+        }
+
+        if ($segments !== null) {
+            $frame['segments'] = array_values($segments);
         }
 
         return $frame;

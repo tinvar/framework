@@ -153,6 +153,9 @@ final class Kernel
      *        page response issues the `__Host-XSRF-TOKEN` cookie and every
      *        POST must carry its session's token; without it nothing issues
      *        the cookie, and the application has to.
+     * @param bool $partialReloads honour X-Only and X-Except (ADR 0015). The
+     *        application's renderer must then render a frame's `segments`
+     *        alone, since a partial frame carries only their data.
      */
     public function __construct(
         public readonly Orm $orm,
@@ -176,6 +179,7 @@ final class Kernel
         ?BuildRegistry $builds = null,
         ?Container $container = null,
         ?CsrfTokens $csrf = null,
+        bool $partialReloads = false,
     ) {
         $this->csrf = $csrf;
         $this->manifest = $manifest;
@@ -217,6 +221,7 @@ final class Kernel
             new LoaderRunner($this->orm, $resolver, $gate),
             self::middlewareFrom($resolver),
             $globalMiddleware,
+            $partialReloads,
         );
 
         // The revalidator needs the same signer and session seam the

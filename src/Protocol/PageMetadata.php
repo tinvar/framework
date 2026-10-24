@@ -25,11 +25,17 @@ final readonly class PageMetadata
         /** The build the page was rendered for, sent back as X-Version. */
         public string $version,
         public ?string $routeToken = null,
+        /**
+         * The page's view, sent back as X-Page with a partial reload, which
+         * "applies only to the same page". Null where partial reloads are
+         * off, and the first page cannot ask for part of itself.
+         */
+        public ?string $view = null,
     ) {}
 
-    /** @return array{url: string, version: string, routeToken: string|null} */
+    /** @return array{url: string, version: string, routeToken: string|null, view: string|null} */
     public function toArray(): array
     {
-        return ['url' => $this->url, 'version' => $this->version, 'routeToken' => $this->routeToken];
+        return ['url' => $this->url, 'version' => $this->version, 'routeToken' => $this->routeToken, 'view' => $this->view];
     }
 }

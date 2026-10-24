@@ -31,10 +31,26 @@ it('carries the page metadata for a document render, and none otherwise', functi
         'allowedQueries' => [],
     ];
 
-    $with = Frame::render(...$args, page: new Tinvar\Protocol\PageMetadata('/racks/r-1?tab=2', 'b3', 'v1.tok'));
+    $with = Frame::render(...$args, page: new Tinvar\Protocol\PageMetadata('/racks/r-1?tab=2', 'b3', 'v1.tok', 'racks/show'));
 
-    expect($with['page'])->toBe(['url' => '/racks/r-1?tab=2', 'version' => 'b3', 'routeToken' => 'v1.tok'])
+    expect($with['page'])->toBe(['url' => '/racks/r-1?tab=2', 'version' => 'b3', 'routeToken' => 'v1.tok', 'view' => 'racks/show'])
         ->and(Frame::render(...$args))->not->toHaveKey('page');
+});
+
+// ADR 0015: a partial reload renders the segments it recomputed, alone.
+it('names the segments a partial render renders, and none for a whole page', function () {
+    $args = [
+        'routeId' => 'racks/show',
+        'params' => [],
+        'loaderData' => ['page' => ['rack' => 'r-1'], 'layouts' => []],
+        'requestId' => 'req-1',
+        'cspNonce' => 'n',
+        'allowedQueries' => [],
+    ];
+
+    expect(Frame::render(...$args, segments: ['page'])['segments'])->toBe(['page'])
+        ->and(Frame::render(...$args, segments: [])['segments'])->toBe([])
+        ->and(Frame::render(...$args))->not->toHaveKey('segments');
 });
 
 it('wraps chunk bytes as binary so RSC output is not treated as text', function () {

@@ -36,18 +36,32 @@ final class LoaderRunner
         private readonly Gate $gate,
     ) {}
 
-    public function run(RouteChain $chain, Request $request): LoadedRoute
+    /**
+     * @param PartialReload|null $partial the segments to recompute; null for all of them
+     */
+    public function run(RouteChain $chain, Request $request, ?PartialReload $partial = null): LoadedRoute
     {
         $binder = new Binder($this->orm);
         $models = $binder->resolveChain($chain, $chain->parameters);
 
+        // The whole chain, whatever the partial reload names. "On every full
+        // render, client navigation, fragment request, refresh and
+        // post-action re-render, PHP runs #[Authorize] for every layout in
+        // the route chain" -- a refresh of one segment is still a refresh of
+        // a page the session must be allowed to see.
         $this->authorize($chain, $models);
+
+        $running = $partial === null ? null : self::layoutsToRun($chain, $partial);
 
         /** @var array<class-string, Data> $byType */
         $byType = [];
         $layouts = [];
 
         foreach ($chain->layouts as $layout) {
+            if ($running !== null && !isset($running[$layout->layoutKey])) {
+                continue;
+            }
+
             $data = $this->invoke($layout, $binder, $chain->parameters, $byType, $request);
             if ($data === null) {
                 continue;
@@ -64,11 +78,18 @@ final class LoaderRunner
                 );
             }
 
-            $layouts[$layout->layoutKey] = $data;
             $byType[$returned] = $data;
+
+            // A layout run only because a recomputed loader takes its data
+            // is not rendered, so its data is not sent.
+            if ($partial === null || $partial->includes($layout->layoutKey)) {
+                $layouts[$layout->layoutKey] = $data;
+            }
         }
 
-        $page = $this->invoke($chain->page, $binder, $chain->parameters, $byType, $request);
+        $page = $partial === null || $partial->includes(PartialReload::PAGE)
+            ? $this->invoke($chain->page, $binder, $chain->parameters, $byType, $request)
+            : null;
 
         return new LoadedRoute(
             chain: $chain,
@@ -76,7 +97,83 @@ final class LoaderRunner
             layouts: $layouts,
             models: $models,
             parameters: $chain->parameters,
+            segments: $partial?->segments,
         );
+    }
+
+    /**
+     * The layouts whose loaders a partial reload runs: those it recomputes,
+     * and any whose data a loader that runs takes by type -- "a child page or
+     * layout can receive a parent's data by type", and a child recomputed
+     * from data its parent did not produce would be a child the parent's
+     * loader never saw. Worked out innermost first, since each layout that
+     * runs may in turn need what is above it.
+     *
+     * @return array<string, true> by layout key
+     */
+    private static function layoutsToRun(RouteChain $chain, PartialReload $partial): array
+    {
+        $needed = $partial->includes(PartialReload::PAGE) ? self::dataTakenBy($chain->page) : [];
+        $running = [];
+
+        foreach (array_reverse($chain->layouts) as $layout) {
+            if (!$partial->includes($layout->layoutKey) && !self::mayProvide($layout, $needed)) {
+                continue;
+            }
+
+            $running[$layout->layoutKey] = true;
+            $needed = [...$needed, ...self::dataTakenBy($layout)];
+        }
+
+        return $running;
+    }
+
+    /**
+     * The Data classes a loader takes by type.
+     *
+     * @return list<class-string>
+     */
+    private static function dataTakenBy(CompiledRoute $route): array
+    {
+        $taken = [];
+        foreach (Binder::loaderParameters($route->class) as $parameter) {
+            $type = $parameter->getType();
+            if ($type instanceof \ReflectionNamedType && !$type->isBuiltin()
+                && is_a($type->getName(), Data::class, true)) {
+                $taken[] = $type->getName();
+            }
+        }
+
+        return $taken;
+    }
+
+    /**
+     * Whether a layout's loader may return one of these classes. Judged on
+     * its declared return type; a loader that declares none, or a union, may
+     * return anything, so it runs -- running a loader that was not needed
+     * costs time, and skipping one that was would fail the request.
+     *
+     * @param list<class-string> $needed
+     */
+    private static function mayProvide(CompiledRoute $layout, array $needed): bool
+    {
+        if ($needed === [] || !method_exists($layout->class, '__invoke')) {
+            return false;
+        }
+
+        $type = new \ReflectionMethod($layout->class, '__invoke')->getReturnType();
+        if (!$type instanceof \ReflectionNamedType || $type->isBuiltin()) {
+            return true;
+        }
+
+        $returns = $type->getName();
+        foreach ($needed as $class) {
+            if (is_a($returns, $class, true) || is_a($class, $returns, true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
