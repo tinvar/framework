@@ -64,6 +64,8 @@ function produce(): array
     $build = scratch();
     mkdir("{$build}/rsc");
     copy(Shop::root() . '/dist/rsc/deferred.json', "{$build}/rsc/deferred.json");
+    // And the panels it kept apart, which build:fragments holds to the routes'.
+    copy(Shop::root() . '/dist/rsc/panels.json', "{$build}/rsc/panels.json");
 
     $process = proc_open(
         [PHP_BINARY, "{$root}/bin/tinvar", 'build:fragments', "--build={$build}"],
