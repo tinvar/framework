@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace Tinvar\Http;
 
+use Tinvar\Live\LiveToken;
+use Tinvar\Render\FragmentToken;
+use Tinvar\Render\RouteToken;
+
 /**
  * Which build IDs this server still answers for.
  *
@@ -56,6 +60,7 @@ final class BuildRegistry
     public const string REVOKED = 'revoked';
     public const string BELOW_FLOOR = 'below floor';
     public const string EXPIRED = 'expired';
+    public const string PRUNED = 'pruned';
     public const string UNKNOWN = 'unknown';
 
     /**
@@ -80,6 +85,22 @@ final class BuildRegistry
      * @var list<string>
      */
     private array $retained = [];
+
+    /**
+     * Builds the store's history has pruned, OLDEST FIRST, all older than
+     * every retained one: refused, and kept only for where they stand.
+     *
+     * @var list<string>
+     */
+    private array $pruned = [];
+
+    /**
+     * Each known build's place, pruned and retained together, oldest first;
+     * null until asked after a change.
+     *
+     * @var array<array-key, int>|null
+     */
+    private ?array $positions = null;
 
     /** @var array<string, true> explicitly revoked, which outranks retention */
     private array $revoked = [];
@@ -155,6 +176,21 @@ final class BuildRegistry
     }
 
     /**
+     * How long after it is superseded a build may still be named by a client
+     * or a token the registry would accept: the skew window, or the longest
+     * lifetime of a token that carries a build -- a fragment, route or live
+     * token, each refreshed up to a day -- whichever is longer.
+     *
+     * `tinvar build:prune` prunes nothing superseded more recently than
+     * this, so no build is taken out from under a client, or a token still
+     * within its lifetime, that could have been accepted on it.
+     */
+    public static function pruneHorizon(int $retainFor = self::RETENTION): int
+    {
+        return max($retainFor, FragmentToken::MAX_LIFETIME, RouteToken::MAX_LIFETIME, LiveToken::MAX_LIFETIME);
+    }
+
+    /**
      * Whether a client on this build may continue without a full page load.
      *
      * Unknown is not an error, it is a skew answer: a build this server never
@@ -184,8 +220,9 @@ final class BuildRegistry
             return self::REVOKED;
         }
 
-        $position = array_search($build, $this->retained, true);
-        if ($position === false) {
+        $positions = $this->positions ??= array_flip([...$this->pruned, ...$this->retained]);
+        $position = $positions[$build] ?? null;
+        if ($position === null) {
             return self::UNKNOWN;
         }
 
@@ -194,16 +231,22 @@ final class BuildRegistry
         // Compared by POSITION, never by string. A floor naming a build this
         // registry does not know has no position to compare against, so
         // everything is refused rather than everything admitted -- an unknown
-        // ordering fails closed.
+        // ordering fails closed. Pruned builds keep their places for this.
         if ($this->floor !== null) {
-            $floorPosition = array_search($this->floor, $this->retained, true);
-            if ($floorPosition === false || $position < $floorPosition) {
+            $floorPosition = $positions[$this->floor] ?? null;
+            if ($floorPosition === null || $position < $floorPosition) {
                 return self::BELOW_FLOOR;
             }
         }
 
+        // A server answers for its own build, as it would for one expired:
+        // during a rolling deploy one not yet replaced goes on serving it.
         if ($build === $this->current) {
             return self::CURRENT;
+        }
+
+        if ($position < \count($this->pruned)) {
+            return self::PRUNED;
         }
 
         // Past its skew window: every client that loaded it has had a day to
@@ -262,6 +305,7 @@ final class BuildRegistry
             return $this;
         }
 
+        $this->positions = null;
         if ($after === null) {
             array_unshift($this->retained, $build);
 
@@ -311,6 +355,8 @@ final class BuildRegistry
                 $this->unreadable = true;
                 $this->loaded = null;
                 $this->retained = [$this->current];
+                $this->pruned = [];
+                $this->positions = null;
                 $this->revoked = [];
                 $this->floor = null;
                 $this->expires = [];
@@ -326,6 +372,8 @@ final class BuildRegistry
         $this->unreadable = false;
         $this->loaded = $history;
         $this->retained = [];
+        $this->pruned = $history->pruned;
+        $this->positions = null;
         $this->revoked = [];
         $this->expires = [];
         $this->floor = $history->floor;
@@ -338,7 +386,9 @@ final class BuildRegistry
             }
         }
 
-        if (!\in_array($this->current, $this->retained, true)) {
+        // Not recorded -- a build deployed before `build:current` ran -- it
+        // is the newest this server knows of. Pruned, it keeps its place.
+        if (!\in_array($this->current, $this->retained, true) && !$history->wasPruned($this->current)) {
             $this->retained[] = $this->current;
         }
 

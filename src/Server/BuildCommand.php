@@ -15,6 +15,7 @@ use Tinvar\Http\BuildStore;
  *   tinvar build:revoke <id>      refuse a build: its clients reload
  *   tinvar build:floor <id>       refuse every build older than this one
  *   tinvar build:list             every recorded build and where it stands
+ *   tinvar build:prune [--keep=N] forget the oldest builds, past every client and token
  *
  * tinvar-spec.md, "Builds and versions": "`tinvar build:revoke <id>` and a
  * minimum-build floor force clients on revoked or pre-security-fix builds into
@@ -35,7 +36,10 @@ final class BuildCommand
     /** Exit status for a request the history refuses. */
     public const int REFUSED = 1;
 
-    public const array COMMANDS = ['build:current', 'build:revoke', 'build:floor', 'build:list'];
+    public const array COMMANDS = ['build:current', 'build:revoke', 'build:floor', 'build:list', 'build:prune'];
+
+    /** How many releases `build:prune` keeps unless told otherwise, the current among them. */
+    public const int KEEP = 10;
 
     /** @var \Closure(string): void */
     private readonly \Closure $out;
@@ -76,6 +80,7 @@ final class BuildCommand
                 'build:revoke' => $this->revoke(self::one($command, $arguments)),
                 'build:floor' => $this->floor(self::one($command, $arguments)),
                 'build:list' => $arguments === [] ? $this->list() : throw new ServeException('Usage: tinvar build:list'),
+                'build:prune' => $this->prune(self::keep($arguments)),
                 default => throw new ServeException("Unknown command '{$command}'."),
             };
         } catch (ServeException $e) {
@@ -193,6 +198,34 @@ final class BuildCommand
         return 0;
     }
 
+    /**
+     * Forgets the oldest releases' times, keeping the newest $keep and every
+     * one superseded within BuildRegistry::pruneHorizon(): see
+     * BuildHistory::pruning(). What a pruned build decides is kept with its
+     * name -- refused, below any floor set over it, never released again --
+     * and every revocation stays.
+     */
+    private function prune(int $keep): int
+    {
+        $before = [];
+        $history = $this->store->update(function (BuildHistory $history) use ($keep, &$before): BuildHistory {
+            $before = $history->pruned;
+
+            return $history->pruning($keep, ($this->clock)(), BuildRegistry::pruneHorizon($this->retainFor));
+        });
+
+        $pruned = \array_slice($history->pruned, \count($before));
+        ($this->out)($pruned === []
+            ? sprintf('Nothing to prune: %d recorded, each among the newest %d or superseded within %s.', \count($history->builds), $keep, self::duration(BuildRegistry::pruneHorizon($this->retainFor)))
+            : sprintf(
+                'Pruned %s: refused already, and kept by name so each stays where it stood. %d recorded.',
+                implode(', ', $pruned),
+                \count($history->builds),
+            ));
+
+        return 0;
+    }
+
     private function list(): int
     {
         $history = $this->store->read();
@@ -224,17 +257,39 @@ final class BuildCommand
             ($this->out)("Floor: {$history->floor}");
         }
 
+        if ($history->pruned !== []) {
+            ($this->out)(\sprintf('Pruned: %d older %s, refused.', \count($history->pruned), \count($history->pruned) === 1 ? 'build' : 'builds'));
+        }
+
         return 0;
     }
 
     private static function assertRecorded(BuildHistory $history, string $build): void
     {
+        if ($history->wasPruned($build)) {
+            throw new \InvalidArgumentException("{$build} was pruned, and a pruned build is refused already.");
+        }
+
         if (!$history->has($build)) {
             throw new \InvalidArgumentException(
                 "No build {$build} has been recorded (tinvar build:list shows those that have). A build never "
                 . 'recorded is refused already.',
             );
         }
+    }
+
+    /** @param list<string> $arguments */
+    private static function keep(array $arguments): int
+    {
+        if ($arguments === []) {
+            return self::KEEP;
+        }
+
+        if (\count($arguments) !== 1 || preg_match('/^--keep=([1-9][0-9]{0,5})\z/', $arguments[0], $m) !== 1) {
+            throw new ServeException('Usage: tinvar build:prune [--keep=N], N at least 1');
+        }
+
+        return (int) $m[1];
     }
 
     /** @param list<string> $arguments */
