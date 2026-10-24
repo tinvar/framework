@@ -13,7 +13,7 @@ namespace Tinvar\Outbound;
  * cookie a server set, a token it handed back), so a dump shows their
  * names only, and the body by its length.
  */
-final readonly class OutboundResponse
+final readonly class OutboundResponse implements \JsonSerializable
 {
     /** @var array<string, list<string>> */
     public array $headers;
@@ -76,5 +76,16 @@ final readonly class OutboundResponse
             'milliseconds' => $this->milliseconds,
             'address' => $this->address,
         ];
+    }
+
+    /**
+     * What json_encode() writes, which a log line may be: the same as a
+     * dump, never the public properties themselves.
+     *
+     * @return array<string, mixed>
+     */
+    public function jsonSerialize(): array
+    {
+        return $this->__debugInfo();
     }
 }

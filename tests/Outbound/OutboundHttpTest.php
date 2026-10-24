@@ -462,7 +462,8 @@ it('keeps headers, bodies, paths and queries out of what it throws and what a du
             $messages[] = $e->getMessage();
         }
     }
-    $dumped = print_r($request, true) . print_r(new OutboundResponse(200, ['set-cookie' => ['session=s3cret-cookie']], 's3cret-response'), true);
+    $response = new OutboundResponse(200, ['set-cookie' => ['session=s3cret-cookie']], 's3cret-response');
+    $dumped = print_r($request, true) . print_r($response, true) . json_encode([$request, $response], JSON_THROW_ON_ERROR);
 
     expect($messages)->toHaveCount(2)
         ->and(implode("\n", $messages))->not->toContain('s3cret')

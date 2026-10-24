@@ -17,7 +17,7 @@ use Tinvar\Outbound\Target;
  * up rather than on every try; where it points is vetted when each
  * delivery is sent, since DNS can change in between.
  */
-final readonly class WebhookSubscription
+final readonly class WebhookSubscription implements \JsonSerializable
 {
     public function __construct(
         public string $url,
@@ -38,5 +38,16 @@ final readonly class WebhookSubscription
     public function __debugInfo(): array
     {
         return ['url' => Target::parse($this->url)->origin() . '/[redacted]', 'secret' => '[redacted]'];
+    }
+
+    /**
+     * What json_encode() writes, which a log line may be: the same as a
+     * dump, never the public properties themselves.
+     *
+     * @return array<string, string>
+     */
+    public function jsonSerialize(): array
+    {
+        return $this->__debugInfo();
     }
 }

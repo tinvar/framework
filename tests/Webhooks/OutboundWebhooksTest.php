@@ -308,7 +308,8 @@ it('holds a subscription to a URL a delivery can go to and a secret worth signin
         ->and(fn () => new WebhookSubscription('https://user:pw@hooks.example.test/', SECRET))->toThrow(\InvalidArgumentException::class, 'credentials')
         ->and(fn () => new WebhookSubscription('https://hooks.example.test/', 'short'))->toThrow(\InvalidArgumentException::class, '32 bytes')
         ->and(print_r($subscription, true))->not->toContain(SECRET)
-        ->and(print_r($subscription, true))->not->toContain('s3cret-path');
+        ->and(print_r($subscription, true))->not->toContain('s3cret-path')
+        ->and(json_encode($subscription, JSON_THROW_ON_ERROR))->not->toContain(SECRET);
 });
 
 it('keeps tries in the database, one delivery\'s in order and a tenant\'s own newest first', function () {

@@ -24,7 +24,7 @@ namespace Tinvar\Outbound;
  * `readBody: false` stops reading at the body, for a caller that wants the
  * status alone -- a webhook delivery, whose tenant sees only that.
  */
-final readonly class OutboundRequest
+final readonly class OutboundRequest implements \JsonSerializable
 {
     public const array METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
 
@@ -123,5 +123,16 @@ final readonly class OutboundRequest
             'readBody' => $this->readBody,
             'maxRedirects' => $this->maxRedirects,
         ];
+    }
+
+    /**
+     * What json_encode() writes, which a log line may be: the same as a
+     * dump, never the public properties themselves.
+     *
+     * @return array<string, mixed>
+     */
+    public function jsonSerialize(): array
+    {
+        return $this->__debugInfo();
     }
 }
