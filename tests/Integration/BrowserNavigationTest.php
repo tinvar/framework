@@ -202,6 +202,25 @@ it('signs in, reads orders and an order, places an order and signs out', functio
         ->and($result['redirected'])->toBe(['path' => '/sign-in', 'next' => '/orders'])
         ->and($result['wrong'])->toBe(\Shop\Actions\AccountActions::NO_MATCH);
 
+    // The email checked on blur against the action's own rules, which refuse
+    // an address at an IP that the form's own check lets through -- and
+    // checked again, and passed, once corrected. Validate-only: the action
+    // never ran for either.
+    expect($result['live'])->toBe('Enter a full email address, like name@example.com.')
+        ->and($result['precognition'])->toBe(['account.signIn:email', 'account.signIn:email']);
+
+    // With JavaScript off, the same form is an ordinary post: sent back with
+    // the error on its field and the email put back -- never the password --
+    // and on to the orders once it is right.
+    expect($result['withoutScript'])->toBe([
+        'back' => '/sign-in?next=%2Forders',
+        'error' => \Shop\Actions\AccountActions::NO_MATCH,
+        'email' => DemoAccount::EMAIL,
+        'password' => '',
+        'signedIn' => '/orders',
+        'heading' => 'Orders',
+    ]);
+
     // Sign-in and sign-out each issue a new session id.
     expect($result['rotated'])->toBe(['onSignIn' => true, 'onSignOut' => true]);
 
