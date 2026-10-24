@@ -128,6 +128,22 @@ it('flags an attribute change in a file that uses one, whatever it is called', f
         ->toBe(["src/OrderPage.php:10: -    #[Page('/orders/{order}')]", "src/OrderPage.php:10: +    #[Page('/o/{order}')]"]);
 });
 
+// Inside a hunk a line is a change by its first character alone: a removed
+// "-- ..." reads "--- ..." and an added "++ ..." reads "+++ ...", which only
+// the file's own header may be taken for.
+it('reads a changed line that starts like a diff header as a change', function () {
+    $this->workspace->file('app/docs/access.txt', "Who may see what:\n-- OrderPage::load needs #[Authorize('view', 'order')]\n");
+    $codemods = withCodemod($this, <<<'PHP'
+    <?php
+    file_put_contents($argv[1] . '/docs/access.txt', "Who may see what:\n++ OrderPage::load is #[PublicAccess]\n");
+    PHP);
+
+    expect($codemods->run($this->app, allowed: true)->flagged)->toBe([
+        "docs/access.txt:2: --- OrderPage::load needs #[Authorize('view', 'order')]",
+        'docs/access.txt:2: +++ OrderPage::load is #[PublicAccess]',
+    ]);
+});
+
 it('keeps a codemod from the network, processes, secrets and anything outside its copy', function () {
     putenv('TINVAR_CODEMOD_SECRET=from-the-shell');
     $real = $this->app . '/src/OrderPage.php';

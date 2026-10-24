@@ -371,16 +371,20 @@ final class Codemods
             $whole = ($old === null ? '' : (string) file_get_contents($old)) . ($new === null ? '' : (string) file_get_contents($new));
             $usesAuthorization = preg_match(self::AUTHORIZATION, $whole) === 1;
             // A removed line is numbered as it stood, an added one as it
-            // will stand.
+            // will stand. The `---`/`+++` header comes before the first hunk
+            // and only there: inside one, a removed "-- x" reads "--- x".
             $oldLine = $newLine = 0;
+            $inHunk = false;
             foreach (explode("\n", $hunk) as $text) {
                 if (preg_match('/^@@ -(\d+)(?:,\d+)? \+(\d+)/', $text, $match) === 1) {
                     $oldLine = (int) $match[1] - 1;
                     $newLine = (int) $match[2] - 1;
+                    $inHunk = true;
 
                     continue;
                 }
-                if (str_starts_with($text, '+++') || str_starts_with($text, '---')) {
+                // "\ No newline at end of file" is about the line before it.
+                if (!$inHunk || str_starts_with($text, '\\')) {
                     continue;
                 }
                 $removed = str_starts_with($text, '-');
