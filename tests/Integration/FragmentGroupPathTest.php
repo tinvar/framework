@@ -20,6 +20,7 @@ use Tinvar\Http\Endpoints\FragmentEndpoint;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Render\FragmentToken;
+use Tinvar\Render\TokenClaims;
 use Tinvar\Support\Signer;
 
 const KEY = 'fragment-group-path-key-of-32-bytes!';
@@ -75,6 +76,16 @@ function signedIn(Kernel $kernel): array
     return [$cookies, (string) $order];
 }
 
+/** The binding a minter writes for the demo customer as they are signed in now: their id and auth epoch. */
+function demoAuthHash(Signer $signer): string
+{
+    $row = new \PDO('sqlite:' . Shop::database())->query(
+        "SELECT c.id, COALESCE(e.epoch, 0) AS epoch FROM customers c LEFT JOIN auth_epochs e ON e.customer_id = c.id WHERE c.email = '" . DemoAccount::EMAIL . "'",
+    )?->fetch(\PDO::FETCH_ASSOC);
+
+    return TokenClaims::hashAuth($signer, (string) ($row['id'] ?? ''), (string) ($row['epoch'] ?? '0'));
+}
+
 /** A token the order page would have minted for this session, issued `$ago` seconds ago. */
 function shippingToken(string $session, string $order, int $ago = 0): string
 {
@@ -89,6 +100,7 @@ function shippingToken(string $session, string $order, int $ago = 0): string
         tenant: '',
         build: 'dev',
         sessionHash: FragmentToken::hashSession($signer, $session),
+        authHash: demoAuthHash($signer),
         expiresAt: time() + 3600,
         issuedAt: time() - $ago,
     )->encode($signer);

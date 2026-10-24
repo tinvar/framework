@@ -21,6 +21,7 @@ use Tinvar\Http\Endpoints\FragmentEndpoint;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Render\FragmentToken;
+use Tinvar\Render\TokenClaims;
 use Tinvar\Support\Signer;
 
 const KEY = 'build-revocation-test-key-of-32-bytes';
@@ -100,8 +101,18 @@ function signedIn(Kernel $kernel, string $database): array
     return [$cookies, (string) $order];
 }
 
+/** The binding a minter writes for the demo customer as they are signed in now: their id and auth epoch. */
+function demoAuthHash(Signer $signer, string $database): string
+{
+    $row = new \PDO('sqlite:' . $database)->query(
+        "SELECT c.id, COALESCE(e.epoch, 0) AS epoch FROM customers c LEFT JOIN auth_epochs e ON e.customer_id = c.id WHERE c.email = '" . DemoAccount::EMAIL . "'",
+    )?->fetch(\PDO::FETCH_ASSOC);
+
+    return TokenClaims::hashAuth($signer, (string) ($row['id'] ?? ''), (string) ($row['epoch'] ?? '0'));
+}
+
 /** What the order page minted for this session while it ran build $build. */
-function shippingToken(string $session, string $order, string $build): string
+function shippingToken(string $session, string $order, string $build, string $database): string
 {
     $signer = new Signer(KEY, FragmentToken::PURPOSE);
 
@@ -114,6 +125,7 @@ function shippingToken(string $session, string $order, string $build): string
         tenant: '',
         build: $build,
         sessionHash: FragmentToken::hashSession($signer, $session),
+        authHash: demoAuthHash($signer, $database),
         expiresAt: time() + 3600,
         issuedAt: time(),
     )->encode($signer);
@@ -137,7 +149,7 @@ it('refuses a build revoked from the CLI on the next request, without a restart'
         $session = (string) Kernel::sessionFrom($cookies[Kernel::SESSION_COOKIE], KEY);
         $fragment = new Request(
             'GET',
-            FragmentEndpoint::PREFIX . shippingToken($session, $order, 'r-old'),
+            FragmentEndpoint::PREFIX . shippingToken($session, $order, 'r-old', $database),
             ['rsc' => '1', 'accept' => 'text/x-component'],
             cookies: $cookies,
         );

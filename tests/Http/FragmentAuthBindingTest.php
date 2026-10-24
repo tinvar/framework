@@ -139,14 +139,16 @@ function endpoint(): array
         middlewareResolver: static fn (string $class): Middleware => new $class(),
         panels: new PanelContext(),
         auth: $auth,
+        renderGroup: static fn (): Response => Response::make(200, 'RSC-GROUP', ['content-type' => 'text/x-component']),
     ), $auth, $signer, $fixture];
 }
 
-function token(Signer $signer, Fixture $fixture, string $authHash): FragmentToken
+/** @param array<string, mixed> $props */
+function token(Signer $signer, Fixture $fixture, string $authHash, array $props = []): FragmentToken
 {
     return new FragmentToken(
         component: 'UnitHistory',
-        props: [],
+        props: $props,
         route: 'racks.show',
         params: params($fixture),
         panel: '',
@@ -159,10 +161,11 @@ function token(Signer $signer, Fixture $fixture, string $authHash): FragmentToke
     );
 }
 
-function fetch(FragmentEndpoint $endpoint, Signer $signer, FragmentToken $token): int
+function fetch(FragmentEndpoint $endpoint, Signer $signer, FragmentToken ...$tokens): int
 {
+    $path = implode('/', array_map(static fn (FragmentToken $t): string => $t->encode($signer), $tokens));
     try {
-        return $endpoint->handle(new Request('GET', FragmentEndpoint::PREFIX . $token->encode($signer)))->status;
+        return $endpoint->handle(new Request('GET', FragmentEndpoint::PREFIX . $path))->status;
     } catch (HttpException $e) {
         return $e->status;
     }
@@ -190,11 +193,34 @@ describe('the fragment endpoint', function () {
         expect(fetch($endpoint, $signer, token($signer, $fixture, TokenClaims::hashAuth($signer, 'agent', '1'))))->toBe(404);
     });
 
-    // Minted before tokens named the user: bound to the session, as it was.
-    it('renders one that names no user, as a token always could', function () {
+    // Every minter that knows the user writes a binding, a signed-out
+    // visitor's included, so a token without one was minted where nobody was
+    // known -- not one to serve to whoever is signed in now.
+    it('refuses one that names no user', function () {
         [$endpoint, $auth, $signer, $fixture] = endpoint();
         $auth->login(new Member('m-1'), '3');
 
-        expect(fetch($endpoint, $signer, token($signer, $fixture, '')))->toBe(200);
+        expect(fetch($endpoint, $signer, token($signer, $fixture, '')))->toBe(404);
+    });
+
+    // Only the first token of a group is checked against who is signed in,
+    // so the group must agree on the binding: a member minted for someone
+    // else rode along with a valid first token.
+    it('refuses a group whose members are bound to different users', function () {
+        [$endpoint, $auth, $signer, $fixture] = endpoint();
+        $auth->login(new Member('m-1'), '3');
+        $mine = token($signer, $fixture, TokenClaims::hashAuth($signer, 'm-1', '3'), ['n' => 1]);
+        $theirs = token($signer, $fixture, TokenClaims::hashAuth($signer, 'agent', '1'), ['n' => 2]);
+
+        expect(fetch($endpoint, $signer, $mine, $theirs))->toBe(404);
+    });
+
+    it('renders a group bound to the signed-in user throughout', function () {
+        [$endpoint, $auth, $signer, $fixture] = endpoint();
+        $auth->login(new Member('m-1'), '3');
+        $hash = TokenClaims::hashAuth($signer, 'm-1', '3');
+
+        expect(fetch($endpoint, $signer, token($signer, $fixture, $hash, ['n' => 1]), token($signer, $fixture, $hash, ['n' => 2])))
+            ->toBe(200);
     });
 });

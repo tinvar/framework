@@ -278,10 +278,12 @@ final class FragmentEndpoint
             // middleware has said who that is. A role changed, or an
             // impersonation started, with the session id kept: the page the
             // token came from was drawn for someone else, and the client
-            // holding it is to be purged, not served more of it. A token
-            // from before tokens said (no user binding) keeps the session
-            // binding alone, as it always had.
-            if ($this->auth !== null && $token->authHash !== ''
+            // holding it is to be purged, not served more of it. Required,
+            // not merely checked when present: every minter that knows the
+            // user writes a binding -- a signed-out visitor's included -- so
+            // a token without one was minted where nobody was known, and is
+            // not one to serve to whoever is signed in now.
+            if ($this->auth !== null
                 && !hash_equals($token->authHash, TokenClaims::hashAuth($this->signer, $this->auth->id(), $this->auth->epoch()))) {
                 throw self::refuse('token was minted for another user, or before their auth epoch moved');
             }
@@ -405,7 +407,11 @@ final class FragmentEndpoint
                 || $token->params !== $first->params
                 || $token->panel !== $first->panel
                 || $token->tenant !== $first->tenant
-                || $token->build !== $first->build) {
+                || $token->build !== $first->build
+                // The user binding too: only the first is checked against
+                // who is signed in, so a member minted for someone else
+                // rode along with it.
+                || !hash_equals($first->authHash, $token->authHash)) {
                 throw self::refuse('tokens in one group were minted for different pages');
             }
         }
