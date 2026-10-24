@@ -486,6 +486,23 @@ describe('names the database gives', function () {
             ]);
     });
 
+    // A type Column would take from a migration's author -- words, then a
+    // length -- can still say more than a type: a key, a default.
+    it('writes no type the database gives that holds a clause', function (string $type) {
+        [, $connection, $generator] = setUp();
+        $connection->execute('CREATE TABLE gen_sites (id TEXT PRIMARY KEY, code TEXT NOT NULL, floors INTEGER NOT NULL DEFAULT 1, note "' . $type . '" NOT NULL)');
+
+        $source = (string) $generator->generate([Site::class], '2026-10-24');
+
+        expect($source)->not->toContain($type)
+            ->and($generator->warnings)->toHaveCount(1)
+            ->and($generator->warnings[0])->toContain('is not one make:migration writes');
+    })->with([
+        'a foreign key' => ['text references gen_sites'],
+        'a default' => ['text default 5'],
+        'a check' => ['text check (1)'],
+    ]);
+
     it('writes a plain identifier the database gives only as a quoted literal in a comment', function () {
         [$files, $connection, $generator] = setUp();
         $connection->execute('CREATE TABLE gen_sites (id TEXT PRIMARY KEY, code TEXT NOT NULL, legacy_flag INTEGER)');

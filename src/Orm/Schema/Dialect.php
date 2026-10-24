@@ -19,6 +19,13 @@ use Tinvar\Orm\PdoConnection;
  */
 abstract class Dialect
 {
+    /** Words that begin a column's clause rather than name its type: no type the database reports may hold one. */
+    private const array CLAUSE_WORDS = [
+        'PRIMARY', 'KEY', 'NOT', 'NULL', 'UNIQUE', 'CHECK', 'DEFAULT', 'COLLATE', 'REFERENCES', 'GENERATED', 'ALWAYS',
+        'AS', 'STORED', 'VIRTUAL', 'CONSTRAINT', 'ON', 'CONFLICT', 'AUTOINCREMENT', 'AUTO_INCREMENT', 'FOREIGN', 'SET',
+        'COMMENT', 'INVISIBLE', 'VISIBLE', 'SRID',
+    ];
+
     /** The driver name PDO reports for this database: sqlite, pgsql or mysql. */
     abstract public function name(): string;
 
@@ -568,14 +575,27 @@ abstract class Dialect
     }
 
     /**
-     * A database type as the builder's own column type, if it looks like
-     * one Column would take; null where it does not.
+     * A type the database reports, as a column type a migration may carry:
+     * one Column would take, of at most four words -- `timestamp without
+     * time zone` -- none of which begins a clause. Column takes `integer
+     * references users` or `text default 5` from a migration's author,
+     * who means it; from the database, where SQLite keeps whatever a quoted
+     * type said, it would put a key or a default into a migration nobody
+     * wrote. Null for anything else.
      *
      * @return array{type: string, length: null, scale: null}|null
      */
     protected static function databaseType(string $type): ?array
     {
-        return preg_match(Column::DATABASE_TYPE, $type) === 1 ? ['type' => $type, 'length' => null, 'scale' => null] : null;
+        if (preg_match(Column::DATABASE_TYPE, $type) !== 1) {
+            return null;
+        }
+        $words = preg_split('/\s+/', trim((string) preg_replace('/\(.*\z/', '', $type))) ?: [];
+        if (\count($words) > 4 || array_intersect(array_map('strtoupper', $words), self::CLAUSE_WORDS) !== []) {
+            return null;
+        }
+
+        return ['type' => $type, 'length' => null, 'scale' => null];
     }
 
     /**

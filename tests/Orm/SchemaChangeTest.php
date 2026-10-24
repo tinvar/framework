@@ -304,5 +304,9 @@ it('names a family for each type, however the database spells it', function () {
         ->and(new MySqlDialect()->family('tinyint(1)'))->toBe('integer')
         ->and(new MySqlDialect()->family('int unsigned'))->toBe('integer')
         ->and(new PostgresDialect()->builderType('character varying(40)'))->toBe(['type' => 'string', 'length' => 40, 'scale' => null])
-        ->and(new MySqlDialect()->builderType("enum('a','b')"))->toBeNull();
+        ->and(new MySqlDialect()->builderType("enum('a','b')"))->toBeNull()
+        ->and(new PostgresDialect()->builderType('timestamp without time zone'))->toBe(['type' => 'timestamp without time zone', 'length' => null, 'scale' => null])
+        ->and(new SqliteDialect()->builderType('VARCHAR(40)'))->toBe(['type' => 'VARCHAR(40)', 'length' => null, 'scale' => null])
+        ->and(new SqliteDialect()->builderType('integer references users'))->toBeNull()
+        ->and(new SqliteDialect()->builderType('text not null'))->toBeNull();
 });
