@@ -17,7 +17,11 @@ use Shop\Kernel;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;
 use Tinvar\Http\Request;
+use Tinvar\Observability\Logger;
+use Tinvar\Observability\MemorySink;
+use Tinvar\Observability\Metrics;
 use Tinvar\Observability\RequestId;
+use Tinvar\Observability\Telemetry;
 
 const KEY = 'shop-telemetry-test-key-32-bytes!!!!';
 
@@ -122,4 +126,26 @@ it('fails readiness when the renderers are gone, and says which check in the log
             ->and(json_decode($ready->body(), true)['checks'])->toBe(['database' => 'ok', 'renderer' => 'failing'])
             ->and(array_column(records($log), 'check'))->toContain('renderer');
     });
+});
+
+// A test's telemetry in place of the environment's, read back from memory:
+// what the testing layer's fakes are for mail and the queue.
+it('takes a test\'s telemetry, and logs to it under the id the response carries', function () {
+    $renderer = Renderer::start('msgpack', 'telemetry-fake');
+    $sink = new MemorySink();
+    try {
+        $kernel = Kernel::fromEnvironment(
+            $renderer->socketPath,
+            key: KEY,
+            database: Shop::database(customers: 17),
+            telemetry: new Telemetry(new Logger($sink), new Metrics()),
+        );
+        $response = $kernel->handle(from('/'));
+    } finally {
+        $renderer->stop();
+    }
+
+    $access = array_values(array_filter($sink->records(), static fn (array $r): bool => $r['message'] === 'request'));
+    expect($access)->toHaveCount(1)
+        ->and($access[0])->toMatchArray(['route' => 'shop.catalog', 'status' => 200, 'request_id' => $response->header('x-request-id')]);
 });
