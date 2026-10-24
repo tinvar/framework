@@ -13,6 +13,7 @@ namespace Tinvar\Tests\Server\BuildCommand;
 use Tinvar\Http\BuildHistory;
 use Tinvar\Http\BuildRegistry;
 use Tinvar\Http\FileBuildStore;
+use Tinvar\Http\PdoBuildStore;
 use Tinvar\Server\BuildCommand;
 
 /** A directory removed when the test process ends. */
@@ -280,6 +281,34 @@ describe('bin/tinvar', function () {
 
         expect($status)->toBe(BuildCommand::REFUSED)
             ->and($output)->toContain('b1 is the current build');
+    });
+
+    // SHOP_BUILDS=database: the table a migration makes in the shop's
+    // database, which every server reaching it reads. The history the file
+    // beside the database held is taken in the first time, revocations and
+    // all; after that, the table is the record.
+    it('keeps the history in the database with SHOP_BUILDS=database, taking in what the file held', function () use ($tinvar) {
+        $database = scratch() . '/shop.sqlite';
+        expect($tinvar($database, 'migrate')[0])->toBe(0)
+            ->and($tinvar($database, 'build:current', 'b1')[0])->toBe(0)
+            ->and($tinvar($database, 'build:current', 'b2')[0])->toBe(0)
+            ->and($tinvar($database, 'build:revoke', 'b1')[0])->toBe(0);
+        putenv('SHOP_BUILDS=database');
+        try {
+            [$status, $output] = $tinvar($database, 'build:current', 'b3');
+            $tinvar($database, 'build:floor', 'b2');
+        } finally {
+            putenv('SHOP_BUILDS');
+        }
+        $history = new PdoBuildStore(new \PDO("sqlite:{$database}"))->read();
+
+        expect($status)->toBe(0, $output)
+            ->and($output)->toContain('Took the build history')
+            ->and(array_column($history->builds, 'id'))->toBe(['b1', 'b2', 'b3'])
+            ->and($history->revoked)->toBe(['b1'])
+            ->and($history->floor)->toBe('b2')
+            // The file is left as it was, and no longer the record.
+            ->and(new FileBuildStore("{$database}-builds.json")->read()->floor)->toBeNull();
     });
 
     it('prints the current build alone, for a script to read', function () use ($tinvar) {
