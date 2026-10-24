@@ -445,8 +445,10 @@ it('puts the reader back at the order they opened, after reading the orders to t
     }
 
     // What the entry kept: the third page's first row, at the top, with the
-    // four pages loaded.
-    expect($result['before']['anchor'])->toMatchArray(['page' => 3, 'index' => 0, 'first' => 1, 'last' => 4, 'window' => true]);
+    // four pages loaded -- by its place, never which order it is. The page
+    // is encrypted, and history state is kept in the clear (ADR 0019); the
+    // order's key stays in memory for a back, and a reload finds it by place.
+    expect($result['before']['anchor'])->toMatchArray(['page' => 3, 'key' => null, 'index' => 0, 'first' => 1, 'last' => 4, 'window' => true]);
 });
 
 // "A deferred ... marked `rescue` that throws is reported to the PHP
