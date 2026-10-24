@@ -341,22 +341,30 @@ final class Frame
     }
 
     /**
-     * The code, digest and message of a report frame. Anything not of the
-     * shape this side expects is dropped rather than logged.
+     * The code, digest and message of a report frame, and where it
+     * happened. Anything not of the shape this side expects is dropped
+     * rather than logged; what is kept of the message and the place is
+     * RendererException::fromReport()'s to decide, under debug only.
      *
      * @param array<string, mixed> $frame
-     * @return array{code: string, digest: string|null, message: string|null}
+     * @return array{code: string, digest: string|null, message: string|null, stack: string|null, file: string|null, line: int|null}
      */
     public static function readReport(array $frame): array
     {
         $code = $frame['code'] ?? null;
         $digest = $frame['digest'] ?? null;
         $message = $frame['message'] ?? null;
+        $stack = $frame['stack'] ?? null;
+        $file = $frame['file'] ?? null;
+        $line = $frame['line'] ?? null;
 
         return [
             'code' => \is_string($code) && preg_match('/^[a-z_]{1,64}$/D', $code) === 1 ? $code : 'render_failed',
             'digest' => \is_string($digest) && preg_match(self::DIGEST_SHAPE, $digest) === 1 ? $digest : null,
             'message' => \is_string($message) ? $message : null,
+            'stack' => \is_string($stack) ? $stack : null,
+            'file' => \is_string($file) ? $file : null,
+            'line' => \is_int($line) && $line > 0 ? $line : null,
         ];
     }
 

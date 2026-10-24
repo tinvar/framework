@@ -79,6 +79,30 @@ final class RendererException extends \RuntimeException
     }
 
     /**
+     * A subtree the renderer rendered as an error row and reported -- a
+     * component that threw inside a Suspense boundary of a page, or in a
+     * fragment -- classified as a failed render is (ADR 0035, 0045).
+     *
+     * The render went on without it, so this is logged, not thrown. The
+     * line names the classification in this side's own words; the
+     * renderer's message, stack and source line are kept only under debug,
+     * as an error frame's are, since that process runs third-party npm code.
+     *
+     * @param array{code: string, digest: string|null, message: string|null, stack: string|null, file: string|null, line: int|null} $report
+     */
+    public static function fromReport(array $report, bool $debug = false): self
+    {
+        $e = self::fromErrorFrame($report, $debug);
+        $failure = $e->failure();
+        $where = "{$failure->title()} in a part of the page that rendered as an error; the rest went on";
+        $message = $debug && $report['message'] !== null
+            ? "{$where}: {$e->getMessage()}"
+            : "{$where}. {$failure->hint()}";
+
+        return new self($message, $e->code_, $e->digest, $e->stack, $e->sourceFile, $e->sourceLine);
+    }
+
+    /**
      * The renderer is the "runs third-party npm code" tier of the trust
      * boundary table, and the spec says its stacks and hints never reach the
      * browser. The code and digest are structured values this side asked for;

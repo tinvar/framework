@@ -302,13 +302,15 @@ final class RenderChannel
                         }
                         $meta[] = $message;
                     } elseif ($type === Frame::REPORT) {
-                        // A rescued subtree: the browser gets an error row
-                        // with this digest, and the log gets the line it
-                        // points to. The message is the renderer's to
-                        // choose, so it is kept only under debug, as an
-                        // error frame's is.
+                        // A subtree rendered as an error -- a fragment's, or
+                        // a Suspense boundary's in a page render: the
+                        // browser gets an error row with this digest, and
+                        // the log gets the line it points to, classified as
+                        // a failed render is. The message, stack and line
+                        // are the renderer's to choose, so they are kept
+                        // only under debug, as an error frame's are.
                         if (++$reports <= self::MAX_REPORTS) {
-                            $this->reportRendered(RendererException::fromErrorFrame(Frame::readReport($message), $this->debug));
+                            $this->reportRendered(RendererException::fromReport(Frame::readReport($message), $this->debug));
                         }
                     } elseif ($type === Frame::DONE) {
                         $done = true;

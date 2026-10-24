@@ -3,8 +3,10 @@
 declare(strict_types=1);
 
 /**
- * The `report` frame: a fragment subtree the renderer rendered as an error
- * row, logged on PHP's side under the digest the browser is shown.
+ * The `report` frame: a subtree the renderer rendered as an error row -- a
+ * fragment's, or a Suspense boundary's in a page render -- logged on PHP's
+ * side under the digest the browser is shown, and classified as a failed
+ * render is (ADR 0017, 0035, 0045).
  *
  * Driven over a real socket by a fake renderer that sends the frames, so the
  * branch in RenderChannel is exercised by what the renderer actually puts on
@@ -22,6 +24,7 @@ use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
 use Tinvar\Render\RenderChannel;
 use Tinvar\Render\RendererException;
+use Tinvar\Render\RenderFailure;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
 
 require_once __DIR__ . '/../Orm/Fixtures/models.php';
@@ -65,13 +68,15 @@ function reportingRenderer(string $path, array $frames): int
 }
 
 /**
- * Renders one fragment against a renderer sending $frames, and returns what
- * the reporter was handed and what reached the sink.
+ * Renders one fragment -- or, given one, another frame -- against a
+ * renderer sending $frames, and returns what the reporter was handed and
+ * what reached the sink.
  *
  * @param list<array<string, mixed>> $frames
+ * @param array<string, mixed>|null $render
  * @return array{list<array{\Throwable, ?string}>, string}
  */
-function renderWith(array $frames, bool $debug = false): array
+function renderWith(array $frames, bool $debug = false, ?array $render = null): array
 {
     if (!\function_exists('pcntl_fork')) {
         test()->markTestSkipped('pcntl is not available.');
@@ -97,7 +102,7 @@ function renderWith(array $frames, bool $debug = false): array
     $pid = reportingRenderer($path, $frames);
     try {
         $channel->render(
-            Frame::fragment(['component' => 'ShippingUpdates', 'props' => []], 'rid', 'nonce', []),
+            $render ?? Frame::fragment(['component' => 'ShippingUpdates', 'props' => []], 'rid', 'nonce', []),
             [],
             static function (string $bytes) use (&$body): void {
                 $body .= $bytes;
@@ -133,7 +138,51 @@ it('keeps the renderer\'s message out of the log unless debugging, and drops a m
     expect($quiet[0][0]->getMessage())->not->toContain('secret detail')
         ->and($quiet[0][1])->toBeNull()
         ->and($quiet[0][0]->code_)->toBe('render_failed')
-        ->and($loud[0][0]->getMessage())->toBe('secret detail');
+        ->and($loud[0][0]->getMessage())->toEndWith(': secret detail');
+});
+
+// A page's Suspense boundary that fails while the document streams is the
+// same frame on a page render: the page completes, and the failure is
+// logged where a fragment's is.
+it('logs a page render\'s failed Suspense boundary, and the page completes', function () {
+    [$reported, $body] = renderWith(
+        [['t' => Frame::REPORT, 'code' => 'browser_api_on_server', 'digest' => 'd00d1e', 'message' => 'window is not defined']],
+        render: Frame::render('shop/order', [], ['page' => null, 'layouts' => []], 'rid', 'nonce', []),
+    );
+
+    expect($body)->not->toBe('')
+        ->and($reported)->toHaveCount(1)
+        ->and($reported[0][1])->toBe('d00d1e')
+        ->and($reported[0][0]->failure())->toBe(RenderFailure::BrowserApiOnServer);
+});
+
+// Classified in this side's words: the title and hint are the framework's,
+// whatever the renderer wrote, and where it happened is kept for the dev
+// overlay only.
+it('names the classification and its hint, and keeps the stack and source line only under debug', function () {
+    $frame = [
+        't' => Frame::REPORT,
+        'code' => 'browser_api_on_server',
+        'digest' => 'd00d1e',
+        'message' => 'window is not defined',
+        'stack' => "ReferenceError: window is not defined\n    at Stats (/app/resources/components/Stats.tsx:4:9)",
+        'file' => '/app/resources/components/Stats.tsx',
+        'line' => 4,
+    ];
+    [$quiet] = renderWith([$frame]);
+    [$loud] = renderWith([$frame], debug: true);
+
+    $failure = RenderFailure::BrowserApiOnServer;
+    expect($quiet[0][0]->getMessage())->toStartWith($failure->title())
+        ->and($quiet[0][0]->getMessage())->toEndWith($failure->hint())
+        ->and($quiet[0][0]->getMessage())->not->toContain('window is not defined')
+        ->and($quiet[0][0]->stack)->toBeNull()
+        ->and($quiet[0][0]->sourceFile)->toBeNull()
+        ->and($loud[0][0]->getMessage())->toStartWith($failure->title())
+        ->and($loud[0][0]->getMessage())->toEndWith(': window is not defined')
+        ->and($loud[0][0]->stack)->toContain('Stats.tsx:4:9')
+        ->and($loud[0][0]->sourceFile)->toBe('/app/resources/components/Stats.tsx')
+        ->and($loud[0][0]->sourceLine)->toBe(4);
 });
 
 it('logs no more than its cap of reports from one render', function () {
