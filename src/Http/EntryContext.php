@@ -13,7 +13,9 @@ use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\PanelRegistry;
 use Tinvar\Http\Middleware\EnterPanel;
 use Tinvar\Http\Middleware\RequirePanelMembership;
+use Tinvar\Http\Middleware\RequirePlatformHost;
 use Tinvar\Http\Middleware\ResolveTenant;
+use Tinvar\Identity\Realms;
 use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Routing\RouteChain;
@@ -35,7 +37,9 @@ use Tinvar\Tenancy\TenantSource;
  * The order is the spec's: the tenant first, since a membership is held in
  * one; then the panel, its guard, the membership check, and the rest of the
  * panel's stack -- MFA, network allowlist, email verification -- in the
- * order its definition gives them (see PanelDefinition).
+ * order its definition gives them (see PanelDefinition). Ahead of them all,
+ * for a panel only the platform's hosts may carry, the host itself
+ * (RequirePlatformHost).
  */
 final readonly class EntryContext
 {
@@ -44,6 +48,8 @@ final readonly class EntryContext
      *        panel's middleware, as it builds an entry point's own
      * @param Memberships|null $memberships the application's membership model; given,
      *        every request into a panel needs a membership of it
+     * @param Realms|null $realms the application's hosts; given, an entry point in a panel
+     *        only the platform's hosts may carry is refused on any other
      */
     public function __construct(
         private Orm $orm,
@@ -52,6 +58,7 @@ final readonly class EntryContext
         private ?PanelRegistry $registry = null,
         private ?Memberships $memberships = null,
         private ?AuthContext $auth = null,
+        private ?Realms $realms = null,
     ) {}
 
     /**
@@ -63,7 +70,14 @@ final readonly class EntryContext
      */
     public function stackFor(?string $tenantSource, ?PanelBinding $panel = null): array
     {
-        $stack = $tenantSource === null ? [] : [new ResolveTenant($this->orm, $this->source($tenantSource))];
+        // The host before anything else, the tenant included: a page of the
+        // admin panel on a tenant's domain is not there, whoever asks.
+        $stack = $panel !== null && $this->realms?->isPlatformPanel($panel->name) === true
+            ? [new RequirePlatformHost($this->realms, $panel->name)]
+            : [];
+        if ($tenantSource !== null) {
+            $stack[] = new ResolveTenant($this->orm, $this->source($tenantSource));
+        }
         if ($panel === null) {
             return $stack;
         }
@@ -150,6 +164,9 @@ final readonly class EntryContext
      * panel, and a `requires:` or `permission:` -- declared or defined --
      * with no Memberships to hold it to. Either would otherwise be a panel
      * that looked guarded and was not, found by whoever first reached it.
+     * So is a panel reaching its tenant's subtree with no tenant tree to
+     * reach across, and a platform-only panel the application does not
+     * define -- a typo there would leave the real one on every host.
      */
     public function check(RouteRegistry $routes, ActionRegistry $actions, QueryRegistry $queries): void
     {
@@ -178,6 +195,23 @@ final readonly class EntryContext
         foreach ($this->registry?->all() ?? [] as $definition) {
             if ($this->memberships === null && ($definition->requires !== null || $definition->permission !== null)) {
                 throw new \InvalidArgumentException(self::unenforced($definition->name)->getMessage());
+            }
+            if ($definition->subtree && $this->orm->tenants() === null) {
+                throw new \InvalidArgumentException(
+                    "Panel '{$definition->name}' reaches its tenant's subtree, and the Orm was given no tenant tree to reach across.",
+                );
+            }
+        }
+
+        // With no panels defined, nothing can be in one: no entry point to
+        // keep off a host, and nothing a typo could leave out.
+        $registry = $this->registry;
+        $platformPanels = $registry === null ? [] : $this->realms?->platformPanels() ?? [];
+        foreach ($platformPanels as $panel) {
+            if (!$registry->has($panel)) {
+                throw new \InvalidArgumentException(
+                    "The realms keep panel '{$panel}' to the platform's hosts, and the application defines no such panel.",
+                );
             }
         }
     }

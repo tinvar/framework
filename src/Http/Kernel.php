@@ -29,6 +29,7 @@ use Tinvar\Http\Middleware\RequireAuthentication;
 use Tinvar\Http\Middleware\ThrottleRequests;
 use Tinvar\Http\Middleware\VerifyCsrfToken;
 use Tinvar\Identity\HandoffEndpoint;
+use Tinvar\Identity\Realms;
 use Tinvar\Live\LiveMinter;
 use Tinvar\Live\LiveUpdates;
 use Tinvar\Live\SubscribeEndpoint;
@@ -375,6 +376,10 @@ final class Kernel
      *        (ADR 0048): mounted at /_mail/unsubscribe/*, beside webhooks and as they
      *        are -- a mail provider's server POSTs it, with a signed link and no
      *        session, so none of the global stack applies to it
+     * @param Realms|null $realms the application's hosts (ADR 0039), the handoff's unless
+     *        given: an entry point in a panel only the platform's hosts may carry is
+     *        refused, as a 404, on any other host -- a tenant's custom domain, or a host
+     *        the application does not know
      */
     public function __construct(
         public readonly Orm $orm,
@@ -417,6 +422,7 @@ final class Kernel
         private readonly ?Telemetry $telemetry = null,
         private readonly ?Probes $probes = null,
         private readonly ?UnsubscribeEndpoint $unsubscribe = null,
+        ?Realms $realms = null,
     ) {
         if ($toolbar !== null && !$dev) {
             throw new \InvalidArgumentException(
@@ -515,7 +521,7 @@ final class Kernel
         // resolve them the same way. Checked now: a panel nobody defined, or
         // a requirement nothing can hold, is refused here rather than found
         // by whoever first reaches it.
-        $entry = new EntryContext($this->orm, $resolver, $panels, $panelRegistry, $memberships, $this->auth);
+        $entry = new EntryContext($this->orm, $resolver, $panels, $panelRegistry, $memberships, $this->auth, $realms ?? $handoff?->realms);
         $entry->check($this->routes, $this->actions, $this->queries);
         // And every route's query allowlist the Kernel is shown -- the one
         // fragment support carries, by route name -- against the panels of

@@ -72,6 +72,16 @@ final class Realms
         return isset($this->platformPanels[$panel]);
     }
 
+    /**
+     * The panels only the platform's own hosts may carry.
+     *
+     * @return list<string>
+     */
+    public function platformPanels(): array
+    {
+        return array_map('strval', array_keys($this->platformPanels));
+    }
+
     public function isAuthority(Realm $realm): bool
     {
         return $realm->host === $this->authority->host;
