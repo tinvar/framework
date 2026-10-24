@@ -181,11 +181,8 @@ final readonly class BuildHistory
 
         $builds = $this->builds;
         $pruned = $this->pruned;
-        while (\count($builds) > $keep) {
-            $next = $builds[1] ?? null;
-            if ($next === null || $next['at'] + $horizon > $now) {
-                break;
-            }
+        // More than $keep, and $keep is at least one: there is a next.
+        while (\count($builds) > $keep && $builds[1]['at'] + $horizon <= $now) {
             $pruned[] = array_shift($builds)['id'];
         }
 
