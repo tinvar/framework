@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Tinvar\Data;
 
+use Tinvar\Attributes\Once;
 use Tinvar\Attributes\Rescue;
+use Tinvar\Cache\Duration;
 
 /**
  * The fields of a Data class that cross the boundary.
@@ -20,6 +22,9 @@ final class DataShape
 
     /** @var array<class-string, array<string, true>> */
     private static array $rescued = [];
+
+    /** @var array<class-string, array<string, array{key: string, ttl: int|null, tags: list<string>}>> */
+    private static array $once = [];
 
     /**
      * Public, non-static properties in declaration order.
@@ -72,5 +77,60 @@ final class DataShape
         }
 
         return self::$rescued[$class] = $rescued;
+    }
+
+    /**
+     * The fields marked #[Once], by name: the key the browser keeps each
+     * under, how many seconds it may go on claiming it (null for as long as
+     * the session lasts), and the tags that make it stop.
+     *
+     * Read here for the reason rescued() is: the encoder sends these as
+     * once fields and codegen types them so, and read in two places they
+     * could disagree. A key or duration that cannot be used is refused when
+     * the class is first read, not when some request finally sends it.
+     *
+     * @param class-string $class
+     * @return array<string, array{key: string, ttl: int|null, tags: list<string>}>
+     */
+    public static function once(string $class): array
+    {
+        if (isset(self::$once[$class])) {
+            return self::$once[$class];
+        }
+
+        $short = (new \ReflectionClass($class))->getShortName();
+        $once = [];
+        foreach (self::fieldsOf($class) as $property) {
+            $attribute = $property->getAttributes(Once::class)[0] ?? null;
+            if ($attribute === null) {
+                continue;
+            }
+
+            $declared = $attribute->newInstance();
+            $name = $property->getName();
+            $key = $declared->key ?? "{$short}.{$name}";
+            if (preg_match(PayloadContext::KEY, $key) !== 1) {
+                throw new \LogicException(
+                    "{$class}::\${$name} is #[Once] under the key '{$key}', which a request header cannot carry. "
+                    . 'Use letters, digits and . _ : / -, up to 128 of them.',
+                );
+            }
+
+            $tags = [];
+            foreach ($declared->tags as $tag) {
+                if (trim($tag) === '' || str_contains($tag, ',')) {
+                    throw new \LogicException("{$class}::\${$name} names a #[Once] tag that is not one tag.");
+                }
+                $tags[] = trim($tag);
+            }
+
+            $once[$name] = [
+                'key' => $key,
+                'ttl' => $declared->until === null ? null : Duration::seconds($declared->until),
+                'tags' => $tags,
+            ];
+        }
+
+        return self::$once[$class] = $once;
     }
 }

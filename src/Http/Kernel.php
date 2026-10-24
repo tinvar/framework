@@ -29,6 +29,9 @@ use Tinvar\Query\QueryRunner;
 use Tinvar\Render\FragmentManifest;
 use Tinvar\Render\FragmentMinter;
 use Tinvar\Render\RouteMinter;
+use Tinvar\Render\RouteToken;
+use Tinvar\Render\TokenError;
+use Tinvar\Data\PayloadContext;
 use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\Router;
@@ -591,6 +594,7 @@ final class Kernel
                 if ($historyKey !== null) {
                     $passed = $passed->withAttribute(self::HISTORY_KEY, $historyKey);
                 }
+                $loaded = $this->withHeldOnce($loaded, $passed, $token);
                 [$passed, $flashed] = $this->withFormState($passed);
                 $response = $this->withCsrfCookie($passed, $respond($loaded, $passed));
                 $response = $this->withHistoryKey($passed, $response, $historyKey);
@@ -920,6 +924,54 @@ final class Kernel
         return $response
             ->withHeader('cache-control', 'private, no-store')
             ->withAddedHeader('vary', 'Cookie');
+    }
+
+    /**
+     * The route as loaded, with the #[Once] keys the browser holds -- when
+     * it can be believed to hold them for this response.
+     *
+     * "Client-held data ... is bound to (user, tenant)." What the browser
+     * keeps under a once key was rendered for some session, and a request
+     * listing it would have the field left out of a page rendered for
+     * whoever is asking now. Sign in, sign out, switch tenant: the next
+     * request still lists what was kept before, and honoured, the page would
+     * be drawn with the last session's content in it. So the list counts
+     * only beside `X-Once-Binding`, the route token of a page the content
+     * was kept with, and only when that token verifies and names the same
+     * session, tenant, panel and build as the token this response carries.
+     * Without a token of its own a response honours nothing: the browser
+     * keeps once content under that binding, and could not file it.
+     *
+     * Never a way to see more: a held key sends less than the same request
+     * without it. And it skips only the field's own resolver -- every
+     * middleware, check and loader ran before this (ADR 0020).
+     */
+    private function withHeldOnce(LoadedRoute $loaded, Request $request, ?string $token): LoadedRoute
+    {
+        $signer = $this->support?->routeSigner;
+        $presented = $request->header('x-once-binding');
+        if ($token === null || $signer === null || $presented === null || !$request->wantsRscPayload()) {
+            return $loaded;
+        }
+
+        $keys = PayloadContext::listFrom($request->header('x-have-once'), PayloadContext::KEY);
+        if ($keys === []) {
+            return $loaded;
+        }
+
+        try {
+            $theirs = RouteToken::decode($presented, $signer)->claims;
+            $ours = RouteToken::decode($token, $signer)->claims;
+        } catch (TokenError) {
+            return $loaded;
+        }
+
+        $same = hash_equals($ours->sessionHash, $theirs->sessionHash)
+            && $ours->tenant === $theirs->tenant
+            && $ours->panel === $theirs->panel
+            && $ours->build === $theirs->build;
+
+        return $same ? $loaded->withContext($loaded->context->withHeldOnce($keys)) : $loaded;
     }
 
     /**

@@ -503,7 +503,7 @@ describe('responses', function () {
         [$router] = router();
 
         expect($router->handle(Request::get('/health', ['RSC' => '1']), respondWithLoaded())->header('vary'))
-            ->toBe('RSC, X-Version');
+            ->toBe('RSC, X-Version, X-Have-Once, X-Once-Binding');
     });
 
     it('does not duplicate Vary when the responder already set it', function () {

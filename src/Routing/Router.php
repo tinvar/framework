@@ -106,7 +106,11 @@ final class Router
                 // cached for the old build must not be handed to a client on
                 // the new one after a deploy. Only payloads: a document load
                 // is the same whatever the client was running.
-                $response = $response->withAddedHeader('vary', 'X-Version');
+                $response = $response->withAddedHeader('vary', 'X-Version')
+                    // What the client says it holds changes the payload: a
+                    // held once field is left out.
+                    ->withAddedHeader('vary', 'X-Have-Once')
+                    ->withAddedHeader('vary', 'X-Once-Binding');
                 if (!$this->partialReloads) {
                     return $response;
                 }
