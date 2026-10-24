@@ -121,12 +121,35 @@ describe('LocalStorage', function () {
         expect(fn () => new LocalStorage('storage/uploads'))->toThrow(InvalidArgumentException::class, 'absolute');
     });
 
+    // Built on every boot, written to by few: a CLI command or a test that
+    // never uploads leaves no directory behind.
+    it('makes its root when it first writes, and holds nothing before', function () {
+        $root = storageTestRoot();
+
+        try {
+            $storage = new LocalStorage($root);
+            $key = StorageKey::generate('avatars', 'png');
+
+            expect(is_dir($root))->toBeFalse()
+                ->and($storage->exists($key))->toBeFalse()
+                ->and($storage->read($key))->toBeNull()
+                ->and(is_dir($root))->toBeFalse();
+
+            $storage->delete($key);
+            $storage->put($key, storageStreamOf('png'));
+            expect(is_dir($root))->toBeTrue();
+        } finally {
+            removeStorageTestRoot($root);
+        }
+    });
+
     it('will not write or read through a symlink planted inside its root', function () {
         $root = storageTestRoot();
         $outside = storageTestRoot();
 
         try {
             mkdir($outside, 0o700, true);
+            mkdir($root, 0o700, true);
             file_put_contents($outside . '/secret.png', 'outside the store');
             $storage = new LocalStorage($root);
             symlink($outside, $root . '/avatars');
