@@ -18,6 +18,7 @@ namespace Tinvar\Tests\Integration\ShopStaticPage;
 
 use Shop\DemoAccount;
 use Shop\Kernel;
+use Shop\Queries\Availability;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;
 use Tinvar\Http\CsrfTokens;
@@ -60,20 +61,25 @@ function scratch(): string
 
 /**
  * The shop's static pages built into $out, as `tinvar build:static` builds
- * them: the manifest from the build, then every #[StaticPage] rendered.
+ * them: the manifest from the build, then every #[StaticPage] rendered --
+ * from $database, and the manifest written to $manifestFile when given.
  *
  * @return array{list<string>, FragmentManifest}
  */
-function build(string $out): array
+function build(string $out, ?string $database = null, ?string $manifestFile = null): array
 {
     $renderer = Renderer::start('msgpack', 'static-build');
     try {
         $routes = new \Tinvar\Routing\RouteRegistry();
         $routes->registerAll(Kernel::ROUTES);
         $manifest = FragmentManifestProducer::produce($routes, Shop::root() . '/dist/rsc/deferred.json');
-        $kernel = Kernel::fromEnvironment($renderer->socketPath, key: KEY, database: Shop::database(), manifest: $manifest);
+        $kernel = Kernel::fromEnvironment($renderer->socketPath, key: KEY, database: $database ?? Shop::database(), manifest: $manifest);
+        $built = new StaticBuilder($kernel->routes, $kernel->renderStatic(...))->build($out, $manifest);
+        if ($manifestFile !== null) {
+            $manifest->write($manifestFile);
+        }
 
-        return [new StaticBuilder($kernel->routes, $kernel->renderStatic(...))->build($out, $manifest), $manifest];
+        return [$built, $manifest];
     } finally {
         $renderer->stop();
     }
@@ -145,11 +151,12 @@ function fetch(string $url, array $headers = []): array
 
 /**
  * The shop behind php -S, serving the built pages in $static: a renderer, a
- * seeded database and the front controller.
+ * seeded database -- $database, when given -- the fragment manifest the
+ * build wrote, when given, and the front controller.
  *
  * @param \Closure(string): void $drive given the origin
  */
-function served(string $root, string $static, \Closure $drive): void
+function served(string $root, string $static, \Closure $drive, ?string $database = null, ?string $manifest = null): void
 {
     $renderer = Renderer::start('msgpack', 'static-served');
     $port = 19_000 + random_int(0, 999);
@@ -163,8 +170,9 @@ function served(string $root, string $static, \Closure $drive): void
             ...array_diff_key(getenv(), ['TINVAR_APP_KEY' => true]),
             'TINVAR_SOCKET' => $renderer->socketPath,
             'TINVAR_APP_KEY_FILE' => "{$keyDir}/app.key",
-            'SHOP_DATABASE' => Shop::database(),
+            'SHOP_DATABASE' => $database ?? Shop::database(),
             'SHOP_STATIC_DIR' => $static,
+            ...($manifest === null ? [] : ['SHOP_FRAGMENTS' => $manifest]),
         ],
     );
 
@@ -260,12 +268,29 @@ describe('the built catalog', function () {
         }
     });
 
-    // The catalog has no <Deferred> boundary, so nothing for /_bootstrap.
-    it('declares no boundaries, so the shop mounts no bootstrap endpoint for it', function () {
-        [, $manifest] = build(scratch() . '/static');
+    // Each card's availability is a <Deferred> boundary in the built page:
+    // a placeholder in the file, and in the manifest the component and props
+    // /_bootstrap will mint for -- for the visitor's own session -- under an
+    // id drawn from them. Built again from the same rows, the same ids.
+    it('declares a boundary for each card\'s availability, which mounts /_bootstrap', function () {
+        $out = scratch() . '/static';
+        [, $manifest] = build($out);
+        $boundaries = $manifest->boundariesFor('shop.catalog');
+        $html = (string) file_get_contents("{$out}/index.html");
+        preg_match_all('/b1\.[A-Za-z0-9_-]+/', $html, $placeholders);
+        $products = array_column(array_column($boundaries, 'props'), 'product');
 
-        expect($manifest->hasAny())->toBeFalse()
-            ->and($manifest->routes())->toBe(['orders.show']);
+        expect($manifest->hasAny())->toBeTrue()
+            ->and($manifest->routes())->toEqualCanonicalizing(['orders.show', 'shop.catalog'])
+            ->and($manifest->componentsFor('shop.catalog'))->toBe(['Availability'])
+            ->and($boundaries)->toHaveCount(24)
+            ->and(array_unique(array_column($boundaries, 'component')))->toBe(['Availability'])
+            ->and(array_unique($products))->toHaveCount(24)
+            ->and(array_unique($placeholders[0]))->toHaveCount(24)
+            // As of the build, in the file, for a visitor with no script.
+            ->and(substr_count($html, 'data-availability="'))->toBe(24)
+            ->and(array_column(build(scratch() . '/static')[1]->boundariesFor('shop.catalog'), 'id'))
+            ->toBe(array_column($boundaries, 'id'));
     });
 });
 
@@ -305,20 +330,37 @@ describe('serving it', function () use ($root) {
             ->and($results['query'][1])->toHaveKey('content-security-policy');
     });
 
-    // The page hydrates under the policy in the file, navigates as a client
-    // visit -- which PHP answers, issuing the visitor their session -- and
-    // from then on the catalog comes from PHP.
-    it('hydrates and navigates in Chromium, and hands the visitor to PHP from the first request it sees', function () use ($root) {
+    // The page hydrates under the policy in the file; its cards' boundaries
+    // trade the file's placeholders at /_bootstrap -- refused with a 419
+    // first, which hands the visitor their session -- and load the stock as
+    // it is now, changed since the build; a click is a client visit PHP
+    // answers, and from then on the catalog comes from PHP.
+    it('hydrates, loads its boundaries through /_bootstrap, and navigates in Chromium', function () use ($root) {
         if (!is_file("{$root}/node_modules/playwright/package.json")) {
             $this->markTestSkipped('Playwright is not installed.');
         }
-        $static = scratch() . '/static';
-        build($static);
+        $database = Shop::testDatabase();
+        $out = scratch();
+        $static = "{$out}/static";
+        build($static, $database, "{$out}/fragments.json");
+        $built = (string) file_get_contents("{$static}/index.html");
+
+        // Changed after the build: the first card in stock to three left,
+        // and the last in stock -- in the second group -- to sold out.
+        $pdo = new \PDO("sqlite:{$database}");
+        $products = $pdo->query('SELECT id, stock FROM products ORDER BY sku')?->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+        $inStock = array_values(array_filter($products, static fn (array $p): bool => (int) $p['stock'] > Availability::LOW));
+        $first = (string) $inStock[0]['id'];
+        $last = (string) $inStock[\count($inStock) - 1]['id'];
+        expect(array_search($last, array_column($products, 'id'), true))->toBeGreaterThanOrEqual(12, 'in the second group');
+        $pdo->prepare('UPDATE products SET stock = 3 WHERE id = ?')->execute([$first]);
+        $pdo->prepare('UPDATE products SET stock = 0 WHERE id = ?')->execute([$last]);
+        $fresh = [['product' => $first, 'state' => 'low'], ['product' => $last, 'state' => 'sold_out']];
 
         $output = '';
-        served($root, $static, function (string $origin) use ($root, &$output): void {
+        served($root, $static, function (string $origin) use ($root, $fresh, &$output): void {
             $process = proc_open(
-                ['node', "{$root}/examples/shop/e2e/static.mjs", $origin],
+                ['node', "{$root}/examples/shop/e2e/static.mjs", $origin, json_encode($fresh, JSON_THROW_ON_ERROR)],
                 [1 => ['pipe', 'w'], 2 => ['redirect', 1]],
                 $pipes,
                 $root,
@@ -326,17 +368,43 @@ describe('serving it', function () use ($root) {
             );
             $output = (string) stream_get_contents($pipes[1]);
             proc_close($process);
-        });
+        }, $database, "{$out}/fragments.json");
 
         $result = json_decode($output, true);
         expect($result)->toBeArray("the browser script failed:\n{$output}");
 
-        expect($result['errors'])->toBe([])
+        // The file had the first card in stock: as of the build.
+        preg_match('#href="/products/' . preg_quote($first, '#') . '".*?data-availability="([a-z_]+)"#s', $built, $asBuilt);
+        $exchanges = $result['boundaries']['exchanges'];
+        $bootstraps = array_values(array_filter($exchanges, static fn (array $e): bool => $e['path'] === '/_bootstrap'));
+        $fragments = array_values(array_filter($exchanges, static fn (array $e): bool => $e['path'] === '/_fragment/'));
+
+        expect($asBuilt[1] ?? null)->toBe('in_stock')
+            ->and($result['boundaries']['shown'])->toBe([
+                ['product' => $first, 'state' => 'low', 'text' => '3 left'],
+                ['product' => $last, 'state' => 'sold_out', 'text' => 'Sold out'],
+            ])
+            // A first visit: refused for want of a CSRF cookie, given one and
+            // a session, then answered with tokens bound to that session.
+            ->and($bootstraps[0] ?? null)->toBe(['method' => 'POST', 'path' => '/_bootstrap', 'tokens' => null, 'status' => 419])
+            ->and(array_column($bootstraps, 'status'))->toContain(200)
+            // Two groups of twelve, one request each.
+            ->and($fragments)->toBe([
+                ['method' => 'GET', 'path' => '/_fragment/', 'tokens' => 12, 'status' => 200],
+                ['method' => 'GET', 'path' => '/_fragment/', 'tokens' => 12, 'status' => 200],
+            ])
+            ->and($result['boundaries']['rescued'])->toBe(0)
+            ->and($result['boundaries']['cookies'])->toContain(Kernel::SESSION_COOKIE)
+            // Chromium logs the first bootstrap's 419 as a failed resource;
+            // it is the exchange working, and nothing else may be there.
+            ->and(array_values(array_filter(
+                $result['errors'],
+                static fn (string $error): bool => !str_contains($error, 'status of 419'),
+            )))->toBe([])
             ->and($result['violations'])->toBe([])
             ->and($result['first']['setCookie'])->toBeFalse()
             ->and($result['first']['headerPolicy'])->toBeNull()
             ->and($result['first']['metaPolicy'])->toContain("'strict-dynamic'")
-            ->and($result['first']['cookies'])->toBe([])
             ->and($result['first']['title'])->toBe('Catalog · Pellwick Supply')
             ->and($result['visited']['heading'])->toBe($result['visited']['name'])
             ->and($result['visited']['cookies'])->toContain(Kernel::SESSION_COOKIE)
@@ -464,7 +532,74 @@ describe('tinvar build:static', function () use ($root) {
         expect($status)->toBe(0, $output)
             ->and($output)->toContain('built   /')
             ->and(is_file("{$out}/static/index.html"))->toBeTrue()
-            ->and(FragmentManifest::fromFile("{$out}/fragments.json")->routes())->toBe(['orders.show']);
+            ->and(FragmentManifest::fromFile("{$out}/fragments.json")->routes())->toEqualCanonicalizing(['orders.show', 'shop.catalog'])
+            ->and(FragmentManifest::fromFile("{$out}/fragments.json")->boundariesFor('shop.catalog'))->toHaveCount(24);
+    });
+
+    // Revalidation, on demand: the catalog built again where it is served,
+    // from the rows as they are now, and nothing built while it is fresh.
+    it('builds the catalog again in place with static:revalidate, from the rows as they are now', function () use ($root) {
+        $database = Shop::testDatabase();
+        $out = scratch();
+        build("{$out}/static", $database, "{$out}/fragments.json");
+        $ids = array_column(FragmentManifest::fromFile("{$out}/fragments.json")->boundariesFor('shop.catalog'), 'id');
+        $pdo = new \PDO("sqlite:{$database}");
+        $product = (string) $pdo->query('SELECT id FROM products WHERE stock > 10 ORDER BY sku LIMIT 1')?->fetchColumn();
+        $pdo->prepare('UPDATE products SET stock = 0 WHERE id = ?')->execute([$product]);
+        $keyDir = scratch();
+        $run = static function () use ($root, $out, $database, $keyDir): array {
+            $process = proc_open(
+                [PHP_BINARY, "{$root}/bin/tinvar", 'static:revalidate', "--dir={$out}/static", "--manifest={$out}/fragments.json"],
+                [1 => ['pipe', 'w'], 2 => ['redirect', 1]],
+                $pipes,
+                $root,
+                [
+                    ...array_diff_key(getenv(), ['TINVAR_APP_KEY' => true, 'SHOP_STATIC_DIR' => true]),
+                    'SHOP_DATABASE' => $database,
+                    'TINVAR_APP_KEY_FILE' => "{$keyDir}/app.key",
+                ],
+            );
+            $output = (string) stream_get_contents($pipes[1]);
+
+            return [proc_close($process), $output];
+        };
+
+        // Stale by age: written eleven minutes ago, past its ten.
+        touch("{$out}/static/index.html", time() - 660);
+        [$status, $output] = $run();
+        $html = (string) file_get_contents("{$out}/static/index.html");
+        preg_match('#href="/products/' . preg_quote($product, '#') . '".*?data-availability="([a-z_]+)"#s', $html, $shown);
+        [$again, $quiet] = $run();
+
+        expect($status)->toBe(0, $output)
+            ->and($output)->toContain('built   /')
+            ->and($shown[1] ?? null)->toBe('sold_out')
+            // The same boundaries: each names a product, which did not change.
+            ->and(array_column(FragmentManifest::fromFile("{$out}/fragments.json")->boundariesFor('shop.catalog'), 'id'))->toBe($ids)
+            ->and($again)->toBe(0, $quiet)
+            ->and($quiet)->toContain('Nothing is stale.')
+            ->and(fn () => StaticBuilder::assertNothingPerVisitor($html, '/'))->not->toThrow(\RuntimeException::class);
+    });
+
+    // With SHOP_STATIC_DIR, the schedule keeps the built catalog fresh.
+    it('schedules revalidation only where pages are served from files', function () use ($root) {
+        $list = static function (array $env) use ($root): string {
+            $process = proc_open(
+                [PHP_BINARY, "{$root}/bin/tinvar", 'schedule:list'],
+                [1 => ['pipe', 'w'], 2 => ['redirect', 1]],
+                $pipes,
+                $root,
+                [...array_diff_key(getenv(), ['TINVAR_APP_KEY' => true, 'SHOP_STATIC_DIR' => true]), 'SHOP_DATABASE' => Shop::database(), ...$env],
+            );
+            $output = (string) stream_get_contents($pipes[1]);
+            proc_close($process);
+
+            return $output;
+        };
+        $keyDir = scratch();
+
+        expect($list(['TINVAR_APP_KEY_FILE' => "{$keyDir}/app.key", 'SHOP_STATIC_DIR' => scratch()]))->toContain('RevalidateStaticPages')
+            ->and($list(['TINVAR_APP_KEY_FILE' => "{$keyDir}/app.key"]))->not->toContain('RevalidateStaticPages');
     });
 
     it('refuses an argument it does not know', function () use ($root) {

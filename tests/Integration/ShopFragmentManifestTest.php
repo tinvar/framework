@@ -141,16 +141,20 @@ function bootstrap(Kernel $kernel, array $cookies, string $order): Response
 
 describe('the produced manifest', function () {
     // What the shop declared by hand before: new FragmentManifest(routes:
-    // ['orders.show']) -- and now with the one component that page renders.
-    it('declares the order page and nothing else, as the shop did by hand', function () {
+    // ['orders.show']) -- with the one component that page renders, and the
+    // catalog, whose cards defer their availability when it is built to a
+    // file, and may mint for that component alone.
+    it('declares the order page and the catalog, each with its one component', function () {
         [$status, $output, $build] = produce();
         $manifest = FragmentManifest::fromFile("{$build}/fragments.json");
 
         expect($status)->toBe(0, $output)
             ->and($output)->toContain('defers  orders.show (ShippingUpdates)')
-            ->and($manifest->routes())->toBe(['orders.show'])
+            ->and($output)->toContain('defers  shop.catalog (Availability)')
+            ->and($manifest->routes())->toEqualCanonicalizing(['orders.show', 'shop.catalog'])
             ->and($manifest->componentsFor('orders.show'))->toBe(['ShippingUpdates'])
-            ->and($manifest->defersOn('shop.catalog'))->toBeFalse()
+            ->and($manifest->componentsFor('shop.catalog'))->toBe(['Availability'])
+            ->and($manifest->defersOn('shop.product'))->toBeFalse()
             ->and($manifest->hasAny())->toBeFalse('no page is built statically');
     });
 
@@ -158,7 +162,8 @@ describe('the produced manifest', function () {
         $views = json_decode((string) file_get_contents(Shop::root() . '/dist/rsc/deferred.json'), true)['views'];
 
         expect($views['shop/order'])->toBe(['ShippingUpdates'])
-            ->and($views['shop/catalog'])->toBe([])
+            ->and($views['shop/catalog'])->toBe(['Availability'])
+            ->and($views['shop/product'])->toBe([])
             ->and($views['shop/layout'])->toBe([]);
     });
 
