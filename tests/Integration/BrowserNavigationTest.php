@@ -67,8 +67,13 @@ function runWithTimeout(array $command, string $cwd, int $seconds): string
 }
 
 /**
- * The served shop for one test: a renderer, a freshly seeded database, and
- * php -S on the front controller.
+ * The served shop for one test: a pool of two renderers, a freshly seeded
+ * database, and php -S on the front controller.
+ *
+ * A pool, as `tinvar serve` runs one: every php -S request is a process of
+ * its own that starts its turn at random, so a visit's renders -- the
+ * document, its payloads, its fragments -- land on either renderer, and a
+ * visit that only worked when one process saw all of it would fail here.
  *
  * @param \Closure(string, string): void $drive given the origin, and the file
  *        php -S writes its error log to
@@ -76,7 +81,7 @@ function runWithTimeout(array $command, string $cwd, int $seconds): string
  */
 function served(string $root, \Closure $drive, array $env = []): void
 {
-    $renderer = Renderer::start('msgpack', 'browser-e2e');
+    $renderer = Renderer::start('msgpack', 'browser-e2e', processes: 2);
     $port = 18_000 + random_int(0, 999);
     $keyFile = sys_get_temp_dir() . '/tinvar-e2e-' . bin2hex(random_bytes(4)) . '/app.key';
     $errorLog = (string) tempnam(sys_get_temp_dir(), 'tinvar-e2e-log-');

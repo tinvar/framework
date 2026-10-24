@@ -25,7 +25,15 @@ final class RenderChannel
 {
     private const int READ_BYTES = 65536;
 
+    /** Built on first use, and kept: a worker's channel serves request after request. */
+    private ?RendererSockets $sockets = null;
+
+    private ?SocketTrust $trust = null;
+
     public function __construct(
+        /**
+         * The renderer's socket, or a pool's directory of them (ADR 0028).
+         */
         private readonly string $socketPath,
         private readonly QueryRunner $runner,
         private readonly FrameCodec $codec = new MessagePackCodec(),
@@ -314,81 +322,78 @@ final class RenderChannel
         error_log(sprintf('[tinvar] the renderer rescued a subtree (%s) [%s]', $e->code_, $e->digest ?? 'no digest'));
     }
 
-    /** @return resource */
+    /**
+     * A connection to the renderer, or to one of a pool's.
+     *
+     * In a pool, a renderer that refuses -- it died, or it is draining and
+     * has taken its socket away since the directory was listed -- is passed
+     * over for the next: nothing has been sent to it, so nothing is lost or
+     * sent twice. Only once a render frame is on its way is a failure the
+     * render's (see render()).
+     *
+     * Every socket is checked before it is connected to (SocketTrust); a
+     * socket that fails the check fails the render rather than being passed
+     * over, since it means someone else's renderer is where ours should be.
+     *
+     * @return resource
+     */
     private function connect()
     {
-        // Checked first so the common "renderer not running" case gives a clear
-        // error rather than a connect warning from the stream layer.
-        if (!file_exists($this->socketPath)) {
-            throw RendererException::cannotConnect($this->socketPath, 'no socket at that path');
-        }
-        $this->assertTrustedSocket();
+        $this->sockets ??= new RendererSockets($this->socketPath);
+        $this->trust ??= new SocketTrust($this->trustedSocketOwners);
 
-        $socket = @stream_socket_client(
-            'unix://' . $this->socketPath,
-            $errno,
-            $error,
-            $this->connectTimeoutSeconds,
-            STREAM_CLIENT_CONNECT,
-        );
-
-        if ($socket === false) {
-            $reason = $error ?? '';
-            throw RendererException::cannotConnect($this->socketPath, $reason !== '' ? $reason : "errno {$errno}");
+        $pool = $this->sockets->isPool();
+        if ($pool) {
+            $this->trust->assertPool($this->socketPath);
         }
 
-        // Non-blocking, so a write can wait on the deadline too: blocking,
-        // a renderer that stopped reading held this worker forever.
-        stream_set_blocking($socket, false);
-
-        return $socket;
-    }
-
-    /**
-     * Whoever answers on this socket receives the render frame -- the
-     * loader's data for this visitor -- and writes the HTML they are served.
-     * In a directory other users can write to, such as /tmp, any of them
-     * could put a socket at this path while the renderer is down. So there
-     * the socket must be a trusted user's; and a directory others can write
-     * without the sticky bit is refused outright, since there a stranger can
-     * replace even a socket we own. A directory owned by anyone untrusted is
-     * refused too: its owner can do as they like inside it.
-     *
-     * Trusted: this user, root, and $trustedSocketOwners. The directory's
-     * own ancestors are the deployment's to secure.
-     */
-    private function assertTrustedSocket(): void
-    {
-        if (!\function_exists('posix_geteuid')) {
-            return;
+        $candidates = $this->sockets->candidates();
+        if ($candidates === []) {
+            throw RendererException::cannotConnect($this->socketPath, 'no renderer is listening in that directory');
         }
 
-        clearstatcache(true, $this->socketPath);
-        $directory = @stat(\dirname($this->socketPath));
-        $socket = @lstat($this->socketPath);
-        if ($directory === false || $socket === false) {
-            throw RendererException::cannotConnect($this->socketPath, 'cannot inspect the socket or its directory');
+        $refusals = [];
+        foreach ($candidates as $path) {
+            // Checked first so the common "renderer not running" case gives a
+            // clear error rather than a connect warning from the stream layer.
+            if (!file_exists($path)) {
+                $refusals[$path] = 'no socket at that path';
+                continue;
+            }
+            $this->trust->assertSocket($path);
+
+            // A refusal is an answer here, not a fault: its reason comes back
+            // in $error, and the warning PHP raises beside it -- through @,
+            // to any error handler installed -- is held back.
+            set_error_handler(static fn (): bool => true);
+            try {
+                $socket = stream_socket_client('unix://' . $path, $errno, $error, $this->connectTimeoutSeconds, STREAM_CLIENT_CONNECT);
+            } finally {
+                restore_error_handler();
+            }
+            if ($socket === false) {
+                $reason = $error ?? '';
+                $refusals[$path] = $reason !== '' ? $reason : "errno {$errno}";
+                continue;
+            }
+
+            // Non-blocking, so a write can wait on the deadline too: blocking,
+            // a renderer that stopped reading held this worker forever.
+            stream_set_blocking($socket, false);
+
+            return $socket;
         }
 
-        $trusted = [posix_geteuid(), 0, ...$this->trustedSocketOwners];
-        if (!\in_array($directory['uid'], $trusted, true)) {
-            throw RendererException::cannotConnect($this->socketPath, 'its directory belongs to another user');
+        if (!$pool) {
+            throw RendererException::cannotConnect($this->socketPath, (string) reset($refusals));
         }
 
-        $shared = ($directory['mode'] & 0022) !== 0;
-        $sticky = ($directory['mode'] & 01000) !== 0;
-        if ($shared && !$sticky) {
-            throw RendererException::cannotConnect(
-                $this->socketPath,
-                'its directory is writable by other users, who could replace the socket',
-            );
+        $each = [];
+        foreach ($refusals as $path => $reason) {
+            $each[] = basename($path) . ": {$reason}";
         }
-        if (($shared || $directory['uid'] !== posix_geteuid()) && !\in_array($socket['uid'], $trusted, true)) {
-            throw RendererException::cannotConnect(
-                $this->socketPath,
-                'it belongs to another user, in a directory any user can write to',
-            );
-        }
+
+        throw RendererException::cannotConnect($this->socketPath, 'no renderer in the pool answered (' . implode('; ', $each) . ')');
     }
 
     /**
