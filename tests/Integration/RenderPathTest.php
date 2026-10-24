@@ -84,7 +84,7 @@ it('renders the catalog end to end', function () {
     expect(substr_count($html, '<title'))->toBe(1);
 
     // What the head preloads, reported over the socket for the Link header:
-    // the client entry, then the client components' chunk.
+    // the client entry, then the chunks of the client components it renders.
     $preloaded = \Tinvar\Render\ModulePreload::modulesOf($result->meta);
     expect($preloaded)->not->toBe([])
         ->and($preloaded[0])->toMatch('#^/assets/index-[\w-]+\.js$#');
@@ -193,6 +193,47 @@ it('includes the renderer message when debug is on', function () {
     $e = RendererException::fromErrorFrame(['message' => 'TypeError: boom'], debug: true);
 
     expect($e->getMessage())->toBe('TypeError: boom');
+});
+
+// "Code splitting: one chunk per client component; modulepreload for the
+// current page's client references, capped." The shop's build names a
+// chunk per 'use client' module (clientComponentChunks()), so each page
+// preloads the islands it renders -- the sign-in form on the sign-in page,
+// not on the catalog -- and its Link header stops at the cap whatever the
+// head lists.
+//
+// Each page is rendered twice, and the second render read. The first time
+// a renderer loads a client module, the hint to preload it is given while
+// the payload is decoded, before React DOM's render of the HTML has begun,
+// and React drops it (plugin-rsc's preloadDeps); every render after gives
+// it during the render. A cold renderer's first page preloads less, and
+// loads the rest as its payload names them.
+it('preloads the client components each page renders, and no others, under the cap', function () {
+    [$kernel, $renderer] = shopKernel();
+
+    $page = static function (string $path) use ($kernel): RenderResult {
+        $kernel->render(Request::get($path, ['accept' => 'text/html']), static function (): void {});
+
+        return $kernel->render(Request::get($path, ['accept' => 'text/html']), static function (): void {});
+    };
+
+    try {
+        $catalog = $page('/');
+        $signIn = $page('/sign-in');
+    } finally {
+        $renderer->stop();
+    }
+
+    $form = static fn (string $module): bool => preg_match('#^/assets/SignInForm-[\w-]+\.js$#', $module) === 1;
+    expect(array_filter(\Tinvar\Render\ModulePreload::modulesOf($signIn->meta), $form))->toHaveCount(1)
+        ->and(array_filter(\Tinvar\Render\ModulePreload::modulesOf($catalog->meta), $form))->toBe([]);
+
+    foreach ([$catalog, $signIn] as $result) {
+        $header = (string) \Tinvar\Render\ModulePreload::header($result);
+        expect(substr_count($header, 'rel=modulepreload'))->toBeLessThanOrEqual(\Tinvar\Render\ModulePreload::MAX_ENTRIES)
+            ->and(\strlen($header))->toBeLessThanOrEqual(\Tinvar\Render\ModulePreload::MAX_BYTES)
+            ->and($header)->toStartWith('</assets/index-');
+    }
 });
 
 // The front controller's path: one Request in, the document or -- for a
