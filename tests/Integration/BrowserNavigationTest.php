@@ -559,3 +559,53 @@ it('lets staff into the admin panel\'s orders, and refuses a customer', function
     // A customer holds no membership of the panel: the shop's own 403 page.
     expect($result['refused'])->toBe(['status' => 403, 'heading' => 'This page is not open to your account']);
 });
+
+// "Uploaded files are referenced only by a server-issued upload ticket": the
+// account page's two forms, in Chromium against the served shop. Each file
+// goes to /_upload under the page's ticket and is saved by its action; a
+// file that only claims to be an image is refused by its bytes.
+it('uploads an avatar and a receipt photo from the account page, and refuses a file posing as an image', function () use ($root) {
+    $storage = sys_get_temp_dir() . '/tinvar-e2e-uploads-' . bin2hex(random_bytes(4));
+    $fixtures = sys_get_temp_dir() . '/tinvar-e2e-images-' . bin2hex(random_bytes(4));
+    mkdir($fixtures, 0o700);
+    $image = imagecreatetruecolor(4, 4);
+    \assert($image !== false);
+    imagepng($image, "{$fixtures}/avatar.png");
+    imagejpeg($image, "{$fixtures}/receipt.jpg");
+
+    $output = '';
+    try {
+        served($root, function (string $origin) use ($root, $fixtures, &$output): void {
+            $output = runWithTimeout(
+                ['node', "{$root}/examples/shop/e2e/uploads.mjs", $origin, DemoAccount::EMAIL, DemoAccount::PASSWORD, "{$fixtures}/avatar.png", "{$fixtures}/receipt.jpg"],
+                $root,
+                90,
+            );
+        }, ['SHOP_STORAGE' => $storage]);
+    } finally {
+        exec('rm -rf ' . escapeshellarg($storage) . ' ' . escapeshellarg($fixtures));
+    }
+
+    $result = json_decode((string) $output, true);
+    expect($result)->toBeArray("the browser script failed:\n{$output}");
+
+    expect($result['errors'])->toBe([])
+        ->and($result['csp'])->toBe([])
+        ->and($result['redirected'])->toBe('/sign-in?next=%2Faccount')
+        ->and($result['before'])->toBe(['images' => 0, 'empty' => true]);
+
+    // Refused by what its bytes are, whatever its name and type said.
+    expect($result['refused'])->toStartWith('That file is not a PNG, JPEG or WebP image');
+
+    // Three files to /_upload, each with the CSRF header; two saved, each by
+    // its own action -- the refused one never reached one. (Sign-in may be
+    // sent twice: a first visit's 419 is retried with the cookie it set.)
+    $saves = array_values(array_filter($result['actions'], static fn (string $a): bool => $a !== 'account.signIn'));
+    expect($result['uploads'])->toBe([['csrf' => true], ['csrf' => true], ['csrf' => true]])
+        ->and($saves)->toBe(['account.updateAvatar', 'account.addReceipt']);
+
+    // Shown back as what it was sniffed as, to this session, and to no one else.
+    expect($result['fetched'])->toBe(['status' => 200, 'type' => 'image/png', 'nosniff' => 'nosniff'])
+        ->and($result['elsewhere'])->toBe(404)
+        ->and($result['receipts'])->toBe(1);
+});
