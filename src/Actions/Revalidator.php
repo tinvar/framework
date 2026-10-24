@@ -8,10 +8,13 @@ use Tinvar\Auth\PanelContext;
 use Tinvar\Http\BuildRegistry;
 use Tinvar\Http\EntryContext;
 use Tinvar\Http\HttpException;
+use Tinvar\Http\Kernel;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Pipeline;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
+use Tinvar\Live\LiveMinter;
+use Tinvar\Live\TagsRead;
 use Tinvar\Orm\Orm;
 use Tinvar\Render\RouteToken;
 use Tinvar\Render\TokenClaims;
@@ -43,12 +46,23 @@ use Tinvar\Support\Signer;
  * into a failed request. The client gets the result and no payload, which it
  * reads as "reload that route yourself" — the same thing it would do if the
  * token had expired.
+ *
+ * With live updates, each re-render also comes back with the live token for
+ * what it read (ADR 0048), minted as a page render's is: by the framework,
+ * bound to the request as it stands once the action has run -- its tenant,
+ * panel, user and auth epoch -- from the tags its loaders and its queries
+ * read. A page re-rendered in place used to keep the token it was first
+ * drawn with, listening on for what it no longer showed and deaf to what it
+ * now did, under a binding the action may have moved.
  */
 final class Revalidator
 {
     /**
-     * @param \Closure(LoadedRoute, Request): string $render produces the payload
-     *        for one re-rendered route
+     * @param \Closure(LoadedRoute, Request): (string|Response) $render produces
+     *        the payload for one re-rendered route: the payload alone, or a
+     *        response whose body is the payload and whose `x-live-token` is
+     *        the live token it minted with the request's Kernel::LIVE_MINTER,
+     *        as a page render answers
      * @param \Closure(class-string): Middleware $middlewareResolver required,
      *        not optional: null meant "run no middleware", which is silently
      *        the pre-fix behaviour for anyone constructing this directly
@@ -60,6 +74,12 @@ final class Revalidator
      * @param EntryContext|null $entry what each route's declarations put around
      *        it -- its tenant, its panel and the panel's stack -- as navigation
      *        runs it
+     * @param TagsRead|null $tags what the loaders read, by segment: the one
+     *        $loaders attributes to segments and loaders are handed, emptied
+     *        before each re-render so no page's tags reach another's token
+     * @param (\Closure(Request, string, array<string, string>, TagsRead|null): ?LiveMinter)|null $liveMinter
+     *        the minter for one re-render, bound to the request as it stands
+     *        (Kernel::liveMinter); none without live updates
      */
     public function __construct(
         private readonly RouteRegistry $routes,
@@ -73,6 +93,8 @@ final class Revalidator
         private readonly array $globalMiddleware = [],
         private readonly ?\Closure $log = null,
         private readonly ?EntryContext $entry = null,
+        private readonly ?TagsRead $tags = null,
+        private readonly ?\Closure $liveMinter = null,
     ) {}
 
     /**
@@ -119,10 +141,26 @@ final class Revalidator
      */
     public function rerender(array $invalidated, array $tokens, Request $request, \Closure $sessionId): array
     {
+        return $this->rerendered($invalidated, $tokens, $request, $sessionId)['payloads'];
+    }
+
+    /**
+     * As rerender(), with each re-render's live token beside its payload:
+     * for every page whose render answered with one -- null when it read
+     * nothing to listen for -- and none for a render that answered with
+     * its payload alone, whose client keeps the token it holds.
+     *
+     * @param list<string> $invalidated
+     * @param list<string> $tokens
+     * @param \Closure(Request): string $sessionId
+     * @return array{payloads: array<string, string>, live: array<string, string|null>}
+     */
+    public function rerendered(array $invalidated, array $tokens, Request $request, \Closure $sessionId): array
+    {
         $wanted = array_flip($this->routesFor($invalidated));
 
         if ($wanted === [] || $tokens === []) {
-            return [];
+            return ['payloads' => [], 'live' => []];
         }
 
         // Deduplicated BEFORE anything renders, and keyed by route AND
@@ -151,14 +189,19 @@ final class Revalidator
         }
 
         $payloads = [];
+        $live = [];
         foreach (\array_slice($pages, 0, self::MAX_ROUTES, preserve_keys: true) as $key => $claims) {
-            $payload = $this->renderOne($claims, $request);
-            if ($payload !== null) {
-                $payloads[$key] = $payload;
+            $rendered = $this->renderOne($claims, $request);
+            if ($rendered === null) {
+                continue;
+            }
+            $payloads[$key] = $rendered[0];
+            if ($rendered[1]) {
+                $live[$key] = $rendered[2];
             }
         }
 
-        return $payloads;
+        return ['payloads' => $payloads, 'live' => $live];
     }
 
     /**
@@ -220,13 +263,19 @@ final class Revalidator
         return $token;
     }
 
-    private function renderOne(TokenClaims $claims, Request $request): ?string
+    /**
+     * One page re-rendered: its payload, whether its render answered for live
+     * updates, and the live token it answered with.
+     *
+     * @return array{string, bool, string|null}|null
+     */
+    private function renderOne(TokenClaims $claims, Request $request): ?array
     {
         $route = $claims->route;
         $params = $claims->params;
         $panel = $claims->panel;
 
-        $run = function () use ($route, $params, $request, $claims): ?string {
+        $run = function () use ($route, $params, $request, $claims): ?array {
             try {
                 $chain = $this->routes->chainFor($route, $params);
             } catch (RoutingException) {
@@ -294,8 +343,30 @@ final class Revalidator
                         return Response::make(200, '');
                     }
 
-                    $loaded = $this->loaders->run($chain, $inner);
-                    $payload = ($this->render)($loaded, $inner);
+                    // This page's tags alone: whatever the action, or the
+                    // page re-rendered before this one, read is not this
+                    // page's to listen for.
+                    $this->tags?->forget();
+                    try {
+                        $loaded = $this->loaders->run($chain, $inner);
+
+                        // Here, inside the route's stack, so the binding is the
+                        // one the page is drawn under: its tenant resolved, its
+                        // panel entered, and whoever the action left signed in
+                        // at whatever epoch it left them.
+                        $minter = $this->liveMinter === null
+                            ? null
+                            : ($this->liveMinter)($inner, $chain->page->name ?? $claims->route, $chain->parameters, $this->tags);
+                        $rendered = ($this->render)($loaded, $minter === null ? $inner : $inner->withAttribute(Kernel::LIVE_MINTER, $minter));
+                    } finally {
+                        $this->tags?->forget();
+                    }
+
+                    if (!$rendered instanceof Response) {
+                        $payload = [$rendered, false, null];
+                    } elseif ($rendered->status >= 200 && $rendered->status < 300) {
+                        $payload = [$rendered->body(), $minter !== null, $minter === null ? null : $rendered->header('x-live-token')];
+                    }
 
                     return Response::make(200, '');
                 });

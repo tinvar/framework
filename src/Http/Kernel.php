@@ -553,7 +553,9 @@ final class Kernel
             ? null
             : new Revalidator(
                 routes: $this->routes,
-                loaders: new LoaderRunner($this->orm, $resolver, $gate),
+                // Telling the loaders' tags apart by segment, for the live
+                // token each re-render answers with.
+                loaders: new LoaderRunner($this->orm, $resolver, $gate, $this->tagsRead),
                 signer: $routeSigner,
                 orm: $this->orm,
                 render: $fragments->renderRoute,
@@ -565,6 +567,10 @@ final class Kernel
                     $log($e, ExceptionHandler::digest($e));
                 },
                 entry: $entry,
+                tags: $this->tagsRead,
+                liveMinter: $live === null
+                    ? null
+                    : fn (Request $request, string $route, array $params, ?TagsRead $loaders): ?LiveMinter => $this->liveMinter($request, $route, $params, $loaders),
             );
 
         // Built before the runners, which report through it: a rescued field

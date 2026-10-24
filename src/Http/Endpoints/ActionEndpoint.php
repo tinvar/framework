@@ -278,6 +278,8 @@ final class ActionEndpoint
                 ->withHeader('x-invalidated-tags', implode(',', $result->revalidatedTags));
         }
 
+        $rerendered = $this->rerender($result->revalidatedRoutes, $routeTokens, $request);
+
         return self::json($result->status, [
             'value' => $result->value,
             'flash' => $result->flash,
@@ -286,7 +288,11 @@ final class ActionEndpoint
             // mounted routes." Absent for any route whose pipeline denied,
             // whose token this server will not act on, or that the client
             // was not holding -- the write stands either way.
-            'payloads' => $this->rerender($result->revalidatedRoutes, $routeTokens, $request),
+            'payloads' => $rerendered['payloads'],
+            // Each re-render's live token, by the same key: what the page
+            // listens for from now on, under the binding it was drawn under
+            // (ADR 0048). Only with live updates, and a render that minted.
+            ...($rerendered['live'] === [] ? [] : ['live' => $rerendered['live']]),
         ])
             // "an action's response lists the server-side query tags it
             // invalidated, and the client flushes matching prefetch entries
@@ -314,12 +320,12 @@ final class ActionEndpoint
      * Re-renders the mounted routes this action invalidated.
      *
      * @param list<string> $invalidated
-     * @return array<string, string>
+     * @return array{payloads: array<string, string>, live: array<string, string|null>}
      */
     private function rerender(array $invalidated, mixed $tokens, Request $request): array
     {
         if ($this->revalidator === null || $invalidated === []) {
-            return [];
+            return ['payloads' => [], 'live' => []];
         }
 
         // What the action named is checked before anything about the
@@ -329,7 +335,7 @@ final class ActionEndpoint
         $this->revalidator->routesFor($invalidated);
 
         if ($this->sessionId === null || !\is_array($tokens) || !array_is_list($tokens)) {
-            return [];
+            return ['payloads' => [], 'live' => []];
         }
 
         $tokens = array_values(array_filter(
@@ -343,7 +349,7 @@ final class ActionEndpoint
         // examined rather than renders performed. This bound is on how much
         // the endpoint will PARSE, which is a different and also necessary
         // limit.
-        return $this->revalidator->rerender(
+        return $this->revalidator->rerendered(
             $invalidated,
             \array_slice($tokens, 0, self::MAX_ROUTE_TOKENS),
             $request,

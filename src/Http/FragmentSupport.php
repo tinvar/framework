@@ -31,11 +31,16 @@ final readonly class FragmentSupport
      *        route. A closure free to pass the whole registry would make
      *        /_fragment a query endpoint with no allowlist, no CSRF, no
      *        authentication and the wrong throttle bucket.
-     * @param (\Closure(\Tinvar\Routing\LoadedRoute, Request): string)|null $renderRoute
+     * @param (\Closure(\Tinvar\Routing\LoadedRoute, Request): (string|Response))|null $renderRoute
      *        produces the payload for a route re-rendered after an action.
      *        Separate from $render because a fragment renders ONE subtree
      *        from a token and this renders a whole route from its loaders:
-     *        the same closure could not honestly do both.
+     *        the same closure could not honestly do both. It may answer as a
+     *        page render does, with a response: the payload as its body, and
+     *        in `x-live-token` what the request's Kernel::LIVE_MINTER minted
+     *        from the render's tags -- the token the client listens with
+     *        from then on, in place of the one the page was first drawn with
+     *        (ADR 0048).
      * @param \Closure(Request): string $sessionId must return a real session id; an empty
      *        one is refused, because every visitor without a session would otherwise share
      *        one binding and their tokens would be interchangeable
