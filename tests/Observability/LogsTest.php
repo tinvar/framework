@@ -89,6 +89,29 @@ describe('the redactor', function () {
             ->and($cut)->toEndWith('bytes]');
     });
 
+    // A secret the first cut splits is too short for its pattern to see,
+    // and what the patterns replace earlier in the window can shrink the
+    // text enough to bring that fragment inside the final cut.
+    it('never lets the fragment of a secret the first cut split reach the output', function () {
+        $jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.' . str_repeat('s1gnature', 5);
+        $shrinking = implode(' ', array_fill(0, 20, $jwt)) . ' ';
+        $secret = 'k' . str_repeat('9a', 40);
+        $bearer = 'Bearer sk_live_0123456789abcdef';
+
+        foreach ([$secret, $bearer] as $straddling) {
+            // Placed so the first cut lands 30 bytes into it.
+            $filler = str_repeat('.', Redactor::MAX_STRING + 512 - 30 - \strlen($shrinking) - 1) . ' ';
+            $text = $shrinking . $filler . $straddling . ' and then the rest';
+
+            $out = new Redactor()->text($text);
+
+            expect($out)->not->toContain(substr($straddling, 0, 30))
+                ->and($out)->not->toContain(substr($straddling, 7, 12))
+                ->and($out)->not->toContain('the rest')
+                ->and($out)->toEndWith('[+' . (\strlen($text) - Redactor::MAX_STRING) . ' bytes]');
+        }
+    });
+
     // The encoder's rule -- nothing but Data crosses -- has no back door
     // through the log: a model or a Data object is its class name alone.
     it('never serializes an object', function () {

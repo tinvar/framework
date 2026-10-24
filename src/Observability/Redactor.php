@@ -102,11 +102,14 @@ final class Redactor
     public function text(string $text): string
     {
         $length = \strlen($text);
-        // Cut with room to spare before the patterns run, so a long string
-        // costs bounded work and a token straddling the cut is still whole
-        // where the patterns see it.
+        // Cut before the patterns run, so a long string costs bounded work --
+        // and then back to the last whitespace or delimiter. A secret the cut
+        // splits is too short for its pattern to recognise, and what the
+        // patterns replace earlier in the window can shrink the text enough
+        // to bring that fragment inside the final cut. Dropped whole, nothing
+        // past a complete token in the window can reach the output.
         if ($length > self::MAX_STRING + 512) {
-            $text = self::cut($text, self::MAX_STRING + 512);
+            $text = (string) preg_replace('/[^\s"\'<>()\[\]{},;]*\z/', '', self::cut($text, self::MAX_STRING + 512));
         }
 
         $redacted = preg_replace(array_keys(self::VALUES), array_values(self::VALUES), $text);
@@ -116,8 +119,12 @@ final class Redactor
             return self::REDACTED;
         }
 
-        return \strlen($redacted) > self::MAX_STRING
-            ? self::cut($redacted, self::MAX_STRING) . '...[+' . ($length - self::MAX_STRING) . ' bytes]'
+        // Marked whenever the text was longer than what is kept, even where
+        // redaction left it short enough: a cut line must not read as whole.
+        $longest = max($length, \strlen($redacted));
+
+        return $longest > self::MAX_STRING
+            ? self::cut($redacted, self::MAX_STRING) . '...[+' . ($longest - self::MAX_STRING) . ' bytes]'
             : $redacted;
     }
 
