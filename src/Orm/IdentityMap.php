@@ -172,6 +172,26 @@ final class IdentityMap
         return array_sum(array_map(\count(...), $this->rows));
     }
 
+    /**
+     * Every row held, in every tenant: what a request read, for the testing
+     * layer's model-leak check (Tinvar\Testing\ModelLeaks), which looks for
+     * their columns in what the render sent. Ghosts a relation registered and
+     * nothing loaded are among them; the caller tells them apart.
+     *
+     * @return list<object>
+     */
+    public function all(): array
+    {
+        $all = [];
+        foreach ($this->rows as $bucket) {
+            foreach ($bucket as $model) {
+                $all[] = $model;
+            }
+        }
+
+        return $all;
+    }
+
     private function bucket(string $class): string
     {
         return "{$this->connection}|{$this->tenant()}|{$class}";

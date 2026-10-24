@@ -46,6 +46,11 @@ final class QueryRunner
      *        #[Panel] is refused on every call: a render runs queries behind
      *        its page's panel, not theirs, and nothing here could tell
      *        whether the page's covers the query's.
+     * @param (\Closure(string, array<string, mixed>, mixed): void)|null $returned told the
+     *        name, arguments and value of each call whose body returned, before the
+     *        encoder sees the value -- for the testing layer, which hands a test the
+     *        Data object a query returned rather than its encoding. Never told of a
+     *        cache hit, which has no value but its encoding.
      */
     public function __construct(
         private readonly QueryRegistry $registry,
@@ -56,6 +61,7 @@ final class QueryRunner
         private readonly ?QueryCache $cache = null,
         private readonly ?\Closure $report = null,
         private readonly ?\Closure $panels = null,
+        private readonly ?\Closure $returned = null,
     ) {}
 
     /**
@@ -581,6 +587,7 @@ final class QueryRunner
                 continue;
             }
 
+            $this->tell($group['name'], $group['args'], $raw[$key] ?? null);
             $outcomes[$key] = $this->settle($raw[$key] ?? null);
             $this->remember($group['name'], $group['args'], $outcomes[$key]);
         }
@@ -616,6 +623,7 @@ final class QueryRunner
             }
 
             foreach ($keys as $index => $key) {
+                $this->tell($name, $groups[$key]['args'], $batch[$index]);
                 $outcomes[$key] = $this->settle($batch[$index]);
                 $this->remember($name, $groups[$key]['args'], $outcomes[$key]);
             }
@@ -696,6 +704,19 @@ final class QueryRunner
             // A mistyped tag closure is already reported by QueryCache, which
             // treats it as "do not cache this one". Failing the render over
             // it here would turn a caching bug into an outage.
+        }
+    }
+
+    /**
+     * Hands a body's value to whoever asked to see it (see the constructor);
+     * nothing for a body that threw.
+     *
+     * @param array<string, mixed> $arguments
+     */
+    private function tell(string $name, array $arguments, mixed $value): void
+    {
+        if ($this->returned !== null && !$value instanceof \Throwable) {
+            ($this->returned)($name, $arguments, $value);
         }
     }
 

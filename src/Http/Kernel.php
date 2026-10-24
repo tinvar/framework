@@ -115,6 +115,15 @@ final class Kernel
      */
     public readonly TagsRead $tagsRead;
 
+    /**
+     * The gate every #[Authorize] is asked through, and the query cache the
+     * runners share: read by the testing layer (Tinvar\Testing), which runs
+     * a query in PHP with the same checks and cache a render's call meets.
+     */
+    public readonly Gate $gate;
+
+    public readonly QueryCache $cache;
+
     /** The hub and keys live tokens need; null when the application has none. */
     private readonly ?LiveUpdates $live;
 
@@ -199,8 +208,12 @@ final class Kernel
     /** The application's global middleware, alone: what errorPage() runs an error page behind. */
     private readonly Pipeline $globalStack;
 
-    /** What every entry point's declarations put around it; see EntryContext. */
-    private readonly EntryContext $entry;
+    /**
+     * What every entry point's declarations put around it; see EntryContext.
+     * Public for the testing layer, which places a query called in PHP in
+     * the panel its declarations or namespace give it.
+     */
+    public readonly EntryContext $entry;
 
     /**
      * The stack the two endpoints run behind.
@@ -460,6 +473,8 @@ final class Kernel
         $this->panels = $panels;
         $gate ??= new PolicyGate($this->policies, $this->auth);
         $cache ??= new QueryCache(new \Tinvar\Cache\ArrayStore(), $this->auth, $panels);
+        $this->gate = $gate;
+        $this->cache = $cache;
 
         // What every entry point's declarations put around it -- the tenant
         // its #[TenantFrom] names, the panel its #[Panel] or namespace puts
@@ -1284,6 +1299,16 @@ final class Kernel
     public function report(\Throwable $e, ?string $digest = null): string
     {
         return $this->exceptions->report($e, $digest);
+    }
+
+    /**
+     * The build this code is, as a client sends it in `X-Version`; null when
+     * the application declared no builds. A test's client navigation sends
+     * it as the router does, read from the page it holds.
+     */
+    public function build(): ?string
+    {
+        return $this->builds?->current;
     }
 
     /**
