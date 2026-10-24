@@ -95,6 +95,16 @@ final class UuidColumns implements Connection
         return $this->inner->inTransaction();
     }
 
+    public function readOnly(\Closure $work): mixed
+    {
+        return $this->inner->readOnly($work);
+    }
+
+    public function isReadOnly(): bool
+    {
+        return $this->inner->isReadOnly();
+    }
+
     public function rollBackOpenTransaction(): bool
     {
         return $this->inner->rollBackOpenTransaction();

@@ -25,4 +25,22 @@ final class ReadOnlyViolation extends \RuntimeException
             . 'Move the write into an #[Action].',
         );
     }
+
+    /**
+     * A write the database refused, inside the read-only transaction a
+     * loader or query body runs in: one sent around the ORM, as raw SQL
+     * through the connection, which the PHP check above never sees. The
+     * statement is not quoted, since it can carry the values it would have
+     * written; the driver's refusal is attached.
+     */
+    public static function refusedByDatabase(\PDOException $refusal): self
+    {
+        return new self(
+            'The database refused a write inside a read-only transaction, which loaders and query bodies run in. '
+            . 'Hovering a link runs a loader, so a write here happens without anyone choosing it. '
+            . 'Move the write into an #[Action].',
+            0,
+            $refusal,
+        );
+    }
 }

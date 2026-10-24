@@ -48,11 +48,31 @@ interface Connection
     public function inTransaction(): bool;
 
     /**
-     * Rolls back a transaction still open, savepoints and all; nothing when
-     * none is. For the end of a request: whatever left one open, the next
-     * request on a worker must not start inside it.
+     * Runs $work with the database refusing writes: the read-only
+     * transaction loaders and query bodies run in ("Safe reads").
      *
-     * @return bool whether one was open
+     * Scopes are counted, not stacked. A render's fibers each open one,
+     * suspend inside it and finish in any order, all on this one
+     * connection, which can hold one transaction at a time -- so the
+     * database is read-only from the first scope opened to the last one
+     * closed, and every statement in between, from any fiber, runs in it.
+     *
+     * @template T
+     * @param \Closure(): T $work
+     * @return T
+     */
+    public function readOnly(\Closure $work): mixed;
+
+    /** Whether a read-only scope is open on this connection, in any fiber. */
+    public function isReadOnly(): bool;
+
+    /**
+     * Rolls back a transaction still open, savepoints and all, and ends a
+     * read-only scope still open; nothing when neither is. For the end of a
+     * request: whatever left one open, the next request on a worker must not
+     * start inside it.
+     *
+     * @return bool whether a transaction was open
      */
     public function rollBackOpenTransaction(): bool;
 }

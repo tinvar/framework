@@ -26,6 +26,39 @@ final class PdoConnection implements Connection
     /** Savepoints open inside the outermost transaction; names the next one. */
     private int $savepoints = 0;
 
+    /**
+     * How a read-only scope tells the database, by driver. Postgres runs it
+     * in a READ ONLY transaction of its own, or -- when the caller already
+     * has one open -- in a savepoint of that transaction set read-only for
+     * its length. SQLite sets query_only on this same connection: a second,
+     * read-only connection could not see an in-memory database at all, nor
+     * this connection's uncommitted writes, and would read a different
+     * snapshot from the one the rest of the request reads. Any other driver
+     * is refused in PHP alone, by the ORM.
+     */
+    private const string READ_ONLY_TRANSACTION = 'transaction';
+
+    private const string READ_ONLY_SAVEPOINT = 'savepoint';
+
+    private const string READ_ONLY_QUERY_ONLY = 'query_only';
+
+    private const string READ_ONLY_IN_PHP = 'php';
+
+    /** Read-only scopes open now, across every fiber; see readOnly(). */
+    private int $readOnlyScopes = 0;
+
+    /**
+     * Which run of read-only scopes is open. A reset ends one with scopes
+     * still counted -- a fiber suspended inside one and never resumed -- and
+     * that fiber, unwound later, must not close the run after it.
+     */
+    private int $readOnlyRun = 0;
+
+    /** How the open run told the database (one of the READ_ONLY_ constants); null when none is open. */
+    private ?string $readOnlyMode = null;
+
+    private readonly string $driver;
+
     public function __construct(
         private readonly \PDO $pdo,
         private readonly string $name = 'default',
@@ -33,6 +66,8 @@ final class PdoConnection implements Connection
         $this->pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
         $this->pdo->setAttribute(\PDO::ATTR_DEFAULT_FETCH_MODE, \PDO::FETCH_ASSOC);
         $this->pdo->setAttribute(\PDO::ATTR_EMULATE_PREPARES, false);
+        $driver = $this->pdo->getAttribute(\PDO::ATTR_DRIVER_NAME);
+        $this->driver = \is_string($driver) ? $driver : '';
     }
 
     /**
@@ -130,11 +165,14 @@ final class PdoConnection implements Connection
     public function select(string $sql, array $bindings = []): array
     {
         $this->record($sql);
-        $statement = $this->pdo->prepare($sql);
-        $statement->execute($bindings);
 
         /** @var list<array<string, mixed>> $rows */
-        $rows = $statement->fetchAll();
+        $rows = $this->run(function () use ($sql, $bindings): array {
+            $statement = $this->pdo->prepare($sql);
+            $statement->execute($bindings);
+
+            return $statement->fetchAll();
+        });
 
         return $rows;
     }
@@ -142,10 +180,213 @@ final class PdoConnection implements Connection
     public function execute(string $sql, array $bindings = []): int
     {
         $this->record($sql);
-        $statement = $this->pdo->prepare($sql);
-        $statement->execute($bindings);
 
-        return $statement->rowCount();
+        return $this->run(function () use ($sql, $bindings): int {
+            $statement = $this->pdo->prepare($sql);
+            $statement->execute($bindings);
+
+            return $statement->rowCount();
+        });
+    }
+
+    /**
+     * Runs one statement, keeping a read-only scope usable after it fails.
+     *
+     * On Postgres a failed statement aborts the transaction it ran in, and
+     * every statement after it is refused until that transaction ends. In a
+     * read-only scope that transaction is shared by every fiber in the
+     * render, so one query's failure -- a malformed uuid, a write refused --
+     * would fail every query after it, where it should fail its own call
+     * alone. Nothing was written to keep, so the transaction is begun again
+     * and the failure goes on to its caller.
+     *
+     * @template T
+     * @param \Closure(): T $statement
+     * @return T
+     */
+    private function run(\Closure $statement): mixed
+    {
+        for ($attempt = 1; ; $attempt++) {
+            try {
+                return $statement();
+            } catch (\PDOException $e) {
+                if ($this->readOnlyMode === null) {
+                    throw $e;
+                }
+
+                $this->recoverReadOnly();
+
+                // Aborted before this statement arrived -- by a raw one sent
+                // through pdo(), which nothing recovered from -- so this one
+                // never ran, and runs in the transaction begun again.
+                if ($attempt === 1 && self::sqlState($e) === '25P02') {
+                    continue;
+                }
+
+                throw $this->refusedWrite($e) ? ReadOnlyViolation::refusedByDatabase($e) : $e;
+            }
+        }
+    }
+
+    /**
+     * Runs $work in a read-only transaction, counted across fibers: see
+     * Connection::readOnly().
+     *
+     * The database is told when the first scope opens rather than at the
+     * first statement, so a write sent around this class -- through pdo(),
+     * or a PDO handle taken from it earlier -- is refused as well.
+     */
+    public function readOnly(\Closure $work): mixed
+    {
+        $run = $this->enterReadOnly();
+        $returned = false;
+
+        // A finally, not a catch: a fiber destroyed while suspended in here
+        // is unwound, which runs finally blocks and no catch, and its scope
+        // has to close with it.
+        try {
+            $result = $work();
+            $returned = true;
+
+            return $result;
+        } finally {
+            if ($returned) {
+                $this->leaveReadOnly($run);
+            } else {
+                // The work's failure is the one reported. A scope that will
+                // not close is the reset contract's to end.
+                try {
+                    $this->leaveReadOnly($run);
+                } catch (\Throwable) {
+                }
+            }
+        }
+    }
+
+    public function isReadOnly(): bool
+    {
+        return $this->readOnlyMode !== null;
+    }
+
+    private function enterReadOnly(): int
+    {
+        if ($this->readOnlyScopes === 0) {
+            $this->readOnlyMode = $this->beginReadOnly();
+            $this->readOnlyRun++;
+        }
+
+        $this->readOnlyScopes++;
+
+        return $this->readOnlyRun;
+    }
+
+    private function leaveReadOnly(int $run): void
+    {
+        // Ended already, by a reset; the run open now, if any, is another's.
+        if ($run !== $this->readOnlyRun || $this->readOnlyScopes === 0) {
+            return;
+        }
+
+        if (--$this->readOnlyScopes > 0) {
+            return;
+        }
+
+        $mode = $this->readOnlyMode;
+        $this->readOnlyMode = null;
+        if ($mode !== null) {
+            $this->endReadOnly($mode);
+        }
+    }
+
+    private function beginReadOnly(): string
+    {
+        if ($this->driver === 'sqlite') {
+            $this->pdo->exec('PRAGMA query_only = ON');
+
+            return self::READ_ONLY_QUERY_ONLY;
+        }
+
+        if ($this->driver !== 'pgsql') {
+            return self::READ_ONLY_IN_PHP;
+        }
+
+        // Inside a transaction the caller opened, a BEGIN would be refused,
+        // and a transaction that has run a statement cannot be made
+        // read-only and then read-write again. A savepoint can be both: set
+        // read-only for the scope, and rolled back to at its end, which
+        // drops the setting with it.
+        if ($this->pdo->inTransaction()) {
+            $this->pdo->exec('SAVEPOINT tinvar_read_only; SET LOCAL transaction_read_only = on');
+
+            return self::READ_ONLY_SAVEPOINT;
+        }
+
+        $this->pdo->exec('BEGIN READ ONLY');
+
+        return self::READ_ONLY_TRANSACTION;
+    }
+
+    private function endReadOnly(string $mode): void
+    {
+        match ($mode) {
+            // Committed rather than rolled back: there is nothing to keep
+            // either way, and monitoring reads a rollback as a failure.
+            self::READ_ONLY_TRANSACTION => $this->pdo->inTransaction() ? $this->pdo->exec('COMMIT') : 0,
+            self::READ_ONLY_SAVEPOINT => $this->pdo->inTransaction()
+                ? $this->pdo->exec('ROLLBACK TO SAVEPOINT tinvar_read_only; RELEASE SAVEPOINT tinvar_read_only')
+                : 0,
+            self::READ_ONLY_QUERY_ONLY => $this->pdo->exec('PRAGMA query_only = OFF'),
+            default => 0,
+        };
+    }
+
+    /**
+     * Brings a read-only scope's transaction back from a failed statement.
+     *
+     * Not while a savepoint of transaction() is open inside the scope: that
+     * savepoint rolls back to itself on the way out, which recovers the
+     * transaction too, and beginning it again here would take the savepoint
+     * away from under it. SQLite does not abort a transaction over a failed
+     * statement, so there is nothing to recover.
+     */
+    private function recoverReadOnly(): void
+    {
+        if ($this->savepoints > 0) {
+            return;
+        }
+
+        try {
+            match ($this->readOnlyMode) {
+                self::READ_ONLY_TRANSACTION => $this->pdo->exec('ROLLBACK; BEGIN READ ONLY'),
+                self::READ_ONLY_SAVEPOINT => $this->pdo->exec(
+                    'ROLLBACK TO SAVEPOINT tinvar_read_only; SET LOCAL transaction_read_only = on',
+                ),
+                default => 0,
+            };
+        } catch (\PDOException) {
+            // A connection that cannot recover -- one that has gone away --
+            // fails the next statement too; the failure that caused this is
+            // the one worth reporting, and the reset contract ends the scope.
+        }
+    }
+
+    /** Whether a failure is the database refusing a write in a read-only scope. */
+    private function refusedWrite(\PDOException $e): bool
+    {
+        return match ($this->driver) {
+            // read_only_sql_transaction
+            'pgsql' => self::sqlState($e) === '25006',
+            // SQLITE_READONLY: what query_only answers a write with.
+            'sqlite' => ($e->errorInfo[1] ?? null) === 8,
+            default => false,
+        };
+    }
+
+    private static function sqlState(\PDOException $e): string
+    {
+        $state = $e->errorInfo[0] ?? $e->getCode();
+
+        return \is_string($state) ? $state : (string) $state;
     }
 
     public function transaction(\Closure $work): mixed
@@ -178,8 +419,11 @@ final class PdoConnection implements Connection
             // request's, ran inside it. Rolled back here; a rollback that
             // fails as well is left to the reset contract, and the commit's
             // failure is the one reported.
+            //
+            // The transaction alone: a read-only scope open around this call
+            // belongs to fibers still inside it.
             try {
-                $this->rollBackOpenTransaction();
+                $this->rollBackTransaction();
             } catch (\Throwable) {
             }
 
@@ -225,6 +469,24 @@ final class PdoConnection implements Connection
     }
 
     public function rollBackOpenTransaction(): bool
+    {
+        // A read-only scope still open is ended first: a fiber suspended
+        // inside one and never resumed left the connection refusing writes,
+        // and on a worker the next request would have found it so. Its
+        // Postgres transaction, or the savepoint it sat in, goes with the
+        // rollback below; query_only has to be turned off.
+        $mode = $this->readOnlyMode;
+        $this->readOnlyMode = null;
+        $this->readOnlyScopes = 0;
+        $this->readOnlyRun++;
+        if ($mode === self::READ_ONLY_QUERY_ONLY) {
+            $this->pdo->exec('PRAGMA query_only = OFF');
+        }
+
+        return $this->rollBackTransaction();
+    }
+
+    private function rollBackTransaction(): bool
     {
         if (!$this->pdo->inTransaction()) {
             return false;

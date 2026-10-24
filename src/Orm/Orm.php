@@ -227,17 +227,21 @@ final class Orm
      * nobody has chosen to visit, so a write there happens without anyone
      * deciding to.
      *
-     * This refuses the write in PHP rather than asking the database for a
-     * READ ONLY transaction. A real one is the stronger guarantee and belongs
-     * here later; this one holds on SQLite too, names the offending call, and
-     * does not need the connection to be transactional.
+     * Refused twice. In PHP first: save(), delete() and transaction() throw
+     * before reaching the database, naming the call. Then by the database:
+     * $work runs in the connection's read-only transaction (ADR 0022), so a
+     * write sent around the facade -- `$orm->connection()->execute()`, raw
+     * PDO -- is refused as well. Job and event dispatch, which the spec names
+     * in the same breath, do not exist yet.
      *
-     * Being a PHP check, it covers the ORM facade -- save(), delete() and
-     * transaction() -- and nothing below it. `$orm->connection()->execute()`
-     * from inside a loader still writes, as do job and event dispatch, which
-     * the spec names in the same breath and which do not exist yet. A database
-     * READ ONLY transaction is what closes those, and the README says this is
-     * still open rather than leaving the gap to be discovered.
+     * The two are kept at different grains on purpose. The PHP check is per
+     * fiber, as the tenant is: one fiber's read-only context must not make
+     * another's code throw. The database's is per connection, since a
+     * connection holds one transaction: while any fiber is inside a scope,
+     * every statement on the connection runs in it. A render runs only
+     * read-only fibers, so they share it without waiting on one another; a
+     * write from a fiber outside every scope, while another is suspended
+     * inside one, is refused by the database alone.
      *
      * @template T
      * @param \Closure(): T $work
@@ -252,7 +256,9 @@ final class Orm
             // this has returned -- so it takes the read-only scope with it.
             // Otherwise a Lazy::of() closure in a loader's Data, or a mapped
             // lazy over an array source, could write during a GET.
-            return Lazy::within(fn (\Closure $deferred): mixed => $this->readOnly($deferred), $work);
+            return $this->connection->readOnly(
+                fn (): mixed => Lazy::within(fn (\Closure $deferred): mixed => $this->readOnly($deferred), $work),
+            );
         } finally {
             $this->setReadOnlyDepth(max(0, $this->readOnlyDepth() - 1));
         }
