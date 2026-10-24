@@ -106,7 +106,14 @@ final class SqliteDialect extends Dialect
 
     public function columns(Connection $connection, string $table): array
     {
-        $definition = $this->definition($connection, $table);
+        // Only for the collation, which nothing else reports: a statement
+        // this cannot take apart costs the columns their case, not the
+        // columns themselves.
+        try {
+            $definition = $this->definition($connection, $table);
+        } catch (\InvalidArgumentException) {
+            $definition = null;
+        }
         $columns = [];
         foreach ($connection->select('SELECT name, type, "notnull", dflt_value, pk FROM pragma_table_info(?) ORDER BY cid', [$table]) as $row) {
             $name = self::text($row, 'name');
