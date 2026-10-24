@@ -1,0 +1,426 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tinvar\Packages;
+
+/**
+ * Package codemods: scripts an enabled package ships to rewrite the app
+ * that uses it, run only when asked, in a sandbox, into a patch.
+ *
+ * "Package codemods run only with --allow-package-codemods, sandboxed, and
+ * any diff touching Authorize, Public or NoAuthorization is flagged for
+ * review" (tinvar-spec.md). A package declares them in its metadata --
+ * `"extra": {"tinvar": {"codemods": ["codemods/v2.php"]}}`, or `tinvar.codemods`
+ * in a package.json -- and each is a PHP script called with one argument,
+ * the directory of the app to rewrite.
+ *
+ * Only packages that pass the supply-chain check run: allowed, and the very
+ * files tinvar.lock pinned. Each script then runs in a process of its own,
+ * inside two sandboxes:
+ *
+ *   - The operating system's: no network, and no writes outside the run's
+ *     own directory -- sandbox-exec on macOS, bubblewrap (`bwrap`) on Linux.
+ *     Where neither is installed, codemods do not run: PHP's own limits
+ *     cannot stand alone, since a static PHP build carries PDO, Redis and
+ *     SOAP clients that open connections no ini setting turns off (PHP 8.5
+ *     removed disable_classes).
+ *   - PHP's: a copy of the package and a copy of the app's tracked files --
+ *     no database, no build, no .env, nothing git ignores -- in a fresh
+ *     directory `open_basedir` confines it to; no php.ini, FFI off, URL
+ *     wrappers off, and every function that starts a process, opens a
+ *     socket, resolves a name, sends mail, or changes the environment or an
+ *     ini setting disabled.
+ *
+ * Its environment is PATH alone, so no secret the shell holds reaches it,
+ * and it is killed at a time limit.
+ *
+ * The real app is never touched. What the scripts changed comes back as a
+ * unified diff, and every changed line that names an authorization
+ * attribute -- or changes an attribute in a file that uses one, where an
+ * alias could hide the name -- is flagged.
+ */
+final class Codemods
+{
+    /** What the flag is about: the attributes declarative authorization is made of. */
+    private const string AUTHORIZATION = '/\b(Authorize|PublicAccess|Public|NoAuthorization)\b/';
+
+    private const array DISABLED = [
+        'exec', 'shell_exec', 'system', 'passthru', 'proc_open', 'popen', 'pcntl_exec', 'pcntl_fork',
+        'pcntl_signal', 'posix_kill', 'posix_mkfifo', 'posix_setuid', 'posix_setgid', 'proc_nice',
+        'putenv', 'dl', 'ini_set', 'ini_alter', 'ini_restore', 'set_include_path',
+        'mail', 'mb_send_mail', 'error_log', 'openlog', 'syslog', 'link', 'symlink',
+        'fsockopen', 'pfsockopen', 'stream_socket_client', 'stream_socket_server', 'stream_socket_pair',
+        'socket_create', 'socket_create_listen', 'socket_create_pair', 'socket_connect',
+        'socket_addrinfo_connect', 'socket_addrinfo_bind', 'curl_init', 'curl_exec', 'curl_multi_init',
+        'curl_multi_exec', 'curl_share_init', 'ftp_connect', 'ftp_ssl_connect',
+        'gethostbyname', 'gethostbynamel', 'gethostbyaddr', 'dns_get_record', 'dns_get_mx', 'getmxrr',
+        'dns_check_record', 'checkdnsrr', 'get_headers', 'imap_open', 'apache_setenv',
+        'pg_connect', 'pg_pconnect', 'mysqli_connect', 'ldap_connect', 'pcntl_rfork', 'pcntl_forkx',
+    ];
+
+    public function __construct(
+        private readonly SupplyChain $supplyChain,
+        private readonly int $timeout = 60,
+    ) {}
+
+    /**
+     * Every codemod the enabled packages declare.
+     *
+     * @return list<array{package: string, script: string, directory: string}>
+     */
+    public function declared(): array
+    {
+        $codemods = [];
+        foreach ($this->supplyChain->enabled() as $package) {
+            $scripts = $package->metadata['codemods'] ?? [];
+            if (!\is_array($scripts) || !array_is_list($scripts)) {
+                throw new \RuntimeException("{$package->name} declares codemods that are not a list of scripts.");
+            }
+            foreach ($scripts as $script) {
+                if (!\is_string($script)
+                    || !str_ends_with($script, '.php')
+                    || str_starts_with($script, '/')
+                    || str_contains($script, '\\')
+                    || preg_match('#(^|/)\.\.?(/|$)#', $script) === 1
+                    || $package->directory === null
+                    || !is_file($package->directory . '/' . $script)
+                    || is_link($package->directory . '/' . $script)) {
+                    throw new \RuntimeException(
+                        "{$package->name} declares a codemod that is not a PHP file inside it: " . json_encode($script) . '.',
+                    );
+                }
+                $codemods[] = ['package' => $package->name, 'script' => $script, 'directory' => $package->directory];
+            }
+        }
+
+        return $codemods;
+    }
+
+    /**
+     * @param bool $allowed whether --allow-package-codemods was given
+     * @param string|null $only one package's codemods alone
+     */
+    public function run(string $app, bool $allowed, ?string $only = null): CodemodResult
+    {
+        if (!$allowed) {
+            throw new \RuntimeException(
+                'Package codemods run only with --allow-package-codemods: they are code from a dependency, run against yours.',
+            );
+        }
+
+        $app = realpath($app) ?: throw new \RuntimeException("{$app} is not a directory.");
+        $files = self::trackedFiles($app);
+        $codemods = array_values(array_filter(
+            $this->declared(),
+            static fn (array $codemod): bool => $only === null || $codemod['package'] === $only,
+        ));
+
+        $sandbox = self::temporaryDirectory();
+        try {
+            $current = $sandbox . '/app-0';
+            self::copyFiles($app, $files, $current);
+
+            $ran = [];
+            $failed = [];
+            foreach ($codemods as $index => $codemod) {
+                $run = $sandbox . '/run-' . ($index + 1);
+                self::copyTree($codemod['directory'], $run . '/package');
+                self::copyTree($current, $run . '/app');
+                mkdir($run . '/tmp', 0o700);
+
+                [$status, $output] = $this->sandboxed($run, $run . '/package/' . $codemod['script']);
+                $label = "{$codemod['package']} {$codemod['script']}";
+                if ($status !== 0) {
+                    $failed[] = "{$label}: " . ($status === 124 ? "killed after {$this->timeout}s" : "exited {$status}")
+                        . ($output === '' ? '' : ': ' . trim(substr($output, 0, 2000)));
+
+                    break;
+                }
+                $ran[] = $label;
+                $current = $run . '/app';
+            }
+
+            [$patch, $flagged] = self::diff($app, $files, $current);
+
+            return new CodemodResult($patch, $flagged, $ran, $failed);
+        } finally {
+            self::remove($sandbox);
+        }
+    }
+
+    /** @return array{int, string} exit status (124 when killed) and what it printed */
+    private function sandboxed(string $root, string $script): array
+    {
+        // A trailing slash, or open_basedir also admits /tmp/run-1x.
+        $base = $root . '/';
+        $command = [
+            ...self::confinement($root),
+            \PHP_BINARY, '-n',
+            '-d', 'open_basedir=' . $base,
+            '-d', 'disable_functions=' . implode(',', self::DISABLED),
+            '-d', 'ffi.enable=0',
+            '-d', 'allow_url_fopen=0',
+            '-d', 'allow_url_include=0',
+            '-d', 'auto_prepend_file=',
+            '-d', 'auto_append_file=',
+            '-d', 'memory_limit=256M',
+            '-d', 'max_execution_time=' . $this->timeout,
+            '-d', 'sys_temp_dir=' . $root . '/tmp',
+            '-d', 'upload_tmp_dir=' . $root . '/tmp',
+            '-d', 'display_errors=stderr',
+            '-d', 'log_errors=0',
+            $script,
+            $root . '/app',
+        ];
+
+        return self::process($command, $root . '/app', ['PATH' => '/usr/bin:/bin', 'HOME' => $root . '/tmp', 'TMPDIR' => $root . '/tmp'], $this->timeout);
+    }
+
+    /**
+     * The operating system's sandbox around the PHP process: no network,
+     * and writes only under $root. Refuses where there is none.
+     *
+     * @return list<string> the command to put in front of PHP's
+     */
+    private static function confinement(string $root): array
+    {
+        if (preg_match('/["\\\\\x00-\x1f]/', $root) === 1) {
+            throw new \RuntimeException("Cannot sandbox a run under {$root}.");
+        }
+
+        if (\PHP_OS_FAMILY === 'Darwin' && is_executable('/usr/bin/sandbox-exec')) {
+            $profile = implode('', [
+                '(version 1)',
+                '(allow default)',
+                '(deny network*)',
+                '(deny process-fork)',
+                '(deny file-write*)',
+                '(allow file-write* (subpath "' . $root . '"))',
+            ]);
+
+            return ['/usr/bin/sandbox-exec', '-p', $profile];
+        }
+
+        if (\PHP_OS_FAMILY === 'Linux') {
+            foreach (['/usr/bin/bwrap', '/bin/bwrap', '/usr/local/bin/bwrap'] as $bwrap) {
+                if (is_executable($bwrap)) {
+                    return [
+                        $bwrap, '--ro-bind', '/', '/', '--dev', '/dev', '--bind', $root, $root,
+                        '--unshare-all', '--die-with-parent', '--new-session', '--',
+                    ];
+                }
+            }
+        }
+
+        throw new \RuntimeException(
+            'No operating-system sandbox to run codemods in: install bubblewrap (bwrap) on Linux; macOS has sandbox-exec.',
+        );
+    }
+
+    /**
+     * @param list<string> $command
+     * @param array<string, string> $env
+     * @return array{int, string}
+     */
+    private static function process(array $command, string $cwd, array $env, int $timeout, int $limit = 1 << 20): array
+    {
+        $process = proc_open($command, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $cwd, $env);
+        if (!\is_resource($process)) {
+            throw new \RuntimeException('Cannot start ' . $command[0] . '.');
+        }
+        stream_set_blocking($pipes[1], false);
+        stream_set_blocking($pipes[2], false);
+
+        $output = '';
+        $deadline = microtime(true) + $timeout;
+        $killed = false;
+        while (true) {
+            $read = [$pipes[1], $pipes[2]];
+            $write = $except = null;
+            @stream_select($read, $write, $except, 0, 100_000);
+            foreach ([$pipes[1], $pipes[2]] as $pipe) {
+                $chunk = fread($pipe, 65536);
+                if (\is_string($chunk) && \strlen($output) < $limit) {
+                    $output .= substr($chunk, 0, $limit - \strlen($output));
+                }
+            }
+            $status = proc_get_status($process);
+            if (!$status['running']) {
+                break;
+            }
+            if (microtime(true) > $deadline) {
+                proc_terminate($process, 9);
+                $killed = true;
+
+                break;
+            }
+        }
+        foreach ([$pipes[1], $pipes[2]] as $pipe) {
+            $rest = stream_get_contents($pipe);
+            if (\is_string($rest) && \strlen($output) < $limit) {
+                $output .= substr($rest, 0, $limit - \strlen($output));
+            }
+            fclose($pipe);
+        }
+        $code = proc_close($process);
+        $exit = $status['running'] ? $code : $status['exitcode'];
+
+        return [$killed ? 124 : $exit, $output];
+    }
+
+    /** @return list<string> paths relative to $app */
+    private static function trackedFiles(string $app): array
+    {
+        [$status, $output] = self::process(['git', '-C', $app, 'ls-files', '-z', '--', '.'], $app, ['PATH' => (string) getenv('PATH')], 60, 64 << 20);
+        if ($status !== 0) {
+            throw new \RuntimeException("{$app} is not in a git repository: codemods run over tracked files only.");
+        }
+
+        return array_values(array_filter(
+            explode("\0", $output),
+            static fn (string $file): bool => $file !== '' && is_file($app . '/' . $file) && !is_link($app . '/' . $file),
+        ));
+    }
+
+    /** @param list<string> $files */
+    private static function copyFiles(string $from, array $files, string $to): void
+    {
+        foreach ($files as $file) {
+            $target = $to . '/' . $file;
+            if (!is_dir(\dirname($target))) {
+                mkdir(\dirname($target), 0o700, true);
+            }
+            copy($from . '/' . $file, $target) ?: throw new \RuntimeException("Cannot copy {$file}.");
+        }
+        if (!is_dir($to)) {
+            mkdir($to, 0o700, true);
+        }
+    }
+
+    /** Regular files and directories only: a link is not followed out of the tree. */
+    private static function copyTree(string $from, string $to): void
+    {
+        mkdir($to, 0o700, true);
+        foreach (scandir($from) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..' || is_link($from . '/' . $entry)) {
+                continue;
+            }
+            if (is_dir($from . '/' . $entry)) {
+                self::copyTree($from . '/' . $entry, $to . '/' . $entry);
+            } else {
+                copy($from . '/' . $entry, $to . '/' . $entry) ?: throw new \RuntimeException("Cannot copy {$entry}.");
+            }
+        }
+    }
+
+    /** @return list<string> regular files under $root, relative to it */
+    private static function filesUnder(string $root, string $prefix = ''): array
+    {
+        $files = [];
+        foreach (scandir($root . ($prefix === '' ? '' : '/' . $prefix)) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            $relative = $prefix === '' ? $entry : $prefix . '/' . $entry;
+            $path = $root . '/' . $relative;
+            if (is_link($path)) {
+                continue;
+            }
+            if (is_dir($path)) {
+                $files = [...$files, ...self::filesUnder($root, $relative)];
+            } else {
+                $files[] = $relative;
+            }
+        }
+
+        return $files;
+    }
+
+    /**
+     * @param list<string> $files the tracked files the sandbox started from
+     * @return array{string, list<string>}
+     */
+    private static function diff(string $app, array $files, string $result): array
+    {
+        $after = self::filesUnder($result);
+        $paths = array_values(array_unique([...$files, ...$after]));
+        sort($paths, \SORT_STRING);
+
+        $patch = '';
+        $flagged = [];
+        foreach ($paths as $path) {
+            $old = \in_array($path, $files, true) ? $app . '/' . $path : null;
+            $new = \in_array($path, $after, true) ? $result . '/' . $path : null;
+            if ($old !== null && $new !== null && hash_file('sha256', $old) === hash_file('sha256', $new)) {
+                continue;
+            }
+
+            [$status, $hunk] = self::process(
+                ['diff', '-u', '--label', 'a/' . $path, '--label', 'b/' . $path, $old ?? '/dev/null', $new ?? '/dev/null'],
+                $result,
+                ['PATH' => '/usr/bin:/bin'],
+                60,
+                64 << 20,
+            );
+            if ($status > 1) {
+                throw new \RuntimeException("Cannot diff {$path}.");
+            }
+            $patch .= $hunk;
+
+            $whole = ($old === null ? '' : (string) file_get_contents($old)) . ($new === null ? '' : (string) file_get_contents($new));
+            $usesAuthorization = preg_match(self::AUTHORIZATION, $whole) === 1;
+            // A removed line is numbered as it stood, an added one as it
+            // will stand.
+            $oldLine = $newLine = 0;
+            foreach (explode("\n", $hunk) as $text) {
+                if (preg_match('/^@@ -(\d+)(?:,\d+)? \+(\d+)/', $text, $match) === 1) {
+                    $oldLine = (int) $match[1] - 1;
+                    $newLine = (int) $match[2] - 1;
+
+                    continue;
+                }
+                if (str_starts_with($text, '+++') || str_starts_with($text, '---')) {
+                    continue;
+                }
+                $removed = str_starts_with($text, '-');
+                $added = str_starts_with($text, '+');
+                $oldLine += $added ? 0 : 1;
+                $newLine += $removed ? 0 : 1;
+                if (!$removed && !$added) {
+                    continue;
+                }
+                if (preg_match(self::AUTHORIZATION, $text) === 1 || ($usesAuthorization && str_contains($text, '#['))) {
+                    $flagged[] = "{$path}:" . max($removed ? $oldLine : $newLine, 1) . ': ' . trim($text);
+                }
+            }
+        }
+
+        return [$patch, $flagged];
+    }
+
+    private static function temporaryDirectory(): string
+    {
+        $path = sys_get_temp_dir() . '/tinvar-codemods-' . bin2hex(random_bytes(8));
+        if (!mkdir($path, 0o700)) {
+            throw new \RuntimeException("Cannot create {$path}.");
+        }
+
+        return realpath($path) ?: $path;
+    }
+
+    private static function remove(string $path): void
+    {
+        if (is_link($path) || is_file($path)) {
+            @unlink($path);
+
+            return;
+        }
+        foreach (scandir($path) ?: [] as $entry) {
+            if ($entry !== '.' && $entry !== '..') {
+                self::remove($path . '/' . $entry);
+            }
+        }
+        @rmdir($path);
+    }
+}
