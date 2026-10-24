@@ -76,7 +76,7 @@ final class Tracer
      * The request's root span, in the trace $traceId -- continuing $parent's
      * when a trusted caller sent one.
      *
-     * @param array<string, string|int|float|bool|list<string>> $attributes
+     * @param array<string, string|int|float|bool|array<array-key, mixed>> $attributes
      */
     public function startRequest(string $traceId, ?TraceContext $parent, string $name, array $attributes = []): Span
     {
@@ -91,7 +91,7 @@ final class Tracer
      * A span inside the request: a child of $parent, or of the request's
      * root. Started now, or at $atHr, an hrtime(true) reading.
      *
-     * @param array<string, string|int|float|bool|list<string>> $attributes
+     * @param array<string, string|int|float|bool|array<array-key, mixed>> $attributes
      */
     public function start(string $name, array $attributes = [], ?Span $parent = null, ?int $atHr = null): Span
     {
@@ -193,20 +193,39 @@ final class Tracer
         return $this->anchorNs + ($hr - $this->anchorHr);
     }
 
-    /** The span with every string in it passed through the Redactor. */
+    /**
+     * The span with what is in it passed through the Redactor, as a log
+     * line's context is: an attribute named like a secret is replaced
+     * whatever it holds -- a list, a number, a map -- and a map's own keys
+     * are held to the same rule all the way down. Other numbers and
+     * booleans pass as they are.
+     */
     private function redacted(Span $span): Span
     {
         $span->name = $this->redactor->text($span->name);
         $span->statusMessage = $this->redactor->text($span->statusMessage);
         foreach ($span->attributes as $key => $value) {
-            if (\is_string($value)) {
-                $span->attributes[$key] = $this->redactor->isSensitiveKey($key) ? Redactor::REDACTED : $this->redactor->text($value);
-            } elseif (\is_array($value)) {
-                $span->attributes[$key] = array_map($this->redactor->text(...), $value);
-            }
+            $span->attributes[$key] = match (true) {
+                $this->redactor->isSensitiveKey($key) => Redactor::REDACTED,
+                \is_string($value) => $this->redactor->text($value),
+                \is_array($value) => self::attributeArray($this->redactor->value($value)),
+                default => $value,
+            };
         }
 
         return $span;
+    }
+
+    /**
+     * What Redactor::value() made of an array, kept to what an attribute
+     * holds: a nested array is one, as are the scalars and the strings it
+     * leaves; anything else it would not write.
+     *
+     * @return array<array-key, mixed>
+     */
+    private static function attributeArray(mixed $value): array
+    {
+        return \is_array($value) ? $value : [(string) (\is_scalar($value) ? $value : '')];
     }
 
     private static function spanId(): string

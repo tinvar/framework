@@ -28,7 +28,7 @@ final class Span
     public string $statusMessage = '';
 
     /**
-     * @param array<string, string|int|float|bool|list<string>> $attributes
+     * @param array<string, string|int|float|bool|array<array-key, mixed>> $attributes
      */
     public function __construct(
         public readonly string $traceId,
@@ -40,7 +40,7 @@ final class Span
         public array $attributes = [],
     ) {}
 
-    /** @param string|int|float|bool|list<string> $value */
+    /** @param string|int|float|bool|array<array-key, mixed> $value */
     public function set(string $key, string|int|float|bool|array $value): self
     {
         $this->attributes[$key] = $value;

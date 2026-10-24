@@ -132,6 +132,54 @@ describe('the tracer', function () {
             ->and($render->statusMessage)->toBe('failed for [email]');
     });
 
+    // Checked by key first, whatever the value is: a sensitive key holding a
+    // list, a number or a nested map gave its value away.
+    it('redacts an attribute by its key whatever its value, and nested keys the same way', function () {
+        $exported = new Exported();
+        $tracer = new Tracer($exported, exportEvery: 0.0);
+        $tracer->startRequest(TRACE, null, 'GET');
+        $tracer->end($tracer->start('render', [
+            'password' => ['a', 'b'],
+            'token' => 123,
+            'session.active' => true,
+            'request' => ['auth' => ['secret' => 'x'], 'headers' => ['secret' => 'y', 'accept' => 'text/html']],
+            'tinvar.render.bytes' => 2048,
+            'tinvar.render.cached' => false,
+            'tinvar.render.first_byte_ms' => 1.25,
+        ]));
+        $tracer->endRequest();
+        $tracer->export();
+
+        expect($exported->batches[0][0]->attributes)->toBe([
+            'password' => '[redacted]',
+            'token' => '[redacted]',
+            'session.active' => '[redacted]',
+            'request' => ['auth' => '[redacted]', 'headers' => ['secret' => '[redacted]', 'accept' => 'text/html']],
+            'tinvar.render.bytes' => 2048,
+            'tinvar.render.cached' => false,
+            'tinvar.render.first_byte_ms' => 1.25,
+        ]);
+    });
+
+    it('writes a nested attribute as OTLP\'s key-value list', function () {
+        $path = sys_get_temp_dir() . '/tinvar-traces-' . bin2hex(random_bytes(4)) . '.jsonl';
+        try {
+            $tracer = new Tracer(new OtlpFileExporter($path), exportEvery: 0.0);
+            $tracer->startRequest(TRACE, null, 'GET');
+            $tracer->end($tracer->start('render', ['request' => ['headers' => ['accept' => 'text/html'], 'retries' => 2]]));
+            $tracer->endRequest();
+            $tracer->export();
+
+            $span = json_decode((string) file_get_contents($path), true)['resourceSpans'][0]['scopeSpans'][0]['spans'][0];
+            expect($span['attributes'][0])->toBe(['key' => 'request', 'value' => ['kvlistValue' => ['values' => [
+                ['key' => 'headers', 'value' => ['kvlistValue' => ['values' => [['key' => 'accept', 'value' => ['stringValue' => 'text/html']]]]]],
+                ['key' => 'retries', 'value' => ['intValue' => '2']],
+            ]]]]);
+        } finally {
+            @unlink($path);
+        }
+    });
+
     it('reports an exporter that fails, and drops its batch', function () {
         $failing = new class implements SpanExporter {
             public function export(array $spans): void

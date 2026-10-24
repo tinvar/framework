@@ -55,7 +55,7 @@ final class OtlpJson
     }
 
     /**
-     * @param array<string, string|int|float|bool|list<string>> $attributes
+     * @param array<array-key, mixed> $attributes
      * @return list<array{key: string, value: array<string, mixed>}>
      */
     private static function attributes(array $attributes): array
@@ -69,17 +69,22 @@ final class OtlpJson
     }
 
     /**
-     * @param string|int|float|bool|list<string> $value
+     * One attribute value as OTLP's AnyValue: a list as an `arrayValue`, a
+     * map -- a redacted context, say -- as a `kvlistValue`, and anything
+     * that is neither a scalar nor an array as an empty string.
+     *
      * @return array<string, mixed>
      */
-    private static function value(string|int|float|bool|array $value): array
+    private static function value(mixed $value): array
     {
         return match (true) {
             \is_bool($value) => ['boolValue' => $value],
             \is_int($value) => ['intValue' => (string) $value],
             \is_float($value) => is_finite($value) ? ['doubleValue' => $value] : ['stringValue' => (string) $value],
-            \is_array($value) => ['arrayValue' => ['values' => array_map(static fn (string $item): array => ['stringValue' => $item], $value)]],
-            default => ['stringValue' => $value],
+            \is_string($value) => ['stringValue' => $value],
+            \is_array($value) && array_is_list($value) => ['arrayValue' => ['values' => array_map(self::value(...), $value)]],
+            \is_array($value) => ['kvlistValue' => ['values' => self::attributes($value)]],
+            default => ['stringValue' => ''],
         };
     }
 }
