@@ -61,6 +61,16 @@ final class Orm
     ) {
         $this->unscopedByFiber = new \WeakMap();
         $this->readOnlyByFiber = new \WeakMap();
+
+        // The database's half of failing closed (RowLevelSecurity): the
+        // connection asks, before each statement, which tenant the fiber
+        // running it is in -- the same per-fiber answer the ORM's own filter
+        // reads, so the two layers can never disagree about whose rows a
+        // statement may see. One Orm per connection: a second one built over
+        // it takes the connection over.
+        if ($connection instanceof TenantSetting) {
+            $connection->followTenant(fn (): array => [$this->identityMap->tenant(), $this->isUnscoped()]);
+        }
     }
 
     public function connection(): Connection
@@ -112,6 +122,13 @@ final class Orm
         $this->unscopedByFiber = new \WeakMap();
         $this->readOnlyMain = 0;
         $this->readOnlyByFiber = new \WeakMap();
+
+        // And the database's copy, now rather than at the next statement:
+        // anything reaching the connection around this class before then
+        // -- a raw PDO handle -- must not find the last request's tenant.
+        if ($this->connection instanceof TenantSetting) {
+            $this->connection->clearTenantSetting();
+        }
     }
 
     /**

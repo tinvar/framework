@@ -8,6 +8,7 @@ use Tinvar\Attributes\Action;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\NoAuthorization;
+use Tinvar\Attributes\TenantFrom;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Http\Request;
 use Tinvar\Orm\Model;
@@ -261,7 +262,23 @@ final class ActionRegistry
             subjectArgument: $subjectArgument,
             optionalModels: $optional,
             classLevelChecks: $inherited,
+            tenantFrom: self::tenantFromOf($where, $class, $method->getName()),
         );
+    }
+
+    /**
+     * An action's #[TenantFrom]: its method's, or its holder's.
+     *
+     * @param class-string $class
+     * @return class-string<\Tinvar\Tenancy\TenantSource>|null
+     */
+    private static function tenantFromOf(string $where, string $class, string $method): ?string
+    {
+        try {
+            return TenantFrom::declaredOn($class, $method);
+        } catch (\LogicException|\InvalidArgumentException $e) {
+            throw new ActionException("{$where}: {$e->getMessage()}", 0, $e);
+        }
     }
 
     private function add(CompiledAction $action): CompiledAction

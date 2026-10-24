@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Http\Endpoints;
 
+use Tinvar\Http\EntryContext;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Pipeline;
@@ -41,6 +42,8 @@ final class QueryEndpoint
      *        a query's own #[Middleware]; required once any query declares one
      * @param list<class-string> $globalMiddleware already run by the stack this
      *        endpoint is mounted in, so not run a second time
+     * @param EntryContext|null $entry what the query's declarations put around
+     *        it -- its tenant -- ahead of its own middleware
      */
     public function __construct(
         private readonly QueryRunner $runner,
@@ -48,6 +51,7 @@ final class QueryEndpoint
         private readonly int $maxBodyBytes = Limits::MAX_BODY_BYTES,
         private readonly ?\Closure $middlewareResolver = null,
         private readonly array $globalMiddleware = [],
+        private readonly ?EntryContext $entry = null,
     ) {}
 
     public function matches(Request $request): bool
@@ -77,17 +81,22 @@ final class QueryEndpoint
         // The query's own #[Middleware], inside the endpoint stack and around
         // everything that touches the query. It was compiled into nothing:
         // a query that declared MFA was served over HTTP without it.
+        //
+        // Its tenant ahead of that: "Resolve model arguments, scoped to the
+        // tenant" is step two of every query call.
+        $entry = $this->entry?->stackFor($this->runner->tenantSourceFor($name)) ?? [];
         $own = array_values(array_diff($this->runner->middlewareFor($name), $this->globalMiddleware));
-        if ($own === []) {
+        if ($entry === [] && $own === []) {
             return $this->dispatch($request, $name, $rawBody);
         }
-        if ($this->middlewareResolver === null) {
+        $resolver = $this->middlewareResolver;
+        if ($own !== [] && $resolver === null) {
             throw new \LogicException(
                 "Query {$name} declares #[Middleware] but the endpoint was given no middleware resolver.",
             );
         }
 
-        return new Pipeline(array_map($this->middlewareResolver, $own))
+        return new Pipeline([...$entry, ...($resolver === null ? [] : array_map($resolver, $own))])
             ->run($request, fn (Request $r): Response => $this->dispatch($r, $name, $rawBody));
     }
 

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Http\Endpoints;
 
 use Tinvar\Http\BuildRegistry;
+use Tinvar\Http\EntryContext;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Pipeline;
@@ -87,6 +88,8 @@ final class FragmentEndpoint
      *        because the session it reads is established by that stack
      * @param (\Closure(list<FragmentToken>, Request, array<string, mixed>, list<string>): Response)|null $renderGroup
      *        renders a group's subtrees in one render; see FragmentSupport
+     * @param EntryContext|null $entry what the originating route's declarations put
+     *        around it -- its tenant -- as a page render runs it
      */
     public function __construct(
         private readonly RouteRegistry $routes,
@@ -104,6 +107,7 @@ final class FragmentEndpoint
         private readonly ?\Closure $allowedQueries = null,
         private readonly ?\Closure $renderGroup = null,
         private readonly ?AuthContext $auth = null,
+        private readonly ?EntryContext $entry = null,
     ) {}
 
     /**
@@ -241,6 +245,10 @@ final class FragmentEndpoint
             // and they are the most expensive endpoint to leave without
             // an account ceiling -- one request is a full subtree render.
             ...$this->extraInner,
+            // Then the route's tenant, as a page render resolves it: from
+            // the request, never from the token, which the check below
+            // holds to it.
+            ...($this->entry?->stackFor($chain->tenantSource()) ?? []),
             ...array_map(
                 fn (string $class): Middleware => ($this->middlewareResolver)($class),
                 $routeOnly,

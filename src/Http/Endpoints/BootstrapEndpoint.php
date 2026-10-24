@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Http\Endpoints;
 
+use Tinvar\Http\EntryContext;
 use Tinvar\Http\FragmentSupport;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Request;
@@ -44,10 +45,15 @@ final class BootstrapEndpoint
     /** Small, as the spec says: this is a page's boundary list, not a payload. */
     public const int MAX_BODY_BYTES = 8192;
 
+    /**
+     * @param EntryContext|null $entry says which tenant the page's route runs
+     *        as, which every token minted for it is bound to
+     */
     public function __construct(
         private readonly RouteRegistry $routes,
         private readonly FragmentManifest $manifest,
         private readonly FragmentSupport $fragments,
+        private readonly ?EntryContext $entry = null,
     ) {}
 
     public function matches(Request $request): bool
@@ -125,8 +131,20 @@ final class BootstrapEndpoint
         // the caller, the oracle FragmentManifest::boundariesFor() returns
         // empty specifically to avoid.
         try {
-            $this->routes->chainFor($route, $params);
+            $chain = $this->routes->chainFor($route, $params);
         } catch (RoutingException) {
+            return self::json(['tokens' => []]);
+        }
+
+        // The tenant the route runs as for this request, as /_fragment will
+        // resolve it when the tokens come back. Minted with the tenant
+        // /_bootstrap itself runs as -- none, since it names no route of its
+        // own -- every token for a tenant's page would be refused there. A
+        // request the route's source cannot place gets what an unbuilt page
+        // gets, for the reason above.
+        try {
+            $tenant = $this->entry?->tenantFor($chain->tenantSource(), $request);
+        } catch (HttpException) {
             return self::json(['tokens' => []]);
         }
 
@@ -137,7 +155,7 @@ final class BootstrapEndpoint
         // condition cleanly; this one let the exception out as a 500,
         // remotely triggerable without authentication.
         try {
-            $minter = $this->fragments->minterFor($request, $route, $params);
+            $minter = $this->fragments->minterFor($request, $route, $params, tenant: $tenant);
         } catch (\InvalidArgumentException) {
             throw new HttpException(
                 409,

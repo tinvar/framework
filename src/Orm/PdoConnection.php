@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Orm;
 
-final class PdoConnection implements Connection
+final class PdoConnection implements Connection, TenantSetting
 {
     /**
      * The most statements the log keeps between resets; the count goes on.
@@ -58,6 +58,25 @@ final class PdoConnection implements Connection
     private ?string $readOnlyMode = null;
 
     private readonly string $driver;
+
+    /**
+     * Asks the Orm which tenant is in force for whoever runs the next
+     * statement; null until an Orm follows this connection (TenantSetting).
+     *
+     * @var (\Closure(): array{string, bool})|null
+     */
+    private ?\Closure $tenantScope = null;
+
+    /**
+     * What the session was last told, as tenant NUL across; null when that
+     * is not known. A rollback makes it unknown: Postgres undoes a
+     * set_config() made inside the transaction or savepoint rolled back,
+     * so the session may be back on an earlier tenant.
+     */
+    private ?string $tenantSetting = null;
+
+    /** Whether this session has ever been told a tenant, so has one to clear. */
+    private bool $tenantSettingTouched = false;
 
     public function __construct(
         private readonly \PDO $pdo,
@@ -168,6 +187,7 @@ final class PdoConnection implements Connection
 
         /** @var list<array<string, mixed>> $rows */
         $rows = $this->run(function () use ($sql, $bindings): array {
+            $this->applyTenantSetting();
             $statement = $this->pdo->prepare($sql);
             $statement->execute($bindings);
 
@@ -182,6 +202,7 @@ final class PdoConnection implements Connection
         $this->record($sql);
 
         return $this->run(function () use ($sql, $bindings): int {
+            $this->applyTenantSetting();
             $statement = $this->pdo->prepare($sql);
             $statement->execute($bindings);
 
@@ -328,6 +349,11 @@ final class PdoConnection implements Connection
 
     private function endReadOnly(string $mode): void
     {
+        // Rolled back to, below, which takes back a tenant set inside it.
+        if ($mode === self::READ_ONLY_SAVEPOINT) {
+            $this->tenantSetting = null;
+        }
+
         match ($mode) {
             // Committed rather than rolled back: there is nothing to keep
             // either way, and monitoring reads a rollback as a failure.
@@ -354,6 +380,8 @@ final class PdoConnection implements Connection
         if ($this->savepoints > 0) {
             return;
         }
+
+        $this->tenantSetting = null;
 
         try {
             match ($this->readOnlyMode) {
@@ -405,6 +433,7 @@ final class PdoConnection implements Connection
         try {
             $result = $work();
         } catch (\Throwable $e) {
+            $this->tenantSetting = null;
             $this->pdo->rollBack();
 
             throw $e;
@@ -450,6 +479,7 @@ final class PdoConnection implements Connection
             // alike, so it is released as well. On Postgres this is also what
             // brings the outer transaction back from a failed statement:
             // until then it refuses every statement that follows.
+            $this->tenantSetting = null;
             $this->pdo->exec("ROLLBACK TO SAVEPOINT {$name}");
             $this->pdo->exec("RELEASE SAVEPOINT {$name}");
 
@@ -492,11 +522,69 @@ final class PdoConnection implements Connection
             return false;
         }
 
-        // The savepoints go with the transaction they were in.
+        // The savepoints go with the transaction they were in, and so does
+        // a tenant set inside it.
         $this->savepoints = 0;
+        $this->tenantSetting = null;
         $this->pdo->rollBack();
 
         return true;
+    }
+
+    public function followTenant(\Closure $scope): void
+    {
+        $this->tenantScope = $scope;
+        $this->tenantSetting = null;
+    }
+
+    public function clearTenantSetting(): void
+    {
+        if ($this->driver !== 'pgsql' || !$this->tenantSettingTouched) {
+            return;
+        }
+
+        $this->tellTenant('', false);
+    }
+
+    /**
+     * Brings the session variable row-level security reads into line with
+     * the tenant in force for whoever is running the next statement.
+     *
+     * Session-wide (set_config's is_local false), not SET LOCAL: there is
+     * no transaction around a request to scope it to, and outside one a
+     * SET LOCAL lasts a single statement. Only on a change, so a request
+     * pays one round trip per tenant it enters, not one per statement; and
+     * not counted or logged, as the SQLite pragmas are not, since query
+     * budgets count the application's statements.
+     *
+     * Postgres alone: the variable is what its policies read, and nothing
+     * else has them.
+     */
+    private function applyTenantSetting(): void
+    {
+        if ($this->driver !== 'pgsql' || $this->tenantScope === null) {
+            return;
+        }
+
+        [$tenant, $across] = ($this->tenantScope)();
+        $this->tellTenant($tenant, $across);
+    }
+
+    private function tellTenant(string $tenant, bool $across): void
+    {
+        $wanted = $tenant . "\0" . ($across ? 'on' : 'off');
+        if ($wanted === $this->tenantSetting) {
+            return;
+        }
+
+        $this->pdo->prepare('SELECT set_config(?, ?, false), set_config(?, ?, false)')->execute([
+            RowLevelSecurity::TENANT_SETTING,
+            $tenant,
+            RowLevelSecurity::ACROSS_SETTING,
+            $across ? 'on' : 'off',
+        ]);
+        $this->tenantSetting = $wanted;
+        $this->tenantSettingTouched = true;
     }
 
     public function statementCount(): int

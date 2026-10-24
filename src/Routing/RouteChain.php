@@ -54,6 +54,28 @@ final readonly class RouteChain
     }
 
     /**
+     * Where the chain's tenant comes from: the #[TenantFrom] of its page or
+     * any layout around it, or null when none declares one.
+     *
+     * A route group's declaration covers the pages in it, and a page may
+     * declare one under a group that does not. Two that disagree never
+     * reach here -- RouteRegistry refuses the pair when the second of them
+     * registers -- so the innermost is the chain's.
+     *
+     * @return class-string<\Tinvar\Tenancy\TenantSource>|null
+     */
+    public function tenantSource(): ?string
+    {
+        foreach (array_reverse($this->all()) as $route) {
+            if ($route->tenantFrom !== null) {
+                return $route->tenantFrom;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Every declared check in the chain, paired with the route that declared it.
      *
      * @return list<array{route: CompiledRoute, check: \Tinvar\Attributes\Authorize}>

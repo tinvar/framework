@@ -24,6 +24,8 @@ final readonly class CompiledRoute
      * @param list<Authorize>              $checks
      * @param bool|null                    $encryptHistory a page's #[EncryptHistory], or null
      *                                                    for the default (ADR 0019)
+     * @param class-string<\Tinvar\Tenancy\TenantSource>|null $tenantFrom the source its
+     *                                                    #[TenantFrom] names, or null for none
      */
     public function __construct(
         public RouteKind $kind,
@@ -37,6 +39,7 @@ final readonly class CompiledRoute
         public array $checks,
         public string $layoutKey = '',
         public ?bool $encryptHistory = null,
+        public ?string $tenantFrom = null,
     ) {}
 
     public function depth(): int

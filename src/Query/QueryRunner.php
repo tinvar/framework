@@ -88,6 +88,12 @@ final class QueryRunner
         return $this->registry->middlewareFor($name);
     }
 
+    /** @return class-string<\Tinvar\Tenancy\TenantSource>|null see QueryRegistry::tenantSourceFor() */
+    public function tenantSourceFor(string $name): ?string
+    {
+        return $this->registry->tenantSourceFor($name);
+    }
+
     /**
      * @param list<array{id: int, name: string, args: array<string, mixed>}> $calls
      * @param list<string> $allowed per-route query allowlist from the render frame

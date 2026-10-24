@@ -7,6 +7,7 @@ namespace Tinvar\Query;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\Query;
+use Tinvar\Attributes\TenantFrom;
 use Tinvar\Auth\BuildRules;
 use Tinvar\Orm\Model;
 use Tinvar\Support\Str;
@@ -33,6 +34,9 @@ final class QueryRegistry
 
     /** @var array<string, list<class-string<\Tinvar\Http\Middleware>>> */
     private array $middleware = [];
+
+    /** @var array<string, class-string<\Tinvar\Tenancy\TenantSource>|null> */
+    private array $tenantFrom = [];
 
     /** @var array<string, array<string, bool>> query name => parameter name => required */
     private array $parameters = [];
@@ -148,6 +152,7 @@ final class QueryRegistry
         $this->checks[$name] = Authorize::declaredOn($class, Query::entryMethodOf($class));
         $this->classLevelChecks[$name] = Authorize::classLevelCount($class);
         $this->middleware[$name] = Middleware::declaredOn($class, Query::entryMethodOf($class));
+        $this->tenantFrom[$name] = TenantFrom::declaredOn($class, Query::entryMethodOf($class));
         $this->parameters[$name] = self::parametersOf($reflection, $declaration);
         $this->nullWhenAbsent[$name] = self::nullWhenAbsentOf($reflection);
         $this->modelArguments[$name] = self::modelArgumentsOf($reflection, $declaration);
@@ -206,6 +211,18 @@ final class QueryRegistry
     public function middlewareFor(string $name): array
     {
         return $this->middleware[$name] ?? [];
+    }
+
+    /**
+     * Where a query's tenant comes from on a call over HTTP, by its
+     * #[TenantFrom]; null for none. A call from a render runs in its page's
+     * tenant, as it runs in its page's middleware.
+     *
+     * @return class-string<\Tinvar\Tenancy\TenantSource>|null
+     */
+    public function tenantSourceFor(string $name): ?string
+    {
+        return $this->tenantFrom[$name] ?? null;
     }
 
     /** @return class-string|null */

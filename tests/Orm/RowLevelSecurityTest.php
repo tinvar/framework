@@ -1,0 +1,265 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Postgres row-level security behind the ORM's tenant filter.
+ *
+ * "Row-level security on by default in the shared tier. PHP sets the tenant
+ * as a session variable on each connection; with none set, policies match
+ * no rows." The ORM fails closed already; these are about the query that
+ * went around it and forgot the predicate. The Postgres group is skipped,
+ * saying why, without a server (tests/Support/Fixtures/databases.php says
+ * how one is found); its policies are held to a role that is not a
+ * superuser, since a superuser bypasses every policy there is.
+ */
+
+namespace Tinvar\Tests\Orm\RowLevelSecurity;
+
+use Tinvar\Orm\IdentityMap;
+use Tinvar\Orm\NoTenantContext;
+use Tinvar\Orm\Orm;
+use Tinvar\Orm\PdoConnection;
+use Tinvar\Orm\RowLevelSecurity;
+use Tinvar\Support\Uuid;
+use Tinvar\Tests\Orm\Fixtures\Rack;
+use Tinvar\Tests\Orm\Fixtures\Script;
+use Tinvar\Tests\Orm\Fixtures\ScriptRun;
+use Tinvar\Tests\Support\Fixtures\Databases;
+use Tinvar\Tests\Tenancy\Fixtures\App;
+
+require_once __DIR__ . '/Fixtures/models.php';
+require_once __DIR__ . '/Fixtures/tenant.php';
+require_once __DIR__ . '/../Support/Fixtures/databases.php';
+require_once __DIR__ . '/../Tenancy/Fixtures/app.php';
+
+describe('the policy', function () {
+    it('is enabled, forced on the table owner, and matches the tenant setting -- or nothing', function () {
+        $statements = RowLevelSecurity::policy('scripts', 'tenant_id', 'uuid');
+
+        expect($statements)->toBe([
+            'ALTER TABLE "scripts" ENABLE ROW LEVEL SECURITY',
+            'ALTER TABLE "scripts" FORCE ROW LEVEL SECURITY',
+            'DROP POLICY IF EXISTS tinvar_tenant ON "scripts"',
+            'CREATE POLICY tinvar_tenant ON "scripts" USING ('
+                . "current_setting('app.across_tenants', true) = 'on' OR \"tenant_id\" = NULLIF(current_setting('app.tenant', true), '')::uuid"
+                . ') WITH CHECK ('
+                . "current_setting('app.across_tenants', true) = 'on' OR \"tenant_id\" = NULLIF(current_setting('app.tenant', true), '')::uuid"
+                . ')',
+        ]);
+    });
+
+    it('reads the table and tenant column off a #[TenantScoped] model', function () {
+        expect(RowLevelSecurity::forModel(Script::class)[0])->toBe('ALTER TABLE "scripts" ENABLE ROW LEVEL SECURITY')
+            ->and(RowLevelSecurity::policy('app.scripts')[0])->toBe('ALTER TABLE "app"."scripts" ENABLE ROW LEVEL SECURITY');
+    });
+
+    it('refuses a model with no tenant column, and names or types that are not plain', function () {
+        expect(fn () => RowLevelSecurity::forModel(Rack::class))->toThrow(\InvalidArgumentException::class, 'not #[TenantScoped]')
+            ->and(fn () => RowLevelSecurity::policy('scripts; DROP TABLE x'))->toThrow(\InvalidArgumentException::class)
+            ->and(fn () => RowLevelSecurity::policy('scripts', 'tenant"id'))->toThrow(\InvalidArgumentException::class)
+            ->and(fn () => RowLevelSecurity::policy('scripts', 'tenant_id', 'uuid); DROP'))->toThrow(\InvalidArgumentException::class);
+    });
+
+    // SQLite has no policies to read a setting: nothing is sent to it.
+    it('sets nothing on a connection other than Postgres', function () {
+        $connection = new PdoConnection(new \PDO('sqlite::memory:'));
+        $orm = new Orm($connection, new IdentityMap('test'));
+
+        $orm->actAs('acme', static fn (): array => $connection->select('SELECT 1'));
+
+        expect($connection->statementLog())->toBe(['SELECT 1']);
+    });
+});
+
+/**
+ * Runs $test on Postgres against two tenants' scripts with the policy on,
+ * as a role the policy holds to.
+ *
+ * @param \Closure(PdoConnection, \PDO): void $test
+ */
+function withPolicies(\Closure $test): void
+{
+    Databases::inScratchSchema('pgsql', static function (\PDO $pdo, string $schema) use ($test): void {
+        $pdo->exec('CREATE TABLE scripts (id TEXT PRIMARY KEY, name TEXT NOT NULL, tenant_id TEXT NOT NULL)');
+        $pdo->exec('CREATE TABLE script_runs (id TEXT PRIMARY KEY, status TEXT NOT NULL, script_id TEXT NOT NULL, tenant_id TEXT NOT NULL)');
+        foreach (['acme', 'globex'] as $tenant) {
+            foreach ([1, 2] as $i) {
+                $id = Uuid::v7();
+                $pdo->prepare('INSERT INTO scripts VALUES (?, ?, ?)')->execute([$id, "{$tenant}-script-{$i}", $tenant]);
+                $pdo->prepare('INSERT INTO script_runs VALUES (?, ?, ?, ?)')->execute([Uuid::v7(), 'ok', $id, $tenant]);
+            }
+        }
+        foreach ([...RowLevelSecurity::forModel(Script::class), ...RowLevelSecurity::forModel(ScriptRun::class)] as $sql) {
+            $pdo->exec($sql);
+        }
+
+        // The connecting role is a superuser here, and a superuser bypasses
+        // every policy. The application must not connect as one; the test
+        // becomes a role that is not, as the application would be.
+        $role = 'tinvar_rls_' . bin2hex(random_bytes(4));
+        $pdo->exec("CREATE ROLE {$role} NOLOGIN");
+        $pdo->exec("GRANT USAGE ON SCHEMA {$schema} TO {$role}");
+        $pdo->exec("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {$schema} TO {$role}");
+        $pdo->exec("SET ROLE {$role}");
+
+        try {
+            $connection = new PdoConnection($pdo, 'pgsql');
+            $connection->resetStatementCount();
+            $test($connection, $pdo);
+        } finally {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            // The connection is shared by every Postgres test in the run.
+            $pdo->exec('RESET ROLE');
+            $pdo->exec("SELECT set_config('app.tenant', '', false), set_config('app.across_tenants', 'off', false)");
+            $pdo->exec("DROP OWNED BY {$role}");
+            $pdo->exec("DROP ROLE {$role}");
+        }
+    });
+}
+
+/** @return list<string> the names a raw query with no tenant predicate reads */
+function rawNames(PdoConnection $connection): array
+{
+    return array_column($connection->select('SELECT name FROM scripts ORDER BY name COLLATE "C"'), 'name');
+}
+
+describe('on Postgres', function () {
+    it('lets a query that forgot the tenant predicate read only the tenant in force', function () {
+        withPolicies(function (PdoConnection $connection): void {
+            $orm = new Orm($connection, new IdentityMap('test'));
+
+            expect($orm->actAs('acme', static fn (): array => rawNames($connection)))->toBe(['acme-script-1', 'acme-script-2'])
+                ->and($orm->actAs('globex', static fn (): array => rawNames($connection)))->toBe(['globex-script-1', 'globex-script-2']);
+        });
+    });
+
+    it('lets it read nothing with no tenant, where the ORM itself fails closed', function () {
+        withPolicies(function (PdoConnection $connection): void {
+            $orm = new Orm($connection, new IdentityMap('test'));
+
+            expect(rawNames($connection))->toBe([])
+                ->and(fn () => $orm->all(Script::class))->toThrow(NoTenantContext::class);
+        });
+    });
+
+    it('lifts the policy inside acrossTenants(), as the ORM lifts its filter, and puts it back after', function () {
+        withPolicies(function (PdoConnection $connection): void {
+            $orm = new Orm($connection, new IdentityMap('test'));
+
+            expect($orm->acrossTenants(static fn (): array => rawNames($connection)))->toHaveCount(4)
+                ->and(rawNames($connection))->toBe([]);
+        });
+    });
+
+    // The setting is session-wide, so a raw handle used inside the scope
+    // sees it too -- and once the request is over, the reset contract takes
+    // it back at once, not at the next statement.
+    it('holds a raw PDO handle to it while the tenant is in force, and to nothing after the reset', function () {
+        withPolicies(function (PdoConnection $connection, \PDO $pdo): void {
+            $orm = new Orm($connection, new IdentityMap('test'));
+            $raw = static fn (): int => \count($pdo->query('SELECT name FROM scripts')->fetchAll());
+
+            $inside = $orm->actAs('acme', static function () use ($connection, $raw): int {
+                $connection->select('SELECT 1');
+
+                return $raw();
+            });
+            $orm->flush();
+
+            expect($inside)->toBe(2)->and($raw())->toBe(0);
+        });
+    });
+
+    // The tenant is fiber-local and a render's fibers share the connection:
+    // the setting follows whichever fiber runs the statement.
+    it('follows the fiber running each statement, not the last one to switch', function () {
+        withPolicies(function (PdoConnection $connection): void {
+            $orm = new Orm($connection, new IdentityMap('test'));
+            /** @var \ArrayObject<string, list<string>> $seen */
+            $seen = new \ArrayObject();
+
+            $fiber = static fn (string $tenant): \Fiber => new \Fiber(static function () use ($orm, $connection, $tenant, $seen): void {
+                $orm->actAs($tenant, static function () use ($connection, $tenant, $seen): void {
+                    \Fiber::suspend();
+                    $seen[$tenant] = rawNames($connection);
+                });
+            });
+
+            $acme = $fiber('acme');
+            $globex = $fiber('globex');
+            $acme->start();
+            $globex->start();
+            $acme->resume();
+            $globex->resume();
+
+            expect($seen->getArrayCopy())->toBe([
+                'acme' => ['acme-script-1', 'acme-script-2'],
+                'globex' => ['globex-script-1', 'globex-script-2'],
+            ]);
+        });
+    });
+
+    it('holds inside the read-only transaction loaders run in', function () {
+        withPolicies(function (PdoConnection $connection): void {
+            $orm = new Orm($connection, new IdentityMap('test'));
+
+            $names = $orm->actAs('globex', static fn (): array => $orm->readOnly(static fn (): array => rawNames($connection)));
+
+            expect($names)->toBe(['globex-script-1', 'globex-script-2']);
+        });
+    });
+
+    // Postgres takes back a set_config() made in a transaction that rolls
+    // back. Believing the session still held the tenant afterwards, the
+    // connection would not tell it again, and the policy would read none.
+    it('tells the session again after a rollback took the setting back', function () {
+        withPolicies(function (PdoConnection $connection): void {
+            $orm = new Orm($connection, new IdentityMap('test'));
+
+            $names = $orm->actAs('acme', static function () use ($connection): array {
+                try {
+                    $connection->transaction(static function () use ($connection): never {
+                        $connection->select('SELECT 1');
+
+                        throw new \RuntimeException('rolled back');
+                    });
+                } catch (\RuntimeException) {
+                }
+
+                return rawNames($connection);
+            });
+
+            expect($names)->toBe(['acme-script-1', 'acme-script-2']);
+        });
+    });
+
+    it('refuses a raw write of another tenant\'s row', function () {
+        withPolicies(function (PdoConnection $connection): void {
+            $orm = new Orm($connection, new IdentityMap('test'));
+
+            expect(fn () => $orm->actAs('acme', static fn (): int => $connection->execute(
+                'INSERT INTO scripts VALUES (?, ?, ?)',
+                [Uuid::v7(), 'planted', 'globex'],
+            )))->toThrow(\PDOException::class, 'row-level security')
+                ->and($orm->actAs('acme', static fn (): int => $connection->execute("UPDATE scripts SET name = 'renamed'")))->toBe(2);
+        });
+    });
+
+    // The whole request path: the route resolves the tenant from the host,
+    // and a loader that reads around the ORM still sees that tenant's rows
+    // alone -- set by the request, inside its read-only transaction.
+    it('sets the tenant a request resolves, so a loader reading around the ORM sees only its rows', function () {
+        withPolicies(function (PdoConnection $connection, \PDO $pdo): void {
+            $app = new App($connection);
+
+            $acme = App::json($app->get('/t/raw', 'acme.test'))['page'];
+            $after = $pdo->query("SELECT current_setting('app.tenant', true)")->fetchColumn();
+
+            expect($acme)->toBe(['tenant' => 'acme', 'names' => ['acme-script-1', 'acme-script-2']])
+                ->and($after)->toBe('');
+        });
+    });
+})->group('pgsql')->skip(Databases::postgresMissing() !== null, Databases::postgresMissing() ?? '');

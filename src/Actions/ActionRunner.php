@@ -57,6 +57,17 @@ final class ActionRunner
     }
 
     /**
+     * Where an action's tenant comes from, by its #[TenantFrom]; null for
+     * none, or for a name that is not registered.
+     *
+     * @return class-string<\Tinvar\Tenancy\TenantSource>|null
+     */
+    public function tenantSourceFor(string $name): ?string
+    {
+        return $this->registry->has($name) ? $this->registry->get($name)->tenantFrom : null;
+    }
+
+    /**
      * @param array<string, mixed> $input
      * @param bool $precognitive validate-only: authorization and the form
      *        request run, the body does not

@@ -24,6 +24,8 @@ final readonly class CompiledAction
      * @param int $classLevelChecks how many of $checks, at the front, the holder
      *        class declared. They run like the method's own but do not decide
      *        for it -- see Checks::undecided().
+     * @param class-string<\Tinvar\Tenancy\TenantSource>|null $tenantFrom what its
+     *        #[TenantFrom] names, on the method or the holder class
      */
     public function __construct(
         public string $name,
@@ -38,6 +40,7 @@ final readonly class CompiledAction
         public ?string $subjectArgument = null,
         public array $optionalModels = [],
         public int $classLevelChecks = 0,
+        public ?string $tenantFrom = null,
     ) {}
 
     /**

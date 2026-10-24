@@ -6,6 +6,7 @@ namespace Tinvar\Http\Endpoints;
 
 use Tinvar\Actions\ActionRunner;
 use Tinvar\Actions\Revalidator;
+use Tinvar\Http\EntryContext;
 use Tinvar\Http\Flash;
 use Tinvar\Http\FlashStore;
 use Tinvar\Http\HttpException;
@@ -44,6 +45,8 @@ final class ActionEndpoint
      * @param FlashStore|null $flashes where a browser's own form post leaves its
      *        errors for the page it is sent back to; without one, such a post
      *        that fails validation gets the framework's 422 page instead
+     * @param EntryContext|null $entry what the action's declarations put around
+     *        it -- its tenant -- ahead of its own middleware
      */
     public function __construct(
         private readonly ActionRunner $runner,
@@ -53,6 +56,7 @@ final class ActionEndpoint
         private readonly ?\Closure $middlewareResolver = null,
         private readonly array $globalMiddleware = [],
         private readonly ?FlashStore $flashes = null,
+        private readonly ?EntryContext $entry = null,
     ) {}
 
     /**
@@ -140,17 +144,22 @@ final class ActionEndpoint
         // everything that touches the action -- Precognition included, since
         // it resolves models and authorizes too. Compiled and never run, a
         // middleware an author put on an action was silently ignored.
+        //
+        // Its tenant ahead of that, as a page's is: model arguments are
+        // resolved scoped to it, and the pages it re-renders are held to it.
+        $entry = $this->entry?->stackFor($this->runner->tenantSourceFor($name)) ?? [];
         $own = array_values(array_diff($this->runner->middlewareFor($name), $this->globalMiddleware));
-        if ($own === []) {
+        if ($entry === [] && $own === []) {
             return $this->dispatch($request, $name, $rawBody);
         }
-        if ($this->middlewareResolver === null) {
+        $resolver = $this->middlewareResolver;
+        if ($own !== [] && $resolver === null) {
             throw new \LogicException(
                 "Action {$name} declares #[Middleware] but the endpoint was given no middleware resolver.",
             );
         }
 
-        return new Pipeline(array_map($this->middlewareResolver, $own))
+        return new Pipeline([...$entry, ...($resolver === null ? [] : array_map($resolver, $own))])
             ->run($request, fn (Request $r): Response => $this->dispatch($r, $name, $rawBody));
     }
 

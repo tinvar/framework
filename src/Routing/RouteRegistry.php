@@ -9,6 +9,7 @@ use Tinvar\Attributes\EncryptHistory;
 use Tinvar\Attributes\Layout;
 use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\Page;
+use Tinvar\Attributes\TenantFrom;
 use Tinvar\Auth\BuildRules;
 use Tinvar\Support\Str;
 
@@ -91,6 +92,7 @@ final class RouteRegistry
             checks: Authorize::declaredOn($class, '__invoke'),
             layoutKey: $kind === RouteKind::Layout ? self::layoutKeyOf($declaration->view) : '',
             encryptHistory: $encryptHistory,
+            tenantFrom: self::tenantFromOf($class),
         );
 
         // A loader parameter the router cannot bind is a developer error that
@@ -142,10 +144,18 @@ final class RouteRegistry
         if ($route->kind === RouteKind::Page) {
             foreach ($this->layouts as $layout) {
                 self::assertParameterNamesAgree($layout, $route);
+                self::assertTenantSourcesAgree($layout, $route);
             }
         } else {
             foreach ($this->pages as $page) {
                 self::assertParameterNamesAgree($route, $page);
+                self::assertTenantSourcesAgree($route, $page);
+            }
+            // A group inside a group: a page under both runs as one tenant,
+            // so the two have to agree whether or not a page exists yet.
+            foreach ($this->layouts as $layout) {
+                self::assertTenantSourcesAgree($layout, $route);
+                self::assertTenantSourcesAgree($route, $layout);
             }
         }
 
@@ -284,6 +294,50 @@ final class RouteRegistry
                 $page->template,
                 $mismatch,
             );
+        }
+    }
+
+    /**
+     * Refuses a route group and a route inside it that name different
+     * tenant sources.
+     *
+     * Which one should win has no good answer: a page that says Signature
+     * under a group that says Host was written by someone who believed
+     * the page ran as the tenant its link names, and someone else who
+     * believed every page in the group ran as its host's. One of them is
+     * wrong about whose data the page shows, so neither is chosen.
+     */
+    private static function assertTenantSourcesAgree(CompiledRoute $outer, CompiledRoute $inner): void
+    {
+        if ($outer->tenantFrom === null || $inner->tenantFrom === null
+            || $outer->tenantFrom === $inner->tenantFrom || !$outer->wraps($inner)) {
+            return;
+        }
+
+        throw new RoutingException(\sprintf(
+            '%s (%s) takes its tenant from %s, and %s (%s) inside it from %s. A route has one tenant source.',
+            $outer->class,
+            $outer->template,
+            $outer->tenantFrom,
+            $inner->class,
+            $inner->template,
+            $inner->tenantFrom,
+        ));
+    }
+
+    /**
+     * A route's #[TenantFrom], on its class or its loader; a class that
+     * declares two sources is a declaration bug, reported as one.
+     *
+     * @param class-string $class
+     * @return class-string<\Tinvar\Tenancy\TenantSource>|null
+     */
+    private static function tenantFromOf(string $class): ?string
+    {
+        try {
+            return TenantFrom::declaredOn($class, '__invoke');
+        } catch (\LogicException|\InvalidArgumentException $e) {
+            throw new RoutingException($e->getMessage(), 0, $e);
         }
     }
 

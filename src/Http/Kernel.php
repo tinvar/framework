@@ -272,12 +272,19 @@ final class Kernel
         $gate ??= new PolicyGate($this->policies, $this->auth);
         $cache ??= new QueryCache(new \Tinvar\Cache\ArrayStore(), $this->auth, $panels);
 
+        // What every entry point's declarations put around it -- the tenant
+        // its #[TenantFrom] names -- shared by every path that runs one, so
+        // a page, its fragments, its re-render and an action all resolve it
+        // the same way.
+        $entry = new EntryContext($this->orm, $resolver);
+
         $this->router = new Router(
             $this->routes,
             new LoaderRunner($this->orm, $resolver, $gate),
             self::middlewareFrom($resolver),
             $globalMiddleware,
             $partialReloads,
+            $entry,
         );
 
         // The revalidator needs the same signer and session seam the
@@ -307,6 +314,7 @@ final class Kernel
                 log: $log === null ? null : static function (\Throwable $e) use ($log): void {
                     $log($e, ExceptionHandler::digest($e));
                 },
+                entry: $entry,
             );
 
         // Built before the runners, which report through it: a rescued field
@@ -329,6 +337,7 @@ final class Kernel
             middlewareResolver: self::middlewareFrom($resolver),
             globalMiddleware: $globalMiddleware,
             flashes: $flashes,
+            entry: $entry,
         );
 
         $queryRunner = new QueryRunner(
@@ -346,6 +355,7 @@ final class Kernel
             $allowedQueries,
             middlewareResolver: self::middlewareFrom($resolver),
             globalMiddleware: $globalMiddleware,
+            entry: $entry,
         );
 
         // Built once, here, and kept for the worker's life by the endpoint
@@ -477,6 +487,7 @@ final class Kernel
             extraInner: $this->throttleFor($throttle, 'fragments', $limits, byAddress: false, cost: $perToken),
             renderGroup: $fragments->renderGroup,
             auth: $this->auth,
+            entry: $entry,
         );
 
         // Both, or neither: a manifest says which boundaries exist, and
@@ -484,7 +495,7 @@ final class Kernel
         // answer a bootstrap request.
         $this->bootstrap_ = $fragments === null || $manifest === null || !$manifest->hasAny()
             ? null
-            : new BootstrapEndpoint($this->routes, $manifest, $fragments);
+            : new BootstrapEndpoint($this->routes, $manifest, $fragments, $entry);
 
         $this->support = $fragments;
 

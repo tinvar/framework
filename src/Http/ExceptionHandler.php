@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Http;
 
+use Tinvar\Orm\NoTenantContext;
 use Tinvar\Support\Digest;
 use Tinvar\Validation\ValidationException;
 
@@ -57,6 +58,16 @@ final class ExceptionHandler
             // payload." The field errors ARE the answer here, and they are
             // the framework's own text about the client's own input.
             return $this->respond(422, ['errors' => $e->errors], $request);
+        }
+
+        // Tenancy failing closed: a #[TenantScoped] read with no tenant in
+        // force. Classified rather than left a bare 500, because it is not
+        // always a bug -- a page reached on a host, or by a session, that
+        // names no tenant is a request for something that is not there --
+        // and it says nothing more than that. The message, naming the model,
+        // goes to the log with the digest like any other.
+        if ($e instanceof NoTenantContext) {
+            $e = new HttpException(404, $e->getMessage(), 'no_tenant');
         }
 
         if ($e instanceof HttpException) {

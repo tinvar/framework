@@ -6,6 +6,7 @@ namespace Tinvar\Actions;
 
 use Tinvar\Auth\PanelContext;
 use Tinvar\Http\BuildRegistry;
+use Tinvar\Http\EntryContext;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Pipeline;
@@ -13,6 +14,7 @@ use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Orm\Orm;
 use Tinvar\Render\RouteToken;
+use Tinvar\Render\TokenClaims;
 use Tinvar\Render\TokenError;
 use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\LoaderRunner;
@@ -55,6 +57,8 @@ final class Revalidator
      * @param (\Closure(\Throwable): void)|null $log receives a re-render that
      *        failed for a reason that is NOT a denial -- without it, a broken
      *        loader looks exactly like a permission result
+     * @param EntryContext|null $entry what each route's declarations put around
+     *        it -- its tenant -- as navigation runs it
      */
     public function __construct(
         private readonly RouteRegistry $routes,
@@ -67,6 +71,7 @@ final class Revalidator
         private readonly ?PanelContext $panels = null,
         private readonly array $globalMiddleware = [],
         private readonly ?\Closure $log = null,
+        private readonly ?EntryContext $entry = null,
     ) {}
 
     /**
@@ -146,7 +151,7 @@ final class Revalidator
 
         $payloads = [];
         foreach (\array_slice($pages, 0, self::MAX_ROUTES, preserve_keys: true) as $key => $claims) {
-            $payload = $this->renderOne($claims->route, $claims->params, $claims->panel, $request);
+            $payload = $this->renderOne($claims, $request);
             if ($payload !== null) {
                 $payloads[$key] = $payload;
             }
@@ -191,14 +196,13 @@ final class Revalidator
             return null;
         }
 
-        // The same bindings a fragment is checked against, for the same
-        // reasons: a token is client-held state, and client-held state is
-        // bound to (user, tenant) and purged on a panel switch.
-        if ($this->orm->tenant() !== $token->claims->tenant) {
-            return null;
-        }
+        // The tenant is held to the route's own, once its #[TenantFrom] has
+        // resolved -- see renderOne(). Compared here, against the action's,
+        // a route that names its tenant was refused whenever the action did
+        // not name one the same way, and accepted on the action's word when
+        // it did.
 
-        // And the build. FragmentEndpoint refuses a revoked one because "a
+        // The build. FragmentEndpoint refuses a revoked one because "a
         // revoked build means a full page load, which is the only way to
         // get a browser off code it already has" -- and that reasoning does
         // not stop applying because the token names a route instead of a
@@ -215,10 +219,13 @@ final class Revalidator
         return $token;
     }
 
-    /** @param array<string, string> $params */
-    private function renderOne(string $route, array $params, string $panel, Request $request): ?string
+    private function renderOne(TokenClaims $claims, Request $request): ?string
     {
-        $run = function () use ($route, $params, $request): ?string {
+        $route = $claims->route;
+        $params = $claims->params;
+        $panel = $claims->panel;
+
+        $run = function () use ($route, $params, $request, $claims): ?string {
             try {
                 $chain = $this->routes->chainFor($route, $params);
             } catch (RoutingException) {
@@ -241,10 +248,14 @@ final class Revalidator
             // and every side effect it has.
             $routeOnly = array_values(array_diff($chain->middleware(), $this->globalMiddleware));
 
-            $pipeline = new Pipeline(array_map(
-                fn (string $class): Middleware => ($this->middlewareResolver)($class),
-                $routeOnly,
-            ));
+            // The route's tenant ahead of its middleware, as on navigation.
+            $pipeline = new Pipeline([
+                ...($this->entry?->stackFor($chain->tenantSource()) ?? []),
+                ...array_map(
+                    fn (string $class): Middleware => ($this->middlewareResolver)($class),
+                    $routeOnly,
+                ),
+            ]);
 
             // A GET for the ROUTE, not the action's POST.
             //
@@ -271,7 +282,16 @@ final class Revalidator
                 // payload" rather than as an empty one.
                 $payload = null;
 
-                $pipeline->run($asGet, function (Request $inner) use ($chain, &$payload): Response {
+                $pipeline->run($asGet, function (Request $inner) use ($chain, $claims, &$payload): Response {
+                    // The same bindings a fragment is checked against, for
+                    // the same reasons: a token is client-held state, and
+                    // client-held state is bound to (user, tenant). Against
+                    // the tenant the route runs as now -- resolved from this
+                    // request, never from the token.
+                    if ($this->orm->tenant() !== $claims->tenant) {
+                        return Response::make(200, '');
+                    }
+
                     $loaded = $this->loaders->run($chain, $inner);
                     $payload = ($this->render)($loaded, $inner);
 

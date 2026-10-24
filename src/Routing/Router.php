@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Routing;
 
 use Tinvar\Data\PayloadContext;
+use Tinvar\Http\EntryContext;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\NotFoundException;
@@ -38,6 +39,9 @@ final class Router
      *        unless the application says its renderer renders a frame's
      *        `segments` alone: one that ignored them would be handed a frame
      *        missing the data of every segment not recomputed.
+     * @param EntryContext|null $entry what the chain's declarations put around
+     *        it -- its tenant -- ahead of its own middleware; without one, a
+     *        #[TenantFrom] is never resolved
      */
     public function __construct(
         private readonly RouteRegistry $routes,
@@ -45,6 +49,7 @@ final class Router
         private readonly \Closure $middlewareResolver,
         private readonly array $globalMiddleware = [],
         private readonly bool $partialReloads = false,
+        private readonly ?EntryContext $entry = null,
     ) {}
 
     /**
@@ -82,12 +87,17 @@ final class Router
                 );
             }
 
-            // The chain's own middleware can only exist once a chain does.
+            // The chain's own middleware can only exist once a chain does --
+            // and its tenant ahead of it, so the middleware, the model
+            // binding and every loader run as the tenant the chain names.
             $routeMiddleware = array_values(array_diff($chain->middleware(), $this->globalMiddleware));
-            $pipeline = new Pipeline(array_map(
-                fn (string $class): Middleware => ($this->middlewareResolver)($class),
-                $routeMiddleware,
-            ));
+            $pipeline = new Pipeline([
+                ...($this->entry?->stackFor($chain->tenantSource()) ?? []),
+                ...array_map(
+                    fn (string $class): Middleware => ($this->middlewareResolver)($class),
+                    $routeMiddleware,
+                ),
+            ]);
 
             return $pipeline->run($passed, function (Request $inner) use ($chain, $respond): Response {
                 // Inside the route's middleware, like everything else that
