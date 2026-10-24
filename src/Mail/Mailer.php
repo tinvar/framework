@@ -38,7 +38,7 @@ final readonly class Mailer
 
         /** @var array<string, mixed> $props */
         $rendered = $this->renderer->render($email->template, $props);
-        $message = new Message($this->from, $email->to, $email->subject, $rendered->html, $rendered->text, $email->replyTo);
+        $message = new Message($this->from, $email->to, $email->subject, $rendered->html, $rendered->text, $email->replyTo, $email->unsubscribe);
         $this->transport->send($message);
 
         return $message;

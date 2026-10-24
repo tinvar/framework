@@ -26,6 +26,7 @@ final readonly class Message
         public string $html,
         public string $text,
         public ?Address $replyTo = null,
+        public ?Unsubscribe $unsubscribe = null,
     ) {
         if ($to === []) {
             throw new \InvalidArgumentException('An email needs someone to go to.');

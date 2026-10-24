@@ -22,6 +22,8 @@ final readonly class LogTransport implements Transport
             'from' => $message->from->toHeader(),
             'to' => array_map(static fn (Address $a): string => $a->toHeader(), $message->to),
             'replyTo' => $message->replyTo?->toHeader(),
+            'listUnsubscribe' => $message->unsubscribe?->headers()['List-Unsubscribe'] ?? null,
+            'listUnsubscribePost' => $message->unsubscribe?->headers()['List-Unsubscribe-Post'] ?? null,
             'subject' => $message->subject,
             'html' => $message->html,
             'text' => $message->text,

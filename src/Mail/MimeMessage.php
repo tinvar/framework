@@ -24,6 +24,10 @@ final class MimeMessage
         if ($message->replyTo !== null) {
             $headers[] = 'Reply-To: ' . $message->replyTo->toHeader();
         }
+        // Checked when the Unsubscribe was made: nothing in them breaks a line.
+        foreach ($message->unsubscribe?->headers() ?? [] as $name => $value) {
+            $headers[] = "{$name}: {$value}";
+        }
         $headers = [
             ...$headers,
             'Subject: ' . self::encodeHeader($message->subject),

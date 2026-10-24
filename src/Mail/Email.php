@@ -17,6 +17,9 @@ use Tinvar\Data\Data;
  *
  * Meridian's MER-36.4: "say what happened in the subject and first line".
  * The subject is the application's to write; a Message refuses an empty one.
+ *
+ * Mail a reader can stop getting -- a newsletter, a digest -- says how in
+ * $unsubscribe, which becomes its List-Unsubscribe headers (ADR 0048).
  */
 final readonly class Email
 {
@@ -30,6 +33,7 @@ final readonly class Email
         public string $template,
         public Data $props,
         public ?Address $replyTo = null,
+        public ?Unsubscribe $unsubscribe = null,
     ) {
         $this->to = $to instanceof Address ? [$to] : $to;
         if (preg_match('/^[a-z0-9][a-z0-9-]{0,63}\z/', $template) !== 1) {
