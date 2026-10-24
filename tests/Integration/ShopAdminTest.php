@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopAdmin;
 
+use Shop\Actions\OrderActions;
 use Shop\Auth\StaffMemberships;
 use Shop\Database\Migrations;
 use Shop\Database\Seeder;
@@ -21,6 +22,7 @@ use Shop\StaffAccount;
 use Tinvar\Http\CsrfTokens;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
+use Tinvar\Live\TagsRead;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Migrations\Migrator;
 use Tinvar\Orm\Orm;
@@ -160,7 +162,8 @@ it('lists every customer\'s newest orders, with whose each is', function () {
     $orm = new Orm(PdoConnection::sqlite(database(), 'shop'), new IdentityMap('shop'));
     $total = (int) $orm->connection()->select('SELECT COUNT(*) AS n FROM orders')[0]['n'];
 
-    $page = new Orders($orm)();
+    $tags = new TagsRead($orm);
+    $page = new Orders($orm, $tags)();
     $placed = array_map(static fn ($o): string => $o->placedAt, $page->orders);
     $sorted = $placed;
     rsort($sorted);
@@ -168,5 +171,8 @@ it('lists every customer\'s newest orders, with whose each is', function () {
     expect($page->total)->toBe($total)
         ->and($page->orders)->toHaveCount(min($total, Orders::LIMIT))
         ->and(\count(array_unique(array_map(static fn ($o): string => $o->customerEmail, $page->orders))))->toBeGreaterThan(1)
-        ->and($placed)->toBe($sorted);
+        ->and($placed)->toBe($sorted)
+        // Every order, so the tag every placed order invalidates: staff's
+        // list is told live as customers order.
+        ->and($tags->all())->toBe(["\0" . OrderActions::ORDERS_TAG => ['*']]);
 });

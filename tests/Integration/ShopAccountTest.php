@@ -632,7 +632,8 @@ it('places an order at the product\'s price, and refuses one it cannot fill', fu
 // "An action's response lists the server-side query tags it invalidated
 // (X-Invalidated-Tags), and the client flushes matching prefetch entries
 // automatically" -- so a list of orders prefetched before the order is not
-// the one shown after it.
+// the one shown after it. Every order's tag, and the customer's own, which
+// their orders page reads and is told of live in another tab.
 it('says placing an order invalidated the customer\'s orders', function () {
     [$visitor, $pdo] = shop();
     $visitor->get('/sign-in');
@@ -642,7 +643,9 @@ it('says placing an order invalidated the customer\'s orders', function () {
     $placed = $visitor->action('orders.place', ['product' => $teacup, 'quantity' => 1]);
     $refused = $visitor->action('orders.place', ['product' => $teacup, 'quantity' => 0]);
 
-    expect($placed->header('x-invalidated-tags'))->toBe(OrderActions::ORDERS_TAG)
+    $customer = (string) $pdo->query("SELECT id FROM customers WHERE email = 'demo@shop.test'")->fetchColumn();
+
+    expect($placed->header('x-invalidated-tags'))->toBe(OrderActions::ORDERS_TAG . ',' . OrderActions::customerTag($customer))
         ->and($refused->header('x-invalidated-tags'))->toBeNull('nothing was written, so nothing is stale');
 });
 
