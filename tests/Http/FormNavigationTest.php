@@ -301,6 +301,30 @@ describe('the page it is sent back to', function () {
             ->and($flashes->held)->toHaveKey('session-a');
     });
 
+    // The post's 303 is followed by the browser as a document load, which is
+    // where the flash is for. Another tab's client router shares the cookie,
+    // and its poll, partial reload or visit took the flash first.
+    it('leaves the flash for the document load, not a client router\'s RSC request', function (array $headers) {
+        $flashes = new SessionFlashes();
+        $flashes->held['session-a'] = ['flash' => ['message' => 'Saved']];
+        [$kernel, $path, , $signIn] = kernel($flashes);
+
+        $signIn();
+        $response = $kernel->handle(
+            new Request('GET', $path, ['accept' => 'text/x-component', 'rsc' => '1', ...$headers], cookies: [...cookies(), Flash::COOKIE => '1']),
+            page($seen),
+        );
+
+        expect($seen?->attribute(Kernel::FLASH))->toBeNull()
+            ->and($flashes->reads)->toBe(0)
+            ->and($flashes->held)->toHaveKey('session-a')
+            ->and($response->cookies())->not->toHaveKey(Flash::COOKIE);
+    })->with([
+        'a visit' => [[]],
+        'a poll or partial reload naming a segment' => [['x-page' => 'racks/show', 'x-only' => 'page']],
+        'a partial reload leaving one out' => [['x-page' => 'racks/show', 'x-except' => 'page']],
+    ]);
+
     // "<Form> also renders a hidden _token field during dynamic server
     // rendering." The render cannot read the cookie, which this very
     // response may be the one to set.

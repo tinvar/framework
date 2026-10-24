@@ -761,9 +761,14 @@ final class Kernel
      * script sends, and the flash such a post left for this page.
      *
      * The flash is read only when the cookie says one is waiting, so a page
-     * with nothing flashed asks the store nothing; and never by a prefetch,
+     * with nothing flashed asks the store nothing; and only by a document
+     * request, which is where a post made without script lands: its 303 is
+     * followed by the browser, as a document load. Never by a prefetch,
      * which runs a page the person may not open -- "Prefetch requests skip
-     * side effects" -- and would take the errors meant for the one they do.
+     * side effects" -- nor by a client router's RSC request: a poll, a
+     * partial reload or a visit in another of the person's tabs, sharing the
+     * cookie, took the flash and its errors from the page the post was sent
+     * back to.
      *
      * @return array{Request, bool} the request, and whether a flash was read
      */
@@ -774,7 +779,8 @@ final class Kernel
             $request = $request->withAttribute(self::CSRF_TOKEN, $token);
         }
 
-        if ($this->flashes === null || $request->cookie(Flash::COOKIE) === null || $request->isPrefetch()) {
+        if ($this->flashes === null || $request->cookie(Flash::COOKIE) === null
+            || $request->isPrefetch() || $request->wantsRscPayload()) {
             return [$request, false];
         }
 
