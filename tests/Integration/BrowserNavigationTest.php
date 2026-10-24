@@ -21,6 +21,7 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Integration\BrowserNavigation;
 
 use Shop\DemoAccount;
+use Shop\StaffAccount;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;
 use Tinvar\Support\Uuid;
@@ -499,4 +500,44 @@ it('shows the shipping panel\'s rescue slot when its fragment fails, and logs wh
         static fn (string $e): bool => !str_contains($e, 'An error occurred in the Server Components render'),
     ));
     expect($unexpected)->toBe([]);
+});
+
+// The admin panel: its guard sending a signed-out visitor to sign in, staff
+// let in to every customer's orders, a customer refused -- and the panel in
+// the route token, so moving between it and the shop is a panel switch.
+it('lets staff into the admin panel\'s orders, and refuses a customer', function () use ($root) {
+    $output = '';
+    served($root, function (string $origin) use ($root, &$output): void {
+        $output = runWithTimeout(
+            [
+                'node',
+                "{$root}/examples/shop/e2e/admin.mjs",
+                $origin,
+                StaffAccount::EMAIL,
+                StaffAccount::PASSWORD,
+                DemoAccount::EMAIL,
+                DemoAccount::PASSWORD,
+            ],
+            $root,
+            90,
+        );
+    });
+
+    $result = json_decode((string) $output, true);
+    expect($result)->toBeArray("the browser script failed:\n{$output}");
+
+    expect($result['errors'])->toBe([])
+        ->and($result['redirected'])->toBe(['path' => '/sign-in', 'next' => '/admin/orders']);
+
+    // Every customer's orders, the newest fifty of them, in the admin panel;
+    // the catalog after it, in none.
+    expect($result['admin']['heading'])->toBe('All orders')
+        ->and($result['admin']['rows'])->toBe(\Shop\Pages\Admin\Orders::LIMIT)
+        ->and($result['admin']['customers'])->toBeGreaterThan(1)
+        ->and($result['admin']['panel'])->not->toBe([])
+        ->and(array_unique($result['admin']['panel']))->toBe(['admin'])
+        ->and(array_unique($result['catalogPanel']))->toBe(['']);
+
+    // A customer holds no membership of the panel: the shop's own 403 page.
+    expect($result['refused'])->toBe(['status' => 403, 'heading' => 'This page is not open to your account']);
 });
