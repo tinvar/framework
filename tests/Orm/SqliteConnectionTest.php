@@ -213,3 +213,50 @@ it('keeps at most a bounded log of statements, and counts them all', function ()
         ->and($connection->statementLog()[0])->toBe('SELECT 0')
         ->and($connection->statementCount())->toBe(PdoConnection::MAX_LOGGED + 10);
 });
+
+// Switching to WAL takes the exclusive lock, and SQLite refuses a switch
+// that finds the write lock held at once, without the busy handler: two
+// processes creating one new database together had one fail before either
+// reached the migration lock. Another process holds the write lock of a
+// file not yet in WAL mode here, as the first of two would.
+it('waits its turn to put a file in WAL mode while another process holds it', function () {
+    $path = scratchDatabase();
+
+    try {
+        $holder = proc_open([
+            PHP_BINARY, '-r',
+            '$pdo = new PDO("sqlite:" . $argv[1]); $pdo->exec("CREATE TABLE hits (n INTEGER)"); '
+            . '$pdo->exec("BEGIN IMMEDIATE"); echo "held\n"; usleep(300000); $pdo->exec("COMMIT");',
+            '--', $path,
+        ], [1 => ['pipe', 'w']], $pipes);
+        expect($holder)->not->toBeFalse()
+            ->and(trim((string) fgets($pipes[1])))->toBe('held');
+
+        $started = microtime(true);
+        $connection = PdoConnection::sqlite($path);
+        $waited = microtime(true) - $started;
+        proc_close($holder);
+
+        expect($connection->select('PRAGMA journal_mode')[0]['journal_mode'])->toBe('wal')
+            ->and($waited)->toBeGreaterThan(0.1);
+    } finally {
+        removeDatabase($path);
+    }
+});
+
+it('gives up on the switch once the busy timeout has passed', function () {
+    $path = scratchDatabase();
+
+    try {
+        $holder = new \PDO("sqlite:{$path}");
+        $holder->exec('CREATE TABLE hits (n INTEGER)');
+        $holder->exec('BEGIN IMMEDIATE');
+
+        $started = microtime(true);
+        expect(fn () => PdoConnection::sqlite($path, busyTimeoutMs: 200))->toThrow(\PDOException::class, 'database is locked')
+            ->and(microtime(true) - $started)->toBeGreaterThan(0.15);
+        $holder->exec('ROLLBACK');
+    } finally {
+        removeDatabase($path);
+    }
+});

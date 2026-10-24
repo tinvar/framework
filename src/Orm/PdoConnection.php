@@ -159,7 +159,7 @@ final class PdoConnection implements Connection, TenantSetting
         // statement holds the database, and the timeout has to be in place
         // before the first lock is contended.
         $pdo->exec('PRAGMA busy_timeout = ' . max(0, $busyTimeoutMs));
-        $mode = $connection->select('PRAGMA journal_mode = WAL')[0]['journal_mode'] ?? null;
+        $mode = self::switchToWal($connection, $busyTimeoutMs);
         $pdo->exec('PRAGMA foreign_keys = ON');
 
         // The pragma is setup, not the application's work: query budgets
@@ -179,6 +179,34 @@ final class PdoConnection implements Connection, TenantSetting
         }
 
         return $connection;
+    }
+
+    /**
+     * Puts the database in WAL mode, waiting out another connection doing
+     * the same: what the journal mode answers.
+     *
+     * The switch takes the database's exclusive lock, and SQLite answers a
+     * switch that finds it held with SQLITE_BUSY at once, without asking the
+     * busy handler -- so two processes opening one new file together, two
+     * deploys migrating it, had one fail outright. Tried again here within
+     * the busy timeout, as any other statement would wait: once one of them
+     * has switched, the mode is in the file and the rest find it there.
+     */
+    private static function switchToWal(self $connection, int $busyTimeoutMs): mixed
+    {
+        $deadline = microtime(true) + max(0, $busyTimeoutMs) / 1000;
+        for ($wait = 1_000; ; $wait = min($wait * 2, 50_000)) {
+            try {
+                return $connection->select('PRAGMA journal_mode = WAL')[0]['journal_mode'] ?? null;
+            } catch (\PDOException $e) {
+                // SQLITE_BUSY and SQLITE_LOCKED; anything else is not a turn
+                // to wait for.
+                if (!\in_array($e->errorInfo[1] ?? null, [5, 6], true) || microtime(true) >= $deadline) {
+                    throw $e;
+                }
+                usleep($wait);
+            }
+        }
     }
 
     public function select(string $sql, array $bindings = []): array
