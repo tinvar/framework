@@ -95,6 +95,26 @@ final class PostgresDialect extends Dialect
         return $table->tenantColumn === null ? [] : RowLevelSecurity::policy($table->name, $table->tenantColumn, 'text');
     }
 
+    /**
+     * In place, one statement a step: the default dropped before the type
+     * changes, since the old default may not cast to the new type, and set
+     * again after. Each value converts by a cast to the new type -- what
+     * Postgres does only implicitly between related types -- and one that
+     * does not convert fails the migration.
+     */
+    protected function changeColumn(string $table, Column $column): array
+    {
+        $alter = "ALTER TABLE {$this->quote($table)} ALTER COLUMN {$this->quote($column->name)}";
+        $type = $this->type($column);
+
+        return [
+            "{$alter} DROP DEFAULT",
+            "{$alter} TYPE {$type} USING {$this->quote($column->name)}::{$type}",
+            ...($column->hasDefault ? ["{$alter} SET DEFAULT {$this->literal($column->default)}"] : []),
+            $column->nullable ? "{$alter} DROP NOT NULL" : "{$alter} SET NOT NULL",
+        ];
+    }
+
     public function dropIndex(string $table, string $index): string
     {
         // An index lives in its table's schema.
@@ -195,14 +215,64 @@ final class PostgresDialect extends Dialect
     {
         $columns = [];
         foreach ($connection->select(
-            'SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type, a.attnotnull AS notnull FROM pg_attribute a '
+            'SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type, a.attnotnull AS notnull, '
+            . 'pg_get_expr(d.adbin, d.adrelid) AS default_sql FROM pg_attribute a '
+            . 'LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum '
             . 'WHERE a.attrelid = to_regclass(?) AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum',
             [$this->quote($table)],
         ) as $row) {
-            $columns[self::text($row, 'name')] = ['type' => self::text($row, 'type'), 'nullable' => ($row['notnull'] ?? false) !== true];
+            [$kind, $default] = self::parseDefault(\is_string($row['default_sql'] ?? null) ? $row['default_sql'] : null);
+            $columns[self::text($row, 'name')] = [
+                'type' => self::text($row, 'type'),
+                'nullable' => ($row['notnull'] ?? false) !== true,
+                'default' => $default,
+                'defaultKind' => $kind,
+                'caseInsensitive' => self::text($row, 'type') === 'citext',
+            ];
         }
 
         return $columns;
+    }
+
+    public function family(string $type): string
+    {
+        // format_type() spells varchar(255) `character varying(255)`, and a
+        // precision can sit mid-type: `timestamp(6) with time zone`.
+        $bare = trim((string) preg_replace(['/\([^)]*\)/', '/\s+/'], ['', ' '], strtolower($type)));
+
+        return match ($bare) {
+            'character varying', 'varchar', 'character', 'char', 'bpchar', 'text', 'citext', 'uuid', 'name' => 'text',
+            'integer', 'int', 'int4', 'bigint', 'int8', 'smallint', 'int2' => 'integer',
+            'boolean', 'bool' => 'boolean',
+            'double precision', 'float8', 'real', 'float4' => 'float',
+            'numeric', 'decimal' => 'decimal',
+            'jsonb', 'json' => 'json',
+            'timestamptz', 'timestamp with time zone', 'timestamp', 'timestamp without time zone' => 'timestamp',
+            'date' => 'date',
+            'bytea' => 'binary',
+            default => $bare,
+        };
+    }
+
+    public function builderType(string $type): ?array
+    {
+        $type = strtolower(trim($type));
+
+        return match (true) {
+            preg_match('/^character varying\((\d+)\)\z/', $type, $m) === 1 => ['type' => 'string', 'length' => (int) $m[1], 'scale' => null],
+            preg_match('/^numeric\((\d+),\s*(\d+)\)\z/', $type, $m) === 1 => ['type' => 'decimal', 'length' => (int) $m[1], 'scale' => (int) $m[2]],
+            \in_array($type, ['text', 'citext', 'character varying'], true) => ['type' => 'text', 'length' => null, 'scale' => null],
+            $type === 'uuid' => ['type' => 'uuid', 'length' => null, 'scale' => null],
+            $type === 'integer' => ['type' => 'integer', 'length' => null, 'scale' => null],
+            $type === 'bigint' => ['type' => 'bigInteger', 'length' => null, 'scale' => null],
+            $type === 'boolean' => ['type' => 'boolean', 'length' => null, 'scale' => null],
+            $type === 'double precision' => ['type' => 'float', 'length' => null, 'scale' => null],
+            $type === 'jsonb' => ['type' => 'json', 'length' => null, 'scale' => null],
+            $type === 'timestamp with time zone' => ['type' => 'timestamp', 'length' => null, 'scale' => null],
+            $type === 'date' => ['type' => 'date', 'length' => null, 'scale' => null],
+            $type === 'bytea' => ['type' => 'binary', 'length' => null, 'scale' => null],
+            default => self::databaseType($type),
+        };
     }
 
     public function indexes(Connection $connection, string $table): array

@@ -55,8 +55,8 @@ final class Schema
     }
 
     /**
-     * Changes a table: columns added, renamed or dropped, indexes added or
-     * dropped.
+     * Changes a table: columns added, renamed, changed (Column::change())
+     * or dropped, indexes added or dropped.
      *
      * @param \Closure(Table): void $define
      */
@@ -65,7 +65,7 @@ final class Schema
         $definition = new Table($table, creating: false);
         $define($definition);
 
-        $this->run($this->dialect->alterTable($definition));
+        $this->dialect->applyAlter($this->connection, $definition, $this->run(...));
     }
 
     public function drop(string $table): void

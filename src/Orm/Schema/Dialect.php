@@ -39,8 +39,61 @@ abstract class Dialect
 
     abstract public function hasTable(Connection $connection, string $table): bool;
 
-    /** @return array<string, array{type: string, nullable: bool}> by column name, in table order */
+    /**
+     * Each column as the database reports it: its type as the database
+     * spells it, whether it takes NULL, its default -- a literal read into
+     * its PHP value (defaultKind 'literal'), something the database
+     * computes ('expression'), or none ('none') -- and whether it compares
+     * without regard to case.
+     *
+     * @return array<string, array{type: string, nullable: bool, default: int|float|string|bool|null, defaultKind: string, caseInsensitive: bool}>
+     *         by column name, in table order
+     */
     abstract public function columns(Connection $connection, string $table): array;
+
+    /**
+     * The family a type belongs to, whether written by the builder or
+     * reported by the database: text, integer, float, decimal, boolean,
+     * json, timestamp, date, binary -- or the type itself where it is none
+     * of them. Two types of one family hold the same values, so a column
+     * whose type the database spells differently from the builder has not
+     * changed; one whose family differs has.
+     */
+    abstract public function family(string $type): string;
+
+    /**
+     * The builder's column for a type as the database reports it, for a
+     * migration to write: a builder type and its length and scale, or the
+     * database's own type where it looks like one Column takes. Null where
+     * it is neither: a type the database gives is written into a migration
+     * only if it could not be anything but a type.
+     *
+     * @return array{type: string, length: int|null, scale: int|null}|null
+     */
+    abstract public function builderType(string $type): ?array;
+
+    /** What this database calls a column's type. */
+    public function typeOf(Column $column): string
+    {
+        return $this->type($column);
+    }
+
+    /**
+     * Turns foreign key enforcement off around one migration, where the
+     * database needs that to rebuild a table (SQLite); whether it did.
+     */
+    public function suspendForeignKeys(Connection $connection): bool
+    {
+        return false;
+    }
+
+    public function resumeForeignKeys(Connection $connection): void {}
+
+    /**
+     * Fails a migration that ran with foreign keys suspended and left a row
+     * referencing one that is not there; called before it commits.
+     */
+    public function checkForeignKeys(Connection $connection): void {}
 
     /** @return list<array{name: string, columns: list<string>, unique: bool}> the primary key among them */
     abstract public function indexes(Connection $connection, string $table): array;
@@ -90,6 +143,9 @@ abstract class Dialect
     {
         $lines = [];
         foreach ($table->columns as $column) {
+            if ($column->changing) {
+                throw new \LogicException("Column '{$column->name}': change() declares an existing column anew, in Schema::table(), not create().");
+            }
             $lines[] = $this->columnDefinition($column, inlineReference: false);
         }
         if ($table->primaryKey !== null) {
@@ -128,28 +184,111 @@ abstract class Dialect
      * The changes to an existing table, in an order that lets each one run:
      * renames first, so later changes can use the new names; indexes
      * dropped before their columns, which SQLite will not drop while an
-     * index covers them; columns added before the indexes over them.
+     * index covers them; columns changed before columns are added, and
+     * added before the indexes over them.
      *
      * @return list<string>
      */
     public function alterTable(Table $table): array
     {
+        return [
+            ...$this->renamesAndDroppedIndexes($table),
+            ...$this->droppedColumns($table),
+            ...$this->beforeColumns($table),
+            ...$this->changedColumns($table),
+            ...$this->additions($table),
+        ];
+    }
+
+    /**
+     * Runs the changes to an existing table: alterTable()'s statements, in
+     * turn. SQLite runs some of them as a rebuild of the table, which it
+     * reads from the database as it stands once the renames before it ran.
+     *
+     * @param \Closure(list<string>): void $run runs statements and records them
+     */
+    public function applyAlter(Connection $connection, Table $table, \Closure $run): void
+    {
+        $run($this->alterTable($table));
+    }
+
+    /** @return list<string> */
+    protected function renamesAndDroppedIndexes(Table $table): array
+    {
         $statements = [];
         $name = $this->quote($table->name);
-
         foreach ($table->renamedColumns as $from => $to) {
             $statements[] = "ALTER TABLE {$name} RENAME COLUMN {$this->quote($from)} TO {$this->quote($to)}";
         }
         foreach ($table->droppedIndexes as $index) {
             $statements[] = $this->dropIndex($table->name, $index);
         }
-        foreach ($table->droppedColumns as $column) {
-            $statements[] = "ALTER TABLE {$name} DROP COLUMN {$this->quote($column)}";
+
+        return $statements;
+    }
+
+    /** @return list<string> */
+    protected function droppedColumns(Table $table): array
+    {
+        $name = $this->quote($table->name);
+
+        return array_map(fn (string $column): string => "ALTER TABLE {$name} DROP COLUMN {$this->quote($column)}", $table->droppedColumns);
+    }
+
+    /** @return list<string> */
+    protected function changedColumns(Table $table): array
+    {
+        $statements = [];
+        foreach (self::changing($table) as $column) {
+            foreach ($this->changeColumn($table->name, $column) as $statement) {
+                $statements[] = $statement;
+            }
         }
 
-        $statements = [...$statements, ...$this->beforeColumns($table)];
+        return $statements;
+    }
+
+    /**
+     * The statements declaring an existing column anew (Column::change()).
+     *
+     * @return list<string>
+     */
+    abstract protected function changeColumn(string $table, Column $column): array;
+
+    /**
+     * The columns a table description declares anew, held to what change()
+     * may say: a key, a unique index or a check is its own change.
+     *
+     * @return list<Column>
+     */
+    protected static function changing(Table $table): array
+    {
+        $changing = [];
+        foreach ($table->columns as $column) {
+            if (!$column->changing) {
+                continue;
+            }
+            if ($column->primary || $column->unique || $column->check !== null || $column->references !== null) {
+                throw new \LogicException(
+                    "Column '{$column->name}': change() declares a column's type, nullability, default and case anew; "
+                    . 'a primary key, unique index, check or foreign key is added or dropped on its own.',
+                );
+            }
+            $changing[] = $column;
+        }
+
+        return $changing;
+    }
+
+    /** @return list<string> the columns added, the indexes made, and what follows them */
+    protected function additions(Table $table): array
+    {
+        $statements = [];
         $indexes = $table->indexes;
         foreach ($table->columns as $column) {
+            if ($column->changing) {
+                continue;
+            }
             if ($column->primary) {
                 throw new \LogicException("Column '{$column->name}': a primary key is declared when the table is created.");
             }
@@ -426,6 +565,63 @@ abstract class Dialect
         }
 
         return true;
+    }
+
+    /**
+     * A database type as the builder's own column type, if it looks like
+     * one Column would take; null where it does not.
+     *
+     * @return array{type: string, length: null, scale: null}|null
+     */
+    protected static function databaseType(string $type): ?array
+    {
+        return preg_match(Column::DATABASE_TYPE, $type) === 1 ? ['type' => $type, 'length' => null, 'scale' => null] : null;
+    }
+
+    /**
+     * A default as the database reports it in SQL, read: ['none', null]
+     * with none, ['literal', value] for a number, a quoted string (a
+     * Postgres cast after it dropped), TRUE, FALSE or NULL, and
+     * ['expression', null] for anything it computes. An expression is
+     * never carried into a migration: it is the database's SQL, so
+     * whoever could set it would choose what a migration runs.
+     *
+     * @return array{string, int|float|string|bool|null}
+     */
+    protected static function parseDefault(?string $sql): array
+    {
+        if ($sql === null) {
+            return ['none', null];
+        }
+        // SQLite keeps `DEFAULT (0)` with its parentheses: taken off while
+        // they wrap the whole of it, and not from `(1) + (2)`.
+        $sql = trim($sql);
+        while (str_starts_with($sql, '(') && str_ends_with($sql, ')')) {
+            $depth = 0;
+            for ($i = 0, $last = \strlen($sql) - 1; $i < $last; $i++) {
+                $depth += match ($sql[$i]) {
+                    '(' => 1,
+                    ')' => -1,
+                    default => 0,
+                };
+                if ($depth === 0) {
+                    break;
+                }
+            }
+            if ($i < $last) {
+                break;
+            }
+            $sql = trim(substr($sql, 1, -1));
+        }
+
+        return match (true) {
+            preg_match('/^[+-]?\d{1,18}\z/', $sql) === 1 => ['literal', (int) $sql],
+            preg_match('/^[+-]?(\d+\.\d*|\.\d+)([eE][+-]?\d+)?\z/', $sql) === 1 => ['literal', (float) $sql],
+            preg_match('/^(true|false)\z/i', $sql) === 1 => ['literal', strtolower($sql) === 'true'],
+            preg_match('/^null(::[a-z ]+)?\z/i', $sql) === 1 => ['literal', null],
+            preg_match('/^\'((?:[^\']|\'\')*)\'(::[a-z][a-z ]*(\(\d+(,\s*\d+)?\))?)?\z/is', $sql, $m) === 1 => ['literal', str_replace("''", "'", $m[1])],
+            default => ['expression', null],
+        };
     }
 
     /** @param array<string, mixed> $row */

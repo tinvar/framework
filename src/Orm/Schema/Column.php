@@ -20,6 +20,13 @@ final class Column
         'json', 'timestamp', 'date', 'binary',
     ];
 
+    /**
+     * What a database type the builder has no name for may look like, since
+     * it is written into the statement as it is: `tsvector`,
+     * `numeric(10, 2)`, `double precision`.
+     */
+    public const string DATABASE_TYPE = '/^[A-Za-z][A-Za-z0-9_ ]{0,62}(\(\d+(\s*,\s*\d+)?\))?\z/';
+
     public private(set) bool $nullable = false;
 
     public private(set) bool $hasDefault = false;
@@ -39,6 +46,9 @@ final class Column
 
     public private(set) ?string $onDelete = null;
 
+    /** Whether this declares an existing column anew rather than adding one (change()). */
+    public private(set) bool $changing = false;
+
     /**
      * @param string $type one of TYPES, or a database type of the application's own
      * @param int|null $length a string's most characters; a decimal's precision
@@ -53,9 +63,8 @@ final class Column
         Identifier::assert($name, 'column');
 
         // A database type the builder has no name for is written into the
-        // statement as it is, so it is held to what a type can look like:
-        // `tsvector`, `numeric(10, 2)`, `double precision`.
-        if (!$this->isPortable() && preg_match('/^[A-Za-z][A-Za-z0-9_ ]{0,62}(\(\d+(\s*,\s*\d+)?\))?\z/', $type) !== 1) {
+        // statement as it is, so it is held to what a type can look like.
+        if (!$this->isPortable() && preg_match(self::DATABASE_TYPE, $type) !== 1) {
             throw new \InvalidArgumentException("'{$type}' is not a column type.");
         }
     }
@@ -144,6 +153,27 @@ final class Column
             throw new \LogicException("Column '{$this->name}' has no references() for onDelete() to act on.");
         }
         $this->onDelete = $action;
+
+        return $this;
+    }
+
+    /**
+     * Declares an existing column anew, in Schema::table(): its type,
+     * nullability, default and case-insensitivity become what this says,
+     * whole -- a default or nullable() it leaves out, the column loses --
+     * and its keys, checks and indexes stay as they are. A key, a unique
+     * index or a check is added or dropped on its own, not by change().
+     *
+     *     $table->string('note', 500)->nullable()->change();
+     *
+     * Postgres alters the column in place, converting each value with a
+     * cast; MySQL redefines it; SQLite, which can do neither, rebuilds the
+     * table around it. A value that does not convert, or a NULL where the
+     * column no longer allows one, fails the migration.
+     */
+    public function change(): self
+    {
+        $this->changing = true;
 
         return $this;
     }

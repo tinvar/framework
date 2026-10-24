@@ -251,15 +251,27 @@ final class Migrator
         $transactional = $migration->withinTransaction && $this->dialect->transactionalDdl();
         $table = $this->dialect->quote(self::TABLE);
 
-        $work = function () use ($migration, $schema, $direction, $name, $batch, $table): void {
+        // SQLite rebuilds a table to change a column, which foreign keys
+        // enforced as it goes would turn into deletes of every row
+        // referencing it; they are checked once, before the commit, instead.
+        $suspended = $this->dialect->suspendForeignKeys($this->connection);
+
+        $work = function () use ($migration, $schema, $direction, $name, $batch, $table, $suspended): void {
             if ($direction === 'up') {
                 $migration->up($schema);
+            } else {
+                $migration->down($schema);
+            }
+            if ($suspended) {
+                $this->dialect->checkForeignKeys($this->connection);
+            }
+
+            if ($direction === 'up') {
                 $this->connection->execute(
                     "INSERT INTO {$table} (name, batch, applied_at) VALUES (?, ?, ?)",
                     [$name, $batch, gmdate('Y-m-d\TH:i:s\Z')],
                 );
             } else {
-                $migration->down($schema);
                 $this->connection->execute("DELETE FROM {$table} WHERE name = ?", [$name]);
             }
         };
@@ -269,6 +281,10 @@ final class Migrator
             $transactional ? $this->connection->transaction($work) : $work();
         } catch (\Throwable $e) {
             throw new MigrationFailed($name, $direction, $transactional ? [] : $schema->statements(), $e);
+        } finally {
+            if ($suspended) {
+                $this->dialect->resumeForeignKeys($this->connection);
+            }
         }
 
         ($this->log)(\sprintf(

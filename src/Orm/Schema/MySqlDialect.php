@@ -120,6 +120,16 @@ final class MySqlDialect extends Dialect
         return "DROP INDEX {$this->quote($index)} ON {$this->quote($table)}";
     }
 
+    /**
+     * MODIFY COLUMN, which takes the whole definition: what change() says is
+     * the column's, and its foreign keys and checks -- constraints of the
+     * table here -- stay.
+     */
+    protected function changeColumn(string $table, Column $column): array
+    {
+        return ["ALTER TABLE {$this->quote($table)} MODIFY COLUMN {$this->columnDefinition($column, inlineReference: false, inlineUnique: false)}"];
+    }
+
     /** A column's REFERENCES is ignored here, so a foreign key added later is a constraint of its own. */
     protected function addColumn(string $table, Column $column): array
     {
@@ -149,18 +159,74 @@ final class MySqlDialect extends Dialect
         ) !== [];
     }
 
+    /**
+     * MySQL reports a literal default as its value, unquoted, and one it
+     * computes with DEFAULT_GENERATED among the column's extras.
+     */
     public function columns(Connection $connection, string $table): array
     {
         $columns = [];
         foreach ($connection->select(
-            'SELECT column_name AS name, column_type AS type, is_nullable AS nullable FROM information_schema.columns '
+            'SELECT column_name AS name, column_type AS type, is_nullable AS nullable, column_default AS dflt, extra AS extra, '
+            . 'collation_name AS collation FROM information_schema.columns '
             . 'WHERE table_schema = DATABASE() AND table_name = ? ORDER BY ordinal_position',
             [$table],
         ) as $row) {
-            $columns[self::text($row, 'name')] = ['type' => self::text($row, 'type'), 'nullable' => self::text($row, 'nullable') === 'YES'];
+            $default = $row['dflt'] ?? null;
+            $kind = match (true) {
+                str_contains(strtoupper(self::text($row, 'extra')), 'DEFAULT_GENERATED') => 'expression',
+                $default === null => 'none',
+                default => 'literal',
+            };
+            $columns[self::text($row, 'name')] = [
+                'type' => self::text($row, 'type'),
+                'nullable' => self::text($row, 'nullable') === 'YES',
+                'default' => $kind === 'literal' && \is_scalar($default) ? (string) $default : null,
+                'defaultKind' => $kind,
+                'caseInsensitive' => str_ends_with(self::text($row, 'collation'), '_ci'),
+            ];
         }
 
         return $columns;
+    }
+
+    /** A boolean is a TINYINT(1) here, an integer like any other. */
+    public function family(string $type): string
+    {
+        $bare = trim((string) preg_replace(['/\([^)]*\)/', '/\b(unsigned|zerofill)\b/', '/\s+/'], ['', '', ' '], strtolower($type)));
+
+        return match ($bare) {
+            'char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext' => 'text',
+            'tinyint', 'smallint', 'mediumint', 'int', 'integer', 'bigint', 'bool', 'boolean' => 'integer',
+            'double', 'float', 'real' => 'float',
+            'decimal', 'numeric' => 'decimal',
+            'json' => 'json',
+            'datetime', 'timestamp' => 'timestamp',
+            'date' => 'date',
+            'tinyblob', 'blob', 'mediumblob', 'longblob', 'binary', 'varbinary' => 'binary',
+            default => $bare,
+        };
+    }
+
+    public function builderType(string $type): ?array
+    {
+        $type = strtolower(trim($type));
+
+        return match (true) {
+            preg_match('/^varchar\((\d+)\)\z/', $type, $m) === 1 => ['type' => 'string', 'length' => (int) $m[1], 'scale' => null],
+            preg_match('/^decimal\((\d+),(\d+)\)\z/', $type, $m) === 1 => ['type' => 'decimal', 'length' => (int) $m[1], 'scale' => (int) $m[2]],
+            $type === 'char(36)' => ['type' => 'uuid', 'length' => null, 'scale' => null],
+            $type === 'text' => ['type' => 'text', 'length' => null, 'scale' => null],
+            $type === 'int' => ['type' => 'integer', 'length' => null, 'scale' => null],
+            $type === 'bigint' => ['type' => 'bigInteger', 'length' => null, 'scale' => null],
+            $type === 'tinyint(1)' => ['type' => 'boolean', 'length' => null, 'scale' => null],
+            $type === 'double' => ['type' => 'float', 'length' => null, 'scale' => null],
+            $type === 'json' => ['type' => 'json', 'length' => null, 'scale' => null],
+            $type === 'datetime(6)' => ['type' => 'timestamp', 'length' => null, 'scale' => null],
+            $type === 'date' => ['type' => 'date', 'length' => null, 'scale' => null],
+            $type === 'longblob' => ['type' => 'binary', 'length' => null, 'scale' => null],
+            default => self::databaseType($type),
+        };
     }
 
     public function indexes(Connection $connection, string $table): array
