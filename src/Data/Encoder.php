@@ -181,20 +181,34 @@ final class Encoder
 
             $field = $property->getValue($value);
             $fieldPath = "{$path}.{$name}";
+            $failed = false;
             $encoded = isset($rescued[$name]) && $field instanceof Lazy
-                ? $this->rescue($field, $fieldPath, $depth + 1, $seen, $scope)
+                ? $this->rescue($field, $fieldPath, $depth + 1, $seen, $scope, $failed)
                 : $this->walk($field, $fieldPath, $depth + 1, $seen, $scope);
 
             if (isset($merged[$name]) && \is_array($encoded)) {
                 $encoded = $this->merged($merged[$name], $encoded, $fieldPath, $scope);
             }
 
-            $out[$name] = isset($once[$name], $keys[$name]) ? [
+            if (!isset($once[$name], $keys[$name])) {
+                $out[$name] = $encoded;
+                continue;
+            }
+
+            $out[$name] = [
                 self::ONCE_KEY => $keys[$name],
                 'ttl' => $once[$name]['ttl'],
                 'tags' => $once[$name]['tags'],
                 'value' => $encoded,
-            ] : $encoded;
+            ];
+            // A rescued failure is not what the field renders, only what it
+            // rendered this once: kept and claimed, a database blip would be
+            // what the browser put back for the field's whole ttl, or the
+            // whole session. Sent to be shown and not kept, so the next
+            // visit asks for it again (ADR 0020).
+            if ($failed) {
+                $out[$name]['keep'] = false;
+            }
         }
 
         return $out;
@@ -307,12 +321,15 @@ final class Encoder
      * every environment, as the hardening rules say.
      *
      * @param array<int, true> $seen
+     * @param bool $failed set when the marker is what is returned
      */
-    private function rescue(Lazy $field, string $path, int $depth, array $seen, EncodeScope $scope): mixed
+    private function rescue(Lazy $field, string $path, int $depth, array $seen, EncodeScope $scope, bool &$failed): mixed
     {
         try {
             $value = $field->resolve();
         } catch (\Throwable $e) {
+            $failed = true;
+
             return [self::RESCUED_KEY => $this->reported($e)];
         }
 

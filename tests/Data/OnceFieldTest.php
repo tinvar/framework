@@ -171,7 +171,10 @@ describe('a once field the browser holds', function () {
     });
 });
 
-it('rescues inside the once field: the marker is its value', function () {
+// Kept and claimed, a failure once would be what the browser put back for
+// the field's whole ttl -- here, the whole session -- and the resolver never
+// asked again. Shown, and not kept.
+it('rescues inside the once field: the marker is its value, sent not to be kept', function () {
     $data = new RescuedOnceData(Lazy::of(static fn (): int => throw new \RuntimeException('no')));
 
     $encoded = (new Encoder(static fn (\Throwable $e): string => 'digest-1'))->encode($data);
@@ -181,7 +184,14 @@ it('rescues inside the once field: the marker is its value', function () {
         'ttl' => null,
         'tags' => [],
         'value' => ['$rescued' => 'digest-1'],
+        'keep' => false,
     ]);
+});
+
+it('sends a rescued once field that resolves to be kept, as any other', function () {
+    $encoded = (new Encoder())->encode(new RescuedOnceData(Lazy::of(static fn (): int => 7)));
+
+    expect($encoded['total'])->toBe(['$once' => defaultKey('RescuedOnceData.total'), 'ttl' => null, 'tags' => [], 'value' => 7]);
 });
 
 describe('what cannot be a once field', function () {
