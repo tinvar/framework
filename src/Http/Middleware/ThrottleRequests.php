@@ -42,6 +42,10 @@ final class ThrottleRequests implements Middleware
      *        X-RateLimit headers. Off for an outer guard, whose generous
      *        numbers would otherwise overwrite the budget a client should
      *        pace itself by.
+     * @param (\Closure(Request): int)|null $cost how many hits a request
+     *        counts as. One, unless the request is several in one: a
+     *        fragment group renders a subtree per token, and charged as one
+     *        request it would buy that many renders for the price of one.
      */
     public function __construct(
         private readonly Throttle $throttle,
@@ -50,13 +54,19 @@ final class ThrottleRequests implements Middleware
         private readonly int $window = 60,
         private readonly bool $byAddress = true,
         private readonly bool $advertise = true,
+        private readonly ?\Closure $cost = null,
     ) {}
 
     public function handle(Request $request, \Closure $next): Response
     {
-        $result = $this->byAddress
-            ? $this->throttle->hitAddress($this->name, $request, $this->limit, $this->window)
-            : $this->throttle->hitUser($this->name, $this->limit, $this->window);
+        // Each hit is counted as it is made, and the first refusal stops the
+        // count: a request over the limit is refused for all of itself.
+        $hits = $this->cost === null ? 1 : max(1, ($this->cost)($request));
+        do {
+            $result = $this->byAddress
+                ? $this->throttle->hitAddress($this->name, $request, $this->limit, $this->window)
+                : $this->throttle->hitUser($this->name, $this->limit, $this->window);
+        } while (--$hits > 0 && $result !== null && $result->allowed);
 
         // No user to charge. The address pass outside this one already
         // counted, so an anonymous caller is bounded either way.

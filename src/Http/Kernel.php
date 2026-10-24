@@ -274,13 +274,19 @@ final class Kernel
                 },
             );
 
+        // Built before the runners, which report through it: a rescued field
+        // and a failed query are logged by the same handler as a failed
+        // request, under the digest the client is shown.
+        $this->exceptions = new ExceptionHandler($log);
+        $encoder = new \Tinvar\Data\Encoder($this->report(...));
+
         $this->actions_ = new ActionEndpoint(
             new ActionRunner(
                 $this->actions,
                 $this->orm,
                 $gate,
                 new Validator($this->orm),
-                new \Tinvar\Data\Encoder(),
+                $encoder,
                 $cache,
             ),
             revalidator: $revalidator,
@@ -294,8 +300,10 @@ final class Kernel
             registry: $this->queries,
             orm: $this->orm,
             gate: $gate,
+            encoder: $encoder,
             cache: $cache,
             debug: $debug,
+            report: $this->report(...),
         );
 
         $this->queries_ = new QueryEndpoint(
@@ -401,8 +409,14 @@ final class Kernel
                 orm: $fragments->orm ?? $this->orm,
                 renderRoute: $fragments->renderRoute,
                 routeSigner: $fragments->routeSigner,
+                renderGroup: $fragments->renderGroup,
             );
         }
+
+        // A group request renders a subtree per token, so it is charged per
+        // token: one request carrying sixteen is sixteen renders, and the
+        // budget is a budget of renders (ADR 0018).
+        $perToken = FragmentEndpoint::tokenCount(...);
 
         $this->fragments_ = $fragments === null ? null : new FragmentEndpoint(
             routes: $this->routes,
@@ -415,9 +429,10 @@ final class Kernel
             allowedQueries: $fragments->allowedQueries,
             middlewareResolver: self::middlewareFrom($resolver),
             globalMiddleware: $globalMiddleware,
-            extraGlobal: $this->throttleFor($throttle, 'fragments', $limits, byAddress: true),
+            extraGlobal: $this->throttleFor($throttle, 'fragments', $limits, byAddress: true, cost: $perToken),
             panels: $panels,
-            extraInner: $this->throttleFor($throttle, 'fragments', $limits, byAddress: false),
+            extraInner: $this->throttleFor($throttle, 'fragments', $limits, byAddress: false, cost: $perToken),
+            renderGroup: $fragments->renderGroup,
         );
 
         // Both, or neither: a manifest says which boundaries exist, and
@@ -434,7 +449,6 @@ final class Kernel
         // whether or not it has a single <Deferred>.
         $builds ??= $fragments?->builds;
         $this->versions = $builds === null ? null : new CheckVersion($builds);
-        $this->exceptions = new ExceptionHandler($log);
         $this->scope = RequestScope::standard($this->orm, $this->auth, $this->policies, $panels, $queryRunner);
 
         // Request-lived services go with the request, like the user and the
@@ -594,6 +608,20 @@ final class Kernel
     }
 
     /**
+     * Logs a failure that did not fail its response -- a #[Rescue] field, a
+     * fragment subtree the renderer rendered as an error row, a query that
+     * threw -- and returns the digest it was logged under.
+     *
+     * An application that builds its own Encoder, QueryRunner or
+     * RenderChannel passes this to each, so what they rescue is logged where
+     * every failed request is.
+     */
+    public function report(\Throwable $e, ?string $digest = null): string
+    {
+        return $this->exceptions->report($e, $digest);
+    }
+
+    /**
      * The application's resolver, narrowed to middleware. A resolver that
      * hands back something else is a misconfiguration to name, not a
      * TypeError from deep inside a request.
@@ -670,6 +698,7 @@ final class Kernel
      * and is not, so an application has to say what store it means.
      *
      * @param array<string, int> $limits
+     * @param (\Closure(Request): int)|null $cost hits a request counts as; one by default
      * @return list<Middleware>
      */
     private function throttleFor(
@@ -677,12 +706,13 @@ final class Kernel
         string $name,
         array $limits,
         bool $byAddress = true,
+        ?\Closure $cost = null,
     ): array {
         if ($throttle === null || ($limits[$name] ?? 0) <= 0) {
             return [];
         }
 
-        return [new ThrottleRequests($throttle, $name, $limits[$name], byAddress: $byAddress)];
+        return [new ThrottleRequests($throttle, $name, $limits[$name], byAddress: $byAddress, cost: $cost)];
     }
 
     /**

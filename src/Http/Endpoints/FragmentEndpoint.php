@@ -45,6 +45,13 @@ use Tinvar\Support\Signer;
  * Every rejection is the same rejection. A caller able to tell "expired" from
  * "wrong session" from "wrong build" from "no such route" could use the
  * difference to probe; the reason goes to the log with a digest instead.
+ *
+ * GET /_fragment/{token}/{token}/... is one <Deferred group>: the boundaries
+ * of one page that load together (ADR 0018). Each token is verified as a
+ * lone one is, and they must all name the same page -- route, params, panel,
+ * tenant, build -- so the route's chain that runs once is the chain every
+ * one of them would have run. One that does not is the same 404 as any
+ * other refusal, for the whole request.
  */
 final class FragmentEndpoint
 {
@@ -52,6 +59,13 @@ final class FragmentEndpoint
 
     /** Tokens are long, but not unbounded: this is a path segment. */
     public const int MAX_TOKEN_BYTES = 4096;
+
+    /**
+     * How many boundaries one group request may carry. A group is charged a
+     * hit per token, so this bounds the work one request can ask for and the
+     * length of its path, not the budget.
+     */
+    public const int MAX_GROUP = 16;
 
     /** "The response is RSC payload only." */
     public const string CONTENT_TYPE = 'text/x-component';
@@ -69,6 +83,8 @@ final class FragmentEndpoint
      * @param list<Middleware> $extraInner  already-built middleware to run AFTER the
      *        application's global stack -- where a per-user throttle has to go,
      *        because the session it reads is established by that stack
+     * @param (\Closure(list<FragmentToken>, Request, array<string, mixed>, list<string>): Response)|null $renderGroup
+     *        renders a group's subtrees in one render; see FragmentSupport
      */
     public function __construct(
         private readonly RouteRegistry $routes,
@@ -84,7 +100,22 @@ final class FragmentEndpoint
         private readonly ?PanelContext $panels = null,
         private readonly array $extraInner = [],
         private readonly ?\Closure $allowedQueries = null,
+        private readonly ?\Closure $renderGroup = null,
     ) {}
+
+    /**
+     * How many tokens a request carries, for the throttle to charge -- read
+     * from the path alone, before anything is verified, since the throttle
+     * runs first. Capped where verification would refuse the rest.
+     */
+    public static function tokenCount(Request $request): int
+    {
+        if (!str_starts_with($request->path, self::PREFIX)) {
+            return 1;
+        }
+
+        return min(self::MAX_GROUP, substr_count($request->path, '/', \strlen(self::PREFIX)) + 1);
+    }
 
     /**
      * Refuses any method but GET, saying which would do; see
@@ -133,7 +164,10 @@ final class FragmentEndpoint
         return $global->run($request, function (Request $passed): Response {
             self::assertMethod($passed);
 
-            $token = $this->verify($passed);
+            // A group's tokens agree on everything below, so the first
+            // stands for all of them; see verify().
+            $tokens = $this->verify($passed);
+            $token = $tokens[0];
 
             // By NAME, never by rebuilding a URL and matching it back. The
             // round trip is not identity -- /sites/{site} with site="new"
@@ -174,7 +208,7 @@ final class FragmentEndpoint
                 throw self::refuse('token was minted in a different panel');
             }
 
-            $run = fn (): Response => $this->throughRoute($chain, $passed, $token);
+            $run = fn (): Response => $this->throughRoute($chain, $passed, $tokens);
 
             // Already in it when the request decided first; a panel-less
             // token runs with no panel at all.
@@ -190,9 +224,12 @@ final class FragmentEndpoint
     /**
      * The route's own middleware, then the subtree -- inside the token's
      * panel, which the caller has already checked and established.
+     *
+     * @param non-empty-list<FragmentToken> $tokens one, or a group that agrees on its page
      */
-    private function throughRoute(RouteChain $chain, Request $passed, FragmentToken $token): Response
+    private function throughRoute(RouteChain $chain, Request $passed, array $tokens): Response
     {
+        $token = $tokens[0];
         $routeOnly = array_values(array_diff($chain->middleware(), $this->globalMiddleware));
         $pipeline = new Pipeline([
             // Inner middleware first: the per-user throttle belongs here,
@@ -207,7 +244,7 @@ final class FragmentEndpoint
             ),
         ]);
 
-        return $pipeline->run($passed, function (Request $inner) use ($chain, $token): Response {
+        return $pipeline->run($passed, function (Request $inner) use ($chain, $token, $tokens): Response {
             // And still the token's panel once the route's middleware
             // has run. Middleware may set a panel of its own -- the
             // route's panel binding, a switch the session made -- and
@@ -233,15 +270,23 @@ final class FragmentEndpoint
                 throw self::refuse('token was minted for a different tenant');
             }
 
-            return $this->renderWithin($chain, $inner, $token);
+            return $this->renderWithin($chain, $inner, $tokens);
         });
     }
 
-    /** The subtree itself, once the panel is established. */
-    private function renderWithin(RouteChain $chain, Request $inner, FragmentToken $token): Response
+    /**
+     * The subtree itself -- or a group's subtrees -- once the panel is
+     * established.
+     *
+     * @param non-empty-list<FragmentToken> $tokens
+     */
+    private function renderWithin(RouteChain $chain, Request $inner, array $tokens): Response
     {
+        $token = $tokens[0];
+
         // Model binding and every #[Authorize] in the chain, before the
-        // subtree renders anything.
+        // subtree renders anything. Once for a group: its tokens name one
+        // page, so this is the chain each would have run alone.
         $models = $this->loaders->bindAndAuthorize($chain, $inner);
 
         // "PHP rejects any other name on that route's socket, so a
@@ -249,7 +294,17 @@ final class FragmentEndpoint
         // Derived here, from the route the token names.
         $allowed = $this->allowedQueries === null ? [] : ($this->allowedQueries)($token->route);
 
-        $response = ($this->render)($token, $inner, $models, $allowed);
+        if (\count($tokens) === 1) {
+            $response = ($this->render)($token, $inner, $models, $allowed);
+        } elseif ($this->renderGroup !== null) {
+            $response = ($this->renderGroup)($tokens, $inner, $models, $allowed);
+        } else {
+            // Not a refusal: the tokens are good and the page has a group on
+            // it. The application has not said how to render one.
+            throw new \LogicException(
+                'A <Deferred group> was requested, and this application\'s FragmentSupport has no renderGroup.',
+            );
+        }
 
         // A refreshed token only on a response that succeeded. Handing one
         // back with a failure the renderer produced itself would extend the
@@ -272,29 +327,40 @@ final class FragmentEndpoint
         // A refresh never extends past the absolute lifetime: near the end
         // its expiry is the deadline itself, after which the token is
         // refused and the client reloads.
-        $refreshed = $token->refreshed();
+        $refreshed = array_map(static fn (FragmentToken $t): ?FragmentToken => $t->refreshed(), $tokens);
 
-        return $refreshed === null
-            ? $response
-            : $response->withHeader('x-fragment-token', $refreshed->encode($this->signer));
+        // A group's in token order, comma-separated. All or none: a group's
+        // tokens were minted together and expire together, and a partial
+        // list would leave the client pairing tokens with the wrong
+        // boundaries.
+        if (\in_array(null, $refreshed, true)) {
+            return $response;
+        }
+
+        return $response->withHeader('x-fragment-token', implode(',', array_map(
+            fn (?FragmentToken $t): string => $t === null ? '' : $t->encode($this->signer),
+            $refreshed,
+        )));
     }
 
     /**
-     * Everything the token has to satisfy before any of it is acted on.
+     * Everything the tokens have to satisfy before any of them is acted on.
+     *
+     * @return non-empty-list<FragmentToken>
      */
-    private function verify(Request $request): FragmentToken
+    private function verify(Request $request): array
     {
         $raw = substr($request->path, \strlen(self::PREFIX));
+        $parts = explode('/', $raw);
 
-        if ($raw === '' || \strlen($raw) > self::MAX_TOKEN_BYTES) {
-            throw self::refuse('token missing or over the size cap');
+        if ($raw === '' || \count($parts) > self::MAX_GROUP) {
+            throw self::refuse('token missing, or more of them than one group may carry');
         }
 
-        try {
-            // Signature first, then expiry: see FragmentToken::decode.
-            $token = FragmentToken::decode($raw, $this->signer);
-        } catch (FragmentTokenError $e) {
-            throw self::refuse($e->getMessage());
+        // The same token twice is the same subtree twice: work asked for,
+        // and nothing a page sends.
+        if (\count(array_unique($parts)) !== \count($parts)) {
+            throw self::refuse('a token repeated within one group');
         }
 
         // "PHP rejects a token from another session, another build outside the
@@ -306,6 +372,43 @@ final class FragmentEndpoint
         $session = ($this->sessionId)($request);
         if ($session === '') {
             throw self::refuse('no session to bind the token to');
+        }
+
+        $tokens = [];
+        foreach ($parts as $part) {
+            $tokens[] = $this->verifyOne($part, $session);
+        }
+
+        // One page's boundaries: everything that decides who may use a token
+        // is the same for all of them, so the chain run once for the first
+        // is the chain each of the others would have run alone. Tokens from
+        // two pages -- even two the caller may see -- are not a group.
+        $first = $tokens[0];
+        foreach ($tokens as $token) {
+            if ($token->route !== $first->route
+                || $token->params !== $first->params
+                || $token->panel !== $first->panel
+                || $token->tenant !== $first->tenant
+                || $token->build !== $first->build) {
+                throw self::refuse('tokens in one group were minted for different pages');
+            }
+        }
+
+        return $tokens;
+    }
+
+    /** One token, verified exactly as a lone one always was. */
+    private function verifyOne(string $raw, #[\SensitiveParameter] string $session): FragmentToken
+    {
+        if ($raw === '' || \strlen($raw) > self::MAX_TOKEN_BYTES) {
+            throw self::refuse('token missing or over the size cap');
+        }
+
+        try {
+            // Signature first, then expiry: see FragmentToken::decode.
+            $token = FragmentToken::decode($raw, $this->signer);
+        } catch (FragmentTokenError $e) {
+            throw self::refuse($e->getMessage());
         }
 
         if (!$token->belongsTo($this->signer, $session)) {

@@ -29,6 +29,14 @@ final class Frame
     public const string DONE = 'done';
     public const string ERROR = 'error';
 
+    /**
+     * A subtree of a fragment failed and the render went on without it: the
+     * payload carries an error row in its place, and this says so, so PHP
+     * can log what the browser will only see a digest of. One-way like the
+     * rest -- it is logged and nothing else -- and capped; see ADR 0017.
+     */
+    public const string REPORT = 'report';
+
     /** @var list<string> */
     public const array PHP_TO_RENDERER = [self::RENDER, self::FRAGMENT, self::RESULT, self::MINTED];
 
@@ -38,9 +46,17 @@ final class Frame
         self::QUERY,
         self::META,
         self::MINT,
+        self::REPORT,
         self::DONE,
         self::ERROR,
     ];
+
+    /**
+     * What a digest from the renderer may look like. It goes into a log line
+     * and back to the browser on an error row, and the renderer is the
+     * semi-trusted side, so it is a short token and nothing else.
+     */
+    public const string DIGEST_SHAPE = '/^[A-Za-z0-9_-]{1,64}$/D';
 
     /**
      * How many fragment tokens one render may ask to have signed.
@@ -116,6 +132,27 @@ final class Frame
         return [
             't' => self::FRAGMENT,
             'token' => $token,
+            'rid' => $requestId,
+            'nonce' => $cspNonce,
+            'allow' => array_values($allowedQueries),
+        ];
+    }
+
+    /**
+     * A <Deferred group>'s subtrees in one render, whose payload's root is
+     * the list of them in the order given. The same frame type as a lone
+     * fragment -- the renderer treats both as payload-only and unable to
+     * mint -- told apart by `tokens` in place of `token`.
+     *
+     * @param list<array<string, mixed>> $tokens already-verified fragment token contents
+     * @param array<array-key, string> $allowedQueries sent as a list whatever its keys
+     * @return array<string, mixed>
+     */
+    public static function fragments(array $tokens, string $requestId, string $cspNonce, array $allowedQueries): array
+    {
+        return [
+            't' => self::FRAGMENT,
+            'tokens' => $tokens,
             'rid' => $requestId,
             'nonce' => $cspNonce,
             'allow' => array_values($allowedQueries),
@@ -224,6 +261,26 @@ final class Frame
         }
 
         return $out;
+    }
+
+    /**
+     * The code, digest and message of a report frame. Anything not of the
+     * shape this side expects is dropped rather than logged.
+     *
+     * @param array<string, mixed> $frame
+     * @return array{code: string, digest: string|null, message: string|null}
+     */
+    public static function readReport(array $frame): array
+    {
+        $code = $frame['code'] ?? null;
+        $digest = $frame['digest'] ?? null;
+        $message = $frame['message'] ?? null;
+
+        return [
+            'code' => \is_string($code) && preg_match('/^[a-z_]{1,64}$/D', $code) === 1 ? $code : 'render_failed',
+            'digest' => \is_string($digest) && preg_match(self::DIGEST_SHAPE, $digest) === 1 ? $digest : null,
+            'message' => \is_string($message) ? $message : null,
+        ];
     }
 
     /**

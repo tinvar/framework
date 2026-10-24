@@ -33,6 +33,14 @@ use Tinvar\Support\Uuid;
  */
 final class QueryRunner
 {
+    /**
+     * @param (\Closure(\Throwable, ?string): string)|null $report logs what a
+     *        query threw under the digest its error record carries -- the
+     *        Kernel's report(). The record keeps the exception's text away
+     *        from the renderer, which is right, and with nothing else it kept
+     *        it from everyone: a fragment rescued because its query failed
+     *        showed a reference no log line had.
+     */
     public function __construct(
         private readonly QueryRegistry $registry,
         private readonly Orm $orm,
@@ -40,6 +48,7 @@ final class QueryRunner
         private readonly Encoder $encoder = new Encoder(),
         private readonly bool $debug = false,
         private readonly ?QueryCache $cache = null,
+        private readonly ?\Closure $report = null,
     ) {}
 
     /**
@@ -316,7 +325,7 @@ final class QueryRunner
                 // fail its own call. Letting it out of run() loses every other
                 // result in the tick, and the message would bypass the code
                 // and digest that keep exception text away from the renderer.
-                return QueryError::of(QueryError::MISCONFIGURED, $e, $this->debug);
+                return $this->failed(QueryError::MISCONFIGURED, $e);
             }
 
             if (!$allowed) {
@@ -524,8 +533,10 @@ final class QueryRunner
             $batch = $raw['batch:' . $name] ?? null;
 
             if ($batch instanceof \Throwable) {
+                // One failure, reported once, however many calls it fails.
+                $error = $this->failed(QueryError::FAILED, $batch);
                 foreach ($keys as $key) {
-                    $outcomes[$key] = ['error' => QueryError::of(QueryError::FAILED, $batch, $this->debug)];
+                    $outcomes[$key] = ['error' => $error];
                 }
                 continue;
             }
@@ -634,7 +645,7 @@ final class QueryRunner
     private function settle(mixed $value): array
     {
         if ($value instanceof \Throwable) {
-            return ['error' => QueryError::of(QueryError::FAILED, $value, $this->debug)];
+            return ['error' => $this->failed(QueryError::FAILED, $value)];
         }
 
         // Read-only, as the body was: encoding resolves the result's Lazy
@@ -644,13 +655,30 @@ final class QueryRunner
         try {
             return ['value' => $this->orm->readOnly(fn (): mixed => $this->encoder->encode($value))];
         } catch (DataBoundaryException $e) {
-            return ['error' => QueryError::of(QueryError::BAD_RESULT, $e, $this->debug)];
+            return ['error' => $this->failed(QueryError::BAD_RESULT, $e)];
         } catch (\Throwable $e) {
             // A Lazy field failing -- a refused write among them -- is this
             // call failing, as a throw from the body would be. Escaping, it
             // failed every other call in the tick with it.
-            return ['error' => QueryError::of(QueryError::FAILED, $e, $this->debug)];
+            return ['error' => $this->failed(QueryError::FAILED, $e)];
         }
+    }
+
+    /**
+     * The record for a call that failed because something threw, with the
+     * throwable reported under the record's own digest -- the one the
+     * renderer, and a rescued boundary after it, will show.
+     *
+     * @return array{code: string, digest: string, message?: string}
+     */
+    private function failed(string $code, \Throwable $e): array
+    {
+        $error = QueryError::of($code, $e, $this->debug);
+        if ($this->report !== null) {
+            ($this->report)($e, $error['digest']);
+        }
+
+        return $error;
     }
 
     /**
