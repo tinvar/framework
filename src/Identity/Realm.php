@@ -24,6 +24,11 @@ use Tinvar\Tenancy\Host;
  * any panel. A **domain** is a tenant's custom domain, whose DNS a tenant (a
  * reseller, say) controls: it always names its tenant, and the panel its
  * sessions are for, so a handoff to it can be held to a membership there.
+ *
+ * The tenant a realm names is the root of its subtree, by the application's
+ * TenantTree: a session made there may run as that tenant or any below it
+ * where its user holds a membership, and a tenant switch there stays below
+ * it (TenantSwitcher). With no tree, the subtree is the tenant alone.
  */
 final readonly class Realm
 {

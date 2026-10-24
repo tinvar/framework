@@ -29,6 +29,7 @@ use Tinvar\Render\TokenClaims;
 use Tinvar\Support\Signer;
 use Tinvar\Tests\Identity\Fixtures\App;
 use Tinvar\Tests\Identity\Fixtures\Browser;
+use Tinvar\Tests\Identity\Fixtures\ResellerOverAcme;
 use Tinvar\Webhooks\ArrayNonceStore;
 
 require_once __DIR__ . '/Fixtures/app.php';
@@ -85,7 +86,7 @@ describe('a handoff', function () {
             // A new session, made for this host alone; the platform host's
             // is untouched, and no cookie crossed between them.
             ->and($browser->jar['admin.platform.test'])->not->toBe($arrivedWith)
-            ->and($app->sessions->sessions[$browser->jar['admin.platform.test']])->toBe(['user' => 'sam', 'realm' => 'admin.platform.test'])
+            ->and($app->sessions->sessions[$browser->jar['admin.platform.test']])->toBe(['user' => 'sam', 'realm' => 'admin.platform.test', 'tenant' => ''])
             ->and($app->sessions->sessions[$browser->jar['id.platform.test']]['realm'])->toBe('id.platform.test');
     });
 
@@ -364,6 +365,91 @@ describe('across tenants', function () {
         // session that signs nobody in.
         expect(json($app->get('https://id.platform.test/whoami', ['__Host-sid' => $made])))->toBe(['user' => ''])
             ->and(json($app->get('https://shop.acme.example/whoami', ['__Host-sid' => $made])))->toBe(['user' => '']);
+    });
+});
+
+// "A session created on it can only hold memberships within that domain's
+// tenant subtree": with a hierarchy, a domain's realm is its tenant's
+// subtree, and a member of a tenant below it is handed over -- into a
+// session running as their own tenant, never one outside the subtree.
+describe('a tenant\'s subtree', function () {
+    it('hands a member of a tenant below the domain\'s to it, into a session running as their own tenant', function () {
+        $app = new App(new ResellerOverAcme());
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+
+        $landed = $browser->follow('https://reseller.example/_handoff/start?return=%2Fwhoami');
+
+        expect(json($landed))->toBe(['user' => 'alice'])
+            ->and($app->sessions->sessions[$browser->jar['reseller.example']])
+            ->toBe(['user' => 'alice', 'realm' => 'reseller.example', 'tenant' => 'acme'])
+            // Asked as the domain's tenant, then confirmed as acme -- at the
+            // authority and again at the callback.
+            ->and($app->directory->askedAs)->toBe(['reseller', 'acme', 'reseller', 'acme']);
+    });
+
+    it('starts the session in the domain\'s own tenant when the user is a member there', function () {
+        $app = new App(new ResellerOverAcme());
+        $app->directory->members['carol']['portal'] = ['acme', 'reseller'];
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'carol');
+
+        $browser->follow('https://reseller.example/_handoff/start?return=%2Fwhoami');
+
+        expect($app->sessions->sessions[$browser->jar['reseller.example']]['tenant'] ?? null)->toBe('reseller');
+    });
+
+    it('refuses a member of a tenant outside the subtree, and one listed where they are not a member', function () {
+        $app = new App(new ResellerOverAcme());
+        $bob = new Browser($app)->signedInAt('id.platform.test', 'bob');
+
+        $refused = $bob->follow('https://reseller.example/_handoff/start?return=%2Fwhoami');
+
+        // A listing naming acme for someone Memberships says is no member
+        // there is not trusted: each tenant listed is asked again.
+        $lying = new App(new ResellerOverAcme());
+        $lying->directory->listed['bob']['portal'] = ['globex', 'acme'];
+        $listed = new Browser($lying)->signedInAt('id.platform.test', 'bob')
+            ->follow('https://reseller.example/_handoff/start?return=%2Fwhoami');
+
+        expect($refused->status)->toBe(403)
+            ->and(errorCode($refused))->toBe('handoff_refused')
+            ->and($app->lastLogged())->toContain('in its tenant or below it')
+            ->and($listed->status)->toBe(403)
+            ->and($lying->directory->askedAs)->toBe(['reseller', 'acme']);
+    });
+
+    it('keeps a domain\'s realm to its tenant alone with no hierarchy', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+
+        $response = $browser->follow('https://reseller.example/_handoff/start?return=%2Fwhoami');
+
+        expect($response->status)->toBe(403)
+            ->and(errorCode($response))->toBe('handoff_refused');
+    });
+
+    // The code is still bound to the realm's own tenant exactly: a code for
+    // the reseller's domain naming acme -- the tenant the session would run
+    // as -- is not one the domain takes.
+    it('binds the code to the domain\'s own tenant, not the one the session lands in', function () {
+        $app = new App(new ResellerOverAcme());
+        $browser = new Browser($app);
+        $session = $browser->sessionAt('reseller.example');
+        $state = Signer::encode(random_bytes(16));
+        $code = HandoffCode::mint(
+            $app->signer,
+            Realm::domain('https://reseller.example', 'acme', 'portal'),
+            'alice',
+            '1',
+            Pkce::challenge(Pkce::verifier($app->signer, $session, $state)),
+            $state,
+            '/whoami',
+            $app->now,
+        );
+
+        $response = $browser->get('https://reseller.example/_handoff/callback?code=' . $code->encode($app->signer));
+
+        expect($response->status)->toBe(403)
+            ->and($app->lastLogged())->toContain('another tenant');
     });
 });
 

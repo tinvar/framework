@@ -6,8 +6,8 @@ namespace Tinvar\Identity;
 
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\Authenticatable;
-use Tinvar\Auth\Membership;
 use Tinvar\Auth\Memberships;
+use Tinvar\Auth\SubtreeMemberships;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
@@ -36,8 +36,9 @@ use Tinvar\Webhooks\NonceStore;
  *   2. `/_handoff/authorize`, on the platform host (the authority). Someone
  *      not signed in there is sent to sign in, and back here after; someone
  *      who is -- held to the target's rules: no staff on a custom domain, a
- *      membership of the target's panel in its tenant -- is sent to the
- *      target with a one-time code (HandoffCode) bound to all of it.
+ *      membership of the target's panel in its tenant or a tenant below it
+ *      -- is sent to the target with a one-time code (HandoffCode) bound to
+ *      all of it, the realm's own tenant exactly.
  *   3. `/_handoff/callback?code=...`, on the target. The code must verify,
  *      be fresh, name this origin, tenant and panel exactly, be redeemed by
  *      the session whose challenge it carries, name a user still on the auth
@@ -209,7 +210,7 @@ final class HandoffEndpoint
             return self::private(($this->signIn)(self::pathAndQuery($request)));
         }
 
-        $refusal = $this->refusal($user, $target);
+        [$refusal] = $this->admission($user, $target);
         if ($refusal !== null) {
             throw new HttpException(403, "The handoff to {$target->origin} is refused: {$refusal}.", 'handoff_refused');
         }
@@ -272,8 +273,9 @@ final class HandoffEndpoint
         }
 
         // Held again: a membership taken away, or a user made staff, in the
-        // minute the code was in flight.
-        $refusal = $this->refusal($user, $realm);
+        // minute the code was in flight. And where the session lands: the
+        // realm's tenant, or the one below it the user belongs to.
+        [$refusal, $tenant] = $this->admission($user, $realm);
         if ($refusal !== null) {
             throw self::refused($refusal);
         }
@@ -284,7 +286,7 @@ final class HandoffEndpoint
             throw self::refused('it has been redeemed before');
         }
 
-        $fresh = $this->sessions->arrive($request, new Arrival($user, $epoch, $realm, $code->returnTo));
+        $fresh = $this->sessions->arrive($request, new Arrival($user, $epoch, $realm, $code->returnTo, $tenant));
         if ($fresh === '' || hash_equals($session, $fresh)) {
             // The one thing the application must not get wrong here: a
             // session the browser arrived with may be one an attacker
@@ -296,30 +298,43 @@ final class HandoffEndpoint
     }
 
     /**
-     * Why $user may not hold a session in $realm, or null when they may.
+     * Why $user may not hold a session in $realm -- null when they may --
+     * and the tenant that session runs as.
      *
      * Staff are never handed to a custom domain: a domain a reseller
      * controls is a domain whose traffic the reseller can read, and a staff
      * session read there is every tenant's data. And a realm in a panel
-     * needs a membership of it in the realm's tenant -- asked as that
-     * tenant, as the panel's own check is -- so a domain gets sessions only
-     * for the people its tenant has.
+     * needs a membership of it in the realm's tenant subtree -- asked as
+     * each tenant, as the panel's own check is -- so a domain gets sessions
+     * only for the people its tenant and the tenants below it have: "A
+     * session created on it can only hold memberships within that domain's
+     * tenant subtree." The realm's own tenant first; then the first tenant
+     * below it the application lists for the user (SubtreeMemberships).
+     *
+     * @return array{string|null, string}
      */
-    private function refusal(Authenticatable $user, Realm $realm): ?string
+    private function admission(Authenticatable $user, Realm $realm): array
     {
         if ($realm->isCustom() && ($this->staff === null || ($this->staff)($user))) {
-            return 'staff accounts are never signed in on a custom domain';
+            return ['staff accounts are never signed in on a custom domain', ''];
         }
 
         if ($realm->panel === '' || $this->memberships === null) {
-            return null;
+            return [null, $realm->tenant];
         }
 
-        $memberships = $this->memberships;
-        $ask = static fn (): ?Membership => $memberships->membership($user, $realm->panel, $realm->tenant);
-        $membership = $realm->tenant === '' ? $ask() : $this->orm->actAs($realm->tenant, $ask);
+        $members = new SubtreeMemberships($this->orm, $this->memberships);
+        if ($members->holds($user, $realm->panel, $realm->tenant)) {
+            return [null, $realm->tenant];
+        }
 
-        return $membership === null ? "the user holds no membership of panel '{$realm->panel}' in its tenant" : null;
+        if ($realm->tenant !== '') {
+            foreach ($members->tenants($user, $realm->panel, $realm->tenant) as $below) {
+                return [null, $below];
+            }
+        }
+
+        return ["the user holds no membership of panel '{$realm->panel}' in its tenant or below it", ''];
     }
 
     /**

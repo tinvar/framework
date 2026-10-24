@@ -12,6 +12,7 @@ use Tinvar\Auth\Authenticatable;
 use Tinvar\Auth\Membership;
 use Tinvar\Auth\Memberships;
 use Tinvar\Auth\PolicyRegistry;
+use Tinvar\Auth\TenantMemberships;
 use Tinvar\Container\Container;
 use Tinvar\Data\Data;
 use Tinvar\Http\Kernel;
@@ -33,6 +34,8 @@ use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
 use Tinvar\Tenancy\Host;
+use Tinvar\Tenancy\TenantHierarchy;
+use Tinvar\Tenancy\TenantTree;
 use Tinvar\Webhooks\ArrayNonceStore;
 
 /**
@@ -61,7 +64,7 @@ final readonly class User implements Authenticatable
  * of acme's portal as well, so a refusal on a custom domain is the staff
  * rule and not a missing membership.
  */
-final class Directory implements UserLookup, Memberships
+final class Directory implements UserLookup, Memberships, TenantMemberships
 {
     /** @var array<string, int> */
     public array $epochs = ['alice' => 1, 'bob' => 1, 'carol' => 1, 'sam' => 1];
@@ -73,6 +76,14 @@ final class Directory implements UserLookup, Memberships
         'bob' => ['portal' => ['globex']],
         'sam' => ['admin' => [''], 'portal' => ['acme']],
     ];
+
+    /**
+     * What tenantsOf() lists in place of the memberships, for a test of a
+     * listing that does not agree with them.
+     *
+     * @var array<string, array<string, list<string>>> user => panel => tenants
+     */
+    public array $listed = [];
 
     /** @var list<string> who is staff */
     public array $staff = ['sam'];
@@ -99,6 +110,11 @@ final class Directory implements UserLookup, Memberships
         return \in_array($tenant, $this->members[$user->authIdentifier()][$panel] ?? [], true) ? new Membership() : null;
     }
 
+    public function tenantsOf(Authenticatable $user, string $panel): array
+    {
+        return $this->listed[$user->authIdentifier()][$panel] ?? $this->members[$user->authIdentifier()][$panel] ?? [];
+    }
+
     public function isStaff(Authenticatable $user): bool
     {
         return \in_array($user->authIdentifier(), $this->staff, true);
@@ -108,8 +124,25 @@ final class Directory implements UserLookup, Memberships
 /** Server-side sessions: id => whose, and the host it was made on. */
 final class SessionStore
 {
-    /** @var array<string, array{user: string, realm: string}> */
+    /** @var array<string, array{user: string, realm: string, tenant?: string}> */
     public array $sessions = [];
+}
+
+/**
+ * A reseller over acme, when a test asks for a hierarchy: the reseller's
+ * custom domain is then a realm whose subtree holds acme's members too.
+ */
+final class ResellerOverAcme implements TenantTree
+{
+    public function parentOf(string $tenant): ?string
+    {
+        return $tenant === 'acme' ? 'reseller' : null;
+    }
+
+    public function descendantsOf(string $tenant): array
+    {
+        return $tenant === 'reseller' ? ['acme'] : [];
+    }
 }
 
 /** This request's session, and the id to replace it with. */
@@ -154,7 +187,7 @@ final class Arrivals implements HandoffSessions
     {
         $box = $request->attribute(SessionBox::class);
         \assert($box instanceof SessionBox);
-        $row = ['user' => $arrival->user->authIdentifier(), 'realm' => $arrival->realm->host];
+        $row = ['user' => $arrival->user->authIdentifier(), 'realm' => $arrival->realm->host, 'tenant' => $arrival->tenant];
 
         if ($this->keepId) {
             $this->store->sessions[$box->id] = $row;
@@ -204,9 +237,13 @@ final class App
     /** @var list<string> the message of everything the Kernel logged: why each refusal was one */
     public array $log = [];
 
-    public function __construct()
+    public function __construct(?TenantTree $tree = null)
     {
-        $this->orm = new Orm(new PdoConnection(new \PDO('sqlite::memory:'), 'identity-test'), new IdentityMap('identity-test'));
+        $this->orm = new Orm(
+            new PdoConnection(new \PDO('sqlite::memory:'), 'identity-test'),
+            new IdentityMap('identity-test'),
+            $tree === null ? null : new TenantHierarchy($tree),
+        );
         $this->auth = new AuthContext();
         $this->directory = new Directory($this->orm);
         $this->sessions = new SessionStore();
@@ -266,6 +303,7 @@ final class App
                 'acme.example' => Realm::domain('https://acme.example', 'acme', 'portal'),
                 'shop.acme.example' => Realm::domain('https://shop.acme.example', 'acme', 'portal'),
                 'globex.example' => Realm::domain('https://globex.example', 'globex', 'portal'),
+                'reseller.example' => Realm::domain('https://reseller.example', 'reseller', 'portal'),
                 // A record nobody should have been able to save.
                 'evil.example' => Realm::domain('https://evil.example', 'acme', 'admin'),
                 default => null,
