@@ -87,18 +87,23 @@ final class Lockfiles
 
                 $directory = $this->root . '/' . $vendor . '/' . $name;
                 $installed = is_dir($directory) ? $this->installedJson($directory . '/composer.json') : null;
+                $from = \is_string($dist['url'] ?? null) ? $dist['url'] : (\is_string($source['url'] ?? null) ? $source['url'] : null);
 
                 $packages[] = new LockedPackage(
                     ecosystem: Ecosystem::Composer,
                     name: $name,
                     version: \is_string($entry['version'] ?? null) ? $entry['version'] : '',
                     pin: self::composerPin($dist, $source),
-                    source: \is_string($dist['url'] ?? null) ? $dist['url'] : (\is_string($source['url'] ?? null) ? $source['url'] : null),
+                    source: $from,
                     directory: is_dir($directory) ? $directory : null,
                     metadata: self::metadataIn($entry['extra'] ?? null) ?? self::metadataIn($installed['extra'] ?? null),
                     where: self::COMPOSER . " {$name}",
                     local: $local,
                     plugin: ($entry['type'] ?? null) === 'composer-plugin',
+                    alternates: array_values(array_filter(
+                        [...self::composerUrls($dist), ...self::composerUrls($source)],
+                        static fn (string $url): bool => $url !== $from,
+                    )),
                 );
             }
         }
@@ -170,6 +175,30 @@ final class Lockfiles
         }
 
         return null;
+    }
+
+    /**
+     * The URLs half a Composer lock entry -- its dist or its source -- names:
+     * its own, and its mirrors', which Composer tries first when one is
+     * preferred. A URL that is not a string is kept as its JSON, which no
+     * allowed prefix matches.
+     *
+     * @param array<mixed> $origin
+     * @return list<string>
+     */
+    private static function composerUrls(array $origin): array
+    {
+        $mirrors = $origin['mirrors'] ?? [];
+        $urls = [];
+        foreach ([$origin, ...(\is_array($mirrors) ? $mirrors : [['url' => $mirrors]])] as $at) {
+            if (\is_array($at) && !\array_key_exists('url', $at)) {
+                continue;
+            }
+            $url = \is_array($at) ? $at['url'] : $at;
+            $urls[] = \is_string($url) ? $url : (string) json_encode($url);
+        }
+
+        return $urls;
     }
 
     /** @return array<mixed>|null */

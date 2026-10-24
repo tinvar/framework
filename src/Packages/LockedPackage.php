@@ -15,6 +15,8 @@ final readonly class LockedPackage
      * @param string|null $directory where it is installed, when it is
      * @param array<mixed>|null $metadata its framework metadata, when it carries any
      * @param string $where how the check names it: its lockfile and key
+     * @param list<string> $alternates every other URL the lockfile names for it, which an install may download
+     *        from instead: for Composer, the source beside a dist, and either one's mirrors
      */
     public function __construct(
         public Ecosystem $ecosystem,
@@ -28,6 +30,7 @@ final readonly class LockedPackage
         public bool $local = false,
         public bool $installScript = false,
         public bool $plugin = false,
+        public array $alternates = [],
     ) {}
 
     public function key(): string

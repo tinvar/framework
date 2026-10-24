@@ -202,6 +202,52 @@ describe('pins', function () {
         ]);
     });
 
+    // Composer falls back to the source when a dist fails, uses it outright
+    // under --prefer-source, and tries a preferred mirror before either: each
+    // is a place the package can come from.
+    it('refuses a Composer package with an allowed dist and a source or mirror elsewhere', function () {
+        $this->workspace->composer('acme/split', [
+            'source' => ['type' => 'git', 'url' => 'https://git.evil.example/acme/split.git', 'reference' => Workspace::COMMIT],
+        ]);
+        $this->workspace->composer('acme/plain', [
+            'source' => ['type' => 'git', 'url' => 'http://github.com/acme/plain.git', 'reference' => Workspace::COMMIT],
+        ]);
+        $this->workspace->composer('acme/ssh', [
+            'source' => ['type' => 'git', 'url' => 'git@github.com:acme/ssh.git', 'reference' => Workspace::COMMIT],
+        ]);
+        $this->workspace->composer('acme/mirrored', [
+            'dist' => [
+                'type' => 'zip',
+                'url' => 'https://api.github.com/repos/acme/mirrored/zipball/' . Workspace::COMMIT,
+                'reference' => Workspace::COMMIT,
+                'shasum' => '',
+                'mirrors' => [['url' => 'https://mirror.evil.example/%package%/%reference%.%type%', 'preferred' => true]],
+            ],
+        ]);
+        $this->workspace->composer('acme/linked', [
+            'dist' => ['type' => 'path', 'url' => 'packages/linked', 'reference' => null],
+            'source' => ['type' => 'git', 'url' => 'https://git.evil.example/acme/linked.git', 'reference' => Workspace::COMMIT],
+        ]);
+
+        expect(violations($this->workspace))->toBe([
+            'composer.lock acme/split may also download from https://git.evil.example/acme/split.git, which PackagePolicy::$composerSources does not allow.',
+            'composer.lock acme/plain may also download from http://github.com/acme/plain.git, which PackagePolicy::$composerSources does not allow.',
+            'composer.lock acme/ssh may also download from git@github.com:acme/ssh.git, which PackagePolicy::$composerSources does not allow.',
+            'composer.lock acme/mirrored may also download from https://mirror.evil.example/%package%/%reference%.%type%, which PackagePolicy::$composerSources does not allow.',
+            'composer.lock acme/linked may also download from https://git.evil.example/acme/linked.git, which PackagePolicy::$composerSources does not allow.',
+        ]);
+    });
+
+    it('refuses a Composer download URL that is not a string', function () {
+        $this->workspace->composer('acme/odd', [
+            'source' => ['type' => 'git', 'url' => ['https://github.com/acme/odd.git'], 'reference' => Workspace::COMMIT],
+        ]);
+
+        expect(violations($this->workspace))->toBe([
+            'composer.lock acme/odd may also download from ["https:\/\/github.com\/acme\/odd.git"], which PackagePolicy::$composerSources does not allow.',
+        ]);
+    });
+
     it('refuses a path package outside the project', function () {
         $this->workspace->composer('acme/local', ['dist' => ['type' => 'path', 'url' => '../elsewhere', 'reference' => null]]);
         $this->workspace->composer('acme/inside', ['dist' => ['type' => 'path', 'url' => 'packages/inside', 'reference' => null]]);

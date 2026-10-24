@@ -27,17 +27,20 @@ final readonly class PackagePolicy
     /** Where Packagist's GitHub-hosted packages download from. */
     public const string GITHUB_ARCHIVES = 'https://api.github.com/repos/';
 
+    /** Where the same packages' git sources are cloned from. */
+    public const string GITHUB_REPOSITORIES = 'https://github.com/';
+
     /**
      * @param list<AllowedPackage> $packages the packages with framework metadata the app enables
      * @param array<string, string> $installScripts npm package => why it may run an install script
      * @param list<string> $registries URL prefixes npm packages may resolve from
-     * @param list<string> $composerSources URL prefixes Composer packages may download from
+     * @param list<string> $composerSources URL prefixes Composer packages may download from: every dist, source and mirror
      */
     public function __construct(
         public array $packages = [],
         public array $installScripts = [],
         public array $registries = [self::NPM_REGISTRY],
-        public array $composerSources = [self::GITHUB_ARCHIVES],
+        public array $composerSources = [self::GITHUB_ARCHIVES, self::GITHUB_REPOSITORIES],
     ) {
         $seen = [];
         foreach ($packages as $package) {

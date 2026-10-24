@@ -135,6 +135,14 @@ final class SupplyChain
                 $violations[] = "{$package->name} is a Composer plugin, and config.allow-plugins does not name it.";
             }
 
+            // A path package included: Composer installs from the source
+            // under --prefer-source, or when a dist fails.
+            foreach ($package->alternates as $url) {
+                if (!$this->policy->composerSourceAllows($url)) {
+                    $violations[] = "{$package->where} may also download from {$url}, which PackagePolicy::\$composerSources does not allow.";
+                }
+            }
+
             if ($package->local) {
                 if ($package->source === null || !self::insideProject($package->source)) {
                     $violations[] = "{$package->where} is a path package outside the project.";
