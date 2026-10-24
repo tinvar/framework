@@ -184,11 +184,11 @@ final class BuildCommand
         });
 
         $below = [];
-        foreach ($history->builds as $recorded) {
-            if ($recorded['id'] === $build) {
+        foreach ([...$history->pruned, ...array_column($history->builds, 'id')] as $recorded) {
+            if ($recorded === $build) {
                 break;
             }
-            $below[] = $recorded['id'];
+            $below[] = $recorded;
         }
 
         ($this->out)($below === []
@@ -264,13 +264,15 @@ final class BuildCommand
         return 0;
     }
 
+    /**
+     * Refuses a build the history has never heard of. A pruned one it has:
+     * its name and place are kept, and a revocation or a floor is recorded
+     * against it like any other -- never blocked because the build seems
+     * refused already, since a revocation outlives whatever else says so.
+     */
     private static function assertRecorded(BuildHistory $history, string $build): void
     {
-        if ($history->wasPruned($build)) {
-            throw new \InvalidArgumentException("{$build} was pruned, and a pruned build is refused already.");
-        }
-
-        if (!$history->has($build)) {
+        if (!$history->has($build) && !$history->wasPruned($build)) {
             throw new \InvalidArgumentException(
                 "No build {$build} has been recorded (tinvar build:list shows those that have). A build never "
                 . 'recorded is refused already.',

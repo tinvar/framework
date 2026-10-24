@@ -136,6 +136,21 @@ describe('a registry reading a pruned history', function () {
             ->and($registry->standing('b9'))->toBe(BuildRegistry::UNKNOWN);
     });
 
+    // The history's newest is never pruned: pruning keeps at least one.
+    // A server still running a build that was pruned refuses it, its own
+    // build or not, where an expired one it still answers for.
+    it('never prunes the current release, and refuses a pruned build on the server running it', function () {
+        $store = store();
+        $store->update(static fn (): BuildHistory => history(5)->pruning(1, NOW, BuildRegistry::pruneHorizon()));
+        $history = $store->read();
+
+        expect($history->current())->toBe('b5')
+            ->and($history->wasPruned('b5'))->toBeFalse()
+            ->and(BuildRegistry::persisted('b5', $store)->standing('b5'))->toBe(BuildRegistry::CURRENT)
+            ->and(BuildRegistry::persisted('b3', $store)->standing('b3'))->toBe(BuildRegistry::PRUNED)
+            ->and(BuildRegistry::persisted('b3', $store)->accepts('b3'))->toBeFalse();
+    });
+
     it('keeps a revoked build revoked once it is pruned', function () {
         $store = store();
         $store->update(static fn (): BuildHistory => new BuildHistory(history(5)->builds, revoked: ['b2'])
@@ -211,18 +226,33 @@ describe('tinvar build:prune', function () {
             ->and(\count($store->read()->builds))->toBe(3);
     });
 
-    it('lists how many were pruned, and refuses to revoke or floor at one', function () {
+    it('lists how many were pruned, and refuses to release one again', function () {
         $store = store();
         $store->update(static fn (): BuildHistory => history(4));
-        [$command, , $out, $err] = command($store);
+        [$command, , $out] = command($store);
         $command->run('build:prune', ['--keep=2']);
 
         expect($command->run('build:list', []))->toBe(0)
             ->and(implode("\n", (array) $out))->toContain('Pruned: 2 older builds, refused.')
-            ->and($command->run('build:revoke', ['b1']))->toBe(BuildCommand::REFUSED)
-            ->and($command->run('build:floor', ['b2']))->toBe(BuildCommand::REFUSED)
-            ->and(implode("\n", (array) $err))->toContain('was pruned')
             ->and($command->run('build:current', ['b1']))->toBe(BuildCommand::REFUSED);
+    });
+
+    // A revocation is never blocked: recorded against a pruned build, it
+    // holds on every server -- the one still running it too -- however the
+    // history changes after.
+    it('records a revocation or a floor against a pruned build', function () {
+        $store = store();
+        $store->update(static fn (): BuildHistory => history(4));
+        [$command, , $out] = command($store);
+        $command->run('build:prune', ['--keep=2']);
+
+        expect($command->run('build:revoke', ['b1']))->toBe(0)
+            ->and($store->read()->isRevoked('b1'))->toBeTrue()
+            ->and(BuildRegistry::persisted('b1', $store)->standing('b1'))->toBe(BuildRegistry::REVOKED)
+            ->and($command->run('build:floor', ['b2']))->toBe(0)
+            ->and($store->read()->floor)->toBe('b2')
+            ->and(implode("\n", (array) $out))->toContain('Refused from now on: b1.')
+            ->and(BuildRegistry::persisted('b4', $store)->standing('b3'))->toBe(BuildRegistry::RETAINED);
     });
 
     it('prunes nothing still within the horizon', function () {

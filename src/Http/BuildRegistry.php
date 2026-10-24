@@ -239,14 +239,20 @@ final class BuildRegistry
             }
         }
 
-        // A server answers for its own build, as it would for one expired:
-        // during a rolling deploy one not yet replaced goes on serving it.
-        if ($build === $this->current) {
-            return self::CURRENT;
-        }
-
+        // Pruned is refused on every server, this build's own among them: a
+        // server still running a build pruned out of the history -- past its
+        // skew window and every token's lifetime, and older than the newest
+        // releases kept -- has outlived every deploy since, and its clients
+        // reload rather than go on with it.
         if ($position < \count($this->pruned)) {
             return self::PRUNED;
+        }
+
+        // A server answers for its own build otherwise, as it does for one
+        // expired: during a rolling deploy one not yet replaced goes on
+        // serving it.
+        if ($build === $this->current) {
+            return self::CURRENT;
         }
 
         // Past its skew window: every client that loaded it has had a day to
