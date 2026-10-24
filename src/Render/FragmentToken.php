@@ -85,6 +85,9 @@ final readonly class FragmentToken
         public string $sessionHash,
         public int $expiresAt,
         public int $issuedAt,
+        // Who was signed in, at which auth epoch (TokenClaims::hashAuth()),
+        // as a route token says; '' for a token minted before tokens said.
+        public string $authHash = '',
     ) {}
 
     /** @see TokenClaims::hashSession() -- one implementation, both tokens. */
@@ -171,6 +174,7 @@ final readonly class FragmentToken
             sessionHash: $this->sessionHash,
             expiresAt: $this->expiresAt,
             issuedAt: $this->issuedAt,
+            authHash: $this->authHash,
         );
     }
 
@@ -188,6 +192,7 @@ final readonly class FragmentToken
             sessionHash: $claims->sessionHash,
             expiresAt: $claims->expiresAt,
             issuedAt: $claims->issuedAt,
+            authHash: $claims->authHash,
         );
     }
 }

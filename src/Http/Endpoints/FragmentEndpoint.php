@@ -13,7 +13,9 @@ use Tinvar\Orm\Orm;
 use Tinvar\Http\Response;
 use Tinvar\Render\FragmentToken;
 use Tinvar\Render\FragmentTokenError;
+use Tinvar\Render\TokenClaims;
 use Tinvar\Routing\LoaderRunner;
+use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Routing\RouteChain;
 use Tinvar\Routing\RouteRegistry;
@@ -101,6 +103,7 @@ final class FragmentEndpoint
         private readonly array $extraInner = [],
         private readonly ?\Closure $allowedQueries = null,
         private readonly ?\Closure $renderGroup = null,
+        private readonly ?AuthContext $auth = null,
     ) {}
 
     /**
@@ -268,6 +271,19 @@ final class FragmentEndpoint
             // there too, and there is no state in which this is skipped.
             if ($this->orm->tenant() !== $token->tenant) {
                 throw self::refuse('token was minted for a different tenant');
+            }
+
+            // And for whoever is signed in, at the auth epoch the application
+            // keeps for them, as a route token is bound -- once the route's
+            // middleware has said who that is. A role changed, or an
+            // impersonation started, with the session id kept: the page the
+            // token came from was drawn for someone else, and the client
+            // holding it is to be purged, not served more of it. A token
+            // from before tokens said (no user binding) keeps the session
+            // binding alone, as it always had.
+            if ($this->auth !== null && $token->authHash !== ''
+                && !hash_equals($token->authHash, TokenClaims::hashAuth($this->signer, $this->auth->id(), $this->auth->epoch()))) {
+                throw self::refuse('token was minted for another user, or before their auth epoch moved');
             }
 
             return $this->renderWithin($chain, $inner, $tokens);

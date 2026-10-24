@@ -78,7 +78,8 @@ final readonly class TokenClaims
 
     /**
      * The signed map, by short key. The user binding only where there is
-     * one: a fragment token binds to the session alone, and is as it was.
+     * one: a token minted with none -- before tokens carried it -- reads as
+     * it always did.
      *
      * @return array<string, mixed>
      */
@@ -115,8 +116,8 @@ final readonly class TokenClaims
             sessionHash: self::string($decoded, 's'),
             expiresAt: \is_int($decoded['e'] ?? null) ? $decoded['e'] : 0,
             issuedAt: \is_int($decoded['i'] ?? null) ? $decoded['i'] : 0,
-            // Absent from a fragment token, which binds to the session alone;
-            // '' then, which no route token's user binding ever is.
+            // Absent from a token minted before tokens carried it; '' then,
+            // which no minted user binding ever is.
             authHash: \is_string($decoded['u'] ?? null) ? $decoded['u'] : '',
         );
     }

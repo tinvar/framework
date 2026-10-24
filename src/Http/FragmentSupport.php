@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Http;
 
+use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Orm\Orm;
 use Tinvar\Render\FragmentMinter;
@@ -51,6 +52,9 @@ final readonly class FragmentSupport
      *        Separate from $render, whose payload's root is the subtree
      *        itself, which a client from before groups still expects. Without
      *        it, a group request is a configuration error, not a refusal.
+     * @param AuthContext|null $auth who is signed in, and at which auth epoch: every token
+     *        minted -- a page's, /_bootstrap's -- is bound to them as a route token is, and the
+     *        endpoint refuses one minted for anyone else. The Kernel fills in its own.
      */
     public function __construct(
         public Signer $signer,
@@ -63,6 +67,7 @@ final readonly class FragmentSupport
         public ?\Closure $renderRoute = null,
         public ?Signer $routeSigner = null,
         public ?\Closure $renderGroup = null,
+        public ?AuthContext $auth = null,
     ) {}
 
     /**
@@ -109,6 +114,8 @@ final readonly class FragmentSupport
             build: $this->builds->current,
             sessionId: ($this->sessionId)($request),
             components: $components,
+            user: $this->auth?->id(),
+            authEpoch: $this->auth?->epoch() ?? '',
         );
     }
 }

@@ -64,6 +64,11 @@ final class FragmentMinter
         private readonly string $sessionId,
         private readonly int $ttl = FragmentToken::DEFAULT_TTL,
         private readonly ?array $components = null,
+        // Who is signed in, and the auth epoch the application keeps for
+        // them, as the route token binds them: a fragment of a page drawn
+        // under one role is not rendered under another (ADR 0019).
+        private readonly ?string $user = null,
+        private readonly string $authEpoch = '',
     ) {
         // decode() hard-rejects an expiry further out than DEFAULT_TTL, so a
         // configured TTL above it would mint tokens that fail verification
@@ -131,6 +136,7 @@ final class FragmentMinter
             tenant: $this->tenant,
             build: $this->build,
             sessionHash: FragmentToken::hashSession($this->signer, $this->sessionId),
+            authHash: TokenClaims::hashAuth($this->signer, $this->user, $this->authEpoch),
             expiresAt: time() + $this->ttl,
             issuedAt: time(),
         ))->encode($this->signer);

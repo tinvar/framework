@@ -427,7 +427,14 @@ final class Kernel
             );
         }
 
-        if ($fragments !== null && ($fragments->panels === null || $fragments->orm === null)) {
+        if ($fragments !== null && $fragments->auth !== null && $fragments->auth !== $this->auth) {
+            throw new \InvalidArgumentException(
+                'FragmentSupport carries a different AuthContext than this Kernel. '
+                . 'Minting and verifying must read the same one.',
+            );
+        }
+
+        if ($fragments !== null && ($fragments->panels === null || $fragments->orm === null || $fragments->auth === null)) {
             // EVERY field. This rebuild listed five of nine, so an
             // application that supplied a query allowlist, a route signer
             // or a route renderer lost them here -- silently, and only on
@@ -445,6 +452,7 @@ final class Kernel
                 renderRoute: $fragments->renderRoute,
                 routeSigner: $fragments->routeSigner,
                 renderGroup: $fragments->renderGroup,
+                auth: $fragments->auth ?? $this->auth,
             );
         }
 
@@ -468,6 +476,7 @@ final class Kernel
             panels: $panels,
             extraInner: $this->throttleFor($throttle, 'fragments', $limits, byAddress: false, cost: $perToken),
             renderGroup: $fragments->renderGroup,
+            auth: $this->auth,
         );
 
         // Both, or neither: a manifest says which boundaries exist, and
