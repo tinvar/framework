@@ -29,17 +29,37 @@ final class SocketTrust
      * without the sticky bit is refused outright, since there a stranger can
      * replace even a socket we own. A directory owned by anyone untrusted is
      * refused too: its owner can do as they like inside it.
+     *
+     * Nothing at the path is not a refusal of trust but an absence -- a
+     * renderer not running, or one that drained since its pool was listed --
+     * and is answered with false, from the same look at the path that would
+     * otherwise inspect it. A separate existence check before this one left
+     * a gap: a socket removed between the two failed the render as one that
+     * could not be inspected, where a pool passes a vanished socket over.
+     *
+     * @return bool false when there is nothing at the path to connect to
      */
-    public function assertSocket(string $socketPath): void
+    public function assertSocket(string $socketPath): bool
     {
         if (!\function_exists('posix_geteuid')) {
-            return;
+            return file_exists($socketPath);
         }
 
         clearstatcache(true, $socketPath);
+        // A path that is not there is an answer, so the warning lstat()
+        // raises for it -- through @, to any error handler installed -- is
+        // held back.
+        set_error_handler(static fn (): bool => true);
+        try {
+            $socket = lstat($socketPath);
+        } finally {
+            restore_error_handler();
+        }
+        if ($socket === false) {
+            return false;
+        }
         $directory = @stat(\dirname($socketPath));
-        $socket = @lstat($socketPath);
-        if ($directory === false || $socket === false) {
+        if ($directory === false) {
             throw RendererException::cannotConnect($socketPath, 'cannot inspect the socket or its directory');
         }
 
@@ -62,6 +82,8 @@ final class SocketTrust
                 'it belongs to another user, in a directory any user can write to',
             );
         }
+
+        return true;
     }
 
     /**

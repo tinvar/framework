@@ -25,6 +25,7 @@ use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
 use Tinvar\Render\RenderChannel;
 use Tinvar\Render\RendererException;
+use Tinvar\Render\SocketTrust;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
 
 require_once __DIR__ . '/../Orm/Fixtures/models.php';
@@ -175,6 +176,22 @@ describe('a renderer in the pool that refuses', function () {
         }
 
         expect($rendered)->toBe(['live', 'live', 'live', 'live']);
+    });
+
+    // Draining, a renderer removes its socket at once, and can do so after
+    // the listing and before the socket is inspected. Seen once by an
+    // existence check and gone at the inspection, it failed the render as a
+    // socket that could not be inspected; gone is now the inspection's own
+    // answer, and the socket is passed over like any that refuses.
+    it('is passed over when its socket is gone by the time it is inspected', function () {
+        $dir = poolDirectory();
+
+        try {
+            expect(new SocketTrust()->assertSocket("{$dir}/renderer-0-1.sock"))->toBeFalse()
+                ->and(new SocketTrust()->assertSocket("{$dir}/missing/renderer-0-1.sock"))->toBeFalse();
+        } finally {
+            cleanUpPool($dir);
+        }
     });
 
     it('fails the render, naming each refusal, when none in the pool answers', function () {

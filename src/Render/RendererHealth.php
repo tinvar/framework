@@ -62,10 +62,9 @@ final class RendererHealth
      */
     public function check(string $socketPath): array
     {
-        if (!file_exists($socketPath)) {
+        if (!$this->trust->assertSocket($socketPath)) {
             throw RendererException::cannotConnect($socketPath, 'no socket at that path');
         }
-        $this->trust->assertSocket($socketPath);
 
         set_error_handler(static fn (): bool => true);
         try {

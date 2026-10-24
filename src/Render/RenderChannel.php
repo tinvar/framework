@@ -372,13 +372,14 @@ final class RenderChannel
 
         $refusals = [];
         foreach ($candidates as $path) {
-            // Checked first so the common "renderer not running" case gives a
-            // clear error rather than a connect warning from the stream layer.
-            if (!file_exists($path)) {
+            // Gone is answered before connecting, so the common "renderer not
+            // running" case gives a clear error rather than a connect warning
+            // from the stream layer -- and a socket drained away since the
+            // listing is passed over, not taken for an untrusted one.
+            if (!$this->trust->assertSocket($path)) {
                 $refusals[$path] = 'no socket at that path';
                 continue;
             }
-            $this->trust->assertSocket($path);
 
             // A refusal is an answer here, not a fault: its reason comes back
             // in $error, and the warning PHP raises beside it -- through @,
