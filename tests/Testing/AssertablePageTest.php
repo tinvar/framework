@@ -12,9 +12,11 @@ namespace Tinvar\Tests\Testing\AssertablePage;
 
 use PHPUnit\Framework\AssertionFailedError;
 use Tinvar\Attributes\Once;
+use Tinvar\Attributes\Optional;
 use Tinvar\Data\Data;
 use Tinvar\Data\Encoder;
 use Tinvar\Data\Lazy;
+use Tinvar\Data\PayloadContext;
 use Tinvar\Testing\AssertablePage;
 
 final readonly class UnitData extends Data
@@ -108,6 +110,25 @@ it('hands the Data object to a typed closure, and fails when it returns false', 
     page()->data(fn (RackPageData $page): bool => $page->rack->name === 'R-14' && \count($page->units) === 3);
 
     expect(fn () => page()->data(fn (RackPageData $page): bool => false))->toThrow(AssertionFailedError::class, 'marked invalid');
+});
+
+final readonly class TicketData extends Data
+{
+    /** @param Lazy<list<string>> $history */
+    public function __construct(public string $subject, #[Optional] public Lazy $history) {}
+}
+
+// ADR 0045: an #[Optional] field nobody asked for is the path that asks.
+it('tells an optional field nobody asked for from one that was sent', function () {
+    $data = new TicketData('Printer', Lazy::of(static fn (): array => ['opened']));
+    $unasked = new AssertablePage(new Encoder()->encode($data, segment: 'page'), $data, 'page');
+    $asked = new AssertablePage(new Encoder()->encode($data, new PayloadContext(only: ['page.history']), 'page'), $data, 'page');
+
+    $unasked->unrequested('history');
+    $asked->where('history', ['opened']);
+
+    expect(fn () => $asked->unrequested('history'))->toThrow(AssertionFailedError::class, "'history' in page was sent")
+        ->and(fn () => $unasked->unrequested('subject'))->toThrow(AssertionFailedError::class, "'subject' in page was sent");
 });
 
 it('refuses a follow-up request from a scope that has no page behind it', function () {

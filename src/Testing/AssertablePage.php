@@ -7,6 +7,7 @@ namespace Tinvar\Testing;
 use PHPUnit\Framework\Assert;
 use Tinvar\Data\Data;
 use Tinvar\Data\DataShape;
+use Tinvar\Data\Encoder;
 use Tinvar\Data\Lazy;
 use Tinvar\Http\Kernel;
 use Tinvar\Routing\PartialReload;
@@ -156,6 +157,20 @@ final class AssertablePage
     {
         $this->value($key);
         Assert::assertInstanceOf(Lazy::class, $this->rawAt($key, keepLazy: true), "{$this->at($key)} is not a Lazy field.");
+
+        return $this;
+    }
+
+    /**
+     * $key is an #[Optional] field this response was not asked for: sent as
+     * the path a partial reload names it by, its resolver never run. Ask
+     * for it with reloadOnly($key, ...) (ADR 0045).
+     */
+    public function unrequested(string $key): self
+    {
+        $value = $this->value($key);
+        Assert::assertIsArray($value, "{$this->at($key)} was sent, not left for a partial reload to ask for.");
+        Assert::assertSame([Encoder::OPTIONAL_KEY], array_keys($value), "{$this->at($key)} was sent, not left for a partial reload to ask for.");
 
         return $this;
     }
