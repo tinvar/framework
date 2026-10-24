@@ -33,6 +33,10 @@ use Tinvar\Live\LiveMinter;
 use Tinvar\Live\LiveUpdates;
 use Tinvar\Live\SubscribeEndpoint;
 use Tinvar\Live\TagsRead;
+use Tinvar\Observability\Logger;
+use Tinvar\Observability\Metrics;
+use Tinvar\Observability\Probes;
+use Tinvar\Observability\Telemetry;
 use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
@@ -359,6 +363,13 @@ final class Kernel
      *        mounted, actions are handed their `Upload` parameters, and UploadTickets
      *        and FileUrls are in the container; without them, an action taking an
      *        upload is refused when called
+     * @param Telemetry|null $telemetry where each request is reported (ADR 0041): its id,
+     *        on the request as RequestId::ATTRIBUTE and on the response as X-Request-Id;
+     *        a log line, metrics and spans for it; and, without a `log` of its own, every
+     *        failure the exception handler classifies, through its Logger
+     * @param Probes|null $probes /_health, /_ready and /_metrics, answered ahead of
+     *        everything else -- the dev toolbar's endpoint and webhooks included --
+     *        since a probe is not a visitor
      */
     public function __construct(
         public readonly Orm $orm,
@@ -398,6 +409,8 @@ final class Kernel
         ?DevToolbar $toolbar = null,
         private readonly ?HandoffEndpoint $handoff = null,
         ?Uploads $uploads = null,
+        private readonly ?Telemetry $telemetry = null,
+        private readonly ?Probes $probes = null,
     ) {
         if ($toolbar !== null && !$dev) {
             throw new \InvalidArgumentException(
@@ -407,6 +420,11 @@ final class Kernel
         }
         $this->toolbar = $toolbar;
         $this->events = $events;
+
+        // Failures go to the structured log unless the application said
+        // where else they go.
+        $log ??= $telemetry?->logger->forExceptions();
+
         $this->renderFailed = $renderFailed;
         $this->throwOnRenderError = $throwOnRenderError;
         $this->errorShell = $errorShell ?? new ErrorShell();
@@ -463,6 +481,14 @@ final class Kernel
             ->instance(AuthContext::class, $this->auth)
             ->instance(PolicyRegistry::class, $this->policies)
             ->instance(TagsRead::class, $this->tagsRead);
+        // So an action, a query or a page can take the request's logger by
+        // type, and write under its id.
+        if ($telemetry !== null) {
+            $container?->instance(Telemetry::class, $telemetry)->instance(Logger::class, $telemetry->logger);
+            if ($telemetry->metrics !== null) {
+                $container?->instance(Metrics::class, $telemetry->metrics);
+            }
+        }
         if ($panels !== null) {
             $container?->instance(PanelContext::class, $panels);
         }
@@ -505,6 +531,10 @@ final class Kernel
             $globalMiddleware,
             $partialReloads,
             $entry,
+            // By the route's name, or its view when it has none.
+            $telemetry === null ? null : static function (RouteChain $chain) use ($telemetry): void {
+                $telemetry->route($chain->page->name ?? $chain->page->view);
+            },
         );
 
         // The revalidator needs the same signer and session seam the
@@ -820,6 +850,11 @@ final class Kernel
 
         // What one page's loaders read is not the next request's.
         $this->scope->add('live', $this->tagsRead->forget(...));
+
+        // Nor is a request's id, should one escape without being ended.
+        if ($telemetry !== null) {
+            $this->scope->add('telemetry', $telemetry->forget(...));
+        }
     }
 
     /**
@@ -842,16 +877,32 @@ final class Kernel
      */
     public function handle(Request $request, \Closure $respond, string $rawBody = '', bool $errorPage = true): Response
     {
+        // First, so everything after -- the session, the routing, a failure
+        // in either, the toolbar's recording -- is under the request's id.
+        $request = $this->telemetry?->begin($request) ?? $request;
         $request = $this->withPreviousUrl($request);
         $this->toolbar?->begin($request);
+        $failure = null;
+        $ended = false;
 
         try {
-            $failure = null;
             $response = $this->dispatch($request, $respond, $rawBody, $failure);
             $response = $errorPage ? $this->withErrorPage($request, $response, $respond, $failure) : $response;
+            // The toolbar draws into the document while the session is still
+            // known, before the reset; telemetry ends after it, so what it
+            // counts, logs and stamps with X-Request-Id is the response that
+            // leaves, toolbar and all.
+            $response = $this->withToolbar($request, $response);
+            $response = $this->telemetry?->end($response, $failure) ?? $response;
+            $ended = true;
 
-            return $this->withToolbar($request, $response);
+            return $response;
         } finally {
+            // A failure that escaped -- throw_on_error's, say -- is still a
+            // request that was answered, with a 500 by whoever caught it.
+            if (!$ended) {
+                $this->telemetry?->end(null, $failure);
+            }
             $this->toolbar?->end();
             $this->scope->reset();
         }
@@ -880,6 +931,26 @@ final class Kernel
     }
 
     /**
+     * The work a request leaves for after its response has gone: telemetry
+     * to its store and its exporter. A worker calls it through its
+     * application's Http\Terminable; a front controller after sending.
+     */
+    public function terminate(): void
+    {
+        $this->telemetry?->terminate();
+    }
+
+    /**
+     * Whether $request is for /_health, /_ready or /_metrics -- for an
+     * application to leave its own per-visitor work, such as issuing a
+     * session, out of a probe's request.
+     */
+    public function answersProbe(Request $request): bool
+    {
+        return $this->probes?->matches($request) ?? false;
+    }
+
+    /**
      * Routes one request to an endpoint or a page, and classifies whatever it
      * throws into a response; $failure is set to what was thrown.
      *
@@ -890,21 +961,36 @@ final class Kernel
         $navigating = false;
 
         try {
-            // The dev toolbar's endpoint, first: its prefix is its own. Not
-            // from loopback it is not here at all, and the global stack is
-            // not run for it; from loopback it runs behind that stack, which
-            // opens the session and signs in the user its token is bound to.
+            // The probes, first: a probe every few seconds is not a visitor,
+            // and pays for no session, no stack and no throttle (ADR 0041).
+            // Their paths and the toolbar's are disjoint, so the order costs
+            // neither anything.
+            if ($this->probes !== null && $this->probes->matches($request)) {
+                $this->telemetry?->route(Probes::route($request));
+
+                return $this->probes->handle($request);
+            }
+
+            // The dev toolbar's endpoint: its prefix is its own. Not from
+            // loopback it is not here at all, and the global stack is not run
+            // for it; from loopback it runs behind that stack, which opens the
+            // session and signs in the user its token is bound to.
             if ($this->toolbar !== null && $this->toolbar->matches($request)) {
+                $this->telemetry?->route('_dev_toolbar');
+
                 return Loopback::request($request)
                     ? $this->globalStack->run($request, fn (Request $passed): Response => $this->toolbar->respond($passed, $this->auth))
                     : throw new NotFoundException();
             }
 
             if ($this->webhooks !== null && $this->webhooks->matches($request)) {
+                $this->telemetry?->route('_webhook');
+
                 return $this->webhooks->handle($request, $rawBody);
             }
 
             if ($this->handoff !== null && $this->handoff->matches($request)) {
+                $this->telemetry?->route('_handoff');
                 HandoffEndpoint::assertMethod($request);
 
                 // A client navigation reaches a handoff when a guard sends it
@@ -920,7 +1006,10 @@ final class Kernel
             // GET to an action that needs a user was answered 401 by the
             // stack's authentication, where the answer is 405 and the method
             // that would do.
+            // Endpoints are counted by endpoint, never by the name in the
+            // path: an action or query name a client made up is not a label.
             if ($this->actions_->matches($request)) {
+                $this->telemetry?->route('_action');
                 ActionEndpoint::assertMethod($request);
 
                 try {
@@ -956,6 +1045,7 @@ final class Kernel
             // Before the other two, because its prefix is as specific and the
             // order should not depend on which was written first.
             if ($this->bootstrap_ !== null && $this->bootstrap_->matches($request)) {
+                $this->telemetry?->route('_bootstrap');
                 BootstrapEndpoint::assertMethod($request);
 
                 return $this->bootstrapStack->run(
@@ -965,6 +1055,7 @@ final class Kernel
             }
 
             if ($this->live_ !== null && $this->live_->matches($request)) {
+                $this->telemetry?->route('_live');
                 SubscribeEndpoint::assertMethod($request);
 
                 return $this->liveStack->run(
@@ -974,6 +1065,7 @@ final class Kernel
             }
 
             if ($this->uploads_ !== null && $this->uploads_->matches($request)) {
+                $this->telemetry?->route('_upload');
                 UploadEndpoint::assertMethod($request);
 
                 return $this->uploadStack->run(
@@ -982,7 +1074,10 @@ final class Kernel
                 );
             }
 
+            // A file's token is in its path, which the access line and the
+            // span write redacted, and the label never holds.
             if ($this->files_ !== null && $this->files_->matches($request)) {
+                $this->telemetry?->route('_file');
                 FileEndpoint::assertMethod($request);
 
                 return $this->fileStack->run(
@@ -992,12 +1087,14 @@ final class Kernel
             }
 
             if ($this->fragments_ !== null && $this->fragments_->matches($request)) {
+                $this->telemetry?->route('_fragment');
                 FragmentEndpoint::assertMethod($request);
 
                 return $this->fragments_->handle($request);
             }
 
             if ($this->queries_->matches($request)) {
+                $this->telemetry?->route('_query');
                 QueryEndpoint::assertMethod($request);
 
                 return $this->queryStack->run(

@@ -1,13 +1,20 @@
 <?php
 
 // What FrankenPHP defines when PHP runs under it, for static analysis: the
-// built-in Mercure hub's publisher (Tinvar\Live\Mercure::builtIn()). Not
-// loaded at runtime -- code that calls it checks function_exists() first.
+// built-in Mercure hub's publisher (Tinvar\Live\Mercure::builtIn()), and the
+// call that ends a response before the worker's terminate work
+// (Tinvar\Http\Worker). Not loaded at runtime -- code that calls them checks
+// function_exists() first.
 
 /**
  * @param string|list<string> $topics
  * @return string the update's id
  */
 function mercure_publish(string|array $topics, string $data = '', bool $private = false, ?string $id = null, ?string $type = null, ?int $retry = null): string
+{
+}
+
+/** Sends what the response holds and ends it; what runs after is not waited for. */
+function frankenphp_finish_request(): bool
 {
 }

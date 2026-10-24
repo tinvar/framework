@@ -42,6 +42,9 @@ final class Router
      * @param EntryContext|null $entry what the chain's declarations put around
      *        it -- its tenant, its panel and the panel's stack -- ahead of its
      *        own middleware; without one, neither is resolved
+     * @param (\Closure(RouteChain): void)|null $matched told of the chain the
+     *        moment it matches, before anything of it runs -- so a request
+     *        whose middleware or loader fails is still known by its route
      */
     public function __construct(
         private readonly RouteRegistry $routes,
@@ -50,6 +53,7 @@ final class Router
         private readonly array $globalMiddleware = [],
         private readonly bool $partialReloads = false,
         private readonly ?EntryContext $entry = null,
+        private readonly ?\Closure $matched = null,
     ) {}
 
     /**
@@ -69,6 +73,9 @@ final class Router
         return $global->run($request, function (Request $passed) use ($respond): Response {
             $chain = $this->routes->match($passed->path)
                 ?? throw new NotFoundException('No route matches this path.');
+            if ($this->matched !== null) {
+                ($this->matched)($chain);
+            }
 
             // A page answers GET and HEAD. Anything else ran the loaders --
             // the read-only bodies prefetch runs on hover -- and answered a

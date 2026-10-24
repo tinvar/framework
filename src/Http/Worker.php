@@ -21,6 +21,11 @@ namespace Tinvar\Http;
  * reset that itself fails ends the loop the same way, since the next request
  * would inherit exactly what it failed to clear.
  *
+ * An application that is Terminable has its terminate() called once each
+ * response has gone -- after frankenphp_finish_request(), so the visitor
+ * has every byte and is not kept waiting -- and before the reset: telemetry
+ * leaves the process there.
+ *
  * Everything that touches the server is injected, so the loop is tested
  * without FrankenPHP: the request-handling function, the globals, the output.
  */
@@ -41,6 +46,9 @@ final class Worker
     /** @var \Closure(\Throwable): void */
     private readonly \Closure $log;
 
+    /** @var \Closure(): void */
+    private readonly \Closure $finish;
+
     /** Why the loop ended early, when it did. */
     private bool $poisoned = false;
 
@@ -53,6 +61,8 @@ final class Worker
      *        this request's SAPI globals and raw body
      * @param (\Closure(Response): void)|null $send writes a response; Sapi::send() by default
      * @param (\Closure(\Throwable): void)|null $log where a request that crashed is reported
+     * @param (\Closure(): void)|null $finish ends the response before a Terminable
+     *        application's terminate(): frankenphp_finish_request() where it exists
      */
     public function __construct(
         private readonly \Closure $boot,
@@ -61,6 +71,7 @@ final class Worker
         ?\Closure $globals = null,
         ?\Closure $send = null,
         ?\Closure $log = null,
+        ?\Closure $finish = null,
     ) {
         if ($maxRequests < 1) {
             throw new \InvalidArgumentException('A worker serves at least one request before it is recycled.');
@@ -71,6 +82,11 @@ final class Worker
         $this->send = $send ?? Sapi::send(...);
         $this->log = $log ?? static function (\Throwable $e): void {
             error_log('[tinvar:worker] ' . $e::class . ': ' . $e->getMessage());
+        };
+        $this->finish = $finish ?? static function (): void {
+            if (\function_exists('frankenphp_finish_request')) {
+                frankenphp_finish_request();
+            }
         };
     }
 
@@ -136,6 +152,17 @@ final class Worker
                 $send(Response::make(500, 'Something went wrong.', ['content-type' => 'text/plain']));
             }
         } finally {
+            // After the response, before the reset: what it sends may still
+            // name this request, and nothing of it should wait on a visitor.
+            if ($application instanceof Terminable) {
+                try {
+                    ($this->finish)();
+                    $application->terminate();
+                } catch (\Throwable $e) {
+                    ($this->log)($e);
+                }
+            }
+
             try {
                 $application->reset();
             } catch (\Throwable $e) {

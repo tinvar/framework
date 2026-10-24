@@ -6,6 +6,8 @@ namespace Tinvar\Render;
 
 use Tinvar\Codec\FrameCodec;
 use Tinvar\Codec\MessagePackCodec;
+use Tinvar\Observability\RenderTrace;
+use Tinvar\Observability\Telemetry;
 use Tinvar\Protocol\Frame;
 use Tinvar\Protocol\ProtocolException;
 use Tinvar\Query\QueryRunner;
@@ -62,6 +64,12 @@ final class RenderChannel
          * the dev toolbar, in dev only. Nothing in production.
          */
         private readonly ?FrameTap $tap = null,
+        /**
+         * Told of each render, each query batch and how each ended, for
+         * the metrics and spans of the request it is part of (ADR 0041).
+         * Production's, beside the tap, which is dev's.
+         */
+        private readonly ?Telemetry $telemetry = null,
     ) {}
 
     /**
@@ -119,6 +127,32 @@ final class RenderChannel
      *        this render may not mint any
      */
     public function render(array $frame, array $allowed, \Closure $sink, ?\Closure $mint = null): RenderResult
+    {
+        $trace = $this->telemetry?->renderStarted($frame);
+
+        try {
+            $result = $this->exchange($frame, $allowed, $sink, $mint, $trace);
+        } catch (\Throwable $e) {
+            if ($trace !== null) {
+                $this->telemetry->renderFailed($trace, $e);
+            }
+            throw $e;
+        }
+
+        if ($trace !== null) {
+            $this->telemetry->renderFinished($trace, $result);
+        }
+
+        return $result;
+    }
+
+    /**
+     * @param array<string, mixed> $frame
+     * @param list<string> $allowed
+     * @param \Closure(string): void $sink
+     * @param (\Closure(string, array<string, mixed>): string)|null $mint
+     */
+    private function exchange(array $frame, array $allowed, \Closure $sink, ?\Closure $mint, ?RenderTrace $trace): RenderResult
     {
         $minted = 0;
         $started = hrtime(true);
@@ -198,7 +232,11 @@ final class RenderChannel
 
                         $at = hrtime(true);
                         $results = $this->runner->run($calls, $allowed);
-                        $queryNs += hrtime(true) - $at;
+                        $answered = hrtime(true);
+                        $queryNs += $answered - $at;
+                        if ($trace !== null) {
+                            $this->telemetry?->queryBatch($trace, $calls, $allowed, $at, $answered);
+                        }
 
                         if ($queryNs / 1e9 > $this->maxQuerySeconds) {
                             throw RendererException::queryBudget(
