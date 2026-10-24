@@ -48,6 +48,7 @@ use Tinvar\Routing\RouteChain;
 use Tinvar\Routing\Router;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Validation\Validator;
+use Tinvar\Webhooks\WebhookEndpoint;
 
 /**
  * The composition root: one place where the request path is actually joined up.
@@ -290,6 +291,9 @@ final class Kernel
      *        one with no error page of its own gets the shell to carry it. Never
      *        in production: everything it shows is what production keeps from
      *        the browser.
+     * @param WebhookEndpoint|null $webhooks the application's inbound webhooks, answered
+     *        ahead of everything else: a delivery is verified by its signature, not by
+     *        a session, so none of the global stack applies to it
      */
     public function __construct(
         public readonly Orm $orm,
@@ -324,6 +328,7 @@ final class Kernel
         bool $throwOnRenderError = false,
         ?ErrorShell $errorShell = null,
         private readonly bool $dev = false,
+        private readonly ?WebhookEndpoint $webhooks = null,
     ) {
         $this->renderFailed = $renderFailed;
         $this->throwOnRenderError = $throwOnRenderError;
@@ -713,6 +718,10 @@ final class Kernel
         $navigating = false;
 
         try {
+            if ($this->webhooks !== null && $this->webhooks->matches($request)) {
+                return $this->webhooks->handle($request, $rawBody);
+            }
+
             // Each endpoint's method is checked before its stack runs: a
             // GET to an action that needs a user was answered 401 by the
             // stack's authentication, where the answer is 405 and the method
