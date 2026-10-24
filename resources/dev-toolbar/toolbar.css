@@ -1,0 +1,197 @@
+/* The dev toolbar's style (Tinvar\Dev\DevToolbar), inside its shadow root:
+   the page's styles do not reach in, and these do not reach out. The dev
+   overlay's palette, one layer below it, so a failure's overlay covers it. */
+:host {
+  all: initial;
+}
+.toggle,
+.panel {
+  position: fixed;
+  z-index: 2147483646;
+  font:
+    12px/1.45 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  color: #f2f2ef;
+  background: rgba(10, 10, 9, 0.96);
+}
+.toggle {
+  left: 12px;
+  bottom: 12px;
+  padding: 6px 10px;
+  border: 1px solid #5f5e5a;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.toggle[aria-expanded='true'] {
+  display: none;
+}
+.panel {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: min(55vh, 520px);
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid #5f5e5a;
+}
+.panel[hidden] {
+  display: none;
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+.title {
+  color: #ff8a80;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.status {
+  flex: 1;
+  color: #a3a29d;
+}
+button {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid #5f5e5a;
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+button:focus-visible {
+  outline: 2px solid #9ecbff;
+  outline-offset: 1px;
+}
+.body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.requests {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 38%;
+  overflow: auto;
+  border-right: 1px solid rgba(255, 255, 255, 0.12);
+}
+.requests button {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  padding: 4px 12px;
+  text-align: left;
+}
+.requests .follow button {
+  padding-left: 28px;
+}
+.requests button[aria-current='true'] {
+  background: rgba(158, 203, 255, 0.12);
+}
+.kind {
+  color: #a3a29d;
+  min-width: 64px;
+}
+.path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.code.bad,
+.error {
+  color: #ff8a80;
+}
+.ms,
+.muted,
+.at {
+  color: #a3a29d;
+}
+.detail {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.tabs {
+  display: flex;
+  gap: 6px;
+  padding: 6px 12px;
+}
+.tabs button[aria-selected='true'] {
+  border-color: #9ecbff;
+  color: #9ecbff;
+}
+.view {
+  flex: 1;
+  overflow: auto;
+  padding: 0 12px 12px;
+}
+h3 {
+  margin: 8px 0 4px;
+  font: inherit;
+  color: #9ecbff;
+}
+pre {
+  margin: 4px 0 8px;
+  padding: 8px;
+  overflow: auto;
+  background: rgba(255, 255, 255, 0.05);
+  color: #c9c8c3;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+table {
+  border-collapse: collapse;
+  margin-top: 8px;
+}
+th {
+  text-align: left;
+  font-weight: normal;
+  color: #c9c8c3;
+  padding: 2px 16px 2px 0;
+}
+td {
+  text-align: right;
+}
+summary {
+  cursor: pointer;
+  padding: 2px 0;
+}
+.frame summary span {
+  margin-right: 10px;
+}
+.frame.out .dir {
+  color: #9ecbff;
+}
+.frame.in .dir {
+  color: #c9c8c3;
+}
+.failure {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-left: 3px solid #ff8a80;
+  background: rgba(255, 138, 128, 0.08);
+}
+.failure p {
+  margin: 4px 0 0;
+}
+@media (max-width: 720px) {
+  .body {
+    flex-direction: column;
+  }
+  .requests {
+    width: auto;
+    max-height: 35%;
+    border-right: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  }
+}

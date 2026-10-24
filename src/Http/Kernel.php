@@ -22,6 +22,8 @@ use Tinvar\Http\Endpoints\QueryEndpoint;
 use Tinvar\Http\Middleware\CheckVersion;
 use Tinvar\Http\Middleware\TranslateRedirects;
 use Tinvar\Container\Container;
+use Tinvar\Dev\DevToolbar;
+use Tinvar\Dev\Loopback;
 use Tinvar\Events\Events;
 use Tinvar\Http\Middleware\RequireAuthentication;
 use Tinvar\Http\Middleware\ThrottleRequests;
@@ -156,6 +158,9 @@ final class Kernel
 
     /** The application's event bus, which hears RenderFailed after the closures. */
     private readonly ?Events $events;
+
+    /** The dev toolbar, under `tinvar dev` only; never on a Kernel not built for dev. */
+    private readonly ?DevToolbar $toolbar;
 
     /** Whether a failed render escapes handle() rather than becoming an error page. */
     private readonly bool $throwOnRenderError;
@@ -301,6 +306,10 @@ final class Kernel
      * @param Events|null $events the application's event bus: every RenderFailed is
      *        dispatched on it, after the $renderFailed closures, so a #[Listener] for
      *        it hears each failed render as they do
+     * @param DevToolbar|null $toolbar the dev toolbar `tinvar dev` asked for: each
+     *        request is recorded, documents carry the toolbar, and /_dev/toolbar
+     *        answers for them -- on loopback, with its token. Refused unless built
+     *        for dev ($dev), so no production Kernel can carry one.
      */
     public function __construct(
         public readonly Orm $orm,
@@ -337,7 +346,15 @@ final class Kernel
         private readonly bool $dev = false,
         private readonly ?WebhookEndpoint $webhooks = null,
         ?Events $events = null,
+        ?DevToolbar $toolbar = null,
     ) {
+        if ($toolbar !== null && !$dev) {
+            throw new \InvalidArgumentException(
+                'The dev toolbar was given to a Kernel not built for dev. It shows every request\'s props and frames, '
+                . 'and exists only under `tinvar dev`.',
+            );
+        }
+        $this->toolbar = $toolbar;
         $this->events = $events;
         $this->renderFailed = $renderFailed;
         $this->throwOnRenderError = $throwOnRenderError;
@@ -705,14 +722,39 @@ final class Kernel
     public function handle(Request $request, \Closure $respond, string $rawBody = '', bool $errorPage = true): Response
     {
         $request = $this->withPreviousUrl($request);
+        $this->toolbar?->begin($request);
 
         try {
             $failure = null;
             $response = $this->dispatch($request, $respond, $rawBody, $failure);
+            $response = $errorPage ? $this->withErrorPage($request, $response, $respond, $failure) : $response;
 
-            return $errorPage ? $this->withErrorPage($request, $response, $respond, $failure) : $response;
+            return $this->withToolbar($request, $response);
         } finally {
+            $this->toolbar?->end();
             $this->scope->reset();
+        }
+    }
+
+    /**
+     * The response, its request recorded for the dev toolbar and the toolbar
+     * drawn into it when it is a document -- before the scope resets, while
+     * the session and the user it belongs to are known. A toolbar that fails
+     * is reported and the response goes out as it was: it is a window onto
+     * the request, not part of it.
+     */
+    private function withToolbar(Request $request, Response $response): Response
+    {
+        if ($this->toolbar === null) {
+            return $response;
+        }
+
+        try {
+            return $this->toolbar->finish($request, $response, $this->auth);
+        } catch (\Throwable $e) {
+            $this->report($e);
+
+            return $response;
         }
     }
 
@@ -727,6 +769,16 @@ final class Kernel
         $navigating = false;
 
         try {
+            // The dev toolbar's endpoint, first: its prefix is its own. Not
+            // from loopback it is not here at all, and the global stack is
+            // not run for it; from loopback it runs behind that stack, which
+            // opens the session and signs in the user its token is bound to.
+            if ($this->toolbar !== null && $this->toolbar->matches($request)) {
+                return Loopback::request($request)
+                    ? $this->globalStack->run($request, fn (Request $passed): Response => $this->toolbar->respond($passed, $this->auth))
+                    : throw new NotFoundException();
+            }
+
             if ($this->webhooks !== null && $this->webhooks->matches($request)) {
                 return $this->webhooks->handle($request, $rawBody);
             }
@@ -1059,6 +1111,7 @@ final class Kernel
         }
 
         $event = new RenderFailed($e, $failure, $request, ExceptionHandler::digest($e));
+        $this->toolbar?->failed($event);
         foreach ($this->renderFailed as $listener) {
             try {
                 $listener($event);

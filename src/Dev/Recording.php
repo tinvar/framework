@@ -1,0 +1,330 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tinvar\Dev;
+
+use Tinvar\Codec\Bin;
+use Tinvar\Http\Request;
+use Tinvar\Render\FrameTap;
+use Tinvar\Render\RenderFailure;
+use Tinvar\Render\RenderResult;
+
+/**
+ * One request, as the dev toolbar shows it: what it was, the frames each of
+ * its renders sent and received -- decoded, so the render frame is the props
+ * the renderer was given -- their timings, and the render failure, if any.
+ *
+ * Everything is kept as plain JSON-ready data, with secrets taken out on
+ * the way in. The toolbar is the developer's own, on loopback, behind a
+ * token bound to their session; the recording is still a file on disk and a
+ * response body, so what would let someone act as the visitor -- the CSRF
+ * token, the route token, the history key, minted fragment tokens, the
+ * policy's nonce, a password typed into a form -- is never written at all.
+ * Loader data stays: the spec's rule is that props "are readable in page
+ * source and must not contain secrets", so they show nothing the page does
+ * not.
+ *
+ * The renderer writes some of those secrets back: the nonce on every script,
+ * the CSRF token in a form's hidden field, the route token and history key
+ * in the page metadata, a minted token on its boundary. So every value taken
+ * out of a frame PHP sent is remembered -- here, never in what is kept --
+ * and taken out of everything that comes back too.
+ *
+ * Bounded, since a render can be large and the renderer -- third-party npm
+ * code -- chooses what it sends: so many frames, so many bytes of each, so
+ * many in all, and a preview of an output chunk rather than the chunk.
+ */
+final class Recording
+{
+    /** Frames kept of one request; past it they are counted, not kept. */
+    public const int MAX_FRAMES = 400;
+
+    /** JSON bytes of one frame's body: past it the body is replaced by its size. */
+    public const int MAX_FRAME_BYTES = 524_288;
+
+    /** JSON bytes of every frame of one request together. */
+    public const int MAX_BYTES = 2_097_152;
+
+    /** Bytes of an output chunk shown as text. */
+    public const int PREVIEW_BYTES = 2048;
+
+    /** Bytes of the path a summary keeps, so the summary stays one short line (RecordingStore). */
+    public const int MAX_PATH_BYTES = 2048;
+
+    /** What a redacted value is replaced by. */
+    public const string REDACTED = '[redacted]';
+
+    /**
+     * Keys whose string values are never kept, wherever they appear: the
+     * render frame's `nonce` and `csrf`, its page's `routeToken` and
+     * `historyKey`, a minted frame's `token`s, and the same names in loader
+     * data, query arguments, flashed input and the URL's query.
+     */
+    private const string SECRET_KEYS = '/token|nonce|csrf|password|passwd|secret|historykey|signature|cookie|authorization|api[_-]?key/i';
+
+    private const int MAX_DEPTH = 32;
+
+    public readonly string $id;
+
+    private readonly int $startedNs;
+    private readonly float $at;
+    private readonly string $method;
+    private readonly string $path;
+
+    /** @var array<string, mixed> */
+    private readonly array $query;
+
+    private readonly string $kind;
+
+    /** @var list<array<string, mixed>> */
+    private array $frames = [];
+
+    private int $frameBytes = 0;
+    private int $dropped = 0;
+
+    /** @var list<array<string, int|float>> */
+    private array $renders = [];
+
+    /** @var array<string, string>|null */
+    private ?array $failure = null;
+
+    /**
+     * The secret values PHP sent the renderer, to take out of what it sends
+     * back; never kept.
+     *
+     * @var array<string, true>
+     */
+    private array $secrets = [];
+
+    /** Shorter than this, a value is not taken out of the renderer's output: it would take out everything. */
+    private const int SHORTEST_SECRET = 8;
+
+    public function __construct(Request $request)
+    {
+        $this->id = bin2hex(random_bytes(8));
+        $this->startedNs = hrtime(true);
+        $this->at = microtime(true);
+        $this->method = $request->method;
+        $this->path = self::text(substr($request->path, 0, self::MAX_PATH_BYTES));
+        $query = self::redact($request->query);
+        $this->query = \is_array($query) ? $query : [];
+        $this->kind = self::kindOf($request);
+    }
+
+    /**
+     * What a request is, as the toolbar groups them: a document starts a
+     * visit, and what follows it -- a client navigation's payload, a
+     * fragment, an action, a query -- is shown under it.
+     */
+    public static function kindOf(Request $request): string
+    {
+        return match (true) {
+            str_starts_with($request->path, '/_action/') => 'action',
+            str_starts_with($request->path, '/_query/') => 'query',
+            str_starts_with($request->path, '/_fragment/') => 'fragment',
+            str_starts_with($request->path, '/_bootstrap') => 'bootstrap',
+            str_starts_with($request->path, '/_live/') => 'live',
+            $request->wantsRscPayload() => 'payload',
+            \in_array($request->method, ['GET', 'HEAD'], true) && str_contains($request->header('accept') ?? '', 'text/html') => 'document',
+            default => 'other',
+        };
+    }
+
+    /**
+     * @param FrameTap::TO_RENDERER|FrameTap::FROM_RENDERER $direction
+     * @param array<string, mixed> $frame
+     */
+    public function frame(string $direction, array $frame): void
+    {
+        if (\count($this->frames) >= self::MAX_FRAMES) {
+            $this->dropped++;
+
+            return;
+        }
+
+        $type = \is_string($frame['t'] ?? null) ? self::text($frame['t']) : '?';
+        $entry = [
+            'dir' => $direction,
+            't' => $type,
+            'atMs' => round((hrtime(true) - $this->startedNs) / 1e6, 3),
+        ];
+
+        if ($type === 'chunk' && \is_string($frame['b'] ?? null)) {
+            // Output bytes -- HTML or payload rows, and not necessarily
+            // UTF-8 -- as their size and the start of them as text.
+            $bytes = $frame['b'];
+            $entry['bytes'] = \strlen($bytes);
+            $body = ['t' => 'chunk', 'b' => ['bytes' => \strlen($bytes), 'preview' => self::text(substr($bytes, 0, self::PREVIEW_BYTES))]];
+        } else {
+            $found = [];
+            $body = self::walk($frame, null, 0, $found);
+            if ($direction === FrameTap::TO_RENDERER) {
+                foreach ($found as $secret) {
+                    if (\strlen($secret) >= self::SHORTEST_SECRET) {
+                        $this->secrets[$secret] = true;
+                    }
+                }
+            }
+        }
+        $body = $this->scrubbed($body);
+
+        $json = self::json($body);
+        if (\strlen($json) > self::MAX_FRAME_BYTES) {
+            $body = ['t' => $type, 'omitted' => \strlen($json) . ' bytes of JSON, more than the toolbar keeps of one frame'];
+            $json = self::json($body);
+        }
+        if ($this->frameBytes + \strlen($json) > self::MAX_BYTES) {
+            $this->dropped++;
+
+            return;
+        }
+
+        $this->frameBytes += \strlen($json);
+        $entry['body'] = $body;
+        $this->frames[] = $entry;
+    }
+
+    public function rendered(RenderResult $result): void
+    {
+        $this->renders[] = [
+            'totalMs' => round($result->totalMs, 3),
+            'firstByteMs' => round($result->timeToFirstByteMs, 3),
+            'waitingOnRendererMs' => round($result->waitingOnRendererMs, 3),
+            'queryMs' => round($result->queryMs, 3),
+            'streamingMs' => round($result->streamingMs, 3),
+            'queryCalls' => $result->queryCalls,
+            'queryBatches' => $result->queryBatches,
+            'bytes' => $result->bytes,
+            'chunks' => $result->chunks,
+        ];
+    }
+
+    /** The render failed: its classification, the framework's hint for it, and the reference the visitor was shown. */
+    public function failed(RenderFailure $failure, string $digest): void
+    {
+        $this->failure = [
+            'code' => $failure->value,
+            'title' => $failure->title(),
+            'hint' => $failure->hint(),
+            'digest' => self::text($digest),
+        ];
+    }
+
+    /**
+     * The recording, finished: the summary the list shows, and the whole.
+     * The binding it is kept under goes in the summary, which the store
+     * reads and never serves.
+     *
+     * @return array{summary: array<string, mixed>, detail: array<string, mixed>}
+     */
+    public function finish(int $status, string $sessionHash, string $authHash): array
+    {
+        $ms = round((hrtime(true) - $this->startedNs) / 1e6, 3);
+        $summary = [
+            'id' => $this->id,
+            'at' => $this->at,
+            'method' => $this->method,
+            'path' => $this->path,
+            'kind' => $this->kind,
+            'status' => $status,
+            'ms' => $ms,
+            'renders' => \count($this->renders),
+            'failure' => $this->failure['code'] ?? null,
+        ];
+
+        return [
+            'summary' => [...$summary, 'session' => $sessionHash, 'auth' => $authHash],
+            'detail' => [
+                ...$summary,
+                'query' => $this->query,
+                'timings' => $this->renders,
+                'frames' => $this->frames,
+                'framesDropped' => $this->dropped,
+                'failure' => $this->failure,
+            ],
+        ];
+    }
+
+    /**
+     * $value with every secret-named string taken out, as plain data: a Bin
+     * as its size, any other object as its type -- a frame holds neither,
+     * and the toolbar is no place to start rendering one.
+     */
+    public static function redact(mixed $value): mixed
+    {
+        $found = [];
+
+        return self::walk($value, null, 0, $found);
+    }
+
+    /**
+     * redact(), collecting the values it took out into $found.
+     *
+     * @param list<string> $found
+     */
+    private static function walk(mixed $value, ?string $key, int $depth, array &$found): mixed
+    {
+        if ($key !== null && preg_match(self::SECRET_KEYS, $key) === 1 && (\is_string($value) || \is_int($value))) {
+            $found[] = (string) $value;
+
+            return self::REDACTED;
+        }
+
+        if (\is_array($value)) {
+            if ($depth >= self::MAX_DEPTH) {
+                return '[nested deeper than the toolbar shows]';
+            }
+            $out = [];
+            foreach ($value as $name => $item) {
+                $out[$name] = self::walk($item, (string) $name, $depth + 1, $found);
+            }
+
+            return $out;
+        }
+
+        return match (true) {
+            \is_string($value) => self::text($value),
+            $value instanceof Bin => ['bin' => \strlen($value->bytes)],
+            \is_object($value) => '[' . get_debug_type($value) . ']',
+            // JSON has no word for these.
+            \is_float($value) && is_nan($value) => 'NAN',
+            \is_float($value) && is_infinite($value) => $value > 0 ? 'INF' : '-INF',
+            default => $value,
+        };
+    }
+
+    /**
+     * $value with every secret PHP sent the renderer taken out of its
+     * strings: as sent, and as JSON writes it, `/` escaped -- the page
+     * metadata is JSON in the HTML.
+     */
+    private function scrubbed(mixed $value): mixed
+    {
+        if ($this->secrets === []) {
+            return $value;
+        }
+        if (\is_array($value)) {
+            return array_map($this->scrubbed(...), $value);
+        }
+        if (!\is_string($value)) {
+            return $value;
+        }
+
+        $secrets = array_keys($this->secrets);
+        $forms = [...$secrets, ...array_map(static fn (string $secret): string => str_replace('/', '\\/', $secret), $secrets)];
+
+        return str_replace($forms, self::REDACTED, $value);
+    }
+
+    /** Valid UTF-8, whatever the bytes were: the renderer chose them. */
+    private static function text(string $bytes): string
+    {
+        return mb_scrub($bytes, 'UTF-8');
+    }
+
+    private static function json(mixed $value): string
+    {
+        return json_encode($value, JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION) ?: 'null';
+    }
+}
