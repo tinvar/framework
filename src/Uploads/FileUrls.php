@@ -17,8 +17,10 @@ use Tinvar\Storage\StorageKey;
  * It is not a public link, and a copy of it in another browser is a 404.
  *
  * Minted for windows of ten minutes, not for the second: the same file
- * shown to the same viewer within one window gets the same URL, so the
- * browser's cache serves the second page that shows it.
+ * shown to the same viewer within one window gets the same URL, so a page
+ * drawn again -- after an action, on a client navigation that keeps the
+ * header -- hands React the src it already has, and the image is not
+ * fetched again.
  */
 final readonly class FileUrls
 {

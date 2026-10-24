@@ -94,9 +94,11 @@ final readonly class FileEndpoint
             'x-content-type-options' => 'nosniff',
             'content-security-policy' => "default-src 'none'; sandbox",
             'cross-origin-resource-policy' => 'same-origin',
-            // This viewer's, for as long as the URL lives: never a shared
-            // cache's, which would hand it to whoever asked next.
-            'cache-control' => 'private, max-age=' . max(0, min(3600, $file->expiresAt - $this->uploads->now())),
+            // Kept by no cache, the browser's included, as every
+            // authenticated response is: client-held data is cleared on
+            // sign-out, and a browser's HTTP cache is nothing a sign-out
+            // can clear.
+            'cache-control' => 'private, no-store',
             'vary' => 'Cookie',
         ];
 

@@ -44,7 +44,7 @@ it('sends the file to the session and user its URL was minted for, as nothing mo
         ->and($response->header('x-content-type-options'))->toBe('nosniff')
         ->and($response->header('content-security-policy'))->toBe("default-src 'none'; sandbox")
         ->and($response->header('content-disposition'))->toStartWith('inline;')
-        ->and($response->header('cache-control'))->toStartWith('private, max-age=');
+        ->and($response->header('cache-control'))->toBe('private, no-store');
 });
 
 it('offers anything but an image as a download, under a name that cannot break the header', function () {
