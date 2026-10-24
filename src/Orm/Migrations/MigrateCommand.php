@@ -203,7 +203,11 @@ final class MigrateCommand
                 ));
             }
 
-            $source = new MigrationGenerator($migrator->connection(), $migrator->dialect())->generate($this->models, gmdate('Y-m-d', $now));
+            $generator = new MigrationGenerator($migrator->connection(), $migrator->dialect());
+            $source = $generator->generate($this->models, gmdate('Y-m-d', $now));
+            foreach ($generator->warnings as $warning) {
+                ($this->err)("warning: {$warning}");
+            }
             if ($source === null) {
                 ($this->out)('The database already has everything the models describe; nothing written. For a backfill or a change the models cannot say: tinvar make:migration <name> --blank');
 

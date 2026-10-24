@@ -180,6 +180,19 @@ describe('make:migration', function () {
             ->and($run->err[0])->toBe('1 migration(s) have not run here (2026_10_24_000001_create_notes); migrate first, or this one would repeat them.');
     });
 
+    it('warns of a column the database names with more than an identifier, and writes nothing of it', function () {
+        $run = run();
+        $connection = PdoConnection::sqlite($run->files->database());
+        $connection->execute("CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT NOT NULL, \"x\nsystem('id');//\" TEXT)");
+
+        expect($run('make:migration', ['add_title']))->toBe(0)
+            ->and($run->err)->toBe([
+                'warning: notes has a column named "x\\nsystem(\'id\');//", which is not a plain identifier and is on no model; '
+                . 'it is left out of the migration. Look at it in the database.',
+            ])
+            ->and($run->out[0])->toStartWith('The database already has everything the models describe; nothing written.');
+    });
+
     it('will not write over a migration of the same name and time', function () {
         $run = run();
         $run('make:migration', ['backfill', '--blank']);

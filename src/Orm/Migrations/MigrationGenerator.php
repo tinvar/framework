@@ -29,9 +29,23 @@ use Tinvar\Orm\Schema\Index;
  *
  * Builder calls, not SQL, so one migration runs on every dialect: written
  * against the SQLite of a laptop, it runs against production's Postgres.
+ *
+ * What it writes is code a developer will run, and some of it comes from
+ * the database -- whoever can make a column there, through a schema a
+ * tenant controls or a database someone else got into, chooses its name.
+ * A name the database gives is written only if it is a plain identifier,
+ * and otherwise left out and reported in warnings; every name, the models'
+ * as well, reaches the file as a quoted literal or as comment text that
+ * cannot end its comment.
  */
 final class MigrationGenerator
 {
+    /** A name the database gives that may be written into the file, even as a comment. */
+    private const string IDENTIFIER = '/^[A-Za-z_][A-Za-z0-9_]*\z/';
+
+    /** @var list<string> what the last generate() left out of the file, and why, for whoever runs it */
+    public private(set) array $warnings = [];
+
     public function __construct(
         private readonly Connection $connection,
         private readonly Dialect $dialect,
@@ -45,6 +59,7 @@ final class MigrationGenerator
      */
     public function generate(array $models, string $date): ?string
     {
+        $this->warnings = [];
         $wanted = $this->wanted($models);
         $up = [];
         $down = [];
@@ -90,6 +105,8 @@ final class MigrationGenerator
 
     private static function source(string $about, string $up, string $down): string
     {
+        // Inside the doc comment: nothing in it may end the comment early.
+        $about = str_replace(["\r", "\n", '*/'], ['', '', '*\/'], $about);
         $wrapped = wordwrap($about, 74, "\n * ", true);
 
         return <<<PHP
@@ -290,9 +307,23 @@ final class MigrationGenerator
         }
 
         foreach (array_keys($live) as $column) {
-            if (!isset($table['columns'][$column]) && $column !== $tenant) {
-                $comments[] = "{$name}.{$column} is in the database and on no model. Dropping it is yours to decide: \$table->dropColumn({$this->php($column)}).";
+            // A name made of digits comes back from PHP as an int key.
+            $column = (string) $column;
+            if (isset($table['columns'][$column]) || $column === $tenant) {
+                continue;
             }
+
+            // The database's name, so anyone who could make the column chose
+            // it; only a plain identifier is written, even into a comment.
+            if (preg_match(self::IDENTIFIER, $column) !== 1) {
+                $this->warnings[] = \sprintf(
+                    '%s has a column named %s, which is not a plain identifier and is on no model; it is left out of the migration. Look at it in the database.',
+                    $name,
+                    json_encode($column, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                );
+                continue;
+            }
+            $comments[] = "{$name}.{$column} is in the database and on no model. Dropping it is yours to decide: \$table->dropColumn({$this->php($column)}).";
         }
 
         // Each comment above the change it is about, or alone where there
@@ -439,8 +470,15 @@ final class MigrationGenerator
         return false;
     }
 
+    /**
+     * Text as `//` comment lines. A line break would end the comment, and
+     * `?>` ends PHP itself even inside one, so neither reaches the file
+     * whatever the text came from.
+     */
     private static function comment(string $text): string
     {
+        $text = str_replace(["\r", "\n", '?>'], ['', '', '?\\>'], $text);
+
         return '        // ' . wordwrap($text, 90, "\n        // ", true);
     }
 
