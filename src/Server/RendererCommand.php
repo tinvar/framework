@@ -375,6 +375,10 @@ final class RendererCommand
     {
         $given ??= getenv('TINVAR_SOCKET') ?: null;
         if ($given === null) {
+            // One a pool killed outright left behind -- its supervisor could
+            // clean up nothing -- goes now, as serve's do.
+            PrivateDirectory::removeAbandoned('tinvar-pool');
+
             // Its owner is this process, which the pool's supervisor is
             // about to become, so a later start can tell when it is gone.
             return PrivateDirectory::create('tinvar-pool', owner: getmypid() ?: null);

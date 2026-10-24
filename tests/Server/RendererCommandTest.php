@@ -15,6 +15,7 @@ use Tinvar\Bench\Shop;
 use Tinvar\Http\Request;
 use Tinvar\Server\RendererCommand;
 use Tinvar\Server\ServeCommand;
+use Tinvar\Support\PrivateDirectory;
 
 $root = \dirname(__DIR__, 4);
 
@@ -89,6 +90,33 @@ describe('renderer:start', function () use ($root) {
 
         expect($execs[0][1][3])->toBe('--processes=' . ServeCommand::defaultRenderers(ServeCommand::cpus(), ServeCommand::cpus()));
     })->skip(fn () => !is_file("{$root}/examples/shop/dist/rsc/index.js"), 'the shop is not built');
+
+    // Killed outright, a pool's supervisor removes nothing; its private
+    // directory was left in /tmp for good.
+    it('makes a private directory when none is named, and removes one a killed pool left', function () use ($root) {
+        $abandoned = PrivateDirectory::create('tinvar-pool');
+        // A pid no process has: the directory's owner is gone.
+        file_put_contents("{$abandoned}/" . PrivateDirectory::OWNER_FILE, '999999');
+        $saved = getenv('TINVAR_SOCKET');
+        putenv('TINVAR_SOCKET');
+        [$command, $out, , $execs] = command($root);
+
+        try {
+            $command->run('renderer:start', ["--app={$root}/examples/shop", '--processes=1']);
+        } finally {
+            if ($saved !== false) {
+                putenv("TINVAR_SOCKET={$saved}");
+            }
+        }
+        $made = $execs[0][1][1];
+        $owner = (string) @file_get_contents("{$made}/" . PrivateDirectory::OWNER_FILE);
+        PrivateDirectory::remove($made);
+
+        expect(is_dir($abandoned))->toBeFalse()
+            ->and($made)->toMatch('#^/tmp/tinvar-pool-[0-9a-f]{10}$#')
+            ->and($owner)->toBe((string) getmypid())
+            ->and($out->getArrayCopy())->toBe(["TINVAR_SOCKET={$made}"]);
+    })->skip(fn () => !is_file("{$root}/examples/shop/dist/rsc/index.js") || !\function_exists('posix_kill'), 'the shop is not built');
 
     it('refuses, with a usage status and nothing started, what it cannot run', function (array $arguments, string $message) use ($root) {
         [$command, , $err, $execs] = command($root);
