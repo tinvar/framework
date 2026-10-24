@@ -233,7 +233,7 @@ describe('row-level security by migration', function () {
 
             expect($orm->actAs(ACME, static fn (): array => $connection->select('SELECT tenant_id FROM runs')))->toBe([['tenant_id' => ACME]])
                 ->and($connection->select('SELECT tenant_id FROM runs'))->toBe([])
-                ->and($connection->select("SELECT pg_get_expr(polqual, polrelid) AS q FROM pg_policy WHERE polname = 'tinvar_tenant'")[0]['q'])->toContain('::uuid');
+                ->and($connection->select("SELECT pg_get_expr(polqual, polrelid) AS q FROM pg_policy WHERE polname = 'tinvar_tenant' AND polrelid = 'runs'::regclass")[0]['q'])->toContain('::uuid');
 
             $migrator->rollback();
 
