@@ -14,7 +14,14 @@
 
 	# No worker: every request runs the front controller afresh, so an edit
 	# to the PHP is in the very next response, as an edit to a component is.
-	frankenphp
+	#
+	# PHP takes uploads up to the framework's own ceiling
+	# (Uploads::DEFAULT_MAX_BYTES), so in dev an upload is refused by the
+	# app's declared limit and not by PHP's 2M default first.
+	frankenphp {
+		php_ini upload_max_filesize 10M
+		php_ini post_max_size 11M
+	}
 }
 
 http://:{$TINVAR_PORT} {
