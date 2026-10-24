@@ -164,22 +164,20 @@ final class FragmentManifest
             return $this;
         }
 
-        if (!is_file($this->path)) {
-            $this->bytes = null;
-
-            return $this->latest = new self();
-        }
-
-        $raw = file_get_contents($this->path);
-        if ($raw === false) {
-            throw new \RuntimeException("Cannot read the fragment manifest at {$this->path}.");
+        // Null for no file, as when there was none to read at boot.
+        $raw = null;
+        if (is_file($this->path)) {
+            $raw = file_get_contents($this->path);
+            if ($raw === false) {
+                throw new \RuntimeException("Cannot read the fragment manifest at {$this->path}.");
+            }
         }
 
         if ($raw === $this->bytes) {
             return $this->latest ?? $this;
         }
 
-        $latest = self::parse($raw, $this->path);
+        $latest = $raw === null ? new self() : self::parse($raw, $this->path);
         $this->bytes = $raw;
 
         return $this->latest = $latest;
