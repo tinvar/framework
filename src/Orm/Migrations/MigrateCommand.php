@@ -7,6 +7,7 @@ namespace Tinvar\Orm\Migrations;
 use Tinvar\Orm\Connection;
 use Tinvar\Orm\Metadata;
 use Tinvar\Orm\Model;
+use Tinvar\Support\DevMode;
 
 /**
  * The migration commands.
@@ -18,9 +19,12 @@ use Tinvar\Orm\Model;
  *   tinvar make:migration <name> [--blank]
  *                                     write the migration the models' difference
  *                                     from the database calls for, or an empty one
+ *   tinvar db:seed [--fresh --force] [the seeder's options]
+ *                                     migrate, then fill the database with the
+ *                                     application's DatabaseSeeder; never in production
  *
- * migrate, rollback and fresh wait up to --lock-timeout seconds (60 by
- * default) for another run to finish.
+ * migrate, rollback, fresh and db:seed wait up to --lock-timeout seconds
+ * (60 by default) for another run to finish.
  */
 final class MigrateCommand
 {
@@ -30,7 +34,7 @@ final class MigrateCommand
     /** Exit status for a run that failed or was refused. */
     public const int FAILED = 1;
 
-    public const array COMMANDS = ['migrate', 'migrate:rollback', 'migrate:status', 'migrate:fresh', 'make:migration'];
+    public const array COMMANDS = ['migrate', 'migrate:rollback', 'migrate:status', 'migrate:fresh', 'make:migration', 'db:seed'];
 
     /** @var \Closure(string): void */
     private readonly \Closure $out;
@@ -44,16 +48,21 @@ final class MigrateCommand
     /** @var \Closure(string): bool */
     private readonly \Closure $ask;
 
+    /** @var array<string, string> */
+    private readonly array $environment;
+
     /**
      * @param \Closure(bool): Connection $connect opens the database; given true where the
-     *        command may create it (migrate, fresh), false where it must already be there
+     *        command may create it (migrate, fresh, db:seed), false where it must already be there
      * @param list<class-string<Model>> $models what make:migration compares the database with
      * @param (\Closure(string): void)|null $out a line for standard output
      * @param (\Closure(string): void)|null $err a line for standard error
      * @param (\Closure(): int)|null $clock the time now, for tests: it names a new migration
+     * @param DatabaseSeeder|null $seeder what db:seed fills the database with; db:seed is refused without one
      * @param (\Closure(string): bool)|null $ask a yes-or-no question for whoever runs make:migration --
      *        whether a column is another renamed -- answered no where nobody is there to ask:
      *        by default, unless standard input is a terminal
+     * @param array<string, string>|null $environment the environment, for tests; the process's own by default
      */
     public function __construct(
         private readonly \Closure $connect,
@@ -62,7 +71,9 @@ final class MigrateCommand
         ?\Closure $out = null,
         ?\Closure $err = null,
         ?\Closure $clock = null,
+        private readonly ?DatabaseSeeder $seeder = null,
         ?\Closure $ask = null,
+        ?array $environment = null,
     ) {
         $this->out = $out ?? static function (string $line): void {
             fwrite(STDOUT, $line . "\n");
@@ -79,6 +90,7 @@ final class MigrateCommand
 
             return \in_array(strtolower(trim((string) fgets(STDIN))), ['y', 'yes'], true);
         };
+        $this->environment = $environment ?? getenv();
     }
 
     /** @param list<string> $arguments what follows the command */
@@ -94,6 +106,7 @@ final class MigrateCommand
                     self::options($command, array_values(array_diff($arguments, ['--force'])), ['lock-timeout']),
                 ),
                 'make:migration' => $this->make($arguments),
+                'db:seed' => $this->seed($arguments),
                 default => throw new \InvalidArgumentException("Unknown command '{$command}'."),
             };
         } catch (\InvalidArgumentException $e) {
@@ -190,14 +203,54 @@ final class MigrateCommand
      */
     private function refuseFresh(string $command, bool $force): void
     {
-        foreach (['TINVAR_ENV', 'APP_ENV'] as $variable) {
-            if (getenv($variable) === 'production') {
-                throw new MigrationRefused("{$command} drops every table, and {$variable} says this is production. It is refused here.");
-            }
+        $production = DevMode::productionMarker($this->environment);
+        if ($production !== null) {
+            throw new MigrationRefused("{$command} drops every table, and {$production} says this is production. It is refused here.");
         }
         if (!$force) {
             throw new MigrationRefused("{$command} drops every table and every row in them. Run it again with --force to do that.");
         }
+    }
+
+    /**
+     * Migrates the database -- from nothing with --fresh -- then has the
+     * application's seeder fill it. Refused in production whatever it is
+     * given: a seeder makes demo accounts with known passwords, and rows
+     * nobody entered.
+     *
+     * @param list<string> $arguments
+     */
+    private function seed(array $arguments): int
+    {
+        $production = DevMode::productionMarker($this->environment);
+        if ($production !== null) {
+            throw new MigrationRefused("db:seed fills a database with demo data, and {$production} says this is production. It is refused here.");
+        }
+        if ($this->seeder === null) {
+            throw new MigrationRefused('This application has no seeder for db:seed to run.');
+        }
+
+        $fresh = \in_array('--fresh', $arguments, true);
+        $force = \in_array('--force', $arguments, true);
+        $given = self::options('db:seed', array_values(array_diff($arguments, ['--fresh', '--force'])), ['lock-timeout', ...array_keys($this->seeder->options())]);
+        if ($force && !$fresh) {
+            throw new \InvalidArgumentException('--force goes with --fresh, which drops every table first.');
+        }
+        if ($fresh) {
+            $this->refuseFresh('db:seed --fresh', $force);
+        }
+
+        $migrator = $this->migrator(true, array_intersect_key($given, ['lock-timeout' => true]));
+        $ran = $fresh ? $migrator->fresh() : $migrator->migrate();
+        ($this->out)(match (true) {
+            $fresh => \sprintf('Dropped every table and ran %d migration(s).', \count($ran)),
+            $ran === [] => 'Nothing to migrate.',
+            default => \sprintf('Ran %d migration(s).', \count($ran)),
+        });
+
+        $this->seeder->seed($migrator->connection(), array_diff_key($given, ['lock-timeout' => true]), $this->out);
+
+        return 0;
     }
 
     /** @param list<string> $arguments */

@@ -14,9 +14,11 @@ use Tinvar\Attributes\Column;
 use Tinvar\Attributes\Id;
 use Tinvar\Attributes\Table;
 use Tinvar\Orm\Connection;
+use Tinvar\Orm\Migrations\DatabaseSeeder;
 use Tinvar\Orm\Migrations\MigrateCommand;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\PdoConnection;
+use Tinvar\Support\Uuid;
 use Tinvar\Tests\Orm\Fixtures\MigrationFiles;
 
 require_once __DIR__ . '/Fixtures/migrations.php';
@@ -36,10 +38,15 @@ final class Run
     /** @var list<string> */
     public array $err = [];
 
+    public ?DatabaseSeeder $seeder = null;
+
     /** @var list<string> what make:migration asked */
     public array $asked = [];
 
     public bool $answer = false;
+
+    /** @var array<string, string> */
+    public array $environment = [];
 
     public function __construct(public readonly MigrationFiles $files, public string $directory = '') {}
 
@@ -61,12 +68,36 @@ final class Run
                 $this->err[] = $line;
             },
             static fn (): int => $now,
+            $this->seeder,
             function (string $question): bool {
                 $this->asked[] = $question;
 
                 return $this->answer;
             },
+            [...getenv(), ...$this->environment],
         )->run($command, $arguments);
+    }
+}
+
+/** Notes to seed, as many as --notes says. */
+final class Notes implements DatabaseSeeder
+{
+    /** @var list<array<string, string>> the options each seed() was given */
+    public array $given = [];
+
+    public function options(): array
+    {
+        return ['notes' => 'how many notes'];
+    }
+
+    public function seed(Connection $connection, array $options, \Closure $out): void
+    {
+        $this->given[] = $options;
+        $notes = (int) ($options['notes'] ?? 1);
+        for ($i = 0; $i < $notes; $i++) {
+            $connection->execute('INSERT INTO notes (id, body) VALUES (?, ?)', [Uuid::v7(), "note {$i}"]);
+        }
+        $out("Seeded {$notes} note(s).");
     }
 }
 
@@ -249,4 +280,56 @@ describe('make:migration', function () {
         'told it is' => [true, "\$table->renameColumn('text', 'body');"],
         'told it is not' => [false, "\$table->string('body');"],
     ]);
+});
+
+describe('db:seed', function () {
+    it('migrates, then seeds with the options the seeder takes', function () {
+        $run = run();
+        $run->files->add('2026_10_24_000001_create_notes', CREATE_NOTES);
+        $run->seeder = $seeder = new Notes();
+
+        expect($run('db:seed', ['--notes=3']))->toBe(0)
+            ->and($run->out)->toContain('Ran 1 migration(s).')
+            ->and(end($run->out))->toBe('Seeded 3 note(s).')
+            ->and($seeder->given)->toBe([['notes' => '3']])
+            ->and(PdoConnection::sqlite($run->files->database())->select('SELECT COUNT(*) AS n FROM notes'))->toBe([['n' => 3]]);
+    });
+
+    it('drops every table first with --fresh, which takes --force', function () {
+        $run = run();
+        $run->files->add('2026_10_24_000001_create_notes', CREATE_NOTES);
+        $run->seeder = new Notes();
+        $run('db:seed', ['--notes=2']);
+
+        expect($run('db:seed', ['--fresh']))->toBe(MigrateCommand::FAILED)
+            ->and(implode("\n", $run->err))->toContain('--force')
+            ->and($run('db:seed', ['--force']))->toBe(MigrateCommand::USAGE)
+            ->and($run('db:seed', ['--fresh', '--force', '--notes=1']))->toBe(0)
+            ->and($run->out)->toContain('Dropped every table and ran 1 migration(s).')
+            ->and(PdoConnection::sqlite($run->files->database())->select('SELECT COUNT(*) AS n FROM notes'))->toBe([['n' => 1]]);
+    });
+
+    it('refuses an option the seeder does not take', function () {
+        $run = run();
+        $run->seeder = new Notes();
+
+        expect($run('db:seed', ['--customers=3']))->toBe(MigrateCommand::USAGE)
+            ->and($run->err[0])->toContain("Unknown argument '--customers=3'");
+    });
+
+    it('refuses to seed in production, and with no seeder to seed with', function (string $variable) {
+        $run = run();
+        $run->files->add('2026_10_24_000001_create_notes', CREATE_NOTES);
+        $run->seeder = $seeder = new Notes();
+        $run->environment = [$variable => 'production'];
+
+        expect($run('db:seed'))->toBe(MigrateCommand::FAILED)
+            ->and($run->err[0])->toContain("{$variable} says this is production")
+            ->and($seeder->given)->toBe([]);
+
+        $run->environment = [];
+        $run->seeder = null;
+        expect($run('db:seed'))->toBe(MigrateCommand::FAILED)
+            ->and($run->err[0])->toBe('This application has no seeder for db:seed to run.');
+    })->with(['TINVAR_ENV', 'APP_ENV', 'NODE_ENV']);
 });
