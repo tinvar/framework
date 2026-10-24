@@ -28,6 +28,7 @@ use Tinvar\Tests\Orm\Fixtures\Fixture;
 require_once __DIR__ . '/../Orm/Fixtures/models.php';
 require_once __DIR__ . '/../Orm/Fixtures/schema.php';
 require_once __DIR__ . '/Fixtures/review.php';
+require_once __DIR__ . '/../Query/Fixtures/queries.php';
 
 function anonymousAuth(): AuthContext
 {
