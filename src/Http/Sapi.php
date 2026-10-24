@@ -25,9 +25,17 @@ final class Sapi
      * @param array<mixed>         $query   $_GET
      * @param array<mixed>         $body    $_POST
      * @param array<mixed>         $cookies $_COOKIE
+     * @param array<mixed>         $files   $_FILES; see UploadedFile::fromGlobals()
+     * @param (\Closure(string): bool)|null $isUploaded is_uploaded_file() unless given
      */
-    public static function request(array $server, array $query = [], array $body = [], array $cookies = []): Request
-    {
+    public static function request(
+        array $server,
+        array $query = [],
+        array $body = [],
+        array $cookies = [],
+        array $files = [],
+        ?\Closure $isUploaded = null,
+    ): Request {
         $method = \is_string($server['REQUEST_METHOD'] ?? null) ? $server['REQUEST_METHOD'] : 'GET';
         $rawQuery = \is_string($server['QUERY_STRING'] ?? null) ? $server['QUERY_STRING'] : null;
 
@@ -40,6 +48,7 @@ final class Sapi
             array_filter($cookies, static fn (mixed $v, mixed $k): bool => \is_string($k) && \is_string($v), ARRAY_FILTER_USE_BOTH),
             $rawQuery,
             \is_string($server['REMOTE_ADDR'] ?? null) ? $server['REMOTE_ADDR'] : null,
+            UploadedFile::fromGlobals($files, $isUploaded),
         );
     }
 

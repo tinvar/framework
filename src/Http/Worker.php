@@ -32,7 +32,7 @@ final class Worker
     /** @var \Closure(callable(): void): bool */
     private readonly \Closure $handleRequest;
 
-    /** @var \Closure(): array{server: array<string, mixed>, query: array<mixed>, body: array<mixed>, cookies: array<mixed>, input: string} */
+    /** @var \Closure(): array{server: array<string, mixed>, query: array<mixed>, body: array<mixed>, cookies: array<mixed>, input: string, files?: array<mixed>} */
     private readonly \Closure $globals;
 
     /** @var \Closure(Response): void */
@@ -49,7 +49,7 @@ final class Worker
      * @param (\Closure(callable(): void): bool)|null $handleRequest
      *        frankenphp_handle_request(), or a stand-in: runs the handler for
      *        one request and says whether the worker should carry on
-     * @param (\Closure(): array{server: array<string, mixed>, query: array<mixed>, body: array<mixed>, cookies: array<mixed>, input: string})|null $globals
+     * @param (\Closure(): array{server: array<string, mixed>, query: array<mixed>, body: array<mixed>, cookies: array<mixed>, input: string, files?: array<mixed>})|null $globals
      *        this request's SAPI globals and raw body
      * @param (\Closure(Response): void)|null $send writes a response; Sapi::send() by default
      * @param (\Closure(\Throwable): void)|null $log where a request that crashed is reported
@@ -118,7 +118,7 @@ final class Worker
             $globals = ($this->globals)();
 
             try {
-                $request = Sapi::request($globals['server'], $globals['query'], $globals['body'], $globals['cookies']);
+                $request = Sapi::request($globals['server'], $globals['query'], $globals['body'], $globals['cookies'], $globals['files'] ?? []);
             } catch (NotFoundException) {
                 $send(Response::make(404, 'Not found', ['content-type' => 'text/plain']));
 
@@ -162,7 +162,7 @@ final class Worker
      * This request's globals. FrankenPHP replaces them before it calls the
      * handler, so they are read inside it, never kept.
      *
-     * @return array{server: array<string, mixed>, query: array<mixed>, body: array<mixed>, cookies: array<mixed>, input: string}
+     * @return array{server: array<string, mixed>, query: array<mixed>, body: array<mixed>, cookies: array<mixed>, input: string, files: array<mixed>}
      */
     private static function superglobals(): array
     {
@@ -175,6 +175,9 @@ final class Worker
             'body' => $_POST,
             'cookies' => $_COOKIE,
             'input' => (string) file_get_contents('php://input'),
+            // PHP wrote a multipart body's files to temporary files of its
+            // own before the handler ran; this request's are these.
+            'files' => $_FILES,
         ];
     }
 }

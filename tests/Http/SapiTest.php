@@ -96,3 +96,37 @@ describe('emitting a response', function () {
         expect($log)->toBe(['status 200', 'content-type: text/html', '<p>one</p>', '<p>two</p>']);
     });
 });
+
+describe('files', function () {
+    it('carries the files PHP received in this request, each under its plain name', function () {
+        $received = '/tmp/php-received';
+        $request = Sapi::request(
+            ['REQUEST_METHOD' => 'POST', 'REQUEST_URI' => '/_upload'],
+            files: [
+                'file' => ['name' => '../me.png', 'type' => 'image/png', 'tmp_name' => $received, 'error' => UPLOAD_ERR_OK, 'size' => 10],
+                'big' => ['name' => 'big.png', 'type' => 'image/png', 'tmp_name' => '', 'error' => UPLOAD_ERR_INI_SIZE, 'size' => 0],
+                // A path PHP did not write in this request.
+                'planted' => ['name' => 'x', 'type' => 'x', 'tmp_name' => '/etc/passwd', 'error' => UPLOAD_ERR_OK, 'size' => 10],
+                // file[] and file[a] nest; nothing reads them.
+                'many' => ['name' => ['a'], 'type' => ['x'], 'tmp_name' => [$received], 'error' => [0], 'size' => [1]],
+            ],
+            isUploaded: static fn (string $path): bool => $path === $received,
+        );
+
+        expect(array_keys($request->files))->toBe(['file', 'big'])
+            ->and($request->files['file']->path)->toBe($received)
+            ->and($request->files['file']->clientName)->toBe('../me.png')
+            ->and($request->files['file']->isOk())->toBeTrue()
+            ->and($request->files['big']->error)->toBe(UPLOAD_ERR_INI_SIZE)
+            ->and($request->files['big']->isOk())->toBeFalse();
+    });
+
+    it('trusts no path PHP did not receive, by default', function () {
+        $request = Sapi::request(
+            ['REQUEST_METHOD' => 'POST', 'REQUEST_URI' => '/_upload'],
+            files: ['file' => ['name' => 'x.png', 'type' => 'image/png', 'tmp_name' => __FILE__, 'error' => UPLOAD_ERR_OK, 'size' => 1]],
+        );
+
+        expect($request->files)->toBe([]);
+    });
+});

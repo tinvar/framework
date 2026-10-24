@@ -33,6 +33,8 @@ final class Request
      * @param ?string                            $rawQuery the query string exactly as
      *                                                     received, without the `?`; null
      *                                                     when the adapter does not have it
+     * @param array<string, UploadedFile>        $files    the files a multipart body carried,
+     *                                                     each under its plain field name
      */
     public function __construct(
         string $method,
@@ -49,6 +51,12 @@ final class Request
          * a client's identity (a throttle) belongs on this.
          */
         public readonly ?string $remoteAddress = null,
+        /**
+         * Only /_upload reads these. An action's body never sees a file:
+         * "Uploaded files are referenced only by a server-issued upload
+         * ticket" -- it is handed the upload the ticket admitted instead.
+         */
+        public readonly array $files = [],
     ) {
         $this->method = strtoupper($method);
         $this->path = self::normalizePath($path);
