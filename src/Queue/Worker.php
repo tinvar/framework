@@ -29,11 +29,24 @@ use Tinvar\Jobs\JobTimedOut;
  *   - threw on its last try: failed, kept with the error, and its failed()
  *     hook run.
  *   - refused (JobRefused): failed at once, never retried.
- *   - ran past its timeout: a failed try. With pcntl, SIGALRM throws
- *     JobTimedOut inside the job; one that swallows it and is still running
- *     after a grace period is past saving in-process, and the worker exits
+ *   - ran past its timeout: a failed try. SIGALRM throws JobTimedOut
+ *     inside the job; one that swallows it and is still running after a
+ *     grace period is past saving in-process, and the worker exits
  *     (EXIT_TIMED_OUT) for its supervisor to start a fresh one. The job's
  *     reservation lapses and it is tried again, its attempt counted.
+ *
+ * A job runs only while its reservation covers the longest it can run. It
+ * is reserved for the worker's timeout, then -- once its own is known --
+ * held for the longer of the two plus RESERVATION_MARGIN, which outlasts
+ * the grace: so no other worker can take it while it runs, whatever its
+ * #[Queue(timeout:)]. Held once, up front, rather than by a heartbeat: a
+ * heartbeat from inside this process would be a write on the job's own
+ * connection, from a signal handler, inside whatever transaction the job
+ * has open -- and rolled back with it. The timeout is what keeps the job
+ * within its reservation, which is why the worker refuses to start
+ * without pcntl to enforce it. Every outcome is recorded only by the
+ * holder of the reservation's token; a worker that has lost it records
+ * nothing ('lost').
  *
  * SIGTERM, SIGINT and SIGQUIT stop it once the job in hand is done.
  */
@@ -45,8 +58,15 @@ final class Worker
     /** Seconds a job may run past its timeout after JobTimedOut before the worker gives up on it. */
     public const int GRACE_SECONDS = 5;
 
-    /** Seconds a reservation outlasts a job's timeout, so a slow-but-alive try is not taken twice. */
+    /**
+     * Seconds a reservation outlasts a job's timeout, so a slow-but-alive
+     * try is not taken twice. More than the grace, so a try that runs to
+     * the very end of it is still held.
+     */
     public const int RESERVATION_MARGIN = 30;
+
+    /** The worker's own timeout, which a job is first reserved for; see run(). */
+    private int $reservedFor = 60;
 
     private bool $stopping = false;
 
@@ -73,7 +93,13 @@ final class Worker
         private readonly ?\Closure $clock = null,
         private readonly ?\Closure $exit = null,
         private readonly int $graceSeconds = self::GRACE_SECONDS,
-    ) {}
+    ) {
+        if ($graceSeconds < 1 || $graceSeconds >= self::RESERVATION_MARGIN) {
+            throw new \InvalidArgumentException(
+                'The grace after a timeout must be at least a second and shorter than the reservation margin, or a job could still run once another worker has taken it.',
+            );
+        }
+    }
 
     /**
      * Works until stopped, or until an option says to stop.
@@ -82,7 +108,15 @@ final class Worker
      */
     public function run(WorkerOptions $options): int
     {
+        // Without an alarm nothing bounds how long a job runs, so nothing
+        // keeps it inside its reservation: another worker could take it and
+        // run it again while it is still going.
+        if (!\function_exists('pcntl_alarm')) {
+            throw new \LogicException('A queue worker needs the pcntl extension: it is what stops a job at its timeout, inside the reservation that keeps other workers off it.');
+        }
+
         $this->stopping = false;
+        $this->reservedFor = $options->timeout;
         $started = $this->now();
         $ran = 0;
         if ($options->signals) {
@@ -94,7 +128,7 @@ final class Worker
         $this->scope->reset();
 
         while (!$this->stopRequested()) {
-            $job = $this->queue->reserve($options->queues, $this->now(), $options->timeout + self::RESERVATION_MARGIN);
+            $job = $this->queue->reserve($options->queues, $this->now(), $this->reservedFor + self::RESERVATION_MARGIN);
             if ($job === null) {
                 if ($options->stopWhenEmpty) {
                     break;
@@ -133,7 +167,7 @@ final class Worker
     /**
      * Runs one reserved job and records how it went.
      *
-     * @return 'done'|'released'|'failed'
+     * @return 'done'|'released'|'failed'|'lost'
      */
     public function process(ReservedJob $job): string
     {
@@ -149,6 +183,17 @@ final class Worker
                 // Taken more times than it may be tried: a worker died or
                 // gave up on it mid-try, and its reservation lapsed.
                 throw new JobRefused('attempts', "{$envelope->class} was taken {$job->attempts} times and may be tried {$options->tries}; the last try never finished.");
+            }
+
+            // Held for as long as this try can run -- its own timeout, if
+            // longer than the one it was reserved for, and the grace after
+            // it -- before it starts. Not held any more: another worker took
+            // it, and it is that worker's to run.
+            $hold = max($this->reservedFor, $options->timeout) + self::RESERVATION_MARGIN;
+            if (!$this->queue->extend($job, $this->now() + $hold)) {
+                $this->say("{$envelope->class} {$job->id} lost: its reservation was taken before it could start");
+
+                return 'lost';
             }
 
             $this->arm($envelope->class, $options->timeout);
@@ -188,24 +233,24 @@ final class Worker
         return $outcome;
     }
 
-    /** @return 'done'|'released'|'failed' */
+    /** @return 'done'|'released'|'failed'|'lost' */
     private function record(ReservedJob $job, ?Envelope $envelope, ?QueueOptions $options, ?\Throwable $error): string
     {
+        // Each write is the holder's alone, and says whether it was: a
+        // worker whose reservation another has taken over records nothing.
         if ($error === null) {
-            $this->queue->delete($job);
-
-            return 'done';
+            return $this->queue->delete($job) ? 'done' : 'lost';
         }
 
         $this->reportFailure($error);
 
         if (!$error instanceof JobRefused && $options !== null && $job->attempts < $options->tries) {
-            $this->queue->release($job, $this->now() + $options->backoffAfter($job->attempts));
-
-            return 'released';
+            return $this->queue->release($job, $this->now() + $options->backoffAfter($job->attempts)) ? 'released' : 'lost';
         }
 
-        $this->queue->fail($job, self::describe($error), $this->now());
+        if (!$this->queue->fail($job, self::describe($error), $this->now())) {
+            return 'lost';
+        }
 
         // The job's own last word, in its context -- not for a refusal,
         // whose context is exactly what no longer checks out.
@@ -252,17 +297,13 @@ final class Worker
         $this->running = $class;
         $this->runningTimeout = $timeout;
         $this->timedOut = false;
-        if (\function_exists('pcntl_alarm')) {
-            pcntl_alarm($timeout);
-        }
+        pcntl_alarm($timeout);
     }
 
     private function disarm(): void
     {
         $this->running = null;
-        if (\function_exists('pcntl_alarm')) {
-            pcntl_alarm(0);
-        }
+        pcntl_alarm(0);
     }
 
     /** SIGALRM: the job in hand has run past its timeout. */
@@ -282,21 +323,13 @@ final class Worker
         }
 
         $this->timedOut = true;
-        if (\function_exists('pcntl_alarm')) {
-            pcntl_alarm(max(1, $this->graceSeconds));
-        }
+        pcntl_alarm($this->graceSeconds);
 
         throw JobTimedOut::after($this->running, $this->runningTimeout);
     }
 
     private function trapSignals(): void
     {
-        if (!\function_exists('pcntl_signal')) {
-            $this->say('no pcntl: timeouts are not enforced, and only a kill stops this worker');
-
-            return;
-        }
-
         pcntl_async_signals(true);
         foreach ([SIGTERM, SIGINT, SIGQUIT] as $signal) {
             pcntl_signal($signal, function (): void {

@@ -124,32 +124,42 @@ final class DatabaseQueue implements Queue
         return new ReservedJob((string) $row['id'], $queue, (string) $row['payload'], (int) $row['attempts'] + 1, $token);
     }
 
-    public function delete(ReservedJob $job): void
+    public function extend(ReservedJob $job, int $until): bool
     {
-        $this->connection->execute("DELETE FROM {$this->table} WHERE id = ? AND token = ?", [$job->id, $job->token]);
+        return $this->connection->execute(
+            "UPDATE {$this->table} SET reserved_until = ? WHERE id = ? AND token = ?",
+            [$until, $job->id, $job->token],
+        ) === 1;
     }
 
-    public function release(ReservedJob $job, int $availableAt): void
+    public function delete(ReservedJob $job): bool
     {
-        $this->connection->execute(
+        return $this->connection->execute("DELETE FROM {$this->table} WHERE id = ? AND token = ?", [$job->id, $job->token]) === 1;
+    }
+
+    public function release(ReservedJob $job, int $availableAt): bool
+    {
+        return $this->connection->execute(
             "UPDATE {$this->table} SET available_at = ?, reserved_until = NULL, token = NULL WHERE id = ? AND token = ?",
             [$availableAt, $job->id, $job->token],
-        );
+        ) === 1;
     }
 
-    public function fail(ReservedJob $job, string $error, int $failedAt): void
+    public function fail(ReservedJob $job, string $error, int $failedAt): bool
     {
-        $this->connection->transaction(function () use ($job, $error, $failedAt): void {
+        return $this->connection->transaction(function () use ($job, $error, $failedAt): bool {
             // Only the holder records the failure: a worker that ran past
             // its reservation, while another took the job, has nothing to
             // fail any more.
             if ($this->connection->execute("DELETE FROM {$this->table} WHERE id = ? AND token = ?", [$job->id, $job->token]) !== 1) {
-                return;
+                return false;
             }
             $this->connection->execute(
                 "INSERT INTO {$this->failedTable} (id, queue, payload, error, failed_at) VALUES (?, ?, ?, ?, ?)",
                 [$job->id, $job->queue, $job->payload, $error, $failedAt],
             );
+
+            return true;
         });
     }
 

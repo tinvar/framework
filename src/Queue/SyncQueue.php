@@ -31,11 +31,25 @@ final readonly class SyncQueue implements Queue
         return null;
     }
 
-    public function delete(ReservedJob $job): void {}
+    public function extend(ReservedJob $job, int $until): bool
+    {
+        return true;
+    }
 
-    public function release(ReservedJob $job, int $availableAt): void {}
+    public function delete(ReservedJob $job): bool
+    {
+        return true;
+    }
 
-    public function fail(ReservedJob $job, string $error, int $failedAt): void {}
+    public function release(ReservedJob $job, int $availableAt): bool
+    {
+        return true;
+    }
+
+    public function fail(ReservedJob $job, string $error, int $failedAt): bool
+    {
+        return true;
+    }
 
     public function enlistsIn(Connection $connection): bool
     {

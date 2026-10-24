@@ -17,6 +17,12 @@ use Tinvar\Orm\Connection;
  * A reservation lasts `reserveFor` seconds. A worker that dies holding a
  * job never releases it, so once the reservation lapses the job is
  * available again, its attempt already counted.
+ *
+ * Every change after a reservation is made by its holder alone: extend,
+ * delete, release and fail act only while the job's current token is the
+ * one the caller holds, and say whether they did. A worker that ran past
+ * its reservation, while another took the job, cannot mark that other
+ * worker's run done, failed or due again.
  */
 interface Queue
 {
@@ -30,14 +36,21 @@ interface Queue
      */
     public function reserve(array $queues, int $now, int $reserveFor): ?ReservedJob;
 
-    /** Done with: removed. */
-    public function delete(ReservedJob $job): void;
+    /**
+     * Holds the reservation until $until, for a job whose own timeout is
+     * longer than the one it was reserved for; false when it is no longer
+     * this holder's to extend.
+     */
+    public function extend(ReservedJob $job, int $until): bool;
 
-    /** Back on its queue, available from $availableAt. */
-    public function release(ReservedJob $job, int $availableAt): void;
+    /** Done with: removed. False when the reservation is no longer this holder's. */
+    public function delete(ReservedJob $job): bool;
 
-    /** Off its queue, kept with why it failed. */
-    public function fail(ReservedJob $job, string $error, int $failedAt): void;
+    /** Back on its queue, available from $availableAt. False when the reservation is no longer this holder's. */
+    public function release(ReservedJob $job, int $availableAt): bool;
+
+    /** Off its queue, kept with why it failed. False when the reservation is no longer this holder's. */
+    public function fail(ReservedJob $job, string $error, int $failedAt): bool;
 
     /**
      * Whether a push runs on $connection, inside whatever transaction it

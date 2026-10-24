@@ -58,26 +58,51 @@ final class ArrayQueue implements Queue
         return null;
     }
 
-    public function delete(ReservedJob $job): void
+    public function extend(ReservedJob $job, int $until): bool
     {
-        if ($this->holds($job)) {
-            unset($this->jobs[$job->id]);
+        if (!$this->holds($job)) {
+            return false;
         }
+        $this->jobs[$job->id] = [...$this->jobs[$job->id], 'reservedUntil' => $until];
+
+        return true;
     }
 
-    public function release(ReservedJob $job, int $availableAt): void
+    public function delete(ReservedJob $job): bool
     {
-        if ($this->holds($job)) {
-            $this->jobs[$job->id] = [...$this->jobs[$job->id], 'availableAt' => $availableAt, 'reservedUntil' => null, 'token' => null];
+        if (!$this->holds($job)) {
+            return false;
         }
+        unset($this->jobs[$job->id]);
+
+        return true;
     }
 
-    public function fail(ReservedJob $job, string $error, int $failedAt): void
+    public function release(ReservedJob $job, int $availableAt): bool
     {
-        if ($this->holds($job)) {
-            unset($this->jobs[$job->id]);
-            array_unshift($this->failures, new FailedJob($job->id, $job->queue, $job->payload, $error, $failedAt));
+        if (!$this->holds($job)) {
+            return false;
         }
+        $this->jobs[$job->id] = [...$this->jobs[$job->id], 'availableAt' => $availableAt, 'reservedUntil' => null, 'token' => null];
+
+        return true;
+    }
+
+    public function fail(ReservedJob $job, string $error, int $failedAt): bool
+    {
+        if (!$this->holds($job)) {
+            return false;
+        }
+        unset($this->jobs[$job->id]);
+        array_unshift($this->failures, new FailedJob($job->id, $job->queue, $job->payload, $error, $failedAt));
+
+        return true;
+    }
+
+    /** When job $id's reservation lapses, or null when it is not held. */
+    public function reservedUntil(string $id): ?int
+    {
+        return $this->jobs[$id]['reservedUntil'] ?? null;
     }
 
     public function enlistsIn(Connection $connection): bool
