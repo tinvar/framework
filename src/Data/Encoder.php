@@ -140,6 +140,21 @@ final class Encoder
         $once = DataShape::once($value::class);
         $merged = DataShape::merged($value::class);
 
+        // The key each once field is sent and held under, naming its
+        // subject. Worked out before any field is read: a held one is never
+        // read at all.
+        $keys = [];
+        $unnamed = null;
+        foreach ($once as $name => $shape) {
+            $keys[$name] = $this->onceKey($value, $name, $shape, $path, $scope);
+            if ($shape['identity'] === []) {
+                $unnamed ??= $name;
+            }
+        }
+        if ($unnamed !== null) {
+            $scope->meetUnnamed($value::class, $unnamed, $once[$unnamed]['key'], $path);
+        }
+
         $out = [];
         foreach (DataShape::fieldsOf($value::class) as $property) {
             $name = $property->getName();
@@ -159,8 +174,8 @@ final class Encoder
             // Held by the browser: the resolver is never run and nothing is
             // sent but the key, so the render skips what it would have drawn
             // from it. Checked before the field is read at all.
-            if (isset($once[$name]) && $scope->context->holds($once[$name]['key'])) {
-                $out[$name] = [self::ONCE_KEY => $once[$name]['key'], 'held' => true];
+            if (isset($keys[$name]) && $scope->context->holds($keys[$name])) {
+                $out[$name] = [self::ONCE_KEY => $keys[$name], 'held' => true];
                 continue;
             }
 
@@ -174,8 +189,8 @@ final class Encoder
                 $encoded = $this->merged($merged[$name], $encoded, $fieldPath, $scope);
             }
 
-            $out[$name] = isset($once[$name]) ? [
-                self::ONCE_KEY => $once[$name]['key'],
+            $out[$name] = isset($once[$name], $keys[$name]) ? [
+                self::ONCE_KEY => $keys[$name],
                 'ttl' => $once[$name]['ttl'],
                 'tags' => $once[$name]['tags'],
                 'value' => $encoded,
@@ -183,6 +198,40 @@ final class Encoder
         }
 
         return $out;
+    }
+
+    /**
+     * The key a once field is sent under: what was rendered, and for whom.
+     *
+     * A default key ends in the page the request asked for, so the summary
+     * kept from `/customers/1` is never claimed for `/customers/2`. A named
+     * key's `{property}` parts become digests of the instance's values, so
+     * each row of a list is kept apart. A key that names no subject of its
+     * own -- either kind, without braces -- may be met once per payload: a
+     * second instance would be kept under it too, and shown in the first's
+     * place (ADR 0020).
+     *
+     * @param array{key: string, ttl: int|null, tags: list<string>, scoped: bool, identity: list<string>} $shape
+     */
+    private function onceKey(Data $value, string $name, array $shape, string $path, EncodeScope $scope): string
+    {
+        if ($shape['identity'] === []) {
+            return $shape['scoped'] ? "{$shape['key']}:{$scope->page()}" : $shape['key'];
+        }
+
+        return (string) preg_replace_callback('/\{([^{}]*)\}/', static function (array $named) use ($value, $name, $path): string {
+            $property = new \ReflectionProperty($value, $named[1]);
+            if (!$property->isInitialized($value)) {
+                throw new \LogicException(
+                    "The once field at {$path}.{$name} names its subject by '{$named[1]}', which is not set.",
+                );
+            }
+
+            $subject = $property->getValue($value);
+            \assert(\is_string($subject) || \is_int($subject));
+
+            return PayloadContext::digest((string) $subject);
+        }, $shape['key']);
     }
 
     /**

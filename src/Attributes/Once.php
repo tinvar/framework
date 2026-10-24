@@ -29,8 +29,12 @@ final readonly class Once
 {
     /**
      * @param string|null  $key   what the browser keeps the rendered field under. It names the
-     *        rendered content, so a key shared by two fields must render the same in both. Defaults
-     *        to the Data class's short name and the field's, `OrdersPageData.summary`.
+     *        rendered content, so a key shared by two fields must render the same in both, and
+     *        wherever it is claimed. Defaults to the Data class's short name and the field's,
+     *        `OrdersPageData.summary`, scoped to the page asked for -- route, parameters and query
+     *        -- so `/customers/1` and `/customers/2` are kept apart. A key may name its subject
+     *        from the class's own string or int properties, in braces: `customer.badge:{id}`.
+     *        A class met more than once in a payload -- a list's rows -- must, or it is refused.
      * @param string|null  $until how long the browser may go on claiming it, as a duration
      *        ('10m', '1d'); unset, until the session ends or the document is loaded again
      * @param list<string> $tags  cache tags whose invalidation by an action makes the browser stop

@@ -64,6 +64,12 @@ final readonly class PlainOnceData extends Data
     public function __construct(#[Once(key: 'plain')] public int $n) {}
 }
 
+/** The key a field with no key of its own is sent under: its class and name, and the page. */
+function defaultKey(string $declared, string $segment = '$', string $route = ''): string
+{
+    return "{$declared}:" . PayloadContext::digest("{$segment}\0{$route}");
+}
+
 /** @return array{SettingsPageData, \ArrayObject<int, string>} */
 function page(): array
 {
@@ -99,13 +105,29 @@ describe('a once field the browser does not hold', function () {
     });
 
     // A key shared by accident would show one field's content in another's
-    // place, so the default names the class as well as the field.
+    // place, so the default names the class as well as the field -- and the
+    // page it was rendered for, which OnceSubjectTest takes through a route.
     it('is kept under the class and field when no key is named, for as long as the session lasts', function () {
         [$data] = page();
 
         $encoded = (new Encoder())->encode($data);
 
-        expect($encoded['orders'])->toBe(['$once' => 'SettingsPageData.orders', 'ttl' => null, 'tags' => [], 'value' => 12]);
+        expect($encoded['orders'])->toBe(['$once' => defaultKey('SettingsPageData.orders'), 'ttl' => null, 'tags' => [], 'value' => 12]);
+    });
+
+    it('is kept under another key on another page, and in another segment', function () {
+        [$data] = page();
+        $encoder = new Encoder();
+
+        $keys = [
+            $encoder->encode($data, new PayloadContext(route: 'one'), 'page')['orders']['$once'],
+            $encoder->encode($data, new PayloadContext(route: 'two'), 'page')['orders']['$once'],
+            $encoder->encode($data, new PayloadContext(route: 'one'), 'layout')['orders']['$once'],
+        ];
+
+        expect(array_unique($keys))->toHaveCount(3)
+            ->and($keys[0])->toBe(defaultKey('SettingsPageData.orders', 'page', 'one'))
+            ->and($keys[0])->toMatch(PayloadContext::KEY);
     });
 
     it('is a once field in every payload, whatever else the request says', function () {
@@ -131,12 +153,12 @@ describe('a once field the browser holds', function () {
     it('leaves the rest of the data as it would be', function () {
         [$data] = page();
 
-        $encoded = (new Encoder())->encode($data, new PayloadContext(heldOnce: ['countries', 'SettingsPageData.orders']));
+        $encoded = (new Encoder())->encode($data, new PayloadContext(heldOnce: ['countries', defaultKey('SettingsPageData.orders')]));
 
         expect($encoded)->toBe([
             'title' => 'Settings',
             'countries' => ['$once' => 'countries', 'held' => true],
-            'orders' => ['$once' => 'SettingsPageData.orders', 'held' => true],
+            'orders' => ['$once' => defaultKey('SettingsPageData.orders'), 'held' => true],
         ]);
     });
 
@@ -155,7 +177,7 @@ it('rescues inside the once field: the marker is its value', function () {
     $encoded = (new Encoder(static fn (\Throwable $e): string => 'digest-1'))->encode($data);
 
     expect($encoded['total'])->toBe([
-        '$once' => 'RescuedOnceData.total',
+        '$once' => defaultKey('RescuedOnceData.total'),
         'ttl' => null,
         'tags' => [],
         'value' => ['$rescued' => 'digest-1'],

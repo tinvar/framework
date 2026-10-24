@@ -8,6 +8,7 @@ use Tinvar\Attributes\Authorize;
 use Tinvar\Auth\Checks;
 use Tinvar\Auth\Gate;
 use Tinvar\Data\Data;
+use Tinvar\Data\PayloadContext;
 use Tinvar\Http\ForbiddenException;
 use Tinvar\Http\Request;
 use Tinvar\Orm\Model;
@@ -109,6 +110,10 @@ final class LoaderRunner
             models: $models,
             parameters: $chain->parameters,
             segments: $partial?->segments,
+            // Everything the loaders could read from the URL: what a #[Once]
+            // field's default key is scoped to, so what one customer's page
+            // rendered is never claimed for another's (ADR 0020).
+            context: new PayloadContext(route: PayloadContext::routeOf($chain->page->class, $chain->parameters, $request->query)),
         );
     }
 

@@ -8,7 +8,9 @@ namespace Tinvar\Data;
  * What a request says about the page the browser holds, as far as it
  * changes how fields are encoded: the #[Once] keys whose rendered content
  * it keeps (`X-Have-Once`), and the merged fields it wants replaced rather
- * than added to (`X-Reset`). ADR 0020.
+ * than added to (`X-Reset`). ADR 0020. And which page it asked for -- the
+ * route, its parameters and its query -- which a once field's default key
+ * is scoped to.
  *
  * Neither can make a response carry anything the same request without the
  * header would not: a held key sends less, and a reset sends the same items
@@ -31,12 +33,22 @@ final readonly class PayloadContext
     public const string PATH = '/^[A-Za-z0-9_\/-]+(\.[A-Za-z0-9_]+)*\z/';
 
     /**
+     * How many characters of a once key name its subject: the page it was
+     * rendered for, or the identity a key names in braces. 132 bits of a
+     * SHA-256, base64url, so no two subjects meet by accident.
+     */
+    public const int DIGEST_LENGTH = 22;
+
+    /**
      * @param list<string> $heldOnce once keys whose field is sent as held, unresolved
      * @param list<string> $resets   dot paths of merged fields sent to replace what is shown
+     * @param string       $route    the page the request asked for -- its route, parameters
+     *        and query, opaque -- or '' for anything but a page render
      */
     public function __construct(
         public array $heldOnce = [],
         public array $resets = [],
+        public string $route = '',
     ) {}
 
     public static function none(): self
@@ -57,13 +69,34 @@ final readonly class PayloadContext
     /** @param list<string> $keys */
     public function withHeldOnce(array $keys): self
     {
-        return new self($keys, $this->resets);
+        return new self($keys, $this->resets, $this->route);
     }
 
     /** @param list<string> $paths */
     public function withResets(array $paths): self
     {
-        return new self($this->heldOnce, $paths);
+        return new self($this->heldOnce, $paths, $this->route);
+    }
+
+    /**
+     * The page a route was asked for as: which page class, with which path
+     * parameters and which query. Everything a loader reads from the URL,
+     * so two requests that could load different things never name the same
+     * page. Serialized rather than JSON-encoded: a query is bytes, and two
+     * different ones must not be made alike on the way.
+     *
+     * @param array<string, string> $parameters
+     * @param array<array-key, mixed> $query
+     */
+    public static function routeOf(string $page, array $parameters, array $query): string
+    {
+        return serialize([$page, $parameters, $query]);
+    }
+
+    /** A subject, as the part of a once key that names it: always DIGEST_LENGTH characters a header can carry. */
+    public static function digest(string $subject): string
+    {
+        return substr(rtrim(strtr(base64_encode(hash('sha256', $subject, true)), '+/', '-_'), '='), 0, self::DIGEST_LENGTH);
     }
 
     /**
