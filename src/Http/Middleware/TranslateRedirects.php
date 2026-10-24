@@ -34,8 +34,12 @@ final class TranslateRedirects implements Middleware
 {
     private const array REDIRECTS = [301, 302, 303, 307, 308];
 
-    /** Headers whose effect is not the redirect itself, carried onto the 409. */
-    private const array CARRIED = ['set-cookie', 'clear-site-data'];
+    /**
+     * Headers whose effect is not the redirect itself, carried onto the 409.
+     * An action that redirects still invalidated its tags, and the client
+     * flushes its prefetch entries by them whichever way the answer came.
+     */
+    private const array CARRIED = ['set-cookie', 'clear-site-data', 'x-invalidated-tags'];
 
     public function handle(Request $request, \Closure $next): Response
     {

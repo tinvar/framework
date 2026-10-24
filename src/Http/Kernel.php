@@ -76,6 +76,9 @@ final class Kernel
     /** Issues the CSRF cookie on page responses, and binds every check to the session. */
     private readonly ?CsrfTokens $csrf;
 
+    /** Where a browser's own form post leaves its errors for the page it goes back to. */
+    private readonly ?FlashStore $flashes;
+
     /** Which routes contain a <Deferred> boundary, so which renders may mint. */
     private readonly ?FragmentManifest $manifest;
 
@@ -141,6 +144,23 @@ final class Kernel
     public const string FRAGMENT_MINTER = 'tinvar.fragment_minter';
 
     /**
+     * The request attribute carrying the session's CSRF token, for the
+     * responder to hand the render. "<Form> also renders a hidden _token
+     * field during dynamic server rendering, so forms work before
+     * JavaScript loads" -- and the render cannot read the cookie, which
+     * this response may be the one to set. Absent without CsrfTokens or a
+     * session.
+     */
+    public const string CSRF_TOKEN = 'tinvar.csrf_token';
+
+    /**
+     * The request attribute carrying the flash a browser's own form post
+     * left for this page (see FlashStore), for the responder to hand the
+     * render. Absent when there was none to read.
+     */
+    public const string FLASH = 'tinvar.flash';
+
+    /**
      * @param \Closure(class-string): object $resolver builds pages, layouts, queries, actions and middleware
      * @param \Closure(Request): list<string> $allowedQueries the route's query allowlist
      * @param list<class-string<Middleware>> $globalMiddleware
@@ -153,6 +173,10 @@ final class Kernel
      *        page response issues the `__Host-XSRF-TOKEN` cookie and every
      *        POST must carry its session's token; without it nothing issues
      *        the cookie, and the application has to.
+     * @param FlashStore|null $flashes the application's session-scoped flash
+     *        store. Given, a form posted without script that fails validation
+     *        is sent back with its errors, and the page reads them; without
+     *        it, that post gets the framework's 422 page.
      */
     public function __construct(
         public readonly Orm $orm,
@@ -176,8 +200,10 @@ final class Kernel
         ?BuildRegistry $builds = null,
         ?Container $container = null,
         ?CsrfTokens $csrf = null,
+        ?FlashStore $flashes = null,
     ) {
         $this->csrf = $csrf;
+        $this->flashes = $flashes;
         $this->manifest = $manifest;
 
         // Over the defaults, not instead of them: tightening one bucket by
@@ -261,6 +287,7 @@ final class Kernel
             sessionId: $fragments?->sessionId,
             middlewareResolver: self::middlewareFrom($resolver),
             globalMiddleware: $globalMiddleware,
+            flashes: $flashes,
         );
 
         $queryRunner = new QueryRunner(
@@ -439,10 +466,14 @@ final class Kernel
             if ($this->actions_->matches($request)) {
                 ActionEndpoint::assertMethod($request);
 
-                return $this->actionStack->run(
+                // A client-router call (`RSC: 1`) fetches with redirect:
+                // 'manual', which hides a 303's Location entirely. It reads
+                // an action's redirect as a navigation reads one: 409 +
+                // X-Redirect, followed inside the same visit.
+                return TranslateRedirects::translate($request, $this->actionStack->run(
                     $request,
                     fn (Request $passed): Response => $this->actions_->handle($passed, $rawBody),
-                );
+                ));
             }
 
             // Before the other two, because its prefix is as specific and the
@@ -488,7 +519,13 @@ final class Kernel
                 if ($minter !== null) {
                     $passed = $passed->withAttribute(self::FRAGMENT_MINTER, $minter);
                 }
+                [$passed, $flashed] = $this->withFormState($passed);
                 $response = $this->withCsrfCookie($passed, $respond($loaded, $passed));
+
+                // Read, so gone: the cookie that said it was waiting goes too.
+                if ($flashed) {
+                    $response = $response->withCookie(Flash::COOKIE, '', maxAge: 0);
+                }
 
                 if ($token === null) {
                     // Still per-visitor by default: a page runs its loaders
@@ -661,6 +698,34 @@ final class Kernel
             ->withCookie(VerifyCsrfToken::COOKIE, $token, httpOnly: false)
             ->withHeader('cache-control', 'private, no-store')
             ->withAddedHeader('vary', 'Cookie');
+    }
+
+    /**
+     * The request, carrying what a page's forms need from the server: the
+     * session's CSRF token, for the hidden field a form posted without
+     * script sends, and the flash such a post left for this page.
+     *
+     * The flash is read only when the cookie says one is waiting, so a page
+     * with nothing flashed asks the store nothing; and never by a prefetch,
+     * which runs a page the person may not open -- "Prefetch requests skip
+     * side effects" -- and would take the errors meant for the one they do.
+     *
+     * @return array{Request, bool} the request, and whether a flash was read
+     */
+    private function withFormState(Request $request): array
+    {
+        $token = $this->csrf?->for($request);
+        if ($token !== null) {
+            $request = $request->withAttribute(self::CSRF_TOKEN, $token);
+        }
+
+        if ($this->flashes === null || $request->cookie(Flash::COOKIE) === null || $request->isPrefetch()) {
+            return [$request, false];
+        }
+
+        $flash = $this->flashes->pull($request);
+
+        return [$flash === [] ? $request : $request->withAttribute(self::FLASH, $flash), true];
     }
 
     /**

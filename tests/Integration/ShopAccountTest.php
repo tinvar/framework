@@ -282,7 +282,9 @@ it('answers a wrong password and an unknown email alike, on the password field',
 
 // "<Form> also renders a hidden _token field during dynamic server
 // rendering, so forms work before JavaScript loads." The urlencoded body
-// was handed to the JSON decoder, and refused as bad JSON.
+// was handed to the JSON decoder, and refused as bad JSON; and once read,
+// it was answered with JSON the browser showed as text. A browser's own
+// post gets a page: a 303 back to the form it came from.
 it('signs in from a form posted before JavaScript loads', function () {
     [$visitor, $pdo] = shop();
     $visitor->get('/sign-in');
@@ -293,7 +295,8 @@ it('signs in from a form posted before JavaScript loads', function () {
         'next' => '/orders',
     ]);
 
-    expect($response->status)->toBe(200)
+    expect($response->status)->toBe(303)
+        ->and($response->header('location'))->toBe('/')
         ->and(sessionRow($pdo, $visitor->sessionId())['customer_id'] ?? null)->toBe(demoId($pdo));
 });
 

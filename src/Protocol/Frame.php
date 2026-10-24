@@ -59,6 +59,14 @@ final class Frame
      *                                         list whatever its keys, so it crosses as an array
      * @param ?PageMetadata        $page for a document render; the renderer
      *                                   writes it into the HTML for the router
+     * @param ?string              $csrfToken the session's CSRF token, for the
+     *                                   hidden field <Form> renders so a form
+     *                                   posts before JavaScript loads. Never in
+     *                                   stored output: pass it only for a render
+     *                                   made for one request.
+     * @param array<string, mixed> $flash what a form posted without script left
+     *                                   for this page: its errors, its input, a
+     *                                   flash -- see FlashStore
      * @return array<string, mixed>
      */
     public static function render(
@@ -69,6 +77,8 @@ final class Frame
         string $cspNonce,
         array $allowedQueries,
         ?PageMetadata $page = null,
+        ?string $csrfToken = null,
+        array $flash = [],
     ): array {
         $frame = [
             't' => self::RENDER,
@@ -82,6 +92,15 @@ final class Frame
 
         if ($page !== null) {
             $frame['page'] = $page->toArray();
+        }
+
+        // Absent rather than empty: a render with nothing for its forms
+        // sends what it always sent.
+        if ($csrfToken !== null) {
+            $frame['csrf'] = $csrfToken;
+        }
+        if ($flash !== []) {
+            $frame['flash'] = $flash;
         }
 
         return $frame;
