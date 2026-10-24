@@ -228,6 +228,14 @@ final class QueryCache
             'l' => $this->locale,
         ];
 
+        // "The panel and its effective scope": a request whose membership
+        // granted reads across its tenant's subtree may get a different
+        // answer from the same query, so it keys apart. Only then, so every
+        // other key is the one it was.
+        if ($this->panels?->granted()?->subtree === true) {
+            $parts['s'] = 'subtree';
+        }
+
         // "shared: true drops the user from the key." Safe only when the body
         // cannot read the current user, which BuildRules checks -- by type
         // closure for injected dependencies, textually for direct calls, and

@@ -28,6 +28,11 @@ use Tinvar\Orm\Orm;
  *
  * Nobody signed in is a 401, which the client reads as the session ending;
  * a user with no membership, or the wrong one, is a 403.
+ *
+ * The one widening is made here, and only after the check passes: in a
+ * panel defined with `subtree: true`, whose memberships carry the tenant
+ * kind and permission the definition names, the rest of the request may
+ * read across its tenant's subtree (Orm::grantSubtree()).
  */
 final readonly class RequirePanelMembership implements Middleware
 {
@@ -46,12 +51,16 @@ final readonly class RequirePanelMembership implements Middleware
     {
         $membership = self::verify($this->auth, $this->memberships, $this->orm, $this->panel);
 
+        $run = static fn (): Response => $next($request->withAttribute(self::ATTRIBUTE, $membership));
+        if ($this->panel->subtree) {
+            $orm = $this->orm;
+            $exact = $run;
+            $run = static fn (): Response => $orm->grantSubtree($exact);
+        }
+
         // The rest of the request runs as having been held to this binding,
         // so a query it calls that needs no more is not asked about again.
-        return $this->panels->grantedWithin(
-            $this->panel,
-            static fn (): Response => $next($request->withAttribute(self::ATTRIBUTE, $membership)),
-        );
+        return $this->panels->grantedWithin($this->panel, $run);
     }
 
     /**

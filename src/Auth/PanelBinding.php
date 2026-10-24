@@ -21,11 +21,14 @@ final readonly class PanelBinding
     /**
      * @param list<string> $kinds tenant kinds the membership must be, by name
      * @param list<string> $permissions permissions it must hold, all of them
+     * @param bool $subtree whether the panel's definition lets a membership read across
+     *        the tenant's subtree (PanelDefinition::$subtree)
      */
     public function __construct(
         public string $name,
         public array $kinds = [],
         public array $permissions = [],
+        public bool $subtree = false,
     ) {}
 
     /**
@@ -67,7 +70,12 @@ final readonly class PanelBinding
         $kinds = $definition->requires === null ? $this->kinds : [...$this->kinds, Panel::kindName($definition->requires)];
         $permissions = $definition->permission === null ? $this->permissions : [...$this->permissions, $definition->permission];
 
-        return new self($this->name, array_values(array_unique($kinds)), array_values(array_unique($permissions)));
+        return new self(
+            $this->name,
+            array_values(array_unique($kinds)),
+            array_values(array_unique($permissions)),
+            $definition->subtree,
+        );
     }
 
     /**

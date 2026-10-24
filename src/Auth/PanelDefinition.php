@@ -29,6 +29,13 @@ use Tinvar\Http\Middleware;
  * then the entry point's own middleware. `namespaces` puts every page,
  * layout, action and query under a namespace in the panel unless it
  * declares a #[Panel] of its own -- "by #[Panel] or by namespace".
+ *
+ * `subtree` is the one widening a panel can say: "Widening (a reseller's
+ * customers ...) comes from the session's membership: its tenant kind plus
+ * a panel permission." A request let in by the membership check of a panel
+ * defined with it may read across its tenant's subtree, with
+ * Orm::withinSubtree(); nothing else may. So a definition saying it names
+ * both the tenant kind and the permission its memberships must have.
  */
 final readonly class PanelDefinition
 {
@@ -38,6 +45,8 @@ final readonly class PanelDefinition
      * @param list<string> $namespaces e.g. `App\Admin\`
      * @param \UnitEnum|string|null $requires the tenant kind every membership here must have
      * @param string|null $permission one every membership here must hold
+     * @param bool $subtree whether a membership here lets the request read across its
+     *        tenant's subtree (Orm::withinSubtree()): a reseller's customers
      */
     public function __construct(
         public string $name,
@@ -46,10 +55,18 @@ final readonly class PanelDefinition
         public array $namespaces = [],
         public \UnitEnum|string|null $requires = null,
         public ?string $permission = null,
+        public bool $subtree = false,
     ) {
         // The same rules the attribute holds itself to: an empty name is no
         // panel, and an empty requirement is one nobody could tell was there.
         new Panel($name, $requires, $permission);
+
+        if ($subtree && ($requires === null || $permission === null)) {
+            throw new \InvalidArgumentException(
+                "Panel '{$name}' reaches its tenant's subtree, and widening comes from the membership -- its tenant kind "
+                . 'plus a panel permission -- so its definition names both, with requires: and permission:.',
+            );
+        }
 
         foreach ($namespaces as $namespace) {
             if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*(\\\\[A-Za-z_][A-Za-z0-9_]*)*\\\\$/', $namespace) !== 1) {
