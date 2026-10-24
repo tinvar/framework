@@ -64,7 +64,12 @@ describe('the redactor', function () {
         'a URL\'s password' => ['Could not reach smtp://orders:hunter22@mail.example.com:587', 'Could not reach smtp://orders:[redacted]@mail.example.com:587'],
         'a bearer token' => ['sent Authorization: Bearer sk_live_abcdef123456', 'sent Authorization: Bearer [redacted]'],
         'basic credentials' => ['Authorization: Basic YWxhZGRpbjpvcGVuc2VzYW1l', 'Authorization: Basic [redacted]'],
+        'basic credentials, lowercase' => ['authorization: basic dXNlcjpwYXNz', 'authorization: basic [redacted]'],
+        'basic credentials, uppercase' => ['AUTHORIZATION: BASIC YWxhZGRpbjpvcGVuc2VzYW1l', 'AUTHORIZATION: BASIC [redacted]'],
+        // user:pass in base64 has no digit: mixed case gives it away instead.
+        'basic credentials with no digit' => ['Basic dXNlcjpwYXNz', 'Basic [redacted]'],
         'the word basic' => ['a basic misunderstanding of the token mismatch', 'a basic misunderstanding of the token mismatch'],
+        'the word basic, capitalised' => ['Basic Understanding is required', 'Basic Understanding is required'],
         'a JWT' => ['cookie eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl rejected', 'cookie [jwt] rejected'],
         'a signed token' => ['refused v1.eyJjIjoiQXVkaXRMb2cifQ.Y2Rmb2dzaWduYXR1cmU as expired', 'refused [token] as expired'],
         'a secret query parameter' => ['GET /reset?token=abc123&page=2', 'GET /reset?token=[redacted]&page=2'],

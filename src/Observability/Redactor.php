@@ -60,10 +60,13 @@ final class Redactor
         // user:password@ in a URL: an SMTP or database URL quoted in a message.
         '~\b([a-z][a-z0-9+.\-]*://[^\s/:@]+):[^\s/@]+@~i' => '$1:' . self::REDACTED . '@',
         // An Authorization header's credentials: a bearer token, or Basic's
-        // base64 -- which has to look like base64, or "basic" in a sentence
-        // would take the next word with it.
+        // base64, the scheme in any case. The base64 has to look like it --
+        // a digit, `+`, `/` or `=`, or a capital after its first letter, as
+        // `dXNlcjpwYXNz` (user:pass) has -- or "basic" in a sentence would
+        // take the next word with it. Only the scheme ignores case: a case-
+        // insensitive capital is no test at all.
         '/\b(Bearer)\s+[A-Za-z0-9._~+\/=\-]{8,}/i' => '$1 ' . self::REDACTED,
-        '/\b(Basic)\s+(?=[A-Za-z0-9+\/]*[0-9+\/=])[A-Za-z0-9+\/]{8,}={0,2}/' => '$1 ' . self::REDACTED,
+        '/\b((?i:basic))\s+(?=[A-Za-z0-9+\/]*[0-9+\/=]|[A-Za-z0-9+\/]+[A-Z])[A-Za-z0-9+\/]{8,}={0,2}/' => '$1 ' . self::REDACTED,
         // JWTs, the live hub's access tokens among them.
         '/\beyJ[A-Za-z0-9_\-]*\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*/' => '[jwt]',
         // The framework's signed tokens (SignedToken): route, fragment, live.
