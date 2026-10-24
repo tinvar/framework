@@ -170,6 +170,23 @@ abstract class Dialect
         return [...$statements, ...$this->afterColumns($table)];
     }
 
+    /**
+     * An INSERT of one row that does nothing where the row's key is taken,
+     * reporting one row affected only when it wrote: a claim -- of a nonce,
+     * a scheduled minute -- that one of several workers wins.
+     *
+     * @param list<string> $columns
+     */
+    public function insertUnlessTaken(string $table, array $columns): string
+    {
+        return \sprintf(
+            'INSERT INTO %s (%s) VALUES (%s) ON CONFLICT DO NOTHING',
+            $this->quote($table),
+            $this->columnList($columns),
+            implode(', ', array_fill(0, \count($columns), '?')),
+        );
+    }
+
     /** @return list<string> */
     public function dropTable(string $table, bool $ifExists = false): array
     {

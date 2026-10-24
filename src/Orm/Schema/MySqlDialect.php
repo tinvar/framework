@@ -89,6 +89,25 @@ final class MySqlDialect extends Dialect
         return [];
     }
 
+    /**
+     * MySQL has no ON CONFLICT. INSERT IGNORE skips a row whose key is
+     * taken and reports none affected, whatever the connection's
+     * found-rows setting -- which would make ON DUPLICATE KEY UPDATE's
+     * no-op report the duplicate as a row, and a replay as a claim won. It
+     * also turns other errors into warnings, a value too long for its
+     * column cut short among them, so the callers hold their values to
+     * their columns' lengths before they insert.
+     */
+    public function insertUnlessTaken(string $table, array $columns): string
+    {
+        return \sprintf(
+            'INSERT IGNORE INTO %s (%s) VALUES (%s)',
+            $this->quote($table),
+            $this->columnList($columns),
+            implode(', ', array_fill(0, \count($columns), '?')),
+        );
+    }
+
     public function createIndex(Index $index, bool $ifNotExists): string
     {
         // CREATE TABLE IF NOT EXISTS declares its indexes inline; an index
