@@ -358,6 +358,20 @@ describe('an action taking an upload', function () {
             ->and($app->call('profiles.avatar', ['profile' => P1, 'avatar' => $reference])->status)->toBe(200);
     });
 
+    // Given back after a body that had saved the key, the upload would be
+    // pruned as unclaimed and the record left naming a file that is gone:
+    // the body's writes roll back with the claim, so it is given back only
+    // when nothing names it.
+    it('rolls back what a failed body wrote before giving its upload back', function () {
+        $app = new App(new MemoryStorage());
+        $reference = uploadedPng($app);
+
+        Tinvar\Tests\Uploads\Fixtures\ProfileActions::$failAfterSave = true;
+        expect($app->call('profiles.avatar', ['profile' => P1, 'avatar' => $reference])->status)->toBe(500)
+            ->and($app->store->find($reference)?->claimedAt)->toBeNull()
+            ->and($app->orm->connection()->select('SELECT avatar_key FROM profiles WHERE id = ?', [P1]))->toBe([['avatar_key' => null]]);
+    });
+
     it('judges an upload in a validate-only call without claiming it', function () {
         $app = new App(new MemoryStorage());
         $reference = uploadedPng($app);

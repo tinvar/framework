@@ -116,6 +116,9 @@ final class ProfileActions
     /** Makes the next body throw, after its upload was claimed. */
     public static bool $fail = false;
 
+    /** Makes the next body throw after it has saved the key on its record. */
+    public static bool $failAfterSave = false;
+
     public function __construct(private readonly Orm $orm) {}
 
     #[Action(name: 'profiles.avatar'), Authorize('update', 'profile')]
@@ -133,6 +136,12 @@ final class ProfileActions
         self::$received = $avatar;
         $profile->avatarKey = $avatar->key;
         $this->orm->save($profile);
+
+        if (self::$failAfterSave) {
+            self::$failAfterSave = false;
+
+            throw new \RuntimeException('The body failed after its write.');
+        }
 
         return ActionResult::ok(['key' => $avatar->key]);
     }
@@ -185,6 +194,7 @@ final class App
         SignIn::$orm = $this->orm;
         ProfileActions::$received = null;
         ProfileActions::$fail = false;
+        ProfileActions::$failAfterSave = false;
 
         $this->container = new Container();
         $this->container->instance(Orm::class, $this->orm);

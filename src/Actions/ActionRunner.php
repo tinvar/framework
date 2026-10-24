@@ -135,21 +135,11 @@ final class ActionRunner
 
         $arguments = $this->bind($action, $models, $requests, $scalars, $request, $uploads);
 
-        // 5. Run the body, with its uploads claimed for it alone: claimed
-        //    now, when nothing else can refuse the call, and given back if
-        //    the body throws, so the file waits for the customer to try
-        //    again rather than being lost with the failed attempt.
-        $claimed = $this->claim($uploads);
-        try {
-            $instance = $this->registry->instanceFor($action);
-            $result = $instance->{$action->method}(...$arguments);
-        } catch (\Throwable $e) {
-            foreach ($claimed as $upload) {
-                $this->uploads?->release($upload);
-            }
-
-            throw $e;
-        }
+        // 5. Run the body.
+        $instance = $this->registry->instanceFor($action);
+        $result = $this->hasUploads($uploads)
+            ? $this->runWithUploads($uploads, static fn (): mixed => $instance->{$action->method}(...$arguments))
+            : $instance->{$action->method}(...$arguments);
 
         if (!$result instanceof ActionResult) {
             throw ActionException::badReturn($action->where(), get_debug_type($result));
@@ -343,6 +333,47 @@ final class ActionRunner
         $upload = $this->uploads->verify($action, $field, $reference, $models, $request);
 
         return $upload === null ? [null, [self::UPLOAD_REFUSED]] : [$upload, []];
+    }
+
+    /** @param array<string, Upload|null> $uploads */
+    private function hasUploads(array $uploads): bool
+    {
+        return array_filter($uploads) !== [];
+    }
+
+    /**
+     * Runs a body that was handed uploads: claimed for it alone, and in one
+     * transaction with its writes.
+     *
+     * Claimed now, when nothing else can refuse the call, so one upload is
+     * attached once however requests race. Given back if the body throws,
+     * so the file waits for the customer to try again -- and that is safe
+     * only because the body's writes roll back with it: given back after a
+     * body that had saved the key on its record, the upload would be
+     * pruned as unclaimed and the record left naming a file that is gone.
+     * Where the upload store shares the connection the claim rolls back
+     * too; a process killed mid-body leaves the upload as it was, or
+     * claimed and unused -- a file kept, never a record dangling.
+     *
+     * @param array<string, Upload|null> $uploads
+     * @param \Closure(): mixed $body
+     */
+    private function runWithUploads(array $uploads, \Closure $body): mixed
+    {
+        $claimed = [];
+        try {
+            return $this->orm->transaction(function () use ($uploads, $body, &$claimed): mixed {
+                $claimed = $this->claim($uploads);
+
+                return $body();
+            });
+        } catch (\Throwable $e) {
+            foreach ($claimed as $upload) {
+                $this->uploads?->release($upload);
+            }
+
+            throw $e;
+        }
     }
 
     /**
