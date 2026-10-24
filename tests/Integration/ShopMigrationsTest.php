@@ -166,14 +166,11 @@ it('runs on what its migrations make: signing in, the epoch moved, and the admin
 });
 
 describe('from the command line', function () {
-    // Two deploys at once: one migrates, the other waits its turn and finds
-    // nothing left to do. Neither fails, and nothing runs twice.
+    // Two deploys at once, onto a database neither finds there: both create
+    // it and switch it to WAL, one migrates, and the other waits its turn
+    // and finds nothing left to do. Neither fails, and nothing runs twice.
     it('migrates the database it is pointed at, two runs at once taking turns', function () {
         $database = database();
-        // Made first, as a deploy finds it: two processes creating one file
-        // at the same instant race over its journal mode before either
-        // reaches the migration lock.
-        PdoConnection::sqlite($database, create: true);
         $command = [PHP_BINARY, 'bin/tinvar', 'migrate', "--database={$database}"];
         $first = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $firstPipes, \dirname(__DIR__, 4));
         [$status, $out, $err] = run($command);
