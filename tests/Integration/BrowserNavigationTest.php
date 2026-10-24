@@ -282,6 +282,33 @@ it('signs in, reads orders and an order, places an order and signs out', functio
     ]);
 });
 
+// "Client-held data ... is bound to (user, tenant)." A product page
+// prefetched for a guest was what the router showed after signing in from
+// it: the action's redirect was answered from the prefetch cache, so the
+// customer was asked to sign in again until they reloaded.
+it('shows a product page prefetched before signing in as the customer sees it, once signed in from it', function () use ($root) {
+    $output = '';
+    served($root, function (string $origin) use ($root, &$output): void {
+        $output = runWithTimeout(
+            ['node', "{$root}/examples/shop/e2e/sign-in-from-product.mjs", $origin, DemoAccount::EMAIL, DemoAccount::PASSWORD],
+            $root,
+            60,
+        );
+    });
+
+    $result = json_decode((string) $output, true);
+    expect($result)->toBeArray("the browser script failed:\n{$output}");
+
+    // The order form, in place of the link to sign in, without a reload:
+    // the redirect was followed as a client visit that asked the server.
+    expect($result['errors'])->toBe([])
+        ->and($result['orderForm'])->toBeTrue()
+        ->and($result['signInLink'])->toBeFalse()
+        ->and($result['account'])->toBeTrue()
+        ->and($result['sameDocument'])->toBeTrue()
+        ->and($result['visitsAfterSignIn'])->toBe([$result['path']]);
+});
+
 // "A deferred ... marked `rescue` that throws is reported to the PHP
 // exception handler and omitted; the client boundary renders its `rescue`
 // slot instead of failing the page." The shop is served with the panel's
