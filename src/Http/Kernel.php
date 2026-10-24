@@ -28,6 +28,7 @@ use Tinvar\Events\Events;
 use Tinvar\Http\Middleware\RequireAuthentication;
 use Tinvar\Http\Middleware\ThrottleRequests;
 use Tinvar\Http\Middleware\VerifyCsrfToken;
+use Tinvar\Identity\HandoffEndpoint;
 use Tinvar\Live\LiveMinter;
 use Tinvar\Live\LiveUpdates;
 use Tinvar\Live\SubscribeEndpoint;
@@ -149,6 +150,9 @@ final class Kernel
         // A trade per page and per grant -- one every few minutes a tab is
         // open -- and one per reconnect, which backs off.
         'live' => 60,
+        // Three steps per move between hosts, and a move is a person
+        // following a link: a minute's budget is twenty moves.
+        'handoff' => 60,
     ];
 
     private readonly ExceptionHandler $exceptions;
@@ -195,6 +199,7 @@ final class Kernel
     private readonly Pipeline $queryStack;
     private readonly Pipeline $bootstrapStack;
     private readonly Pipeline $liveStack;
+    private readonly Pipeline $handoffStack;
 
     /**
      * The request attribute carrying the page's route token, for the
@@ -310,6 +315,9 @@ final class Kernel
      *        request is recorded, documents carry the toolbar, and /_dev/toolbar
      *        answers for them -- on loopback, with its token. Refused unless built
      *        for dev ($dev), so no production Kernel can carry one.
+     * @param HandoffEndpoint|null $handoff moving a session between the application's
+     *        hosts (ADR 0039): mounted at /_handoff/*, behind the global stack -- which
+     *        starts the session and signs its user in -- and the handoff throttle
      */
     public function __construct(
         public readonly Orm $orm,
@@ -347,6 +355,7 @@ final class Kernel
         private readonly ?WebhookEndpoint $webhooks = null,
         ?Events $events = null,
         ?DevToolbar $toolbar = null,
+        private readonly ?HandoffEndpoint $handoff = null,
     ) {
         if ($toolbar !== null && !$dev) {
             throw new \InvalidArgumentException(
@@ -390,6 +399,16 @@ final class Kernel
             throw new \InvalidArgumentException(
                 'The Throttle reads a different AuthContext than this Kernel, so its per-account limit '
                 . 'would never apply. Build it with the same one.',
+            );
+        }
+
+        // The platform host's half of a handoff asks who is signed in; one
+        // reading another context would see nobody, ever, and send every
+        // visitor to sign in again and again.
+        if ($handoff !== null && !$handoff->reads($auth)) {
+            throw new \InvalidArgumentException(
+                'The HandoffEndpoint reads a different AuthContext than this Kernel, so it would never see who is '
+                . 'signed in. Build it with the same one.',
             );
         }
 
@@ -581,6 +600,19 @@ final class Kernel
             new VerifyCsrfToken(tokens: $csrf),
             ...$this->throttleFor($throttle, 'live', $limits, byAddress: true),
             ...$this->throttleFor($throttle, 'live', $limits, byAddress: false),
+        ]);
+
+        // A handoff's three steps are GETs a person follows from host to
+        // host: the global stack for the session and its user, the handoff
+        // budget, and no CSRF -- the step that changes something is held to
+        // the session that began it by PKCE, which is what a CSRF token would
+        // have said -- and no authentication, since being signed out on the
+        // target is why a handoff starts.
+        $this->handoffStack = new Pipeline([
+            ...$this->floodGuardFor($throttle, 'handoff', $limits),
+            ...$global,
+            ...$this->throttleFor($throttle, 'handoff', $limits, byAddress: true),
+            ...$this->throttleFor($throttle, 'handoff', $limits, byAddress: false),
         ]);
 
         // Fragments run their own stack: GET with no body, so CSRF does not
@@ -781,6 +813,12 @@ final class Kernel
 
             if ($this->webhooks !== null && $this->webhooks->matches($request)) {
                 return $this->webhooks->handle($request, $rawBody);
+            }
+
+            if ($this->handoff !== null && $this->handoff->matches($request)) {
+                HandoffEndpoint::assertMethod($request);
+
+                return $this->handoffStack->run($request, fn (Request $passed): Response => $this->handoff->handle($passed));
             }
 
             // Each endpoint's method is checked before its stack runs: a

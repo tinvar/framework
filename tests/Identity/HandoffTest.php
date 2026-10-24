@@ -1,0 +1,530 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Identity across domains: a session moves from the platform host to
+ * another realm only by a one-time code the target asked for, and arrives
+ * as a new session there.
+ *
+ * Driven through the Kernel by a browser that keeps a cookie jar per host
+ * and follows redirects between them, as a real one does -- no cookie is
+ * ever shared between two hosts.
+ */
+
+namespace Tinvar\Tests\Identity\Handoff;
+
+use Tinvar\Auth\AuthContext;
+use Tinvar\Http\Kernel;
+use Tinvar\Http\Request;
+use Tinvar\Http\Response;
+use Tinvar\Identity\HandoffCode;
+use Tinvar\Identity\HandoffEndpoint;
+use Tinvar\Identity\Pkce;
+use Tinvar\Identity\Realm;
+use Tinvar\Identity\Realms;
+use Tinvar\Render\RouteToken;
+use Tinvar\Render\SignedToken;
+use Tinvar\Render\TokenClaims;
+use Tinvar\Support\Signer;
+use Tinvar\Tests\Identity\Fixtures\App;
+use Tinvar\Tests\Identity\Fixtures\Browser;
+use Tinvar\Webhooks\ArrayNonceStore;
+
+require_once __DIR__ . '/Fixtures/app.php';
+
+const KEY_OTHER = 'another-identity-test-key-of-thirty-two-bytes';
+
+/** @return array<string, mixed> */
+function json(Response $response): array
+{
+    $decoded = json_decode($response->body(), true, flags: JSON_THROW_ON_ERROR);
+
+    return \is_array($decoded) ? $decoded : [];
+}
+
+function errorCode(Response $response): string
+{
+    return (string) (json($response)['error']['code'] ?? '');
+}
+
+/**
+ * The callback URL the platform host sends $browser to, for a handoff to
+ * $origin it starts there -- without following it.
+ */
+function codeFor(Browser $browser, string $origin, string $return = '/whoami'): string
+{
+    $start = $browser->get($origin . HandoffEndpoint::START . '?return=' . rawurlencode($return));
+    expect($start->status)->toBe(303);
+
+    $authorize = $browser->get((string) $start->header('location'));
+    expect($authorize->status)->toBe(303, $authorize->body());
+
+    $callback = (string) $authorize->header('location');
+    expect($callback)->toStartWith($origin . HandoffEndpoint::CALLBACK . '?code=');
+
+    return $callback;
+}
+
+describe('a handoff', function () {
+    it('moves a user signed in on the platform host to a panel\'s own host, into a new session there', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'sam');
+        $arrivedWith = $browser->sessionAt('admin.platform.test');
+
+        $landed = $browser->follow('https://admin.platform.test/_handoff/start?return=%2Fwhoami');
+
+        expect($landed->status)->toBe(200)
+            ->and(json($landed))->toBe(['user' => 'sam'])
+            ->and(array_map(static fn (string $url): string => (string) parse_url($url, PHP_URL_HOST) . parse_url($url, PHP_URL_PATH), $browser->trail))->toBe([
+                'admin.platform.test/_handoff/start',
+                'id.platform.test/_handoff/authorize',
+                'admin.platform.test/_handoff/callback',
+                'admin.platform.test/whoami',
+            ])
+            // A new session, made for this host alone; the platform host's
+            // is untouched, and no cookie crossed between them.
+            ->and($browser->jar['admin.platform.test'])->not->toBe($arrivedWith)
+            ->and($app->sessions->sessions[$browser->jar['admin.platform.test']])->toBe(['user' => 'sam', 'realm' => 'admin.platform.test'])
+            ->and($app->sessions->sessions[$browser->jar['id.platform.test']]['realm'])->toBe('id.platform.test');
+    });
+
+    it('carries a user to a tenant\'s custom domain, held to a membership there asked as that tenant', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+
+        $landed = $browser->follow('https://acme.example/_handoff/start?return=%2Fwhoami');
+
+        expect(json($landed))->toBe(['user' => 'alice'])
+            ->and($app->directory->askedAs)->toBe(['acme', 'acme']);
+    });
+
+    it('sends someone not signed in on the platform host to sign in there, and back to the handoff after', function () {
+        $app = new App();
+        $browser = new Browser($app);
+
+        $start = $browser->get('https://acme.example/_handoff/start?return=%2Fwhoami');
+        $authorizeUrl = (string) $start->header('location');
+        $authorize = $browser->get($authorizeUrl);
+        $next = (string) parse_url($authorizeUrl, PHP_URL_PATH) . '?' . parse_url($authorizeUrl, PHP_URL_QUERY);
+
+        // On the platform host: credentials are never typed on the domain.
+        expect($authorizeUrl)->toStartWith('https://id.platform.test/_handoff/authorize?')
+            ->and($authorize->status)->toBe(302)
+            ->and($authorize->header('location'))->toBe('/sign-in?next=' . rawurlencode($next));
+
+        // Signed in there, the same handoff goes through.
+        $browser->signedInAt('id.platform.test', 'alice');
+        $landed = $browser->follow('https://id.platform.test' . $next);
+
+        expect(json($landed))->toBe(['user' => 'alice']);
+    });
+
+    it('sends a visitor already signed in on the target straight on, with no code', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('acme.example', 'alice');
+
+        $start = $browser->get('https://acme.example/_handoff/start?return=%2Fwhoami');
+
+        expect($start->status)->toBe(303)
+            ->and($start->header('location'))->toBe('/whoami');
+    });
+
+    it('keeps every step out of caches and Referers', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+        $start = $browser->get('https://acme.example/_handoff/start?return=%2Fwhoami');
+        $authorize = $browser->get((string) $start->header('location'));
+        $callback = $browser->get((string) $authorize->header('location'));
+
+        foreach ([$start, $authorize, $callback] as $response) {
+            expect($response->header('cache-control'))->toBe('no-store')
+                ->and($response->header('referrer-policy'))->toBe('no-referrer');
+        }
+    });
+
+    it('goes on only to a path on the target, never off it or round again', function () {
+        $app = new App();
+        $browser = new Browser($app);
+
+        foreach (['https://evil.example/', '//evil.example', '/\\evil.example', '/_handoff/start?return=/x', ''] as $return) {
+            $location = (string) $browser->get('https://acme.example/_handoff/start?return=' . rawurlencode($return))->header('location');
+            parse_str((string) parse_url($location, PHP_URL_QUERY), $query);
+            expect($query['return'] ?? null)->toBe('/');
+        }
+
+        // Edited between start and authorize: refused outright.
+        $location = (string) $browser->get('https://acme.example/_handoff/start?return=%2Fwhoami')->header('location');
+        $edited = str_replace('return=%2Fwhoami', 'return=%2F%2Fevil.example', $location);
+        $response = new Browser($app)->signedInAt('id.platform.test', 'alice')->get($edited);
+
+        expect($response->status)->toBe(400)
+            ->and(errorCode($response))->toBe('handoff_malformed');
+    });
+});
+
+describe('the code', function () {
+    it('is refused when replayed, from the session that redeemed it or with the cookie it arrived with', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+        $callback = codeFor($browser, 'https://acme.example');
+        $arrivedWith = $browser->sessionAt('acme.example');
+
+        expect($browser->get($callback)->status)->toBe(303);
+
+        $again = $browser->get($callback);
+        $replayed = $app->get($callback, ['__Host-sid' => $arrivedWith]);
+
+        expect($again->status)->toBe(403)
+            ->and(errorCode($again))->toBe('handoff_refused')
+            ->and($replayed->status)->toBe(403)
+            ->and(errorCode($replayed))->toBe('handoff_refused')
+            // The rotated session fails PKCE; the cookie it arrived with
+            // passes that, and meets the nonce already claimed.
+            ->and($app->log[\count($app->log) - 2])->toContain('not the one that started the handoff')
+            ->and($app->lastLogged())->toContain('redeemed before');
+    });
+
+    it('is refused at any origin but the one it was minted for: another domain of the tenant, another tenant\'s, the platform\'s', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+        $callback = codeFor($browser, 'https://acme.example');
+        $session = $browser->sessionAt('acme.example');
+
+        foreach (['shop.acme.example', 'globex.example', 'acme.platform.test', 'id.platform.test', 'admin.platform.test'] as $host) {
+            $elsewhere = str_replace('https://acme.example/', "https://{$host}/", $callback);
+            $response = $app->get($elsewhere, ['__Host-sid' => $session]);
+            expect($response->status)->toBe(403, $host)
+                ->and(errorCode($response))->toBe('handoff_refused')
+                ->and($app->lastLogged())->toContain('minted for https://acme.example');
+        }
+
+        // Still good where it belongs: none of those spent it.
+        expect($browser->get($callback)->status)->toBe(303);
+    });
+
+    it('is refused once it has expired', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+        $callback = codeFor($browser, 'https://acme.example');
+
+        $app->now += HandoffCode::TTL;
+        $response = $browser->get($callback);
+
+        expect($response->status)->toBe(403)
+            ->and(errorCode($response))->toBe('handoff_refused')
+            ->and($app->lastLogged())->toContain('expired');
+    });
+
+    it('is refused once its user\'s auth epoch has moved -- a sign-out or a role change while it was in flight', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+        $callback = codeFor($browser, 'https://acme.example');
+
+        $app->directory->epochs['alice']++;
+        $response = $browser->get($callback);
+
+        expect($response->status)->toBe(403)
+            ->and(errorCode($response))->toBe('handoff_refused')
+            ->and($app->lastLogged())->toContain('auth epoch has moved')
+            ->and($app->sessions->sessions[$browser->jar['acme.example']] ?? null)->toBeNull();
+    });
+
+    it('is refused when its user\'s membership was taken away while it was in flight', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+        $callback = codeFor($browser, 'https://acme.example');
+
+        $app->directory->members['alice'] = [];
+
+        expect($browser->get($callback)->status)->toBe(403)
+            ->and($app->lastLogged())->toContain('no membership');
+    });
+
+    it('is redeemed only by the browser session that started the handoff', function () {
+        $app = new App();
+        $victim = new Browser($app)->signedInAt('id.platform.test', 'alice');
+        $callback = codeFor($victim, 'https://acme.example');
+
+        // Lifted from the victim -- a log, a Referer, a reseller's server --
+        // and presented with a session of the attacker's own.
+        $attacker = new Browser($app);
+        $response = $attacker->get($callback);
+
+        expect($response->status)->toBe(403)
+            ->and(errorCode($response))->toBe('handoff_refused')
+            ->and($app->lastLogged())->toContain('not the one that started the handoff')
+            // And the victim, who did start it, still can.
+            ->and(json($victim->follow($callback)))->toBe(['user' => 'alice']);
+    });
+
+    // Login CSRF: an attacker's own code, planted in a victim's browser,
+    // would sign the victim in as the attacker -- and what the victim then
+    // types would be the attacker's to read.
+    it('never signs a browser in as someone else by a code planted in it', function () {
+        $app = new App();
+        $attacker = new Browser($app)->signedInAt('id.platform.test', 'carol');
+        $planted = codeFor($attacker, 'https://acme.example');
+
+        $victim = new Browser($app);
+        $response = $victim->get($planted);
+
+        expect($response->status)->toBe(403)
+            ->and(json($victim->follow('https://acme.example/whoami')))->toBe(['user' => '']);
+    });
+
+    it('never promotes the session the browser arrived with, even one an attacker planted', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+        $browser->jar['acme.example'] = 'planted-by-an-attacker';
+
+        $landed = $browser->follow('https://acme.example/_handoff/start?return=%2Fwhoami');
+
+        expect(json($landed))->toBe(['user' => 'alice'])
+            ->and($browser->jar['acme.example'])->not->toBe('planted-by-an-attacker')
+            ->and($app->sessions->sessions)->not->toHaveKey('planted-by-an-attacker')
+            ->and(json($app->get('https://acme.example/whoami', ['__Host-sid' => 'planted-by-an-attacker'])))->toBe(['user' => '']);
+    });
+
+    it('fails the handoff when the application keeps the session id instead of starting a new one', function () {
+        $app = new App();
+        $app->arrivals->keepId = true;
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+
+        $response = $browser->follow('https://acme.example/_handoff/start?return=%2Fwhoami');
+
+        expect($response->status)->toBe(500)
+            ->and($app->lastLogged())->toContain('must start a new session');
+    });
+
+    it('is refused when it is not a handoff code: forged, edited, or a token of another kind', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+        $callback = codeFor($browser, 'https://acme.example');
+        $code = (string) substr($callback, (int) strpos($callback, 'code=') + 5);
+        [$v, $payload, $mac] = explode('.', $code);
+
+        $foreign = new Signer(App::class, HandoffCode::PURPOSE);
+        $routeToken = SignedToken::encode($app->signer, RouteToken::PURPOSE, ['o' => 'https://acme.example']);
+        $tampered = $v . '.' . Signer::encode(str_replace('"alice"', '"carol"', (string) Signer::decode($payload))) . '.' . $mac;
+
+        foreach ([$tampered, $routeToken, str_replace($mac, Signer::encode($foreign->sign('x')), $code), 'garbage', str_repeat('a', 5000)] as $bad) {
+            expect($browser->get('https://acme.example/_handoff/callback?code=' . rawurlencode($bad))->status)->toBe(403);
+        }
+    });
+});
+
+describe('across tenants', function () {
+    it('will not hand a user to a domain of a tenant they hold no membership in', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+
+        $start = $browser->get('https://globex.example/_handoff/start?return=%2Fwhoami');
+        $response = $browser->get((string) $start->header('location'));
+
+        expect($response->status)->toBe(403)
+            ->and(errorCode($response))->toBe('handoff_refused')
+            ->and($app->lastLogged())->toContain('no membership')
+            ->and($app->directory->askedAs)->toBe(['globex']);
+    });
+
+    // A code that names this origin but another tenant -- a minting bug, a
+    // record moved between tenants while the code was in flight -- is held
+    // to the realm's tenant, not its own word.
+    it('refuses a code naming this origin with another tenant', function () {
+        $app = new App();
+        $browser = new Browser($app);
+        $session = $browser->sessionAt('globex.example');
+        $state = Signer::encode(random_bytes(16));
+        $code = HandoffCode::mint(
+            $app->signer,
+            Realm::domain('https://globex.example', 'acme', 'portal'),
+            'bob',
+            '1',
+            Pkce::challenge(Pkce::verifier($app->signer, $session, $state)),
+            $state,
+            '/whoami',
+            $app->now,
+        );
+
+        $response = $browser->get('https://globex.example/_handoff/callback?code=' . $code->encode($app->signer));
+
+        expect($response->status)->toBe(403)
+            ->and(errorCode($response))->toBe('handoff_refused')
+            ->and($app->lastLogged())->toContain('another tenant');
+    });
+
+    it('keeps the session it makes to the host it was made on', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+        $browser->follow('https://acme.example/_handoff/start?return=%2Fwhoami');
+        $made = $browser->jar['acme.example'];
+
+        // Presented anywhere else -- the platform host above all -- it is a
+        // session that signs nobody in.
+        expect(json($app->get('https://id.platform.test/whoami', ['__Host-sid' => $made])))->toBe(['user' => ''])
+            ->and(json($app->get('https://shop.acme.example/whoami', ['__Host-sid' => $made])))->toBe(['user' => '']);
+    });
+});
+
+describe('staff', function () {
+    it('are never handed to a custom domain, member or not', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'sam');
+
+        $start = $browser->get('https://acme.example/_handoff/start?return=%2Fwhoami');
+        $response = $browser->get((string) $start->header('location'));
+
+        expect($response->status)->toBe(403)
+            ->and(errorCode($response))->toBe('handoff_refused')
+            ->and($app->lastLogged())->toContain('staff accounts')
+            // A tenant's host the platform owns is another matter.
+            ->and(json(new Browser($app)->signedInAt('id.platform.test', 'sam')->follow('https://acme.platform.test/_handoff/start?return=%2Fwhoami')))->toBe(['user' => 'sam']);
+    });
+
+    it('are refused at the custom domain too, if made staff while the code was in flight', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'carol');
+        $callback = codeFor($browser, 'https://acme.example');
+        $app->directory->staff[] = 'carol';
+
+        expect($browser->get($callback)->status)->toBe(403)
+            ->and($app->lastLogged())->toContain('staff accounts');
+    });
+});
+
+describe('hosts', function () {
+    it('answers only on hosts that are realms, and each step only where it belongs', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+
+        expect($browser->get('https://nobody.example/_handoff/start')->status)->toBe(404)
+            // A custom domain record carrying the admin panel is no realm at all.
+            ->and($browser->get('https://evil.example/_handoff/start')->status)->toBe(404)
+            // The platform host signs in itself.
+            ->and($browser->get('https://id.platform.test/_handoff/start')->status)->toBe(404)
+            // Only the platform host authorizes.
+            ->and(errorCode($browser->get('https://acme.example/_handoff/authorize?origin=https%3A%2F%2Facme.example')))->toBe('handoff_unknown')
+            ->and($browser->get('https://id.platform.test/_handoff/authorize?origin=https%3A%2F%2Fnobody.example&state=' . str_repeat('a', 22) . '&challenge=' . str_repeat('b', 43) . '&return=%2F')->status)->toBe(404)
+            // The origin exactly: another scheme or port is not the realm.
+            ->and($browser->get('https://id.platform.test/_handoff/authorize?origin=https%3A%2F%2Facme.example%3A8443&state=' . str_repeat('a', 22) . '&challenge=' . str_repeat('b', 43) . '&return=%2F')->status)->toBe(404);
+    });
+
+    it('is followed with GET alone', function () {
+        $app = new App();
+
+        $response = $app->kernel->handle(
+            new Request('POST', HandoffEndpoint::CALLBACK, ['host' => 'acme.example', 'accept' => 'application/json']),
+            static fn (): Response => Response::make(500),
+        );
+
+        expect($response->status)->toBe(405);
+    });
+});
+
+describe('realms', function () {
+    it('are https origins in the one spelling a browser serializes, or http on localhost', function () {
+        foreach (['https://shop.test', 'https://shop.test:8443', 'http://localhost:8080', 'http://admin.localhost'] as $origin) {
+            expect(Realm::hostOf($origin))->not->toBeNull($origin);
+        }
+        foreach ([
+            'http://shop.test', 'https://shop.test:443', 'http://localhost:80', 'https://Shop.test', 'https://shop.test.',
+            'https://shop.test/', 'https://shop.test/path', 'https://127.0.0.1', 'https://[::1]', 'https://user@shop.test',
+            'shop.test', 'https://shop.test:0', 'https://shop.test:65536', 'https://shop.test:08443',
+        ] as $origin) {
+            expect(Realm::hostOf($origin))->toBeNull($origin);
+        }
+    });
+
+    it('make a custom domain name its tenant and its panel', function () {
+        expect(static fn () => Realm::domain('https://acme.example', '', 'portal'))->toThrow(\InvalidArgumentException::class)
+            ->and(static fn () => Realm::domain('https://acme.example', 'acme', ''))->toThrow(\InvalidArgumentException::class);
+    });
+
+    it('list the platform\'s own hosts once each, and look the rest up', function () {
+        $authority = Realm::platform('https://id.platform.test');
+
+        expect(static fn () => new Realms(Realm::domain('https://acme.example', 'acme', 'portal')))->toThrow(\InvalidArgumentException::class)
+            ->and(static fn () => new Realms($authority, [Realm::domain('https://acme.example', 'acme', 'portal')]))->toThrow(\InvalidArgumentException::class)
+            ->and(static fn () => new Realms($authority, [Realm::platform('https://id.platform.test:8443')]))->toThrow(\InvalidArgumentException::class);
+
+        // A lookup can never stand in for a listed host, nor answer for
+        // another host than the one asked about.
+        $realms = new Realms($authority, [], static fn (string $host): Realm => Realm::domain('https://acme.example', 'acme', 'portal'));
+
+        expect($realms->forHost('id.platform.test'))->toBe($authority)
+            ->and($realms->forHost('acme.example')?->tenant)->toBe('acme')
+            ->and($realms->forHost('globex.example'))->toBeNull();
+    });
+
+    it('make a handoff that may reach a custom domain say who is staff, and hold users to memberships', function () {
+        $app = new App();
+        $build = static fn (bool $staff, bool $memberships) => new HandoffEndpoint(
+            realms: App::realms(),
+            signer: $app->signer,
+            nonces: new ArrayNonceStore(),
+            sessionId: static fn (Request $r): string => '',
+            auth: $app->auth,
+            orm: $app->orm,
+            users: $app->directory,
+            sessions: $app->arrivals,
+            signIn: static fn (string $back): Response => Response::make(401),
+            memberships: $memberships ? $app->directory : null,
+            staff: $staff ? static fn (): bool => false : null,
+        );
+
+        expect(static fn () => $build(false, true))->toThrow(\InvalidArgumentException::class)
+            ->and(static fn () => $build(true, false))->toThrow(\InvalidArgumentException::class)
+            ->and($build(true, true))->toBeInstanceOf(HandoffEndpoint::class);
+    });
+
+    it('refuse a Kernel built with a handoff reading another AuthContext', function () {
+        $app = new App();
+        $endpoint = new HandoffEndpoint(
+            realms: new Realms(Realm::platform('https://id.platform.test')),
+            signer: $app->signer,
+            nonces: new ArrayNonceStore(),
+            sessionId: static fn (Request $r): string => '',
+            auth: new AuthContext(),
+            orm: $app->orm,
+            users: $app->directory,
+            sessions: $app->arrivals,
+            signIn: static fn (string $back): Response => Response::make(401),
+        );
+
+        expect(static fn () => new Kernel(
+            orm: $app->orm,
+            routes: new \Tinvar\Routing\RouteRegistry(),
+            queries: new \Tinvar\Query\QueryRegistry(),
+            actions: new \Tinvar\Actions\ActionRegistry(),
+            auth: $app->auth,
+            policies: new \Tinvar\Auth\PolicyRegistry(),
+            resolver: static fn (string $class): object => new $class(),
+            allowedQueries: static fn (Request $r): array => [],
+            handoff: $endpoint,
+        ))->toThrow(\InvalidArgumentException::class, 'AuthContext');
+    });
+});
+
+describe('a code\'s claims', function () {
+    it('carry the epoch only as a keyed hash, and verify only under their own purpose', function () {
+        $app = new App();
+        $code = HandoffCode::mint($app->signer, Realm::domain('https://acme.example', 'acme', 'portal'), 'alice', '7', str_repeat('c', 43), str_repeat('s', 22), '/', $app->now);
+        $encoded = $code->encode($app->signer);
+
+        expect(HandoffCode::decode($encoded, $app->signer, $app->now))->toEqual($code)
+            ->and($code->authHash)->toBe(TokenClaims::hashAuth($app->signer, 'alice', '7'))
+            ->and((string) Signer::decode(explode('.', $encoded)[1]))->not->toContain('"7"')
+            ->and(static fn () => HandoffCode::decode($encoded, new Signer(KEY_OTHER, HandoffCode::PURPOSE), $app->now))->toThrow(\Tinvar\Render\TokenError::class);
+    });
+
+    it('are refused living longer than a code is minted for, or issued in the future', function () {
+        $app = new App();
+        $realm = Realm::domain('https://acme.example', 'acme', 'portal');
+        $long = new HandoffCode($realm->origin, 'acme', 'portal', 'alice', 'h', str_repeat('c', 43), str_repeat('s', 22), '/', str_repeat('j', 22), $app->now, $app->now + HandoffCode::TTL + 1);
+        $ahead = new HandoffCode($realm->origin, 'acme', 'portal', 'alice', 'h', str_repeat('c', 43), str_repeat('s', 22), '/', str_repeat('j', 22), $app->now + 120, $app->now + 150);
+
+        expect(static fn () => HandoffCode::decode($long->encode($app->signer), $app->signer, $app->now))->toThrow(\Tinvar\Render\TokenError::class)
+            ->and(static fn () => HandoffCode::decode($ahead->encode($app->signer), $app->signer, $app->now))->toThrow(\Tinvar\Render\TokenError::class);
+    });
+});
