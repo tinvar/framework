@@ -28,9 +28,36 @@ namespace Tinvar\Http;
  * was doing. Revoking A -- because it had a security fix in it -- forces a
  * full page load instead, which is the only way to get a browser off code it
  * has already downloaded.
+ *
+ * Configured in code, or read from a BuildStore (persisted()). Only the store
+ * makes `build:revoke` an operator's command: the build that needs revoking
+ * is the one whose code was written before anyone knew, so its own
+ * configuration cannot be what refuses it. A persisted registry looks at the
+ * store each time it is asked, which the store keeps cheap, so a revocation
+ * written from a terminal is in force on every worker's next request without
+ * a restart.
  */
 final class BuildRegistry
 {
+    /**
+     * How long a superseded build stays retained, in seconds: a day.
+     *
+     * tinvar-spec.md leaves "is 24 hours of old builds enough?" open; it is
+     * the answer here until someone measures a reason for another. Counted
+     * from when the build was superseded, not when it was released -- a
+     * client that loaded a build an hour before the next deploy holds it as
+     * long as one that loaded it the day before.
+     */
+    public const int RETENTION = 86_400;
+
+    /** What standing() says of a build. Only the first two are accepted. */
+    public const string CURRENT = 'current';
+    public const string RETAINED = 'retained';
+    public const string REVOKED = 'revoked';
+    public const string BELOW_FLOOR = 'below floor';
+    public const string EXPIRED = 'expired';
+    public const string UNKNOWN = 'unknown';
+
     /**
      * A conservative build-ID shape.
      *
@@ -59,6 +86,23 @@ final class BuildRegistry
 
     private ?string $floor = null;
 
+    /** Where a persisted registry reads its history; null when configured in code. */
+    private ?BuildStore $store = null;
+
+    /** The history the fields above were last built from. */
+    private ?BuildHistory $loaded = null;
+
+    /** Whether the store could not be read the last time it was asked. */
+    private bool $unreadable = false;
+
+    private int $retainFor = self::RETENTION;
+
+    /** @var (\Closure(): int)|null the time now; time() unless a test says otherwise */
+    private ?\Closure $clock = null;
+
+    /** @var array<string, int> a superseded build => when it stops being retained */
+    private array $expires = [];
+
     /**
      * @param list<string> $retained older builds still served, OLDEST FIRST.
      *        The current build is always the newest and is appended.
@@ -80,6 +124,37 @@ final class BuildRegistry
     }
 
     /**
+     * A registry whose retained builds, revocations and floor are read from
+     * a store -- what `tinvar build:current`, `build:revoke` and
+     * `build:floor` write.
+     *
+     * $current is the build THIS code is, never read from the store: the
+     * store says what an operator released, and during a rolling deploy a
+     * server still running the previous build must go on answering for it.
+     * Recorded or not, it is the newest this server knows of.
+     *
+     * @param int $retainFor seconds a superseded build stays retained
+     * @param (\Closure(): int)|null $clock the time now, for tests
+     */
+    public static function persisted(
+        string $current,
+        BuildStore $store,
+        int $retainFor = self::RETENTION,
+        ?\Closure $clock = null,
+    ): self {
+        if ($retainFor < 0) {
+            throw new \InvalidArgumentException('Builds cannot be retained for a negative time.');
+        }
+
+        $registry = new self($current);
+        $registry->store = $store;
+        $registry->retainFor = $retainFor;
+        $registry->clock = $clock;
+
+        return $registry;
+    }
+
+    /**
      * Whether a client on this build may continue without a full page load.
      *
      * Unknown is not an error, it is a skew answer: a build this server never
@@ -87,21 +162,31 @@ final class BuildRegistry
      */
     public function accepts(?string $build): bool
     {
+        $standing = $this->standing($build);
+
+        return $standing === self::CURRENT || $standing === self::RETAINED;
+    }
+
+    /**
+     * Where a build stands: one of the constants above. accepts() is this,
+     * reduced to yes or no; `tinvar build:list` shows it whole, so what an
+     * operator reads is what the workers decide, not a second account of it.
+     */
+    public function standing(?string $build): string
+    {
+        $this->sync();
+
         if ($build === null || $build === '' || preg_match(self::SHAPE, $build) !== 1) {
-            return false;
+            return self::UNKNOWN;
         }
 
         if (isset($this->revoked[$build])) {
-            return false;
+            return self::REVOKED;
         }
 
         $position = array_search($build, $this->retained, true);
         if ($position === false) {
-            return false;
-        }
-
-        if ($this->floor === null) {
-            return true;
+            return self::UNKNOWN;
         }
 
         // The floor is a security boundary, not a tidiness one: a build below
@@ -110,14 +195,31 @@ final class BuildRegistry
         // registry does not know has no position to compare against, so
         // everything is refused rather than everything admitted -- an unknown
         // ordering fails closed.
-        $floorPosition = array_search($this->floor, $this->retained, true);
+        if ($this->floor !== null) {
+            $floorPosition = array_search($this->floor, $this->retained, true);
+            if ($floorPosition === false || $position < $floorPosition) {
+                return self::BELOW_FLOOR;
+            }
+        }
 
-        return $floorPosition !== false && $position >= $floorPosition;
+        if ($build === $this->current) {
+            return self::CURRENT;
+        }
+
+        // Past its skew window: every client that loaded it has had a day to
+        // finish, so a request on it now is one to reload.
+        $until = $this->expires[$build] ?? null;
+        if ($until !== null && ($this->clock === null ? time() : ($this->clock)()) >= $until) {
+            return self::EXPIRED;
+        }
+
+        return self::RETAINED;
     }
 
     /** `tinvar build:revoke <id>`. Outranks retention. */
     public function revoke(string $build): self
     {
+        $this->assertConfiguredInCode('build:revoke');
         self::assertShape($build);
         $this->revoked[$build] = true;
 
@@ -133,6 +235,7 @@ final class BuildRegistry
      */
     public function floor(string $build): self
     {
+        $this->assertConfiguredInCode('build:floor');
         self::assertShape($build);
         $this->floor = $build;
 
@@ -152,6 +255,7 @@ final class BuildRegistry
      */
     public function retain(string $build, ?string $after = null): self
     {
+        $this->assertConfiguredInCode('build:current');
         self::assertShape($build);
 
         if (\in_array($build, $this->retained, true)) {
@@ -179,7 +283,82 @@ final class BuildRegistry
     /** @return list<string> oldest first */
     public function retained(): array
     {
+        $this->sync();
+
         return $this->retained;
+    }
+
+    /**
+     * Rebuilds the retained list, revocations and floor from the store, when
+     * it holds a history other than the one they were built from.
+     *
+     * A store that cannot be read leaves this server answering for its own
+     * build and nothing else. That is the direction a revocation list fails
+     * in: every older client reloads, which is the most a revocation could
+     * have asked of them, and the site stays up -- where throwing would have
+     * turned a hand-edited file into an error on every navigation.
+     */
+    private function sync(): void
+    {
+        if ($this->store === null) {
+            return;
+        }
+
+        try {
+            $history = $this->store->read();
+        } catch (\RuntimeException) {
+            if (!$this->unreadable) {
+                $this->unreadable = true;
+                $this->loaded = null;
+                $this->retained = [$this->current];
+                $this->revoked = [];
+                $this->floor = null;
+                $this->expires = [];
+            }
+
+            return;
+        }
+
+        if ($history === $this->loaded && !$this->unreadable) {
+            return;
+        }
+
+        $this->unreadable = false;
+        $this->loaded = $history;
+        $this->retained = [];
+        $this->revoked = [];
+        $this->expires = [];
+        $this->floor = $history->floor;
+
+        foreach ($history->builds as $i => $build) {
+            $this->retained[] = $build['id'];
+            $next = $history->builds[$i + 1] ?? null;
+            if ($next !== null) {
+                $this->expires[$build['id']] = $next['at'] + $this->retainFor;
+            }
+        }
+
+        if (!\in_array($this->current, $this->retained, true)) {
+            $this->retained[] = $this->current;
+        }
+
+        foreach ($history->revoked as $build) {
+            $this->revoked[$build] = true;
+        }
+    }
+
+    /**
+     * Refuses an in-code change to a persisted registry. It would last until
+     * the store next changed and then vanish, on this worker alone -- a
+     * revocation in force on one thread of one server, for a while.
+     */
+    private function assertConfiguredInCode(string $command): void
+    {
+        if ($this->store !== null) {
+            throw new \LogicException(
+                "This registry reads its builds from a store; change them there (tinvar {$command}) so every worker sees it.",
+            );
+        }
     }
 
     private static function assertShape(string $build): void
