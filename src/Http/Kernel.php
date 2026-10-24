@@ -587,7 +587,21 @@ final class Kernel
 
         $this->support = $fragments;
 
-        $this->live_ = $live === null ? null : new SubscribeEndpoint($live, $this->auth, $this->builds);
+        // Every trade runs the route each token names through its tenant,
+        // panel stack, middleware and #[Authorize] chain, as /_fragment does:
+        // a session taken out of the panel stops being granted its topics.
+        $this->live_ = $live === null ? null : new SubscribeEndpoint(
+            live: $live,
+            auth: $this->auth,
+            orm: $this->orm,
+            routes: $this->routes,
+            loaders: new LoaderRunner($this->orm, $resolver, $gate),
+            entry: $entry,
+            middlewareResolver: self::middlewareFrom($resolver),
+            panels: $panels,
+            builds: $this->builds,
+            globalMiddleware: $globalMiddleware,
+        );
 
         // Its own argument, not reached through FragmentSupport: detecting a
         // deploy is something every application with a client router needs,

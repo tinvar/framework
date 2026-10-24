@@ -14,10 +14,16 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Live\SubscribeEndpoint;
 
+use Tinvar\Attributes\NoAuthorization;
+use Tinvar\Attributes\Page;
+use Tinvar\Auth\AllowAllGate;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\Authenticatable;
+use Tinvar\Data\Data;
 use Tinvar\Http\BuildRegistry;
+use Tinvar\Http\EntryContext;
 use Tinvar\Http\HttpException;
+use Tinvar\Http\Middleware;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Live\LiveMinter;
@@ -25,7 +31,12 @@ use Tinvar\Live\LiveToken;
 use Tinvar\Live\LiveUpdates;
 use Tinvar\Live\MemoryHub;
 use Tinvar\Live\SubscribeEndpoint;
+use Tinvar\Orm\IdentityMap;
+use Tinvar\Orm\Orm;
+use Tinvar\Orm\PdoConnection;
 use Tinvar\Render\TokenClaims;
+use Tinvar\Routing\LoaderRunner;
+use Tinvar\Routing\RouteRegistry;
 
 const KEY = 'subscribe-endpoint-test-key-0123456789abcdef';
 const SESSION_COOKIE = '__Host-test_session';
@@ -40,14 +51,46 @@ final readonly class Member implements Authenticatable
     }
 }
 
+final readonly class TitleData extends Data
+{
+    public function __construct(public string $title) {}
+}
+
+#[Page('/orders', view: 'orders', name: 'orders.index'), NoAuthorization(reason: 'a test page')]
+final class OrdersPage
+{
+    public function __invoke(): TitleData
+    {
+        return new TitleData('Orders');
+    }
+}
+
 /** @return array{SubscribeEndpoint, MemoryHub, LiveUpdates, AuthContext} */
 function endpoint(?BuildRegistry $builds = null): array
 {
     $hub = new MemoryHub();
     $live = LiveUpdates::fromKey(KEY, $hub, static fn (Request $r): string => $r->cookie(SESSION_COOKIE) ?? '');
     $auth = new AuthContext();
+    $orm = new Orm(PdoConnection::sqlite(':memory:', 'test'), new IdentityMap('test'));
+    $routes = new RouteRegistry();
+    $routes->register(OrdersPage::class);
+    $resolver = static fn (string $class): object => new $class();
 
-    return [new SubscribeEndpoint($live, $auth, $builds ?? new BuildRegistry('b1')), $hub, $live, $auth];
+    return [new SubscribeEndpoint(
+        live: $live,
+        auth: $auth,
+        orm: $orm,
+        routes: $routes,
+        loaders: new LoaderRunner($orm, $resolver, new AllowAllGate()),
+        entry: new EntryContext($orm, $resolver, auth: $auth),
+        middlewareResolver: static function (string $class): Middleware {
+            $middleware = new $class();
+            \assert($middleware instanceof Middleware);
+
+            return $middleware;
+        },
+        builds: $builds ?? new BuildRegistry('b1'),
+    ), $hub, $live, $auth];
 }
 
 /**

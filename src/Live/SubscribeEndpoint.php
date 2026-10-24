@@ -5,13 +5,22 @@ declare(strict_types=1);
 namespace Tinvar\Live;
 
 use Tinvar\Auth\AuthContext;
+use Tinvar\Auth\PanelContext;
 use Tinvar\Http\BuildRegistry;
 use Tinvar\Http\Endpoints\Limits;
+use Tinvar\Http\EntryContext;
 use Tinvar\Http\HttpException;
+use Tinvar\Http\Middleware;
+use Tinvar\Http\Pipeline;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
+use Tinvar\Orm\NoTenantContext;
+use Tinvar\Orm\Orm;
 use Tinvar\Render\TokenClaims;
 use Tinvar\Render\TokenError;
+use Tinvar\Routing\LoaderRunner;
+use Tinvar\Routing\RouteRegistry;
+use Tinvar\Routing\RoutingException;
 
 /**
  * POST /_live/subscribe
@@ -33,6 +42,18 @@ use Tinvar\Render\TokenError;
  * no longer answered for, forged, or from another tenant or panel than the
  * rest -- is answered with null in its place, and its topics are not
  * granted: the same answer for every reason, as for fragment tokens.
+ *
+ * And so is one for a page the session may no longer open. A token says
+ * which page a client holds, never whether it may go on holding it -- the
+ * tenant and panel in it were the request's when it was minted -- so every
+ * trade runs the page's route as /_fragment does: its tenant resolved from
+ * this request, its panel entered, the panel's guard, membership check and
+ * stack, the route's own middleware and every #[Authorize] in its chain. A
+ * user taken out of a panel, or out of a tenant, stops being granted its
+ * topics at the next trade rather than for the token's whole lifetime --
+ * and an application that also moves the user's auth epoch on such a
+ * change (AuthContext) has the next trade refused with the 401 that purges
+ * what the client holds.
  *
  * Behind CSRF and the live throttle: a trade sets a cookie, and is a POST.
  * Not behind authentication: a page a visitor with no account may see can
@@ -61,10 +82,22 @@ final class SubscribeEndpoint
      */
     public const int MIN_GRANT_SECONDS = 30;
 
+    /**
+     * @param \Closure(class-string): Middleware $middlewareResolver builds a route's own middleware
+     * @param list<class-string<Middleware>> $globalMiddleware already run around this endpoint,
+     *        so left out of a route's when it is run again here
+     */
     public function __construct(
         private readonly LiveUpdates $live,
         private readonly AuthContext $auth,
+        private readonly Orm $orm,
+        private readonly RouteRegistry $routes,
+        private readonly LoaderRunner $loaders,
+        private readonly EntryContext $entry,
+        private readonly \Closure $middlewareResolver,
+        private readonly ?PanelContext $panels = null,
         private readonly ?BuildRegistry $builds = null,
+        private readonly array $globalMiddleware = [],
     ) {}
 
     public function matches(Request $request): bool
@@ -99,8 +132,8 @@ final class SubscribeEndpoint
         $auth = TokenClaims::hashAuth($this->live->signer, $this->auth->id(), $this->auth->epoch());
 
         $refreshed = [];
-        $granted = [];
-        $expiresAt = $now + self::GRANT_SECONDS;
+        /** @var array<string, list<array{int, LiveToken, LiveToken}>> $byPage tokens that survived, by the page they name */
+        $byPage = [];
         $binding = null;
 
         foreach ($tokens as $i => $token) {
@@ -142,12 +175,27 @@ final class SubscribeEndpoint
                 continue;
             }
 
-            $refreshed[$i] = $renewed->encode($this->live->signer);
-            $expiresAt = min($expiresAt, $renewed->claims->expiresAt);
-            foreach (array_keys($live->topics) as $topic) {
-                $granted[$topic] = true;
+            $byPage[json_encode([$claims->route, $claims->params], JSON_THROW_ON_ERROR)][] = [$i, $live, $renewed];
+        }
+
+        $granted = [];
+        $expiresAt = $now + self::GRANT_SECONDS;
+        foreach ($byPage as $tokensOfPage) {
+            // Once per page: a page's token and its boundaries' name one
+            // route, so one run of it says for all of them.
+            if (!$this->admits($tokensOfPage[0][1]->claims, $request)) {
+                continue;
+            }
+
+            foreach ($tokensOfPage as [$i, $live, $renewed]) {
+                $refreshed[$i] = $renewed->encode($this->live->signer);
+                $expiresAt = min($expiresAt, $renewed->claims->expiresAt);
+                foreach (array_keys($live->topics) as $topic) {
+                    $granted[$topic] = true;
+                }
             }
         }
+        ksort($refreshed);
 
         $topics = array_keys($granted);
         sort($topics);
@@ -173,6 +221,75 @@ final class SubscribeEndpoint
             $expiresAt,
             TokenClaims::hashSession($this->live->signer, $session),
         );
+    }
+
+    /**
+     * Whether this request may still open the page the token was minted
+     * for, in the tenant and panel it names -- the route run as /_fragment
+     * runs it (FragmentEndpoint), short of rendering anything. Fail-closed:
+     * any refusal along the way, a redirect from a guard included, is no.
+     */
+    private function admits(TokenClaims $claims, Request $request): bool
+    {
+        try {
+            $chain = $this->routes->chainFor($claims->route, $claims->params);
+        } catch (RoutingException) {
+            // Renamed or removed since: a page this server no longer has.
+            return false;
+        }
+
+        // The panel the route is in, as the token says it was minted in: a
+        // token naming another, or none, was not minted for this page.
+        if (($this->entry->panelForChain($chain)->name ?? '') !== $claims->panel) {
+            return false;
+        }
+
+        $pipeline = new Pipeline([
+            // The tenant, resolved from this request, and the panel's guard,
+            // membership check and stack -- what decides whether the session
+            // still belongs where the token says it was.
+            ...$this->entry->stackForChain($chain),
+            ...array_map(
+                fn (string $class): Middleware => ($this->middlewareResolver)($class),
+                array_values(array_diff($chain->middleware(), $this->globalMiddleware)),
+            ),
+        ]);
+
+        $run = fn (): Response => $pipeline->run($request, function (Request $inner) use ($chain, $claims): Response {
+            // Checked, never applied: a token agrees with where the request
+            // is, and can put it nowhere.
+            if (($this->panels?->currentOrNull() ?? '') !== $claims->panel || $this->orm->tenant() !== $claims->tenant) {
+                throw new HttpException(404, 'The page is in another tenant or panel than the token.', 'live_unavailable');
+            }
+
+            // Whoever the route's middleware says is signed in, as at the
+            // start of the trade.
+            if (!hash_equals($claims->authHash, TokenClaims::hashAuth($this->live->signer, $this->auth->id(), $this->auth->epoch()))) {
+                throw new HttpException(404, 'The page was drawn for someone else.', 'live_unavailable');
+            }
+
+            // Model binding and every #[Authorize] in the chain: a page whose
+            // subject the user may no longer see grants nothing about it.
+            $this->loaders->bindAndAuthorize($chain, $inner);
+
+            return Response::make(204);
+        });
+
+        try {
+            if ($claims->panel === '') {
+                $response = $run();
+            } elseif ($this->panels === null) {
+                return false;
+            } else {
+                // Entered as /_fragment enters it: the trade itself is in no
+                // panel, and the stack holds the session to this one.
+                $response = $this->panels->within($claims->panel, $run);
+            }
+        } catch (HttpException|RoutingException|NoTenantContext) {
+            return false;
+        }
+
+        return $response->status >= 200 && $response->status < 300;
     }
 
     /**
