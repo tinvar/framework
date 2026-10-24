@@ -254,6 +254,10 @@ final class RenderChannel
                         $done = true;
                     } elseif ($type === Frame::ERROR) {
                         throw RendererException::fromErrorFrame($message, $this->debug);
+                    } elseif ($type === Frame::HEALTHY) {
+                        // The renderer's own direction, but the answer to a
+                        // health check, which a render never asks.
+                        throw new ProtocolException("The renderer sent a 'healthy' frame during a render.");
                     }
                 }
 

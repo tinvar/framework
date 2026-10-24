@@ -212,3 +212,19 @@ describe('the socket path', function () {
         }
     });
 })->skip(fn () => !\function_exists('posix_geteuid') || posix_geteuid() === 0, 'needs POSIX ownership, and not root');
+
+// A health check's answer is the renderer's to send, but never in a render:
+// one arriving mid-render is the renderer saying something nobody asked.
+it('refuses a healthy frame during a render', function () {
+    $dir = privateDirectory();
+    $path = $dir . '/r.sock';
+    $pid = hostileRenderer($path, [['t' => Frame::HEALTHY, 'pid' => 1, 'inFlight' => 0, 'served' => 0]]);
+    $done = cleanUp($dir, $pid);
+
+    try {
+        expect(fn () => hardeningChannel($path)->render(['t' => 'render'], [], static function (string $bytes): void {}))
+            ->toThrow(ProtocolException::class, "'healthy' frame during a render");
+    } finally {
+        $done();
+    }
+});

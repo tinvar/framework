@@ -47,8 +47,18 @@ final class Frame
      */
     public const string REPORT = 'report';
 
+    /**
+     * A health check, alone on its connection, and its one-frame answer.
+     * renderer:check and the pool's supervisor ask it of each renderer: an
+     * answer proves the event loop turns, which a connect alone does not,
+     * since the kernel accepts connections for a process that is stuck. It
+     * carries nothing of any request, and a render may not send it.
+     */
+    public const string HEALTH = 'health';
+    public const string HEALTHY = 'healthy';
+
     /** @var list<string> */
-    public const array PHP_TO_RENDERER = [self::RENDER, self::FRAGMENT, self::RESULT, self::MINTED, self::MAIL];
+    public const array PHP_TO_RENDERER = [self::RENDER, self::FRAGMENT, self::RESULT, self::MINTED, self::MAIL, self::HEALTH];
 
     /** @var list<string> */
     public const array RENDERER_TO_PHP = [
@@ -59,6 +69,7 @@ final class Frame
         self::REPORT,
         self::DONE,
         self::ERROR,
+        self::HEALTHY,
     ];
 
     /**
@@ -203,6 +214,38 @@ final class Frame
     public static function result(array $results): array
     {
         return ['t' => self::RESULT, 'r' => $results];
+    }
+
+    /** @return array<string, mixed> */
+    public static function health(): array
+    {
+        return ['t' => self::HEALTH];
+    }
+
+    /**
+     * What a renderer said of itself, checked field by field: the renderer
+     * is the semi-trusted side, and these numbers end up on an operator's
+     * screen.
+     *
+     * @param array<string, mixed> $frame
+     * @return array{pid: int, inFlight: int, served: int}
+     */
+    public static function readHealthy(array $frame): array
+    {
+        if (($frame['t'] ?? null) !== self::HEALTHY) {
+            throw new ProtocolException("A health check must be answered with a 'healthy' frame.");
+        }
+
+        $read = [];
+        foreach (['pid', 'inFlight', 'served'] as $field) {
+            $value = $frame[$field] ?? null;
+            if (!\is_int($value) || $value < 0) {
+                throw new ProtocolException("A 'healthy' frame must carry a whole number in '{$field}'.");
+            }
+            $read[$field] = $value;
+        }
+
+        return ['pid' => $read['pid'], 'inFlight' => $read['inFlight'], 'served' => $read['served']];
     }
 
     /** @return array<string, mixed> */

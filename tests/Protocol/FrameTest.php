@@ -214,3 +214,27 @@ describe('the mint exchange', function () {
             ]]);
     });
 });
+
+describe('the health check', function () {
+    it('goes from PHP, and its answer comes from the renderer', function () {
+        expect(Frame::health())->toBe(['t' => Frame::HEALTH])
+            ->and(Frame::PHP_TO_RENDERER)->toContain(Frame::HEALTH)
+            ->and(Frame::RENDERER_TO_PHP)->toContain(Frame::HEALTHY)
+            ->and(Frame::RENDERER_TO_PHP)->not->toContain(Frame::HEALTH);
+    });
+
+    it('reads what a renderer says of itself', function () {
+        expect(Frame::readHealthy(['t' => Frame::HEALTHY, 'pid' => 4242, 'inFlight' => 3, 'served' => 17]))
+            ->toBe(['pid' => 4242, 'inFlight' => 3, 'served' => 17]);
+    });
+
+    // The renderer is the semi-trusted side, and these reach a terminal.
+    it('refuses an answer that is not whole numbers', function (array $frame) {
+        expect(fn () => Frame::readHealthy($frame))->toThrow(ProtocolException::class);
+    })->with([
+        'another frame' => [['t' => Frame::DONE, 'pid' => 1, 'inFlight' => 0, 'served' => 0]],
+        'a string' => [['t' => Frame::HEALTHY, 'pid' => "1\e[2J", 'inFlight' => 0, 'served' => 0]],
+        'a negative count' => [['t' => Frame::HEALTHY, 'pid' => 1, 'inFlight' => -1, 'served' => 0]],
+        'a missing field' => [['t' => Frame::HEALTHY, 'pid' => 1, 'inFlight' => 0]],
+    ]);
+});
