@@ -146,6 +146,20 @@ final class QueryCache
      */
     public function tagsFor(Query $declaration, array $arguments, string $tenant = ''): array
     {
+        return self::tagsOf($declaration, $arguments, $tenant);
+    }
+
+    /**
+     * The same, with no cache to ask: a query's tags say what it read
+     * whether or not its answer is kept. A render's live subscription is
+     * scoped to them (Tinvar\Live), and an application that caches nothing
+     * still wants its pages told when what they read changes.
+     *
+     * @param array<string, mixed> $arguments
+     * @return list<string>
+     */
+    public static function tagsOf(Query $declaration, array $arguments, string $tenant = ''): array
+    {
         if ($declaration->tags === null) {
             return [];
         }

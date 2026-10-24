@@ -638,17 +638,19 @@ final class QueryRunner
      */
     private function cachedValue(string $name, array $arguments): ?array
     {
-        if ($this->cache === null) {
-            return null;
-        }
-
         $declaration = $this->registry->declarationFor($name);
 
         // Recorded on the way IN, so a hit declares its tags too -- a
         // fragment served from cache still depends on them, and a client
         // that only learned about tags on a miss would stop re-fetching
-        // exactly the boundaries the cache is keeping warm.
+        // exactly the boundaries the cache is keeping warm. And with no
+        // cache at all: what a query read is what a live subscription is
+        // scoped to, cached or not.
         $this->recordTags($declaration, $arguments);
+
+        if ($this->cache === null) {
+            return null;
+        }
 
         $hit = $this->cache->get($name, $declaration, $arguments, $this->orm->tenant());
 
@@ -682,12 +684,12 @@ final class QueryRunner
      */
     private function recordTags(QueryAttribute $declaration, array $arguments): void
     {
-        if ($this->cache === null || $declaration->tags === null) {
+        if ($declaration->tags === null) {
             return;
         }
 
         try {
-            foreach ($this->cache->tagsFor($declaration, $arguments, $this->orm->tenant()) as $tag) {
+            foreach (QueryCache::tagsOf($declaration, $arguments, $this->orm->tenant()) as $tag) {
                 $this->tagsRead[$tag] = true;
             }
         } catch (\Throwable) {
