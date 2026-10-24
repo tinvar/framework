@@ -153,7 +153,12 @@ final class QueryRunner
             $groupOf[$id] = $key;
         }
 
-        $values = $groups === [] ? [] : $this->execute($groups);
+        // One read-only transaction for the tick. Each body and each encode
+        // is a read-only scope of its own, and a body that never suspends
+        // finishes before the next starts, so without this every scope began
+        // and ended a transaction of its own: on the 24-card catalog, the
+        // batch and 24 encodes, fifty statements the page did not ask for.
+        $values = $groups === [] ? [] : $this->orm->readOnly(fn (): array => $this->execute($groups));
 
         $results = [];
         foreach ($calls as $call) {

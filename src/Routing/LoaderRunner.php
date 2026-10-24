@@ -52,6 +52,19 @@ final class LoaderRunner
         // a page the session must be allowed to see.
         $this->authorize($chain, $models);
 
+        // The chain's loaders share one read-only transaction rather than
+        // opening one each; each is still a read-only scope in invoke().
+        return $this->orm->readOnly(fn (): LoadedRoute => $this->load($chain, $binder, $models, $request, $partial));
+    }
+
+    /** @param array<string, Model> $models */
+    private function load(
+        RouteChain $chain,
+        Binder $binder,
+        array $models,
+        Request $request,
+        ?PartialReload $partial,
+    ): LoadedRoute {
         /** @var array<class-string, Data> $byType */
         $byType = [];
         $layouts = [];

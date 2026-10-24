@@ -15,6 +15,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Orm\ReadOnlyTransaction;
 
+use Tinvar\Attributes\Layout;
 use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Page;
 use Tinvar\Attributes\Query;
@@ -41,12 +42,15 @@ require_once __DIR__ . '/../Query/Fixtures/queries.php';
 
 /**
  * The fixture's connection, noting for every statement whether the
- * connection was read-only when it ran.
+ * connection was read-only when it ran, and counting the read-only
+ * transactions begun.
  */
 final class Watched implements Connection
 {
     /** @var list<array{string, bool}> */
     public array $seen = [];
+
+    public int $transactions = 0;
 
     public function __construct(private readonly Connection $inner) {}
 
@@ -96,6 +100,10 @@ final class Watched implements Connection
 
     public function readOnly(\Closure $work): mixed
     {
+        if (!$this->inner->isReadOnly()) {
+            $this->transactions++;
+        }
+
         return $this->inner->readOnly($work);
     }
 
@@ -141,6 +149,38 @@ final class WritingPage
         }
 
         return new RenamedData((int) $connection->pdo()->exec("UPDATE racks SET name = 'renamed'"));
+    }
+}
+
+final readonly class RackCountData extends Data
+{
+    public function __construct(public int $racks) {}
+}
+
+final readonly class UnitCountData extends Data
+{
+    public function __construct(public int $units) {}
+}
+
+#[Layout('/counts', view: 'counts/layout')]
+final class CountingLayout
+{
+    public function __construct(private readonly Orm $orm) {}
+
+    public function __invoke(): RackCountData
+    {
+        return new RackCountData(\count($this->orm->all(Rack::class)));
+    }
+}
+
+#[Page('/counts', view: 'counts/index', name: 'counts.index')]
+final class CountingPage
+{
+    public function __construct(private readonly Orm $orm) {}
+
+    public function __invoke(): UnitCountData
+    {
+        return new UnitCountData((int) $this->orm->connection()->select('SELECT COUNT(*) AS c FROM units')[0]['c']);
     }
 }
 
@@ -333,6 +373,33 @@ it('refuses a loader that writes through raw PDO', function () {
         ->toThrow(\PDOException::class, 'readonly database')
         ->and(rackNames($fixture))->toBe(['R-01', 'R-02'])
         ->and($fixture->connection->isReadOnly())->toBeFalse('the scope ended with the throw');
+});
+
+// Each loader, body and encode is a scope; begun and ended one by one, each
+// was a transaction of its own, two statements apiece -- fifty a catalog.
+it('begins one transaction for a loader chain, and one for a query tick', function () {
+    $fixture = new Fixture(racks: 3, unitsPerRack: 1);
+    $watched = new Watched($fixture->connection);
+    $orm = new Orm($watched, new IdentityMap('test'));
+
+    $routes = new RouteRegistry();
+    $routes->registerAll([CountingLayout::class, CountingPage::class]);
+    $loaders = new LoaderRunner($orm, static fn (string $class): object => new $class($orm), new AllowAllGate());
+    $loaded = $loaders->run($routes->match('/counts') ?? throw new \LogicException('No route.'), Request::get('/counts'));
+
+    expect($loaded->page)->toEqual(new UnitCountData(3))
+        ->and($watched->transactions)->toBe(1, 'the layout and the page in one');
+
+    $watched->transactions = 0;
+    $registry = new QueryRegistry();
+    $registry->register(RackSummary::class);
+    $results = (new QueryRunner($registry, $orm, new AllowAllGate()))->run(array_map(
+        static fn (int $i): array => ['id' => $i, 'name' => 'racks.summary', 'args' => ['rack' => $fixture->ids['racks'][$i]]],
+        [0, 1, 2],
+    ), ['racks.summary']);
+
+    expect(array_column($results, 'value'))->toHaveCount(3)
+        ->and($watched->transactions)->toBe(1, 'three bodies and three encodes in one');
 });
 
 // A scope inside a transaction the caller holds -- a render run inside an
