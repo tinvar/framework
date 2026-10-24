@@ -315,6 +315,66 @@ describe('the page it is sent back to', function () {
     });
 });
 
+// "A 419 becomes a same-origin redirect back with a 'page expired' flash,
+// not an error screen." A form left open past its session was answered
+// with the framework's bare 419 page.
+describe('a form posted without script, after its session changed', function () {
+    it('goes back with a page-expired flash rather than an error page', function () {
+        $flashes = new SessionFlashes();
+        [$kernel, , $rack, $signIn] = kernel($flashes);
+        $cookies = [...cookies(), VerifyCsrfToken::COOKIE => 'a-token-from-an-older-session'];
+        $signIn();
+
+        $response = $kernel->handle(
+            submitted('RackActions.moveUnit', ['rack' => $rack, 'position' => '12'], $cookies),
+            page(),
+        );
+
+        expect($response->status)->toBe(303)
+            ->and($response->header('location'))->toBe('/racks/r-1?tab=units')
+            ->and($flashes->held['session-a'])->toBe(['form' => [
+                'action' => 'RackActions.moveUnit',
+                'errors' => [],
+                'old' => [],
+                'expired' => true,
+            ]]);
+    });
+
+    // The post failed CSRF, so whoever sent it may not be the person the
+    // next page shows it to: another site could otherwise fill in a form
+    // on this one.
+    it('puts none of the refused post\'s input back', function () {
+        $flashes = new SessionFlashes();
+        [$kernel] = kernel($flashes);
+
+        $kernel->handle(
+            submitted('RackActions.moveUnit', ['note' => 'chosen by another site'], [...cookies(), VerifyCsrfToken::COOKIE => 'x']),
+            page(),
+        );
+
+        expect(json_encode($flashes->held))->not->toContain('chosen by another site');
+    });
+
+    it('still refuses a script caller with 419, which retries by itself', function () {
+        $flashes = new SessionFlashes();
+        [$kernel, , $rack, $signIn] = kernel($flashes);
+        $signIn();
+
+        $response = $kernel->handle(
+            new Request('POST', '/_action/RackActions.moveUnit', [
+                'content-type' => 'application/json',
+                'accept' => 'application/json',
+                'x-xsrf-token' => 'stale',
+            ], cookies: [...cookies(), VerifyCsrfToken::COOKIE => 'stale']),
+            page(),
+            json_encode(['rack' => $rack, 'position' => 12], JSON_THROW_ON_ERROR),
+        );
+
+        expect($response->status)->toBe(419)
+            ->and($flashes->held)->toBe([]);
+    });
+});
+
 describe('a script caller', function () {
     it('still gets field errors as JSON, with nothing flashed', function () {
         $flashes = new SessionFlashes();

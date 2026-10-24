@@ -466,14 +466,34 @@ final class Kernel
             if ($this->actions_->matches($request)) {
                 ActionEndpoint::assertMethod($request);
 
+                try {
+                    $response = $this->actionStack->run(
+                        $request,
+                        fn (Request $passed): Response => $this->actions_->handle($passed, $rawBody),
+                    );
+                } catch (HttpException $e) {
+                    // "A 419 becomes a same-origin redirect back with a
+                    // 'page expired' flash, not an error screen." Script
+                    // retries with the refreshed cookie and arranges that
+                    // itself; a browser's own post is sent back here. With
+                    // no input put back: the post failed CSRF, so whoever
+                    // made it may not be the person it is shown to.
+                    if ($e->status === 419 && ActionEndpoint::isFormNavigation($request)) {
+                        return $this->actions_->back($request, ['form' => [
+                            'action' => substr($request->path, \strlen(ActionEndpoint::PREFIX)),
+                            'errors' => [],
+                            'old' => [],
+                            'expired' => true,
+                        ]]);
+                    }
+                    throw $e;
+                }
+
                 // A client-router call (`RSC: 1`) fetches with redirect:
                 // 'manual', which hides a 303's Location entirely. It reads
                 // an action's redirect as a navigation reads one: 409 +
                 // X-Redirect, followed inside the same visit.
-                return TranslateRedirects::translate($request, $this->actionStack->run(
-                    $request,
-                    fn (Request $passed): Response => $this->actions_->handle($passed, $rawBody),
-                ));
+                return TranslateRedirects::translate($request, $response);
             }
 
             // Before the other two, because its prefix is as specific and the
