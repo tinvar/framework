@@ -1,0 +1,74 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tinvar\Queue;
+
+use Tinvar\Attributes\Queue as QueueOptions;
+
+/**
+ * How a worker runs: which queues, in priority order, and when it stops.
+ *
+ *   tinvar queue:work [--queue=mail,default] [--sleep=1] [--max-jobs=N]
+ *                     [--max-time=SECONDS] [--memory=MB] [--timeout=SECONDS]
+ *                     [--stop-when-empty]
+ *
+ * `timeout` is only how long a reservation lasts past a job's own timeout
+ * margin: each job's timeout is its #[Queue]'s.
+ */
+final readonly class WorkerOptions
+{
+    /** @param list<string> $queues */
+    public function __construct(
+        public array $queues = [QueueOptions::DEFAULT],
+        public int $sleep = 1,
+        public int $maxJobs = 0,
+        public int $maxTime = 0,
+        public int $memoryMb = 128,
+        public int $timeout = 60,
+        public bool $stopWhenEmpty = false,
+        public bool $signals = true,
+    ) {
+        if ($queues === []) {
+            throw new \InvalidArgumentException('A worker needs a queue to work.');
+        }
+    }
+
+    /**
+     * From `queue:work`'s arguments.
+     *
+     * @param list<string> $arguments
+     */
+    public static function fromArguments(array $arguments): self
+    {
+        $values = [];
+        $stopWhenEmpty = false;
+        foreach ($arguments as $argument) {
+            if ($argument === '--stop-when-empty') {
+                $stopWhenEmpty = true;
+
+                continue;
+            }
+            if (preg_match('/^--(queue|sleep|max-jobs|max-time|memory|timeout)=(.+)\z/', $argument, $m) !== 1) {
+                throw new \InvalidArgumentException(
+                    "Unknown argument '{$argument}'. Usage: tinvar queue:work [--queue=a,b] [--sleep=S] [--max-jobs=N] "
+                    . '[--max-time=S] [--memory=MB] [--timeout=S] [--stop-when-empty]',
+                );
+            }
+            if ($m[1] !== 'queue' && preg_match('/^\d{1,9}\z/', $m[2]) !== 1) {
+                throw new \InvalidArgumentException("--{$m[1]} takes a whole number; got '{$m[2]}'.");
+            }
+            $values[$m[1]] = $m[2];
+        }
+
+        return new self(
+            queues: isset($values['queue']) ? array_values(array_filter(explode(',', $values['queue']), static fn (string $q): bool => $q !== '')) : [QueueOptions::DEFAULT],
+            sleep: (int) ($values['sleep'] ?? 1),
+            maxJobs: (int) ($values['max-jobs'] ?? 0),
+            maxTime: (int) ($values['max-time'] ?? 0),
+            memoryMb: (int) ($values['memory'] ?? 128),
+            timeout: (int) ($values['timeout'] ?? 60),
+            stopWhenEmpty: $stopWhenEmpty,
+        );
+    }
+}
