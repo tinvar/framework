@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Http;
 
+use Tinvar\Support\Digest;
 use Tinvar\Validation\ValidationException;
 
 /**
@@ -92,15 +93,27 @@ final class ExceptionHandler
     }
 
     /**
-     * A stable, non-reversible handle on one failure.
+     * Logs a failure that is not this request's outcome, and says what it
+     * was logged under.
      *
-     * Enough to find the log line, not enough to learn anything: the class and
-     * location go through a hash, and the message never does, since it may
-     * quote the client's own input back.
+     * A rescued field or fragment fails without failing the response, so
+     * nothing reaches handle(); this is how it still reaches the log. The
+     * digest is the one the client is given -- in the Rescued marker, or on
+     * the renderer's error row -- so a reference quoted to support finds the
+     * line. A caller that has already shown one passes it.
      */
+    public function report(\Throwable $e, ?string $digest = null): string
+    {
+        $digest ??= self::digest($e);
+        $this->log($e, $digest);
+
+        return $digest;
+    }
+
+    /** See Digest::of(). */
     public static function digest(\Throwable $e): string
     {
-        return substr(hash('sha256', $e::class . '|' . $e->getFile() . '|' . $e->getLine()), 0, 16);
+        return Digest::of($e);
     }
 
     private static function codeFor(int $status): string

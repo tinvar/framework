@@ -41,7 +41,23 @@ final class RenderChannel
          * @var list<int>
          */
         private readonly array $trustedSocketOwners = [],
+        /**
+         * Logs a subtree the renderer reports it rendered as an error row --
+         * the Kernel's report(), given the renderer's digest so the log line
+         * and the browser's reference agree. Without one, PHP's error log.
+         *
+         * @var (\Closure(\Throwable, ?string): string)|null
+         */
+        private readonly ?\Closure $report = null,
     ) {}
+
+    /**
+     * Report frames one render may send. Each is a log line this process
+     * writes, so a renderer -- the side that "runs third-party npm code" --
+     * must not be able to write them without end. Past the cap they are
+     * dropped, not fatal: the render they describe has still completed.
+     */
+    public const int MAX_REPORTS = 32;
 
     /**
      * tinvar-spec.md, "Resource limits": "Per render: 200 query calls and 5
@@ -103,6 +119,7 @@ final class RenderChannel
 
         $meta = [];
         $metaBytes = 0;
+        $reports = 0;
         $bytes = 0;
         $chunks = 0;
         $queryCalls = 0;
@@ -224,6 +241,15 @@ final class RenderChannel
                             throw new ProtocolException('The renderer sent more meta than one render may.');
                         }
                         $meta[] = $message;
+                    } elseif ($type === Frame::REPORT) {
+                        // A rescued subtree: the browser gets an error row
+                        // with this digest, and the log gets the line it
+                        // points to. The message is the renderer's to
+                        // choose, so it is kept only under debug, as an
+                        // error frame's is.
+                        if (++$reports <= self::MAX_REPORTS) {
+                            $this->reportRendered(RendererException::fromErrorFrame(Frame::readReport($message), $this->debug));
+                        }
                     } elseif ($type === Frame::DONE) {
                         $done = true;
                     } elseif ($type === Frame::ERROR) {
@@ -271,6 +297,17 @@ final class RenderChannel
             waitingOnRendererMs: $waitNs / 1e6,
             tagsRead: $this->runner->tagsRead(),
         );
+    }
+
+    private function reportRendered(RendererException $e): void
+    {
+        if ($this->report !== null) {
+            ($this->report)($e, $e->digest);
+
+            return;
+        }
+
+        error_log(sprintf('[tinvar] the renderer rescued a subtree (%s) [%s]', $e->code_, $e->digest ?? 'no digest'));
     }
 
     /** @return resource */

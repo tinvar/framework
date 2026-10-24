@@ -248,13 +248,19 @@ final class Kernel
                 },
             );
 
+        // Built before the runners, which report through it: a rescued field
+        // and a failed query are logged by the same handler as a failed
+        // request, under the digest the client is shown.
+        $this->exceptions = new ExceptionHandler($log);
+        $encoder = new \Tinvar\Data\Encoder($this->report(...));
+
         $this->actions_ = new ActionEndpoint(
             new ActionRunner(
                 $this->actions,
                 $this->orm,
                 $gate,
                 new Validator($this->orm),
-                new \Tinvar\Data\Encoder(),
+                $encoder,
                 $cache,
             ),
             revalidator: $revalidator,
@@ -267,8 +273,10 @@ final class Kernel
             registry: $this->queries,
             orm: $this->orm,
             gate: $gate,
+            encoder: $encoder,
             cache: $cache,
             debug: $debug,
+            report: $this->report(...),
         );
 
         $this->queries_ = new QueryEndpoint(
@@ -407,7 +415,6 @@ final class Kernel
         // whether or not it has a single <Deferred>.
         $builds ??= $fragments?->builds;
         $this->versions = $builds === null ? null : new CheckVersion($builds);
-        $this->exceptions = new ExceptionHandler($log);
         $this->scope = RequestScope::standard($this->orm, $this->auth, $this->policies, $panels, $queryRunner);
 
         // Request-lived services go with the request, like the user and the
@@ -534,6 +541,20 @@ final class Kernel
         } finally {
             $this->scope->reset();
         }
+    }
+
+    /**
+     * Logs a failure that did not fail its response -- a #[Rescue] field, a
+     * fragment subtree the renderer rendered as an error row, a query that
+     * threw -- and returns the digest it was logged under.
+     *
+     * An application that builds its own Encoder, QueryRunner or
+     * RenderChannel passes this to each, so what they rescue is logged where
+     * every failed request is.
+     */
+    public function report(\Throwable $e, ?string $digest = null): string
+    {
+        return $this->exceptions->report($e, $digest);
     }
 
     /**
