@@ -87,8 +87,11 @@ function serve(string $root, array $arguments, array $env): array
     );
     stream_set_blocking($pipes[1], false);
 
+    // Past serve's own waits -- 180 s for the dev renderer, 30 for
+    // FrankenPHP -- so a start that fails says why in serve's words, rather
+    // than being cut off by this one while it loads.
     $output = '';
-    $deadline = microtime(true) + 120;
+    $deadline = microtime(true) + 240;
     while (microtime(true) < $deadline && preg_match('#Listening on (http://\S+)#', $output, $m) !== 1) {
         $output .= (string) stream_get_contents($pipes[1]);
         if (!proc_get_status($process)['running']) {

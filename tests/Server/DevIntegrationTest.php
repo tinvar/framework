@@ -103,8 +103,11 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
     stream_set_blocking($pipes[1], false);
 
     try {
+        // Past dev's own waits -- codegen's 60 s, then serve's 180 for the
+        // dev renderer and 30 for FrankenPHP -- so a start that fails says
+        // why in their words rather than being stopped mid-load by this.
         $output = '';
-        $deadline = microtime(true) + 120;
+        $deadline = microtime(true) + 300;
         while (microtime(true) < $deadline && preg_match('#Listening on (http://\S+)#', $output, $m) !== 1) {
             $output .= (string) stream_get_contents($pipes[1]);
             if (!proc_get_status($process)['running']) {
