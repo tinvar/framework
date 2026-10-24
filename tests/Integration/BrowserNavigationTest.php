@@ -68,16 +68,19 @@ function runWithTimeout(array $command, string $cwd, int $seconds): string
  * The served shop for one test: a renderer, a freshly seeded database, and
  * php -S on the front controller.
  *
- * @param \Closure(string): void $drive given the origin
+ * @param \Closure(string, string): void $drive given the origin, and the file
+ *        php -S writes its error log to
+ * @param array<string, string> $env more of the server's environment
  */
-function served(string $root, \Closure $drive): void
+function served(string $root, \Closure $drive, array $env = []): void
 {
     $renderer = Renderer::start('msgpack', 'browser-e2e');
     $port = 18_000 + random_int(0, 999);
     $keyFile = sys_get_temp_dir() . '/tinvar-e2e-' . bin2hex(random_bytes(4)) . '/app.key';
+    $errorLog = (string) tempnam(sys_get_temp_dir(), 'tinvar-e2e-log-');
     $server = proc_open(
         [PHP_BINARY, '-S', "127.0.0.1:{$port}", "{$root}/examples/shop/public/index.php"],
-        [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']],
+        [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', $errorLog, 'w']],
         $pipes,
         $root,
         // No TINVAR_APP_KEY: the app generates one into a fresh key file.
@@ -88,6 +91,7 @@ function served(string $root, \Closure $drive): void
             'TINVAR_SOCKET' => $renderer->socketPath,
             'TINVAR_APP_KEY_FILE' => $keyFile,
             'SHOP_DATABASE' => Shop::database(),
+            ...$env,
         ],
     );
 
@@ -108,11 +112,12 @@ function served(string $root, \Closure $drive): void
         // browser talking to whatever else holds the port.
         expect(proc_get_status($server)['running'])->toBeTrue("php -S did not start on port {$port}");
 
-        $drive("http://127.0.0.1:{$port}");
+        $drive("http://127.0.0.1:{$port}", $errorLog);
     } finally {
         proc_terminate($server);
         proc_close($server);
         $renderer->stop();
+        @unlink($errorLog);
         $generated = is_file($keyFile);
         if ($generated) {
             unlink($keyFile);
@@ -214,12 +219,15 @@ it('signs in, reads orders and an order, places an order and signs out', functio
     ]);
 
     // The order page rendered without its shipping updates, which loaded
-    // from /_fragment/ only once scrolled to.
+    // from /_fragment/ only once scrolled to. The order placed later has
+    // one line, so its panel starts within the boundary's buffer of the
+    // fold and loads without a scroll: the second request.
     expect($result['order']['heading'])->toBe("Order {$result['order']['number']}")
         ->and($result['order']['lines'])->toBeGreaterThan(0)
+        ->and($result['order']['below'])->toBeGreaterThan(200, 'the panel starts past its buffer below the fold')
         ->and($result['order']['requestedBeforeScroll'])->toBe(0)
         ->and($result['order']['shipping'])->toBeTrue()
-        ->and($result['fragments'])->toBe(['1']);
+        ->and($result['fragments'])->toBe(['1', '1']);
 
     expect($result['actions'])->toBe(['account.signIn', 'account.signIn', 'orders.place', 'account.signOut'])
         ->and($result['placed']['heading'])->toStartWith('Order PW-')
@@ -237,4 +245,52 @@ it('signs in, reads orders and an order, places an order and signs out', functio
         'httpOnly' => true,
         'sameSite' => 'Lax',
     ]);
+});
+
+// "A deferred ... marked `rescue` that throws is reported to the PHP
+// exception handler and omitted; the client boundary renders its `rescue`
+// slot instead of failing the page." The shop is served with the panel's
+// query made to throw (ShippingUpdates::failingForTest), so this is a real
+// failure in PHP, carried through the renderer as an error row.
+it('shows the shipping panel\'s rescue slot when its fragment fails, and logs what the slot quotes', function () use ($root) {
+    $output = '';
+    $log = '';
+    served($root, function (string $origin, string $errorLog) use ($root, &$output, &$log): void {
+        $output = runWithTimeout(
+            ['node', "{$root}/examples/shop/e2e/rescue.mjs", $origin, DemoAccount::EMAIL, DemoAccount::PASSWORD],
+            $root,
+            90,
+        );
+        $log = (string) file_get_contents($errorLog);
+    }, ['SHOP_TEST_FAIL' => 'shipping-updates']);
+
+    $result = json_decode((string) $output, true);
+    expect($result)->toBeArray("the browser script failed:\n{$output}");
+
+    // The slot, in place of the panel, with the rest of the order intact.
+    expect($result['rescue']['text'])->toContain("Couldn't load shipping updates")
+        ->toContain('The order above is current')
+        ->toContain('Try again')
+        ->and($result['rescue']['marked'])->toBeTrue()
+        ->and($result['rescue']['lines'])->toBeGreaterThan(0)
+        ->and($result['rescue']['reference'])->toMatch('/^[A-Za-z0-9_-]{8,64}$/');
+
+    // The fragment answered: a payload carrying an error row, not a failed
+    // page. Once rescued it waited for the slot's button, then asked once.
+    expect($result['fragments'])->toBe([200, 200])
+        ->and($result['retried'])->toBe(['before' => 1, 'after' => 2, 'stillRescued' => true]);
+
+    // Reported to the exception handler: the reference the visitor sees is
+    // in the log, beside the exception that caused it.
+    $reference = $result['rescue']['reference'];
+    expect($log)->toContain("[shop] {$reference} RuntimeException: Shipping updates failed on purpose")
+        ->and($log)->toContain("[shop] {$reference} Tinvar\\Render\\RendererException");
+
+    // Nothing failed but the panel. The browser logs the error row React
+    // rendered for it; nothing else.
+    $unexpected = array_values(array_filter(
+        $result['errors'],
+        static fn (string $e): bool => !str_contains($e, 'An error occurred in the Server Components render'),
+    ));
+    expect($unexpected)->toBe([]);
 });
