@@ -33,6 +33,7 @@ use Tinvar\Live\LiveMinter;
 use Tinvar\Live\LiveUpdates;
 use Tinvar\Live\SubscribeEndpoint;
 use Tinvar\Live\TagsRead;
+use Tinvar\Mail\UnsubscribeEndpoint;
 use Tinvar\Observability\Logger;
 use Tinvar\Observability\Metrics;
 use Tinvar\Observability\Probes;
@@ -370,6 +371,10 @@ final class Kernel
      * @param Probes|null $probes /_health, /_ready and /_metrics, answered ahead of
      *        everything else -- the dev toolbar's endpoint and webhooks included --
      *        since a probe is not a visitor
+     * @param UnsubscribeEndpoint|null $unsubscribe one-click unsubscribe from email
+     *        (ADR 0048): mounted at /_mail/unsubscribe/*, beside webhooks and as they
+     *        are -- a mail provider's server POSTs it, with a signed link and no
+     *        session, so none of the global stack applies to it
      */
     public function __construct(
         public readonly Orm $orm,
@@ -411,6 +416,7 @@ final class Kernel
         ?Uploads $uploads = null,
         private readonly ?Telemetry $telemetry = null,
         private readonly ?Probes $probes = null,
+        private readonly ?UnsubscribeEndpoint $unsubscribe = null,
     ) {
         if ($toolbar !== null && !$dev) {
             throw new \InvalidArgumentException(
@@ -993,6 +999,12 @@ final class Kernel
                 $this->telemetry?->route('_webhook');
 
                 return $this->webhooks->handle($request, $rawBody);
+            }
+
+            if ($this->unsubscribe !== null && $this->unsubscribe->matches($request)) {
+                $this->telemetry?->route('_unsubscribe');
+
+                return $this->unsubscribe->handle($request, $rawBody);
             }
 
             if ($this->handoff !== null && $this->handoff->matches($request)) {
