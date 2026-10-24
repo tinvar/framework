@@ -133,6 +133,12 @@ final class Orm
         $this->readOnlyMain = 0;
         $this->readOnlyByFiber = new \WeakMap();
 
+        // A transaction still open here was left in a fiber nobody resumes.
+        // Its frames would hold the next request's afterCommit() callbacks
+        // for a commit that never comes, and fold its undo into theirs.
+        $this->journal = [];
+        $this->afterCommit = [];
+
         // And the database's copy, now rather than at the next statement:
         // anything reaching the connection around this class before then
         // -- a raw PDO handle -- must not find the last request's tenant.
@@ -908,7 +914,7 @@ final class Orm
             // same save() wrote nothing. Loaded relations were refilled for
             // writes that no longer exist, too. Undone newest first, so a
             // model saved twice ends with the snapshot it had before either.
-            foreach (array_reverse(array_pop($this->journal)) as $undo) {
+            foreach (array_reverse(self::popFrame($this->journal)) as $undo) {
                 $undo();
             }
 
@@ -921,14 +927,16 @@ final class Orm
         }
 
         // A nested call that returned is undone if the outer one rolls back.
-        $frame = array_pop($this->journal);
+        // A frame flush() dropped -- its fiber resumed after the request
+        // ended -- has nothing left to fold.
+        $frame = self::popFrame($this->journal);
         if ($this->journal !== []) {
             array_push($this->journal[array_key_last($this->journal)], ...$frame);
         }
 
         // And what waited on it waits on the outer one, which may still roll
         // back. Only the outermost commit is a commit anyone else can read.
-        $waiting = array_pop($this->afterCommit);
+        $waiting = self::popFrame($this->afterCommit);
         if ($this->afterCommit !== []) {
             array_push($this->afterCommit[array_key_last($this->afterCommit)], ...$waiting);
         } else {
@@ -969,6 +977,20 @@ final class Orm
         }
 
         $this->afterCommit[array_key_last($this->afterCommit)][] = $callback;
+    }
+
+    /**
+     * The innermost frame, or none: flush() empties the stacks under a
+     * transaction left open in an abandoned fiber, which may still return.
+     *
+     * @template T
+     * @param list<list<T>> $stack
+     * @param-out list<list<T>> $stack
+     * @return list<T>
+     */
+    private static function popFrame(array &$stack): array
+    {
+        return array_pop($stack) ?? [];
     }
 
     /** @param list<\Closure(): void> $callbacks */

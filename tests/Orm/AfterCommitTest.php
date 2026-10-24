@@ -102,3 +102,26 @@ it('runs every callback even when one throws, and rethrows the first once they h
     expect($thrown)->toBe('first')
         ->and($ran)->toBe(['second']);
 });
+
+// A transaction left open in a fiber nobody resumes -- abandoned when the
+// request ended -- held its frame past the reset, so every afterCommit() of
+// the next request on that worker waited on a commit that never came: the
+// job never dispatched, the invalidation never sent.
+it('starts the next request with no frame a request before left open', function () {
+    $orm = orm();
+    $ran = [];
+
+    $fiber = new \Fiber(function () use ($orm): void {
+        $orm->transaction(static function (): void {
+            \Fiber::suspend();
+        });
+    });
+    $fiber->start();
+    $orm->flush();
+
+    $orm->afterCommit(function () use (&$ran): void {
+        $ran[] = 'next request';
+    });
+
+    expect($ran)->toBe(['next request']);
+});
