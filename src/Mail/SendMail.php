@@ -15,9 +15,11 @@ use Tinvar\Jobs\Job;
  * tried for a while before it fails: a mail server that is down is usually
  * back within the hour.
  */
-#[Queue('mail', tries: 5, backoff: [10, 60, 300, 900], timeout: 60)]
+#[Queue(self::QUEUE, tries: 5, backoff: [10, 60, 300, 900], timeout: 60)]
 final readonly class SendMail implements Job
 {
+    public const string QUEUE = 'mail';
+
     public function __construct(public Mailable $mailable) {}
 
     public function handle(Mailer $mailer): void

@@ -52,6 +52,9 @@ final class Console
      * @param \Closure(class-string): object $resolver builds commands and what they take
      * @param (\Closure(\Throwable): void)|null $report a failure, for the application's log
      * @param (\Closure(): \DateTimeImmutable)|null $clock now; the system clock unless given
+     * @param list<string> $queues what queue:work works without --queue, in priority order:
+     *        every queue the application's jobs are on, or a worker started plainly
+     *        leaves some of them unworked
      */
     public function __construct(
         array $commands,
@@ -66,6 +69,7 @@ final class Console
         private readonly ?Scheduler $scheduler = null,
         private readonly ?\Closure $report = null,
         private readonly ?\Closure $clock = null,
+        private readonly array $queues = [\Tinvar\Attributes\Queue::DEFAULT],
     ) {
         foreach ($commands as $class) {
             $attribute = new \ReflectionClass($class)->getAttributes(CommandName::class)[0] ?? null;
@@ -186,7 +190,7 @@ final class Console
     private function work(array $arguments, Output $output): int
     {
         [$queue, $runner] = $this->queueParts();
-        $options = WorkerOptions::fromArguments($arguments);
+        $options = WorkerOptions::fromArguments($arguments, $this->queues);
 
         $this->worker = new Worker(
             $queue,

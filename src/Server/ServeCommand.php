@@ -12,6 +12,7 @@ use Tinvar\Support\PrivateDirectory;
  * stopped together.
  *
  *   tinvar serve [--dev] [--host=HOST] [--port=PORT] [--app=DIR] [--workers=N] [--frankenphp=PATH]
+ *                [--worker] [--schedule]
  *
  * With --dev, Vite's dev server is the renderer ("Dev mode: Vite's dev server
  * is the renderer, with HMR and no separate build"): no build is needed, the
@@ -33,9 +34,18 @@ use Tinvar\Support\PrivateDirectory;
  * The renderer gets a scrubbed environment, as it requires; FrankenPHP gets
  * this process's, since the application reads its settings from it.
  *
+ * `--worker` and `--schedule` start the application's queue worker
+ * (`queue:work`) and scheduler (`schedule:work`) beside them, through the
+ * console this command is run from, with FrankenPHP's environment and the
+ * URL it serves (TINVAR_URL), which work done outside a request builds its
+ * links on. Either one exiting on its own -- a worker giving up its process
+ * to a job that would not stop at its timeout, or past its memory limit --
+ * is started again, up to RESTARTS times a minute; past that, or when the
+ * renderer or FrankenPHP exits, everything stops.
+ *
  * It prints the URL once FrankenPHP is answering on it, forwards SIGINT and
- * SIGTERM to both children, and if either exits on its own stops the other
- * and exits non-zero. Killed outright, it can do none of that, so each child
+ * SIGTERM to the children, and if the renderer or FrankenPHP exits on its
+ * own stops the rest and exits non-zero. Killed outright, it can do none of that, so each child
  * also stops when this process's end of its standard input closes; and the
  * next start removes the directory a killed one left.
  */
@@ -48,8 +58,8 @@ final class ServeCommand
 
     private const array OPTIONS = ['host', 'port', 'app', 'workers', 'frankenphp'];
 
-    /** Options that take no value. */
-    private const array FLAGS = ['dev'];
+    /** Options that take no value: dev mode, and the background children to start beside the server. */
+    private const array FLAGS = ['dev', 'worker', 'schedule'];
 
     /**
      * What only `serve --dev` hands FrankenPHP: kept out of the environment of
@@ -60,6 +70,9 @@ final class ServeCommand
 
     /** The addresses dev mode may listen on. */
     private const array LOOPBACK = ['127.0.0.1', '::1'];
+
+    /** How often in a minute a background child may be started again before serve gives up on it. */
+    public const int RESTARTS = 5;
 
     /** Variables the renderer may see; it refuses to start holding anything secret. */
     private const array RENDERER_ENV = ['PATH', 'TZ', 'LANG', 'LC_ALL'];
@@ -89,6 +102,8 @@ final class ServeCommand
      *        keys, which its Caddyfile reads (Tinvar\Live\HubSettings). Asked
      *        once FrankenPHP is about to start, and never given to the
      *        renderer, whose environment stays scrubbed.
+     * @param string|null $console the CLI whose `queue:work` and `schedule:work`
+     *        --worker and --schedule run; without it, neither is offered
      */
     public function __construct(
         private readonly string $projectRoot,
@@ -97,6 +112,7 @@ final class ServeCommand
         ?\Closure $err = null,
         private readonly ?string $workingDirectory = null,
         private readonly ?\Closure $serverEnvironment = null,
+        private readonly ?string $console = null,
     ) {
         $this->out = $out ?? static function (string $line): void {
             fwrite(STDOUT, $line . "\n");
@@ -126,7 +142,7 @@ final class ServeCommand
      * without a process to clean up.
      *
      * @param list<string> $arguments
-     * @return array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string}
+     * @return array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string, background: list<string>}
      */
     public function plan(array $arguments): array
     {
@@ -186,6 +202,7 @@ final class ServeCommand
             'entry' => $entry,
             'renderer' => $renderer,
             'workers' => $workers === null ? self::cpus() : (int) $workers,
+            'background' => $this->background($options),
             'port' => $port,
             'dev' => $dev,
             'vitePort' => $vitePort,
@@ -195,7 +212,7 @@ final class ServeCommand
 
     /**
      * @param list<string> $arguments
-     * @return array<string, string>
+     * @return array<string, string> options by name; a flag's value is ''
      */
     private static function parse(array $arguments): array
     {
@@ -208,13 +225,35 @@ final class ServeCommand
             if (preg_match('/^--([a-z]+)=(.*)\z/s', $argument, $m) !== 1 || !\in_array($m[1], self::OPTIONS, true)) {
                 throw new ServeException(
                     "Unknown argument '{$argument}'. Usage: tinvar serve [--dev] [--host=HOST] [--port=PORT] [--app=DIR] "
-                    . '[--workers=N] [--frankenphp=PATH]',
+                    . '[--workers=N] [--frankenphp=PATH] [--worker] [--schedule]',
                 );
             }
             $options[$m[1]] = $m[2];
         }
 
         return $options;
+    }
+
+    /**
+     * The console commands --worker and --schedule ask for.
+     *
+     * @param array<string, string> $options
+     * @return list<string>
+     */
+    private function background(array $options): array
+    {
+        $commands = [];
+        if (isset($options['worker'])) {
+            $commands[] = 'queue:work';
+        }
+        if (isset($options['schedule'])) {
+            $commands[] = 'schedule:work';
+        }
+        if ($commands !== [] && ($this->console === null || !is_file($this->console))) {
+            throw new ServeException('--worker and --schedule run the application\'s console, and this serve was given none.');
+        }
+
+        return $commands;
     }
 
     /**
@@ -256,7 +295,7 @@ final class ServeCommand
         throw new ServeException('The renderer is not installed: run npm ci in ' . $this->projectRoot . '.');
     }
 
-    /** @param array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string} $plan */
+    /** @param array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string, background: list<string>} $plan */
     private function serve(array $plan): int
     {
         // One killed outright had no chance to remove its own.
@@ -307,6 +346,16 @@ final class ServeCommand
                 $this->waitFor(static fn (): bool => file_exists($socket), $renderer, 'The renderer', 20);
             }
 
+            // FrankenPHP's environment, which the queue worker and scheduler
+            // share: the application reads its settings from it, and work
+            // done outside a request builds its links on TINVAR_URL.
+            $environment = [
+                ...array_diff_key(getenv(), array_flip(self::DEV_ENV)),
+                ...($this->serverEnvironment === null ? [] : ($this->serverEnvironment)()),
+                ...$phpEnv,
+                'TINVAR_URL' => \sprintf('http://%s:%d', PortFinder::hostForUrl($plan['host']), $plan['port']),
+            ];
+
             // FrankenPHP watches nothing of its parent's, so it runs under a
             // PHP process that watches standard input for it.
             $children['FrankenPHP'] = $server = $this->spawn(
@@ -321,13 +370,15 @@ final class ServeCommand
                     'caddyfile',
                 ],
                 $plan['app'],
-                [
-                    ...array_diff_key(getenv(), array_flip(self::DEV_ENV)),
-                    ...($this->serverEnvironment === null ? [] : ($this->serverEnvironment)()),
-                    ...$phpEnv,
-                ],
+                $environment,
             );
             $this->waitFor(static fn (): bool => PortFinder::answers($plan['host'], $plan['port']), $server, 'FrankenPHP', 30);
+
+            // Once the server answers, so a job that publishes to its hub, or
+            // a link it builds, finds it there.
+            foreach ($plan['background'] as $command) {
+                $children[$command] = $this->spawnBackground($command, $plan['app'], $environment);
+            }
         } catch (ServeException $e) {
             ($this->err)($e->getMessage());
             $this->terminate($children);
@@ -351,7 +402,7 @@ final class ServeCommand
                 $socket,
             ));
 
-        $status = $this->supervise($children);
+        $status = $this->supervise($children, $plan['app'], $environment);
         $this->terminate($children);
         PrivateDirectory::remove($directory);
 
@@ -359,12 +410,17 @@ final class ServeCommand
     }
 
     /**
-     * Waits for a stop signal or for a child to exit on its own.
+     * Waits for a stop signal or for a child to exit on its own. A queue
+     * worker or scheduler that exits is started again, within RESTARTS a
+     * minute; anything else exiting stops everything.
      *
      * @param array<string, resource> $children
+     * @param array<string, string>   $environment the background children's
      */
-    private function supervise(array $children): int
+    private function supervise(array &$children, string $app, array $environment): int
     {
+        /** @var array<string, list<float>> $restarts */
+        $restarts = [];
         for (;;) {
             if ($this->stopRequested()) {
                 return 0;
@@ -382,6 +438,16 @@ final class ServeCommand
                     return 0;
                 }
 
+                $recent = array_values(array_filter($restarts[$name] ?? [], static fn (float $at): bool => $at > microtime(true) - 60));
+                if (\in_array($name, self::BACKGROUND, true) && \count($recent) < self::RESTARTS) {
+                    ($this->err)("{$name} exited with status {$status['exitcode']}; starting it again.");
+                    $this->release($process);
+                    $restarts[$name] = [...$recent, microtime(true)];
+                    $children[$name] = $this->spawnBackground($name, $app, $environment);
+
+                    continue;
+                }
+
                 ($this->err)("{$name} exited with status {$status['exitcode']}; stopping the rest.");
 
                 return 1;
@@ -389,6 +455,35 @@ final class ServeCommand
 
             usleep(100_000);
         }
+    }
+
+    /** The children supervise() starts again when they exit. */
+    private const array BACKGROUND = ['queue:work', 'schedule:work'];
+
+    /**
+     * A console command beside the server, tethered as FrankenPHP is: killed
+     * outright, serve closes its end of the pipe and the command is stopped.
+     * SIGTERM reaches it through the tether, so a worker finishes the job in
+     * hand before it goes.
+     *
+     * @param array<string, string> $environment
+     * @return resource
+     */
+    private function spawnBackground(string $command, string $app, array $environment)
+    {
+        \assert($this->console !== null);
+
+        return $this->spawn([PHP_BINARY, __DIR__ . '/../../bin/tethered.php', PHP_BINARY, $this->console, $command], $app, $environment);
+    }
+
+    /** @param resource $process */
+    private function release($process): void
+    {
+        if (isset($this->tethers[(int) $process])) {
+            fclose($this->tethers[(int) $process]);
+            unset($this->tethers[(int) $process]);
+        }
+        proc_close($process);
     }
 
     /**

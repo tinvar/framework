@@ -38,8 +38,9 @@ final readonly class WorkerOptions
      * From `queue:work`'s arguments.
      *
      * @param list<string> $arguments
+     * @param list<string> $queues what it works without --queue, in priority order
      */
-    public static function fromArguments(array $arguments): self
+    public static function fromArguments(array $arguments, array $queues = [QueueOptions::DEFAULT]): self
     {
         $values = [];
         $stopWhenEmpty = false;
@@ -62,7 +63,7 @@ final readonly class WorkerOptions
         }
 
         return new self(
-            queues: isset($values['queue']) ? array_values(array_filter(explode(',', $values['queue']), static fn (string $q): bool => $q !== '')) : [QueueOptions::DEFAULT],
+            queues: isset($values['queue']) ? array_values(array_filter(explode(',', $values['queue']), static fn (string $q): bool => $q !== '')) : $queues,
             sleep: (int) ($values['sleep'] ?? 1),
             maxJobs: (int) ($values['max-jobs'] ?? 0),
             maxTime: (int) ($values['max-time'] ?? 0),

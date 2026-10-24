@@ -104,6 +104,33 @@ it('plans to serve the app it is given, on 127.0.0.1 and a port it chose', funct
     });
 });
 
+// The queue worker and the scheduler, beside the server, through the console
+// serve is run from.
+it('plans a queue worker and a scheduler for --worker and --schedule, from its console', function () {
+    withoutEnvironmentBinary(function () {
+        $root = project();
+        $app = app();
+        $console = scratch() . '/console';
+        file_put_contents($console, "<?php\n");
+        $command = new ServeCommand($root, new PortFinder(static fn (): bool => true), static function (): void {}, static function (): void {}, console: $console);
+
+        expect($command->plan(["--app={$app}"])['background'])->toBe([])
+            ->and($command->plan(["--app={$app}", '--worker'])['background'])->toBe(['queue:work'])
+            ->and($command->plan(["--app={$app}", '--worker', '--schedule'])['background'])->toBe(['queue:work', 'schedule:work']);
+    });
+});
+
+it('refuses --worker with no console to run it through, and a flag given a value', function () {
+    withoutEnvironmentBinary(function () {
+        [$command, $errors] = command(project());
+
+        expect($command->run(['--app=' . app(), '--worker']))->toBe(ServeCommand::USAGE)
+            ->and($command->run(['--app=' . app(), '--worker=2']))->toBe(ServeCommand::USAGE)
+            ->and($errors[0])->toContain('given none')
+            ->and($errors[1])->toContain("Unknown argument '--worker=2'");
+    });
+});
+
 // The app is found where the command runs, not built into the framework.
 it('serves the app in the working directory when none is named', function () {
     withoutEnvironmentBinary(function () {
