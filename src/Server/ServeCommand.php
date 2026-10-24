@@ -662,11 +662,12 @@ final class ServeCommand
      * leave none, and a worker rendering a document is mostly waiting on the
      * socket -- on ten cores, one renderer kept its thread at 100% while ten
      * workers used half a core between them. Renderers are what document
-     * renders need cores for. Measured there with ten workers, 1 -> 2 -> 4
+     * renders need cores for. Measured there with ten workers (with other
+     * work on the machine, so the shape and not the figures), 1 -> 2 -> 4
      * renderers took the catalog from about 450 to 640 to 770 documents a
      * second, and 6 and 8 added a few percent each while taking cores from
-     * the workers and everything else on the machine (bench/results, ADR
-     * 0028): half is where the curve has flattened. And each worker has at
+     * the workers and everything else on the machine (ADR 0028): half is
+     * where the curve has flattened. And each worker has at
      * most one render in flight, so a renderer past the worker count could
      * never be busy.
      */
