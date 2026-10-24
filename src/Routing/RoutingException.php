@@ -40,6 +40,14 @@ final class RoutingException extends \RuntimeException
         );
     }
 
+    public static function encryptHistoryOnLayout(string $class): self
+    {
+        return new self(
+            "{$class} is a layout carrying #[EncryptHistory], which is read off pages only. Put it on each "
+            . 'page that should differ from the default.',
+        );
+    }
+
     public static function missingAttribute(string $class): self
     {
         return new self("{$class} has neither a #[Page] nor a #[Layout] attribute.");

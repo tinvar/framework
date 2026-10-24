@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Routing;
 
 use Tinvar\Attributes\Authorize;
+use Tinvar\Attributes\EncryptHistory;
 use Tinvar\Attributes\Layout;
 use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\Page;
@@ -63,6 +64,14 @@ final class RouteRegistry
             throw RoutingException::badName($class, $name);
         }
 
+        // Off the class itself, as an opt-out is read (see EncryptHistory).
+        // On a layout it would be a declaration nothing reads, which is
+        // refused here rather than left to look like it opted pages out.
+        $encryptHistory = ($reflection->getAttributes(EncryptHistory::class)[0] ?? null)?->newInstance()->encrypt;
+        if ($encryptHistory !== null && $kind === RouteKind::Layout) {
+            throw RoutingException::encryptHistoryOnLayout($class);
+        }
+
         // Compiled once; parameter names are derived from the same pass.
         $segments = self::compile($declaration->path);
 
@@ -81,6 +90,7 @@ final class RouteRegistry
             middleware: Middleware::declaredOn($class, '__invoke'),
             checks: Authorize::declaredOn($class, '__invoke'),
             layoutKey: $kind === RouteKind::Layout ? self::layoutKeyOf($declaration->view) : '',
+            encryptHistory: $encryptHistory,
         );
 
         // A loader parameter the router cannot bind is a developer error that

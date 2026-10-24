@@ -82,6 +82,9 @@ final class Kernel
     /** Where each session's previous URL is kept between its requests. */
     private readonly ?PreviousUrlStore $previousUrls;
 
+    /** The keys a page's client seals its remembered state with (ADR 0019). */
+    private readonly ?HistoryKeys $historyKeys;
+
     /** Which routes contain a <Deferred> boundary, so which renders may mint. */
     private readonly ?FragmentManifest $manifest;
 
@@ -164,6 +167,14 @@ final class Kernel
     public const string FLASH = 'tinvar.flash';
 
     /**
+     * The request attribute carrying the page's history key (HistoryKeys),
+     * for the responder to put into the page metadata: a document load
+     * cannot read the header a client navigation gets it in. Absent when the
+     * page's history is not encrypted (ADR 0019).
+     */
+    public const string HISTORY_KEY = 'tinvar.history_key';
+
+    /**
      * @param \Closure(class-string): object $resolver builds pages, layouts, queries, actions and middleware
      * @param \Closure(Request): list<string> $allowedQueries the route's query allowlist
      * @param list<class-string<Middleware>> $globalMiddleware
@@ -187,6 +198,11 @@ final class Kernel
      *        session-scoped store for the previous URL. Given, every document
      *        load and client visit that renders a page is recorded in it, and
      *        Request::previousUrl() reads it back; without it, that is null.
+     * @param HistoryKeys|null $historyKeys the session-scoped history keys.
+     *        Given, a page rendered for a signed-in user -- or one that says
+     *        #[EncryptHistory] -- carries its session's key, and the client
+     *        router seals what it remembers for the page with it; without
+     *        them, nothing is encrypted (ADR 0019).
      */
     public function __construct(
         public readonly Orm $orm,
@@ -213,10 +229,12 @@ final class Kernel
         bool $partialReloads = false,
         ?FlashStore $flashes = null,
         ?PreviousUrlStore $previousUrls = null,
+        ?HistoryKeys $historyKeys = null,
     ) {
         $this->csrf = $csrf;
         $this->flashes = $flashes;
         $this->previousUrls = $previousUrls;
+        $this->historyKeys = $historyKeys;
         $this->manifest = $manifest;
 
         // Over the defaults, not instead of them: tightening one bucket by
@@ -568,8 +586,14 @@ final class Kernel
                 if ($minter !== null) {
                     $passed = $passed->withAttribute(self::FRAGMENT_MINTER, $minter);
                 }
+                // For the page metadata, as the route token is.
+                $historyKey = $this->historyKeyFor($loaded, $passed);
+                if ($historyKey !== null) {
+                    $passed = $passed->withAttribute(self::HISTORY_KEY, $historyKey);
+                }
                 [$passed, $flashed] = $this->withFormState($passed);
                 $response = $this->withCsrfCookie($passed, $respond($loaded, $passed));
+                $response = $this->withHistoryKey($passed, $response, $historyKey);
                 $this->recordVisit($passed, $response);
 
                 // Read, so gone: the cookie that said it was waiting goes too.
@@ -850,6 +874,49 @@ final class Kernel
         } catch (\Throwable $e) {
             $this->report($e);
         }
+    }
+
+    /**
+     * The page's history key, or null when its history is not encrypted.
+     *
+     * "On by default for authenticated routes ... `#[EncryptHistory(false)]`
+     * opts a page out." Who is signed in is decided per request here -- no
+     * route says it needs a user, a page's middleware does -- so a page is
+     * encrypted when it is rendered for a signed-in user, unless it opts
+     * out; and a page that says #[EncryptHistory] is encrypted for anyone
+     * with a session. Bound to the same session, tenant and panel the route
+     * token is, read at the same moment, so the key changes exactly when the
+     * client's binding does (ADR 0019).
+     */
+    private function historyKeyFor(LoadedRoute $loaded, Request $request): ?string
+    {
+        if ($this->historyKeys === null || !($loaded->chain->page->encryptHistory ?? $this->auth->check())) {
+            return null;
+        }
+
+        return $this->historyKeys->for($request, $this->orm->tenant(), $this->panels?->currentOrNull() ?? '');
+    }
+
+    /**
+     * The page response, carrying its history key to a client navigation.
+     *
+     * A header for a payload, which the router reads; a document has it in
+     * its page metadata already. Either way the response is the session's
+     * alone: no shared cache may keep it, nor hand it to anyone else.
+     */
+    private function withHistoryKey(Request $request, Response $response, ?string $key): Response
+    {
+        if ($key === null || $response->status >= 400) {
+            return $response;
+        }
+
+        if ($request->wantsRscPayload()) {
+            $response = $response->withHeader(HistoryKeys::HEADER, $key);
+        }
+
+        return $response
+            ->withHeader('cache-control', 'private, no-store')
+            ->withAddedHeader('vary', 'Cookie');
     }
 
     /**

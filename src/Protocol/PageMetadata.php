@@ -31,11 +31,26 @@ final readonly class PageMetadata
          * off, and the first page cannot ask for part of itself.
          */
         public ?string $view = null,
+        /**
+         * The session's history key, for a page whose history is encrypted
+         * (Kernel::HISTORY_KEY, ADR 0019); null for one whose is not.
+         */
+        public ?string $historyKey = null,
     ) {}
 
-    /** @return array{url: string, version: string, routeToken: string|null, view: string|null} */
+    /**
+     * Absent rather than null, the history key: a page with nothing to
+     * encrypt sends what it always sent.
+     *
+     * @return array{url: string, version: string, routeToken: string|null, view: string|null, historyKey?: string}
+     */
     public function toArray(): array
     {
-        return ['url' => $this->url, 'version' => $this->version, 'routeToken' => $this->routeToken, 'view' => $this->view];
+        $page = ['url' => $this->url, 'version' => $this->version, 'routeToken' => $this->routeToken, 'view' => $this->view];
+        if ($this->historyKey !== null) {
+            $page['historyKey'] = $this->historyKey;
+        }
+
+        return $page;
     }
 }

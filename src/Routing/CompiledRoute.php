@@ -22,6 +22,8 @@ final readonly class CompiledRoute
      * @param list<string>                 $parameters
      * @param list<class-string>           $middleware
      * @param list<Authorize>              $checks
+     * @param bool|null                    $encryptHistory a page's #[EncryptHistory], or null
+     *                                                    for the default (ADR 0019)
      */
     public function __construct(
         public RouteKind $kind,
@@ -34,6 +36,7 @@ final readonly class CompiledRoute
         public array $middleware,
         public array $checks,
         public string $layoutKey = '',
+        public ?bool $encryptHistory = null,
     ) {}
 
     public function depth(): int
