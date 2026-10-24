@@ -154,6 +154,15 @@ final class Response
         return self::make($status, '', ['location' => $url]);
     }
 
+    /**
+     * The same response under another status: an error page rendered as a
+     * page, answered with the status of the failure it stands for.
+     */
+    public function withStatus(int $status): self
+    {
+        return clone($this, ['status' => $status]);
+    }
+
     public function withHeader(string $name, string $value): self
     {
         self::assertSafeHeader($name, $value);

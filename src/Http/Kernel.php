@@ -154,6 +154,15 @@ final class Kernel
     /** Whether a failed render escapes handle() rather than becoming an error page. */
     private readonly bool $throwOnRenderError;
 
+    /** Runs an #[ErrorPage]'s layouts and loader, as the router runs a page's. */
+    private readonly LoaderRunner $errorLoaders;
+
+    /** The page PHP writes alone when the error page cannot be rendered. */
+    private readonly ErrorShell $errorShell;
+
+    /** The application's global middleware, alone: what errorPage() runs an error page behind. */
+    private readonly Pipeline $globalStack;
+
     /** What every entry point's declarations put around it; see EntryContext. */
     private readonly EntryContext $entry;
 
@@ -271,6 +280,9 @@ final class Kernel
      *        render escapes handle() as itself, after the listeners have heard of it,
      *        instead of being answered with an error page that a test reads as a
      *        response like any other
+     * @param ErrorShell|null $errorShell the page PHP writes on its own when a
+     *        failed document request's #[ErrorPage] cannot be rendered -- the
+     *        renderer being what failed, usually; a plain one unless given
      */
     public function __construct(
         public readonly Orm $orm,
@@ -303,9 +315,11 @@ final class Kernel
         ?LiveUpdates $live = null,
         array $renderFailed = [],
         bool $throwOnRenderError = false,
+        ?ErrorShell $errorShell = null,
     ) {
         $this->renderFailed = $renderFailed;
         $this->throwOnRenderError = $throwOnRenderError;
+        $this->errorShell = $errorShell ?? new ErrorShell();
 
         // Panels need somewhere to be current. An application defining them
         // and passing no context gets one, rather than panels that resolve
@@ -373,6 +387,11 @@ final class Kernel
             $entry->checkAllowlists($this->routes, $this->queries, $fragments->allowedQueries);
         }
         $this->entry = $entry;
+
+        // Every error page's layouts are known now; one it could not be
+        // rendered in is refused here, not on the request that first fails.
+        $this->routes->assertErrorPagesRenderable();
+        $this->errorLoaders = new LoaderRunner($this->orm, $resolver, $gate);
 
         $this->router = new Router(
             $this->routes,
@@ -462,6 +481,7 @@ final class Kernel
         // the container refuses that while they are assembled.
         $buildGlobal = static fn (): array => array_map(self::middlewareFrom($resolver), $globalMiddleware);
         $global = $container === null ? $buildGlobal() : $container->longLived('the Kernel\'s endpoint stacks', $buildGlobal);
+        $this->globalStack = new Pipeline($global);
 
         // The address pass is outermost -- ahead of the application's own
         // global middleware, so a refused request does not pay for session
@@ -649,12 +669,40 @@ final class Kernel
      * and the scope is reset in a finally so the next request on this worker
      * does not inherit this one's user, identity map or policy instances.
      *
-     * @param \Closure(LoadedRoute, Request): Response $respond renders a matched route
+     * A document request that fails is answered with the application's
+     * #[ErrorPage] for its status, rendered here -- before the reset, so the
+     * session the global middleware opened, and with it the signed-in user,
+     * is still in place for the error page's layouts even when no route
+     * matched at all.
+     *
+     * @param \Closure(LoadedRoute, Request): Response $respond renders a matched route,
+     *        and an error page
+     * @param bool $errorPage false for a caller that wants the failure as the
+     *        framework answers it -- a benchmark, a build step -- not a page
      */
-    public function handle(Request $request, \Closure $respond, string $rawBody = ''): Response
+    public function handle(Request $request, \Closure $respond, string $rawBody = '', bool $errorPage = true): Response
+    {
+        $request = $this->withPreviousUrl($request);
+
+        try {
+            $failure = null;
+            $response = $this->dispatch($request, $respond, $rawBody, $failure);
+
+            return $errorPage ? $this->withErrorPage($request, $response, $respond, $failure) : $response;
+        } finally {
+            $this->scope->reset();
+        }
+    }
+
+    /**
+     * Routes one request to an endpoint or a page, and classifies whatever it
+     * throws into a response; $failure is set to what was thrown.
+     *
+     * @param \Closure(LoadedRoute, Request): Response $respond
+     */
+    private function dispatch(Request $request, \Closure $respond, string $rawBody, ?\Throwable &$failure): Response
     {
         $navigating = false;
-        $request = $this->withPreviousUrl($request);
 
         try {
             // Each endpoint's method is checked before its stack runs: a
@@ -804,15 +852,136 @@ final class Kernel
 
             return new TranslateRedirects()->handle($request, $checked);
         } catch (\Throwable $e) {
+            $failure = $e;
             $this->renderFailed($e, $request);
             $response = $this->exceptions->handle($e, $request);
 
             // An HttpException can carry a redirect too, and it is answered
             // here rather than inside the middleware above.
             return $navigating ? TranslateRedirects::translate($request, $response) : $response;
+        }
+    }
+
+    /**
+     * The failed document request's response, as the application's error
+     * page for its status -- or as it was, when there is none.
+     *
+     * "Render failures: Inertia falls back to client rendering, which RSC
+     * cannot do ... Instead PHP renders an error page in its own shell." The
+     * error page is a page, rendered by the renderer, so it is skipped when
+     * the renderer is what failed in a way that leaves it unusable -- gone,
+     * cut off, out of time -- and anything that fails while rendering it
+     * falls back to the ErrorShell, which PHP writes alone.
+     *
+     * @param \Closure(LoadedRoute, Request): Response $respond
+     */
+    private function withErrorPage(Request $request, Response $response, \Closure $respond, ?\Throwable $failure): Response
+    {
+        return self::wantsErrorPage($request, $response) ? $this->drawErrorPage($request, $response, $respond, $failure) : $response;
+    }
+
+    /**
+     * The error page for $status, as a document request failing with it
+     * would be answered: behind the global middleware, so the session and
+     * the signed-in user are what the page's layouts see -- for an
+     * application to show one in a situation of its own, and to look at
+     * each of its error pages without having to cause the failure.
+     *
+     * @param \Closure(LoadedRoute, Request): Response $respond
+     */
+    public function errorPage(Request $request, int $status, \Closure $respond): Response
+    {
+        try {
+            return $this->globalStack->run(
+                $this->withPreviousUrl($request),
+                fn (Request $passed): Response => $this->drawErrorPage($passed, Response::make($status), $respond, null),
+            );
         } finally {
             $this->scope->reset();
         }
+    }
+
+    /** @param \Closure(LoadedRoute, Request): Response $respond */
+    private function drawErrorPage(Request $request, Response $response, \Closure $respond, ?\Throwable $failure): Response
+    {
+        $chain = $this->routes->errorChain($response->status);
+        if ($chain === null) {
+            return $response;
+        }
+
+        $error = $failure === null ? HttpError::returned($response->status) : $this->exceptions->errorFor($failure);
+        // The status the response carries, which is what the visitor gets:
+        // a classified failure and its response always agree on it, and a
+        // returned refusal has nothing else to go on.
+        $error = new HttpError($response->status, $error->code, $error->reason, $error->digest);
+
+        $rendererUnusable = $failure instanceof ProtocolException
+            || ($failure instanceof RendererException && !$failure->failure()->leavesRendererUsable());
+
+        try {
+            if ($rendererUnusable) {
+                return $this->carried($response, $this->errorShell->respond($error, $request));
+            }
+
+            // The token a form in the header posts without script, as on any
+            // page; never a route token or a minter, which an error page --
+            // no route of its own -- has no business carrying.
+            $token = $this->csrf?->for($request);
+            $passed = $token === null ? $request : $request->withAttribute(self::CSRF_TOKEN, $token);
+
+            $loaded = $this->errorLoaders->run($chain, $passed, provided: [HttpError::class => $error]);
+            $rendered = $respond($loaded, $passed);
+            if ($rendered->status !== 200) {
+                throw new \UnexpectedValueException("The error page for {$response->status} was answered with {$rendered->status}.");
+            }
+
+            return $this->carried($response, $rendered->withStatus($response->status));
+        } catch (\Throwable $e) {
+            // Reported, and answered by the shell under the original
+            // failure's digest: that is the line the visitor's reference has
+            // to find, and this one says why the page around it could not be
+            // drawn.
+            $this->report($e);
+
+            return $this->carried($response, $this->errorShell->respond($error, $request));
+        }
+    }
+
+    /**
+     * Only a browser asking for a document, with a GET, outside the
+     * framework's own endpoints: an endpoint's caller wants its JSON, a 422
+     * is a form's errors and not a failure, and a client navigation that
+     * fails is loaded again as a document, which lands here.
+     */
+    private static function wantsErrorPage(Request $request, Response $response): bool
+    {
+        return $response->status >= 400
+            && $response->status !== 422
+            && \in_array($request->method, ['GET', 'HEAD'], true)
+            && !$request->wantsRscPayload()
+            && !str_starts_with($request->path, '/_')
+            && str_contains($request->header('accept') ?? '', 'text/html');
+    }
+
+    /**
+     * The error page, carrying what the refusal had to say besides its status:
+     * its cookies, Retry-After and the rate-limit counters on a 429, Allow on
+     * a 405. Never kept by a shared cache: it was drawn for this visitor.
+     */
+    private function carried(Response $failed, Response $page): Response
+    {
+        $page = $page->withCookiesOf($failed)
+            ->withHeader('cache-control', 'private, no-store')
+            ->withAddedHeader('vary', 'Cookie');
+
+        foreach (['retry-after', 'allow', 'x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset'] as $header) {
+            $value = $failed->header($header);
+            if ($value !== null) {
+                $page = $page->withHeader($header, $value);
+            }
+        }
+
+        return $page;
     }
 
     /**

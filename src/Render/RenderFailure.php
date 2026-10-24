@@ -41,6 +41,17 @@ enum RenderFailure: string
         return self::tryFrom($code) ?? self::RenderError;
     }
 
+    /**
+     * Whether the renderer can still render after this: a component that threw
+     * leaves it as well as it was, so an error page can be drawn by it; a
+     * renderer that is gone, cut off or out of time cannot be asked again
+     * inside the same request, and PHP draws the page alone.
+     */
+    public function leavesRendererUsable(): bool
+    {
+        return !\in_array($this, [self::RendererUnreachable, self::RenderIncomplete, self::Deadline, self::ProtocolViolation], true);
+    }
+
     /** A few words naming the failure, for the overlay's heading and a log line. */
     public function title(): string
     {

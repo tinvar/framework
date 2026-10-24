@@ -60,15 +60,7 @@ final class ExceptionHandler
             return $this->respond(422, ['errors' => $e->errors], $request);
         }
 
-        // Tenancy failing closed: a #[TenantScoped] read with no tenant in
-        // force. Classified rather than left a bare 500, because it is not
-        // always a bug -- a page reached on a host, or by a session, that
-        // names no tenant is a request for something that is not there --
-        // and it says nothing more than that. The message, naming the model,
-        // goes to the log with the digest like any other.
-        if ($e instanceof NoTenantContext) {
-            $e = new HttpException(404, $e->getMessage(), 'no_tenant');
-        }
+        $e = self::normalize($e);
 
         if ($e instanceof HttpException) {
             $this->log($e, $digest = self::digest($e));
@@ -104,6 +96,37 @@ final class ExceptionHandler
     }
 
     /**
+     * What handle() answers $e with, as an #[ErrorPage]'s loader is told it:
+     * the status, the code, the fixed reason and the digest -- the same
+     * digest the log line is under, so the page's reference finds it.
+     */
+    public function errorFor(\Throwable $e): HttpError
+    {
+        if ($e instanceof ValidationException) {
+            return new HttpError(422, 'unprocessable', self::reason(422), self::digest($e));
+        }
+
+        $e = self::normalize($e);
+        $status = $e instanceof HttpException ? $e->status : 500;
+        $code = $e instanceof HttpException && $e->code_ !== '' ? $e->code_ : self::codeFor($status);
+
+        return new HttpError($status, $code, self::reason($status), self::digest($e));
+    }
+
+    /**
+     * Tenancy failing closed: a #[TenantScoped] read with no tenant in
+     * force. Classified rather than left a bare 500, because it is not
+     * always a bug -- a page reached on a host, or by a session, that names
+     * no tenant is a request for something that is not there -- and it says
+     * nothing more than that. The message, naming the model, goes to the log
+     * with the digest like any other.
+     */
+    private static function normalize(\Throwable $e): \Throwable
+    {
+        return $e instanceof NoTenantContext ? new HttpException(404, $e->getMessage(), 'no_tenant') : $e;
+    }
+
+    /**
      * Logs a failure that is not this request's outcome, and says what it
      * was logged under.
      *
@@ -127,7 +150,14 @@ final class ExceptionHandler
         return Digest::of($e);
     }
 
-    private static function codeFor(int $status): string
+    /** The fixed reason phrase for a status: never an exception's message. */
+    public static function reason(int $status): string
+    {
+        return self::REASONS[$status] ?? self::REASONS[500];
+    }
+
+    /** The machine-readable code the framework gives a status when nothing more specific was thrown. */
+    public static function codeFor(int $status): string
     {
         return match ($status) {
             400 => 'bad_request',

@@ -46,8 +46,10 @@ final class LoaderRunner
     /**
      * @param PartialReload|null $partial the segments a partial reload
      *        re-renders; null for the whole page
+     * @param array<class-string, object> $provided objects the loaders may take by
+     *        type besides what the binder supplies: an error page's HttpError
      */
-    public function run(RouteChain $chain, Request $request, ?PartialReload $partial = null): LoadedRoute
+    public function run(RouteChain $chain, Request $request, ?PartialReload $partial = null, array $provided = []): LoadedRoute
     {
         $binder = new Binder($this->orm);
         $models = $binder->resolveChain($chain, $chain->parameters);
@@ -61,16 +63,20 @@ final class LoaderRunner
 
         // The chain's loaders share one read-only transaction rather than
         // opening one each; each is still a read-only scope in invoke().
-        return $this->orm->readOnly(fn (): LoadedRoute => $this->load($chain, $binder, $models, $request, $partial));
+        return $this->orm->readOnly(fn (): LoadedRoute => $this->load($chain, $binder, $models, $request, $partial, $provided));
     }
 
-    /** @param array<string, Model> $models */
+    /**
+     * @param array<string, Model> $models
+     * @param array<class-string, object> $provided
+     */
     private function load(
         RouteChain $chain,
         Binder $binder,
         array $models,
         Request $request,
         ?PartialReload $partial,
+        array $provided = [],
     ): LoadedRoute {
         /** @var array<class-string, Data> $byType */
         $byType = [];
@@ -83,7 +89,7 @@ final class LoaderRunner
         // What a partial reload leaves out is the rendering of the segments
         // it does not name, and their data; never a loader (ADR 0015).
         foreach ($chain->layouts as $layout) {
-            $data = $this->invoke($layout, $binder, $chain->parameters, $byType, $request, $layout->layoutKey);
+            $data = $this->invoke($layout, $binder, $chain->parameters, $byType, $request, $layout->layoutKey, $provided);
             if ($data === null) {
                 continue;
             }
@@ -107,7 +113,7 @@ final class LoaderRunner
             }
         }
 
-        $page = $this->invoke($chain->page, $binder, $chain->parameters, $byType, $request, PartialReload::PAGE);
+        $page = $this->invoke($chain->page, $binder, $chain->parameters, $byType, $request, PartialReload::PAGE, $provided);
 
         return new LoadedRoute(
             chain: $chain,
@@ -215,6 +221,7 @@ final class LoaderRunner
     /**
      * @param array<string, string> $parameters
      * @param array<class-string, Data> $parentData
+     * @param array<class-string, object> $provided
      */
     private function invoke(
         CompiledRoute $route,
@@ -223,6 +230,7 @@ final class LoaderRunner
         array $parentData,
         Request $request,
         ?string $segment = null,
+        array $provided = [],
     ): ?Data {
         $instance = ($this->resolver)($route->class);
 
@@ -232,7 +240,7 @@ final class LoaderRunner
             return null;
         }
 
-        $arguments = $binder->argumentsFor($route, $parameters, $parentData, $request);
+        $arguments = $binder->argumentsFor($route, $parameters, $parentData, $request, $provided);
 
         // "Loaders and queries run in a read-only transaction ... because
         // hovering a link runs them." Prefetch-on-hover means this body runs

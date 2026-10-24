@@ -100,6 +100,7 @@ final class Binder
      *
      * @param array<string, string> $parameters
      * @param array<class-string, Data> $parentData data from layouts already run
+     * @param array<class-string, object> $provided objects to hand over by type
      * @return array<string, mixed>
      */
     public function argumentsFor(
@@ -107,6 +108,7 @@ final class Binder
         array $parameters,
         array $parentData,
         Request $request,
+        array $provided = [],
     ): array {
         $arguments = [];
 
@@ -143,6 +145,12 @@ final class Binder
 
             if ($class === Request::class) {
                 $arguments[$name] = $request;
+                continue;
+            }
+
+            // What the caller hands over by type -- an error page's HttpError.
+            if ($class !== null && isset($provided[$class])) {
+                $arguments[$name] = $provided[$class];
                 continue;
             }
 

@@ -6,6 +6,7 @@ namespace Tinvar\Routing;
 
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\EncryptHistory;
+use Tinvar\Attributes\ErrorPage;
 use Tinvar\Attributes\Layout;
 use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\Page;
@@ -13,6 +14,9 @@ use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\TenantFrom;
 use Tinvar\Auth\BuildRules;
 use Tinvar\Auth\PanelBinding;
+use Tinvar\Data\Data;
+use Tinvar\Http\HttpError;
+use Tinvar\Http\Request;
 use Tinvar\Support\Str;
 
 /**
@@ -40,6 +44,16 @@ final class RouteRegistry
 
     private bool $sorted = false;
 
+    /** @var array<int, CompiledRoute> status => the #[ErrorPage] shown for it */
+    private array $errorPages = [];
+
+    /**
+     * Marks an error page declared within no path, so under no layout at
+     * all, which `/` -- wrapped by a root layout -- is not. No layout's key
+     * can be it: a view path holds no NUL.
+     */
+    private const string NO_LAYOUTS = "\0";
+
     /** @param class-string $class */
     public function register(string $class): CompiledRoute
     {
@@ -47,6 +61,15 @@ final class RouteRegistry
 
         $pageAttribute = $reflection->getAttributes(Page::class)[0] ?? null;
         $layoutAttribute = $reflection->getAttributes(Layout::class)[0] ?? null;
+        $errorAttribute = $reflection->getAttributes(ErrorPage::class)[0] ?? null;
+
+        if ($errorAttribute !== null) {
+            if ($pageAttribute !== null || $layoutAttribute !== null) {
+                throw new RoutingException("{$class} is an #[ErrorPage] and a route at once; an error page has no URL of its own.");
+            }
+
+            return $this->registerErrorPage($class, $errorAttribute->newInstance());
+        }
 
         if ($pageAttribute === null && $layoutAttribute === null) {
             throw RoutingException::missingAttribute($class);
@@ -394,6 +417,144 @@ final class RouteRegistry
             return TenantFrom::declaredOn($class, '__invoke');
         } catch (\LogicException|\InvalidArgumentException $e) {
             throw new RoutingException($e->getMessage(), 0, $e);
+        }
+    }
+
+    /**
+     * An #[ErrorPage], compiled as a page at the path it sits `within`, and
+     * kept apart from the pages: no URL matches it, and no name reaches it.
+     *
+     * Refused here, rather than on the request that first fails, is anything
+     * the error page could not be rendered with. It renders where routing,
+     * a middleware or a check has just failed, so it runs no middleware of
+     * its own and declares no checks, panel or tenant: there is nothing in
+     * place to hold them to. Its layouts' checks still run -- see
+     * assertErrorPagesRenderable() for what is asked of them.
+     *
+     * @param class-string $class
+     */
+    private function registerErrorPage(string $class, ErrorPage $declaration): CompiledRoute
+    {
+        if (!Str::isViewPath($declaration->view)) {
+            throw RoutingException::badView($class, $declaration->view);
+        }
+
+        $within = $declaration->within ?? '/';
+        $segments = self::compile($within);
+        if (self::parametersOf($within, $segments) !== []) {
+            throw new RoutingException(
+                "{$class} sits within {$within}, which has parameters. An error page is shown where nothing "
+                . 'matched, so there is nothing to fill them from: put it within a path of literal segments.',
+            );
+        }
+
+        if (Middleware::declaredOn($class, '__invoke') !== [] || Authorize::declaredOn($class, '__invoke') !== []
+            || self::panelsOf($class) !== [] || self::tenantFromOf($class) !== null) {
+            throw new RoutingException(
+                "{$class} declares middleware, a check, a panel or a tenant source. An error page renders where "
+                . 'those may be what failed, so it can declare none; its layouts\' checks still run.',
+            );
+        }
+
+        self::assertErrorLoaderBindable($class);
+
+        $route = new CompiledRoute(
+            kind: RouteKind::Page,
+            class: $class,
+            template: self::normalizeTemplate($within),
+            view: $declaration->view,
+            name: null,
+            segments: $segments,
+            parameters: [],
+            middleware: [],
+            checks: [],
+            layoutKey: $declaration->within === null ? self::NO_LAYOUTS : '',
+        );
+
+        if ($declaration->statuses === []) {
+            throw new RoutingException("{$class} is an #[ErrorPage] for no status at all.");
+        }
+        foreach ($declaration->statuses as $status) {
+            if ($status < 400 || $status > 599) {
+                throw new RoutingException("{$class} names " . var_export($status, true) . ' as an error status; an error page is for 400 to 599.');
+            }
+            if (isset($this->errorPages[$status])) {
+                throw new RoutingException("Both {$this->errorPages[$status]->class} and {$class} are the error page for {$status}.");
+            }
+            $this->errorPages[$status] = $route;
+        }
+
+        return $route;
+    }
+
+    /**
+     * An error page's loader takes the HttpError, the Request, its layouts'
+     * Data by type, and anything defaulted -- nothing a path or a model
+     * binding would have to supply.
+     *
+     * @param class-string $class
+     */
+    private static function assertErrorLoaderBindable(string $class): void
+    {
+        if (!method_exists($class, '__invoke')) {
+            return;
+        }
+
+        foreach (new \ReflectionMethod($class, '__invoke')->getParameters() as $parameter) {
+            $type = $parameter->getType();
+            $name = $type instanceof \ReflectionNamedType ? $type->getName() : null;
+            $bindable = $name === HttpError::class || $name === Request::class
+                || ($name !== null && ($name === Data::class || is_subclass_of($name, Data::class)));
+            if (!$bindable && !$parameter->isDefaultValueAvailable()) {
+                throw RoutingException::unbindableParameter($class, $parameter->getName(), (string) ($type ?? 'untyped'));
+            }
+        }
+    }
+
+    /**
+     * The error page for a status, in the layouts at the path it sits within,
+     * or null when the application has none for it. A page for 500 answers
+     * any 5xx no other page names: a 502 or a 503 is the server's failure as
+     * much as a 500 is.
+     */
+    public function errorChain(int $status): ?RouteChain
+    {
+        $page = $this->errorPages[$status] ?? ($status >= 500 ? $this->errorPages[500] ?? null : null);
+        if ($page === null) {
+            return null;
+        }
+
+        $layouts = $page->layoutKey === self::NO_LAYOUTS ? [] : ($this->layoutCache["error:{$page->template}"] ??= $this->layoutsFor($page));
+
+        return new RouteChain(page: $page, layouts: $layouts, parameters: []);
+    }
+
+    /**
+     * Refuses an error page whose layouts it could not be rendered in, once
+     * every route is registered -- the Kernel asks when it is built, which
+     * is when the layouts are all known.
+     *
+     * A layout running middleware, in a panel or for a tenant needs context
+     * an error page cannot establish: it is shown where that context may be
+     * what failed, and it runs no middleware. Such a layout's loader may
+     * rely on its guard having run, so it is not run without it.
+     */
+    public function assertErrorPagesRenderable(): void
+    {
+        foreach (array_unique(array_keys($this->errorPages)) as $status) {
+            $chain = $this->errorChain($status);
+            if ($chain === null) {
+                continue;
+            }
+            foreach ($chain->layouts as $layout) {
+                if ($layout->middleware !== [] || $layout->panels !== [] || $layout->tenantFrom !== null) {
+                    throw new RoutingException(
+                        "{$chain->page->class} is the error page for {$status}, within {$layout->class}, which runs "
+                        . 'middleware, in a panel or for a tenant. An error page runs none of those, so it cannot sit '
+                        . 'within that layout: put it within a path whose layouts declare none.',
+                    );
+                }
+            }
         }
     }
 
