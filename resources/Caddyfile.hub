@@ -1,0 +1,53 @@
+# A Mercure hub of its own, for live updates beyond one app server.
+#
+# FrankenPHP's built-in hub keeps its subscribers in the process that serves
+# them, so with more than one app server an update published on one reaches
+# only the pages connected to it (ADR 0030). This runs the same hub as a
+# service of its own -- FrankenPHP or any Caddy with the Mercure module, no
+# PHP -- which every app server and worker publishes to over HTTP, and which
+# each app server's /.well-known/mercure is passed on to (ADR 0048):
+#
+#   frankenphp run --config vendor/tinvar/framework/resources/Caddyfile.hub
+#
+# with the keys and audience the application has (TINVAR_LIVE_*, see
+# Tinvar\Live\HubSettings) and TINVAR_LIVE_HUB_URL on the app servers naming
+# it. The keys are never given to a renderer, which refuses to start
+# holding them.
+#
+# Plain HTTP on loopback, by default. On another machine than the app
+# servers it is reached over https -- the app refuses an http:// hub
+# anywhere but loopback, since its publisher tokens and its subscribers'
+# access cookies would cross the network in the clear -- so put TLS in
+# front of it, or serve it with a certificate of its own.
+{
+	admin off
+	persist_config off
+	auto_https off
+}
+
+http://:{$TINVAR_LIVE_HUB_PORT:3000} {
+	bind {$TINVAR_LIVE_HUB_HOST:127.0.0.1}
+
+	# As the shop's Caddyfile runs the built-in one: an update is published
+	# only with a publisher token PHP signed for its topic, a subscriber is
+	# let in only with an access token naming the topics it may hear -- every
+	# update is private -- read from an HttpOnly cookie, never a URL. Local
+	# transport: no history, since a client that missed updates fetches its
+	# page again instead.
+	mercure {
+		transport local
+		issuer tinvar {
+			publisher {
+				jwt {env.TINVAR_LIVE_PUBLISHER_KEY} HS256
+			}
+			subscriber {
+				jwt {env.TINVAR_LIVE_SUBSCRIBER_KEY} HS256
+			}
+		}
+		resource_identifier {$TINVAR_LIVE_AUDIENCE:https://live.tinvar.invalid/.well-known/mercure}
+		cookie_name __Secure-tinvar-live
+	}
+
+	# Nothing else is here.
+	respond 404
+}

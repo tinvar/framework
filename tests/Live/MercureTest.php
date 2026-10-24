@@ -6,7 +6,8 @@ declare(strict_types=1);
  * The Mercure transport: the access tokens the hub checks, the cookie they
  * travel in, and the keys behind them.
  *
- * Checked against the hub itself by tests/Integration/ShopLiveTest.php; here
+ * Checked against the hub itself by tests/Integration/ShopLiveTest.php, and
+ * against one run apart from any app server by RemoteHubTest.php; here
  * the shape each part must have for the hub to accept it -- the protocol's
  * modern mode, which FrankenPHP 1.13 runs -- and what must never reach a
  * client.
@@ -164,8 +165,88 @@ describe('the hub\'s settings', function () {
                 HubSettings::SUBSCRIBER_ENV => 'from-the-environment-0123456789abcdef',
                 HubSettings::PUBLISHER_ENV => HubSettings::derive(KEY)->publisherKey,
                 HubSettings::AUDIENCE_ENV => AUDIENCE,
+                // The built-in hub's: nothing for the Caddyfile to pass on to.
+                HubSettings::HUB_UPSTREAM_ENV => '',
             ]);
     });
+});
+
+describe('a hub of its own', function () {
+    it('is named by TINVAR_LIVE_HUB_URL, and the app server is told its origin to pass subscribers on to', function () {
+        putenv(HubSettings::HUB_URL_ENV . '=https://hub.internal.example:8443/.well-known/mercure');
+        try {
+            $settings = HubSettings::resolve(KEY);
+        } finally {
+            putenv(HubSettings::HUB_URL_ENV);
+        }
+
+        expect($settings->hubUrl)->toBe('https://hub.internal.example:8443/.well-known/mercure')
+            ->and($settings->environment()[HubSettings::HUB_UPSTREAM_ENV])->toBe('https://hub.internal.example:8443')
+            // Its keys are the same ones, and still never in what a client gets.
+            ->and($settings->publisherKey)->toBe(HubSettings::derive(KEY)->publisherKey);
+    });
+
+    it('is published to over HTTP from every process, ahead of the built-in hub or the same server', function () {
+        $settings = new HubSettings(SUBSCRIBER, PUBLISHER, AUDIENCE, 'https://hub.example.com/.well-known/mercure');
+        $sent = [];
+        $post = static function (string $url, array $headers) use (&$sent): int {
+            $sent[] = [$url, jwt(substr($headers['authorization'], \strlen('Bearer ')), PUBLISHER)[2]];
+
+            return 200;
+        };
+
+        $settings->hub('http://127.0.0.1:8080/.well-known/mercure', $post)?->publish('tinvar:x', '{}');
+
+        expect($sent)->toBe([['https://hub.example.com/.well-known/mercure', 'valid']]);
+    });
+
+    it('leaves a process outside FrankenPHP the same server\'s hub, over HTTP, or none', function () {
+        if (\function_exists('mercure_publish')) {
+            $this->markTestSkipped('Running under FrankenPHP.');
+        }
+        $settings = new HubSettings(SUBSCRIBER, PUBLISHER, AUDIENCE);
+        $sent = [];
+        $post = static function (string $url) use (&$sent): int {
+            $sent[] = $url;
+
+            return 200;
+        };
+
+        $settings->hub('http://127.0.0.1:8080/.well-known/mercure', $post)?->publish('tinvar:x', '{}');
+
+        expect($settings->hub())->toBeNull()
+            ->and($sent)->toBe(['http://127.0.0.1:8080/.well-known/mercure']);
+    });
+
+    it('is reached over https anywhere, and over plain HTTP on this machine alone', function (string $url, string $upstream) {
+        expect(HubSettings::upstreamOf($url))->toBe($upstream);
+    })->with([
+        ['https://hub.example.com/.well-known/mercure', 'https://hub.example.com'],
+        ['HTTPS://Hub.Example.com:444/.well-known/mercure', 'https://hub.example.com:444'],
+        ['http://127.0.0.1:3000/.well-known/mercure', 'http://127.0.0.1:3000'],
+        ['http://127.0.0.2:3000/.well-known/mercure', 'http://127.0.0.2:3000'],
+        ['http://[::1]:3000/.well-known/mercure', 'http://[::1]:3000'],
+        ['http://localhost:3000/.well-known/mercure', 'http://localhost:3000'],
+    ]);
+
+    // Refused when the application starts, not on the first publish: a
+    // hub over plain HTTP elsewhere sends every publisher token and every
+    // access cookie across the network in the clear.
+    it('is refused at any other URL', function (string $url, string $message) {
+        expect(static fn () => new HubSettings(SUBSCRIBER, PUBLISHER, AUDIENCE, $url))
+            ->toThrow(\InvalidArgumentException::class, $message);
+    })->with([
+        'plain HTTP to another machine' => ['http://hub.internal/.well-known/mercure', 'plain HTTP'],
+        'plain HTTP to a private address' => ['http://10.0.0.5:3000/.well-known/mercure', 'plain HTTP'],
+        'a name that only starts like loopback' => ['http://127.evil.example/.well-known/mercure', 'plain HTTP'],
+        'another scheme' => ['ftp://hub.example.com/.well-known/mercure', HubSettings::HUB_URL_ENV],
+        'credentials' => ['https://user:pass@hub.example.com/.well-known/mercure', HubSettings::HUB_URL_ENV],
+        'a query' => ['https://hub.example.com/.well-known/mercure?topic=x', HubSettings::HUB_URL_ENV],
+        'a fragment' => ['https://hub.example.com/.well-known/mercure#x', HubSettings::HUB_URL_ENV],
+        'another path, which the proxy would not reach' => ['https://hub.example.com/hub', HubSettings::HUB_URL_ENV],
+        'no host' => ['https:///.well-known/mercure', HubSettings::HUB_URL_ENV],
+        'not a URL' => ['hub.example.com', HubSettings::HUB_URL_ENV],
+    ]);
 });
 
 describe('a document\'s token', function () {
