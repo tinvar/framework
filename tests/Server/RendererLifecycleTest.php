@@ -229,8 +229,19 @@ it('checks every renderer, restarts them one at a time with no render refused, a
         $checked = $command->run('renderer:check', ["--socket={$socket}"]);
         $checkOutput = $out->getArrayCopy();
 
+        // The shop, ready to render before the restart begins: seeding its
+        // database is no part of what the renders must overlap.
+        $kernel = Kernel::fromEnvironment($socket, database: Shop::database());
+
         // renderer:restart while the shop renders without pause: every render
         // completes, and every renderer is replaced.
+        //
+        // The pool is listed between renders, so each change to it -- a
+        // replacement's socket appearing, a retired renderer's going -- falls
+        // under the render in flight then. How many renders fit in the
+        // restart is the machine's business: on a loaded one, a fresh
+        // renderer's first render takes as long as half the restart, and
+        // only three ran. That some ran while the pool changed is the test's.
         $before = socketsIn($socket);
         $restart = proc_open(
             [PHP_BINARY, "{$root}/bin/tinvar", 'renderer:restart', "--socket={$socket}"],
@@ -239,10 +250,12 @@ it('checks every renderer, restarts them one at a time with no render refused, a
             $root,
             ['PATH' => getenv('PATH') ?: '/usr/bin:/bin'],
         );
-        $kernel = Kernel::fromEnvironment($socket, database: Shop::database());
         $rendered = 0;
         $failures = [];
+        $pool = $before;
+        $acrossChanges = 0;
         do {
+            $found = $pool;
             try {
                 $html = '';
                 $kernel->render(Request::get('/', ['accept' => 'text/html']), static function (string $bytes) use (&$html): void {
@@ -252,6 +265,8 @@ it('checks every renderer, restarts them one at a time with no render refused, a
             } catch (\Throwable $e) {
                 $failures[] = $e::class . ': ' . $e->getMessage();
             }
+            $pool = socketsIn($socket);
+            $acrossChanges += (int) ($pool !== $found);
         } while (proc_get_status($restart)['running']);
         $restartOutput = stream_get_contents($pipes[1]) . stream_get_contents($pipes[2]);
         $restarted = proc_close($restart);
@@ -273,7 +288,8 @@ it('checks every renderer, restarts them one at a time with no render refused, a
 
     expect($restarted)->toBe(0, $restartOutput . $output)
         ->and($failures)->toBe([])
-        ->and($rendered)->toBeGreaterThan(5)
+        ->and($rendered)->toBeGreaterThan(0)
+        ->and($acrossChanges)->toBeGreaterThan(0, 'a render was in flight as the pool changed')
         ->and($after)->toHaveCount(2)
         ->and(array_intersect($before, $after))->toBe([]);
 
