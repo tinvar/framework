@@ -11,6 +11,7 @@ use Tinvar\Data\Data;
 use Tinvar\Data\PayloadContext;
 use Tinvar\Http\ForbiddenException;
 use Tinvar\Http\Request;
+use Tinvar\Live\TagsRead;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 
@@ -30,11 +31,16 @@ use Tinvar\Orm\Orm;
  */
 final class LoaderRunner
 {
-    /** @param \Closure(class-string): object $resolver builds a page or layout class */
+    /**
+     * @param \Closure(class-string): object $resolver builds a page or layout class
+     * @param TagsRead|null $tags told which segment each loader is, so the
+     *        tags a loader reads are its segment's (see Tinvar\Live)
+     */
     public function __construct(
         private readonly Orm $orm,
         private readonly \Closure $resolver,
         private readonly Gate $gate,
+        private readonly ?TagsRead $tags = null,
     ) {}
 
     /**
@@ -77,7 +83,7 @@ final class LoaderRunner
         // What a partial reload leaves out is the rendering of the segments
         // it does not name, and their data; never a loader (ADR 0015).
         foreach ($chain->layouts as $layout) {
-            $data = $this->invoke($layout, $binder, $chain->parameters, $byType, $request);
+            $data = $this->invoke($layout, $binder, $chain->parameters, $byType, $request, $layout->layoutKey);
             if ($data === null) {
                 continue;
             }
@@ -101,7 +107,7 @@ final class LoaderRunner
             }
         }
 
-        $page = $this->invoke($chain->page, $binder, $chain->parameters, $byType, $request);
+        $page = $this->invoke($chain->page, $binder, $chain->parameters, $byType, $request, PartialReload::PAGE);
 
         return new LoadedRoute(
             chain: $chain,
@@ -216,6 +222,7 @@ final class LoaderRunner
         array $parameters,
         array $parentData,
         Request $request,
+        ?string $segment = null,
     ): ?Data {
         $instance = ($this->resolver)($route->class);
 
@@ -230,7 +237,8 @@ final class LoaderRunner
         // "Loaders and queries run in a read-only transaction ... because
         // hovering a link runs them." Prefetch-on-hover means this body runs
         // for a page nobody has decided to visit.
-        $result = $this->orm->readOnly(static fn (): mixed => $instance(...$arguments));
+        $load = fn (): mixed => $this->orm->readOnly(static fn (): mixed => $instance(...$arguments));
+        $result = $this->tags === null || $segment === null ? $load() : $this->tags->within($segment, $load);
 
         if ($result !== null && !$result instanceof Data) {
             throw new RoutingException(

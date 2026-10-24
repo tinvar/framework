@@ -62,6 +62,11 @@ final class ServeCommand
      * @param string $projectRoot where the framework's node_modules and tools are
      * @param (\Closure(string): void)|null $out a line for standard output
      * @param (\Closure(string): void)|null $err a line for standard error
+     * @param (\Closure(): array<string, string>)|null $serverEnvironment more of
+     *        FrankenPHP's environment, from the application -- its live hub's
+     *        keys, which its Caddyfile reads (Tinvar\Live\HubSettings). Asked
+     *        once FrankenPHP is about to start, and never given to the
+     *        renderer, whose environment stays scrubbed.
      */
     public function __construct(
         private readonly string $projectRoot,
@@ -69,6 +74,7 @@ final class ServeCommand
         ?\Closure $out = null,
         ?\Closure $err = null,
         private readonly ?string $workingDirectory = null,
+        private readonly ?\Closure $serverEnvironment = null,
     ) {
         $this->out = $out ?? static function (string $line): void {
             fwrite(STDOUT, $line . "\n");
@@ -221,6 +227,7 @@ final class ServeCommand
                 $plan['app'],
                 [
                     ...getenv(),
+                    ...($this->serverEnvironment === null ? [] : ($this->serverEnvironment)()),
                     'TINVAR_HOST' => $plan['host'],
                     'TINVAR_PORT' => (string) $plan['port'],
                     'TINVAR_APP_ROOT' => $plan['app'],

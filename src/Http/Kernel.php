@@ -25,6 +25,10 @@ use Tinvar\Container\Container;
 use Tinvar\Http\Middleware\RequireAuthentication;
 use Tinvar\Http\Middleware\ThrottleRequests;
 use Tinvar\Http\Middleware\VerifyCsrfToken;
+use Tinvar\Live\LiveMinter;
+use Tinvar\Live\LiveUpdates;
+use Tinvar\Live\SubscribeEndpoint;
+use Tinvar\Live\TagsRead;
 use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
@@ -75,6 +79,21 @@ final class Kernel
     /** Mounted only when an application has statically-built pages to bootstrap. */
     public readonly ?BootstrapEndpoint $bootstrap_;
 
+    /** Mounted only when an application supplies live updates. */
+    public readonly ?SubscribeEndpoint $live_;
+
+    /**
+     * What a page's loaders read, by segment, for its live token -- given
+     * to a loader that asks for it by type.
+     */
+    public readonly TagsRead $tagsRead;
+
+    /** The hub and keys live tokens need; null when the application has none. */
+    private readonly ?LiveUpdates $live;
+
+    /** The builds a token may name, wherever the application declared them. */
+    private readonly ?BuildRegistry $builds;
+
     /** Kept so a page render can mint the route token its client sends back. */
     private readonly ?FragmentSupport $support;
 
@@ -118,6 +137,9 @@ final class Kernel
         // NAT's visitors spending that NAT's action budget just by loading
         // pages.
         'bootstrap' => 120,
+        // A trade per page and per grant -- one every few minutes a tab is
+        // open -- and one per reconnect, which backs off.
+        'live' => 60,
     ];
 
     private readonly ExceptionHandler $exceptions;
@@ -142,6 +164,7 @@ final class Kernel
     private readonly Pipeline $actionStack;
     private readonly Pipeline $queryStack;
     private readonly Pipeline $bootstrapStack;
+    private readonly Pipeline $liveStack;
 
     /**
      * The request attribute carrying the page's route token, for the
@@ -183,6 +206,15 @@ final class Kernel
     public const string HISTORY_KEY = 'tinvar.history_key';
 
     /**
+     * The request attribute carrying the page's LiveMinter, for the responder
+     * to mint the page's live token with once the render has run -- what it
+     * read is known only then -- and hand it over: in `X-Live-Token` on a
+     * payload, at the end of a document (Tinvar\Live). Absent without live
+     * updates, a route name or a session.
+     */
+    public const string LIVE_MINTER = 'tinvar.live_minter';
+
+    /**
      * @param \Closure(class-string): object $resolver builds pages, layouts, queries, actions and middleware
      * @param \Closure(Request): list<string> $allowedQueries the route's query allowlist
      * @param list<class-string<Middleware>> $globalMiddleware
@@ -218,6 +250,10 @@ final class Kernel
      *        Given, every request into a panel needs a membership of it in the
      *        request's tenant, and `requires:` and `permission:` are held to it;
      *        without it, declaring either is refused.
+     * @param LiveUpdates|null $live the hub and keys for live updates. Given,
+     *        every page render is handed a LiveMinter, /_live/subscribe is
+     *        mounted, and what an action invalidates is published once it
+     *        commits; without them, nothing is live.
      */
     public function __construct(
         public readonly Orm $orm,
@@ -247,6 +283,7 @@ final class Kernel
         ?HistoryKeys $historyKeys = null,
         ?PanelRegistry $panelRegistry = null,
         ?Memberships $memberships = null,
+        ?LiveUpdates $live = null,
     ) {
         // Panels need somewhere to be current. An application defining them
         // and passing no context gets one, rather than panels that resolve
@@ -258,6 +295,12 @@ final class Kernel
         $this->previousUrls = $previousUrls;
         $this->historyKeys = $historyKeys;
         $this->manifest = $manifest;
+        $this->live = $live;
+        $this->builds = $builds ?? $fragments?->builds;
+
+        // Always, live updates or not: a loader that says what it read asks
+        // for this by type, and must get one either way.
+        $this->tagsRead = new TagsRead($this->orm);
 
         // Over the defaults, not instead of them: tightening one bucket by
         // passing ['actions' => 3] silently turned off every other one. A
@@ -282,7 +325,8 @@ final class Kernel
             ->instance(QueryRegistry::class, $this->queries)
             ->instance(ActionRegistry::class, $this->actions)
             ->instance(AuthContext::class, $this->auth)
-            ->instance(PolicyRegistry::class, $this->policies);
+            ->instance(PolicyRegistry::class, $this->policies)
+            ->instance(TagsRead::class, $this->tagsRead);
         if ($panels !== null) {
             $container?->instance(PanelContext::class, $panels);
         }
@@ -310,7 +354,7 @@ final class Kernel
 
         $this->router = new Router(
             $this->routes,
-            new LoaderRunner($this->orm, $resolver, $gate),
+            new LoaderRunner($this->orm, $resolver, $gate, $this->tagsRead),
             self::middlewareFrom($resolver),
             $globalMiddleware,
             $partialReloads,
@@ -361,6 +405,7 @@ final class Kernel
                 new Validator($this->orm),
                 $encoder,
                 $cache,
+                $live?->invalidator($this->orm, $this->report(...)),
             ),
             revalidator: $revalidator,
             sessionId: $fragments?->sessionId,
@@ -443,6 +488,18 @@ final class Kernel
             new VerifyCsrfToken(tokens: $csrf),
             ...$this->throttleFor($throttle, 'bootstrap', $limits, byAddress: true),
             ...$this->throttleFor($throttle, 'bootstrap', $limits, byAddress: false),
+        ]);
+
+        // The live trade gets what bootstrap gets, and for the same reason no
+        // authentication: a page a visitor with no account may see reads
+        // tags too. It sets a cookie, so CSRF; and whose session it is, it
+        // checks itself.
+        $this->liveStack = new Pipeline([
+            ...$this->floodGuardFor($throttle, 'live', $limits),
+            ...$global,
+            new VerifyCsrfToken(tokens: $csrf),
+            ...$this->throttleFor($throttle, 'live', $limits, byAddress: true),
+            ...$this->throttleFor($throttle, 'live', $limits, byAddress: false),
         ]);
 
         // Fragments run their own stack: GET with no body, so CSRF does not
@@ -530,11 +587,12 @@ final class Kernel
 
         $this->support = $fragments;
 
+        $this->live_ = $live === null ? null : new SubscribeEndpoint($live, $this->auth, $this->builds);
+
         // Its own argument, not reached through FragmentSupport: detecting a
         // deploy is something every application with a client router needs,
         // whether or not it has a single <Deferred>.
-        $builds ??= $fragments?->builds;
-        $this->versions = $builds === null ? null : new CheckVersion($builds);
+        $this->versions = $this->builds === null ? null : new CheckVersion($this->builds);
         $this->scope = RequestScope::standard($this->orm, $this->auth, $this->policies, $panels, $queryRunner);
 
         // Request-lived services go with the request, like the user and the
@@ -543,6 +601,9 @@ final class Kernel
         if ($container !== null) {
             $this->scope->add('container', $container->endRequest(...));
         }
+
+        // What one page's loaders read is not the next request's.
+        $this->scope->add('live', $this->tagsRead->forget(...));
     }
 
     /**
@@ -608,6 +669,15 @@ final class Kernel
                 );
             }
 
+            if ($this->live_ !== null && $this->live_->matches($request)) {
+                SubscribeEndpoint::assertMethod($request);
+
+                return $this->liveStack->run(
+                    $request,
+                    fn (Request $passed): Response => $this->live_->handle($passed, $rawBody),
+                );
+            }
+
             if ($this->fragments_ !== null && $this->fragments_->matches($request)) {
                 FragmentEndpoint::assertMethod($request);
 
@@ -639,6 +709,12 @@ final class Kernel
                 }
                 if ($minter !== null) {
                     $passed = $passed->withAttribute(self::FRAGMENT_MINTER, $minter);
+                }
+                // Built now, with the binding as it stands for this render;
+                // used once the render has run.
+                $live = $this->liveMinter($passed, $loaded->chain->page->name, $loaded->chain->parameters, $this->tagsRead);
+                if ($live !== null) {
+                    $passed = $passed->withAttribute(self::LIVE_MINTER, $live);
                 }
                 // For the page metadata, as the route token is.
                 $historyKey = $this->historyKeyFor($loaded, $passed);
@@ -728,6 +804,44 @@ final class Kernel
     public function queryPanelRefusal(string $name): ?string
     {
         return $this->entry->queryRefusal($this->queries, $name);
+    }
+
+    /**
+     * The live minter for a render of this route, bound to the request as it
+     * stands -- session, user and auth epoch, tenant, panel, build -- or null
+     * without live updates, a route name or a session.
+     *
+     * A page render gets one as Kernel::LIVE_MINTER, which counts what its
+     * loaders read; an application rendering a fragment asks here, inside
+     * the fragment's own request, with no loaders to count -- the fragment
+     * endpoint runs none.
+     *
+     * @param array<string, string> $params
+     */
+    public function liveMinter(Request $request, ?string $route, array $params, ?TagsRead $loaders = null): ?LiveMinter
+    {
+        if ($this->live === null || $route === null) {
+            return null;
+        }
+
+        $session = ($this->live->sessionId)($request);
+        if ($session === '') {
+            return null;
+        }
+
+        return new LiveMinter(
+            signer: $this->live->signer,
+            topics: $this->live->topics,
+            route: $route,
+            params: $params,
+            panel: $this->panels?->currentOrNull() ?? '',
+            tenant: $this->orm->tenant(),
+            build: $this->builds->current ?? 'dev',
+            sessionId: $session,
+            user: $this->auth->id(),
+            authEpoch: $this->auth->epoch(),
+            loaders: $loaders,
+        );
     }
 
     /**

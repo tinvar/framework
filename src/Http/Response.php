@@ -246,6 +246,44 @@ final class Response
     }
 
     /**
+     * The response, setting a cookie for one path alone: `__Secure-`,
+     * HttpOnly, SameSite=Strict.
+     *
+     * For a credential something other than the application reads at its
+     * own path -- the live hub's access token, which the hub reads at
+     * /.well-known/mercure. Path=/ would send it with every request the
+     * application serves, where nothing reads it and it only adds bytes;
+     * and `__Host-` requires Path=/, so the prefix is `__Secure-`, which
+     * still keeps a plain-http response from setting it. Strict, because
+     * the only request that carries it is the client's own, from this
+     * origin.
+     */
+    public function withPathCookie(string $name, string $value, string $path, ?int $maxAge = null): self
+    {
+        if (preg_match('/^__Secure-[A-Za-z0-9!#$%&\'*+.^_`|~-]+\z/', $name) !== 1) {
+            throw new \InvalidArgumentException('A path cookie name must be a __Secure- prefixed token.');
+        }
+
+        if (preg_match('/^\/[\x21-\x3a\x3c-\x7e]*\z/', $path) !== 1) {
+            throw new \InvalidArgumentException("Cookie '{$name}' needs an absolute path with nothing a cookie attribute cannot carry.");
+        }
+
+        if (preg_match('/^[\x21\x23-\x2b\x2d-\x3a\x3c-\x5b\x5d-\x7e]*\z/', $value) !== 1) {
+            throw new \InvalidArgumentException("Cookie '{$name}' has a value with characters a cookie cannot carry.");
+        }
+
+        if ($maxAge !== null && $maxAge < 0) {
+            throw new \InvalidArgumentException("Cookie '{$name}' cannot have a negative Max-Age.");
+        }
+
+        $clone = clone $this;
+        $clone->cookies[$name] = "{$name}={$value}; Path={$path}; Secure; HttpOnly; SameSite=Strict"
+            . ($maxAge === null ? '' : "; Max-Age={$maxAge}");
+
+        return $clone;
+    }
+
+    /**
      * Every cookie another response sets, set on this one too -- for a
      * response that replaces another, as a translated redirect does, and
      * must not drop what it was carrying.

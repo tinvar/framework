@@ -11,6 +11,7 @@ use Tinvar\Data\Encoder;
 use Tinvar\Http\ForbiddenException;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Http\Request;
+use Tinvar\Live\Invalidator;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 use Tinvar\Validation\FormRequest;
@@ -42,6 +43,9 @@ final class ActionRunner
         private readonly Validator $validator,
         private readonly Encoder $encoder = new Encoder(),
         private readonly ?QueryCache $cache = null,
+        // Tells every other client listening that the tags were invalidated,
+        // once the action's writes are committed (Tinvar\Live).
+        private readonly ?Invalidator $live = null,
     ) {}
 
     /**
@@ -129,6 +133,11 @@ final class ActionRunner
         if ($this->cache !== null && $result->revalidatedTags !== []) {
             $this->cache->forgetTags($result->revalidatedTags, $this->orm->tenant());
         }
+
+        //    And the clients holding pages that read them -- in other tabs,
+        //    for other people -- told: the response's X-Invalidated-Tags
+        //    reaches only the client that ran the action.
+        $this->live?->invalidate($result->revalidatedTags, $this->orm->tenant());
 
         // 7. The data boundary. Only Data objects, scalars, lists and maps
         //    leave, in every environment -- an action's value and flash were

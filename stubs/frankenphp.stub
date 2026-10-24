@@ -1,0 +1,13 @@
+<?php
+
+// What FrankenPHP defines when PHP runs under it, for static analysis: the
+// built-in Mercure hub's publisher (Tinvar\Live\Mercure::builtIn()). Not
+// loaded at runtime -- code that calls it checks function_exists() first.
+
+/**
+ * @param string|list<string> $topics
+ * @return string the update's id
+ */
+function mercure_publish(string|array $topics, string $data = '', bool $private = false, ?string $id = null, ?string $type = null, ?int $retry = null): string
+{
+}
