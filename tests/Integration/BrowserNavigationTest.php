@@ -309,6 +309,44 @@ it('shows a product page prefetched before signing in as the customer sees it, o
         ->and($result['visitsAfterSignIn'])->toBe([$result['path']]);
 });
 
+// "History encryption: on by default for authenticated routes, including
+// remembered form state, using `crypto.subtle` and a session-scoped key ...
+// logout calls `clearHistory()`." The product page's quantity is remembered
+// on its history entry; for a signed-in customer the tab's storage holds it
+// only sealed (ADR 0019).
+it('keeps what a signed-in customer typed sealed in the tab, opens it for their session, and clears it on sign-out', function () use ($root) {
+    $output = '';
+    served($root, function (string $origin) use ($root, &$output): void {
+        $output = runWithTimeout(
+            ['node', "{$root}/examples/shop/e2e/history.mjs", $origin, DemoAccount::EMAIL, DemoAccount::PASSWORD],
+            $root,
+            60,
+        );
+    });
+
+    $result = json_decode((string) $output, true);
+    expect($result)->toBeArray("the browser script failed:\n{$output}");
+
+    expect($result['errors'])->toBe([])
+        // A visitor who is not signed in is handed no key; the customer's
+        // product page came with one.
+        ->and($result['signedOut'])->toBe('undefined')
+        ->and($result['keyed'])->not->toBeEmpty()
+        ->and(array_unique(array_map(static fn (string $line): string => substr($line, strrpos($line, ' ') + 1), $result['keyed'])))->toBe(['key']);
+
+    // No plaintext draft: the quantity's entry is ciphertext, and nothing is
+    // kept in the clear.
+    expect($result['storage'])->toBe(['sealed' => 1, 'entries' => [], 'plaintext' => false]);
+
+    // It opens again for the same session: back to the page, and a reload.
+    expect($result['back'])->toBe('7')
+        ->and($result['reloadedKey'])->toBe('string')
+        ->and($result['reloaded'])->toBe('7');
+
+    // Signing out wiped it from the tab.
+    expect($result['afterSignOut'])->toBeNull();
+});
+
 // "A deferred ... marked `rescue` that throws is reported to the PHP
 // exception handler and omitted; the client boundary renders its `rescue`
 // slot instead of failing the page." The shop is served with the panel's
