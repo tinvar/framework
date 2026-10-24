@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Integration\ShopPreviousUrl;
 
 use Shop\Auth\PreviousUrls;
+use Shop\Database\Migrations;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Tinvar\Bench\Renderer;
@@ -19,6 +20,7 @@ use Tinvar\Http\CsrfTokens;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Orm\IdentityMap;
+use Tinvar\Orm\Migrations\Migrator;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Support\Signer;
@@ -30,8 +32,7 @@ function store(): array
 {
     $path = sys_get_temp_dir() . '/tinvar-previous-' . bin2hex(random_bytes(4)) . '.sqlite';
     $connection = PdoConnection::sqlite($path, 'shop', create: true);
-    // As the schema makes it.
-    $connection->execute('CREATE TABLE previous_urls (session TEXT PRIMARY KEY, url TEXT NOT NULL, expires_at INTEGER NOT NULL)');
+    Migrations::migrate($connection);
     $owner = getmypid();
     register_shutdown_function(static function () use ($path, $owner): void {
         if (getmypid() !== $owner) {
@@ -120,9 +121,11 @@ describe('the store', function () {
         expect($pdo->query('SELECT url FROM previous_urls')->fetchAll(\PDO::FETCH_COLUMN))->toBe(['/']);
     });
 
-    it('makes its table in a database seeded before it', function () {
+    it('gets its table from migrating a database seeded before it', function () {
         [$urls, $pdo] = store();
         $pdo->exec('DROP TABLE previous_urls');
+        $pdo->exec('DROP TABLE ' . Migrator::TABLE);
+        Migrations::migrate(new PdoConnection($pdo));
         $cookie = Kernel::newSession(KEY);
 
         expect($urls->get(from($cookie)))->toBeNull();
@@ -150,15 +153,21 @@ function sweepPlan(\PDO $pdo): array
 }
 
 describe('the sweep', function () {
-    it('finds expired rows by an index, in the table the schema makes', function () {
-        $pdo = new \PDO('sqlite::memory:');
-        $pdo->exec((string) file_get_contents(Shop::root() . '/database/schema.sql'));
+    it('finds expired rows by an index, in the table the migrations make', function () {
+        $connection = PdoConnection::sqlite(':memory:', 'shop');
+        Migrations::migrate($connection);
+        $pdo = $connection->pdo();
 
         expect(implode("\n", sweepPlan($pdo)))->toMatch('/USING (COVERING )?INDEX previous_urls_expires_at \(expires_at<\?\)/');
     });
 
-    it('makes that index in a database seeded before it', function () {
+    // A table made before the index was, by a store that made its own
+    // table the first time it needed one, as the shop's used to.
+    it('gets that index from migrating a database seeded before it', function () {
         [$urls, $pdo] = store();
+        $pdo->exec('DROP INDEX previous_urls_expires_at');
+        $pdo->exec('DROP TABLE ' . Migrator::TABLE);
+        Migrations::migrate(new PdoConnection($pdo));
 
         $urls->put(from(Kernel::newSession(KEY)), '/orders');
 

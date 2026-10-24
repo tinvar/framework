@@ -14,6 +14,7 @@ namespace Tinvar\Tests\Integration\ShopAuthEpoch;
 use Shop\Auth\AuthEpochs;
 use Shop\Auth\Sessions;
 use Shop\Auth\StartSession;
+use Shop\Database\Migrations;
 use Shop\Database\Seeder;
 use Shop\DemoAccount;
 use Shop\Kernel;
@@ -22,6 +23,7 @@ use Tinvar\Auth\AuthContext;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Orm\IdentityMap;
+use Tinvar\Orm\Migrations\Migrator;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
 
@@ -128,9 +130,13 @@ it('logs a signed-out visitor in as no one, at no epoch', function () {
     expect(loggedInAs($sessions, Kernel::newSession(KEY)))->toBe([null, '']);
 });
 
-it('makes its table in a database seeded before it', function () {
+// A database from before epochs -- and before the shop had migrations --
+// is given the table by migrating it, rather than failing every sign-in.
+it('gets its table from migrating a database seeded before it', function () {
     [, $epochs, $orm, $pdo] = shop();
     $pdo->exec('DROP TABLE auth_epochs');
+    $pdo->exec('DROP TABLE ' . Migrator::TABLE);
+    Migrations::migrate($orm->connection());
     $customer = demo($orm, $pdo);
 
     $epochs->bump($customer->id);

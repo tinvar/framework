@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Integration\ShopAdmin;
 
 use Shop\Auth\StaffMemberships;
+use Shop\Database\Migrations;
 use Shop\Database\Seeder;
 use Shop\DemoAccount;
 use Shop\Kernel;
@@ -21,6 +22,7 @@ use Tinvar\Http\CsrfTokens;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Orm\IdentityMap;
+use Tinvar\Orm\Migrations\Migrator;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Support\Signer;
@@ -142,10 +144,13 @@ it('makes the seeded staff account a member holding the permission the page need
 });
 
 // As `auth_epochs` and `flashes` are: a database from before staff existed
-// is given the table, empty, rather than failing every admin request.
-it('gives a database seeded before staff existed the table, with nobody in it', function () {
+// -- and before the shop had migrations -- is given the table, empty, by
+// migrating it, rather than failing every admin request.
+it('gives a database seeded before staff existed the table, with nobody in it, once migrated', function () {
     $connection = PdoConnection::sqlite(database(), 'shop');
     $connection->execute('DROP TABLE staff');
+    $connection->execute('DROP TABLE ' . Migrator::TABLE);
+    Migrations::migrate($connection);
     $orm = new Orm($connection, new IdentityMap('shop'));
 
     expect(new StaffMemberships($orm)->membership(customer($orm, StaffAccount::EMAIL), StaffMemberships::PANEL, ''))->toBeNull();

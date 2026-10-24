@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Shop\Database\Factories\CustomerFactory;
+use Shop\Database\Migrations;
 use Shop\Database\Factories\OrderFactory;
 use Shop\Database\Factories\ProductFactory;
 use Shop\Models\Customer;
@@ -13,11 +14,11 @@ use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Support\Uuid;
 
-/** The shop's own schema in an in-memory SQLite database, foreign keys enforced. */
+/** The shop's own schema, as its migrations make it, in an in-memory SQLite database, foreign keys enforced. */
 function shopSqlite(): PdoConnection
 {
     $connection = PdoConnection::sqlite(':memory:', 'shop-test');
-    $connection->pdo()->exec((string) file_get_contents(__DIR__ . '/../../../../examples/shop/database/schema.sql'));
+    Migrations::migrate($connection);
 
     return $connection;
 }
