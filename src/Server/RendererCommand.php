@@ -4,13 +4,17 @@ declare(strict_types=1);
 
 namespace Tinvar\Server;
 
+use Tinvar\Render\RendererHealth;
 use Tinvar\Support\PrivateDirectory;
 
 /**
- * The spec's renderer lifecycle commands, for a pool run on its own rather
- * than under `tinvar serve`:
+ * The spec's renderer lifecycle commands, for a pool run on its own or under
+ * `tinvar serve`:
  *
  *   tinvar renderer:start [--processes=N] [--app=DIR] [--socket=DIR] [--codec=msgpack|json-lines]
+ *   tinvar renderer:stop [--graceful] [--socket=DIR] [--timeout=SECONDS]
+ *   tinvar renderer:check [--socket=PATH]
+ *   tinvar renderer:restart [--socket=DIR] [--timeout=SECONDS]
  *
  * renderer:start runs the pool in the foreground -- a process manager's
  * child, or a terminal's -- and becomes it: this process is replaced by the
@@ -18,6 +22,17 @@ use Tinvar\Support\PrivateDirectory;
  * nothing stands between them to forward or lose one. The pool is N
  * sandboxed renderers with a socket each in one directory (ADR 0028); the
  * PHP workers are pointed at the directory with TINVAR_SOCKET.
+ *
+ * The others find the pool by that directory -- --socket, else
+ * TINVAR_SOCKET -- and its supervisor by the pid it records there:
+ *
+ *   - renderer:stop --graceful drains it: no new renders, the open ones
+ *     finished, then gone. Without --graceful it stops at once, and a render
+ *     in flight fails as any render does whose renderer goes away.
+ *   - renderer:check asks each renderer, over its socket, how it is.
+ *   - renderer:restart replaces the renderers one at a time, each only once
+ *     its replacement answers: for a deploy, so they load the new build
+ *     without a render refused.
  */
 final class RendererCommand
 {
@@ -27,8 +42,30 @@ final class RendererCommand
     /** Variables the renderer may see; it refuses to start holding anything secret. */
     private const array RENDERER_ENV = ['PATH', 'TZ', 'LANG', 'LC_ALL'];
 
+    /** Exit status when the command ran and what it was asked to do did not happen. */
+    public const int FAILED = 1;
+
+    /** The file in a pool's directory naming its supervisor; see src/pool.js. */
+    public const string PID_FILE = 'renderer.pid';
+
+    /**
+     * How long a graceful stop is waited for when --timeout does not say: the
+     * renderers' drain (60 s, PHP's overall cap on a render) and the
+     * supervisor's grace after it.
+     */
+    private const int GRACEFUL_SECONDS = 70;
+
+    private const int IMMEDIATE_SECONDS = 10;
+
+    /** A rolling restart starts each replacement (20 s at most) and drains what it replaces. */
+    private const int RESTART_SECONDS = 120;
+
+    /** Each command's options: 'value' takes --name=VALUE, 'flag' is --name alone. */
     private const array OPTIONS = [
-        'renderer:start' => ['processes', 'app', 'socket', 'codec'],
+        'renderer:start' => ['processes' => 'value', 'app' => 'value', 'socket' => 'value', 'codec' => 'value'],
+        'renderer:stop' => ['graceful' => 'flag', 'socket' => 'value', 'timeout' => 'value'],
+        'renderer:check' => ['socket' => 'value'],
+        'renderer:restart' => ['socket' => 'value', 'timeout' => 'value'],
     ];
 
     /** @var \Closure(string): void */
@@ -71,6 +108,9 @@ final class RendererCommand
 
             return match ($command) {
                 'renderer:start' => $this->start($options),
+                'renderer:stop' => $this->stop($options),
+                'renderer:check' => $this->check($options),
+                'renderer:restart' => $this->restart($options),
                 default => throw new ServeException("Unknown command '{$command}'."),
             };
         } catch (ServeException $e) {
@@ -115,6 +155,198 @@ final class RendererCommand
             [$script, $directory, $entry, "--processes={$count}", "--codec={$codec}"],
             [...array_intersect_key(getenv(), array_flip(self::RENDERER_ENV)), 'NODE_ENV' => 'production'],
         );
+    }
+
+    /** @param array<string, string> $options */
+    private function stop(array $options): int
+    {
+        $graceful = isset($options['graceful']);
+        $seconds = $this->seconds($options, $graceful ? self::GRACEFUL_SECONDS : self::IMMEDIATE_SECONDS);
+        [$directory, $pid] = $this->supervisor($options);
+        if ($pid === null) {
+            return self::FAILED;
+        }
+
+        // SIGTERM drains; SIGQUIT is the pool's stop-at-once (src/pool.js).
+        posix_kill($pid, $graceful ? SIGTERM : SIGQUIT);
+        ($this->err)(sprintf('%s the renderer pool in %s (pid %d)...', $graceful ? 'Draining' : 'Stopping', $directory, $pid));
+
+        $deadline = microtime(true) + $seconds;
+        while (self::running($pid) && microtime(true) < $deadline) {
+            usleep(50_000);
+        }
+        if (self::running($pid)) {
+            ($this->err)("It is still running after {$seconds}s.");
+
+            return self::FAILED;
+        }
+
+        ($this->out)('stopped');
+
+        return 0;
+    }
+
+    /** @param array<string, string> $options */
+    private function check(array $options): int
+    {
+        $path = $this->target($options);
+        if (!file_exists($path)) {
+            ($this->err)("No renderer at {$path}.");
+
+            return self::FAILED;
+        }
+
+        $pidFile = "{$path}/" . self::PID_FILE;
+        if (is_dir($path) && is_file($pidFile)) {
+            $pid = (int) trim((string) file_get_contents($pidFile));
+            ($this->out)(\sprintf('supervisor  pid %d  %s', $pid, self::running($pid) ? 'running' : 'NOT RUNNING'));
+        }
+
+        $answers = new RendererHealth()->checkAll($path);
+        if ($answers === []) {
+            ($this->err)("No renderer is listening in {$path}.");
+
+            return self::FAILED;
+        }
+
+        $healthy = true;
+        foreach ($answers as $socket => $answer) {
+            if (\is_string($answer)) {
+                $healthy = false;
+                ($this->out)(\sprintf('%s  NOT ANSWERING: %s', basename($socket), $answer));
+                continue;
+            }
+            ($this->out)(\sprintf(
+                '%s  pid %d  %d rendering  %d served',
+                basename($socket),
+                $answer['pid'],
+                $answer['inFlight'],
+                $answer['served'],
+            ));
+        }
+
+        return $healthy ? 0 : self::FAILED;
+    }
+
+    /** @param array<string, string> $options */
+    private function restart(array $options): int
+    {
+        $seconds = $this->seconds($options, self::RESTART_SECONDS);
+        [$directory, $pid] = $this->supervisor($options);
+        if ($pid === null) {
+            return self::FAILED;
+        }
+
+        // Done when no socket of the renderers there now is left and as many
+        // answer as before: each is removed only once its replacement is up.
+        $before = self::sockets($directory);
+        posix_kill($pid, SIGUSR2);
+        ($this->err)(sprintf('Replacing %d renderers in %s, one at a time...', \count($before), $directory));
+
+        $deadline = microtime(true) + $seconds;
+        while (microtime(true) < $deadline) {
+            $now = self::sockets($directory);
+            if (array_intersect($before, $now) === [] && \count($now) >= \count($before)) {
+                ($this->out)('restarted');
+
+                return 0;
+            }
+            if (!self::running($pid)) {
+                ($this->err)('The pool stopped during the restart.');
+
+                return self::FAILED;
+            }
+            usleep(100_000);
+        }
+
+        // The pool keeps its old renderers when a replacement does not
+        // start, and says so in its own output.
+        ($this->err)("Not every renderer was replaced within {$seconds}s; a replacement that does not start leaves the old ones serving -- see the pool's output.");
+
+        return self::FAILED;
+    }
+
+    /**
+     * The pool's directory and its supervisor's pid, or null for the pid
+     * when there is no pool running there to signal -- said why.
+     *
+     * The pid file is checked against the process it names: a pool killed
+     * outright leaves its file behind, and its pid may since belong to
+     * anything else this user runs.
+     *
+     * @param array<string, string> $options
+     * @return array{string, int|null}
+     */
+    private function supervisor(array $options): array
+    {
+        $directory = $this->target($options);
+        $pidFile = "{$directory}/" . self::PID_FILE;
+        if (!is_dir($directory) || !is_file($pidFile)) {
+            ($this->err)("No renderer pool in {$directory}: there is no " . self::PID_FILE . ' there.');
+
+            return [$directory, null];
+        }
+
+        $text = trim((string) file_get_contents($pidFile));
+        $pid = preg_match('/^[1-9][0-9]{0,9}\z/', $text) === 1 ? (int) $text : 0;
+        $command = $pid > 0 ? trim((string) shell_exec("ps -o args= -p {$pid} 2>/dev/null")) : '';
+        if ($pid === 0 || !self::running($pid) || !str_contains($command, 'renderer.js')) {
+            ($this->err)("The renderer pool in {$directory} is not running" . ($pid > 0 ? " (pid {$pid} is not its supervisor)." : '.'));
+
+            return [$directory, null];
+        }
+
+        return [$directory, $pid];
+    }
+
+    /**
+     * --socket, else TINVAR_SOCKET.
+     *
+     * @param array<string, string> $options
+     */
+    private function target(array $options): string
+    {
+        $path = $options['socket'] ?? (getenv('TINVAR_SOCKET') ?: null);
+        if ($path === null) {
+            throw new ServeException('Which renderer? Pass --socket=PATH, or set TINVAR_SOCKET.');
+        }
+
+        return rtrim($path, '/');
+    }
+
+    /** @param array<string, string> $options */
+    private function seconds(array $options, int $default): int
+    {
+        $given = $options['timeout'] ?? null;
+        if ($given === null) {
+            return $default;
+        }
+        if (preg_match('/^[1-9][0-9]{0,3}\z/', $given) !== 1) {
+            throw new ServeException("--timeout must be a whole number of seconds from 1 to 9999; got '{$given}'.");
+        }
+
+        return (int) $given;
+    }
+
+    /** @return list<string> the socket names in a pool's directory */
+    private static function sockets(string $directory): array
+    {
+        return array_values(array_filter(scandir($directory) ?: [], static fn (string $name): bool => str_ends_with($name, '.sock')));
+    }
+
+    /**
+     * Signal 0 asks without sending; EPERM is a process that exists under
+     * another user. A zombie answers too -- exited, and waiting for its
+     * parent to collect it, which may be a while or never -- so it is asked
+     * after as well, and counts as gone.
+     */
+    private static function running(int $pid): bool
+    {
+        if ($pid <= 0 || (!posix_kill($pid, 0) && posix_get_last_error() !== 1)) {
+            return false;
+        }
+
+        return !str_starts_with(trim((string) shell_exec("ps -o stat= -p {$pid} 2>/dev/null")), 'Z');
     }
 
     /** The app's built rsc entry: --app's, or the working directory's. */
@@ -164,13 +396,16 @@ final class RendererCommand
 
         $options = [];
         foreach ($arguments as $argument) {
-            if (preg_match('/^--([a-z]+)=(.*)\z/s', $argument, $m) === 1 && \in_array($m[1], $allowed, true)) {
-                $options[$m[1]] = $m[2];
+            if (preg_match('/^--([a-z]+)(?:=(.*))?\z/s', $argument, $m) === 1
+                && ($allowed[$m[1]] ?? null) === (isset($m[2]) ? 'value' : 'flag')) {
+                $options[$m[1]] = $m[2] ?? '';
             } else {
-                throw new ServeException(
-                    "Unknown argument '{$argument}'. Usage: tinvar {$command} "
-                    . implode(' ', array_map(static fn (string $o): string => "[--{$o}=...]", $allowed)),
-                );
+                $usage = [];
+                foreach ($allowed as $name => $kind) {
+                    $usage[] = $kind === 'flag' ? "[--{$name}]" : "[--{$name}=...]";
+                }
+
+                throw new ServeException("Unknown argument '{$argument}'. Usage: tinvar {$command} " . implode(' ', $usage));
             }
         }
 

@@ -162,9 +162,10 @@ it('serves the shop on a free port it chose, and stops cleanly', function () use
         ->and($port)->toBeGreaterThanOrEqual(6000)->toBeLessThanOrEqual(7000);
 
     // Two sandboxed renderers, each on a socket of its own in the directory
-    // the workers were given.
+    // the workers were given. Counted there, not in the log: what the
+    // renderers print before FrankenPHP starts does not always survive in a
+    // log file FrankenPHP then writes to as well.
     expect($output)->toMatch('#Serving \S+ with 2 FrankenPHP workers and 2 renderers in /tmp/tinvar-serve-\w+\.#')
-        ->and($output)->toContain('a pool of 2 listening in')
         ->and(array_map(basename(...), $sockets))->toBe(['renderer-0-1.sock', 'renderer-1-2.sock']);
 
     // The catalog, rendered by a worker through one of the renderers.
@@ -243,4 +244,47 @@ it('takes its children with it when it is killed outright', function () use ($ro
         ->and($left)->toBeTrue('a killed command removes nothing itself')
         ->and($removed)->toContain($directory)
         ->and(is_dir($directory))->toBeFalse('the next start removes it');
+});
+
+// A deploy: SIGUSR2 to serve replaces its renderers one at a time, each
+// only once its replacement answers, and the shop keeps being served whole
+// throughout (ADR 0028).
+it('restarts its renderers one at a time on SIGUSR2, serving every page meanwhile', function () use ($root) {
+    $keyFile = sys_get_temp_dir() . '/tinvar-serve-key-' . bin2hex(random_bytes(4)) . '/app.key';
+    [$process, $url, $stop, $log] = serve($root, $keyFile);
+    preg_match('#renderers in (/\S+)\. Ctrl\+C#', (string) file_get_contents($log), $m);
+    $pool = $m[1] ?? '/nonexistent';
+    $names = static fn (): array => array_map(basename(...), glob("{$pool}/*.sock") ?: []);
+
+    try {
+        $before = $names();
+        posix_kill(proc_get_status($process)['pid'], SIGUSR2);
+
+        $statuses = [];
+        $deadline = microtime(true) + 30;
+        do {
+            [$status, , $body] = fetch("{$url}/", ['Accept: text/html']);
+            $statuses[] = $status === 200 && substr_count($body, 'data-availability=') === 24 ? 'whole' : "status {$status}";
+            $after = $names();
+        } while ((array_intersect($before, $after) !== [] || \count($after) < 2) && microtime(true) < $deadline);
+    } finally {
+        $code = $stop();
+        if (is_file($keyFile)) {
+            unlink($keyFile);
+        }
+        foreach (glob(\dirname($keyFile) . '/{,.}*', GLOB_BRACE) ?: [] as $leftover) {
+            if (is_file($leftover)) {
+                unlink($leftover);
+            }
+        }
+        if (is_dir(\dirname($keyFile))) {
+            rmdir(\dirname($keyFile));
+        }
+    }
+
+    expect($before)->toHaveCount(2)
+        ->and($after)->toHaveCount(2)
+        ->and(array_intersect($before, $after))->toBe([], 'every renderer was replaced')
+        ->and(array_unique($statuses))->toBe(['whole'])
+        ->and($code)->toBe(0);
 });

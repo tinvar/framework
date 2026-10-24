@@ -49,7 +49,10 @@ use Tinvar\Support\PrivateDirectory;
  *
  * It prints the URL once FrankenPHP is answering on it, forwards SIGINT and
  * SIGTERM to the children, and if the renderer or FrankenPHP exits on its
- * own stops the rest and exits non-zero. Killed outright, it can do none of that, so each child
+ * own stops the rest and exits non-zero. Stopping, it stops the renderers
+ * last, so the requests and jobs the others finish still have a renderer to
+ * render through. SIGUSR2 is passed to the pool: a rolling restart, after a
+ * deploy. Killed outright, it can do none of that, so each child
  * also stops when this process's end of its standard input closes; and the
  * next start removes the directory a killed one left.
  */
@@ -91,6 +94,9 @@ final class ServeCommand
     private readonly \Closure $err;
 
     private bool $stopping = false;
+
+    /** Set by SIGUSR2, and passed on to the renderers by supervise(). */
+    private bool $restartRequested = false;
 
     /**
      * The write end of each child's standard input, by process: held open
@@ -446,6 +452,16 @@ final class ServeCommand
                 return 0;
             }
 
+            // The pool's supervisor restarts its renderers one at a time on
+            // SIGUSR2 (renderer:restart sends it there directly).
+            if ($this->restartRequested) {
+                $this->restartRequested = false;
+                if (isset($children['the renderers']) && proc_get_status($children['the renderers'])['running']) {
+                    proc_terminate($children['the renderers'], \defined('SIGUSR2') ? SIGUSR2 : 31);
+                    ($this->err)('Restarting the renderers one at a time.');
+                }
+            }
+
             foreach ($children as $name => $process) {
                 $status = proc_get_status($process);
                 if ($status['running']) {
@@ -533,6 +549,9 @@ final class ServeCommand
                 $this->stopping = true;
             });
         }
+        pcntl_signal(SIGUSR2, function (): void {
+            $this->restartRequested = true;
+        });
     }
 
     /**
@@ -584,11 +603,28 @@ final class ServeCommand
     }
 
     /**
-     * SIGTERM to each child still running, then SIGKILL to any that will not go.
+     * Stops every child, the renderers last.
+     *
+     * FrankenPHP finishes the requests it has, and a queue worker the job in
+     * hand, and those still need a renderer to render through -- a page, or
+     * an email. Stopped together, the renderers drained the renders they had
+     * and refused the ones the others were still about to ask for.
      *
      * @param array<string, resource> $children
      */
     private function terminate(array $children): void
+    {
+        $renderers = array_intersect_key($children, ['the renderers' => true, 'the dev renderer' => true]);
+        $this->stopAll(array_diff_key($children, $renderers));
+        $this->stopAll($renderers);
+    }
+
+    /**
+     * SIGTERM to each child still running, then SIGKILL to any that will not go.
+     *
+     * @param array<string, resource> $children
+     */
+    private function stopAll(array $children): void
     {
         foreach ($children as $process) {
             if (proc_get_status($process)['running']) {
