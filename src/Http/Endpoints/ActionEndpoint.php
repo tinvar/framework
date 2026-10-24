@@ -6,6 +6,8 @@ namespace Tinvar\Http\Endpoints;
 
 use Tinvar\Actions\ActionRunner;
 use Tinvar\Actions\Revalidator;
+use Tinvar\Http\Flash;
+use Tinvar\Http\FlashStore;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Pipeline;
@@ -20,6 +22,13 @@ use Tinvar\Validation\ValidationException;
  * web, auth, throttle:actions, plus the action's panel stack -- is applied by
  * whoever mounts this; the endpoint itself owns the body limits, the method,
  * and turning a result or a failure into a response.
+ *
+ * Two kinds of caller, told apart by isFormNavigation(). Script -- <Form>,
+ * useForm, a generated action called directly -- gets JSON: the value, the
+ * field errors, the re-rendered pages. A browser posting a form itself,
+ * before JavaScript has loaded or without it, is navigating, and gets a page:
+ * a 303 to wherever the action redirected, or back to the form, with its
+ * errors flashed.
  */
 final class ActionEndpoint
 {
@@ -32,6 +41,9 @@ final class ActionEndpoint
      *        an action's own #[Middleware]; required once any action declares one
      * @param list<class-string> $globalMiddleware already run by the stack this
      *        endpoint is mounted in, so not run a second time
+     * @param FlashStore|null $flashes where a browser's own form post leaves its
+     *        errors for the page it is sent back to; without one, such a post
+     *        that fails validation gets the framework's 422 page instead
      */
     public function __construct(
         private readonly ActionRunner $runner,
@@ -40,7 +52,50 @@ final class ActionEndpoint
         private readonly ?\Closure $sessionId = null,
         private readonly ?\Closure $middlewareResolver = null,
         private readonly array $globalMiddleware = [],
+        private readonly ?FlashStore $flashes = null,
     ) {}
+
+    /**
+     * Whether a request is a browser submitting a form itself -- no script
+     * involved -- and so wants a page back rather than JSON.
+     *
+     * A form's body, from something that asks for HTML and not for JSON.
+     * Every script caller asks for JSON; a browser's own submission asks for
+     * text/html and never names application/json.
+     */
+    public static function isFormNavigation(Request $request): bool
+    {
+        $type = strtolower(trim(explode(';', $request->header('content-type') ?? '', 2)[0]));
+        if ($type !== 'application/x-www-form-urlencoded' && $type !== 'multipart/form-data') {
+            return false;
+        }
+
+        $accept = $request->header('accept') ?? '';
+
+        return str_contains($accept, 'text/html') && !str_contains($accept, 'application/json');
+    }
+
+    /**
+     * The answer to a browser's own form post: a 303 back to the page it
+     * came from, with a flash for that page to read.
+     *
+     * A flash is only kept where there is a store to keep it in. Without one
+     * the redirect still happens -- the write it follows has happened too --
+     * and what the flash would have said is not said.
+     *
+     * @param array<string, mixed> $flash
+     */
+    public function back(Request $request, array $flash = []): Response
+    {
+        $response = Response::redirect(Flash::back($request), 303);
+        if ($flash === [] || $this->flashes === null) {
+            return $response;
+        }
+
+        $this->flashes->put($request, $flash);
+
+        return $response->withCookie(Flash::COOKIE, '1', maxAge: Flash::LIFETIME);
+    }
 
     /**
      * How many route tokens one action request will even look at.
@@ -160,8 +215,27 @@ final class ActionEndpoint
             $routeTokens = $input['_routes'] ?? [];
             unset($input['_routes']);
 
+            // So is the hidden CSRF field a form posted without script
+            // carries: VerifyCsrfToken has read it from the body already.
+            unset($input['_token']);
+
             $result = $this->runner->run($name, $input, $precognitive, $request);
         } catch (ValidationException $e) {
+            if (self::isFormNavigation($request)) {
+                // "Without JavaScript, fall back to redirect-back with
+                // flashed errors." With nowhere to flash them, the 422 goes
+                // to the exception handler, whose page at least says so.
+                if ($this->flashes === null) {
+                    throw $e;
+                }
+
+                return $this->back($request, ['form' => [
+                    'action' => $name,
+                    'errors' => $e->errors,
+                    'old' => Flash::old($input),
+                ]]);
+            }
+
             // "With JavaScript, a failed action returns errors with the
             // payload (no redirect)."
             return self::json(422, ['errors' => $e->errors]);
@@ -170,8 +244,18 @@ final class ActionEndpoint
         if ($result->isRedirect()) {
             // 303 after a write, so a reload does not repeat it. No body:
             // ActionResult refuses a flash or a value on a redirect, which
-            // this response would have nowhere to put.
+            // this response would have nowhere to put. A client-router call
+            // reads it as 409 + X-Redirect; the Kernel translates it.
             return Response::redirect((string) $result->redirect, 303)
+                ->withHeader('x-invalidated-tags', implode(',', $result->revalidatedTags));
+        }
+
+        if (self::isFormNavigation($request)) {
+            // A browser's own post is answered with a page, never with JSON
+            // it would show as text. The page it came from is rendered fresh,
+            // so there is nothing to re-render for it here, and the value is
+            // for script; the flash is what the person should see.
+            return $this->back($request, $result->flash === [] ? [] : ['flash' => $result->flash])
                 ->withHeader('x-invalidated-tags', implode(',', $result->revalidatedTags));
         }
 

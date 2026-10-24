@@ -103,7 +103,7 @@ final class Visitor
      *
      * @param array<string, string> $fields
      */
-    public function postForm(string $name, array $fields): Response
+    public function postForm(string $name, array $fields, string $from = 'https://shop.test/'): Response
     {
         $token = $this->csrfToken();
         $fields = [...$fields, '_token' => $token];
@@ -112,7 +112,7 @@ final class Visitor
             new Request(
                 'POST',
                 "/_action/{$name}",
-                ['content-type' => 'application/x-www-form-urlencoded', 'accept' => 'text/html'],
+                ['content-type' => 'application/x-www-form-urlencoded', 'accept' => 'text/html', 'referer' => $from],
                 [],
                 $fields,
                 [...$this->cookies, '__Host-XSRF-TOKEN' => $token],
@@ -261,8 +261,8 @@ it('signs in under a new session id bound to the customer, and forgets the old o
 
     $response = signIn($visitor);
 
-    expect($response->status)->toBe(200)
-        ->and(json_decode($response->body(), true)['value'])->toBe(['next' => '/orders'])
+    expect($response->status)->toBe(303)
+        ->and($response->header('location'))->toBe('/orders')
         ->and($visitor->sessionId())->not->toBe($before)
         ->and(sessionRow($pdo, $before))->toBeNull()
         ->and(sessionRow($pdo, $visitor->sessionId())['customer_id'])->toBe(demoId($pdo));
@@ -283,7 +283,9 @@ it('answers a wrong password and an unknown email alike, on the password field',
 
 // "<Form> also renders a hidden _token field during dynamic server
 // rendering, so forms work before JavaScript loads." The urlencoded body
-// was handed to the JSON decoder, and refused as bad JSON.
+// was handed to the JSON decoder, and refused as bad JSON; and once read,
+// it was answered with JSON the browser showed as text. A browser's own
+// post gets a page: the 303 on to where the visitor was going.
 it('signs in from a form posted before JavaScript loads', function () {
     [$visitor, $pdo] = shop();
     $visitor->get('/sign-in');
@@ -294,8 +296,57 @@ it('signs in from a form posted before JavaScript loads', function () {
         'next' => '/orders',
     ]);
 
-    expect($response->status)->toBe(200)
+    expect($response->status)->toBe(303)
+        ->and($response->header('location'))->toBe('/orders')
         ->and(sessionRow($pdo, $visitor->sessionId())['customer_id'] ?? null)->toBe(demoId($pdo));
+});
+
+/** @return array<string, mixed>|null what the visitor's session was flashed, still waiting */
+function flashRow(\PDO $pdo, Visitor $visitor): ?array
+{
+    $statement = $pdo->prepare('SELECT data FROM flashes WHERE session = ?');
+    $statement->execute([hash('sha256', (string) $visitor->sessionId())]);
+    $data = $statement->fetchColumn();
+
+    return $data === false ? null : json_decode((string) $data, true);
+}
+
+// "Without JavaScript, fall back to redirect-back with flashed errors." The
+// shop keeps the flash beside its sessions, by a hash of the session id --
+// and the password a visitor typed is never written down.
+it('sends a sign-in posted without script back with its errors, and never the password', function () {
+    [$visitor, $pdo] = shop();
+    $visitor->get('/sign-in');
+
+    $response = $visitor->postForm('account.signIn', [
+        'email' => DemoAccount::EMAIL,
+        'password' => 'not-the-password',
+        'next' => '/orders',
+    ], 'https://shop.test/sign-in?next=%2Forders');
+
+    expect($response->status)->toBe(303)
+        ->and($response->header('location'))->toBe('/sign-in?next=%2Forders')
+        ->and($visitor->cookies)->toHaveKey(\Tinvar\Http\Flash::COOKIE)
+        ->and(flashRow($pdo, $visitor))->toBe(['form' => [
+            'action' => 'account.signIn',
+            'errors' => ['password' => [AccountActions::NO_MATCH]],
+            'old' => ['email' => DemoAccount::EMAIL, 'next' => '/orders'],
+        ]])
+        ->and((string) $pdo->query('SELECT data FROM flashes')->fetchColumn())->not->toContain('not-the-password');
+});
+
+it('hands the flash to the page it was sent back to, once', function () {
+    [$visitor, $pdo] = shop();
+    $visitor->get('/sign-in');
+    $visitor->postForm('account.signIn', ['email' => 'not-an-email', 'password' => 'x', 'next' => '/'], 'https://shop.test/sign-in');
+
+    expect(flashRow($pdo, $visitor))->not->toBeNull();
+
+    // The page renders without a renderer here and fails; it read the
+    // flash before rendering all the same.
+    $visitor->get('/sign-in');
+
+    expect(flashRow($pdo, $visitor))->toBeNull();
 });
 
 /** @return array{string, int} a stored hash's algorithm and cost */
@@ -327,7 +378,7 @@ it('rehashes a password on sign-in when the hashing policy has moved on since', 
     $pdo->prepare('UPDATE customers SET password_hash = ? WHERE email = ?')
         ->execute([password_hash(DemoAccount::PASSWORD, PASSWORD_BCRYPT, ['cost' => 5]), DemoAccount::EMAIL]);
 
-    expect(signIn($visitor)->status)->toBe(200);
+    expect(signIn($visitor)->status)->toBe(303);
 
     $stored = (string) $pdo->query("SELECT password_hash FROM customers WHERE email = 'demo@shop.test'")->fetchColumn();
 
@@ -352,14 +403,14 @@ it('signs in whatever the email\'s case', function () {
     $visitor->get('/sign-in');
 
     expect($visitor->action('account.signIn', ['email' => 'Demo@Shop.TEST', 'password' => DemoAccount::PASSWORD, 'next' => '/'])->status)
-        ->toBe(200);
+        ->toBe(303);
 });
 
 it('sends a customer on only to a path on this site', function (string $next, string $expected) {
     [$visitor] = shop();
     $visitor->get('/sign-in');
 
-    expect(json_decode(signIn($visitor, next: $next)->body(), true)['value']['next'])->toBe($expected);
+    expect(signIn($visitor, next: $next)->header('location'))->toBe($expected);
 })->with([
     'a path' => ['/orders?page=2', '/orders?page=2'],
     'another site' => ['https://evil.example/', NextPath::DEFAULT],
@@ -405,7 +456,7 @@ it('does not let wrong guesses from one address keep the account\'s owner out fr
     }
 
     expect(signIn($attacker)->status)->toBe(429, 'the guessing address is paused')
-        ->and(signIn($owner)->status)->toBe(200, 'the owner, elsewhere, is not');
+        ->and(signIn($owner)->status)->toBe(303, 'the owner, elsewhere, is not');
 });
 
 // One subscriber is handed a whole /64, so it is one address here as it is
@@ -424,7 +475,7 @@ it('counts an IPv6 guesser\'s failures by its /64', function () {
     }
 
     expect(signIn($neighbour)->status)->toBe(429)
-        ->and(signIn($elsewhere)->status)->toBe(200);
+        ->and(signIn($elsewhere)->status)->toBe(303);
 });
 
 it('counts only failures, so signing in often never pauses anyone', function () {
@@ -436,7 +487,7 @@ it('counts only failures, so signing in often never pauses anyone', function () 
         $statuses[] = signIn($visitor)->status;
     }
 
-    expect(array_unique($statuses))->toBe([200]);
+    expect(array_unique($statuses))->toBe([303]);
 });
 
 it('clears an address\'s failures on an account when it signs in', function () {
@@ -447,7 +498,7 @@ it('clears an address\'s failures on an account when it signs in', function () {
         for ($i = 1; $i < SignInThrottle::PER_ACCOUNT; $i++) {
             expect(signIn($visitor, 'wrong')->status)->toBe(422);
         }
-        expect(signIn($visitor)->status)->toBe(200, "round {$round}");
+        expect(signIn($visitor)->status)->toBe(303, "round {$round}");
     }
 });
 
@@ -477,7 +528,7 @@ it('pauses an account for everyone once guesses from many addresses reach its ce
         signIn($last, 'wrong');
     }
 
-    expect($before)->toBe(200, 'below the ceiling')
+    expect($before)->toBe(303, 'below the ceiling')
         ->and(signIn($from(201))->status)->toBe(429, 'at it, from an address that never guessed');
 });
 
@@ -493,7 +544,7 @@ it('hands over the new session\'s CSRF token with its cookie, so the next page n
         'email' => DemoAccount::EMAIL,
         'password' => DemoAccount::PASSWORD,
         'next' => '/products/no-such-product',
-    ])->status)->toBe(200);
+    ])->status)->toBe(303);
 
     expect($visitor->get('/products/no-such-product')->status)->toBe(404)
         ->and($visitor->actionFromCookie('account.signOut', [])->status)->toBe(200, 'signed out from the 404')
@@ -501,7 +552,7 @@ it('hands over the new session\'s CSRF token with its cookie, so the next page n
             'email' => DemoAccount::EMAIL,
             'password' => DemoAccount::PASSWORD,
             'next' => '/',
-        ])->status)->toBe(200, 'and in again, with the token the sign-out handed over');
+        ])->status)->toBe(303, 'and in again, with the token the sign-out handed over');
 });
 
 it('signs out under a new, signed-out session, and the old one stops working', function () {
@@ -561,10 +612,12 @@ it('places an order at the product\'s price, and refuses one it cannot fill', fu
     $soldOut = (string) $pdo->query('SELECT id FROM products WHERE stock = 0')->fetchColumn();
 
     $placed = $visitor->action('orders.place', ['product' => $teacup['id'], 'quantity' => 3]);
-    $id = json_decode($placed->body(), true)['value']['order'];
+    // On to the order it placed.
+    $id = substr((string) $placed->header('location'), \strlen('/orders/'));
     $order = $pdo->query('SELECT * FROM orders WHERE id = ' . $pdo->quote($id))->fetch(\PDO::FETCH_ASSOC);
 
-    expect($placed->status)->toBe(200)
+    expect($placed->status)->toBe(303)
+        ->and($placed->header('location'))->toStartWith('/orders/')
         ->and($order['customer_id'])->toBe(demoId($pdo))
         ->and($order['status'])->toBe('placed')
         ->and((int) $order['subtotal_cents'])->toBe(3 * (int) $teacup['price_cents'])
@@ -603,5 +656,5 @@ it('seeds customers whose credentials follow from their number', function () {
         'email' => Seeder::emailFor(2),
         'password' => Seeder::passwordFor(2),
         'next' => '/',
-    ])->status)->toBe(200);
+    ])->status)->toBe(303);
 });

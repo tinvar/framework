@@ -79,6 +79,14 @@ final class Frame
      *                                   segments to render alone -- `$loaderData`
      *                                   holds only theirs (ADR 0015); sent as a
      *                                   list whatever its keys
+     * @param ?string              $csrfToken the session's CSRF token, for the
+     *                                   hidden field <Form> renders so a form
+     *                                   posts before JavaScript loads. Never in
+     *                                   stored output: pass it only for a render
+     *                                   made for one request.
+     * @param array<string, mixed> $flash what a form posted without script left
+     *                                   for this page: its errors, its input, a
+     *                                   flash -- see FlashStore
      * @return array<string, mixed>
      */
     public static function render(
@@ -90,6 +98,8 @@ final class Frame
         array $allowedQueries,
         ?PageMetadata $page = null,
         ?array $segments = null,
+        ?string $csrfToken = null,
+        array $flash = [],
     ): array {
         $frame = [
             't' => self::RENDER,
@@ -107,6 +117,15 @@ final class Frame
 
         if ($segments !== null) {
             $frame['segments'] = array_values($segments);
+        }
+
+        // Absent rather than empty: a render with nothing for its forms
+        // sends what it always sent.
+        if ($csrfToken !== null) {
+            $frame['csrf'] = $csrfToken;
+        }
+        if ($flash !== []) {
+            $frame['flash'] = $flash;
         }
 
         return $frame;

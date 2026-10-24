@@ -65,7 +65,8 @@ function signedIn(Kernel $kernel): array
         ),
         json_encode(['email' => DemoAccount::EMAIL, 'password' => DemoAccount::PASSWORD, 'next' => '/orders'], JSON_THROW_ON_ERROR),
     ), $cookies);
-    expect($signIn->status)->toBe(200, $signIn->body());
+    // Signed in, and sent on to where the visitor was going.
+    expect($signIn->status)->toBe(303, $signIn->body());
 
     $order = new \PDO('sqlite:' . Shop::database())->query(
         "SELECT o.id FROM orders o JOIN customers c ON c.id = o.customer_id WHERE c.email = '" . DemoAccount::EMAIL . "' LIMIT 1",

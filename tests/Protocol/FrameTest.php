@@ -53,6 +53,26 @@ it('names the segments a partial render renders, and none for a whole page', fun
         ->and(Frame::render(...$args))->not->toHaveKey('segments');
 });
 
+// The hidden field a form posts before JavaScript loads, and what such a
+// post left for the page it was sent back to. A render with neither sends
+// the frame it always sent.
+it('carries the CSRF token and the flash for the page\'s forms only when given them', function () {
+    $args = [
+        'routeId' => 'racks/show',
+        'params' => [],
+        'loaderData' => [],
+        'requestId' => 'req-1',
+        'cspNonce' => 'n',
+        'allowedQueries' => [],
+    ];
+
+    $with = Frame::render(...$args, csrfToken: 'tok', flash: ['form' => ['action' => 'a', 'errors' => []]]);
+
+    expect($with['csrf'])->toBe('tok')
+        ->and($with['flash'])->toBe(['form' => ['action' => 'a', 'errors' => []]])
+        ->and(Frame::render(...$args))->not->toHaveKeys(['csrf', 'flash']);
+});
+
 it('wraps chunk bytes as binary so RSC output is not treated as text', function () {
     expect(Frame::chunk("\xff<div>")['b'])->toBeInstanceOf(Bin::class);
 });
