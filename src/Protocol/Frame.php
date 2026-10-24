@@ -22,6 +22,15 @@ final class Frame
     public const string RESULT = 'result';
     public const string MINTED = 'minted';
 
+    /**
+     * An email template to render: its name and props, nothing else. The
+     * renderer answers with the HTML as chunks and the plain-text part in a
+     * meta frame (`{t: 'meta', mail: {text}}`), and calls no query: a mail
+     * render has an empty allowlist, since everything it shows is in its
+     * props.
+     */
+    public const string MAIL = 'mail';
+
     // renderer -> PHP
     public const string CHUNK = 'chunk';
     public const string QUERY = 'query';
@@ -39,7 +48,7 @@ final class Frame
     public const string REPORT = 'report';
 
     /** @var list<string> */
-    public const array PHP_TO_RENDERER = [self::RENDER, self::FRAGMENT, self::RESULT, self::MINTED];
+    public const array PHP_TO_RENDERER = [self::RENDER, self::FRAGMENT, self::RESULT, self::MINTED, self::MAIL];
 
     /** @var list<string> */
     public const array RENDERER_TO_PHP = [
@@ -173,6 +182,15 @@ final class Frame
             'nonce' => $cspNonce,
             'allow' => array_values($allowedQueries),
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $props already encoded: Data objects, scalars, lists and maps
+     * @return array<string, mixed>
+     */
+    public static function mail(string $template, array $props, string $requestId): array
+    {
+        return ['t' => self::MAIL, 'template' => $template, 'props' => $props, 'rid' => $requestId];
     }
 
     /**
