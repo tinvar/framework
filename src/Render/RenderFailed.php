@@ -17,8 +17,10 @@ use Tinvar\Http\Request;
  * is what an application hears about it: to count failures by kind, to page
  * someone when the renderer is unreachable, to fail a test.
  *
- * The framework has no event bus, so the Kernel hands it to the listeners it
- * was given, in order, before the error page is chosen.
+ * The Kernel hands it to the closures it was given, in order, and then to the
+ * application's event bus (Tinvar\Events), where a #[Listener] method taking
+ * a RenderFailed hears it -- all before the error page is chosen. Never
+ * queued: it carries the exception and the request, which do not travel.
  */
 final readonly class RenderFailed
 {

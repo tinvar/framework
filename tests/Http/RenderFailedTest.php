@@ -11,9 +11,14 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Http\RenderFailed;
 
 use Tinvar\Actions\ActionRegistry;
+use Tinvar\Attributes\Listener;
 use Tinvar\Attributes\Page;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PolicyRegistry;
+use Tinvar\Events\EventDispatcher;
+use Tinvar\Events\EventFake;
+use Tinvar\Events\EventRegistry;
+use Tinvar\Events\Events;
 use Tinvar\Http\Kernel;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
@@ -34,15 +39,19 @@ require_once __DIR__ . '/../Auth/Fixtures/policies.php';
 #[Page('/catalog', view: 'catalog', name: 'catalog')]
 final class CatalogPage {}
 
-/** @param list<\Closure(RenderFailed): void> $listeners */
-function kernel(array $listeners = [], bool $throwOnRenderError = false): Kernel
+/**
+ * @param list<\Closure(RenderFailed): void> $listeners
+ * @param (\Closure(Orm): Events)|null $events the bus, built on the Kernel's database
+ */
+function kernel(array $listeners = [], bool $throwOnRenderError = false, ?\Closure $events = null, ?\Closure $log = null): Kernel
 {
     $fixture = new Fixture(racks: 0, unitsPerRack: 0, sites: 0);
     $routes = new RouteRegistry();
     $routes->register(CatalogPage::class);
+    $orm = new Orm($fixture->connection, new IdentityMap('test'));
 
     return new Kernel(
-        orm: new Orm($fixture->connection, new IdentityMap('test')),
+        orm: $orm,
         routes: $routes,
         queries: new QueryRegistry(),
         actions: new ActionRegistry(),
@@ -50,9 +59,33 @@ function kernel(array $listeners = [], bool $throwOnRenderError = false): Kernel
         policies: new PolicyRegistry(),
         resolver: static fn (string $class): object => new $class(),
         allowedQueries: static fn (Request $r): array => [],
+        log: $log,
         renderFailed: $listeners,
         throwOnRenderError: $throwOnRenderError,
+        events: $events === null ? null : $events($orm),
     );
+}
+
+/** Hears render failures on the bus, as an application's own #[Listener] would. */
+final class CountsFailures
+{
+    /** @var list<RenderFailure> */
+    public static array $heard = [];
+
+    #[Listener]
+    public function failed(RenderFailed $event): void
+    {
+        self::$heard[] = $event->failure;
+    }
+}
+
+final class BrokenListener
+{
+    #[Listener]
+    public function failed(RenderFailed $event): never
+    {
+        throw new \RuntimeException('the pager is down');
+    }
 }
 
 function failingWith(\Throwable $e): \Closure
@@ -149,3 +182,82 @@ it('resets the request scope before a failed render escapes', function () {
 
     expect($kernel->auth->check())->toBeFalse();
 });
+
+// tinvar-spec.md: "Fire a RenderFailed event." The application's event bus
+// hears it too, so a #[Listener] for it is all an application writes.
+it('dispatches each failed render on the event bus, after the closures, with the same digest', function () {
+    $order = [];
+    $fake = null;
+    $kernel = kernel(
+        [static function () use (&$order): void {
+            $order[] = 'closure';
+        }],
+        events: static function (Orm $orm) use (&$fake): Events {
+            return $fake = new EventFake($orm);
+        },
+    );
+
+    $failure = RendererException::fromErrorFrame(['code' => 'component_not_found', 'digest' => 'abc']);
+    $response = $kernel->handle(new Request('GET', '/catalog'), failingWith($failure));
+    \assert($fake instanceof EventFake);
+    $dispatched = $fake->dispatched(RenderFailed::class);
+
+    expect($order)->toBe(['closure'])
+        ->and($dispatched)->toHaveCount(1)
+        ->and($dispatched[0]->failure)->toBe(RenderFailure::ComponentNotFound)
+        ->and($dispatched[0]->digest)->toBe(json_decode($response->body(), true)['error']['digest']);
+
+    // Nothing for a failure that was not a render.
+    $kernel->handle(new Request('GET', '/catalog'), failingWith(new \LogicException('a loader bug')));
+    expect($fake->dispatched(RenderFailed::class))->toHaveCount(1);
+});
+
+it('runs an application\'s #[Listener] for it through the real dispatcher', function () {
+    CountsFailures::$heard = [];
+    $kernel = kernel(events: static function (Orm $orm): Events {
+        $registry = new EventRegistry();
+        $registry->register(CountsFailures::class);
+
+        return new EventDispatcher($registry, $orm, static fn (string $class): object => new $class());
+    });
+
+    $kernel->handle(new Request('GET', '/catalog'), failingWith(RendererException::closedEarly()));
+
+    expect(CountsFailures::$heard)->toHaveCount(1)
+        ->and(CountsFailures::$heard[0]->value)->toBe(RendererException::closedEarly()->failure()->value);
+});
+
+// A broken listener on the bus is reported, and the visitor still gets the
+// error page the failure calls for.
+it('reports a bus listener that throws, and answers as it would have', function () {
+    $logged = [];
+    $kernel = kernel(
+        events: static function (Orm $orm): Events {
+            $registry = new EventRegistry();
+            $registry->register(BrokenListener::class);
+
+            return new EventDispatcher($registry, $orm, static fn (string $class): object => new $class());
+        },
+        log: static function (\Throwable $e) use (&$logged): void {
+            $logged[] = $e->getMessage();
+        },
+    );
+
+    $response = $kernel->handle(new Request('GET', '/catalog'), failingWith(RendererException::closedEarly()));
+
+    expect($response->status)->toBe(500)
+        ->and($logged)->toContain('the pager is down');
+});
+
+it('refuses a queued listener for it at registration: it carries the exception and the request', function () {
+    $registry = new EventRegistry();
+
+    expect(fn () => $registry->register(QueuedFailureListener::class))->toThrow(\InvalidArgumentException::class, 'is not Queueable');
+});
+
+#[\Tinvar\Attributes\Queue]
+final class QueuedFailureListener
+{
+    #[Listener]
+    public function failed(RenderFailed $event): void {}
+}

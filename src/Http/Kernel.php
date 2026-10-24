@@ -22,6 +22,7 @@ use Tinvar\Http\Endpoints\QueryEndpoint;
 use Tinvar\Http\Middleware\CheckVersion;
 use Tinvar\Http\Middleware\TranslateRedirects;
 use Tinvar\Container\Container;
+use Tinvar\Events\Events;
 use Tinvar\Http\Middleware\RequireAuthentication;
 use Tinvar\Http\Middleware\ThrottleRequests;
 use Tinvar\Http\Middleware\VerifyCsrfToken;
@@ -152,6 +153,9 @@ final class Kernel
 
     /** @var list<\Closure(RenderFailed): void> */
     private readonly array $renderFailed;
+
+    /** The application's event bus, which hears RenderFailed after the closures. */
+    private readonly ?Events $events;
 
     /** Whether a failed render escapes handle() rather than becoming an error page. */
     private readonly bool $throwOnRenderError;
@@ -294,6 +298,9 @@ final class Kernel
      * @param WebhookEndpoint|null $webhooks the application's inbound webhooks, answered
      *        ahead of everything else: a delivery is verified by its signature, not by
      *        a session, so none of the global stack applies to it
+     * @param Events|null $events the application's event bus: every RenderFailed is
+     *        dispatched on it, after the $renderFailed closures, so a #[Listener] for
+     *        it hears each failed render as they do
      */
     public function __construct(
         public readonly Orm $orm,
@@ -329,7 +336,9 @@ final class Kernel
         ?ErrorShell $errorShell = null,
         private readonly bool $dev = false,
         private readonly ?WebhookEndpoint $webhooks = null,
+        ?Events $events = null,
     ) {
+        $this->events = $events;
         $this->renderFailed = $renderFailed;
         $this->throwOnRenderError = $throwOnRenderError;
         $this->errorShell = $errorShell ?? new ErrorShell();
@@ -1030,8 +1039,8 @@ final class Kernel
     }
 
     /**
-     * Tells the listeners when $e is a failed render, and rethrows it under
-     * throw_on_error.
+     * Tells the listeners -- the closures, then the event bus -- when $e is a
+     * failed render, and rethrows it under throw_on_error.
      *
      * The digest handed over is the one the response will carry, computed the
      * same way, so a listener's alert and the visitor's reference name the
@@ -1053,6 +1062,17 @@ final class Kernel
         foreach ($this->renderFailed as $listener) {
             try {
                 $listener($event);
+            } catch (\Throwable $thrown) {
+                $this->report($thrown);
+            }
+        }
+
+        // And the application's bus, whose listeners run as the bus runs
+        // them: one that throws stops the dispatch, as it would anywhere,
+        // and is reported here -- the visitor is still shown the error page.
+        if ($this->events !== null) {
+            try {
+                $this->events->dispatch($event);
             } catch (\Throwable $thrown) {
                 $this->report($thrown);
             }
