@@ -122,6 +122,9 @@ final class Kernel
 
     private readonly ExceptionHandler $exceptions;
 
+    /** What every entry point's declarations put around it; see EntryContext. */
+    private readonly EntryContext $entry;
+
     /**
      * The stack the two endpoints run behind.
      *
@@ -297,6 +300,13 @@ final class Kernel
         // by whoever first reaches it.
         $entry = new EntryContext($this->orm, $resolver, $panels, $panelRegistry, $memberships, $this->auth);
         $entry->check($this->routes, $this->actions, $this->queries);
+        // And every route's query allowlist the Kernel is shown -- the one
+        // fragment support carries, by route name -- against the panels of
+        // the queries it names: a render runs them behind its page's panel.
+        if ($fragments?->allowedQueries !== null) {
+            $entry->checkAllowlists($this->routes, $this->queries, $fragments->allowedQueries);
+        }
+        $this->entry = $entry;
 
         $this->router = new Router(
             $this->routes,
@@ -368,6 +378,7 @@ final class Kernel
             cache: $cache,
             debug: $debug,
             report: $this->report(...),
+            panels: $this->queryPanelRefusal(...),
         );
 
         $this->queries_ = new QueryEndpoint(
@@ -703,6 +714,20 @@ final class Kernel
     public function report(\Throwable $e, ?string $digest = null): string
     {
         return $this->exceptions->report($e, $digest);
+    }
+
+    /**
+     * Why a call to query $name may not run in the request's panel as it
+     * stands, or null when it may; see EntryContext::queryRefusal().
+     *
+     * An application that builds its own QueryRunner for its render channel
+     * passes this as the runner's `panels`, so a query declared for a
+     * stricter panel is refused, call by call, from a page that is not held
+     * to it -- as the Kernel's own runner does.
+     */
+    public function queryPanelRefusal(string $name): ?string
+    {
+        return $this->entry->queryRefusal($this->queries, $name);
     }
 
     /**

@@ -38,9 +38,22 @@ final class PanelContext
     /** @var \WeakMap<object, string> */
     private \WeakMap $byFiber;
 
+    /**
+     * What a membership was checked against for this work: the binding
+     * RequirePanelMembership let the request into its panel with. A query
+     * declaring a panel binding reads it to tell whether the request was
+     * already held to everything the query needs (see EntryContext).
+     * Fiber-local, as the panel is.
+     */
+    private ?PanelBinding $grantMain = null;
+
+    /** @var \WeakMap<object, PanelBinding> */
+    private \WeakMap $grantByFiber;
+
     public function __construct()
     {
         $this->byFiber = new \WeakMap();
+        $this->grantByFiber = new \WeakMap();
     }
 
     /**
@@ -110,6 +123,51 @@ final class PanelContext
         }
     }
 
+    /** The binding this work's membership was checked against, or null when none was. */
+    public function granted(): ?PanelBinding
+    {
+        $fiber = \Fiber::getCurrent();
+
+        if ($fiber === null) {
+            return $this->grantMain;
+        }
+
+        return $this->grantByFiber[$fiber] ?? $this->grantMain;
+    }
+
+    /**
+     * Runs $work as having passed a membership check against $binding,
+     * restoring whatever was there afterwards -- scoped, as within() is.
+     *
+     * @template T
+     * @param \Closure(): T $work
+     * @return T
+     */
+    public function grantedWithin(PanelBinding $binding, \Closure $work): mixed
+    {
+        $fiber = \Fiber::getCurrent();
+        $had = $fiber !== null && isset($this->grantByFiber[$fiber]);
+        $previous = $fiber === null ? $this->grantMain : ($had ? $this->grantByFiber[$fiber] : null);
+
+        if ($fiber === null) {
+            $this->grantMain = $binding;
+        } else {
+            $this->grantByFiber[$fiber] = $binding;
+        }
+
+        try {
+            return $work();
+        } finally {
+            if ($fiber === null) {
+                $this->grantMain = $previous;
+            } elseif ($had) {
+                $this->grantByFiber[$fiber] = $previous;
+            } else {
+                unset($this->grantByFiber[$fiber]);
+            }
+        }
+    }
+
     /**
      * Cleared at the end of every request and job, with the rest of the scope.
      *
@@ -122,6 +180,8 @@ final class PanelContext
     {
         $this->main = null;
         $this->byFiber = new \WeakMap();
+        $this->grantMain = null;
+        $this->grantByFiber = new \WeakMap();
     }
 
     private function set(string $panel): void

@@ -40,6 +40,12 @@ final class QueryRunner
      *        from the renderer, which is right, and with nothing else it kept
      *        it from everyone: a fragment rescued because its query failed
      *        showed a reference no log line had.
+     * @param (\Closure(string): ?string)|null $panels why a call to a query may not run
+     *        in the request's panel as it stands, or null when it may -- the
+     *        Kernel's queryPanelRefusal(). Without it, a query that declares a
+     *        #[Panel] is refused on every call: a render runs queries behind
+     *        its page's panel, not theirs, and nothing here could tell
+     *        whether the page's covers the query's.
      */
     public function __construct(
         private readonly QueryRegistry $registry,
@@ -49,6 +55,7 @@ final class QueryRunner
         private readonly bool $debug = false,
         private readonly ?QueryCache $cache = null,
         private readonly ?\Closure $report = null,
+        private readonly ?\Closure $panels = null,
     ) {}
 
     /**
@@ -135,11 +142,18 @@ final class QueryRunner
             $seen[$call['id']] = true;
         }
 
-        // Step 1: the allowlist and the shape of the arguments.
+        // Step 1: the allowlist and the shape of the arguments -- and the
+        // query's panel, which is the request context it needs before any
+        // of its arguments is resolved.
         foreach ($calls as $call) {
             $prepared = $this->admit($call, $allowed);
             if (isset($prepared['error'])) {
                 $errors[$call['id']] = $prepared['error'];
+                continue;
+            }
+            $refused = $this->panelRefusal($call['name']);
+            if ($refused !== null) {
+                $errors[$call['id']] = $refused;
                 continue;
             }
             $accepted[$call['id']] = ['name' => $call['name'], 'args' => $prepared['args'], 'key' => $prepared['key']];
@@ -194,6 +208,24 @@ final class QueryRunner
         }
 
         return $results;
+    }
+
+    /**
+     * A call refused for its query's panel, or null.
+     *
+     * @return array{code: string, digest: string, message?: string}|null
+     */
+    private function panelRefusal(string $name): ?array
+    {
+        if ($this->panels === null) {
+            return $this->registry->panelsFor($name) === []
+                ? null
+                : QueryError::of(QueryError::MISCONFIGURED, "Query {$name} declares a #[Panel], and this runner has no way to hold a call to it.", $this->debug);
+        }
+
+        $why = ($this->panels)($name);
+
+        return $why === null ? null : QueryError::of(QueryError::FORBIDDEN, $why, $this->debug);
     }
 
     /**

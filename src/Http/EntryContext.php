@@ -79,7 +79,7 @@ final readonly class EntryContext
         }
 
         if ($this->memberships !== null && $this->auth !== null) {
-            $stack[] = new RequirePanelMembership($this->auth, $this->memberships, $this->orm, $panel);
+            $stack[] = new RequirePanelMembership($this->auth, $this->memberships, $this->orm, $panel, $this->panels);
         } elseif ($panel->narrows()) {
             // Carried and not enforced is what this replaced. check() refuses
             // it when the Kernel is built; this is for a route registered after.
@@ -180,6 +180,111 @@ final readonly class EntryContext
                 throw new \InvalidArgumentException(self::unenforced($definition->name)->getMessage());
             }
         }
+    }
+
+    /**
+     * Refuses, when the Kernel is built, a route whose query allowlist names
+     * a query its own panel does not cover.
+     *
+     * A query called from a render runs in its page's request context --
+     * its page's panel, behind its page's stack -- not behind its own, which
+     * only an HTTP call to /_query runs. So a page in a looser panel, or in
+     * none, that may call a query declared for a stricter one would run it
+     * past every check the query declared. The route's binding has to cover
+     * the query's: the same panel, and every tenant kind and permission the
+     * query needs among those the route was held to.
+     *
+     * @param \Closure(string): list<string> $allowedQueries the route's query allowlist, by route name
+     */
+    public function checkAllowlists(RouteRegistry $routes, QueryRegistry $queries, \Closure $allowedQueries): void
+    {
+        foreach ($routes->pages() as $page) {
+            if ($page->name === null) {
+                continue;
+            }
+
+            $chain = $routes->chainFor($page->name, array_fill_keys($page->parameters, ''));
+            $routePanel = $this->panelForChain($chain);
+
+            foreach ($allowedQueries($page->name) as $name) {
+                $queryPanel = $this->queryPanel($queries, $name);
+                if ($queryPanel !== null && ($routePanel === null || !$routePanel->covers($queryPanel))) {
+                    throw new \InvalidArgumentException(\sprintf(
+                        "Route '%s' may call query '%s', which is in panel '%s'%s; the route is %s. A query called "
+                        . 'from a render runs behind its page\'s panel, not its own, so the page has to be held to '
+                        . 'everything the query is.',
+                        $page->name,
+                        $name,
+                        $queryPanel->name,
+                        self::requirements($queryPanel),
+                        $routePanel === null ? 'in no panel' : "in panel '{$routePanel->name}'" . self::requirements($routePanel),
+                    ));
+                }
+            }
+        }
+    }
+
+    /**
+     * Why a call to query $name may not run in the request as it stands, or
+     * null when it may: the render path's half of checkAllowlists(), for a
+     * route registered after the Kernel, an allowlist the Kernel was never
+     * shown, or a panel set by the application's own middleware.
+     *
+     * A query declaring a panel runs only in that panel -- its stack, guard
+     * and MFA included, never ran for a request in another, and a
+     * membership alone cannot stand in for them. In it, a request whose
+     * membership was checked against a binding covering the query's runs it
+     * as is; one that was not -- the query needs a permission its page did
+     * not -- has the membership checked again, against the query's binding.
+     */
+    public function queryRefusal(QueryRegistry $queries, string $name): ?string
+    {
+        $queryPanel = $this->queryPanel($queries, $name);
+        if ($queryPanel === null) {
+            return null;
+        }
+
+        $current = $this->panels?->currentOrNull();
+        if ($current !== $queryPanel->name) {
+            return "query '{$name}' is in panel '{$queryPanel->name}', and the request is in " . ($current === null ? 'none' : "panel '{$current}'");
+        }
+
+        // Without Memberships a binding cannot narrow (check() refuses it),
+        // so being in the panel -- behind its stack -- is all it asks.
+        if ($this->memberships === null || $this->auth === null) {
+            return $queryPanel->narrows() ? self::unenforced($queryPanel->name)->getMessage() : null;
+        }
+
+        // In the panel, so there is a context to have been granted it in.
+        if ($this->panels->granted()?->covers($queryPanel) === true) {
+            return null;
+        }
+
+        try {
+            RequirePanelMembership::verify($this->auth, $this->memberships, $this->orm, $queryPanel);
+        } catch (HttpException $e) {
+            return $e->getMessage();
+        }
+
+        return null;
+    }
+
+    /** A query's panel binding, by its #[Panel] or its namespace; null for none or an unknown name. */
+    private function queryPanel(QueryRegistry $queries, string $name): ?PanelBinding
+    {
+        $class = $queries->classFor($name);
+
+        return $class === null ? null : $this->panelFor($queries->panelsFor($name), $class);
+    }
+
+    private static function requirements(PanelBinding $panel): string
+    {
+        $needs = [...array_map(static fn (string $k): string => "a {$k} tenant", $panel->kinds), ...array_map(
+            static fn (string $p): string => "'{$p}'",
+            $panel->permissions,
+        )];
+
+        return $needs === [] ? '' : ' needing ' . implode(', ', $needs);
     }
 
     /** @param class-string<TenantSource> $class */

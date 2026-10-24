@@ -249,6 +249,18 @@ final class AdminStats
     }
 }
 
+/** Narrower than its panel: a permission of its own. Registered only when a test asks. */
+#[Query(name: 'admin.refunds'), Panel('admin', permission: 'orders.refund'), NoAuthorization(reason: 'a fixture query')]
+final class AdminRefunds
+{
+    public function __invoke(): string
+    {
+        Trace::note('query:refunds');
+
+        return 'refunds';
+    }
+}
+
 /**
  * The application around them.
  */
@@ -261,6 +273,8 @@ final class App
     public readonly AuthContext $auth;
     public readonly PanelContext $panels;
     public readonly Directory $directory;
+    public readonly QueryRegistry $queries;
+    public readonly Orm $orm;
 
     /** @var list<string> the panel each fragment rendered in */
     public array $fragments = [];
@@ -268,12 +282,19 @@ final class App
     /**
      * @param list<class-string> $routes beside the fixture's own
      * @param list<class-string<Middleware>> $global
+     * @param list<class-string> $extraQueries beside AdminStats
+     * @param (\Closure(string): list<string>)|null $allowedQueries each route's query allowlist, by name
      */
-    public function __construct(array $routes = [], array $global = [SignIn::class], ?FragmentManifest $manifest = null)
-    {
+    public function __construct(
+        array $routes = [],
+        array $global = [SignIn::class],
+        ?FragmentManifest $manifest = null,
+        array $extraQueries = [],
+        ?\Closure $allowedQueries = null,
+    ) {
         Trace::reset();
         $fixture = new TenantFixture();
-        $orm = new Orm($fixture->connection, new IdentityMap('panels-test'));
+        $orm = $this->orm = new Orm($fixture->connection, new IdentityMap('panels-test'));
         $this->auth = new AuthContext();
         $this->panels = new PanelContext();
         $this->directory = new Directory();
@@ -290,8 +311,8 @@ final class App
         $actions = new ActionRegistry($container->resolver());
         $actions->register(AdminActions::class);
 
-        $queries = new QueryRegistry($container->resolver());
-        $queries->register(AdminStats::class);
+        $queries = $this->queries = new QueryRegistry($container->resolver());
+        $queries->registerAll([AdminStats::class, ...$extraQueries]);
 
         $this->support = new FragmentSupport(
             signer: $this->fragmentSigner,
@@ -304,6 +325,7 @@ final class App
             },
             sessionId: static fn (Request $r): string => SESSION,
             panels: $this->panels,
+            allowedQueries: $allowedQueries,
             orm: $orm,
             routeSigner: $this->routeSigner,
             renderRoute: static function (): string {

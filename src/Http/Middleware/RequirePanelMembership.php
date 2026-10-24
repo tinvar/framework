@@ -8,6 +8,7 @@ use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\Membership;
 use Tinvar\Auth\Memberships;
 use Tinvar\Auth\PanelBinding;
+use Tinvar\Auth\PanelContext;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Request;
@@ -38,33 +39,51 @@ final readonly class RequirePanelMembership implements Middleware
         private Memberships $memberships,
         private Orm $orm,
         private PanelBinding $panel,
+        private PanelContext $panels,
     ) {}
 
     public function handle(Request $request, \Closure $next): Response
     {
-        $user = $this->auth->user();
+        $membership = self::verify($this->auth, $this->memberships, $this->orm, $this->panel);
+
+        // The rest of the request runs as having been held to this binding,
+        // so a query it calls that needs no more is not asked about again.
+        return $this->panels->grantedWithin(
+            $this->panel,
+            static fn (): Response => $next($request->withAttribute(self::ATTRIBUTE, $membership)),
+        );
+    }
+
+    /**
+     * The signed-in user's membership, held to everything $panel requires.
+     *
+     * @throws HttpException 401 for nobody signed in, 403 for no membership or the wrong one
+     */
+    public static function verify(AuthContext $auth, Memberships $memberships, Orm $orm, PanelBinding $panel): Membership
+    {
+        $user = $auth->user();
         if ($user === null) {
-            throw new HttpException(401, "Panel '{$this->panel->name}' needs a signed-in member.", 'unauthenticated');
+            throw new HttpException(401, "Panel '{$panel->name}' needs a signed-in member.", 'unauthenticated');
         }
 
-        $membership = $this->memberships->membership($user, $this->panel->name, $this->orm->tenant());
+        $membership = $memberships->membership($user, $panel->name, $orm->tenant());
         if ($membership === null) {
-            throw self::refuse("is not a member of panel '{$this->panel->name}' in this tenant");
+            throw self::refuse("is not a member of panel '{$panel->name}' in this tenant");
         }
 
-        foreach ($this->panel->kinds as $kind) {
+        foreach ($panel->kinds as $kind) {
             if (!$membership->isKind($kind)) {
-                throw self::refuse("holds a membership of panel '{$this->panel->name}' in a tenant that is not a {$kind}");
+                throw self::refuse("holds a membership of panel '{$panel->name}' in a tenant that is not a {$kind}");
             }
         }
 
-        foreach ($this->panel->permissions as $permission) {
+        foreach ($panel->permissions as $permission) {
             if (!$membership->can($permission)) {
-                throw self::refuse("lacks '{$permission}' in panel '{$this->panel->name}'");
+                throw self::refuse("lacks '{$permission}' in panel '{$panel->name}'");
             }
         }
 
-        return $next($request->withAttribute(self::ATTRIBUTE, $membership));
+        return $membership;
     }
 
     /** The membership a request passed this check with, or null when none did. */

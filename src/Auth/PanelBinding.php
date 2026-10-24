@@ -70,6 +70,18 @@ final readonly class PanelBinding
         return new self($this->name, array_values(array_unique($kinds)), array_values(array_unique($permissions)));
     }
 
+    /**
+     * Whether a request let in under this binding was already held to
+     * everything $other needs: the same panel, and every tenant kind and
+     * permission $other names among this one's.
+     */
+    public function covers(self $other): bool
+    {
+        return $this->name === $other->name
+            && array_diff($other->kinds, $this->kinds) === []
+            && array_diff($other->permissions, $this->permissions) === [];
+    }
+
     /** Whether entering needs anything of a membership beyond holding one. */
     public function narrows(): bool
     {
