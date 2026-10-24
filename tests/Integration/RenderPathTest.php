@@ -20,12 +20,20 @@ use Tinvar\Codec\MessagePackCodec;
 use Tinvar\Http\Request;
 use Tinvar\Render\RendererException;
 use Tinvar\Render\RenderResult;
+use Tinvar\Testing\RendererPool;
+use Tinvar\Testing\Testing;
+
+use function Tinvar\Testing\render;
 
 beforeAll(function () {
     $unbuilt = Shop::ensureBuilt();
     if ($unbuilt !== null) {
         test()->markTestSkipped($unbuilt);
     }
+});
+
+afterEach(function () {
+    Testing::forget();
 });
 
 /** @return array{Kernel, Renderer} */
@@ -107,46 +115,42 @@ it('renders the catalog end to end', function () {
         ->and(strpos($html, 'tinvar-page'))->toBeLessThan(strpos($html, 'self.__rsc'));
 });
 
+/**
+ * The shop on the testing layer's renderer pool (Tinvar\Testing), for the
+ * tests written with render(): one renderer for every such test in this
+ * process, started by the first.
+ */
+function testedShop(): void
+{
+    $pool = RendererPool::for(Shop::entry(), \dirname(Shop::root(), 2));
+    Testing::use(Kernel::fromEnvironment($pool->path, debug: true, database: Shop::testDatabase()), $pool);
+}
+
 it('batches every availability query into one frame and no statement', function () {
-    [$kernel, $renderer] = shopKernel();
-    $statements = null;
+    testedShop();
 
-    try {
-        $kernel->orm->connection()->resetStatementCount();
-        // Read as the render streams, since the request's teardown resets
-        // the count once it is done; the last flush comes after every query.
-        $result = $kernel->render(
-            Request::get('/', ['accept' => 'text/html']),
-            static function () use ($kernel, &$statements): void {
-                $statements = $kernel->orm->connection()->statementCount();
-            },
-        );
-    } finally {
-        $renderer->stop();
-    }
+    $page = render('/')
+        // 24 calls, one frame.
+        ->assertQueryTicks(1)
+        // Two: the visitor's session, and the products. The 24 availability
+        // calls resolve their products from the identity map the loader
+        // filled, so the batch costs no statement at all.
+        ->assertQueryBudget(2);
 
-    expect($result->queryCalls)->toBe(24, 'one availability call per card')
-        ->and($result->queryBatches)->toBe(1, '24 calls, one frame')
-        // One: the products. The 24 availability calls resolve their
-        // products from the identity map the loader filled, so the batch
-        // costs no statement at all.
-        ->and($statements)->toBe(1, 'the products, once');
+    expect($page->result->queryCalls)->toBe(24, 'one availability call per card');
 });
 
 it('lets no model column reach the browser', function () {
-    [$kernel, $renderer] = shopKernel();
+    testedShop();
 
-    try {
-        [$html] = renderCatalog($kernel);
-    } finally {
-        $renderer->stop();
-    }
+    // render() holds every page to it; asked again here because it is what
+    // this test is about. stock and price_cents are real columns; the stock
+    // count is on no Data object, only the availability query's reading of
+    // it.
+    $page = render('/')->assertNoModelLeak()->assertDontSee('password');
 
-    // stock and price_cents are real columns; the stock count is on no Data
-    // object, only the availability query's reading of it.
-    expect($html)->not->toContain('price_cents')
-        ->not->toContain('"stock"')
-        ->not->toContain('password');
+    expect($page->body)->not->toContain('price_cents')
+        ->not->toContain('"stock"');
 });
 
 it('renders identically over the json-lines codec', function () {

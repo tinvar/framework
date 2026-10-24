@@ -19,11 +19,18 @@ use Shop\Auth\SignInThrottle;
 use Shop\Database\Seeder;
 use Shop\DemoAccount;
 use Shop\Kernel;
+use Shop\Models\Customer;
+use Shop\Pages\SignIn;
 use Tinvar\Http\CsrfTokens;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Support\Signer;
+use Tinvar\Testing\AssertablePage;
+use Tinvar\Testing\Testing;
+
+use function Tinvar\Testing\actingAs;
+use function Tinvar\Testing\get;
 
 const KEY = 'shop-account-test-key-of-32-bytes!!';
 
@@ -33,8 +40,15 @@ final class Visitor
     /** @var array<string, string> */
     public array $cookies = [];
 
-    /** @param string $address where this visitor connects from */
-    public function __construct(public readonly Kernel $kernel, public readonly string $address = '127.0.0.1') {}
+    /**
+     * @param string $address where this visitor connects from
+     * @param string $database the shop's database file
+     */
+    public function __construct(
+        public readonly Kernel $kernel,
+        public readonly string $address = '127.0.0.1',
+        public readonly string $database = '',
+    ) {}
 
     public function get(string $url): Response
     {
@@ -167,7 +181,7 @@ function shop(): array
 
     $kernel = Kernel::fromEnvironment('/tmp/tinvar-shop-account-none.sock', key: KEY, database: $path);
 
-    return [new Visitor($kernel), new \PDO("sqlite:{$path}")];
+    return [new Visitor($kernel, database: $path), new \PDO("sqlite:{$path}")];
 }
 
 /** @return array<string, mixed>|null */
@@ -190,10 +204,33 @@ function signIn(Visitor $visitor, string $password = DemoAccount::PASSWORD, stri
     return $visitor->action('account.signIn', ['email' => DemoAccount::EMAIL, 'password' => $password, 'next' => $next]);
 }
 
-it('sends a signed-out visitor to sign in, and remembers where they were going', function () {
-    [$visitor] = shop();
+/**
+ * The visitor's shop, under test with the testing layer (Tinvar\Testing) as
+ * well: the tests below that ask about pages alone are written with it.
+ */
+function tested(Visitor $visitor): Visitor
+{
+    Testing::use($visitor->kernel);
 
-    expect($visitor->get('/orders?page=2')->header('location'))->toBe('/sign-in?next=%2Forders%3Fpage%3D2');
+    return $visitor;
+}
+
+afterEach(function () {
+    Testing::forget();
+});
+
+function demo(Visitor $visitor): Customer
+{
+    $customer = $visitor->kernel->orm->find(Customer::class, demoId(new \PDO('sqlite:' . $visitor->database)));
+    \assert($customer instanceof Customer);
+
+    return $customer;
+}
+
+it('sends a signed-out visitor to sign in, and remembers where they were going', function () {
+    tested(shop()[0]);
+
+    get('/orders?page=2')->assertRedirect('/sign-in?next=%2Forders%3Fpage%3D2');
 });
 
 // Keyed by a hash of the id: a copy of the table is not a list of cookies.
@@ -336,17 +373,18 @@ it('sends a sign-in posted without script back with its errors, and never the pa
 });
 
 it('hands the flash to the page it was sent back to, once', function () {
-    [$visitor, $pdo] = shop();
-    $visitor->get('/sign-in');
-    $visitor->postForm('account.signIn', ['email' => 'not-an-email', 'password' => 'x', 'next' => '/'], 'https://shop.test/sign-in');
+    tested(shop()[0]);
 
-    expect(flashRow($pdo, $visitor))->not->toBeNull();
+    $back = get('/sign-in')->then()
+        ->submit('account.signIn', ['email' => 'not-an-email', 'password' => 'x', 'next' => '/'], '/sign-in')
+        ->assertRedirect('/sign-in');
 
-    // The page renders without a renderer here and fails; it read the
-    // flash before rendering all the same.
-    $visitor->get('/sign-in');
+    // The page it was sent back to is handed the errors, and the email that
+    // was typed; the next one is handed nothing.
+    $page = $back->follow()->assertPage(SignIn::class, fn (AssertablePage $page) => $page->hasFormErrors(['email']));
 
-    expect(flashRow($pdo, $visitor))->toBeNull();
+    expect($page->recorded()->request->attribute(\Tinvar\Http\Kernel::FLASH)['form']['old'] ?? null)->toBe(['email' => 'not-an-email', 'next' => '/'])
+        ->and($page->then()->get('/sign-in')->recorded()->request->attribute(\Tinvar\Http\Kernel::FLASH))->toBeNull();
 });
 
 /** @return array{string, int} a stored hash's algorithm and cost */
@@ -422,11 +460,9 @@ it('sends a customer on only to a path on this site', function (string $next, st
 
 // A visitor already signed in has nothing to do on the sign-in page.
 it('sends a signed-in customer on from the sign-in page', function () {
-    [$visitor] = shop();
-    $visitor->get('/sign-in');
-    signIn($visitor);
+    $visitor = tested(shop()[0]);
 
-    expect($visitor->get('/sign-in?next=%2Forders%3Fpage%3D2')->header('location'))->toBe('/orders?page=2');
+    actingAs(demo($visitor))->get('/sign-in?next=%2Forders%3Fpage%3D2')->assertRedirect('/orders?page=2');
 });
 
 it('pauses sign-in for an account after too many attempts, and says how long for', function () {
