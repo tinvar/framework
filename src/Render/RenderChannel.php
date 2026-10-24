@@ -57,6 +57,11 @@ final class RenderChannel
          * @var (\Closure(\Throwable, ?string): string)|null
          */
         private readonly ?\Closure $report = null,
+        /**
+         * Sees every frame both ways, decoded, and the render's measurements:
+         * the dev toolbar, in dev only. Nothing in production.
+         */
+        private readonly ?FrameTap $tap = null,
     ) {}
 
     /**
@@ -134,6 +139,7 @@ final class RenderChannel
         $queryBatches = 0;
         $queryNs = 0;
         $waitNs = 0;
+        $sinkNs = 0;
         $firstByteNs = null;
 
         $buffer = '';
@@ -146,6 +152,7 @@ final class RenderChannel
         $deadlineFrom = $started;
 
         try {
+            $this->tap?->frame(FrameTap::TO_RENDERER, $frame);
             $this->write($socket, $this->codec->encodeFrame($frame), $started, $deadlineFrom);
 
             // No switch here on purpose. `switch` counts as a breakable level in
@@ -155,6 +162,7 @@ final class RenderChannel
             // Left by the break below, once the inner loop has seen `done`.
             while (true) {
                 while (!$done && ($message = $this->codec->decodeFrame($buffer, $offset)) !== null) {
+                    $this->tap?->frame(FrameTap::FROM_RENDERER, $message);
                     $type = Frame::assertFromRenderer($message);
 
                     if ($type === Frame::CHUNK) {
@@ -168,7 +176,9 @@ final class RenderChannel
 
                         $at = hrtime(true);
                         $sink($payload);
-                        $deadlineFrom += hrtime(true) - $at;
+                        $spent = hrtime(true) - $at;
+                        $deadlineFrom += $spent;
+                        $sinkNs += $spent;
                         $this->assertWithinOverallCap($started);
                     } elseif ($type === Frame::QUERY) {
                         $calls = Frame::readQueryBatch($message);
@@ -196,7 +206,9 @@ final class RenderChannel
                             );
                         }
 
-                        $this->write($socket, $this->codec->encodeFrame(Frame::result($results)), $started, $deadlineFrom);
+                        $reply = Frame::result($results);
+                        $this->tap?->frame(FrameTap::TO_RENDERER, $reply);
+                        $this->write($socket, $this->codec->encodeFrame($reply), $started, $deadlineFrom);
                     } elseif ($type === Frame::MINT) {
                         // The renderer is the only side that knows which
                         // <Deferred> boundaries exist and what props they got,
@@ -242,7 +254,9 @@ final class RenderChannel
                             }
                         }
 
-                        $this->write($socket, $this->codec->encodeFrame(Frame::minted($tokens)), $started, $deadlineFrom);
+                        $reply = Frame::minted($tokens);
+                        $this->tap?->frame(FrameTap::TO_RENDERER, $reply);
+                        $this->write($socket, $this->codec->encodeFrame($reply), $started, $deadlineFrom);
                     } elseif ($type === Frame::META) {
                         $metaBytes += \strlen(json_encode($message, JSON_PARTIAL_OUTPUT_ON_ERROR) ?: '');
                         if (\count($meta) >= self::MAX_META_FRAMES || $metaBytes > self::MAX_META_BYTES) {
@@ -293,7 +307,7 @@ final class RenderChannel
 
         $totalNs = hrtime(true) - $started;
 
-        return new RenderResult(
+        $result = new RenderResult(
             meta: $meta,
             bytes: $bytes,
             chunks: $chunks,
@@ -308,7 +322,11 @@ final class RenderChannel
             // in queries as one that never waited at all.
             waitingOnRendererMs: $waitNs / 1e6,
             tagsRead: $this->runner->tagsRead(),
+            streamingMs: $sinkNs / 1e6,
         );
+        $this->tap?->rendered($result);
+
+        return $result;
     }
 
     private function reportRendered(RendererException $e): void

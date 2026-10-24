@@ -17,6 +17,8 @@ final readonly class RenderResult
      * @param list<string> $tagsRead cache tags the queries in this render
      *        depended on, so a fragment response can declare them and the
      *        client can re-fetch just the boundaries an action invalidated
+     * @param float $streamingMs time spent handing output to the sink -- the
+     *        browser, or a buffer -- which the deadline leaves out
      */
     public function __construct(
         public array $meta,
@@ -29,5 +31,6 @@ final readonly class RenderResult
         public float $queryMs,
         public float $waitingOnRendererMs,
         public array $tagsRead = [],
+        public float $streamingMs = 0.0,
     ) {}
 }
