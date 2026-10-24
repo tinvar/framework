@@ -277,9 +277,9 @@ final class QueryRunner
             // which happens on hydrate from a real row and after an insert --
             // so it distinguishes both cases from a genuine read.
             //
-            // The map is also bypassed while a read is unscoped, as it is
-            // everywhere else, for the same reason.
-            $trustMap = !$this->orm->isUnscoped();
+            // The map is also bypassed while a read is unscoped or across a
+            // subtree, as it is everywhere else, for the same reason.
+            $trustMap = !$this->orm->isWidened();
 
             foreach (array_unique($ids) as $id) {
                 $known = $trustMap ? $this->orm->identityMap()->get($class, $id) : null;

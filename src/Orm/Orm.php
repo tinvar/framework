@@ -6,6 +6,7 @@ namespace Tinvar\Orm;
 
 use Tinvar\Data\Lazy;
 use Tinvar\Support\Uuid;
+use Tinvar\Tenancy\TenantHierarchy;
 
 /**
  * The ORM runtime for one request: a connection, an identity map, a relation-row
@@ -65,12 +66,47 @@ final class Orm
     /** @var \WeakMap<object, int> */
     private \WeakMap $readOnlyByFiber;
 
+    /**
+     * The subtree withinSubtree() widened reads to, outside any fiber: its
+     * root and every tenant in it, root first; null for none.
+     *
+     * Per fiber as well, and -- as acrossTenants() is -- not inherited by a
+     * fiber from the main context: a render's fibers each start at their
+     * tenant exactly, and widen only where their own code says so.
+     *
+     * @var array{string, non-empty-list<string>}|null
+     */
+    private ?array $subtreeMain = null;
+
+    /** @var \WeakMap<object, array{string, non-empty-list<string>}> */
+    private \WeakMap $subtreeByFiber;
+
+    /**
+     * Whether a membership has granted reads across the tenant's subtree:
+     * set by the panel stack (RequirePanelMembership) for a panel defined
+     * with `subtree: true`, after its check. Inherited by a fiber from the
+     * main context, as the tenant is -- the render's fibers run inside the
+     * request the grant was made for.
+     */
+    private bool $subtreeGrantMain = false;
+
+    /** @var \WeakMap<object, bool> */
+    private \WeakMap $subtreeGrantByFiber;
+
+    /**
+     * @param TenantHierarchy|null $tenants the application's tenant tree: what
+     *        withinSubtree() reads across, and what lets a host's tenant bound a
+     *        session's (ResolveTenant). Null for tenants with no hierarchy.
+     */
     public function __construct(
         private readonly Connection $connection,
         private readonly IdentityMap $identityMap = new IdentityMap(),
+        private readonly ?TenantHierarchy $tenants = null,
     ) {
         $this->unscopedByFiber = new \WeakMap();
         $this->readOnlyByFiber = new \WeakMap();
+        $this->subtreeByFiber = new \WeakMap();
+        $this->subtreeGrantByFiber = new \WeakMap();
 
         // The database's half of failing closed (RowLevelSecurity): the
         // connection asks, before each statement, which tenant the fiber
@@ -79,7 +115,7 @@ final class Orm
         // statement may see. One Orm per connection: a second one built over
         // it takes the connection over.
         if ($connection instanceof TenantSetting) {
-            $connection->followTenant(fn (): array => [$this->identityMap->tenant(), $this->isUnscoped()]);
+            $connection->followTenant(fn (): array => [$this->identityMap->tenant(), $this->isUnscoped(), $this->subtreeInForce() ?? []]);
         }
     }
 
@@ -91,6 +127,12 @@ final class Orm
     public function identityMap(): IdentityMap
     {
         return $this->identityMap;
+    }
+
+    /** The application's tenant tree, or null when its tenants have none. */
+    public function tenants(): ?TenantHierarchy
+    {
+        return $this->tenants;
     }
 
     public function scheduler(): ?BatchScheduler
@@ -132,6 +174,10 @@ final class Orm
         $this->unscopedByFiber = new \WeakMap();
         $this->readOnlyMain = 0;
         $this->readOnlyByFiber = new \WeakMap();
+        $this->subtreeMain = null;
+        $this->subtreeByFiber = new \WeakMap();
+        $this->subtreeGrantMain = false;
+        $this->subtreeGrantByFiber = new \WeakMap();
 
         // A transaction still open here was left in a fiber nobody resumes.
         // Its frames would hold the next request's afterCommit() callbacks
@@ -199,11 +245,15 @@ final class Orm
     {
         $previous = $this->identityMap->tenant();
         $previousUnscoped = $this->unscopedDepth();
+        $previousSubtree = $this->subtreeState();
 
         // An explicit switch wins over an enclosing acrossTenants(). Without
         // this, actAs() inside acrossTenants() would name a tenant and still
         // read every tenant's rows, which is the opposite of what it says.
+        // And over an enclosing withinSubtree(), for the same reason: the
+        // tenant named is the tenant read.
         $this->setUnscopedDepth(0);
+        $this->setSubtreeState(null);
         $this->switchTenant($tenant);
 
         // Entering a scoped context from an unscoped one: drop anything the
@@ -218,6 +268,7 @@ final class Orm
         } finally {
             $this->switchTenant($previous);
             $this->setUnscopedDepth($previousUnscoped);
+            $this->setSubtreeState($previousSubtree);
             if ($previousUnscoped > 0) {
                 $this->identityMap->flush();
                 $this->relationRows = [];
@@ -248,6 +299,182 @@ final class Orm
             // served to a later scoped read.
             $this->identityMap->flush();
             $this->relationRows = [];
+        }
+    }
+
+    /**
+     * Reads, for the duration of $work, the rows of the tenant in force and
+     * of every tenant below it: a reseller's own and its customers'.
+     *
+     * The spec's `withinReseller()`, named for what it reads rather than for
+     * one application's tenant kinds. "Widening (a reseller's customers, all
+     * tenants for staff) comes from the session's membership: its tenant
+     * kind plus a panel permission" -- so, unlike acrossTenants(), it runs
+     * only where a membership granted it (grantSubtree()): a panel defined
+     * with `subtree: true`, after its membership check. Called anywhere
+     * else it throws, so a page that widens by mistake fails rather than
+     * reads.
+     *
+     * The tenant in force does not change. A row written here is stamped
+     * with it, a job dispatched here runs as it, and every token minted here
+     * -- route, fragment, upload -- names it, exactly: what widens is the
+     * predicate, `tenant IN (subtree)`, and the policy Postgres holds the
+     * connection to (RowLevelSecurity), never the tenant anything is bound
+     * to. To write a child's row as the child, actAs() it.
+     *
+     * Reads here bypass the identity map and the relation-row cache, as
+     * unscoped ones do: a child's row read here and cached under the parent
+     * would answer a later read made as the parent alone. actAs() inside
+     * narrows to the tenant it names; acrossTenants() inside lifts scoping
+     * altogether, as it does anywhere.
+     *
+     * @template T
+     * @param \Closure(): T $work
+     * @return T
+     * @throws \LogicException where no membership granted it, with no tenant tree, or no tenant
+     */
+    public function withinSubtree(\Closure $work): mixed
+    {
+        if (!$this->isSubtreeGranted()) {
+            throw new \LogicException(
+                'withinSubtree() reads below the tenant in force, which only a membership grants: run it in a panel '
+                . 'defined with `subtree: true`, whose membership check grants it.',
+            );
+        }
+        if ($this->tenants === null) {
+            throw new \LogicException('withinSubtree() reads across a tenant\'s subtree, and the Orm was given no tenant tree.');
+        }
+
+        $root = $this->tenant();
+        if ($root === '') {
+            throw new \LogicException('withinSubtree() reads below the tenant in force, and there is none.');
+        }
+
+        return $this->inSubtree([$root, $this->tenants->subtree($root)], $work);
+    }
+
+    /**
+     * Runs $work with withinSubtree() allowed: the grant a membership gives.
+     *
+     * Called by the panel stack, after the membership check, for a panel
+     * whose definition says its memberships reach the subtree; anything
+     * else calling it says the same thing, as explicitly as a call to
+     * acrossTenants() would. Scoped, and inherited by the render's fibers.
+     *
+     * @template T
+     * @param \Closure(): T $work
+     * @return T
+     */
+    public function grantSubtree(\Closure $work): mixed
+    {
+        $fiber = \Fiber::getCurrent();
+        $had = $fiber !== null && isset($this->subtreeGrantByFiber[$fiber]);
+        $previous = $fiber === null ? $this->subtreeGrantMain : ($had && $this->subtreeGrantByFiber[$fiber]);
+
+        if ($fiber === null) {
+            $this->subtreeGrantMain = true;
+        } else {
+            $this->subtreeGrantByFiber[$fiber] = true;
+        }
+
+        try {
+            return $work();
+        } finally {
+            if ($fiber === null) {
+                $this->subtreeGrantMain = $previous;
+            } elseif ($had) {
+                $this->subtreeGrantByFiber[$fiber] = $previous;
+            } else {
+                unset($this->subtreeGrantByFiber[$fiber]);
+            }
+        }
+    }
+
+    /** Whether a membership granted withinSubtree() to the work running now. */
+    public function isSubtreeGranted(): bool
+    {
+        $fiber = \Fiber::getCurrent();
+
+        return $fiber === null ? $this->subtreeGrantMain : ($this->subtreeGrantByFiber[$fiber] ?? $this->subtreeGrantMain);
+    }
+
+    /**
+     * The tenants a read now reaches when withinSubtree() has widened it --
+     * the tenant in force first -- or null when it reads one tenant, or
+     * scoping is lifted.
+     *
+     * @return non-empty-list<string>|null
+     */
+    public function subtreeInForce(): ?array
+    {
+        if ($this->unscopedDepth() > 0) {
+            return null;
+        }
+
+        $subtree = $this->subtreeState();
+
+        // Its root is the tenant in force, or it is not in force: a bare
+        // switchTenant() inside the block reads the tenant it switched to,
+        // alone, rather than that tenant beside another's subtree.
+        return $subtree !== null && $subtree[0] === $this->tenant() ? $subtree[1] : null;
+    }
+
+    /**
+     * Whether reads now reach past the tenant in force -- acrossTenants()
+     * or withinSubtree() -- and so bypass the identity map and the
+     * relation-row cache, which hold the tenant's rows alone.
+     */
+    public function isWidened(): bool
+    {
+        return $this->isUnscoped() || $this->subtreeInForce() !== null;
+    }
+
+    /**
+     * $work inside a subtree already worked out: for withinSubtree(), and
+     * for work deferred from inside one (captureScope()), which goes on
+     * reading the subtree it was set up in without asking for it again.
+     *
+     * @template T
+     * @param array{string, non-empty-list<string>} $subtree
+     * @param \Closure(): T $work
+     * @return T
+     */
+    private function inSubtree(array $subtree, \Closure $work): mixed
+    {
+        $previous = $this->subtreeState();
+        $previousUnscoped = $this->unscopedDepth();
+
+        // Named, so it narrows an enclosing acrossTenants() as actAs() does.
+        $this->setUnscopedDepth(0);
+        $this->setSubtreeState($subtree);
+
+        try {
+            return $work();
+        } finally {
+            $this->setSubtreeState($previous);
+            $this->setUnscopedDepth($previousUnscoped);
+        }
+    }
+
+    /** @return array{string, non-empty-list<string>}|null this fiber's own, never main's */
+    private function subtreeState(): ?array
+    {
+        $fiber = \Fiber::getCurrent();
+
+        return $fiber === null ? $this->subtreeMain : ($this->subtreeByFiber[$fiber] ?? null);
+    }
+
+    /** @param array{string, non-empty-list<string>}|null $subtree */
+    private function setSubtreeState(?array $subtree): void
+    {
+        $fiber = \Fiber::getCurrent();
+
+        if ($fiber === null) {
+            $this->subtreeMain = $subtree;
+        } elseif ($subtree === null) {
+            unset($this->subtreeByFiber[$fiber]);
+        } else {
+            $this->subtreeByFiber[$fiber] = $subtree;
         }
     }
 
@@ -303,8 +530,9 @@ final class Orm
     }
 
     /**
-     * The read scope in force now -- tenant, read-only or not -- as a
-     * closure that runs work under it later. An unscoped context is refused.
+     * The read scope in force now -- tenant, the subtree withinSubtree()
+     * widened it to, read-only or not -- as a closure that runs work under
+     * it later. An unscoped context is refused.
      *
      * For work deferred past the code that set the scope up: a Lazy field
      * mapped inside actAs('acme') is read when the encoder resolves it, by
@@ -325,11 +553,21 @@ final class Orm
 
         $tenant = $this->tenant();
         $readOnly = $this->isReadOnly();
+        $subtree = $this->subtreeInForce();
 
-        return function (\Closure $work) use ($tenant, $readOnly): mixed {
+        return function (\Closure $work) use ($tenant, $readOnly, $subtree): mixed {
             $run = $readOnly
                 ? fn (): mixed => $this->readOnly(static fn (): mixed => $work())
                 : static fn (): mixed => $work();
+
+            // Set up inside withinSubtree(): read across the same subtree,
+            // as it was when the work was set up -- a membership granted it
+            // then, and this is the block's own work, deferred. Inside
+            // actAs(), which starts from the tenant alone.
+            if ($subtree !== null) {
+                $exact = $run;
+                $run = fn (): mixed => $this->inSubtree([$tenant, $subtree], $exact);
+            }
 
             return $this->actAs($tenant, $run);
         };
@@ -386,7 +624,8 @@ final class Orm
     }
 
     /**
-     * The tenant predicate for a model, and its binding.
+     * The tenant predicate for a model, and its binding: the tenant in
+     * force, or every tenant in the subtree withinSubtree() widened to.
      *
      * @return array{string, list<string>}
      */
@@ -399,6 +638,14 @@ final class Orm
         $tenant = $this->identityMap->tenant();
         if ($tenant === '') {
             throw new NoTenantContext($meta->class);
+        }
+
+        $subtree = $this->subtreeInForce();
+        if ($subtree !== null && \count($subtree) > 1) {
+            return [
+                '"' . $meta->tenantColumn . '" IN (' . implode(', ', array_fill(0, \count($subtree), '?')) . ')',
+                $subtree,
+            ];
         }
 
         return ['"' . $meta->tenantColumn . '" = ?', [$tenant]];
@@ -459,7 +706,7 @@ final class Orm
         // QueryRunner::resolveModels() guards the same way; every other
         // resolution path (Binder, ActionRunner, Validator) comes through
         // here, so the guard belongs here too.
-        if (!$this->isUnscoped() && ($existing = $this->identityMap->get($class, $id))) {
+        if (!$this->isWidened() && ($existing = $this->identityMap->get($class, $id))) {
             /** @var Model $existing */
             if (self::holdsRow($existing)) {
                 return $existing;
@@ -566,7 +813,10 @@ final class Orm
         $resultSet = new ResultSet();
         $models = [];
 
-        $unscoped = $this->isUnscoped();
+        // Widened past the tenant -- unscoped, or across a subtree -- the
+        // map is bypassed in both directions: what it holds is the tenant's
+        // alone, and what is read here may be another's.
+        $unscoped = $this->isWidened();
 
         $reflection = new \ReflectionClass($class);
 
@@ -652,12 +902,12 @@ final class Orm
         // made in. To read a relation across tenants, read its parent inside
         // the block: a ghost made there carries no scope.
         $scope = $this->isUnscoped() ? null : $this->captureScope();
-        $madeIn = $this->tenant();
+        $madeIn = $this->scopeName();
 
         /** @var Model $ghost */
         $ghost = (new \ReflectionClass($target))->newLazyGhost(
             function (Model $object) use ($relation, $parent, $foreignKey, $targetMeta, $scope, $madeIn): void {
-                if ($scope !== null && ($this->isUnscoped() || $this->tenant() !== $madeIn)) {
+                if ($scope !== null && ($this->isUnscoped() || $this->scopeName() !== $madeIn)) {
                     $scope(function () use ($object, $relation, $parent, $foreignKey, $targetMeta): void {
                         $this->initializeGhost($object, $relation, $parent, $foreignKey, $targetMeta);
                     });
@@ -670,11 +920,21 @@ final class Orm
         );
 
         // Registered before it initializes, so every parent pointing at this row
-        // shares one instance and one initializer run. Not while unscoped: a
-        // ghost put in the map there would be served to a later scoped read.
-        return $this->isUnscoped()
+        // shares one instance and one initializer run. Not while unscoped, or
+        // across a subtree: a ghost put in the map there would be served to a
+        // later read scoped to the tenant alone.
+        return $this->isWidened()
             ? $ghost
             : $this->identityMap->remember($target, $foreignKey, $ghost);
+    }
+
+    /**
+     * The scope a read is in, as a string two reads in the same one share:
+     * the tenant, and whether withinSubtree() has widened it.
+     */
+    private function scopeName(): string
+    {
+        return $this->tenant() . ($this->subtreeInForce() === null ? '' : "\0subtree");
     }
 
     /**
@@ -1073,7 +1333,7 @@ final class Orm
         if ($row === null) {
             // A miss, which is what a read would now find.
             $this->relationRows[$key][$id] = null;
-        } elseif ($this->isUnscoped()) {
+        } elseif ($this->isWidened()) {
             // Possibly another tenant's row, so not cached under this one's
             // key: dropped, and read again under the reader's scope.
             unset($this->relationRows[$key][$id]);
@@ -1126,7 +1386,7 @@ final class Orm
         }
 
         if ($to !== null && $this->hasRows($key, $to)) {
-            if ($this->isUnscoped()) {
+            if ($this->isWidened()) {
                 // Possibly another tenant's row: a scoped parent must not be
                 // handed it. Dropped, so the next read loads under its scope.
                 unset($this->relationRows[$key][$to]);
@@ -1177,7 +1437,7 @@ final class Orm
         $before = $collection->all();
         $this->journal(static fn () => $collection->replaceItems($before));
 
-        if (!$this->isUnscoped() && $this->hasRows($key, $parentId)) {
+        if (!$this->isWidened() && $this->hasRows($key, $parentId)) {
             /** @var list<array<string, mixed>> $rows */
             $rows = $this->relationRows[$key][$parentId];
             $collection->replaceItems($this->hydrateAll($relation->target, $rows));
@@ -1226,8 +1486,9 @@ final class Orm
         $groupKey = $parent->primaryKey();
 
         // An unscoped read never touches the cache, in either direction, so it
-        // takes its answer straight from the load.
-        if ($this->isUnscoped()) {
+        // takes its answer straight from the load; nor does one across a
+        // subtree, for the same reason.
+        if ($this->isWidened()) {
             $grouped = $this->loadRelationRows($relation, $this->batchWith($parent), $key);
 
             return $this->hydrateAll($relation->target, $grouped[$groupKey] ?? []);
@@ -1279,7 +1540,7 @@ final class Orm
     {
         $key = $this->relationCacheKey($relation);
 
-        if ($this->isUnscoped()) {
+        if ($this->isWidened()) {
             $grouped = $this->loadRelationRows($relation, $this->batchWith($parent), $key);
 
             /** @var array<string, mixed>|null */
@@ -1323,7 +1584,7 @@ final class Orm
         // alone, so skipping a group cached under scope answered NOTHING for
         // it: an empty collection, or a DanglingRelation for a row that is
         // there, inside acrossTenants().
-        $unscoped = $this->isUnscoped();
+        $unscoped = $this->isWidened();
 
         foreach ($parents as $parent) {
             $groupKey = $relation->kind === RelationKind::HasMany

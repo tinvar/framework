@@ -22,6 +22,8 @@ use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Orm\RowLevelSecurity;
 use Tinvar\Support\Uuid;
+use Tinvar\Tenancy\TenantHierarchy;
+use Tinvar\Tenancy\TenantTree;
 use Tinvar\Tests\Orm\Fixtures\Rack;
 use Tinvar\Tests\Orm\Fixtures\Script;
 use Tinvar\Tests\Orm\Fixtures\ScriptRun;
@@ -43,10 +45,19 @@ describe('the policy', function () {
             'DROP POLICY IF EXISTS tinvar_tenant ON "scripts"',
             'CREATE POLICY tinvar_tenant ON "scripts" USING ('
                 . "current_setting('app.across_tenants', true) = 'on' OR \"tenant_id\" = NULLIF(current_setting('app.tenant', true), '')::uuid"
+                . " OR \"tenant_id\" = ANY (NULLIF(current_setting('app.subtree', true), '')::uuid[])"
                 . ') WITH CHECK ('
                 . "current_setting('app.across_tenants', true) = 'on' OR \"tenant_id\" = NULLIF(current_setting('app.tenant', true), '')::uuid"
+                . " OR \"tenant_id\" = ANY (NULLIF(current_setting('app.subtree', true), '')::uuid[])"
                 . ')',
         ]);
+    });
+
+    // Quoted element by element, so an id holding a comma, a brace or a
+    // quote is one tenant in the array and not several, or a parse error.
+    it('writes a subtree as an array literal with every tenant quoted', function () {
+        expect(RowLevelSecurity::arrayLiteral([]))->toBe('')
+            ->and(RowLevelSecurity::arrayLiteral(['acme', 'a,"b}', 'c\\d']))->toBe('{"acme","a,\\"b}","c\\\\d"}');
     });
 
     it('reads the table and tenant column off a #[TenantScoped] model', function () {
@@ -113,11 +124,25 @@ function withPolicies(\Closure $test): void
             }
             // The connection is shared by every Postgres test in the run.
             $pdo->exec('RESET ROLE');
-            $pdo->exec("SELECT set_config('app.tenant', '', false), set_config('app.across_tenants', 'off', false)");
+            $pdo->exec("SELECT set_config('app.tenant', '', false), set_config('app.across_tenants', 'off', false), set_config('app.subtree', '', false)");
             $pdo->exec("DROP OWNED BY {$role}");
             $pdo->exec("DROP ROLE {$role}");
         }
     });
+}
+
+/** globex under acme, here: the two tenants withPolicies() seeds, one below the other. */
+final class AcmeOverGlobex implements TenantTree
+{
+    public function parentOf(string $tenant): ?string
+    {
+        return $tenant === 'globex' ? 'acme' : null;
+    }
+
+    public function descendantsOf(string $tenant): array
+    {
+        return $tenant === 'acme' ? ['globex'] : [];
+    }
 }
 
 /** @return list<string> the names a raw query with no tenant predicate reads */
@@ -151,6 +176,38 @@ describe('on Postgres', function () {
 
             expect($orm->acrossTenants(static fn (): array => rawNames($connection)))->toHaveCount(4)
                 ->and(rawNames($connection))->toBe([]);
+        });
+    });
+
+    // withinSubtree() widens the database's half with the ORM's: a query
+    // that forgot the predicate reads the subtree, and only the subtree,
+    // while it is in force -- and the tenant alone again after.
+    it('widens the policy to the subtree inside withinSubtree(), and to the tenant alone after', function () {
+        withPolicies(function (PdoConnection $connection): void {
+            $orm = new Orm($connection, new IdentityMap('test'), new TenantHierarchy(new AcmeOverGlobex()));
+            $across = static fn (string $tenant): array => $orm->actAs($tenant, static fn (): array => $orm->grantSubtree(
+                static fn (): array => $orm->withinSubtree(static fn (): array => rawNames($connection)),
+            ));
+
+            expect($across('acme'))->toBe(['acme-script-1', 'acme-script-2', 'globex-script-1', 'globex-script-2'])
+                ->and($across('globex'))->toBe(['globex-script-1', 'globex-script-2'])
+                ->and($orm->actAs('acme', static fn (): array => rawNames($connection)))->toBe(['acme-script-1', 'acme-script-2'])
+                ->and(rawNames($connection))->toBe([]);
+        });
+    });
+
+    it('lets a raw write inside the subtree, and refuses one outside it', function () {
+        withPolicies(function (PdoConnection $connection): void {
+            $orm = new Orm($connection, new IdentityMap('test'), new TenantHierarchy(new AcmeOverGlobex()));
+            $write = static fn (string $tenant): int => $orm->actAs('acme', static fn (): int => $orm->grantSubtree(
+                static fn (): int => $orm->withinSubtree(static fn (): int => $connection->execute(
+                    'INSERT INTO scripts VALUES (?, ?, ?)',
+                    [Uuid::v7(), "for-{$tenant}", $tenant],
+                )),
+            ));
+
+            expect($write('globex'))->toBe(1)
+                ->and(fn () => $write('initech'))->toThrow(\PDOException::class, 'row-level security');
         });
     });
 

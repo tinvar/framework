@@ -63,15 +63,15 @@ final class PdoConnection implements Connection, TenantSetting
      * Asks the Orm which tenant is in force for whoever runs the next
      * statement; null until an Orm follows this connection (TenantSetting).
      *
-     * @var (\Closure(): array{string, bool})|null
+     * @var (\Closure(): array{string, bool, list<string>})|null
      */
     private ?\Closure $tenantScope = null;
 
     /**
-     * What the session was last told, as tenant NUL across; null when that
-     * is not known. A rollback makes it unknown: Postgres undoes a
-     * set_config() made inside the transaction or savepoint rolled back,
-     * so the session may be back on an earlier tenant.
+     * What the session was last told, as tenant NUL across NUL subtree;
+     * null when that is not known. A rollback makes it unknown: Postgres
+     * undoes a set_config() made inside the transaction or savepoint
+     * rolled back, so the session may be back on an earlier tenant.
      */
     private ?string $tenantSetting = null;
 
@@ -543,7 +543,7 @@ final class PdoConnection implements Connection, TenantSetting
             return;
         }
 
-        $this->tellTenant('', false);
+        $this->tellTenant('', false, []);
     }
 
     /**
@@ -566,22 +566,26 @@ final class PdoConnection implements Connection, TenantSetting
             return;
         }
 
-        [$tenant, $across] = ($this->tenantScope)();
-        $this->tellTenant($tenant, $across);
+        [$tenant, $across, $subtree] = ($this->tenantScope)();
+        $this->tellTenant($tenant, $across, $subtree);
     }
 
-    private function tellTenant(string $tenant, bool $across): void
+    /** @param list<string> $subtree */
+    private function tellTenant(string $tenant, bool $across, array $subtree = []): void
     {
-        $wanted = $tenant . "\0" . ($across ? 'on' : 'off');
+        $tenants = RowLevelSecurity::arrayLiteral($subtree);
+        $wanted = $tenant . "\0" . ($across ? 'on' : 'off') . "\0" . $tenants;
         if ($wanted === $this->tenantSetting) {
             return;
         }
 
-        $this->pdo->prepare('SELECT set_config(?, ?, false), set_config(?, ?, false)')->execute([
+        $this->pdo->prepare('SELECT set_config(?, ?, false), set_config(?, ?, false), set_config(?, ?, false)')->execute([
             RowLevelSecurity::TENANT_SETTING,
             $tenant,
             RowLevelSecurity::ACROSS_SETTING,
             $across ? 'on' : 'off',
+            RowLevelSecurity::SUBTREE_SETTING,
+            $tenants,
         ]);
         $this->tenantSetting = $wanted;
         $this->tenantSettingTouched = true;

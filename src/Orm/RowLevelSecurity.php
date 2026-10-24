@@ -24,7 +24,11 @@ namespace Tinvar\Orm;
  * connect as one.
  *
  * acrossTenants() lifts the policy as it lifts the ORM's filter, by a
- * second variable. It is a guard against a forgotten predicate, not against
+ * second variable; withinSubtree() widens it to the tenants of a subtree
+ * by a third, a Postgres array of them, empty -- and so matching nothing
+ * -- outside one. A policy made before that third variable matches the
+ * tenant alone: a read across a subtree there sees the parent's rows and
+ * none of its children's until a migration makes the policy again. It is a guard against a forgotten predicate, not against
  * SQL injection: injected SQL can call set_config() as well as this class
  * can.
  */
@@ -35,6 +39,9 @@ final class RowLevelSecurity
 
     /** 'on' while acrossTenants() has lifted scoping; 'off' otherwise. */
     public const string ACROSS_SETTING = 'app.across_tenants';
+
+    /** The tenants withinSubtree() widened reads to, as an array literal; '' for none. */
+    public const string SUBTREE_SETTING = 'app.subtree';
 
     /** The policy's name on every table, so it can be dropped and made again. */
     public const string POLICY = 'tinvar_tenant';
@@ -57,11 +64,18 @@ final class RowLevelSecurity
         // NULLIF: no tenant is '', which cast to a uuid is an error rather
         // than a value matching nothing. NULL compares as unknown, and a
         // policy reading unknown matches no row.
+        //
+        // The subtree the same way: '' outside withinSubtree() is NULL, and
+        // `= ANY (NULL)` is unknown, so it adds nothing to the tenant alone.
         $predicate = \sprintf(
-            "current_setting('%s', true) = 'on' OR %s = NULLIF(current_setting('%s', true), '')::%s",
+            "current_setting('%s', true) = 'on' OR %s = NULLIF(current_setting('%s', true), '')::%s"
+            . " OR %s = ANY (NULLIF(current_setting('%s', true), '')::%s[])",
             self::ACROSS_SETTING,
             $column,
             self::TENANT_SETTING,
+            $type,
+            $column,
+            self::SUBTREE_SETTING,
             $type,
         );
 
@@ -87,6 +101,25 @@ final class RowLevelSecurity
         }
 
         return self::policy($meta->table, $meta->tenantColumn, $type);
+    }
+
+    /**
+     * Tenants as the Postgres array literal SUBTREE_SETTING holds, every
+     * element quoted so a tenant's id is read as one value whatever it
+     * holds; '' for none.
+     *
+     * @param list<string> $tenants
+     */
+    public static function arrayLiteral(array $tenants): string
+    {
+        if ($tenants === []) {
+            return '';
+        }
+
+        return '{' . implode(',', array_map(
+            static fn (string $tenant): string => '"' . addcslashes($tenant, '"\\') . '"',
+            $tenants,
+        )) . '}';
     }
 
     /** A plain or schema-qualified identifier, quoted. */

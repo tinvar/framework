@@ -21,9 +21,10 @@ namespace Tinvar\Orm;
 interface TenantSetting
 {
     /**
-     * @param \Closure(): array{string, bool} $scope the tenant in force for whoever
-     *        is about to run a statement ('' for none), and whether
-     *        acrossTenants() has lifted scoping for them
+     * @param \Closure(): array{string, bool, list<string>} $scope the tenant in force
+     *        for whoever is about to run a statement ('' for none), whether
+     *        acrossTenants() has lifted scoping for them, and the tenants
+     *        withinSubtree() has widened their reads to (empty for none)
      */
     public function followTenant(\Closure $scope): void;
 

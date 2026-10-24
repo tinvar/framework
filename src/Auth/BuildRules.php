@@ -98,6 +98,8 @@ final class BuildRules
         '->allows(' => 'a policy decision',
         '->acrossTenants(' => 'another tenant',
         '->withinReseller(' => 'another reseller',
+        '->withinSubtree(' => 'the tenants below this one',
+        '->grantSubtree(' => 'the tenants below this one',
         'Panel::current' => 'the current panel',
         'PanelContext' => 'the current panel',
         '->currentOrNull(' => 'the current panel',
