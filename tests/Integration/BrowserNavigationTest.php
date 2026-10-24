@@ -23,6 +23,7 @@ namespace Tinvar\Tests\Integration\BrowserNavigation;
 use Shop\DemoAccount;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;
+use Tinvar\Support\Uuid;
 
 $root = \dirname(__DIR__, 4);
 
@@ -375,6 +376,77 @@ it('keeps what a signed-in customer typed sealed in the tab, opens it for their 
 
     // Signing out wiped it from the tab.
     expect($result['afterSignOut'])->toBeNull();
+});
+
+/**
+ * A copy of the seeded database in which the demo customer has $total
+ * orders, the ones added older than the rest: enough for the orders list to
+ * be read a page at a time past its second page. A copy, so the other tests
+ * find the twelve orders they count.
+ */
+function databaseWithOrders(int $total): string
+{
+    $path = sys_get_temp_dir() . '/tinvar-e2e-orders-' . bin2hex(random_bytes(4)) . '.sqlite';
+    $source = new \PDO('sqlite:' . Shop::database());
+    $source->exec('VACUUM INTO ' . $source->quote($path));
+
+    $pdo = new \PDO('sqlite:' . $path);
+    $customer = (string) $pdo->query('SELECT id FROM customers WHERE email = ' . $pdo->quote(DemoAccount::EMAIL))?->fetchColumn();
+    $have = (int) $pdo->query('SELECT COUNT(*) FROM orders WHERE customer_id = ' . $pdo->quote($customer))?->fetchColumn();
+    $insert = $pdo->prepare(
+        'INSERT INTO orders (id, number, customer_id, status, placed_at, subtotal_cents, shipping_cents, total_cents)'
+        . " VALUES (?, ?, ?, 'delivered', ?, 1000, 500, 1500)",
+    );
+    for ($i = 1; $i <= $total - $have; $i++) {
+        $insert->execute([Uuid::v7(), \sprintf('E2E-%04d', $i), $customer, gmdate('Y-m-d\TH:i:s\Z', time() - (340 + $i) * 86_400)]);
+    }
+
+    return $path;
+}
+
+// "Infinite scroll ... URL sync of the page param." A list read a page at a
+// time, to its third page, then an order opened and back: the page arrived
+// holding only the page its URL names, and the raw scroll position restored
+// over it landed about a page away. The list records the row at the top of
+// what the reader saw and puts them back at it, with the pages they had
+// (ADR 0020).
+it('puts the reader back at the order they opened, after reading the orders to the third page', function () use ($root) {
+    $database = databaseWithOrders(45);
+    $output = '';
+    try {
+        served($root, function (string $origin) use ($root, &$output): void {
+            $output = runWithTimeout(
+                ['node', "{$root}/examples/shop/e2e/scroll-back.mjs", $origin, DemoAccount::EMAIL, DemoAccount::PASSWORD],
+                $root,
+                90,
+            );
+        }, ['SHOP_DATABASE' => $database]);
+    } finally {
+        @unlink($database);
+    }
+
+    $result = json_decode((string) $output, true);
+    expect($result)->toBeArray("the browser script failed:\n{$output}");
+
+    // Four pages loaded, read back up into the third, the bar following.
+    expect($result['errors'])->toBe([])
+        ->and($result['before']['shown'])->toBe(40)
+        ->and($result['before']['url'])->toBe('/orders?page=3');
+
+    // Back, and after a reload: the same row at the same place on the
+    // screen, every page the reader had shown again from the first, and the
+    // bar still on the third.
+    foreach (['after', 'reloaded'] as $when) {
+        expect($result[$when]['top'])->not->toBeNull("the order opened is not on the page {$when}")
+            ->and(abs($result[$when]['top'] - $result['before']['top']))->toBeLessThan(2.0, "{$when}: {$output}")
+            ->and($result[$when]['first'])->toBe($result['before']['first'])
+            ->and($result[$when]['shown'])->toBe(40)
+            ->and($result[$when]['url'])->toBe('/orders?page=3');
+    }
+
+    // What the entry kept: the third page's first row, at the top, with the
+    // four pages loaded.
+    expect($result['before']['anchor'])->toMatchArray(['page' => 3, 'index' => 0, 'first' => 1, 'last' => 4, 'window' => true]);
 });
 
 // "A deferred ... marked `rescue` that throws is reported to the PHP
