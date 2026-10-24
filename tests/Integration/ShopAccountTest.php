@@ -522,6 +522,26 @@ it('signs out under a new, signed-out session, and the old one stops working', f
     expect($visitor->action('orders.place', ['product' => $product, 'quantity' => 1])->status)->toBe(401);
 });
 
+// Hovering a link prefetches its page. "Prefetch requests skip side effects
+// like previous-URL tracking", and marking the session as in use is one.
+it('does not count a prefetch as the session being used', function () {
+    [$visitor, $pdo] = shop();
+    $visitor->get('/sign-in');
+    signIn($visitor);
+    $pdo->prepare('UPDATE sessions SET last_seen_at = 1 WHERE id = ?')->execute([hash('sha256', (string) $visitor->sessionId())]);
+    $seen = static fn (): int => (int) (sessionRow($pdo, $visitor->sessionId())['last_seen_at'] ?? 0);
+
+    $prefetched = $visitor->kernel->handle(
+        new Request('GET', '/no-such-page', ['rsc' => '1', 'x-version' => 'dev', 'purpose' => 'prefetch'], [], [], $visitor->cookies),
+    );
+    $afterPrefetch = $seen();
+    $visitor->get('/no-such-page');
+
+    expect($prefetched->status)->toBe(404, 'a prefetch is answered as any GET is')
+        ->and($afterPrefetch)->toBe(1)
+        ->and($seen())->toBeGreaterThan(1);
+});
+
 // An order id is not a secret: it is in URLs and screenshots.
 it('shows an order only to the customer who placed it', function () {
     [$visitor, $pdo] = shop();
