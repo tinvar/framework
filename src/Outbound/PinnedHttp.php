@@ -32,15 +32,21 @@ use Tinvar\Attributes\OutboundPolicy;
  * the caller set. Other methods are never followed: a body sent to one
  * origin is not sent on to another.
  *
- * Bounded: the whole request, hops included, within its timeout; the
- * connection within the connect timeout; the body within its cap and the
- * headers within 64 KB, the transfer stopped as soon as either is passed.
- * The name lookup is not inside the timeout -- getaddrinfo() has none --
- * and is bounded by the resolver's configuration.
+ * Bounded: the whole request, hops and name lookups included, within its
+ * timeout; the connection within the connect timeout; the body within its
+ * cap and the headers within 64 KB, the transfer stopped as soon as either
+ * is passed. Each lookup is given what is left of the timeout, and an
+ * answer that comes after it is not used: the request fails as a timeout,
+ * connected to nothing. A resolver that can stop at the deadline does;
+ * getaddrinfo() cannot be stopped, so SystemResolver's late answer is
+ * thrown away when it comes.
  */
 final readonly class PinnedHttp implements OutboundHttp
 {
     public const string USER_AGENT = 'Tinvar-OutboundHttp/1';
+
+    /** Seconds a request may take, its lookups included, unless the client or the request says otherwise. */
+    public const float DEFAULT_TIMEOUT = 10.0;
 
     private const int MAX_HEADER_BYTES = 65_536;
 
@@ -48,14 +54,14 @@ final readonly class PinnedHttp implements OutboundHttp
     private const array TLS_ERRORS = [35, 51, 53, 54, 58, 59, 60, 64, 66, 77, 80, 82, 83, 90, 91, 98];
 
     /**
-     * @param float $timeout seconds a request may take unless it says otherwise
+     * @param float $timeout seconds a request may take, its lookups included, unless it says otherwise
      * @param float $connectTimeout seconds a connection may take to open
      * @param int $maxResponseBytes the largest body read unless a request says otherwise
      */
     public function __construct(
         private OutboundPolicy $policy = new OutboundPolicy(),
         private Resolver $resolver = new SystemResolver(),
-        private float $timeout = 10.0,
+        private float $timeout = self::DEFAULT_TIMEOUT,
         private float $connectTimeout = 5.0,
         private int $maxResponseBytes = 1_048_576,
     ) {
@@ -77,7 +83,7 @@ final readonly class PinnedHttp implements OutboundHttp
         $headers = $request->headers;
 
         for ($hops = 0; ; $hops++) {
-            $address = $this->policy->vet($target, $this->resolver);
+            $address = $this->vet($request, $target, $started, $deadline);
             $response = $this->transfer($request, $target, $address, $headers, $maxBytes, $started, $deadline);
 
             $follows = $request->maxRedirects > 0 && ($request->method === 'GET' || $request->method === 'HEAD');
@@ -102,6 +108,28 @@ final readonly class PinnedHttp implements OutboundHttp
             }
             $target = $next;
         }
+    }
+
+    /**
+     * The address $target may be connected to, its name looked up within
+     * what is left of the request's time. The resolver is told how long
+     * that is; an answer that comes after it -- from a resolver that could
+     * not stop, or did not -- is not used.
+     */
+    private function vet(OutboundRequest $request, Target $target, int $started, int $deadline): string
+    {
+        $origin = "{$request->method} {$target->origin()}";
+        $remaining = $deadline - self::clock();
+        if ($remaining <= 0) {
+            throw new OutboundFailed(OutboundFailed::TIMEOUT, "{$origin} ran out of time.", null, self::since($started));
+        }
+
+        $address = $this->policy->vet($target, $this->resolver, $remaining / 1e9);
+        if (self::clock() >= $deadline) {
+            throw new OutboundFailed(OutboundFailed::TIMEOUT, "{$origin} ran out of time looking up its name.", null, self::since($started));
+        }
+
+        return $address;
     }
 
     /**

@@ -112,12 +112,13 @@ final readonly class OutboundPolicy
      * since a name that answers with a private address beside a public one
      * is either misconfigured or an attempt.
      *
+     * @param float $timeout seconds the lookup may take
      * @throws OutboundRefused
-     * @throws OutboundFailed when the name does not resolve
+     * @throws OutboundFailed when the name does not resolve, or not in time
      */
-    public function vet(Target $target, Resolver $resolver): string
+    public function vet(Target $target, Resolver $resolver, float $timeout): string
     {
-        $addresses = $target->literal !== null ? [$target->literal] : $resolver->resolve($target->host);
+        $addresses = $target->literal !== null ? [$target->literal] : $resolver->resolve($target->host, $timeout);
         if ($addresses === []) {
             throw new OutboundFailed(OutboundFailed::DNS, "{$target->host} does not resolve.");
         }

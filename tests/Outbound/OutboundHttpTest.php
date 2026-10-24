@@ -26,6 +26,7 @@ use Tinvar\Outbound\OutboundRefused;
 use Tinvar\Outbound\OutboundRequest;
 use Tinvar\Outbound\OutboundResponse;
 use Tinvar\Outbound\PinnedHttp;
+use Tinvar\Outbound\Resolver;
 use Tinvar\Outbound\StaticResolver;
 use Tinvar\Outbound\SystemResolver;
 use Tinvar\Outbound\Target;
@@ -55,6 +56,38 @@ class Platform {}
 /** Extends it, and declares a policy of its own. */
 #[OutboundPolicy(allow: ['192.168.7.0/24'])]
 final class Tenanted extends Platform {}
+
+/**
+ * A DNS server that takes its time: `$takes` seconds for every lookup,
+ * then an answer. One that `stops` gives up at the time it is given, as a
+ * resolver with a deadline of its own would; one that does not answers
+ * late, as getaddrinfo() does.
+ */
+final class SlowResolver implements Resolver
+{
+    /** @var list<float> the time each lookup was given */
+    public array $given = [];
+
+    /** @param list<string> $answer */
+    public function __construct(
+        private readonly float $takes,
+        private readonly bool $stops,
+        private readonly array $answer = ['127.0.0.1'],
+    ) {}
+
+    public function resolve(string $host, float $timeout): array
+    {
+        $this->given[] = $timeout;
+        if ($this->stops && $this->takes > $timeout) {
+            usleep((int) ($timeout * 1e6));
+
+            throw new OutboundFailed(OutboundFailed::TIMEOUT, "{$host} did not resolve in time.");
+        }
+        usleep((int) ($this->takes * 1e6));
+
+        return $this->answer;
+    }
+}
 
 dataset('refused addresses', [
     'loopback' => ['127.0.0.1', 'loopback'],
@@ -407,6 +440,62 @@ it('stops a request at its timeout', function () {
     expect(microtime(true) - $started)->toBeLessThan(3.0);
 });
 
+// The lookup was outside the timeout: a DNS server slow to answer held a
+// request with a half-second timeout for as long as it liked.
+it('gives a name lookup what is left of the timeout, and fails the request when it runs out', function () {
+    needsFork();
+    $server = Server::start([Server::reply(200)]);
+    $resolver = new SlowResolver(takes: 5.0, stops: true);
+
+    $started = microtime(true);
+    try {
+        expect(fn () => new PinnedHttp(local(), $resolver)->send(new OutboundRequest('GET', "http://slow.invalid:{$server->port}/", timeout: 0.5)))
+            ->toThrow(fn (OutboundFailed $e) => expect($e->reason)->toBe(OutboundFailed::TIMEOUT));
+    } finally {
+        $requests = $server->stop();
+    }
+
+    expect(microtime(true) - $started)->toBeLessThan(2.0)
+        ->and($resolver->given)->toHaveCount(1)
+        ->and($resolver->given[0])->toBeGreaterThan(0.0)
+        ->and($resolver->given[0])->toBeLessThanOrEqual(0.5)
+        ->and($requests)->toBe([]);
+});
+
+it('does not use an answer that comes after the timeout, and connects to nothing', function () {
+    needsFork();
+    $server = Server::start([Server::reply(200)]);
+    $resolver = new SlowResolver(takes: 0.6, stops: false);
+
+    try {
+        expect(fn () => new PinnedHttp(local(), $resolver)->send(new OutboundRequest('GET', "http://slow.invalid:{$server->port}/", timeout: 0.3)))
+            ->toThrow(fn (OutboundFailed $e) => expect($e->reason)->toBe(OutboundFailed::TIMEOUT)
+                ->and($e->getMessage())->toContain('looking up its name')
+                ->and($e->milliseconds)->toBeGreaterThanOrEqual(600));
+    } finally {
+        $requests = $server->stop();
+    }
+
+    expect($requests)->toBe([]);
+});
+
+it('gives each hop\'s lookup only what the hops before it left', function () {
+    needsFork();
+    $server = Server::start([Server::reply(302, '', ['Location' => '/second']), Server::reply(200, 'arrived')]);
+    $resolver = new SlowResolver(takes: 0.2, stops: true);
+
+    try {
+        $response = new PinnedHttp(local(), $resolver)->send(new OutboundRequest('GET', "http://slow.invalid:{$server->port}/first", maxRedirects: 1, timeout: 3.0));
+    } finally {
+        $server->stop();
+    }
+
+    expect($response->body)->toBe('arrived')
+        ->and($resolver->given)->toHaveCount(2)
+        ->and($resolver->given[0])->toBeLessThanOrEqual(3.0)
+        ->and($resolver->given[1])->toBeLessThanOrEqual($resolver->given[0] - 0.2);
+});
+
 it('stops reading a body over the cap, by its length or as it streams', function () {
     needsFork();
     $chunked = "HTTP/1.1 200 OK\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n" . dechex(4096) . "\r\n" . str_repeat('y', 4096) . "\r\n0\r\n\r\n";
@@ -496,9 +585,16 @@ it('sends only the methods it knows', function () {
 });
 
 it('resolves through the machine\'s resolver, and says when a name does not', function () {
-    expect(new SystemResolver()->resolve('localhost'))->toContain('127.0.0.1')
-        ->and(fn () => new SystemResolver()->resolve('no-such-host.invalid'))
+    expect(new SystemResolver()->resolve('localhost', 5.0))->toContain('127.0.0.1')
+        ->and(fn () => new SystemResolver()->resolve('no-such-host.invalid', 5.0))
         ->toThrow(fn (OutboundFailed $e) => expect($e->reason)->toBe(OutboundFailed::DNS));
+});
+
+// getaddrinfo() cannot be stopped once it is asked, so the machine's
+// resolver is not asked at all with no time left.
+it('looks nothing up through the machine\'s resolver with no time left', function () {
+    expect(fn () => new SystemResolver()->resolve('localhost', 0.0))
+        ->toThrow(fn (OutboundFailed $e) => expect($e->reason)->toBe(OutboundFailed::TIMEOUT));
 });
 
 it('fakes the client for tests: records, answers, and refuses what the real one would', function () {

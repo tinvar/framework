@@ -9,7 +9,8 @@ namespace Tinvar\Outbound;
  * server a test runs, or a closure answering differently each time it is
  * asked -- a rebinding DNS server, which OutboundHttp asks only once.
  *
- * A name not in the table does not resolve.
+ * A name not in the table does not resolve. Every answer is at once, so
+ * the time a lookup is given is never short.
  */
 final class StaticResolver implements Resolver
 {
@@ -23,7 +24,7 @@ final class StaticResolver implements Resolver
     /** @param array<string, list<string>|\Closure(int): list<string>> $names a closure is handed which lookup this is, from 1 */
     public function __construct(private readonly array $names) {}
 
-    public function resolve(string $host): array
+    public function resolve(string $host, float $timeout): array
     {
         $this->lookups[$host] = ($this->lookups[$host] ?? 0) + 1;
         $answer = $this->names[$host] ?? null;

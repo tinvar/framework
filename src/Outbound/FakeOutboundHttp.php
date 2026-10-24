@@ -36,7 +36,7 @@ final class FakeOutboundHttp implements OutboundHttp
     {
         $target = Target::parse($request->url);
         if ($target->literal !== null || $this->resolver !== null) {
-            $this->policy->vet($target, $this->resolver ?? new StaticResolver([]));
+            $this->policy->vet($target, $this->resolver ?? new StaticResolver([]), $request->timeout ?? PinnedHttp::DEFAULT_TIMEOUT);
         }
 
         $this->sent[] = $request;
