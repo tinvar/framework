@@ -21,7 +21,7 @@ final readonly class LoadedRoute
      *        null for the whole page. Only those segments' data is here --
      *        `page` is null when the page was not one of them.
      * @param PayloadContext $context what the request says the browser holds
-     *        -- the once keys it keeps -- for encode() (ADR 0020)
+     *        -- once keys, merged fields to reset -- for encode() (ADR 0020)
      */
     public function __construct(
         public RouteChain $chain,
@@ -52,11 +52,13 @@ final readonly class LoadedRoute
     }
 
     /**
-     * The loader data as the renderer is handed it, with what the request
-     * said the browser holds applied to every segment's.
+     * The loader data as the renderer is handed it: each segment's encoded
+     * under its own key, so a merged field is known by the dot path a
+     * client names it by, with what the request said it holds applied.
      *
      * One place for it, so an application cannot encode the page with the
-     * request's context and a layout without.
+     * request's context and a layout without, or root a layout's paths at
+     * `page`.
      *
      * @return array{page: mixed, layouts: array<string, mixed>}
      */
@@ -64,11 +66,11 @@ final readonly class LoadedRoute
     {
         $layouts = [];
         foreach ($this->layouts as $key => $data) {
-            $layouts[$key] = $encoder->encode($data, $this->context);
+            $layouts[$key] = $encoder->encode($data, $this->context, $key);
         }
 
         return [
-            'page' => $encoder->encode($this->page, $this->context),
+            'page' => $encoder->encode($this->page, $this->context, PartialReload::PAGE),
             'layouts' => $layouts,
         ];
     }

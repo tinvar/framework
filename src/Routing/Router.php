@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Routing;
 
+use Tinvar\Data\PayloadContext;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\NotFoundException;
@@ -94,6 +95,16 @@ final class Router
                 $partial = $this->partialReloads ? PartialReload::fromRequest($inner, $chain) : null;
                 $loaded = $this->loaders->run($chain, $inner, $partial);
 
+                // The merged fields a client wants replaced rather than added
+                // to. Only marks what is sent; a page load never merges, so
+                // only a payload reads it (ADR 0020).
+                $resets = $inner->wantsRscPayload()
+                    ? PayloadContext::listFrom($inner->header('x-reset'), PayloadContext::PATH)
+                    : [];
+                if ($resets !== []) {
+                    $loaded = $loaded->withContext($loaded->context->withResets($resets));
+                }
+
                 // One URL returns different bodies depending on the RSC header,
                 // so caches must key on it or skip the route entirely.
                 $response = $respond($loaded, $inner)->withAddedHeader('vary', 'RSC');
@@ -108,7 +119,8 @@ final class Router
                 // is the same whatever the client was running.
                 $response = $response->withAddedHeader('vary', 'X-Version')
                     // What the client says it holds changes the payload: a
-                    // held once field is left out.
+                    // held once field is left out, a reset field marked.
+                    ->withAddedHeader('vary', 'X-Reset')
                     ->withAddedHeader('vary', 'X-Have-Once')
                     ->withAddedHeader('vary', 'X-Once-Binding');
                 if (!$this->partialReloads) {

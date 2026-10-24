@@ -322,5 +322,6 @@ it('says a payload varies on what the client holds', function () {
     [, $response] = visit($kernel, ['RSC' => '1', 'X-Test-Session' => 'session-a']);
 
     expect($response->header('vary'))->toContain('X-Have-Once')
-        ->toContain('X-Once-Binding');
+        ->toContain('X-Once-Binding')
+        ->toContain('X-Reset');
 });

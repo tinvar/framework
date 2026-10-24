@@ -88,7 +88,7 @@ describe('a once field the browser does not hold', function () {
     it('crosses with its key, how long it may be claimed, its tags and its value', function () {
         [$data] = page();
 
-        $encoded = (new Encoder())->encode($data);
+        $encoded = (new Encoder())->encode($data, segment: 'page');
 
         expect($encoded['countries'])->toBe([
             '$once' => 'countries',
@@ -122,7 +122,7 @@ describe('a once field the browser holds', function () {
     it('is sent as its key alone, and its resolver never runs', function () {
         [$data, $ran] = page();
 
-        $encoded = (new Encoder())->encode($data, new PayloadContext(heldOnce: ['countries']));
+        $encoded = (new Encoder())->encode($data, new PayloadContext(heldOnce: ['countries']), 'page');
 
         expect($encoded['countries'])->toBe(['$once' => 'countries', 'held' => true])
             ->and($ran->getArrayCopy())->toBe(['orders']);

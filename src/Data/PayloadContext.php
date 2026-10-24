@@ -7,17 +7,19 @@ namespace Tinvar\Data;
 /**
  * What a request says about the page the browser holds, as far as it
  * changes how fields are encoded: the #[Once] keys whose rendered content
- * it keeps (`X-Have-Once`). ADR 0020.
+ * it keeps (`X-Have-Once`), and the merged fields it wants replaced rather
+ * than added to (`X-Reset`). ADR 0020.
  *
- * It cannot make a response carry anything the same request without the
- * header would not: a held key sends less. So it is read on the client's
- * word -- except that a held key is only taken from a client whose held
- * content was rendered for this session, tenant and panel, which the Kernel
- * checks before it gets here.
+ * Neither can make a response carry anything the same request without the
+ * header would not: a held key sends less, and a reset sends the same items
+ * marked to replace. So both are read on the client's word -- except that a
+ * held key is only taken from a client whose held content was rendered for
+ * this session, tenant and panel, which the Kernel checks before it gets
+ * here.
  */
 final readonly class PayloadContext
 {
-    /** More keys than any page has fields is a client bug or a probe. */
+    /** More keys or paths than any page has fields is a client bug or a probe. */
     public const int MAX_ENTRIES = 64;
 
     public const int MAX_HEADER_BYTES = 4096;
@@ -25,9 +27,16 @@ final readonly class PayloadContext
     /** A once key: a field's, or one an attribute names. */
     public const string KEY = '/^[A-Za-z0-9_.:\/-]{1,128}\z/';
 
-    /** @param list<string> $heldOnce once keys whose field is sent as held, unresolved */
+    /** A dot path to a field: a segment, then field names. As PartialReload reads them. */
+    public const string PATH = '/^[A-Za-z0-9_\/-]+(\.[A-Za-z0-9_]+)*\z/';
+
+    /**
+     * @param list<string> $heldOnce once keys whose field is sent as held, unresolved
+     * @param list<string> $resets   dot paths of merged fields sent to replace what is shown
+     */
     public function __construct(
         public array $heldOnce = [],
+        public array $resets = [],
     ) {}
 
     public static function none(): self
@@ -40,10 +49,21 @@ final readonly class PayloadContext
         return \in_array($key, $this->heldOnce, true);
     }
 
+    public function resets(string $path): bool
+    {
+        return \in_array($path, $this->resets, true);
+    }
+
     /** @param list<string> $keys */
     public function withHeldOnce(array $keys): self
     {
-        return new self($keys);
+        return new self($keys, $this->resets);
+    }
+
+    /** @param list<string> $paths */
+    public function withResets(array $paths): self
+    {
+        return new self($this->heldOnce, $paths);
     }
 
     /**

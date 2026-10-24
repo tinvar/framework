@@ -41,6 +41,15 @@ final class Encoder
      */
     public const string ONCE_KEY = '$once';
 
+    /** The key a #[Merge] field is sent under, holding its dot path. */
+    public const string MERGE_KEY = '$merge';
+
+    /** The key a Scroll is sent under, holding its dot path. */
+    public const string SCROLL_KEY = '$scroll';
+
+    /** What a matchOn may name: one property of an item. */
+    private const string PROPERTY = '/^[A-Za-z_][A-Za-z0-9_]*\z/';
+
     /**
      * @param (\Closure(\Throwable, ?string): string)|null $report logs what a
      *        #[Rescue] field threw and returns the digest it was logged
@@ -52,19 +61,21 @@ final class Encoder
 
     /**
      * @param PayloadContext|null $context what the request says the browser holds, for
-     *        #[Once] fields; none, for anything but a page render
+     *        #[Once], #[Merge] and Scroll fields; none, for anything but a page render
+     * @param string $segment the route segment the value is the data of -- a layout's key or
+     *        `page` -- which roots the dot path a merged field is known to the browser by
      */
-    public function encode(mixed $value, ?PayloadContext $context = null): mixed
+    public function encode(mixed $value, ?PayloadContext $context = null, string $segment = '$'): mixed
     {
         // Threaded through the walk rather than kept on the encoder: one
         // encoder serves every query call of a render, each in its own fiber,
         // and a fiber suspends mid-walk on a relation read while the next
         // one encodes.
-        return $this->walk($value, '$', 0, [], $context ?? PayloadContext::none());
+        return $this->walk($value, '$', 0, [], new EncodeScope($context ?? PayloadContext::none(), $segment));
     }
 
     /** @param array<int, true> $seen object ids on the current path */
-    private function walk(mixed $value, string $path, int $depth, array $seen, PayloadContext $context): mixed
+    private function walk(mixed $value, string $path, int $depth, array $seen, EncodeScope $scope): mixed
     {
         if ($depth > self::MAX_DEPTH) {
             throw DataBoundaryException::tooDeep($path, self::MAX_DEPTH);
@@ -72,10 +83,11 @@ final class Encoder
 
         return match (true) {
             $value === null, \is_bool($value), \is_int($value), \is_float($value), \is_string($value) => $value,
-            \is_array($value) => $this->walkArray($value, $path, $depth, $seen, $context),
+            \is_array($value) => $this->walkArray($value, $path, $depth, $seen, $scope),
             $value instanceof Bin => $value,
-            $value instanceof Lazy => $this->walk($value->resolve(), $path, $depth, $seen, $context),
-            $value instanceof Data => $this->walkData($value, $path, $depth, $seen, $context),
+            $value instanceof Lazy => $this->walk($value->resolve(), $path, $depth, $seen, $scope),
+            $value instanceof Data => $this->walkData($value, $path, $depth, $seen, $scope),
+            $value instanceof Scroll => $this->walkScroll($value, $path, $depth, $seen, $scope),
             \is_object($value) => throw DataBoundaryException::notData($value, $path),
             default => throw DataBoundaryException::badResource($path, get_debug_type($value)),
         };
@@ -86,12 +98,12 @@ final class Encoder
      * @param array<int, true>        $seen
      * @return array<array-key, mixed>
      */
-    private function walkArray(array $value, string $path, int $depth, array $seen, PayloadContext $context): array
+    private function walkArray(array $value, string $path, int $depth, array $seen, EncodeScope $scope): array
     {
         if (array_is_list($value)) {
             $out = [];
             foreach ($value as $i => $item) {
-                $out[] = $this->walk($item, "{$path}[{$i}]", $depth + 1, $seen, $context);
+                $out[] = $this->walk($item, "{$path}[{$i}]", $depth + 1, $seen, $scope);
             }
 
             return $out;
@@ -106,7 +118,7 @@ final class Encoder
             if ($k === self::RESERVED_KEY) {
                 throw DataBoundaryException::reservedKey($path, $k);
             }
-            $out[$k] = $this->walk($item, "{$path}.{$k}", $depth + 1, $seen, $context);
+            $out[$k] = $this->walk($item, "{$path}.{$k}", $depth + 1, $seen, $scope);
         }
 
         return $out;
@@ -116,7 +128,7 @@ final class Encoder
      * @param array<int, true> $seen
      * @return array<string, mixed>
      */
-    private function walkData(Data $value, string $path, int $depth, array $seen, PayloadContext $context): array
+    private function walkData(Data $value, string $path, int $depth, array $seen, EncodeScope $scope): array
     {
         $id = spl_object_id($value);
         if (isset($seen[$id])) {
@@ -126,6 +138,7 @@ final class Encoder
 
         $rescued = DataShape::rescued($value::class);
         $once = DataShape::once($value::class);
+        $merged = DataShape::merged($value::class);
 
         $out = [];
         foreach (DataShape::fieldsOf($value::class) as $property) {
@@ -146,7 +159,7 @@ final class Encoder
             // Held by the browser: the resolver is never run and nothing is
             // sent but the key, so the render skips what it would have drawn
             // from it. Checked before the field is read at all.
-            if (isset($once[$name]) && $context->holds($once[$name]['key'])) {
+            if (isset($once[$name]) && $scope->context->holds($once[$name]['key'])) {
                 $out[$name] = [self::ONCE_KEY => $once[$name]['key'], 'held' => true];
                 continue;
             }
@@ -154,8 +167,12 @@ final class Encoder
             $field = $property->getValue($value);
             $fieldPath = "{$path}.{$name}";
             $encoded = isset($rescued[$name]) && $field instanceof Lazy
-                ? $this->rescue($field, $fieldPath, $depth + 1, $seen, $context)
-                : $this->walk($field, $fieldPath, $depth + 1, $seen, $context);
+                ? $this->rescue($field, $fieldPath, $depth + 1, $seen, $scope)
+                : $this->walk($field, $fieldPath, $depth + 1, $seen, $scope);
+
+            if (isset($merged[$name]) && \is_array($encoded)) {
+                $encoded = $this->merged($merged[$name], $encoded, $fieldPath, $scope);
+            }
 
             $out[$name] = isset($once[$name]) ? [
                 self::ONCE_KEY => $once[$name]['key'],
@@ -169,6 +186,69 @@ final class Encoder
     }
 
     /**
+     * A #[Merge] field: its items, and what the browser needs to put them
+     * with those it shows -- where, matched on what, and whether this
+     * response replaces them instead.
+     *
+     * @param array<array-key, mixed> $items already encoded
+     * @return array<string, mixed>
+     */
+    private function merged(\Tinvar\Attributes\Merge $merge, array $items, string $path, EncodeScope $scope): array
+    {
+        $dot = $scope->dotPath($path);
+
+        return [
+            self::MERGE_KEY => $dot,
+            'mode' => $merge->prepend ? 'prepend' : 'append',
+            'reset' => $scope->context->resets($dot),
+            'matchOn' => self::matchOn($merge->matchOn, $path),
+            'items' => array_values($items),
+        ];
+    }
+
+    /**
+     * One page of a Scroll: its items, which page they are, the pages either
+     * side, and the same reset a #[Merge] field carries.
+     *
+     * @param Scroll<mixed>    $scroll
+     * @param array<int, true> $seen
+     * @return array<string, mixed>
+     */
+    private function walkScroll(Scroll $scroll, string $path, int $depth, array $seen, EncodeScope $scope): array
+    {
+        $dot = $scope->dotPath($path);
+
+        // Always a list, whatever keys it was built with: the items are in
+        // page order, and a map would cross as an object.
+        $items = [];
+        foreach ($scroll->items as $i => $item) {
+            $items[] = $this->walk($item, "{$path}.items[{$i}]", $depth + 1, $seen, $scope);
+        }
+
+        return [
+            self::SCROLL_KEY => $dot,
+            'reset' => $scope->context->resets($dot),
+            'page' => $scroll->page,
+            'previous' => $scroll->previous,
+            'next' => $scroll->next,
+            'total' => $scroll->total,
+            'perPage' => $scroll->perPage,
+            'pageName' => $scroll->pageName,
+            'matchOn' => self::matchOn($scroll->matchOn, $path),
+            'items' => $items,
+        ];
+    }
+
+    private static function matchOn(?string $property, string $path): ?string
+    {
+        if ($property !== null && preg_match(self::PROPERTY, $property) !== 1) {
+            throw new \LogicException("The list at {$path} is matched on '{$property}', which is not a property name.");
+        }
+
+        return $property;
+    }
+
+    /**
      * A #[Rescue] field: its value, or -- if producing it threw -- the
      * marker, with the failure reported.
      *
@@ -179,7 +259,7 @@ final class Encoder
      *
      * @param array<int, true> $seen
      */
-    private function rescue(Lazy $field, string $path, int $depth, array $seen, PayloadContext $context): mixed
+    private function rescue(Lazy $field, string $path, int $depth, array $seen, EncodeScope $scope): mixed
     {
         try {
             $value = $field->resolve();
@@ -187,7 +267,7 @@ final class Encoder
             return [self::RESCUED_KEY => $this->reported($e)];
         }
 
-        return $this->walk($value, $path, $depth, $seen, $context);
+        return $this->walk($value, $path, $depth, $seen, $scope);
     }
 
     private function reported(\Throwable $e): string

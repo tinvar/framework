@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Data;
 
+use Tinvar\Attributes\Merge;
 use Tinvar\Attributes\Once;
 use Tinvar\Attributes\Rescue;
 use Tinvar\Cache\Duration;
@@ -25,6 +26,9 @@ final class DataShape
 
     /** @var array<class-string, array<string, array{key: string, ttl: int|null, tags: list<string>}>> */
     private static array $once = [];
+
+    /** @var array<class-string, array<string, Merge>> */
+    private static array $merged = [];
 
     /**
      * Public, non-static properties in declaration order.
@@ -132,5 +136,39 @@ final class DataShape
         }
 
         return self::$once[$class] = $once;
+    }
+
+    /**
+     * The fields marked #[Merge], by name. Only a list can be merged into
+     * one already shown, so a mark on anything else is refused here.
+     *
+     * @param class-string $class
+     * @return array<string, Merge>
+     */
+    public static function merged(string $class): array
+    {
+        if (isset(self::$merged[$class])) {
+            return self::$merged[$class];
+        }
+
+        $merged = [];
+        foreach (self::fieldsOf($class) as $property) {
+            $attribute = $property->getAttributes(Merge::class)[0] ?? null;
+            if ($attribute === null) {
+                continue;
+            }
+
+            $type = $property->getType();
+            if (!$type instanceof \ReflectionNamedType || $type->getName() !== 'array') {
+                throw new \LogicException(
+                    "{$class}::\${$property->getName()} is #[Merge], which only a list field can be. "
+                    . 'A paginated list is a Scroll, which merges by page without it.',
+                );
+            }
+
+            $merged[$property->getName()] = $attribute->newInstance();
+        }
+
+        return self::$merged[$class] = $merged;
     }
 }
