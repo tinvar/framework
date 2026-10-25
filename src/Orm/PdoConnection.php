@@ -78,6 +78,13 @@ final class PdoConnection implements Connection, TenantSetting
     /** Whether this session has ever been told a tenant, so has one to clear. */
     private bool $tenantSettingTouched = false;
 
+    /**
+     * How long a write waits for SQLite's write lock, in milliseconds, in
+     * untilWriteLock()'s steps; null leaves the waiting to SQLite's busy
+     * handler, as for a connection sqlite() did not open.
+     */
+    private ?int $writeWaitMs = null;
+
     public function __construct(
         private readonly \PDO $pdo,
         private readonly string $name = 'default',
@@ -119,6 +126,14 @@ final class PdoConnection implements Connection, TenantSetting
     private const array SQLITE_SYNCHRONOUS_LEVELS = ['NORMAL', 'FULL', 'EXTRA'];
 
     /**
+     * The first wait between tries at SQLite's write lock, and the longest
+     * it doubles to, in microseconds; see untilWriteLock().
+     */
+    public const int SQLITE_WRITE_RETRY_FIRST_US = 100;
+
+    public const int SQLITE_WRITE_RETRY_LONGEST_US = 4_000;
+
+    /**
      * A SQLite database file, opened the way a server with several workers
      * needs it.
      *
@@ -153,6 +168,10 @@ final class PdoConnection implements Connection, TenantSetting
      * a second writer queues behind it under the busy timeout. postgres()
      * is untouched: under its default READ COMMITTED each statement reads a
      * fresh snapshot, and a second writer waits on the row lock instead.
+     *
+     * A write made through this connection -- a transaction() beginning, or
+     * an execute() outside one -- waits for the write lock in short steps of
+     * its own rather than in SQLite's busy handler: see untilWriteLock().
      */
     public static function sqlite(
         string $path,
@@ -188,6 +207,7 @@ final class PdoConnection implements Connection, TenantSetting
         $mode = self::switchToWal($connection, $busyTimeoutMs);
         $pdo->exec('PRAGMA foreign_keys = ON');
         $pdo->exec("PRAGMA synchronous = {$synchronous}");
+        $connection->writeWaitMs = max(0, $busyTimeoutMs);
 
         // The pragma is setup, not the application's work: query budgets
         // count from the first statement a caller issues.
@@ -256,13 +276,21 @@ final class PdoConnection implements Connection, TenantSetting
     {
         $this->record($sql);
 
-        return $this->run(function () use ($sql, $bindings): int {
+        $statement = fn (): int => $this->run(function () use ($sql, $bindings): int {
             $this->applyTenantSetting();
             $statement = $this->pdo->prepare($sql);
             $statement->execute($bindings);
 
             return $statement->rowCount();
         });
+
+        // Outside a transaction a write is its own, and takes the write lock
+        // itself. Inside one -- begun IMMEDIATE, holding the lock already --
+        // or in a read-only scope, where a write is refused, there is no lock
+        // to wait for.
+        return $this->pdo->inTransaction() || $this->readOnlyMode !== null
+            ? $statement()
+            : $this->untilWriteLock($statement);
     }
 
     /**
@@ -483,7 +511,7 @@ final class PdoConnection implements Connection, TenantSetting
             return $this->savepoint($work);
         }
 
-        $this->pdo->beginTransaction();
+        $this->untilWriteLock(fn (): bool => $this->pdo->beginTransaction());
 
         try {
             $result = $work();
@@ -515,6 +543,60 @@ final class PdoConnection implements Connection, TenantSetting
         }
 
         return $result;
+    }
+
+    /**
+     * Runs $attempt -- a write that takes SQLite's write lock: BEGIN
+     * IMMEDIATE, or a statement outside a transaction -- again for as long
+     * as the lock is held elsewhere and the busy timeout has not passed.
+     *
+     * In place of SQLite's busy handler, which sleeps 1, 2, 5, 10 ms and on,
+     * up to 100 ms, between tries, and never wakes when the lock comes free.
+     * Once writers queue, most of them have waited long enough to be on its
+     * longest sleeps, so a released lock sits idle until one wakes: the load
+     * test found the shop's workers asleep in it with the writer idle and
+     * half the cores unused (ADR 0050). Here a writer starts at a tenth of a
+     * millisecond and doubles to four at most, each wait drawn at random
+     * from its upper half so the writers queued do not all wake together.
+     * Many waiters still try often between them, so the lock is taken again
+     * soon after it is let go; and one that has waited long tries as often
+     * as one that just arrived, where SQLite's handler left the longest
+     * waiting to try least.
+     *
+     * SQLite's own timeout is set to zero for the tries and put back after,
+     * for anything else on the connection -- a read, a write made through
+     * pdo(). Retrying is safe: a write refused the lock has done nothing,
+     * since a statement outside a transaction is undone whole when it fails,
+     * and a BEGIN that fails begins nothing. Only SQLITE_BUSY is retried;
+     * anything else is not a turn to wait for.
+     *
+     * @template T
+     * @param \Closure(): T $attempt
+     * @return T
+     */
+    private function untilWriteLock(\Closure $attempt): mixed
+    {
+        if ($this->writeWaitMs === null) {
+            return $attempt();
+        }
+
+        $this->pdo->exec('PRAGMA busy_timeout = 0');
+
+        try {
+            $deadline = hrtime(true) + $this->writeWaitMs * 1_000_000;
+            for ($wait = self::SQLITE_WRITE_RETRY_FIRST_US; ; $wait = min($wait * 2, self::SQLITE_WRITE_RETRY_LONGEST_US)) {
+                try {
+                    return $attempt();
+                } catch (\PDOException $e) {
+                    if (($e->errorInfo[1] ?? null) !== 5 || hrtime(true) >= $deadline) {
+                        throw $e;
+                    }
+                }
+                usleep(random_int(intdiv($wait, 2), $wait));
+            }
+        } finally {
+            $this->pdo->exec("PRAGMA busy_timeout = {$this->writeWaitMs}");
+        }
     }
 
     /**

@@ -130,6 +130,169 @@ it('waits for a held write lock rather than failing at once', function () {
     }
 });
 
+/**
+ * Another process holding $path's write lock for $milliseconds, once it has
+ * it: the process and its output pipe.
+ *
+ * @return array{resource, resource}
+ */
+function holdWriteLock(string $path, int $milliseconds): array
+{
+    $holder = proc_open([
+        PHP_BINARY, '-r',
+        '$pdo = new PDO("sqlite:" . $argv[1]); $pdo->exec("BEGIN IMMEDIATE"); echo "held\n"; '
+        . 'usleep((int) $argv[2] * 1000); $pdo->exec("COMMIT");',
+        '--', $path, (string) $milliseconds,
+    ], [1 => ['pipe', 'w']], $pipes);
+    if ($holder === false || trim((string) fgets($pipes[1])) !== 'held') {
+        throw new \RuntimeException('The process holding the write lock did not start.');
+    }
+
+    return [$holder, $pipes[1]];
+}
+
+/**
+ * How many times $connection's PDO began a transaction while $work ran:
+ * each try at BEGIN IMMEDIATE is a statement SQLite prepares, and its
+ * authorizer hears every one.
+ */
+function beginsDuring(PdoConnection $connection, \Closure $work): int
+{
+    $pdo = $connection->pdo();
+    \assert($pdo instanceof \Pdo\Sqlite);
+    $begins = 0;
+    $pdo->setAuthorizer(static function (int $action, ?string $what) use (&$begins): int {
+        if ($action === 22 && $what === 'BEGIN') {
+            $begins++;
+        }
+
+        return \Pdo\Sqlite::OK;
+    });
+
+    try {
+        $work();
+    } finally {
+        $pdo->setAuthorizer(null);
+    }
+
+    return $begins;
+}
+
+// SQLite's busy handler sleeps up to 100 ms between tries and never wakes
+// when the lock comes free, so queued writers left it idle (ADR 0050). A
+// transaction waits in steps of its own, a few milliseconds at most.
+it('waits for the write lock in short steps of its own, and begins once it is let go', function () {
+    $path = scratchDatabase();
+
+    try {
+        $connection = PdoConnection::sqlite($path, create: true);
+        $connection->execute('CREATE TABLE hits (n INTEGER)');
+        [$holder] = holdWriteLock($path, 300);
+
+        $started = microtime(true);
+        $begins = beginsDuring($connection, static function () use ($connection): void {
+            $connection->transaction(static fn (): int => $connection->execute('INSERT INTO hits (n) VALUES (1)'));
+        });
+        $waited = microtime(true) - $started;
+        proc_close($holder);
+
+        // Each try a statement; SQLite's handler would have prepared it once
+        // and slept in it. Fewer than 20 tries in 300 ms would be waits far
+        // past 4 ms; more than 400, a loop that does not back off.
+        expect($connection->select('SELECT n FROM hits'))->toBe([['n' => 1]])
+            ->and($waited)->toBeGreaterThan(0.2)
+            ->and($begins)->toBeGreaterThan(20)
+            ->and($begins)->toBeLessThan(400)
+            ->and($connection->select('PRAGMA busy_timeout')[0]['timeout'])->toBe(PdoConnection::SQLITE_BUSY_TIMEOUT_MS);
+    } finally {
+        removeDatabase($path);
+    }
+});
+
+it('waits the same way for a write made outside a transaction', function () {
+    $path = scratchDatabase();
+
+    try {
+        $connection = PdoConnection::sqlite($path, create: true);
+        $connection->execute('CREATE TABLE hits (n INTEGER)');
+        $connection->resetStatementCount();
+        [$holder] = holdWriteLock($path, 200);
+
+        $started = microtime(true);
+        $written = $connection->execute('INSERT INTO hits (n) VALUES (1)');
+        $waited = microtime(true) - $started;
+        proc_close($holder);
+
+        // However many tries it took, it is one statement to a query budget.
+        expect($written)->toBe(1)
+            ->and($waited)->toBeGreaterThan(0.1)
+            ->and($connection->statementCount())->toBe(1)
+            ->and($connection->select('PRAGMA busy_timeout')[0]['timeout'])->toBe(PdoConnection::SQLITE_BUSY_TIMEOUT_MS);
+    } finally {
+        removeDatabase($path);
+    }
+});
+
+it('gives up on the write lock once the busy timeout has passed, and keeps the timeout for everything else', function () {
+    $path = scratchDatabase();
+
+    try {
+        $holder = PdoConnection::sqlite($path, create: true);
+        $holder->execute('CREATE TABLE hits (n INTEGER)');
+        $holder->pdo()->exec('BEGIN IMMEDIATE');
+
+        $waiter = PdoConnection::sqlite($path, busyTimeoutMs: 300);
+        $started = microtime(true);
+        expect(fn () => $waiter->transaction(static fn (): int => $waiter->execute('INSERT INTO hits (n) VALUES (1)')))
+            ->toThrow(\PDOException::class, 'database is locked');
+        $waited = microtime(true) - $started;
+        $holder->pdo()->exec('ROLLBACK');
+
+        expect($waited)->toBeGreaterThan(0.25)
+            ->and($waited)->toBeLessThan(2.0)
+            ->and($waiter->inTransaction())->toBeFalse()
+            ->and($waiter->select('PRAGMA busy_timeout')[0]['timeout'])->toBe(300);
+    } finally {
+        removeDatabase($path);
+    }
+});
+
+// Only SQLITE_BUSY is a turn to wait for: a write refused for what it is
+// fails once, at once.
+it('does not try a failed write again for anything but a held lock', function () {
+    $connection = PdoConnection::sqlite(':memory:');
+    $connection->execute('CREATE TABLE hits (n INTEGER PRIMARY KEY)');
+    $connection->execute('INSERT INTO hits (n) VALUES (1)');
+
+    $started = microtime(true);
+    expect(fn () => $connection->execute('INSERT INTO hits (n) VALUES (1)'))->toThrow(\PDOException::class, 'UNIQUE')
+        ->and(microtime(true) - $started)->toBeLessThan(0.05);
+});
+
+// A connection the caller opened itself is left to whatever busy handler it
+// set; only sqlite() knows the timeout it was opened with.
+it('leaves a connection it did not open to SQLite\'s own busy handler', function () {
+    $path = scratchDatabase();
+
+    try {
+        PdoConnection::sqlite($path, create: true)->execute('CREATE TABLE hits (n INTEGER)');
+        $pdo = new \Pdo\Sqlite("sqlite:{$path}");
+        $pdo->exec('PRAGMA busy_timeout = 2000');
+        $connection = new PdoConnection($pdo);
+        [$holder] = holdWriteLock($path, 200);
+
+        $begins = beginsDuring($connection, static function () use ($connection): void {
+            $connection->transaction(static fn (): int => $connection->execute('INSERT INTO hits (n) VALUES (1)'));
+        });
+        proc_close($holder);
+
+        expect($begins)->toBe(1)
+            ->and($connection->select('SELECT COUNT(*) AS n FROM hits')[0]['n'])->toBe(1);
+    } finally {
+        removeDatabase($path);
+    }
+});
+
 it('reads while another connection holds an open write', function () {
     $path = scratchDatabase();
 
