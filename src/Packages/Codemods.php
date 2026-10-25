@@ -39,6 +39,8 @@ namespace Tinvar\Packages;
  * unified diff, with these flagged:
  *
  *   - any PHP file added or deleted;
+ *   - any file whose name a patch tool could read as another's, which is
+ *     left out of the patch (patchable());
  *   - in a PHP file, every changed line of an attribute block, a `use` or a
  *     namespace declaration, whatever it names, and every class or method
  *     whose authorization attributes, parent or traits differ once names
@@ -367,15 +369,15 @@ final class Codemods
             if ($old !== null && $new !== null && hash_file('sha256', $old) === hash_file('sha256', $new)) {
                 continue;
             }
-            // diff writes a name into the patch's header as it is. A line
-            // break in one -- the codemod chooses its files' names -- would
-            // write lines of its choosing into the patch, a hunk for another
-            // file among them, read by no flag below.
-            if (preg_match('/[\x00-\x1f\x7f]/', $path) === 1) {
-                throw new \RuntimeException(
-                    'The codemods wrote a file with a control character in its name, ' . json_encode($path)
-                    . ', which a patch cannot name safely: nothing is written.',
-                );
+            // diff writes a name into the patch's header as it is, and the
+            // codemod chooses its files' names. One a patch tool could read
+            // as another file is left out, flagged, so the flags below are
+            // always about the file the patch changes.
+            if (!self::patchable($path)) {
+                $flagged[] = json_encode($path, \JSON_UNESCAPED_SLASHES | \JSON_UNESCAPED_UNICODE | \JSON_INVALID_UTF8_SUBSTITUTE)
+                    . ':1: left out of the patch: patch or git apply could read another file\'s name in it';
+
+                continue;
             }
 
             [$status, $hunk] = self::process(
@@ -456,6 +458,29 @@ final class Codemods
         }
 
         return [$patch, $flagged];
+    }
+
+    /**
+     * Whether a patch can name $path as it is: letters, digits, `.`, `_`, `-`
+     * and `/`, in relative segments that are neither `.` nor `..`, and not
+     * starting with `-`. Any other character is one a patch tool may read
+     * otherwise than the diff that wrote it -- a line break starts a line
+     * of the patch's own, whitespace ends a name for `patch`, a quote or a
+     * backslash starts an escaped one for `git apply` -- and then the flags
+     * would be about one file while the patch changed another.
+     */
+    public static function patchable(string $path): bool
+    {
+        if (preg_match('#^(?!-)[A-Za-z0-9._/-]+\z#', $path) !== 1) {
+            return false;
+        }
+        foreach (explode('/', $path) as $segment) {
+            if ($segment === '' || $segment === '.' || $segment === '..') {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /** Whether PHP would run $path: by its name, or by an open tag in it. */

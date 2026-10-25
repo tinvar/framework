@@ -406,17 +406,48 @@ it('runs no codemod from a package whose files changed since it was locked', fun
 })->throws(\RuntimeException::class, 'its installed files changed');
 
 // A file's name is the codemod's to choose, and diff writes it into the
-// patch's header as it is: a line break in it wrote lines of the
-// codemod's choosing into the patch -- a hunk for another file among
-// them, which no flag read and `patch` applied.
-it('refuses a file a codemod names with a line break, rather than write it into the patch', function () {
+// patch's header as it is. A line break in one wrote lines of the
+// codemod's choosing into the patch -- a hunk for another file among them,
+// which no flag read and `patch` applied -- and whitespace, a quote or a
+// backslash can have patch or git apply read another file's name in it.
+it('keeps a file whose name a patch tool could misread out of the patch, and flags it', function (string $name) {
     $this->workspace->file('app/src/Report.php', "<?php\n\nnamespace App;\n\nfinal class Report extends AdminPage\n{\n}\n");
-    $codemods = withCodemod($this, <<<'PHP'
-    <?php
-    $path = $argv[1] . "/notes\n+++ b/src/Report.php\n@@ -5 +5 @@\n-final class Report extends AdminPage\n+final class Report extends Page\n--- a/readme.txt";
-    mkdir(dirname($path), 0o777, true);
-    file_put_contents($path, "hello\n");
-    PHP);
+    $codemods = withCodemod($this, '<?php $path = $argv[1] . "/" . ' . var_export($name, true) . ";\n"
+        . "@mkdir(dirname(\$path), 0o777, true);\nfile_put_contents(\$path, \"hello\\n\");\n");
 
-    $codemods->run($this->app, allowed: true);
-})->throws(\RuntimeException::class, 'a control character in its name');
+    $result = $codemods->run($this->app, allowed: true);
+
+    expect($result->failed)->toBe([])
+        ->and($result->needsReview())->toBeTrue()
+        ->and($result->flagged)->toBe([json_encode($name, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . ":1: left out of the patch: patch or git apply could read another file's name in it"])
+        ->and($result->patch)->toBe('');
+})->with([
+    'a line break' => ["notes\n+++ b/src/Report.php\n@@ -5 +5 @@\n-final class Report extends AdminPage\n+final class Report extends Page\n--- a/readme.txt"],
+    'a space' => ['src/Report.php extends Page'],
+    'a tab' => ["src/Report.php\textends"],
+    'a leading quote' => ['"src/Report.php"'],
+    'a backslash' => ['src\\Report.php'],
+]);
+
+it('names in a patch only plain relative paths', function (string $path, bool $patchable) {
+    expect(Codemods::patchable($path))->toBe($patchable);
+})->with([
+    ['src/OrderPage.php', true],
+    ['.github/workflows/ci.yml', true],
+    ['resources/js/order-page_v2.tsx', true],
+    ['a..b/c', true],
+    ['src/../OrderPage.php', false],
+    ['../OrderPage.php', false],
+    ['src/..', false],
+    ['./src/OrderPage.php', false],
+    ['/etc/passwd', false],
+    ['src//OrderPage.php', false],
+    ['src/', false],
+    ['-p1', false],
+    ['src/Order Page.php', false],
+    ['"src/OrderPage.php', false],
+    ['src\\OrderPage.php', false],
+    ["src/OrderPage.php\n", false],
+    ['src/Ordér.php', false],
+    ['', false],
+]);
