@@ -9,6 +9,7 @@ use Tinvar\Auth\Authenticatable;
 use Tinvar\Auth\Memberships;
 use Tinvar\Auth\SubtreeMemberships;
 use Tinvar\Http\HttpException;
+use Tinvar\Http\Kernel;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Jobs\UserLookup;
@@ -27,7 +28,8 @@ use Tinvar\Webhooks\NonceStore;
  * platform host, then redirects back to the custom domain with PKCE, so
  * credentials are never typed on a domain a reseller controls", and "Staff
  * accounts can't sign in on custom domains." Three GETs, each a top-level
- * navigation, so SameSite=Lax cookies go with every one:
+ * navigation, so SameSite=Lax cookies go with every one -- and, before a
+ * code goes to a custom domain, a POST:
  *
  *   1. `/_handoff/start?return=/path`, on the target. Derives a PKCE
  *      challenge from the target session and a fresh state (Pkce), and sends
@@ -39,13 +41,27 @@ use Tinvar\Webhooks\NonceStore;
  *      membership of the target's panel in its tenant or a tenant below it
  *      -- is sent to the target with a one-time code (HandoffCode) bound to
  *      all of it, the realm's own tenant exactly.
+ *
+ *      Unless the target is a tenant's custom domain: then the code waits on
+ *      the person. The answer is a consent screen naming the domain and the
+ *      account (HandoffConsent), drawn by the application or by
+ *      HandoffConsentShell, kept out of frames and caches; its confirm and
+ *      its cancel each POST back here with the session's CSRF token and a
+ *      ticket (ConsentTicket) bound to this session, the user at their auth
+ *      epoch, the destination, the challenge and five minutes. A confirm
+ *      spends the ticket on a code; a cancel spends it on a return to the
+ *      destination with `error=access_denied`, and no code at all. The
+ *      platform's own hosts are never asked about: the platform runs them,
+ *      so there is nobody there to be warned about.
  *   3. `/_handoff/callback?code=...`, on the target. The code must verify,
  *      be fresh, name this origin, tenant and panel exactly, be redeemed by
  *      the session whose challenge it carries, name a user still on the auth
  *      epoch it was minted on and still admitted here, and never have been
  *      redeemed before (NonceStore). Then the application starts a **new**
  *      session (HandoffSessions) -- never the one the browser arrived with --
- *      and the browser goes on to the path the handoff started for.
+ *      and the browser goes on to the path the handoff started for. Arriving
+ *      with `error` instead, from a cancel, it is a 403 `handoff_cancelled`,
+ *      and nothing here changes.
  *
  * Every refusal at the callback is the same 403, `handoff_refused`, with
  * the cause in the log alone: a caller that could tell "expired" from
@@ -53,10 +69,11 @@ use Tinvar\Webhooks\NonceStore;
  * good, and whose.
  *
  * Mounted by the Kernel behind the application's global middleware -- which
- * starts the session and signs its user in -- and the `handoff` throttle.
- * Not behind CSRF: each step is a GET, and the step that changes something,
- * the callback, is held to the session that started it by PKCE, which is
- * what a CSRF token would have said.
+ * starts the session and signs its user in -- CSRF, and the `handoff`
+ * throttle. CSRF holds the consent's POST alone: every other step is a GET,
+ * and the step that changes something there, the callback, is held to the
+ * session that started it by PKCE, which is what a CSRF token would have
+ * said.
  */
 final class HandoffEndpoint
 {
@@ -68,6 +85,12 @@ final class HandoffEndpoint
 
     /** The NonceStore scope a redeemed code's id is claimed under. */
     public const string NONCE_SCOPE = 'handoff-code';
+
+    /** The NonceStore scope an answered consent ticket's id is claimed under. */
+    public const string CONSENT_SCOPE = 'handoff-consent';
+
+    /** What a cancel tells the destination, in OAuth's spelling (RFC 6749, 4.1.2.1). */
+    public const string CANCELLED = 'access_denied';
 
     /** The longest path a handoff goes on to. */
     public const int MAX_RETURN = 512;
@@ -89,6 +112,10 @@ final class HandoffEndpoint
      * @param (\Closure(Authenticatable): bool)|null $staff whether a user is staff, and so never
      *        handed to a custom domain
      * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
+     * @param (\Closure(Request, HandoffConsent): Response)|null $consent draws the consent
+     *        screen a handoff to a custom domain asks with: the destination, the account, and
+     *        a confirm and a cancel posting HandoffConsent::fields(). HandoffConsentShell's
+     *        unless given. Whatever it answers is sent never framed and never kept.
      */
     public function __construct(
         public readonly Realms $realms,
@@ -103,6 +130,7 @@ final class HandoffEndpoint
         private readonly ?Memberships $memberships = null,
         private readonly ?\Closure $staff = null,
         private readonly ?\Closure $clock = null,
+        private readonly ?\Closure $consent = null,
     ) {
         // A host that may be a custom domain is a host a reseller may
         // control. Handing a session to one with nothing to say who is
@@ -117,6 +145,16 @@ final class HandoffEndpoint
         }
     }
 
+    /**
+     * Whether a handoff may wait on a consent screen: whenever a host may be
+     * a custom domain. Its forms POST, so the Kernel mounting it must check
+     * the session's CSRF token, and hand it the token to draw them with.
+     */
+    public function asksConsent(): bool
+    {
+        return $this->realms->looksUp();
+    }
+
     /** Whether this endpoint reads $auth: the Kernel's own, or who is signed in is never known. */
     public function reads(AuthContext $auth): bool
     {
@@ -128,17 +166,24 @@ final class HandoffEndpoint
         return \in_array($request->path, [self::START, self::AUTHORIZE, self::CALLBACK], true);
     }
 
-    /** GET only: each step is a navigation. */
+    /** GET: each step is a navigation. And POST to authorize, which a consent screen's forms answer. */
     public static function assertMethod(Request $request): void
     {
-        if ($request->method !== 'GET') {
-            throw new HttpException(405, 'A handoff is followed with GET.', 'method_not_allowed', ['allow' => 'GET']);
+        $allowed = $request->path === self::AUTHORIZE ? ['GET', 'POST'] : ['GET'];
+        if (!\in_array($request->method, $allowed, true)) {
+            throw new HttpException(405, 'A handoff is followed with GET, and a consent answered with POST.', 'method_not_allowed', [
+                'allow' => implode(', ', $allowed),
+            ]);
         }
     }
 
     public function handle(Request $request): Response
     {
         self::assertMethod($request);
+
+        if ($request->method === 'POST') {
+            return $this->decide($request);
+        }
 
         return match ($request->path) {
             self::START => $this->start($request),
@@ -183,10 +228,7 @@ final class HandoffEndpoint
     /** Step 2, on the platform host: who is signed in here, and may they go there? */
     private function authorize(Request $request): Response
     {
-        $here = $this->realms->forRequest($request);
-        if ($here === null || !$this->realms->isAuthority($here)) {
-            throw self::unknown('Handoffs are authorized on the platform host alone.');
-        }
+        $this->assertAuthority($request);
 
         $origin = self::param($request, 'origin');
         $target = $origin === null ? null : $this->realms->forOrigin($origin);
@@ -215,6 +257,123 @@ final class HandoffEndpoint
             throw new HttpException(403, "The handoff to {$target->origin} is refused: {$refusal}.", 'handoff_refused');
         }
 
+        // The platform's own hosts are its own word: it runs them, so a
+        // session made there reaches nobody the person has to be warned
+        // about. A custom domain is a host someone else runs, who can read
+        // the session made there -- that is asked about, always.
+        if (!$target->isCustom()) {
+            return $this->issue($user, $target, $challenge, $state, $returnTo);
+        }
+
+        return $this->ask($request, $user, $target, $challenge, $state, $returnTo);
+    }
+
+    /**
+     * The consent screen: the destination and the account, and a confirm
+     * and a cancel carrying a ticket for this pending handoff alone.
+     */
+    private function ask(Request $request, Authenticatable $user, Realm $target, string $challenge, string $state, string $returnTo): Response
+    {
+        $session = ($this->sessionId)($request);
+        if ($session === '') {
+            // The ticket is the session's; without one, a screen's answer
+            // could be posted from anywhere.
+            throw new HttpException(400, 'A consent is asked of a session; this request carries none.', 'handoff_no_session');
+        }
+
+        $csrf = $request->attribute(Kernel::CSRF_TOKEN);
+        if (!\is_string($csrf) || $csrf === '') {
+            // Forms that could never post would leave the screen a dead end,
+            // and a Kernel with no CSRF tokens checks none on the post: both
+            // are a Kernel built wrong, which refuses to be (Kernel).
+            throw new \LogicException('A consent screen needs the session\'s CSRF token; the Kernel mounting the handoff has no CsrfTokens.');
+        }
+
+        $ticket = ConsentTicket::mint(
+            $this->signer,
+            $session,
+            $user->authIdentifier(),
+            $this->auth->epoch(),
+            $target,
+            $challenge,
+            $state,
+            $returnTo,
+            $this->now(),
+        );
+        $consent = new HandoffConsent($user, $target, $ticket->encode($this->signer), $csrf, $ticket->expiresAt);
+        $screen = $this->consent === null ? new HandoffConsentShell()->respond($request, $consent) : ($this->consent)($request, $consent);
+
+        return self::unframed(self::private($screen));
+    }
+
+    /**
+     * Step 2 answered, on the platform host: a consent screen's confirm, or
+     * its cancel. Past CSRF already; what was agreed to is the ticket's
+     * alone -- nothing else the post says is read -- and held to this
+     * session, the user at the epoch they were asked at, and a destination
+     * that is still the realm it named. Spent once, whichever was posted.
+     */
+    private function decide(Request $request): Response
+    {
+        $this->assertAuthority($request);
+
+        $decision = $request->body[HandoffConsent::DECISION] ?? null;
+        $raw = $request->body[HandoffConsent::TICKET] ?? null;
+        if (!\in_array($decision, [HandoffConsent::CONFIRM, HandoffConsent::CANCEL], true) || !\is_string($raw)) {
+            throw new HttpException(400, 'A consent is answered with its ticket and a decision.', 'handoff_malformed');
+        }
+
+        $now = $this->now();
+        try {
+            $ticket = ConsentTicket::decode($raw, $this->signer, $now);
+        } catch (TokenError $e) {
+            throw self::declined($e->getMessage());
+        }
+
+        if (!$ticket->belongsTo($this->signer, ($this->sessionId)($request))) {
+            throw self::declined('it was shown to another session');
+        }
+
+        $user = $this->auth->user();
+        if ($user === null || !$ticket->isFor($this->signer, $user->authIdentifier(), $this->auth->epoch())) {
+            throw self::declined('who is signed in, or their auth epoch, has changed since it was shown');
+        }
+
+        // The destination the screen named, exactly, and still that realm:
+        // a record moved to another tenant or panel while the screen was
+        // open is not what the person agreed to.
+        $target = $this->realms->forOrigin($ticket->origin);
+        if ($target === null || $this->realms->isAuthority($target)
+            || $target->tenant !== $ticket->tenant || $target->panel !== $ticket->panel) {
+            throw self::declined("its destination {$ticket->origin} is no longer the realm it named");
+        }
+
+        // Held again on a confirm: a membership taken away, or a user made
+        // staff, while the screen was open.
+        if ($decision === HandoffConsent::CONFIRM) {
+            [$refusal] = $this->admission($user, $target);
+            if ($refusal !== null) {
+                throw self::declined($refusal);
+            }
+        }
+
+        // Last, so a ticket is spent by the one answer that gets this far;
+        // and before anything is issued, so two posts at once cannot both
+        // be taken.
+        if (!$this->nonces->claim(self::CONSENT_SCOPE, $ticket->id, $ticket->expiresAt, $now)) {
+            throw self::declined('it has been answered before');
+        }
+
+        if ($decision === HandoffConsent::CANCEL) {
+            return self::private(Response::location($target->url(self::CALLBACK . '?error=' . self::CANCELLED), 303));
+        }
+
+        return $this->issue($user, $target, $ticket->challenge, $ticket->state, $ticket->returnTo);
+    }
+
+    /** A code for $user into $target, and the browser sent to redeem it there. */
+    private function issue(Authenticatable $user, Realm $target, string $challenge, string $state, string $returnTo): Response
+    {
         $code = HandoffCode::mint(
             $this->signer,
             $target,
@@ -229,11 +388,26 @@ final class HandoffEndpoint
         return self::private(Response::location($target->url(self::CALLBACK . '?code=' . rawurlencode($code->encode($this->signer))), 303));
     }
 
+    private function assertAuthority(Request $request): void
+    {
+        $here = $this->realms->forRequest($request);
+        if ($here === null || !$this->realms->isAuthority($here)) {
+            throw self::unknown('Handoffs are authorized on the platform host alone.');
+        }
+    }
+
     /** Step 3, on the target: redeem the code once, into a new session. */
     private function callback(Request $request): Response
     {
         $realm = $this->realms->forRequest($request) ?? throw self::unknown('This host is no realm.');
         $now = $this->now();
+
+        // Declined on the platform host: no code came, and none is read even
+        // if one did. Nothing here changes, so nothing needs proving -- a
+        // link to this is a page saying so, and no more.
+        if (\array_key_exists('error', $request->query)) {
+            throw new HttpException(403, 'The handoff was cancelled on the platform host.', 'handoff_cancelled');
+        }
 
         $raw = $request->query['code'] ?? null;
         if (!\is_string($raw)) {
@@ -379,6 +553,20 @@ final class HandoffEndpoint
             ->withHeader('referrer-policy', 'no-referrer');
     }
 
+    /**
+     * Never drawn inside another page: a consent screen in a frame is one a
+     * page of anyone's can lay its own over, and have the confirm pressed
+     * through it. Both headers, for browsers old and new; the policy added
+     * beside whatever the screen's own is, as a policy of its own, which a
+     * browser enforces with it.
+     */
+    private static function unframed(Response $response): Response
+    {
+        return $response
+            ->withHeader('x-frame-options', 'DENY')
+            ->withAddedHeader('content-security-policy', "frame-ancestors 'none'");
+    }
+
     private static function unknown(string $why): HttpException
     {
         return new HttpException(404, $why, 'handoff_unknown');
@@ -387,6 +575,12 @@ final class HandoffEndpoint
     private static function refused(string $why): HttpException
     {
         return new HttpException(403, "The handoff code is refused: {$why}.", 'handoff_refused');
+    }
+
+    /** As a code's refusals are: one 403, the cause in the log alone. */
+    private static function declined(string $why): HttpException
+    {
+        return new HttpException(403, "The handoff consent is refused: {$why}.", 'handoff_refused');
     }
 
     private function now(): int

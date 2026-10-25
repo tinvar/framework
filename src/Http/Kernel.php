@@ -360,7 +360,8 @@ final class Kernel
      *        for dev ($dev), so no production Kernel can carry one.
      * @param HandoffEndpoint|null $handoff moving a session between the application's
      *        hosts (ADR 0039): mounted at /_handoff/*, behind the global stack -- which
-     *        starts the session and signs its user in -- and the handoff throttle
+     *        starts the session and signs its user in -- CSRF and the handoff throttle.
+     *        One that may reach a custom domain asks consent with a form, and needs $csrf
      * @param Uploads|null $uploads where uploaded files and their records are kept, and
      *        the keys their tickets are signed with. Given, /_upload and /_file are
      *        mounted, actions are handed their `Upload` parameters, and UploadTickets
@@ -485,6 +486,18 @@ final class Kernel
             throw new \InvalidArgumentException(
                 'The HandoffEndpoint reads a different AuthContext than this Kernel, so it would never see who is '
                 . 'signed in. Build it with the same one.',
+            );
+        }
+
+        // A handoff that may reach a custom domain asks consent first, with
+        // forms that POST. Without session-bound tokens the post would be
+        // checked by a double submit alone, and the screen would have no
+        // token to draw its forms with: refused here, rather than a consent
+        // anyone's page could answer, or one nobody can.
+        if ($handoff !== null && $handoff->asksConsent() && $csrf === null) {
+            throw new \InvalidArgumentException(
+                'The HandoffEndpoint may hand sessions to custom domains, which it asks consent for with a form: '
+                . 'give this Kernel CsrfTokens, so the form carries its session\'s token and the post is held to it.',
             );
         }
 
@@ -705,13 +718,15 @@ final class Kernel
 
         // A handoff's three steps are GETs a person follows from host to
         // host: the global stack for the session and its user, the handoff
-        // budget, and no CSRF -- the step that changes something is held to
-        // the session that began it by PKCE, which is what a CSRF token would
-        // have said -- and no authentication, since being signed out on the
-        // target is why a handoff starts.
+        // budget, and no authentication, since being signed out on the
+        // target is why a handoff starts. CSRF for the one POST, a consent
+        // screen's answer; the GETs pass it untouched -- the step among them
+        // that changes something is held to the session that began it by
+        // PKCE, which is what a CSRF token would have said.
         $this->handoffStack = new Pipeline([
             ...$this->floodGuardFor($throttle, 'handoff', $limits),
             ...$global,
+            new VerifyCsrfToken(tokens: $csrf),
             ...$this->throttleFor($throttle, 'handoff', $limits, byAddress: true),
             ...$this->throttleFor($throttle, 'handoff', $limits, byAddress: false),
         ]);
@@ -1027,7 +1042,7 @@ final class Kernel
                 // which the router can follow only as a document load.
                 return TranslateRedirects::translate(
                     $request,
-                    $this->handoffStack->run($request, fn (Request $passed): Response => $this->handoff->handle($passed)),
+                    $this->handoffStack->run($request, fn (Request $passed): Response => $this->handoffStep($passed)),
                 );
             }
 
@@ -1616,6 +1631,23 @@ final class Kernel
             ->withCookie(VerifyCsrfToken::COOKIE, $token, httpOnly: false)
             ->withHeader('cache-control', 'private, no-store')
             ->withAddedHeader('vary', 'Cookie');
+    }
+
+    /**
+     * One handoff step, handed the session's CSRF token as a page is. A
+     * consent screen draws its forms with it, and is the one step answered
+     * with a page rather than a redirect -- so it alone carries the cookie
+     * the token is checked against when one of them is posted.
+     */
+    private function handoffStep(Request $request): Response
+    {
+        \assert($this->handoff !== null);
+
+        $token = $this->csrf?->for($request);
+        $passed = $token === null ? $request : $request->withAttribute(self::CSRF_TOKEN, $token);
+        $response = $this->handoff->handle($passed);
+
+        return $response->status === 200 ? $this->withCsrfCookie($passed, $response) : $response;
     }
 
     /**

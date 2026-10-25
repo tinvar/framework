@@ -15,12 +15,15 @@ use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Auth\TenantMemberships;
 use Tinvar\Container\Container;
 use Tinvar\Data\Data;
+use Tinvar\Http\CsrfTokens;
 use Tinvar\Http\Kernel;
+use Tinvar\Http\Middleware\VerifyCsrfToken;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Identity\Arrival;
 use Tinvar\Identity\HandoffCode;
+use Tinvar\Identity\HandoffConsent;
 use Tinvar\Identity\HandoffEndpoint;
 use Tinvar\Identity\HandoffSessions;
 use Tinvar\Identity\Realm;
@@ -232,12 +235,25 @@ final class App
     public readonly Signer $signer;
     public readonly Realms $realms;
     public readonly HandoffEndpoint $endpoint;
+    public readonly CsrfTokens $csrf;
     public int $now = 1_800_000_000;
 
     /** @var list<string> the message of everything the Kernel logged: why each refusal was one */
     public array $log = [];
 
-    public function __construct(?TenantTree $tree = null)
+    /**
+     * Hosts whose record has changed since the App was built: a custom
+     * domain moved to another tenant or panel, or gone (null).
+     *
+     * @var array<string, Realm|null>
+     */
+    public array $moved = [];
+
+    /**
+     * @param (\Closure(Request, HandoffConsent): Response)|null $consent the application's own
+     *        consent screen; the framework's unless given
+     */
+    public function __construct(?TenantTree $tree = null, ?\Closure $consent = null)
     {
         $this->orm = new Orm(
             new PdoConnection(new \PDO('sqlite::memory:'), 'identity-test'),
@@ -249,7 +265,9 @@ final class App
         $this->sessions = new SessionStore();
         $this->arrivals = new Arrivals($this->sessions);
         $this->signer = new Signer(KEY, HandoffCode::PURPOSE);
-        $this->realms = self::realms();
+        $this->realms = self::realms($this);
+        $sessionId = static fn (Request $r): string => $r->cookie(SESSION_COOKIE) ?? '';
+        $this->csrf = new CsrfTokens(new Signer(KEY, CsrfTokens::PURPOSE), $sessionId);
 
         $container = (new Container())
             ->instance(SessionStore::class, $this->sessions)
@@ -263,7 +281,7 @@ final class App
             realms: $this->realms,
             signer: $this->signer,
             nonces: new ArrayNonceStore(),
-            sessionId: static fn (Request $r): string => $r->cookie(SESSION_COOKIE) ?? '',
+            sessionId: $sessionId,
             auth: $this->auth,
             orm: $this->orm,
             users: $this->directory,
@@ -272,6 +290,7 @@ final class App
             memberships: $this->directory,
             staff: static fn (Authenticatable $user): bool => $directory->isStaff($user),
             clock: fn (): int => $this->now,
+            consent: $consent,
         );
 
         $this->kernel = new Kernel(
@@ -289,16 +308,18 @@ final class App
                 $this->log[] = $e->getMessage();
             },
             container: $container,
+            csrf: $this->csrf,
             handoff: $this->endpoint,
         );
     }
 
-    public static function realms(): Realms
+    /** @param App|null $app whose records have moved since, if any */
+    public static function realms(?self $app = null): Realms
     {
         return new Realms(
             Realm::platform('https://id.platform.test'),
             [Realm::platform('https://admin.platform.test', panel: 'admin')],
-            static fn (string $host): ?Realm => match ($host) {
+            static fn (string $host): ?Realm => $app !== null && \array_key_exists($host, $app->moved) ? $app->moved[$host] : match ($host) {
                 'acme.platform.test' => Realm::platform('https://acme.platform.test', 'acme', 'portal'),
                 'acme.example' => Realm::domain('https://acme.example', 'acme', 'portal'),
                 'shop.acme.example' => Realm::domain('https://shop.acme.example', 'acme', 'portal'),
@@ -325,14 +346,38 @@ final class App
      */
     public function get(string $url, array $cookies = []): Response
     {
+        return $this->send('GET', $url, [], $cookies);
+    }
+
+    /**
+     * A form posted to $url, as a browser posts one without script.
+     *
+     * @param array<string, string> $body
+     * @param array<string, string> $cookies
+     */
+    public function post(string $url, array $body, array $cookies = []): Response
+    {
+        return $this->send('POST', $url, $body, $cookies);
+    }
+
+    /**
+     * @param array<string, string> $body
+     * @param array<string, string> $cookies
+     */
+    private function send(string $method, string $url, array $body, array $cookies): Response
+    {
         $parts = parse_url($url);
         \assert(\is_array($parts) && isset($parts['host']));
         $raw = $parts['query'] ?? '';
         parse_str($raw, $query);
         /** @var array<string, string|list<string>> $query */
+        $headers = ['host' => $parts['host'], 'accept' => 'application/json'];
+        if ($method === 'POST') {
+            $headers = ['host' => $parts['host'], 'accept' => 'text/html', 'content-type' => 'application/x-www-form-urlencoded'];
+        }
 
         return $this->kernel->handle(
-            new Request('GET', $parts['path'] ?? '/', ['host' => $parts['host'], 'accept' => 'application/json'], $query, [], $cookies, $raw),
+            new Request($method, $parts['path'] ?? '/', $headers, $query, $body, $cookies, $raw),
             static fn (LoadedRoute $loaded): Response => Response::make(200, json_encode(
                 $loaded->page === null ? [] : get_object_vars($loaded->page),
                 JSON_THROW_ON_ERROR,
@@ -344,15 +389,25 @@ final class App
 /**
  * A browser: a cookie jar per host, following redirects across them. A
  * host it has not been to before gives it a session of its own, as a
- * server issues one on a first visit.
+ * server issues one on a first visit. Following, it answers a consent
+ * screen as $consent says -- confirming it, unless told otherwise.
  */
 final class Browser
 {
     /** @var array<string, string> host => session cookie */
     public array $jar = [];
 
+    /** @var array<string, string> host => the CSRF cookie a page there set */
+    public array $xsrf = [];
+
     /** @var list<string> each URL visited, in order */
     public array $trail = [];
+
+    /** What follow() answers a consent screen with; null stops at the screen. */
+    public ?string $consent = HandoffConsent::CONFIRM;
+
+    /** @var array<int, string> each consent screen shown, by object id => the host it was shown on */
+    private array $shownOn = [];
 
     public function __construct(private readonly App $app) {}
 
@@ -377,23 +432,116 @@ final class Browser
     {
         $host = (string) parse_url($url, PHP_URL_HOST);
         $this->trail[] = $url;
-        $response = $this->app->get($url, [SESSION_COOKIE => $this->sessionAt($host)]);
 
-        $line = $response->cookies()[SESSION_COOKIE] ?? null;
-        if ($line !== null) {
-            $this->jar[$host] = explode(';', substr($line, \strlen(SESSION_COOKIE) + 1))[0];
+        return $this->keep($host, $this->app->get($url, $this->cookiesFor($host)));
+    }
+
+    /**
+     * A form posted to $url with this browser's cookies for its host.
+     *
+     * @param array<string, string> $body
+     */
+    public function post(string $url, array $body): Response
+    {
+        $host = (string) parse_url($url, PHP_URL_HOST);
+        $this->trail[] = 'POST ' . $url;
+
+        return $this->keep($host, $this->app->post($url, $body, $this->cookiesFor($host)));
+    }
+
+    /**
+     * The consent screen $screen answered, as a person pressing one of its
+     * buttons does: that form's fields, posted where it says, on the host
+     * the screen was shown on -- with $edit laid over them.
+     *
+     * @param array<string, string> $edit
+     */
+    public function answer(Response $screen, string $decision = HandoffConsent::CONFIRM, array $edit = []): Response
+    {
+        [$action, $fields] = self::form($screen, $decision);
+        $shownOn = $this->shownOn[spl_object_id($screen)] ?? throw new \LogicException('This browser was never shown that screen.');
+
+        return $this->post("https://{$shownOn}{$action}", [...$fields, ...$edit]);
+    }
+
+    /**
+     * The action and hidden fields of the form on $screen that posts $decision.
+     *
+     * @return array{string, array<string, string>}
+     */
+    public static function form(Response $screen, string $decision): array
+    {
+        preg_match_all('#<form method="post" action="([^"]*)">(.*?)</form>#s', $screen->body(), $forms, PREG_SET_ORDER);
+        foreach ($forms as [, $action, $inner]) {
+            preg_match_all('#<input type="hidden" name="([^"]*)" value="([^"]*)">#', $inner, $inputs, PREG_SET_ORDER);
+            $fields = [];
+            foreach ($inputs as [, $name, $value]) {
+                $fields[html_entity_decode($name)] = html_entity_decode($value);
+            }
+            if (($fields[HandoffConsent::DECISION] ?? null) === $decision) {
+                return [html_entity_decode($action), $fields];
+            }
+        }
+
+        throw new \RuntimeException("The response has no form posting '{$decision}': " . $screen->body());
+    }
+
+    /** Whether $response is a consent screen. */
+    public static function isConsent(Response $response): bool
+    {
+        return $response->status === 200 && str_contains($response->body(), 'name="' . HandoffConsent::TICKET . '"');
+    }
+
+    /**
+     * $url, and every redirect after it -- answering any consent screen on
+     * the way as $consent says -- until a response that is neither.
+     */
+    public function follow(string $url, int $hops = 8): Response
+    {
+        $response = $this->get($url);
+        while ($hops-- > 0) {
+            if ($this->consent !== null && self::isConsent($response)) {
+                $response = $this->answer($response, $this->consent);
+                $url = str_replace('POST ', '', (string) end($this->trail));
+            } elseif (\in_array($response->status, [302, 303], true)) {
+                $url = self::resolve($url, (string) $response->header('location'));
+                $response = $this->get($url);
+            } else {
+                break;
+            }
         }
 
         return $response;
     }
 
-    /** $url, and every redirect after it, until a response that is not one. */
-    public function follow(string $url, int $hops = 8): Response
+    /** @return array<string, string> */
+    private function cookiesFor(string $host): array
     {
-        $response = $this->get($url);
-        while ($hops-- > 0 && \in_array($response->status, [302, 303], true)) {
-            $url = self::resolve($url, (string) $response->header('location'));
-            $response = $this->get($url);
+        $cookies = [SESSION_COOKIE => $this->sessionAt($host)];
+        if (isset($this->xsrf[$host])) {
+            $cookies[VerifyCsrfToken::COOKIE] = $this->xsrf[$host];
+        }
+
+        return $cookies;
+    }
+
+    private function keep(string $host, Response $response): Response
+    {
+        if (self::isConsent($response)) {
+            $this->shownOn[spl_object_id($response)] = $host;
+        }
+
+        foreach ([SESSION_COOKIE, VerifyCsrfToken::COOKIE] as $name) {
+            $line = $response->cookies()[$name] ?? null;
+            if ($line === null) {
+                continue;
+            }
+            $value = explode(';', substr($line, \strlen($name) + 1))[0];
+            if ($name === SESSION_COOKIE) {
+                $this->jar[$host] = $value;
+            } else {
+                $this->xsrf[$host] = $value;
+            }
         }
 
         return $response;

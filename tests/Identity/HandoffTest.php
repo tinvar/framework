@@ -51,7 +51,8 @@ function errorCode(Response $response): string
 
 /**
  * The callback URL the platform host sends $browser to, for a handoff to
- * $origin it starts there -- without following it.
+ * $origin it starts there -- confirming the consent screen a custom domain
+ * is asked about with, and without following the callback.
  */
 function codeFor(Browser $browser, string $origin, string $return = '/whoami'): string
 {
@@ -59,6 +60,9 @@ function codeFor(Browser $browser, string $origin, string $return = '/whoami'): 
     expect($start->status)->toBe(303);
 
     $authorize = $browser->get((string) $start->header('location'));
+    if (Browser::isConsent($authorize)) {
+        $authorize = $browser->answer($authorize);
+    }
     expect($authorize->status)->toBe(303, $authorize->body());
 
     $callback = (string) $authorize->header('location');
@@ -97,7 +101,9 @@ describe('a handoff', function () {
         $landed = $browser->follow('https://acme.example/_handoff/start?return=%2Fwhoami');
 
         expect(json($landed))->toBe(['user' => 'alice'])
-            ->and($app->directory->askedAs)->toBe(['acme', 'acme']);
+            // Asked before the screen, again at its confirm, and again at
+            // the callback.
+            ->and($app->directory->askedAs)->toBe(['acme', 'acme', 'acme']);
     });
 
     it('sends someone not signed in on the platform host to sign in there, and back to the handoff after', function () {
@@ -135,11 +141,12 @@ describe('a handoff', function () {
         $app = new App();
         $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
         $start = $browser->get('https://acme.example/_handoff/start?return=%2Fwhoami');
-        $authorize = $browser->get((string) $start->header('location'));
-        $callback = $browser->get((string) $authorize->header('location'));
+        $screen = $browser->get((string) $start->header('location'));
+        $confirm = $browser->answer($screen);
+        $callback = $browser->get((string) $confirm->header('location'));
 
-        foreach ([$start, $authorize, $callback] as $response) {
-            expect($response->header('cache-control'))->toBe('no-store')
+        foreach ([$start, $screen, $confirm, $callback] as $response) {
+            expect($response->header('cache-control'))->toContain('no-store')
                 ->and($response->header('referrer-policy'))->toBe('no-referrer');
         }
     });
@@ -382,9 +389,9 @@ describe('a tenant\'s subtree', function () {
         expect(json($landed))->toBe(['user' => 'alice'])
             ->and($app->sessions->sessions[$browser->jar['reseller.example']])
             ->toBe(['user' => 'alice', 'realm' => 'reseller.example', 'tenant' => 'acme'])
-            // Asked as the domain's tenant, then confirmed as acme -- at the
-            // authority and again at the callback.
-            ->and($app->directory->askedAs)->toBe(['reseller', 'acme', 'reseller', 'acme']);
+            // Asked as the domain's tenant, then confirmed as acme -- before
+            // the consent screen, at its confirm, and again at the callback.
+            ->and($app->directory->askedAs)->toBe(['reseller', 'acme', 'reseller', 'acme', 'reseller', 'acme']);
     });
 
     it('starts the session in the domain\'s own tenant when the user is a member there', function () {

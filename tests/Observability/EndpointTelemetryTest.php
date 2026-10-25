@@ -185,7 +185,7 @@ describe('identity handoff', function () {
     it('files a handoff step as _handoff, and writes nothing of its query', function () {
         [$telemetry, $sink] = telemetry();
         $app = new HandoffApp();
-        $kernel = kernel($telemetry, ['handoff' => $app->endpoint, 'auth' => $app->auth, 'orm' => $app->orm]);
+        $kernel = kernel($telemetry, ['handoff' => $app->endpoint, 'auth' => $app->auth, 'orm' => $app->orm, 'csrf' => $app->csrf]);
 
         $kernel->handle(from('GET', HandoffEndpoint::CALLBACK . '?code=v1.c2VjcmV0LWhhbmRvZmYtY29kZQ.bWFjLW9mLXRoZS1jb2Rl&state=xyz'), document());
 
