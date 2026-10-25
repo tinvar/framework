@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Live;
 
+use Tinvar\Cache\TagNamespace;
 use Tinvar\Orm\Orm;
 
 /**
@@ -44,16 +45,15 @@ final class TagsRead
 
     /**
      * Records tags the code running now has read, in the tenant it runs as
-     * -- the namespace QueryCache keeps the same tags under.
+     * -- the namespace QueryCache keeps the same tags under: the subtree's,
+     * where a membership granted it, so a write made as a tenant below
+     * reaches the page (TagNamespace).
      */
     public function read(string ...$tags): void
     {
-        $tenant = $this->orm->tenant();
-        foreach ($tags as $tag) {
-            if ($tag === '') {
-                continue;
-            }
-            $this->read[$tenant . "\0" . $tag][$this->segment ?? self::WHOLE] = true;
+        $tags = array_values(array_filter($tags, static fn (string $tag): bool => $tag !== ''));
+        foreach (TagNamespace::read($tags, $this->orm->tenant(), $this->orm->isSubtreeGranted()) as $tag) {
+            $this->read[$tag][$this->segment ?? self::WHOLE] = true;
         }
     }
 

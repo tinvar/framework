@@ -321,7 +321,7 @@ describe('tag invalidation reaches the server cache', function () {
         );
         $cache->put('q', $declaration, ['rack' => 'r1'], 'acme', ['n' => 1]);
 
-        expect($cache->forgetTags(['rack:r1'], 'globex'))->toBe(0, 'another tenant cannot drop it')
-            ->and($cache->forgetTags(['rack:r1'], 'acme'))->toBe(1);
+        expect($cache->forgetTags(['rack:r1'], 'globex', null))->toBe(0, 'another tenant cannot drop it')
+            ->and($cache->forgetTags(['rack:r1'], 'acme', null))->toBe(1);
     });
 });

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Live;
 
+use Tinvar\Cache\TagNamespace;
 use Tinvar\Orm\Orm;
 
 /**
@@ -49,13 +50,19 @@ final readonly class Invalidator
             if ($tag === '') {
                 continue;
             }
-            $topic = $this->topics->for($tenant, $tag);
-            // The topic, so the client knows which of its subscriptions
-            // this is for -- an update carries no topic of its own -- and the
-            // tag, so it can forget what it keeps under it, as it would on
-            // reading X-Invalidated-Tags. Delivered only to subscribers
-            // allowed the topic, which only a render that read the tag gets.
-            $updates[$topic] = json_encode(['topic' => $topic, 'tag' => $tag], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            // In every namespace the write reaches: the tenant's own, and the
+            // subtree's of it and of each tenant above it, where the pages
+            // reading across a subtree the tenant is in listen (TagNamespace).
+            foreach (TagNamespace::written([$tag], $tenant, $this->orm->tenants()) as $namespaced) {
+                $topic = $this->topics->of($namespaced);
+                // The topic, so the client knows which of its subscriptions
+                // this is for -- an update carries no topic of its own -- and
+                // the tag, so it can forget what it keeps under it, as it
+                // would on reading X-Invalidated-Tags. Delivered only to
+                // subscribers allowed the topic, which only a render that
+                // read the tag gets.
+                $updates[$topic] = json_encode(['topic' => $topic, 'tag' => $tag], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            }
         }
 
         if ($updates === []) {

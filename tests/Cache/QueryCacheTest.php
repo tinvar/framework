@@ -193,7 +193,7 @@ describe('tags', function () {
         $cache->put('q', $declaration, ['rack' => 'r1'], 'acme', 'acme value');
         $cache->put('q', $declaration, ['rack' => 'r1'], 'globex', 'globex value');
 
-        expect($cache->forgetTags(['rack:r1'], 'globex'))->toBe(1)
+        expect($cache->forgetTags(['rack:r1'], 'globex', null))->toBe(1)
             ->and($cache->get('q', $declaration, ['rack' => 'r1'], 'acme')['hit'])
             ->toBeTrue('the other tenant is untouched');
     });
@@ -228,7 +228,7 @@ describe('tags', function () {
         $cache->put('q', $declaration, ['rack' => 'r1'], 'acme', 'one');
         $cache->put('q', $declaration, ['rack' => 'r2'], 'acme', 'two');
 
-        expect($cache->forgetTags(['rack:r1'], 'acme'))->toBe(1)
+        expect($cache->forgetTags(['rack:r1'], 'acme', null))->toBe(1)
             ->and($cache->get('q', $declaration, ['rack' => 'r1'], 'acme')['hit'])->toBeFalse()
             ->and($cache->get('q', $declaration, ['rack' => 'r2'], 'acme')['hit'])->toBeTrue();
     });

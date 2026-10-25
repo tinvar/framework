@@ -61,6 +61,35 @@ final readonly class TenantHierarchy
     }
 
     /**
+     * Every tenant above $tenant, its parent first.
+     *
+     * The tenants whose reads across their subtree a write made as $tenant
+     * has to reach (Cache\TagNamespace). Walked up as contains() walks, and
+     * stopped where contains() would stop -- at a loop, or past MAX_DEPTH --
+     * keeping what it found before: an answer that reaches too few tenants
+     * leaves a page stale, and never shows anyone a row.
+     *
+     * @return list<string>
+     */
+    public function ancestors(string $tenant): array
+    {
+        $above = [];
+        $seen = [$tenant => true];
+        $current = $tenant;
+        for ($depth = 0; $tenant !== '' && $depth < self::MAX_DEPTH; $depth++) {
+            $parent = $this->tree->parentOf($current);
+            if ($parent === null || $parent === '' || isset($seen[$parent])) {
+                break;
+            }
+            $seen[$parent] = true;
+            $above[] = $parent;
+            $current = $parent;
+        }
+
+        return $above;
+    }
+
+    /**
      * $root and every tenant below it, $root first.
      *
      * @return non-empty-list<string>

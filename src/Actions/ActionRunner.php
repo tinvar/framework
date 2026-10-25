@@ -153,9 +153,11 @@ final class ActionRunner
         //    revalidateTags() only ever reached the client, as an
         //    x-invalidated-tags header for its prefetch cache; the server-side
         //    cache was never touched, so a #[Query(cache: '5m')] kept serving
-        //    the pre-write answer for the rest of its TTL.
+        //    the pre-write answer for the rest of its TTL. With the tenant
+        //    tree, so a write made as a child reaches its parents' reads
+        //    across the subtree it is part of.
         if ($this->cache !== null && $result->revalidatedTags !== []) {
-            $this->cache->forgetTags($result->revalidatedTags, $this->orm->tenant());
+            $this->cache->forgetTags($result->revalidatedTags, $this->orm->tenant(), $this->orm->tenants());
         }
 
         //    And the clients holding pages that read them -- in other tabs,

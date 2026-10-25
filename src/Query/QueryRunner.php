@@ -696,8 +696,11 @@ final class QueryRunner
             return;
         }
 
+        // Under the subtree's namespace where a membership granted the call
+        // its tenant's subtree: it may have read the rows of any tenant
+        // below, and its page is told when one of them writes.
         try {
-            foreach (QueryCache::tagsOf($declaration, $arguments, $this->orm->tenant()) as $tag) {
+            foreach (QueryCache::tagsOf($declaration, $arguments, $this->orm->tenant(), $this->orm->isSubtreeGranted()) as $tag) {
                 $this->tagsRead[$tag] = true;
             }
         } catch (\Throwable) {

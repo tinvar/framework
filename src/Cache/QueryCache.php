@@ -8,6 +8,7 @@ use Tinvar\Attributes\Query;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Orm\Model;
+use Tinvar\Tenancy\TenantHierarchy;
 
 /**
  * The query cache.
@@ -93,7 +94,10 @@ final class QueryCache
 
         try {
             $ttl = Duration::seconds((string) $declaration->cache);
-            $tags = $this->tagsFor($declaration, $arguments, $tenant);
+            // Filed as the key is: an entry keyed apart for a request granted
+            // the subtree is tagged under the subtree's namespace, which a
+            // write made as any tenant in it reaches (TagNamespace).
+            $tags = $this->tagsFor($declaration, $arguments, $tenant, $this->subtreeGranted());
         } catch (\Throwable $e) {
             // A mistyped tag closure or TTL is a declaration bug, and it is
             // only reachable on a miss -- after the body has run. Losing every
@@ -115,12 +119,19 @@ final class QueryCache
      * caller must say whose entries it means, and ActionResult carries only
      * strings.
      *
+     * Nor has $tenants, for the same reason. An entry a request granted the
+     * subtree put is filed under the subtree's namespace, so a write made as
+     * a tenant below reaches it only by walking up the tree -- the one reads
+     * across a subtree are made with, Orm::tenants(). Defaulted to none, a
+     * child's write would leave its parent's pages stale for their TTL.
+     *
      * @param list<string> $tags
+     * @param TenantHierarchy|null $tenants the tenant tree; null for tenants with none
      * @return int entries invalidated
      */
-    public function forgetTags(array $tags, string $tenant): int
+    public function forgetTags(array $tags, string $tenant, ?TenantHierarchy $tenants): int
     {
-        return $this->store->forgetTags(self::namespaced($tags, $tenant));
+        return $this->store->forgetTags(TagNamespace::written($tags, $tenant, $tenants));
     }
 
     /**
@@ -144,9 +155,9 @@ final class QueryCache
      * @param array<string, mixed> $arguments
      * @return list<string>
      */
-    public function tagsFor(Query $declaration, array $arguments, string $tenant = ''): array
+    public function tagsFor(Query $declaration, array $arguments, string $tenant = '', bool $subtree = false): array
     {
-        return self::tagsOf($declaration, $arguments, $tenant);
+        return self::tagsOf($declaration, $arguments, $tenant, $subtree);
     }
 
     /**
@@ -156,9 +167,11 @@ final class QueryCache
      * still wants its pages told when what they read changes.
      *
      * @param array<string, mixed> $arguments
+     * @param bool $subtree whether a membership granted the read its tenant's
+     *        subtree, which files the tags under the subtree's namespace
      * @return list<string>
      */
-    public static function tagsOf(Query $declaration, array $arguments, string $tenant = ''): array
+    public static function tagsOf(Query $declaration, array $arguments, string $tenant = '', bool $subtree = false): array
     {
         if ($declaration->tags === null) {
             return [];
@@ -178,25 +191,20 @@ final class QueryCache
             $strings[] = $tag;
         }
 
-        return self::namespaced($strings, $tenant);
+        // Namespaced by tenant, as the key is. A flat namespace lets a write
+        // in one tenant drop another's entries -- not a disclosure, but a
+        // cross-tenant side channel and a cheap way to defeat the cache for
+        // everyone.
+        return TagNamespace::read($strings, $tenant, $subtree);
     }
 
     /**
-     * Tags are namespaced by tenant, as the key is.
-     *
-     * A flat namespace lets a write in one tenant drop another's entries --
-     * not a disclosure, but a cross-tenant side channel and a cheap way to
-     * defeat the cache for everyone.
-     *
-     * @param list<string> $tags
-     * @return list<string>
+     * Whether the request was granted reads across its tenant's subtree:
+     * what keys an entry apart (key()) and files its tags (put()).
      */
-    private static function namespaced(array $tags, string $tenant): array
+    private function subtreeGranted(): bool
     {
-        return array_map(
-            static fn (string $tag): string => $tenant . "\0" . $tag,
-            $tags,
-        );
+        return $this->panels?->granted()?->subtree === true;
     }
 
     /** @param array<string, mixed> $arguments */
@@ -232,7 +240,7 @@ final class QueryCache
         // granted reads across its tenant's subtree may get a different
         // answer from the same query, so it keys apart. Only then, so every
         // other key is the one it was.
-        if ($this->panels?->granted()?->subtree === true) {
+        if ($this->subtreeGranted()) {
             $parts['s'] = 'subtree';
         }
 
