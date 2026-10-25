@@ -21,16 +21,26 @@ use Tinvar\Http\Request;
  * The token is kept as its hash and compared in constant time, and has to
  * be long enough not to be guessed: 32 characters at least.
  *
- * A loopback peer is let in by its address only while the Host it names is
- * this machine's too. A page that points a name of its own at 127.0.0.1 --
- * DNS rebinding -- reaches the probes from its visitor's loopback address,
- * but still names its own domain; and a reverse proxy on the same machine
- * forwards whoever called it under the public name. Neither is a caller on
- * this machine, so both need the token. A request with no Host header is a
- * client on the machine itself, and is let in.
+ * Let in by its address alone, a caller must look like what it is: a probe
+ * from that network, not traffic passed on from somewhere else.
+ *
+ * - A request carrying a proxy's headers -- Forwarded, X-Forwarded-*,
+ *   X-Real-IP, Via -- was passed on by something in front, whoever called
+ *   it; it needs the token. A proxy that adds none of them is not told
+ *   apart from its caller here: behind one, give ProbeAccess a token and no
+ *   networks, or block `/_*` at the proxy.
+ * - A loopback peer (all of 127.0.0.0/8, ::1, and their mapped forms, as
+ *   the networks test them) must also name this machine in its Host. A page
+ *   that points a name of its own at 127.0.0.1 -- DNS rebinding -- reaches
+ *   the probes from its visitor's loopback address, but still names its own
+ *   domain. A request with no Host header is a client on the machine
+ *   itself.
  */
 final class ProbeAccess
 {
+    /** What a proxy adds to what it passes on: a request carrying one came through something in front. */
+    private const array PROXY_HEADERS = ['forwarded', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'x-real-ip', 'via'];
+
     /** @var list<array{string, int}> each network as its packed address and prefix length */
     private readonly array $networks;
 
@@ -71,8 +81,14 @@ final class ProbeAccess
             return false;
         }
 
+        foreach (self::PROXY_HEADERS as $name) {
+            if ($request->header($name) !== null) {
+                return false;
+            }
+        }
+
         $host = $request->header('host');
-        if ($host !== null && Loopback::address($request->remoteAddress) && !Loopback::host($host)) {
+        if ($host !== null && self::loopback($address) && !Loopback::host($host)) {
             return false;
         }
 
@@ -83,6 +99,12 @@ final class ProbeAccess
         }
 
         return false;
+    }
+
+    /** Whether a packed address is this machine's, by the same test the networks use. */
+    private static function loopback(string $address): bool
+    {
+        return self::within($address, (string) inet_pton('127.0.0.0'), 8) || $address === inet_pton('::1');
     }
 
     /** @return array{string, int} */

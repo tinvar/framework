@@ -133,10 +133,25 @@ describe('who may ask', function () {
         ['shop.example.com', false],
     ]);
 
+    // The whole loopback network, as the allow rule reads it, not three
+    // spellings of it: 127.8.9.10 naming a rebound domain is no different.
+    it('holds every loopback address to the Host rule', function (string $address) {
+        expect(new ProbeAccess()->allows(probe('/_metrics', $address, ['host' => 'rebound.attacker.example'])))->toBeFalse()
+            ->and(new ProbeAccess()->allows(probe('/_metrics', $address, ['host' => 'localhost'])))->toBeTrue();
+    })->with(['127.0.0.1', '127.8.9.10', '::1', '::ffff:127.0.0.2']);
+
+    // A proxy in front that keeps the loopback Host, or sits on an internal
+    // network, still says what it is in the headers it adds.
+    it('refuses what a proxy passed on, by address alone', function (string $header) {
+        expect(new ProbeAccess()->allows(probe('/_health', '127.0.0.1', ['host' => 'localhost', $header => '203.0.113.9'])))->toBeFalse()
+            ->and(new ProbeAccess(['10.0.0.0/8'])->allows(probe('/_health', '10.1.2.3', [$header => '203.0.113.9'])))->toBeFalse();
+    })->with(['forwarded', 'x-forwarded-for', 'x-forwarded-host', 'x-real-ip', 'via']);
+
     it('lets the token in whatever host is named', function () {
         $access = new ProbeAccess(token: TOKEN);
 
-        expect($access->allows(probe('/', '127.0.0.1', ['host' => 'shop.example.com', 'authorization' => 'Bearer ' . TOKEN])))->toBeTrue();
+        expect($access->allows(probe('/', '127.0.0.1', ['host' => 'shop.example.com', 'authorization' => 'Bearer ' . TOKEN])))->toBeTrue()
+            ->and($access->allows(probe('/', '127.0.0.1', ['x-forwarded-for' => '203.0.113.9', 'authorization' => 'Bearer ' . TOKEN])))->toBeTrue();
     });
 
     it('lets in the networks it is given', function () {
