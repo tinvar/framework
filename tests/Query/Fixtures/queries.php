@@ -135,6 +135,39 @@ final class CachedSummary
     }
 }
 
+/**
+ * A cached query whose answer depends on what its viewer may see: the gate
+ * lets anyone call it, and the body decides how much to show by the viewer's
+ * role -- the shape an auth epoch has to reach (ADR 0049), since a hit runs
+ * no body.
+ */
+#[Query(
+    name: 'racks.cachedForViewer',
+    cache: '5m',
+    tags: static function (Rack $rack): array {
+        return ['rack:' . $rack->primaryKey()];
+    },
+), NoAuthorization(reason: 'fixture: exercises the query cache, not access control')]
+final class CachedForViewer
+{
+    /** Counts body runs, since a cache hit is not visible in statement counts. */
+    public static int $runs = 0;
+
+    /** @var array<string, string> each user's role, by id; the test changes it */
+    public static array $roles = [];
+
+    public function __construct(private readonly \Tinvar\Auth\AuthContext $auth) {}
+
+    public function __invoke(Rack $rack): RackSummaryData
+    {
+        self::$runs++;
+        $role = self::$roles[$this->auth->id() ?? ''] ?? 'guest';
+
+        // Staff see the rack's units counted; anyone else sees none.
+        return new RackSummaryData("{$rack->name} as {$role}", $role === 'staff' ? $rack->units->count() : 0);
+    }
+}
+
 /** Takes a Site, so a Site ghost in the identity map could short-circuit it. */
 #[Query(name: 'racks.siteCode'), NoAuthorization(reason: 'fixture: exercises ghost resolution, not access control')]
 final class SiteCode

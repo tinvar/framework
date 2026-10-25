@@ -23,6 +23,11 @@ use Tinvar\Tenancy\TenantHierarchy;
  *
  * The last line is the important one, and it is a property of the caller: this
  * class is only ever consulted after the gate has answered.
+ *
+ * One departure (ADR 0049): beside the user, the key names the user's auth
+ * epoch, so nothing computed for them before the application last moved it
+ * -- a role taken away, impersonation stopped, every session signed out --
+ * is served to them after.
  */
 final class QueryCache
 {
@@ -50,9 +55,10 @@ final class QueryCache
 
     /**
      * Bumped whenever the key's composition changes, so old entries cannot be
-     * read under a new scheme. Adding the feature-flag component will need it.
+     * read under a new scheme. v2 added the auth epoch (ADR 0049); adding the
+     * feature-flag component will need it again.
      */
-    private const string KEY_SCHEMA = 'v1';
+    private const string KEY_SCHEMA = 'v2';
 
     public function enabledFor(Query $declaration): bool
     {
@@ -247,12 +253,28 @@ final class QueryCache
         // "shared: true drops the user from the key." Safe only when the body
         // cannot read the current user, which BuildRules checks -- by type
         // closure for injected dependencies, textually for direct calls, and
-        // not at all through the wider call graph. Its docblock says so.
+        // not at all through the wider call graph. Its docblock says so. The
+        // epoch goes with the user: an answer that cannot depend on who asks
+        // cannot depend on what they were allowed when they asked.
         if (!$declaration->shared) {
             // A distinct shape, not '': a guest must not collide with a user
             // whose identifier happens to be the empty string.
+            //
+            // With the user, their auth epoch (ADR 0049). The gate runs before
+            // every lookup, but it answers only whether the user may make the
+            // call; what a body that reads the user returned -- the rows their
+            // role reached, the fields an impersonating admin was shown -- is
+            // not asked again on a hit. Keyed by the user alone, that answer
+            // outlived the role change or the impersonation that shaped it
+            // until its TTL ran out. The application moves the epoch at those
+            // moments, so the next lookup misses and the body runs as who the
+            // user is now. Hex, because the epoch is the application's string
+            // and may be any bytes: bytes JSON cannot encode would have left
+            // the user uncacheable rather than keyed. A guest has no epoch
+            // (AuthContext keeps it ''), so the guest key is the one shape it
+            // was.
             $id = $this->auth->id();
-            $parts['u'] = $id === null ? ['anon'] : ['id', $id];
+            $parts['u'] = $id === null ? ['anon'] : ['id', $id, bin2hex($this->auth->epoch())];
         }
 
         // SHA-256, not a fast non-cryptographic hash. The arguments are chosen

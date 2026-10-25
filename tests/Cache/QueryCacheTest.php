@@ -123,6 +123,64 @@ describe('the key', function () {
             ->toBe($cache($b)->key('q', $shared, ['x' => 1], 'acme'));
     });
 
+    // ADR 0049: the spec's key names the user; this one names their auth
+    // epoch beside them, so what was computed before the application moved
+    // it is never looked up again.
+    it('separates one user at two auth epochs', function () use ($cache) {
+        $declaration = new QueryAttribute(cache: '1m');
+        $at = function (string $epoch) use ($cache, $declaration): string {
+            $auth = new AuthContext();
+            $auth->login(user('u1'), $epoch);
+
+            return $cache($auth)->key('q', $declaration, ['x' => 1], 'acme');
+        };
+
+        expect($at('1'))->not->toBe($at('2'))
+            ->and($at('1'))->toBe($at('1'), 'the same epoch is the same key');
+    });
+
+    // AuthContext keeps a guest's epoch '', whatever is handed in, so every
+    // guest still shares the one guest key -- and a user signing out lands on
+    // it, never on the entries kept for them.
+    it('keys a guest the same whatever epoch is handed in', function () use ($cache) {
+        $declaration = new QueryAttribute(cache: '1m');
+        $handed = new AuthContext();
+        $handed->login(null, '7');
+        $user = new AuthContext();
+        $user->login(user('u1'), '7');
+
+        expect($cache($handed)->key('q', $declaration, ['x' => 1], 'acme'))
+            ->toBe($cache(new AuthContext())->key('q', $declaration, ['x' => 1], 'acme'))
+            ->not->toBe($cache($user)->key('q', $declaration, ['x' => 1], 'acme'));
+    });
+
+    // Shared drops the user, and the epoch is the user's.
+    it('drops the epoch with the user when the query is shared', function () use ($cache) {
+        $shared = new QueryAttribute(cache: '1m', shared: true);
+        $before = new AuthContext();
+        $before->login(user('u1'), '1');
+        $after = new AuthContext();
+        $after->login(user('u1'), '2');
+
+        expect($cache($before)->key('q', $shared, ['x' => 1], 'acme'))
+            ->toBe($cache($after)->key('q', $shared, ['x' => 1], 'acme'));
+    });
+
+    // The epoch is the application's string. One that is not UTF-8 -- raw
+    // random bytes, say -- has no JSON form, and would have left its user
+    // uncached rather than keyed.
+    it('keys an epoch of any bytes', function () {
+        $store = new ArrayStore();
+        $auth = new AuthContext();
+        $auth->login(user('u1'), random_bytes(8) . "\xff");
+        $cache = new QueryCache($store, $auth);
+        $declaration = new QueryAttribute(cache: '1m');
+
+        $cache->put('q', $declaration, ['x' => 1], 'acme', 'value');
+
+        expect($cache->get('q', $declaration, ['x' => 1], 'acme'))->toBe(['hit' => true, 'value' => 'value']);
+    });
+
     it('keys a model argument on its class and id', function () use ($cache) {
         $fixture = new Fixture(racks: 2, unitsPerRack: 1);
         $orm = new Orm($fixture->connection, new IdentityMap('test'));
@@ -310,6 +368,122 @@ describe('through the runner', function () {
         $query->run($call, allowed: ['racks.cached']);
 
         expect(Tinvar\Tests\Query\Fixtures\CachedSummary::$runs)->toBe(2, 'the body ran again');
+    });
+});
+
+/**
+ * ADR 0049. The gate runs before every lookup, but what a body that reads its
+ * viewer returned is not asked again on a hit: keyed by the user alone, a
+ * role taken away went on being served what the old role saw until the TTL
+ * ran out. The application moves the user's auth epoch at that moment.
+ */
+describe('a moved auth epoch', function () {
+    it('misses for the same user, and serves nothing kept before it moved', function () {
+        $store = new ArrayStore();
+        $auth = new AuthContext();
+        $cache = new QueryCache($store, $auth);
+        $declaration = new QueryAttribute(cache: '5m');
+
+        $auth->login(user('u1'), '1');
+        $cache->put('q', $declaration, ['x' => 1], 'acme', 'what staff see');
+
+        $auth->login(user('u1'), '2');
+        $miss = $cache->get('q', $declaration, ['x' => 1], 'acme');
+        $cache->put('q', $declaration, ['x' => 1], 'acme', 'what a customer sees');
+
+        expect($miss)->toBe(['hit' => false, 'value' => null])
+            ->and($cache->get('q', $declaration, ['x' => 1], 'acme'))
+            ->toBe(['hit' => true, 'value' => 'what a customer sees']);
+    });
+
+    it('leaves every other user\'s entries where they were', function () {
+        $store = new ArrayStore();
+        $auth = new AuthContext();
+        $cache = new QueryCache($store, $auth);
+        $declaration = new QueryAttribute(cache: '5m');
+
+        $auth->login(user('u2'), '1');
+        $cache->put('q', $declaration, ['x' => 1], 'acme', 'u2 at 1');
+        $auth->login(user('u1'), '1');
+        $cache->put('q', $declaration, ['x' => 1], 'acme', 'u1 at 1');
+
+        // u1's role changes; u2's does not.
+        $auth->login(user('u1'), '2');
+        expect($cache->get('q', $declaration, ['x' => 1], 'acme')['hit'])->toBeFalse();
+
+        $auth->login(user('u2'), '1');
+        expect($cache->get('q', $declaration, ['x' => 1], 'acme'))->toBe(['hit' => true, 'value' => 'u2 at 1']);
+    });
+
+    // Through the runner, with a body that shapes its answer by the viewer's
+    // role. The stale answer is the thing to rule out, not merely a miss.
+    it('runs the body again as who the user is now, and only for them', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 3);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $auth = new AuthContext();
+        $registry = new QueryRegistry(static fn (string $c): object => new $c($auth));
+        $registry->register(Tinvar\Tests\Query\Fixtures\CachedForViewer::class);
+        $runner = new QueryRunner($registry, $orm, new AllowAllGate(), cache: new QueryCache(new ArrayStore(), $auth));
+
+        $viewer = Tinvar\Tests\Query\Fixtures\CachedForViewer::class;
+        $viewer::$runs = 0;
+        $viewer::$roles = ['u1' => 'staff', 'u2' => 'staff'];
+        $call = [['id' => 0, 'name' => 'racks.cachedForViewer', 'args' => ['rack' => $fixture->ids['racks'][0]]]];
+        /** @return array{name: string, units: int} */
+        $as = static fn (string $id, string $epoch): array => $auth->actingAs(
+            user($id),
+            static fn (): array => $runner->run($call, allowed: ['racks.cachedForViewer'])[0]['value'],
+            $epoch,
+        );
+
+        $staff = $as('u1', '1');
+        $as('u2', '1');
+        expect($staff['units'])->toBe(3)
+            ->and($viewer::$runs)->toBe(2);
+
+        // u1's staff role is taken away, and the application moves their epoch.
+        $viewer::$roles['u1'] = 'customer';
+        $now = $as('u1', '2');
+
+        expect($now['name'])->toEndWith('as customer')
+            ->and($now['units'])->toBe(0, 'nothing the staff role saw')
+            ->and($viewer::$runs)->toBe(3, 'the body ran again for u1');
+
+        // Then both are served from the cache again: u1 at the new epoch, and
+        // u2, whose epoch never moved, as before.
+        $again = $as('u1', '2');
+        $other = $as('u2', '1');
+
+        expect($again)->toBe($now)
+            ->and($other['name'])->toEndWith('as staff')
+            ->and($other['units'])->toBe(3)
+            ->and($viewer::$runs)->toBe(3);
+    });
+
+    it('never serves a signed-out visitor what was kept for the user', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 3);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $auth = new AuthContext();
+        $registry = new QueryRegistry(static fn (string $c): object => new $c($auth));
+        $registry->register(Tinvar\Tests\Query\Fixtures\CachedForViewer::class);
+        $runner = new QueryRunner($registry, $orm, new AllowAllGate(), cache: new QueryCache(new ArrayStore(), $auth));
+
+        $viewer = Tinvar\Tests\Query\Fixtures\CachedForViewer::class;
+        $viewer::$runs = 0;
+        $viewer::$roles = ['u1' => 'staff'];
+        $call = [['id' => 0, 'name' => 'racks.cachedForViewer', 'args' => ['rack' => $fixture->ids['racks'][0]]]];
+        /** @return array{name: string, units: int} */
+        $run = static fn (): array => $runner->run($call, allowed: ['racks.cachedForViewer'])[0]['value'];
+
+        $auth->actingAs(user('u1'), $run, '1');
+        // Signed out, with an epoch handed in all the same: a guest has none.
+        $guest = $auth->actingAs(null, $run, '1');
+        $another = $auth->actingAs(null, $run);
+
+        expect($guest['name'])->toEndWith('as guest')
+            ->and($guest['units'])->toBe(0)
+            ->and($another)->toBe($guest)
+            ->and($viewer::$runs)->toBe(2, 'one run for the user, one shared by every guest');
     });
 });
 
