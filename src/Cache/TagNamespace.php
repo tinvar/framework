@@ -50,7 +50,8 @@ final class TagNamespace
      * the tenants above as far as the loop and no further.
      *
      * @param list<string> $tags as the application names them
-     * @return list<string>
+     * @return list<string> namespace by namespace, the tenant's own first, each
+     *         holding $tags in the order given
      */
     public static function written(array $tags, string $tenant, ?TenantHierarchy $tenants): array
     {

@@ -44,29 +44,25 @@ final readonly class Invalidator
     public function invalidate(array $tags, ?string $tenant = null): void
     {
         $tenant ??= $this->orm->tenant();
-
-        $updates = [];
-        foreach ($tags as $tag) {
-            if ($tag === '') {
-                continue;
-            }
-            // In every namespace the write reaches: the tenant's own, and the
-            // subtree's of it and of each tenant above it, where the pages
-            // reading across a subtree the tenant is in listen (TagNamespace).
-            foreach (TagNamespace::written([$tag], $tenant, $this->orm->tenants()) as $namespaced) {
-                $topic = $this->topics->of($namespaced);
-                // The topic, so the client knows which of its subscriptions
-                // this is for -- an update carries no topic of its own -- and
-                // the tag, so it can forget what it keeps under it, as it
-                // would on reading X-Invalidated-Tags. Delivered only to
-                // subscribers allowed the topic, which only a render that
-                // read the tag gets.
-                $updates[$topic] = json_encode(['topic' => $topic, 'tag' => $tag], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
-            }
+        $tags = array_values(array_unique(array_filter($tags, static fn (string $tag): bool => $tag !== '')));
+        if ($tags === []) {
+            return;
         }
 
-        if ($updates === []) {
-            return;
+        // In every namespace the write reaches: the tenant's own, and the
+        // subtree's of it and of each tenant above it, where the pages
+        // reading across a subtree the tenant is in listen (TagNamespace).
+        // Namespace by namespace, each with the tags in order.
+        $updates = [];
+        foreach (TagNamespace::written($tags, $tenant, $this->orm->tenants()) as $i => $namespaced) {
+            $tag = $tags[$i % \count($tags)];
+            $topic = $this->topics->of($namespaced);
+            // The topic, so the client knows which of its subscriptions this
+            // is for -- an update carries no topic of its own -- and the tag,
+            // so it can forget what it keeps under it, as it would on reading
+            // X-Invalidated-Tags. Delivered only to subscribers allowed the
+            // topic, which only a render that read the tag gets.
+            $updates[$topic] = json_encode(['topic' => $topic, 'tag' => $tag], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         }
 
         $this->orm->afterCommit(function () use ($updates): void {
