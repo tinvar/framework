@@ -439,6 +439,32 @@ it('keeps headers on a hop to the same origin and drops them all on a hop to ano
         ->and($requests[2]['headers']['host'])->toBe("other.invalid:{$server->port}");
 });
 
+// A GET can carry a body too -- a search an API takes that way -- and
+// following its redirect sent the body on, to whichever origin it named.
+it('follows no redirect for a request with a body, whatever its method', function () {
+    needsFork();
+    $server = Server::start([
+        static fn (array $r): string => Server::reply(307, '', ['Location' => 'http://other.invalid:' . explode(':', $r['headers']['host'])[1] . '/other']),
+        Server::reply(200, 'arrived'),
+    ]);
+    $resolver = new StaticResolver(['hooks.invalid' => ['127.0.0.1'], 'other.invalid' => ['127.0.0.1']]);
+
+    try {
+        $response = new PinnedHttp(local(), $resolver)->send(new OutboundRequest(
+            'GET',
+            "http://hooks.invalid:{$server->port}/search",
+            body: '{"api_token":"s3cret"}',
+            maxRedirects: 5,
+        ));
+    } finally {
+        $requests = $server->stop();
+    }
+
+    expect($response->status)->toBe(307)
+        ->and($requests)->toHaveCount(1)
+        ->and($requests[0]['body'])->toBe('{"api_token":"s3cret"}');
+});
+
 it('caps the redirects it follows, and follows none for a POST', function () {
     needsFork();
     $again = Server::reply(302, '', ['Location' => '/again']);

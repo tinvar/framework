@@ -29,8 +29,8 @@ use Tinvar\Attributes\OutboundPolicy;
  * or HEAD may ask for up to OutboundRequest::MAX_REDIRECTS to be followed;
  * each hop is a new destination -- resolved, vetted and pinned again --
  * never from https to http, and a hop to another origin drops every header
- * the caller set. Other methods are never followed: a body sent to one
- * origin is not sent on to another.
+ * the caller set. Other methods are never followed, nor is a GET that
+ * carries a body: a body sent to one origin is not sent on to another.
  *
  * Bounded: the whole request, hops and name lookups included, within its
  * timeout; the connection within the connect timeout; the body within its
@@ -90,7 +90,10 @@ final readonly class PinnedHttp implements OutboundHttp
             $address = $this->vet($request, $target, $started, $deadline);
             $response = $this->transfer($request, $target, $address, $headers, $maxBytes, $started, $deadline);
 
-            $follows = $request->maxRedirects > 0 && ($request->method === 'GET' || $request->method === 'HEAD');
+            // A body is never sent on to where a redirect points, so a
+            // request carrying one -- a GET can -- follows none.
+            $follows = $request->maxRedirects > 0 && $request->body === ''
+                && ($request->method === 'GET' || $request->method === 'HEAD');
             if (!$follows || !$response->redirect()) {
                 return $response;
             }
