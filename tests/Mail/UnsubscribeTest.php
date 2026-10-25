@@ -96,10 +96,12 @@ describe('the headers', function () {
         $transport = new ArrayTransport();
         $message = new Mailer($transport, new Renderer(), new Address('news@shop.example'))->send(new Digest('c-42'));
         $mime = MimeMessage::build($message, 'shop.example');
-        $path = sys_get_temp_dir() . '/tinvar-unsubscribe-' . bin2hex(random_bytes(4)) . '.log';
+        // A directory of its own: the log refuses one others can write into.
+        $path = sys_get_temp_dir() . '/tinvar-unsubscribe-' . bin2hex(random_bytes(4)) . '/mail.log';
         new LogTransport($path)->send($message);
         $logged = LogTransport::read($path)[0];
         @unlink($path);
+        @rmdir(\dirname($path));
 
         $url = URL;
         expect($transport->sent[0]->unsubscribe)->toBe($message->unsubscribe)

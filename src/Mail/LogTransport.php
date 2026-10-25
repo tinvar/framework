@@ -34,11 +34,14 @@ final readonly class LogTransport implements Transport
         if (!is_dir($directory) && !mkdir($directory, 0o700, true) && !is_dir($directory)) {
             throw new \RuntimeException("Cannot create {$directory} for the mail log.");
         }
+        self::assertPrivate($directory);
 
         $handle = $this->open();
         try {
+            // Not opened to append -- that would create a file wherever a
+            // link swapped in pointed -- so the end is found under the lock.
             flock($handle, LOCK_EX);
-            if (fwrite($handle, $line . "\n") === false || !fflush($handle)) {
+            if (fseek($handle, 0, SEEK_END) !== 0 || fwrite($handle, $line . "\n") === false || !fflush($handle)) {
                 throw new \RuntimeException("Cannot write the mail log at {$this->path}.");
             }
         } finally {
@@ -51,14 +54,15 @@ final readonly class LogTransport implements Transport
      * The log, opened to append, and readable by this user alone.
      *
      * What it holds is every message whole: a password reset, a sign-in
-     * link, a one-click unsubscribe token. So a new one is created by an
-     * exclusive open under a 0077 umask -- private from its first byte, and
-     * never through a link, dangling or not, planted at its name -- and an
-     * existing one is written to only when it is a plain file of this
-     * user's with no other name: not a link, not a directory, not another
-     * user's file, nor a hard link to one of this user's own, any of them
-     * planted at the log's name in a directory others can write, such as
-     * the temporary one. One an older version left readable is closed up.
+     * link, a one-click unsubscribe token. Its directory is this user's
+     * alone (assertPrivate()), so nobody else can put anything at its name.
+     * And even so, a new log is created only by an exclusive open under a
+     * 0077 umask -- private from its first byte, and never through a link,
+     * dangling or not -- and an existing one is opened without being
+     * created, and written to only when it is a plain file of this user's
+     * with no other name: not a link, not a directory, not another user's
+     * file, nor a hard link to one of this user's own. One an older version
+     * left readable is closed up.
      *
      * @return resource
      */
@@ -75,13 +79,14 @@ final readonly class LogTransport implements Transport
             }
         }
         // There already, or put there since it was looked for: opened only
-        // once its name is seen to be a plain file of this user's.
+        // once its name is seen to be a plain file of this user's, and
+        // without O_CREAT, so a name swapped since creates nothing.
         if ($handle === false) {
             $named = @lstat($this->path);
             if ($named === false || !self::ownPlainFile($named)) {
                 throw self::refused($this->path);
             }
-            $handle = @fopen($this->path, 'ab');
+            $handle = @fopen($this->path, 'r+b');
             if ($handle === false) {
                 throw new \RuntimeException("Cannot open the mail log at {$this->path}.");
             }
@@ -93,7 +98,8 @@ final readonly class LogTransport implements Transport
         $opened = fstat($handle);
         $named = @lstat($this->path);
         if ($opened === false || $named === false || !self::ownPlainFile($opened) || !self::ownPlainFile($named)
-            || $opened['ino'] !== $named['ino'] || $opened['dev'] !== $named['dev']) {
+            || $opened['ino'] !== $named['ino'] || $opened['dev'] !== $named['dev']
+            || $opened['mode'] !== $named['mode'] || $opened['uid'] !== $named['uid']) {
             fclose($handle);
             throw self::refused($this->path);
         }
@@ -104,6 +110,30 @@ final readonly class LogTransport implements Transport
         }
 
         return $handle;
+    }
+
+    /**
+     * Refuses a directory another user can write into -- and so put a file
+     * or a link at the log's name, or swap one in between a look and an
+     * open -- unless it is one of this user's with the sticky bit, where
+     * nobody else can rename or remove what this user made.
+     */
+    private static function assertPrivate(string $directory): void
+    {
+        clearstatcache(true, $directory);
+        $stat = @stat($directory);
+        if ($stat === false) {
+            throw new \RuntimeException("Cannot read the mail log's directory, {$directory}.");
+        }
+        $others = ($stat['mode'] & 0o022) !== 0;
+        $sticky = ($stat['mode'] & 0o1000) !== 0;
+        $mine = !\function_exists('posix_geteuid') || $stat['uid'] === posix_geteuid();
+        if ($others && !($sticky && $mine)) {
+            throw new \RuntimeException(
+                "The mail log's directory, {$directory}, can be written by other users, who could put a file or a link "
+                . "at its name: keep the log in a directory of this user's alone.",
+            );
+        }
     }
 
     /** @param array<array-key, int> $stat */

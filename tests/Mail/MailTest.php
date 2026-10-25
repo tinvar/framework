@@ -205,6 +205,32 @@ it('writes the log into nothing planted at its name', function (string $planted)
     }
 })->with(['a hard link', 'a dangling link', 'a link to a file', 'a directory']);
 
+// Whoever can write into the log's directory can put something at its
+// name, or swap one in between a look and an open; in a sticky directory
+// of this user's, nobody else can rename or remove what this user made.
+it('keeps the log only in a directory nobody else can write into', function () {
+    $directory = sys_get_temp_dir() . '/tinvar-mail-' . bin2hex(random_bytes(4));
+    mkdir($directory);
+    $path = "{$directory}/mail.log";
+
+    try {
+        foreach ([0o777, 0o775, 0o757] as $mode) {
+            chmod($directory, $mode);
+            expect(fn () => new LogTransport($path)->send(message()))->toThrow(\RuntimeException::class, 'can be written by other users')
+                ->and(file_exists($path))->toBeFalse();
+        }
+
+        chmod($directory, 0o1777);
+        new LogTransport($path)->send(message());
+        expect(LogTransport::read($path))->toHaveCount(1);
+    } finally {
+        if (is_file($path)) {
+            unlink($path);
+        }
+        rmdir($directory);
+    }
+});
+
 it('renders a mailable through the renderer and sends it, now or from the queue after the commit', function () {
     $h = new Harness();
     $sent = new ArrayTransport();
