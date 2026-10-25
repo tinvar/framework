@@ -57,8 +57,34 @@ final readonly class EventDispatcher implements Events
             }
 
             $call = fn () => $this->call($listener, $event);
-            $listener->afterCommit ? $this->orm->afterCommit($call) : $call();
+            $listener->afterCommit ? $this->orm->afterCommit($this->asDispatcher($call)) : $call();
         }
+    }
+
+    /**
+     * $call, run as the tenant the event was dispatched in.
+     *
+     * The commit can come in another tenant than the dispatch: a transaction
+     * opened as one tenant, the event dispatched inside actAs() for another
+     * -- forEachTenant() inside one transaction, a reseller's action acting
+     * as each customer in turn. The listener is about the dispatching
+     * tenant's event, as a queued one is, and running it as whichever
+     * tenant the commit happened in would read, write and notify in that
+     * one. Narrowed to the tenant, never widened: an event dispatched
+     * inside acrossTenants() or withinSubtree() does not re-enter it after
+     * the block has closed. Untouched where the context is the one it was
+     * dispatched in -- outside any transaction, where it runs at once.
+     *
+     * @param \Closure(): void $call
+     * @return \Closure(): void
+     */
+    private function asDispatcher(\Closure $call): \Closure
+    {
+        $tenant = $this->orm->tenant();
+
+        return function () use ($tenant, $call): void {
+            $this->orm->tenant() === $tenant ? $call() : $this->orm->actAs($tenant, $call);
+        };
     }
 
     private function call(ListenerDefinition $listener, object $event): void

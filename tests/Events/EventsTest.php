@@ -77,6 +77,17 @@ final class QueuedListeners
     }
 }
 
+final class TenantListeners
+{
+    public function __construct(private readonly Journal $journal, private readonly Orm $orm) {}
+
+    #[Listener(afterCommit: true)]
+    public function later(OrderPlaced $event): void
+    {
+        $this->journal->entries[] = ['afterCommit' => $event->number, 'tenant' => $this->orm->tenant()];
+    }
+}
+
 #[Queue]
 final class QueuedWithBadEvent
 {
@@ -127,6 +138,28 @@ it('holds an afterCommit listener until the commit, and drops it on a rollback',
 
     expect(array_column($h->journal()->entries, 'afterCommit'))->toBe(['PW-2'])
         ->and(array_column($h->journal()->entries, 'now'))->toBe(['PW-2', 'PW-3']);
+});
+
+// The commit can come in another tenant than the dispatch: a transaction
+// opened as one tenant, the event dispatched inside actAs() for another --
+// a task's forEachTenant() in one transaction, a reseller's action acting
+// as each customer. The listener is about the dispatching tenant's event,
+// and ran as whichever tenant the commit happened in.
+it('runs an afterCommit listener as the tenant it was dispatched in, wherever the commit comes', function () {
+    $h = new Harness();
+    $events = events($h, [TenantListeners::class]);
+
+    $h->orm->actAs('globex', fn () => $h->orm->transaction(
+        fn () => $h->orm->actAs('acme', fn () => $events->dispatch(new OrderPlaced('PW-7'))),
+    ));
+    $h->orm->transaction(fn () => $h->orm->actAs('acme', fn () => $events->dispatch(new OrderPlaced('PW-8'))));
+    $h->orm->actAs('acme', fn () => $events->dispatch(new OrderPlaced('PW-9')));
+
+    expect($h->journal()->entries)->toBe([
+        ['afterCommit' => 'PW-7', 'tenant' => 'acme'],
+        ['afterCommit' => 'PW-8', 'tenant' => 'acme'],
+        ['afterCommit' => 'PW-9', 'tenant' => 'acme'],
+    ])->and($h->orm->tenant())->toBe('');
 });
 
 it('queues a listener whose class has #[Queue], under that class\'s queue, tries and panel', function () {
