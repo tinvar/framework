@@ -27,6 +27,9 @@ final class RenderChannel
 {
     private const int READ_BYTES = 65536;
 
+    /** The most one send() is handed; see write(). */
+    private const int WRITE_BYTES = 1_048_576;
+
     /** Built on first use, and kept: a worker's channel serves request after request. */
     private ?RendererSockets $sockets = null;
 
@@ -436,9 +439,11 @@ final class RenderChannel
                 continue;
             }
 
-            // Non-blocking, so a write can wait on the deadline too: blocking,
-            // a renderer that stopped reading held this worker forever.
-            stream_set_blocking($socket, false);
+            // Blocking, and every wait bounded by the deadline: a read is
+            // given what is left of it as the stream's timeout (read()), a
+            // write as the socket's send timeout (write()). Unbounded, a
+            // renderer that stopped reading held this worker forever.
+            stream_set_blocking($socket, true);
 
             return $socket;
         }
@@ -458,16 +463,49 @@ final class RenderChannel
     /**
      * Writes all of $bytes, waiting for room within the render deadline.
      *
+     * Each send blocks for at most what is left of the deadline, as the
+     * socket's send timeout, and returns what it got through when that runs
+     * out. Nothing here waits with select(): FD_SETSIZE caps it at
+     * descriptor 1024, and a FrankenPHP worker shares its process's
+     * descriptors with every connection the server holds, so past about a
+     * thousand open connections the renderer's socket was numbered above it
+     * and every render failed as `render_incomplete`. Nor through the
+     * stream: on macOS a blocking stream's write ignores its timeout on a
+     * Unix socket (the kernel does not honour MSG_DONTWAIT there), and a
+     * non-blocking one could only wait with select().
+     *
      * @param resource $socket
      */
     private function write($socket, string $bytes, float $startedNs, float $deadlineFromNs): void
     {
+        $raw = socket_import_stream($socket);
+        if ($raw === false) {
+            throw RendererException::closedEarly();
+        }
+
         $total = \strlen($bytes);
         for ($written = 0; $written < $total;) {
-            $this->await($socket, $startedNs, $deadlineFromNs, forWrite: true);
+            // At least a microsecond: a send timeout of zero is no timeout at
+            // all. Past the deadline that is a single try, as read() makes,
+            // and only the overall cap is final.
+            $wait = max($this->waitLeft($startedNs, $deadlineFromNs), 1e-6);
+            if (!@socket_set_option($raw, \SOL_SOCKET, \SO_SNDTIMEO, self::timeval($wait))) {
+                throw RendererException::closedEarly();
+            }
 
-            $n = @fwrite($socket, substr($bytes, $written));
+            // In slices, so a large frame sent a little at a time is not
+            // copied whole on every pass.
+            $n = @socket_send($raw, substr($bytes, $written, self::WRITE_BYTES), min(self::WRITE_BYTES, $total - $written), 0);
             if ($n === false) {
+                $errno = socket_last_error($raw);
+                socket_clear_error($raw);
+                if ($errno === \SOCKET_EINTR) {
+                    continue;
+                }
+                if ($errno === \SOCKET_EAGAIN || $errno === \SOCKET_EWOULDBLOCK) {
+                    throw $this->timedOut($this->deadlineSeconds - (hrtime(true) - $deadlineFromNs) / 1e9);
+                }
+
                 throw RendererException::closedEarly();
             }
             $written += $n;
@@ -475,18 +513,16 @@ final class RenderChannel
     }
 
     /**
-     * Waits until the socket is readable (or writable), or the deadline passes.
-     *
-     * The deadline runs from $deadlineFromNs, which leaves out the time spent
-     * writing to the browser. Once it has passed, the socket is still polled
-     * -- with no timeout -- before giving up: bytes the renderer has already
-     * sent are a render that finished, and refusing to read them truncated a
-     * page that was sitting complete in the socket. The overall cap, counted
-     * from $startedNs, bounds the wait as well.
-     *
-     * @param resource $socket
+     * Seconds the next wait may take: what is left of the deadline, which
+     * runs from $deadlineFromNs and so leaves out the time spent writing to
+     * the browser, within what is left of the overall cap, counted from
+     * $startedNs. Zero once the deadline has passed, so the socket is still
+     * tried -- without waiting -- before giving up: bytes the renderer has
+     * already sent are a render that finished, and refusing to read them
+     * truncated a page that was sitting complete in the socket. The overall
+     * cap is final.
      */
-    private function await($socket, float $startedNs, float $deadlineFromNs, bool $forWrite = false): void
+    private function waitLeft(float $startedNs, float $deadlineFromNs): float
     {
         $now = hrtime(true);
         $deadlineLeft = $this->deadlineSeconds - ($now - $deadlineFromNs) / 1e9;
@@ -495,19 +531,15 @@ final class RenderChannel
             throw $this->timedOut($deadlineLeft);
         }
 
-        $remaining = max(0.0, min($deadlineLeft, $overallLeft));
+        return max(0.0, min($deadlineLeft, $overallLeft));
+    }
 
-        $read = $forWrite ? null : [$socket];
-        $write = $forWrite ? [$socket] : null;
-        $except = null;
-        $ready = @stream_select($read, $write, $except, (int) $remaining, (int) (fmod($remaining, 1.0) * 1e6));
+    /** @return array{sec: int, usec: int} */
+    private static function timeval(float $seconds): array
+    {
+        $whole = (int) $seconds;
 
-        if ($ready === false) {
-            throw RendererException::closedEarly();
-        }
-        if ($ready === 0) {
-            throw $this->timedOut($this->deadlineSeconds - (hrtime(true) - $deadlineFromNs) / 1e9);
-        }
+        return ['sec' => $whole, 'usec' => max(0, min(999_999, (int) round(($seconds - $whole) * 1e6)))];
     }
 
     /**
@@ -538,17 +570,34 @@ final class RenderChannel
      * Blocks until bytes arrive, the renderer closes, or the render deadline
      * passes. Returns null at clean end-of-stream.
      *
+     * The wait is the stream's own: a blocking read with what is left of the
+     * deadline as its timeout, which PHP waits on with poll() -- no
+     * descriptor limit, unlike select() (see write()). A timeout of zero
+     * takes only what has already arrived.
+     *
      * @param resource $socket
      */
     private function read($socket, float $startedNs, float $deadlineFromNs): ?string
     {
-        $this->await($socket, $startedNs, $deadlineFromNs);
+        for (;;) {
+            $wait = $this->waitLeft($startedNs, $deadlineFromNs);
+            $time = self::timeval($wait);
+            stream_set_timeout($socket, $time['sec'], $time['usec']);
 
-        $chunk = fread($socket, self::READ_BYTES);
-        if ($chunk === false || ($chunk === '' && feof($socket))) {
-            return null;
+            $chunk = @fread($socket, self::READ_BYTES);
+            if ($chunk !== false && $chunk !== '') {
+                return $chunk;
+            }
+            if (feof($socket)) {
+                return null;
+            }
+
+            // Nothing within the wait, and the renderer still connected. A
+            // wake-up with nothing to read is not the wait running out: the
+            // rest of it is waited again.
+            if ($wait <= 0.0 || stream_get_meta_data($socket)['timed_out']) {
+                throw $this->timedOut($this->deadlineSeconds - (hrtime(true) - $deadlineFromNs) / 1e9);
+            }
         }
-
-        return $chunk;
     }
 }
