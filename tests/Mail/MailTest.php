@@ -148,6 +148,42 @@ it('appends messages to a log, one JSON line each, and reads them back', functio
     }
 });
 
+// The log holds every message whole -- a password reset, a sign-in link, a
+// one-click unsubscribe token -- and the shop puts it in the temporary
+// directory when its database is in memory.
+it('keeps the log readable by its owner alone, and writes into no file it did not make its own', function () {
+    $directory = sys_get_temp_dir() . '/tinvar-mail-' . bin2hex(random_bytes(4));
+    mkdir($directory, 0o755);
+    $path = "{$directory}/mail.log";
+    $elsewhere = "{$directory}/elsewhere";
+    $previous = umask(0o022);
+    try {
+        new LogTransport($path)->send(message());
+        expect(fileperms($path) & 0o777)->toBe(0o600);
+
+        // A log an older version left readable is closed up.
+        chmod($path, 0o644);
+        new LogTransport($path)->send(message());
+        expect(fileperms($path) & 0o777)->toBe(0o600)
+            ->and(LogTransport::read($path))->toHaveCount(2);
+
+        // A link planted at its name is not followed.
+        unlink($path);
+        touch($elsewhere);
+        symlink($elsewhere, $path);
+        expect(fn () => new LogTransport($path)->send(message()))->toThrow(\RuntimeException::class, 'a link, or another user\'s file')
+            ->and(filesize($elsewhere))->toBe(0);
+    } finally {
+        umask($previous);
+        foreach ([$path, $elsewhere] as $file) {
+            if (is_link($file) || is_file($file)) {
+                unlink($file);
+            }
+        }
+        rmdir($directory);
+    }
+});
+
 it('renders a mailable through the renderer and sends it, now or from the queue after the commit', function () {
     $h = new Harness();
     $sent = new ArrayTransport();
