@@ -29,7 +29,8 @@ use Symfony\Component\Yaml\Yaml;
  *     manifest is what the lock installs. Every action and reusable
  *     workflow a GitHub workflow uses -- and every one a local action it
  *     uses names in turn -- is pinned the same way, by commit: a tag can be
- *     moved.
+ *     moved. Every container image a job runs in or beside is pinned by
+ *     its digest.
  *
  *   trusted-ci-only
  *     "Downstream app test suites run in framework CI only on trusted
@@ -396,6 +397,22 @@ final class SupplyChain
                     foreach (self::field($job, 'uses') as $uses) {
                         $violations = [...$violations, ...self::unpinned("{$name} jobs.{$id}", $uses)];
                     }
+                    // The job's own container and its service containers
+                    // are pulled by name too, and a tag moves as readily as
+                    // an action's does.
+                    foreach (self::field($job, 'container') as $container) {
+                        $violations = [...$violations, ...self::unpinnedContainer("{$name} jobs.{$id}.container", $container)];
+                    }
+                    foreach (self::field($job, 'services') as $services) {
+                        if (!\is_array($services)) {
+                            $violations[] = "{$name} jobs.{$id}.services is not a mapping the check can read.";
+
+                            continue;
+                        }
+                        foreach ($services as $service => $container) {
+                            $violations = [...$violations, ...self::unpinnedContainer("{$name} jobs.{$id}.services.{$service}", $container)];
+                        }
+                    }
                     foreach (self::field($job, 'steps') as $steps) {
                         if (!\is_array($steps)) {
                             $violations[] = "{$name} jobs.{$id}.steps is not a list the check can read.";
@@ -528,6 +545,37 @@ final class SupplyChain
             || preg_match('/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.\/-]+@[0-9a-f]{40}$/', $uses) === 1;
 
         return $pinned ? [] : ["{$at} uses {$uses}, which is not pinned to a full commit."];
+    }
+
+    /**
+     * A job's container or a service: an image name, or a mapping whose
+     * `image` is one. Each is pinned by its digest -- the tag beside it, if
+     * any, is a label and no more. An expression is refused, since what it
+     * names is not known until the workflow runs.
+     *
+     * @return list<string> the violations, when $container is not pinned to a digest
+     */
+    private static function unpinnedContainer(string $at, mixed $container): array
+    {
+        $images = \is_array($container) ? self::field($container, 'image') : [$container];
+        if ($images === []) {
+            return ["{$at} names no image the check can read."];
+        }
+
+        $violations = [];
+        foreach ($images as $image) {
+            if (!\is_string($image)) {
+                $violations[] = "{$at} image is not a string.";
+
+                continue;
+            }
+            $name = str_starts_with(strtolower($image), 'docker://') ? substr($image, 9) : $image;
+            if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.\/:-]*@sha256:[0-9a-f]{64}$/', $name) !== 1) {
+                $violations[] = "{$at} image {$image} is not pinned to a sha256 digest.";
+            }
+        }
+
+        return $violations;
     }
 
     /**

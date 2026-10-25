@@ -429,6 +429,53 @@ describe('workflows', function () {
         ]);
     });
 
+    // A job's container and its services are pulled by name: the digest is
+    // the pin, and a tag beside it changes nothing.
+    it('refuses a container or service image not pinned by digest', function () {
+        $digest = 'sha256:' . str_repeat('ab', 32);
+        $this->workspace->workflows['ci.yml'] = <<<YAML
+        on: push
+        jobs:
+          pinned:
+            container:
+              image: php:8.5-cli@{$digest}
+            services:
+              postgres:
+                image: docker://postgres:17@{$digest}
+            steps: []
+          short:
+            container: ghcr.io/acme/ci@{$digest}
+            steps: []
+          tagged:
+            container:
+              image: php:8.5-cli
+            services:
+              postgres:
+                image: postgres@sha256:abc
+              mysql: mysql:8
+              redis:
+                ports: ['6379:6379']
+            steps: []
+          expression:
+            container: \${{ matrix.image }}@{$digest}
+            steps: []
+          odd:
+            container: {image: [php]}
+            services: postgres
+            steps: []
+        YAML;
+
+        expect(violations($this->workspace))->toBe([
+            '.github/workflows/ci.yml jobs.tagged.container image php:8.5-cli is not pinned to a sha256 digest.',
+            '.github/workflows/ci.yml jobs.tagged.services.postgres image postgres@sha256:abc is not pinned to a sha256 digest.',
+            '.github/workflows/ci.yml jobs.tagged.services.mysql image mysql:8 is not pinned to a sha256 digest.',
+            '.github/workflows/ci.yml jobs.tagged.services.redis names no image the check can read.',
+            ".github/workflows/ci.yml jobs.expression.container image \${{ matrix.image }}@{$digest} is not pinned to a sha256 digest.",
+            '.github/workflows/ci.yml jobs.odd.container image is not a string.',
+            '.github/workflows/ci.yml jobs.odd.services is not a mapping the check can read.',
+        ]);
+    });
+
     it('refuses a workflow it cannot read', function () {
         $this->workspace->workflows['a.yml'] = "on: push\non: push\n";
         $this->workspace->workflows['b.yml'] = "on: 1\n";
