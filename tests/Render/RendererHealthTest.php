@@ -44,6 +44,9 @@ function answering(string $path, array $frames): int
             usleep(200_000);
             fclose($client);
         }
+        // Gone without running destructors: an inherited database
+        // connection would hang up on the parent's socket.
+        posix_kill(getmypid(), SIGKILL);
         exit(0);
     }
     fclose($server);
@@ -149,6 +152,9 @@ it('gives up on an answer that trickles in past the timeout', function () {
             }
             fclose($client);
         }
+        // Gone without running destructors: an inherited database
+        // connection would hang up on the parent's socket.
+        posix_kill(getmypid(), SIGKILL);
         exit(0);
     }
     fclose($server);

@@ -76,6 +76,9 @@ function renderers(array $sockets): array
                 fwrite($client, $codec->encodeFrame($answer));
                 fclose($client);
             }
+            // Gone without running destructors: an inherited database
+            // connection would hang up on the parent's socket.
+            posix_kill(getmypid(), SIGKILL);
             exit(0);
         }
         fclose($server);

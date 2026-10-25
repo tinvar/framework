@@ -64,6 +64,9 @@ function hostileRenderer(string $path, array $frames, bool $readsRenderFrame = t
             }
         } finally {
             fclose($server);
+            // Gone without running destructors: an inherited database
+            // connection would hang up on the parent's socket.
+            posix_kill(getmypid(), SIGKILL);
             exit(0);
         }
     }

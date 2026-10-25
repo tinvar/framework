@@ -84,6 +84,9 @@ function fakeRenderer(string $path, string $name): int
             fwrite($client, $codec->encodeFrame(Frame::chunk($name)) . $codec->encodeFrame(['t' => Frame::DONE]));
             fclose($client);
         }
+        // Gone without running destructors: an inherited database
+        // connection would hang up on the parent's socket.
+        posix_kill(getmypid(), SIGKILL);
         exit(0);
     }
     fclose($server);
