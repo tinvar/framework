@@ -25,6 +25,7 @@ use Tinvar\Orm\Migrations\MigrationGenerator;
 use Tinvar\Orm\Migrations\Migrator;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Orm\Schema\SqliteDialect;
+use Tinvar\Support\DevMode;
 use Tinvar\Support\PrivateDirectory;
 use Tinvar\Support\Signer;
 
@@ -57,15 +58,21 @@ function tables(PdoConnection $connection): array
 }
 
 /**
- * Runs a command in a process of its own.
+ * Runs a command in a process of its own, with TINVAR_ENV=testing -- what
+ * lets db:seed and migrate:fresh run -- and none of the shell's own
+ * production markers.
  *
  * @param list<string> $command
- * @param array<string, string> $environment added to this process's
+ * @param array<string, string|null> $environment laid over this process's; null takes a variable out
  * @return array{int, string, string} its exit status, standard output and standard error
  */
 function run(array $command, array $environment = []): array
 {
-    $process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, \dirname(__DIR__, 4), $environment === [] ? null : [...getenv(), ...$environment]);
+    $environment = array_filter(
+        [...array_diff_key(getenv(), array_flip(DevMode::PRODUCTION_MARKERS)), 'TINVAR_ENV' => 'testing', ...$environment],
+        \is_string(...),
+    );
+    $process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, \dirname(__DIR__, 4), $environment);
     \assert(\is_resource($process));
     $out = (string) stream_get_contents($pipes[1]);
     $err = (string) stream_get_contents($pipes[2]);
@@ -257,13 +264,40 @@ describe('from the command line', function () {
 
     // A seeded database has accounts whose passwords are in this
     // repository; one in production would be a way in.
-    it('refuses to seed where the environment says production', function () {
+    it('refuses to seed where the environment says production, --non-production or not', function () {
         $database = database();
 
         [$status, , $err] = run([PHP_BINARY, 'bin/tinvar', 'db:seed', "--database={$database}"], ['APP_ENV' => 'production']);
+        [$flagged, , $flaggedErr] = run(['examples/shop/bin/seed', '--non-production', "--database={$database}"], ['NODE_ENV' => 'production']);
 
         expect($status)->toBe(1)
             ->and($err)->toContain('APP_ENV says this is production')
+            ->and($flagged)->toBe(1)
+            ->and($flaggedErr)->toContain('NODE_ENV says this is production. It is refused here, --non-production or not.')
             ->and(file_exists($database))->toBeFalse();
+    });
+
+    // The seed script does not say it for whoever runs it: the database it
+    // replaces could be anyone's.
+    it('has the seed script refuse where nothing says this is not production, and say what to set', function () {
+        $database = database();
+
+        [$status, , $err] = run(['examples/shop/bin/seed', '--customers=1', "--database={$database}"], ['TINVAR_ENV' => null]);
+        [$fresh, , $freshErr] = run([PHP_BINARY, 'bin/tinvar', 'migrate:fresh', '--force', "--database={$database}"], ['TINVAR_ENV' => null]);
+
+        expect($status)->toBe(1)
+            ->and($err)->toContain('Set TINVAR_ENV=local (or development, or testing), or pass --non-production to say so for this run.')
+            ->and($fresh)->toBe(1)
+            ->and($freshErr)->toContain('migrate:fresh drops every table, and nothing says this is not production.')
+            ->and(file_exists($database))->toBeFalse();
+    });
+
+    it('has the seed script run where --non-production says so', function () {
+        $database = database();
+
+        [$status, $out, $err] = run(['examples/shop/bin/seed', '--non-production', '--customers=1', "--database={$database}"], ['TINVAR_ENV' => null]);
+
+        expect($status)->toBe(0, $err)
+            ->and($out)->toContain('24 products, 2 customers');
     });
 });
