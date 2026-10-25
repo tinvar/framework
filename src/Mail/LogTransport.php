@@ -113,10 +113,12 @@ final readonly class LogTransport implements Transport
     }
 
     /**
-     * Refuses a directory another user can write into -- and so put a file
-     * or a link at the log's name, or swap one in between a look and an
-     * open -- unless it is one of this user's with the sticky bit, where
-     * nobody else can rename or remove what this user made.
+     * Refuses a directory that is not this user's -- its owner can rename,
+     * replace or plant anything in it, whatever its mode says now -- and one
+     * of this user's that another user can write into, and so put a file or
+     * a link at the log's name or swap one in between a look and an open,
+     * unless it has the sticky bit, where nobody else can rename or remove
+     * what this user made.
      */
     private static function assertPrivate(string $directory): void
     {
@@ -125,10 +127,15 @@ final readonly class LogTransport implements Transport
         if ($stat === false) {
             throw new \RuntimeException("Cannot read the mail log's directory, {$directory}.");
         }
+        if (\function_exists('posix_geteuid') && $stat['uid'] !== posix_geteuid()) {
+            throw new \RuntimeException(
+                "The mail log's directory, {$directory}, is not this user's, so its owner could put a file or a link "
+                . "at its name: keep the log in a directory of this user's alone.",
+            );
+        }
         $others = ($stat['mode'] & 0o022) !== 0;
         $sticky = ($stat['mode'] & 0o1000) !== 0;
-        $mine = !\function_exists('posix_geteuid') || $stat['uid'] === posix_geteuid();
-        if ($others && !($sticky && $mine)) {
+        if ($others && !$sticky) {
             throw new \RuntimeException(
                 "The mail log's directory, {$directory}, can be written by other users, who could put a file or a link "
                 . "at its name: keep the log in a directory of this user's alone.",

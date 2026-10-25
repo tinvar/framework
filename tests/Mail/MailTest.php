@@ -231,6 +231,15 @@ it('keeps the log only in a directory nobody else can write into', function () {
     }
 });
 
+// Another user's directory is theirs to plant in whatever its mode says:
+// the root directory, which root owns and nobody else can write, will do.
+it('keeps the log out of a directory another user owns, however closed it is', function () {
+    $path = '/tinvar-mail-' . bin2hex(random_bytes(4)) . '.log';
+
+    expect(fn () => new LogTransport($path)->send(message()))->toThrow(\RuntimeException::class, 'is not this user\'s')
+        ->and(file_exists($path))->toBeFalse();
+})->skip(!\function_exists('posix_geteuid') || posix_geteuid() === 0 || fileowner('/') === (\function_exists('posix_geteuid') ? posix_geteuid() : -1), 'the root directory is this user\'s');
+
 it('renders a mailable through the renderer and sends it, now or from the queue after the commit', function () {
     $h = new Harness();
     $sent = new ArrayTransport();
