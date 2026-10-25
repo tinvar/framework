@@ -645,3 +645,42 @@ it('uploads an avatar and a receipt photo from the account page, and refuses a f
         ->and($result['elsewhere'])->toBe(404)
         ->and($result['receipts'])->toBe(1);
 });
+
+// "#[Optional] ... only when named in X-Only" (ADR 0045): the product page
+// sends a customer's own orders of it with no render until its button asks,
+// and the button's partial reload names the field and brings back the page
+// segment with them -- in the same document.
+it('asks for a customer\'s orders of a product only when they press the button for them', function () use ($root) {
+    $pdo = new \PDO('sqlite:' . Shop::database());
+    $customer = (string) $pdo->query('SELECT id FROM customers WHERE email = ' . $pdo->quote(DemoAccount::EMAIL))?->fetchColumn();
+    $latest = $pdo->prepare('SELECT l.product_id FROM order_lines l JOIN orders o ON o.id = l.order_id WHERE o.customer_id = ? ORDER BY o.placed_at DESC LIMIT 1');
+    $latest->execute([$customer]);
+    $product = (string) $latest->fetchColumn();
+    $orders = $pdo->prepare(
+        'SELECT o.number FROM orders o JOIN order_lines l ON l.order_id = o.id WHERE o.customer_id = ? AND l.product_id = ? '
+        . 'GROUP BY o.id ORDER BY o.placed_at DESC, o.id DESC LIMIT ' . \Shop\Pages\ProductPage::YOUR_ORDERS,
+    );
+    $orders->execute([$customer, $product]);
+    $expected = $orders->fetchAll(\PDO::FETCH_COLUMN);
+
+    $output = '';
+    served($root, function (string $origin) use ($root, $product, &$output): void {
+        $output = runWithTimeout(
+            ['node', "{$root}/examples/shop/e2e/your-orders.mjs", $origin, DemoAccount::EMAIL, DemoAccount::PASSWORD, "/products/{$product}"],
+            $root,
+            60,
+        );
+    });
+
+    $result = json_decode((string) $output, true);
+    expect($result)->toBeArray("the browser script failed:\n{$output}");
+
+    expect($result['errors'])->toBe([])
+        ->and($result['tableBefore'])->toBe(0)
+        ->and($result['xOnly'])->toBe('page.yourOrders')
+        ->and($result['xPage'])->toBe('shop/product')
+        ->and($expected)->not->toBe([])
+        ->and(array_map('trim', $result['numbers']))->toBe($expected)
+        ->and($result['buttonAfter'])->toBe(0)
+        ->and($result['sameDocument'])->toBeTrue();
+});
