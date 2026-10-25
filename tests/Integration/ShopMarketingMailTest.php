@@ -300,6 +300,22 @@ describe('the product announcement', function () {
         Fakes::$queue->assertNothingPushed();
     });
 
+    // Plain HTTP on loopback is dev, and the mail domain stands in for the
+    // https origin -- unless the environment says production, where it is
+    // a proxy's backend with SHOP_URL unset, and a stand-in would send mail
+    // whose one-click link reaches nobody.
+    it('stands the mail domain in for an https address on loopback, and never where the environment says production', function () {
+        $loopback = new Links('http://127.0.0.1:8080');
+
+        expect($loopback->unsubscribeOrigin())->toBe('https://pellwick.test')
+            ->and(new Links('http://[::1]:6123')->unsubscribeOrigin())->toBe('https://pellwick.test')
+            ->and(new Links('http://127.0.0.1.shop.example')->unsubscribeOrigin())->toBeNull()
+            ->and(new Links('https://shop.test')->unsubscribeOrigin())->toBe('https://shop.test')
+            ->and(new Unsubscribes(KEY, $loopback, [])->refusal())->toBeNull()
+            ->and(new Unsubscribes(KEY, $loopback, ['APP_ENV' => 'production'])->refusal())->toContain('RFC 8058')
+            ->and(new Unsubscribes(KEY, new Links('https://shop.test'), ['APP_ENV' => 'production'])->refusal())->toBeNull();
+    });
+
     it('builds its links on the shop\'s own address when that is https', function () {
         putenv('SHOP_URL=https://shop.test');
         Testing::forget();
