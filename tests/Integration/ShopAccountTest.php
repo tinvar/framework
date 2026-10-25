@@ -610,6 +610,32 @@ it('signs out under a new, signed-out session, and the old one stops working', f
     expect($visitor->action('orders.place', ['product' => $product, 'quantity' => 1])->status)->toBe(401);
 });
 
+// The shop's database syncs NORMAL, which a power cut can take the last
+// commits back from. A sign-out taken back would be a session that signs in
+// again, so who a session belongs to is committed synced in full (ADR 0050).
+it('commits a sign-in and a sign-out synced in full, and nothing else it does on the way', function () {
+    [$visitor] = shop();
+    $pdo = $visitor->kernel->orm->connection()->pdo();
+    \assert($pdo instanceof \Pdo\Sqlite);
+    $levels = [];
+    $pdo->setAuthorizer(static function (int $action, ?string $pragma, ?string $value) use (&$levels): int {
+        if ($action === 19 && $pragma === 'synchronous' && $value !== null) {
+            $levels[] = strtoupper($value);
+        }
+
+        return \Pdo\Sqlite::OK;
+    });
+
+    $visitor->get('/sign-in');
+    signIn($visitor);
+    $visitor->get('/orders');
+    $visitor->action('account.signOut', []);
+    $pdo->setAuthorizer(null);
+
+    expect($levels)->toBe(['FULL', 'NORMAL', 'FULL', 'NORMAL'])
+        ->and($visitor->kernel->orm->connection()->select('PRAGMA synchronous')[0]['synchronous'])->toBe(1);
+});
+
 // Hovering a link prefetches its page. "Prefetch requests skip side effects
 // like previous-URL tracking", and marking the session as in use is one.
 it('does not count a prefetch as the session being used', function () {
