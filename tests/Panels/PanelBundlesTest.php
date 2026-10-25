@@ -14,12 +14,14 @@ namespace Tinvar\Tests\Panels\PanelBundles {
     use Tinvar\Auth\PanelRegistry;
     use Tinvar\Render\PanelBundles;
     use Tinvar\Routing\RouteRegistry;
+    use Tinvar\Tests\Panels\PanelBundles\Admin\AdminError;
     use Tinvar\Tests\Panels\PanelBundles\Admin\Orders;
     use Tinvar\Tests\Panels\PanelBundles\Admin\StrayPage;
     use Tinvar\Tests\Panels\PanelBundles\Shop\AdminLayout;
     use Tinvar\Tests\Panels\PanelBundles\Shop\Catalog;
     use Tinvar\Tests\Panels\PanelBundles\Shop\DeclaredPage;
     use Tinvar\Tests\Panels\PanelBundles\Shop\Layout;
+    use Tinvar\Tests\Panels\PanelBundles\Shop\ShopError;
     use Tinvar\Tests\Panels\PanelBundles\Shop\Wrapped;
 
     /** @param list<class-string> $classes */
@@ -77,6 +79,18 @@ namespace Tinvar\Tests\Panels\PanelBundles {
             ->toThrow(\RuntimeException::class, "AdminLayout's view 'admin/layout' is in the admin panel's directory, and wraps");
     });
 
+    // An error page renders in no panel for whoever reaches its status: one
+    // drawn from the admin directory would ship the admin chunk to them.
+    it('refuses an error page whose view the build kept in a panel', function () {
+        expect(fn () => PanelBundles::check(routes([Orders::class, Catalog::class, AdminError::class]), panels(), report(['admin' => ['admin/orders', 'admin/error']])))
+            ->toThrow(\RuntimeException::class, "AdminError is an #[ErrorPage], shown in no panel, and its view 'admin/error' is in the admin panel's directory");
+    });
+
+    it('takes an error page whose view is in no panel', function () {
+        expect(fn () => PanelBundles::check(routes([Orders::class, Catalog::class, ShopError::class]), panels(), report(['admin' => ['admin/orders']])))
+            ->not->toThrow(\RuntimeException::class);
+    });
+
     it('refuses a build with no report while routes are in a panel, and takes one with none in use', function () {
         expect(fn () => PanelBundles::check(routes([Orders::class]), panels(), '/nonexistent/panels.json'))
             ->toThrow(\RuntimeException::class, 'panelChunks()')
@@ -93,6 +107,7 @@ namespace Tinvar\Tests\Panels\PanelBundles {
 }
 
 namespace Tinvar\Tests\Panels\PanelBundles\Shop {
+    use Tinvar\Attributes\ErrorPage;
     use Tinvar\Attributes\Layout as LayoutAttribute;
     use Tinvar\Attributes\Page;
     use Tinvar\Attributes\Panel;
@@ -111,9 +126,13 @@ namespace Tinvar\Tests\Panels\PanelBundles\Shop {
 
     #[Page('/wrapped/page', view: 'shop/wrapped', name: 'wrapped')]
     final class Wrapped {}
+
+    #[ErrorPage([404], view: 'shop/error', within: '/')]
+    final class ShopError {}
 }
 
 namespace Tinvar\Tests\Panels\PanelBundles\Admin {
+    use Tinvar\Attributes\ErrorPage;
     use Tinvar\Attributes\Page;
 
     #[Page('/admin/orders', view: 'admin/orders', name: 'admin.orders')]
@@ -121,4 +140,7 @@ namespace Tinvar\Tests\Panels\PanelBundles\Admin {
 
     #[Page('/admin/stray', view: 'shop/stray', name: 'admin.stray')]
     final class StrayPage {}
+
+    #[ErrorPage([404], view: 'admin/error', within: '/')]
+    final class AdminError {}
 }

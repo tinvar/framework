@@ -530,6 +530,21 @@ final class RouteRegistry
     }
 
     /**
+     * Every #[ErrorPage], once each however many statuses it answers.
+     *
+     * @return list<CompiledRoute>
+     */
+    public function errorPages(): array
+    {
+        $pages = [];
+        foreach ($this->errorPages as $page) {
+            $pages[$page->class] = $page;
+        }
+
+        return array_values($pages);
+    }
+
+    /**
      * Refuses an error page whose layouts it could not be rendered in, once
      * every route is registered -- the Kernel asks when it is built, which
      * is when the layouts are all known.

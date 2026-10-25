@@ -30,7 +30,10 @@ use Tinvar\Routing\RouteRegistry;
  * - every panel a route is in must be one the build kept to itself;
  * - a page's view must be in its route's panel's directory, and in no
  *   panel's when its route is in none;
- * - a layout's view in a panel's directory may wrap only that panel's pages.
+ * - a layout's view in a panel's directory may wrap only that panel's pages;
+ * - an #[ErrorPage]'s view must be in no panel's directory: it is shown to
+ *   whoever reaches the status, in no panel (ADR 0035), so a panel's chunk
+ *   behind it would ship to anyone who can trigger a 404.
  */
 final class PanelBundles
 {
@@ -96,6 +99,13 @@ final class PanelBundles
                 if ($wrapping !== null && $wrapping !== $panel && $layout->wraps($page)) {
                     $violations[] = "{$layout->class}'s view '{$layout->view}' is in the {$wrapping} panel's directory, and wraps {$page->class}, which is not in that panel";
                 }
+            }
+        }
+
+        foreach ($routes->errorPages() as $page) {
+            $built = $panelOfView[$page->view] ?? null;
+            if ($built !== null) {
+                $violations[] = "{$page->class} is an #[ErrorPage], shown in no panel, and its view '{$page->view}' is in the {$built} panel's directory";
             }
         }
 
