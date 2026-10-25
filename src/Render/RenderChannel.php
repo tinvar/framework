@@ -503,6 +503,13 @@ final class RenderChannel
                     continue;
                 }
                 if ($errno === \SOCKET_EAGAIN || $errno === \SOCKET_EWOULDBLOCK) {
+                    // The send timeout ran out, or woke a little early, as a
+                    // timeout can (see read()): given up after the one try
+                    // past the deadline, and the rest waited out before it.
+                    if ($wait > 1e-6) {
+                        continue;
+                    }
+
                     throw $this->timedOut($this->deadlineSeconds - (hrtime(true) - $deadlineFromNs) / 1e9);
                 }
 
@@ -592,10 +599,14 @@ final class RenderChannel
                 return null;
             }
 
-            // Nothing within the wait, and the renderer still connected. A
-            // wake-up with nothing to read is not the wait running out: the
-            // rest of it is waited again.
-            if ($wait <= 0.0 || stream_get_meta_data($socket)['timed_out']) {
+            // Nothing within the wait, and the renderer still connected. Given
+            // up only once the deadline has passed by this channel's own clock,
+            // after the one try past it: a timeout can wake a little early --
+            // poll() counts whole milliseconds -- and a wake-up with nothing to
+            // read is not the wait running out either. Taken at its word, an
+            // early timeout found the deadline not yet passed and was reported
+            // as the overall cap instead. Either way the rest is waited again.
+            if ($wait <= 0.0) {
                 throw $this->timedOut($this->deadlineSeconds - (hrtime(true) - $deadlineFromNs) / 1e9);
             }
         }
