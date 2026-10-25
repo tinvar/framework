@@ -167,12 +167,6 @@ it('keeps the log readable by its owner alone, and writes into no file it did no
         expect(fileperms($path) & 0o777)->toBe(0o600)
             ->and(LogTransport::read($path))->toHaveCount(2);
 
-        // A link planted at its name is not followed.
-        unlink($path);
-        touch($elsewhere);
-        symlink($elsewhere, $path);
-        expect(fn () => new LogTransport($path)->send(message()))->toThrow(\RuntimeException::class, 'a link, or another user\'s file')
-            ->and(filesize($elsewhere))->toBe(0);
     } finally {
         umask($previous);
         foreach ([$path, $elsewhere] as $file) {
@@ -183,6 +177,33 @@ it('keeps the log readable by its owner alone, and writes into no file it did no
         rmdir($directory);
     }
 });
+
+// Planted at its name, in a directory others can write: each would have
+// had the messages appended to a file someone else chose -- one of this
+// user's own, through a hard link or a symbolic one -- or created there.
+it('writes the log into nothing planted at its name', function (string $planted) {
+    $directory = sys_get_temp_dir() . '/tinvar-mail-' . bin2hex(random_bytes(4));
+    mkdir($directory, 0o755);
+    $path = "{$directory}/mail.log";
+    $mine = "{$directory}/mine";
+    file_put_contents($mine, "this user's own\n");
+    match ($planted) {
+        'a hard link' => link($mine, $path),
+        'a dangling link' => symlink("{$directory}/not-yet", $path),
+        'a link to a file' => symlink($mine, $path),
+        'a directory' => mkdir($path),
+    };
+
+    try {
+        expect(fn () => new LogTransport($path)->send(message()))->toThrow(\RuntimeException::class, 'not a plain file of this user\'s alone')
+            ->and(file_get_contents($mine))->toBe("this user's own\n")
+            ->and(file_exists("{$directory}/not-yet"))->toBeFalse();
+    } finally {
+        is_dir($path) && !is_link($path) ? rmdir($path) : unlink($path);
+        unlink($mine);
+        rmdir($directory);
+    }
+})->with(['a hard link', 'a dangling link', 'a link to a file', 'a directory']);
 
 it('renders a mailable through the renderer and sends it, now or from the queue after the commit', function () {
     $h = new Harness();

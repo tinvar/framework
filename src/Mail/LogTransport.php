@@ -51,41 +51,75 @@ final readonly class LogTransport implements Transport
      * The log, opened to append, and readable by this user alone.
      *
      * What it holds is every message whole: a password reset, a sign-in
-     * link, a one-click unsubscribe token. So it is created under a 0077
-     * umask, private from its first byte; an older one left readable is
-     * closed up; and it is refused when the name is a link or the file is
-     * another user's -- one planted at the log's name in a directory others
-     * can write, such as the temporary one, to read the log from.
+     * link, a one-click unsubscribe token. So a new one is created by an
+     * exclusive open under a 0077 umask -- private from its first byte, and
+     * never through a link, dangling or not, planted at its name -- and an
+     * existing one is written to only when it is a plain file of this
+     * user's with no other name: not a link, not a directory, not another
+     * user's file, nor a hard link to one of this user's own, any of them
+     * planted at the log's name in a directory others can write, such as
+     * the temporary one. One an older version left readable is closed up.
      *
      * @return resource
      */
     private function open()
     {
-        $previous = umask(0o077);
-        try {
-            $handle = @fopen($this->path, 'ab');
-        } finally {
-            umask($previous);
+        clearstatcache(true, $this->path);
+        $handle = false;
+        if (!file_exists($this->path) && !is_link($this->path)) {
+            $previous = umask(0o077);
+            try {
+                $handle = @fopen($this->path, 'xb');
+            } finally {
+                umask($previous);
+            }
         }
+        // There already, or put there since it was looked for: opened only
+        // once its name is seen to be a plain file of this user's.
         if ($handle === false) {
-            throw new \RuntimeException("Cannot open the mail log at {$this->path}.");
+            $named = @lstat($this->path);
+            if ($named === false || !self::ownPlainFile($named)) {
+                throw self::refused($this->path);
+            }
+            $handle = @fopen($this->path, 'ab');
+            if ($handle === false) {
+                throw new \RuntimeException("Cannot open the mail log at {$this->path}.");
+            }
         }
 
+        // And the file opened is the one the name is now, so nothing swapped
+        // in between the look and the open is written to.
         clearstatcache(true, $this->path);
         $opened = fstat($handle);
         $named = @lstat($this->path);
-        if ($opened === false || $named === false
-            || $opened['ino'] !== $named['ino'] || $opened['dev'] !== $named['dev']
-            || (\function_exists('posix_geteuid') && $opened['uid'] !== posix_geteuid())) {
+        if ($opened === false || $named === false || !self::ownPlainFile($opened) || !self::ownPlainFile($named)
+            || $opened['ino'] !== $named['ino'] || $opened['dev'] !== $named['dev']) {
             fclose($handle);
-            throw new \RuntimeException("The mail log at {$this->path} is a link, or another user's file; nothing is written to it.");
+            throw self::refused($this->path);
         }
+        // PHP has no fchmod(); the name is this very file, checked above.
         if (($opened['mode'] & 0o077) !== 0 && !chmod($this->path, 0o600)) {
             fclose($handle);
             throw new \RuntimeException("Cannot make the mail log at {$this->path} private; nothing is written to it.");
         }
 
         return $handle;
+    }
+
+    /** @param array<array-key, int> $stat */
+    private static function ownPlainFile(array $stat): bool
+    {
+        return ($stat['mode'] & 0o170000) === 0o100000
+            && $stat['nlink'] === 1
+            && (!\function_exists('posix_geteuid') || $stat['uid'] === posix_geteuid());
+    }
+
+    private static function refused(string $path): \RuntimeException
+    {
+        return new \RuntimeException(
+            "The mail log at {$path} is not a plain file of this user's alone -- a link, a directory, another "
+            . "user's file, or a file with another name as well; nothing is written to it.",
+        );
     }
 
     /**
