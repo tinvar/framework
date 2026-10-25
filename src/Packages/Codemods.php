@@ -46,7 +46,11 @@ namespace Tinvar\Packages;
  *     `const`, an enum case, a define()), whatever it names, and every
  *     class or method whose authorization attributes, parent or traits
  *     differ once names are resolved (AuthorizationMap); in one that does
- *     not parse, every changed line;
+ *     not parse, or that names define() or call_user_func(), every changed
+ *     line;
+ *   - whenever anything changed, every authorization attribute in the app
+ *     whose arguments rest on a global constant, which any code can
+ *     declare where nothing shows it (unverifiable());
  *   - in any file, every changed line that names an authorization
  *     attribute.
  */
@@ -411,6 +415,14 @@ final class Codemods
                         . ' the codemods, so every line they change is flagged';
                 }
             }
+            // A file that can declare a global constant, which an attribute's
+            // argument can name, by means no line shows -- a callable, a
+            // variable function, a value made elsewhere -- is flagged whole.
+            $defines = !$whole && (($was->definesConstants ?? false) || ($is->definesConstants ?? false));
+            if ($defines) {
+                $flagged[] = "{$path}:1: names define() or call_user_func(), which can declare a constant where nothing "
+                    . 'shows it, so every line the codemods change is flagged';
+            }
 
             // A removed line is numbered as it stood, an added one as it
             // will stand. The `---`/`+++` header comes before the first hunk
@@ -437,7 +449,7 @@ final class Codemods
                 if (!$removed && !$added) {
                     continue;
                 }
-                $flag = $was === null || $is === null
+                $flag = $was === null || $is === null || $defines
                     || ($removed ? $was->covers($oldLine) : $is->covers($newLine))
                     || preg_match(self::AUTHORIZATION, $text) === 1;
                 if ($flag) {
@@ -458,7 +470,105 @@ final class Codemods
             }
         }
 
+        // Any change at all can change a global constant, whatever file it
+        // is in: authorization that rests on one is flagged with it.
+        if ($patch !== '' || $flagged !== []) {
+            $flagged = [...$flagged, ...self::unverifiable($result)];
+        }
+
         return [$patch, $flagged];
+    }
+
+    /**
+     * Every authorization attribute in the app, as the codemods left it,
+     * whose arguments rest on what no reading of the code can pin down: a
+     * global constant, which any code can declare -- with define() under a
+     * name no string spells, and before the file that seems to declare it
+     * -- or something only running the code says (a `new`, a call,
+     * `parent::` or `static::`). Class constants and enum cases are
+     * followed to what they rest on, through the app's own declarations; a
+     * class the app does not declare is not the patch's to change.
+     *
+     * @return list<string>
+     */
+    private static function unverifiable(string $root): array
+    {
+        $maps = [];
+        foreach (self::filesUnder($root) as $path) {
+            $code = (string) file_get_contents($root . '/' . $path);
+            if (self::patchable($path) && self::isPhp($path, $code) && ($map = self::read($code)) !== null) {
+                $maps[$path] = $map;
+            }
+        }
+
+        $constants = [];
+        $classes = [];
+        foreach ($maps as $map) {
+            foreach ($map->constants as $key => $refs) {
+                // Declared twice, which declaration loads first decides.
+                $constants[$key] = isset($constants[$key]) ? ["unverifiable:{$key}, declared twice"] : $refs;
+            }
+            foreach ($map->classes as $class) {
+                $classes[$class] = true;
+            }
+        }
+
+        $flagged = [];
+        foreach ($maps as $path => $map) {
+            foreach ($map->references as $reference) {
+                $why = self::restsOn($reference['refs'], $constants, $classes, []);
+                if ($why !== null) {
+                    $flagged[] = "{$path}:{$reference['line']}: authorization of {$reference['label']} rests on {$why}, "
+                        . 'which a codemod can change where nothing shows it';
+                }
+            }
+        }
+
+        return $flagged;
+    }
+
+    /**
+     * What, among $refs and what they lead to, cannot be pinned down; null
+     * when everything can.
+     *
+     * @param list<string> $refs
+     * @param array<string, list<string>> $constants
+     * @param array<string, true> $classes
+     * @param array<string, true> $seen
+     */
+    private static function restsOn(array $refs, array $constants, array $classes, array $seen): ?string
+    {
+        foreach ($refs as $ref) {
+            [$kind, $name] = explode(':', $ref, 2);
+            if ($kind === 'unverifiable') {
+                return $name;
+            }
+            if ($kind === 'global') {
+                return "the constant {$name}";
+            }
+
+            $at = (int) strrpos($name, '::');
+            $class = strtolower(substr($name, 0, $at));
+            $key = $class . substr($name, $at);
+            if (isset($seen[$key])) {
+                continue;
+            }
+            if (isset($constants[$key])) {
+                $why = self::restsOn($constants[$key], $constants, $classes, [...$seen, $key => true]);
+                if ($why !== null) {
+                    return $why;
+                }
+
+                continue;
+            }
+            // The app's own class, without the constant: inherited, or
+            // nowhere, and either way not followed.
+            if (isset($classes[$class])) {
+                return $name;
+            }
+        }
+
+        return null;
     }
 
     /**

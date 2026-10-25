@@ -241,7 +241,7 @@ it('flags an argument changed inside an attribute written over several lines', f
 // class, beside it, in another file, as an enum case -- on a line that is
 // no attribute and names none. Its text in the attribute stays the same
 // while what it says changes.
-it('flags a constant, an enum case or a define() an attribute could name, wherever it is declared', function () {
+it('flags a constant or an enum case an attribute could name, wherever it is declared', function () {
     $this->workspace->file('app/src/Refunds.php', <<<'PHP'
     <?php
 
@@ -250,7 +250,6 @@ it('flags a constant, an enum case or a define() an attribute could name, wherev
     use Tinvar\Attributes\Authorize;
 
     const AUDIT = 'refunds.audit';
-    define('App\EXPORT', 'refunds.export');
 
     final class Refunds
     {
@@ -277,13 +276,124 @@ it('flags a constant, an enum case or a define() an attribute could name, wherev
 
     expect($codemods->run($this->app, allowed: true)->flagged)->toBe([
         "src/Refunds.php:7: -const AUDIT = 'refunds.audit';",
-        "src/Refunds.php:8: -define('App\\EXPORT', 'refunds.export');",
         "src/Refunds.php:7: +const AUDIT = 'browses.audit';",
-        "src/Refunds.php:8: +define('App\\EXPORT', 'browses.export');",
-        "src/Refunds.php:12: -    public const string ABILITY = 'refund';",
-        "src/Refunds.php:12: +    public const string ABILITY = 'browse';",
-        "src/Refunds.php:23: -    case Refund = 'refund';",
-        "src/Refunds.php:23: +    case Refund = 'browse';",
+        "src/Refunds.php:11: -    public const string ABILITY = 'refund';",
+        "src/Refunds.php:11: +    public const string ABILITY = 'browse';",
+        "src/Refunds.php:22: -    case Refund = 'refund';",
+        "src/Refunds.php:22: +    case Refund = 'browse';",
+    ]);
+});
+
+const AUDIT_PAGE = <<<'PHP'
+<?php
+
+namespace App;
+
+use Tinvar\Attributes\Authorize;
+
+final class Audit
+{
+    #[Authorize(AUDIT, 'order')]
+    public function load(Order $order): string
+    {
+        return 'audit';
+    }
+}
+
+PHP;
+
+// A global constant can be declared by any code, before the file that
+// seems to declare it, and by means no line names: define() qualified,
+// handed to call_user_func(), called through a variable or a first-class
+// callable, given a value made elsewhere, or named by no string at all.
+// Authorization resting on one is flagged whenever anything changes, and
+// a file that names define() has every changed line flagged.
+it('flags authorization resting on a global constant, however a codemod declares it', function (string $boot, bool $namesDefine) {
+    $this->workspace->file('app/src/Audit.php', AUDIT_PAGE);
+    $this->workspace->file('app/src/boot.php', $boot);
+    $codemods = withCodemod($this, <<<'PHP'
+    <?php
+    $file = $argv[1] . '/src/boot.php';
+    file_put_contents($file, str_replace("'refunds.audit'", "'browse'", file_get_contents($file)));
+    PHP);
+
+    $flagged = $codemods->run($this->app, allowed: true)->flagged;
+    $header = 'src/boot.php:1: names define() or call_user_func(), which can declare a constant where nothing shows it, so every line the codemods change is flagged';
+    $changed = array_values(array_filter($flagged, static fn (string $f): bool => str_starts_with($f, 'src/boot.php:') && str_contains($f, ": +") && str_contains($f, "'browse'")));
+
+    expect($flagged)->toContain("src/Audit.php:10: authorization of App\\Audit::load() rests on the constant AUDIT, which a codemod can change where nothing shows it")
+        ->and(\in_array($header, $flagged, true))->toBe($namesDefine)
+        ->and($changed !== [])->toBe($namesDefine);
+})->with([
+    'define() qualified' => ["<?php\n\n\\define('App\\AUDIT', 'refunds.audit');\n", true],
+    'call_user_func()' => ["<?php\n\ncall_user_func('define', 'App\\AUDIT', 'refunds.audit');\n", true],
+    'a variable function' => ["<?php\n\n\$declare = 'define';\n\$declare('App\\AUDIT', 'refunds.audit');\n", true],
+    'a first-class callable' => ["<?php\n\n\$declare = define(...);\n\$declare('App\\AUDIT', 'refunds.audit');\n", true],
+    'a value made apart' => ["<?php\n\n\$ability = 'refunds.audit';\ndefine('App\\AUDIT', \$ability);\n", true],
+    'a name no string spells' => ["<?php\n\n\$declare = strrev('enifed');\n\$declare('App\\AUDIT', 'refunds.audit');\n", false],
+]);
+
+// Class constants and enum cases are compile-time, and declared where the
+// patch shows them: followed to what they rest on, and flagged only where
+// that is a global constant -- or a class the app declares without them.
+it('follows class constants and enum cases to what they rest on', function () {
+    $this->workspace->file('app/src/Abilities.php', <<<'PHP'
+    <?php
+
+    namespace App;
+
+    interface Abilities
+    {
+        public const string REFUND = 'refund';
+        public const string BROWSE = self::REFUND . '.browse', AUDIT = PREFIX . '.audit';
+    }
+
+    enum Ability: string
+    {
+        case Export = 'export';
+    }
+
+    PHP);
+    $this->workspace->file('app/src/Reports.php', <<<'PHP'
+    <?php
+
+    namespace App;
+
+    use Tinvar\Attributes\Authorize;
+
+    final class Reports
+    {
+        #[Authorize(ability: Abilities::BROWSE)]
+        public function refunds(): string
+        {
+            return 'refunds';
+        }
+
+        #[Authorize(Ability::Export->value, \Tinvar\Attributes\Page::class)]
+        public function exports(): string
+        {
+            return 'exports';
+        }
+
+        #[Authorize(Abilities::AUDIT)]
+        public function audits(): string
+        {
+            return 'audits';
+        }
+
+        #[Authorize(Abilities::MISSING)]
+        public function missing(): string
+        {
+            return 'missing';
+        }
+    }
+
+    PHP);
+    $codemods = withCodemod($this, "<?php file_put_contents(\$argv[1] . '/notes.txt', \"changed\\n\");\n");
+
+    expect($codemods->run($this->app, allowed: true)->flagged)->toBe([
+        'src/Reports.php:22: authorization of App\Reports::audits() rests on the constant PREFIX, which a codemod can change where nothing shows it',
+        'src/Reports.php:28: authorization of App\Reports::missing() rests on App\Abilities::MISSING, which a codemod can change where nothing shows it',
     ]);
 });
 
