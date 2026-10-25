@@ -23,6 +23,7 @@ namespace Tinvar\Tests\Panels\PanelBundles {
     use Tinvar\Tests\Panels\PanelBundles\Shop\Layout;
     use Tinvar\Tests\Panels\PanelBundles\Shop\ShopError;
     use Tinvar\Tests\Panels\PanelBundles\Shop\Wrapped;
+    use Tinvar\Tests\Panels\PanelBundles\Shop\WrappedError;
 
     /** @param list<class-string> $classes */
     function routes(array $classes): RouteRegistry
@@ -86,6 +87,11 @@ namespace Tinvar\Tests\Panels\PanelBundles {
             ->toThrow(\RuntimeException::class, "AdminError is an #[ErrorPage], shown in no panel, and its view 'admin/error' is in the admin panel's directory");
     });
 
+    it('refuses a layout from a panel\'s directory around an error page', function () {
+        expect(fn () => PanelBundles::check(routes([Orders::class, Catalog::class, AdminLayout::class, WrappedError::class]), panels(), report(['admin' => ['admin/orders', 'admin/layout']])))
+            ->toThrow(\RuntimeException::class, "AdminLayout's view 'admin/layout' is in the admin panel's directory, and wraps the #[ErrorPage]");
+    });
+
     it('takes an error page whose view is in no panel', function () {
         expect(fn () => PanelBundles::check(routes([Orders::class, Catalog::class, ShopError::class]), panels(), report(['admin' => ['admin/orders']])))
             ->not->toThrow(\RuntimeException::class);
@@ -129,6 +135,9 @@ namespace Tinvar\Tests\Panels\PanelBundles\Shop {
 
     #[ErrorPage([404], view: 'shop/error', within: '/')]
     final class ShopError {}
+
+    #[ErrorPage([404], view: 'shop/wrapped-error', within: '/wrapped')]
+    final class WrappedError {}
 }
 
 namespace Tinvar\Tests\Panels\PanelBundles\Admin {

@@ -107,6 +107,14 @@ final class PanelBundles
             if ($built !== null) {
                 $violations[] = "{$page->class} is an #[ErrorPage], shown in no panel, and its view '{$page->view}' is in the {$built} panel's directory";
             }
+
+            // And the layouts it is drawn in, which ship with it.
+            foreach ($layouts as $layout) {
+                $wrapping = $panelOfView[$layout->view] ?? null;
+                if ($wrapping !== null && $layout->wraps($page)) {
+                    $violations[] = "{$layout->class}'s view '{$layout->view}' is in the {$wrapping} panel's directory, and wraps the #[ErrorPage] {$page->class}, shown in no panel";
+                }
+            }
         }
 
         if ($violations !== []) {
