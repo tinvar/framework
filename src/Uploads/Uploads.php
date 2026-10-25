@@ -118,6 +118,17 @@ final readonly class Uploads
     }
 
     /**
+     * The user alone, as a keyed hash: what the cap on the uploads one user
+     * has waiting counts by. Not the user binding, whose epoch moves on
+     * every sign-in -- counted by that, signing out and in again started the
+     * count over, and the cap held a user to nothing the throttle did not.
+     */
+    public function ownerHash(string $user): string
+    {
+        return bin2hex(substr($this->ticketSigner->sign('upload-owner:' . $user), 0, 16));
+    }
+
+    /**
      * Removes what nobody claimed in time: each expired, unclaimed upload's
      * file, then its record -- in that order, so a file is never left with
      * no record to find it by. A claimed upload's file is never touched:

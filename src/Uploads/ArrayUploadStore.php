@@ -24,11 +24,11 @@ final class ArrayUploadStore implements UploadStore
         return $this->uploads[$id] ?? null;
     }
 
-    public function pendingCount(string $authHash, int $now): int
+    public function pendingCount(string $ownerHash, int $now): int
     {
         return \count(array_filter(
             $this->uploads,
-            static fn (PendingUpload $u): bool => $u->authHash === $authHash && $u->claimedAt === null && $u->expiresAt > $now,
+            static fn (PendingUpload $u): bool => $u->ownerHash === $ownerHash && $u->claimedAt === null && $u->expiresAt > $now,
         ));
     }
 

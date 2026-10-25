@@ -261,9 +261,9 @@ dataset('upload stores', [
     }],
 ]);
 
-function pendingUpload(string $id, int $expiresAt, string $owner = 'u'): PendingUpload
+function pendingUpload(string $id, int $expiresAt, string $owner = 'u', string $epoch = 'e1'): PendingUpload
 {
-    return new PendingUpload($id, "avatars/{$id}.png", 'a', 'f', 'C', 't', 'avatars', '', '', 's', $owner, 'n.png', 'image/png', 3, 1000, $expiresAt);
+    return new PendingUpload($id, "avatars/{$id}.png", 'a', 'f', 'C', 't', 'avatars', '', '', 's', "{$owner}@{$epoch}", 'n.png', 'image/png', 3, 1000, $expiresAt, ownerHash: $owner);
 }
 
 describe('an upload store', function () {
@@ -285,7 +285,8 @@ describe('an upload store', function () {
     it('counts what one owner has waiting, and lists what expired unclaimed, oldest first', function (\Closure $make) {
         $store = $make();
         $store->add(pendingUpload(str_repeat('a', 32), 3000));
-        $store->add(pendingUpload(str_repeat('b', 32), 2000));
+        // The same owner after a sign-in moved their epoch: still theirs.
+        $store->add(pendingUpload(str_repeat('b', 32), 2000, epoch: 'e2'));
         $store->add(pendingUpload(str_repeat('c', 32), 2500, owner: 'someone else'));
         $store->add(pendingUpload(str_repeat('d', 32), 1800));
         $store->claim(str_repeat('d', 32), 1700);
@@ -298,4 +299,48 @@ describe('an upload store', function () {
         $store->forget(str_repeat('b', 32));
         expect($store->find(str_repeat('b', 32)))->toBeNull();
     })->with('upload stores');
+
+    it('brings a table made before uploads had an owner up to date, keeping its rows', function () {
+        $connection = \Tinvar\Orm\PdoConnection::sqlite(':memory:', 'test');
+        $schema = new \Tinvar\Orm\Schema\Schema($connection, \Tinvar\Orm\Schema\Dialect::for($connection));
+
+        // As define() made it when the cap counted the user binding.
+        $schema->create('uploads', static function (\Tinvar\Orm\Schema\Table $uploads): void {
+            $uploads->string('id', 64)->primary();
+            $uploads->string('storage_key', 255);
+            $uploads->string('action', 191);
+            $uploads->string('field', 64);
+            $uploads->string('target_class', 255);
+            $uploads->string('target_id', 191);
+            $uploads->string('prefix', 191);
+            $uploads->string('tenant', 191);
+            $uploads->string('panel', 64);
+            $uploads->string('session_hash', 64);
+            $uploads->string('auth_hash', 64);
+            $uploads->string('name', 255);
+            $uploads->string('type', 64);
+            $uploads->bigInteger('size');
+            $uploads->bigInteger('created_at');
+            $uploads->bigInteger('expires_at');
+            $uploads->bigInteger('claimed_at')->nullable();
+            $uploads->index(['claimed_at', 'expires_at'], 'uploads_unclaimed');
+            $uploads->index(['auth_hash'], 'uploads_owner');
+        });
+        $connection->execute(
+            "INSERT INTO uploads VALUES (?, 'avatars/x.png', 'a', 'f', 'C', 't', 'avatars', '', '', 's', 'u@e1', 'n.png', 'image/png', 3, 1000, 3000, NULL)",
+            [str_repeat('a', 32)],
+        );
+
+        DatabaseUploadStore::upgrade($schema);
+        DatabaseUploadStore::upgrade($schema);
+
+        $store = new DatabaseUploadStore($connection);
+        $store->add(pendingUpload(str_repeat('b', 32), 3000));
+
+        $indexes = array_column($connection->select("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND name = 'uploads_owner'"), 'sql');
+        expect($store->find(str_repeat('a', 32))?->ownerHash)->toBe('')
+            ->and($store->pendingCount('u', 1500))->toBe(1)
+            ->and($indexes)->toHaveCount(1)
+            ->and((string) $indexes[0])->toContain('owner_hash');
+    });
 });

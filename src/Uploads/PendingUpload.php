@@ -12,7 +12,8 @@ namespace Tinvar\Uploads;
  * action call is held to the same things /_upload held the upload to: the
  * session and the user with their auth epoch (as keyed hashes), the tenant
  * and the panel, the action and its parameter, and the record the file is
- * for.
+ * for. Beside them, who uploaded it, whatever their epoch (Uploads::
+ * ownerHash()), which the cap on a user's waiting uploads counts by.
  */
 final readonly class PendingUpload
 {
@@ -34,6 +35,7 @@ final readonly class PendingUpload
         public int $createdAt,
         public int $expiresAt,
         public ?int $claimedAt = null,
+        public string $ownerHash = '',
     ) {}
 
     /** The same upload, claimed at $at -- or unclaimed, for null. */

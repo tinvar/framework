@@ -269,6 +269,26 @@ describe('/_upload', function () {
         expect($refused->status)->toBe(429)
             ->and(json($refused)['error']['code'])->toBe('upload_pending');
     });
+
+    it('holds a user to the cap after a sign-in moves their epoch, and counts no one else\'s', function () {
+        $app = new App(new MemoryStorage());
+        $ticket = $app->ticket($app->profile(P1));
+        for ($i = 0; $i < UploadEndpoint::MAX_PENDING; $i++) {
+            expect($app->upload($ticket, png())->status)->toBe(201);
+        }
+
+        // Signed out and in again: a new epoch, and a new ticket under it.
+        // The files already waiting are still theirs.
+        $again = $app->ticket($app->profile(P1), epoch: 'e2');
+        $refused = $app->upload($again, png(), headers: ['x-test-epoch' => 'e2']);
+
+        expect($refused->status)->toBe(429)
+            ->and(json($refused)['error']['code'])->toBe('upload_pending');
+
+        // Another user is not held to theirs.
+        $theirs = $app->ticket($app->profile(P3), user: 'u-2');
+        expect($app->upload($theirs, png(), user: 'u-2')->status)->toBe(201);
+    });
 });
 
 describe('an action taking an upload', function () {

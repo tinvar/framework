@@ -17,8 +17,8 @@ interface UploadStore
 
     public function find(string $id): ?PendingUpload;
 
-    /** How many uploads under $authHash are unclaimed and not yet expired. */
-    public function pendingCount(string $authHash, int $now): int;
+    /** How many uploads of the user $ownerHash names (Uploads::ownerHash()) are unclaimed and not yet expired. */
+    public function pendingCount(string $ownerHash, int $now): int;
 
     /**
      * Marks an upload claimed, if it is unclaimed and has not expired.

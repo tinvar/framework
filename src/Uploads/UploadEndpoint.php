@@ -66,6 +66,8 @@ final class UploadEndpoint
      * Uploads one user may have stored and not yet claimed. Each is a file
      * on disk until it is claimed or pruned, so without a cap one ticket
      * would let a signed-in user fill the disk at the throttle's pace.
+     * Counted by the user, not by their auth epoch: a sign-in moves that,
+     * and a cap it started over would be no cap.
      */
     public const int MAX_PENDING = 20;
 
@@ -170,9 +172,11 @@ final class UploadEndpoint
         // Checked, never applied: the ticket agrees with where the request
         // is, and can put it nowhere.
         $session = $this->uploads->sessionOf($request);
+        $user = $this->auth->id();
         if ($this->orm->tenant() !== $ticket->tenant
             || ($this->panels?->currentOrNull() ?? '') !== $ticket->panel
             || $session === ''
+            || $user === null
             || !hash_equals($ticket->sessionHash, $this->uploads->sessionHash($session))
             || !hash_equals($ticket->authHash, $this->uploads->authHash($this->auth->id(), $this->auth->epoch()))) {
             throw self::refused('was issued to another session, user, tenant or panel');
@@ -197,7 +201,8 @@ final class UploadEndpoint
         }
 
         $now = $this->uploads->now();
-        if ($this->uploads->store->pendingCount($ticket->authHash, $now) >= self::MAX_PENDING) {
+        $owner = $this->uploads->ownerHash($user);
+        if ($this->uploads->store->pendingCount($owner, $now) >= self::MAX_PENDING) {
             throw new HttpException(429, 'Too many uploads are waiting to be saved.', 'upload_pending', [
                 'retry-after' => (string) Uploads::PENDING_TTL,
             ]);
@@ -231,6 +236,7 @@ final class UploadEndpoint
             size: $size,
             createdAt: $now,
             expiresAt: $now + Uploads::PENDING_TTL,
+            ownerHash: $owner,
         );
 
         try {
