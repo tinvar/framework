@@ -651,7 +651,10 @@ it('uploads an avatar and a receipt photo from the account page, and refuses a f
 // and the button's partial reload names the field and brings back the page
 // segment with them -- in the same document.
 it('asks for a customer\'s orders of a product only when they press the button for them', function () use ($root) {
-    $pdo = new \PDO('sqlite:' . Shop::database());
+    // A database of its own: the uploads test leaves the shared one's demo
+    // account an avatar whose file went with that test's storage.
+    $database = Shop::testDatabase();
+    $pdo = new \PDO('sqlite:' . $database);
     $customer = (string) $pdo->query('SELECT id FROM customers WHERE email = ' . $pdo->quote(DemoAccount::EMAIL))?->fetchColumn();
     $latest = $pdo->prepare('SELECT l.product_id FROM order_lines l JOIN orders o ON o.id = l.order_id WHERE o.customer_id = ? ORDER BY o.placed_at DESC LIMIT 1');
     $latest->execute([$customer]);
@@ -662,6 +665,9 @@ it('asks for a customer\'s orders of a product only when they press the button f
     );
     $orders->execute([$customer, $product]);
     $expected = $orders->fetchAll(\PDO::FETCH_COLUMN);
+    // Closed before the shop opens it: a statement left open holds a read
+    // lock its first write -- the page each visit records -- would wait on.
+    unset($latest, $orders, $pdo);
 
     $output = '';
     served($root, function (string $origin) use ($root, $product, &$output): void {
@@ -670,7 +676,7 @@ it('asks for a customer\'s orders of a product only when they press the button f
             $root,
             60,
         );
-    });
+    }, ['SHOP_DATABASE' => $database]);
 
     $result = json_decode((string) $output, true);
     expect($result)->toBeArray("the browser script failed:\n{$output}");
@@ -696,7 +702,7 @@ it('saves an email preference the moment its switch is flipped', function () use
             $root,
             60,
         );
-    });
+    }, ['SHOP_DATABASE' => Shop::testDatabase()]);
 
     $result = json_decode((string) $output, true);
     expect($result)->toBeArray("the browser script failed:\n{$output}");
