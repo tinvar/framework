@@ -211,7 +211,13 @@ describe('the shop', function () {
         $cookies = [];
 
         try {
-            expect(send($kernel, 'GET', '/', $cookies)->status)->toBe(200)
+            // Bound to the session, so kept out of shared caches, as the
+            // CSRF cookie is.
+            $landed = send($kernel, 'GET', '/', $cookies);
+            expect($landed->status)->toBe(200)
+                ->and($landed->cookies()[PreviousUrls::COOKIE] ?? '')->toContain('HttpOnly')
+                ->and($landed->header('cache-control'))->toBe('private, no-store')
+                ->and($landed->header('vary'))->toContain('Cookie')
                 ->and(previous($cookies))->toBe('/');
 
             expect(send($kernel, 'GET', '/sign-in?next=%2Forders', $cookies)->status)->toBe(200)
