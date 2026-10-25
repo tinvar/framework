@@ -46,6 +46,29 @@ it('opens a file in WAL mode, with a busy timeout and foreign keys on', function
     }
 });
 
+// SQLite's default in WAL mode syncs the log on every commit, inside the
+// write lock, so every queued writer waited for the disk too (ADR 0050).
+it('syncs at checkpoints rather than at every commit, unless told otherwise', function () {
+    $path = scratchDatabase();
+
+    try {
+        // 1 is NORMAL, 2 FULL, 3 EXTRA.
+        expect(PdoConnection::sqlite($path, create: true)->select('PRAGMA synchronous')[0]['synchronous'])->toBe(1)
+            ->and(PdoConnection::sqlite($path, synchronous: 'full')->select('PRAGMA synchronous')[0]['synchronous'])->toBe(2)
+            ->and(PdoConnection::sqlite($path, synchronous: 'EXTRA')->select('PRAGMA synchronous')[0]['synchronous'])->toBe(3);
+    } finally {
+        removeDatabase($path);
+    }
+});
+
+// OFF hands the file's consistency to the operating system, which can leave
+// it corrupt after a power cut; and an unknown word would be a setting that
+// looks configured and is not.
+it('refuses to sync OFF, or by a word SQLite does not know', function (string $level) {
+    expect(fn () => PdoConnection::sqlite(':memory:', synchronous: $level))
+        ->toThrow(\InvalidArgumentException::class, 'NORMAL, FULL or EXTRA');
+})->with(['OFF', '0', 'normal; PRAGMA foreign_keys = OFF', '']);
+
 // Off by default in SQLite: a REFERENCES clause was decoration, and an order
 // line could name a product that never existed.
 it('enforces foreign keys', function () {

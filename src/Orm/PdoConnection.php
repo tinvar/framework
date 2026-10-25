@@ -109,6 +109,16 @@ final class PdoConnection implements Connection, TenantSetting
     public const int SQLITE_BUSY_TIMEOUT_MS = 5000;
 
     /**
+     * How a SQLite connection syncs its commits to disk, unless told
+     * otherwise: in WAL mode, NORMAL syncs the log at each checkpoint rather
+     * than at every commit (ADR 0050).
+     */
+    public const string SQLITE_SYNCHRONOUS = 'NORMAL';
+
+    /** The synchronous settings sqlite() takes. OFF is not one: it can corrupt the file. */
+    private const array SQLITE_SYNCHRONOUS_LEVELS = ['NORMAL', 'FULL', 'EXTRA'];
+
+    /**
      * A SQLite database file, opened the way a server with several workers
      * needs it.
      *
@@ -119,6 +129,15 @@ final class PdoConnection implements Connection, TenantSetting
      * was decoration. WAL lets readers run beside the one writer; the busy
      * timeout queues writers instead of failing them; foreign_keys makes the
      * schema's references real.
+     *
+     * Commits are synced as $synchronous says, NORMAL unless told otherwise.
+     * SQLite's default in WAL mode, FULL, syncs the log on every commit,
+     * inside the write lock, so every writer waiting for that lock waits for
+     * the disk as well. NORMAL syncs it at each checkpoint instead. The file
+     * stays consistent either way; what NORMAL gives up is the last commits
+     * before the machine itself loses power or crashes -- not before PHP or
+     * the process does, which loses nothing that was committed. FULL is for
+     * a database where that matters more than the writer's throughput.
      *
      * The file must exist unless $create says otherwise. Opening a mistyped
      * path made a fresh, empty database there, and every query then failed
@@ -141,9 +160,16 @@ final class PdoConnection implements Connection, TenantSetting
         bool $create = false,
         int $busyTimeoutMs = self::SQLITE_BUSY_TIMEOUT_MS,
         bool $immediateTransactions = true,
+        string $synchronous = self::SQLITE_SYNCHRONOUS,
     ): self {
         if ($path === '') {
             throw new \InvalidArgumentException('A SQLite connection needs a database path.');
+        }
+        $synchronous = strtoupper($synchronous);
+        if (!\in_array($synchronous, self::SQLITE_SYNCHRONOUS_LEVELS, true)) {
+            throw new \InvalidArgumentException(
+                'A SQLite connection syncs NORMAL, FULL or EXTRA; OFF can leave the file corrupt after a power cut.',
+            );
         }
 
         $flags = \Pdo\Sqlite::OPEN_READWRITE | ($create ? \Pdo\Sqlite::OPEN_CREATE : 0);
@@ -161,6 +187,7 @@ final class PdoConnection implements Connection, TenantSetting
         $pdo->exec('PRAGMA busy_timeout = ' . max(0, $busyTimeoutMs));
         $mode = self::switchToWal($connection, $busyTimeoutMs);
         $pdo->exec('PRAGMA foreign_keys = ON');
+        $pdo->exec("PRAGMA synchronous = {$synchronous}");
 
         // The pragma is setup, not the application's work: query budgets
         // count from the first statement a caller issues.
