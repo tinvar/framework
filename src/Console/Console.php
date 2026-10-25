@@ -263,13 +263,18 @@ final class Console
         $this->trapSignals();
         $output->error('Running the schedule every minute. Ctrl+C stops after the task in hand.');
 
-        $last = null;
+        // The last time looked at. Each time the minute turns past it, every
+        // minute since is looked at, not only the one it turned to: a task
+        // that ran long held the loop past the minutes after it, and a task
+        // due in one of them was skipped (Scheduler::runSince()). Never back
+        // again, should the clock step back.
+        $since = null;
         while (!$this->stopRequested()) {
             $now = $this->now();
-            $minute = intdiv($now->getTimestamp(), 60);
-            if ($minute !== $last) {
-                $last = $minute;
-                foreach ($scheduler->runDue($now) as $task => $outcome) {
+            if ($since === null || intdiv($now->getTimestamp(), 60) > intdiv($since->getTimestamp(), 60)) {
+                $outcomes = $since === null ? $scheduler->runDue($now) : $scheduler->runSince($since, $now);
+                $since = $now;
+                foreach ($outcomes as $task => $outcome) {
                     $output->error('[' . gmdate('Y-m-d H:i:s') . "] {$outcome}  {$task}");
                 }
             }

@@ -135,6 +135,25 @@ final class NightlyFails
     }
 }
 
+/** On the hour, and every ten minutes: says when it ran. */
+#[Schedule('0 * * * *')]
+final class Hourly
+{
+    public function __invoke(Journal $journal): void
+    {
+        $journal->entries[] = ['ran' => 'hourly'];
+    }
+}
+
+#[Schedule('*/10 * * * *')]
+final class EveryTenMinutes
+{
+    public function __invoke(Journal $journal): void
+    {
+        $journal->entries[] = ['ran' => 'every ten minutes'];
+    }
+}
+
 /** Reads a tenant-scoped model with none: refused, as the spec has it. */
 #[Schedule('* * * * *')]
 final class ForgetsTheTenant
@@ -315,4 +334,78 @@ it('claims a task\'s minute once across schedulers sharing a database', function
         ->and($other->claim('Task', 600))->toBeFalse()
         ->and($other->claim('Task', 660))->toBeTrue()
         ->and($store->claim('Other', 600))->toBeTrue();
+});
+
+// schedule:work looked at the minute it turned to and no other: a task that
+// ran past its minute held the loop past the next ones, and a task due in
+// one of them was skipped without a word.
+describe('minutes a scheduler was held past', function () {
+    $scheduler = static fn (Harness $h, ?ArrayScheduleStore $store = null): Scheduler => new Scheduler(
+        [Hourly::class, EveryTenMinutes::class],
+        $h->orm,
+        $h->container->resolver(),
+        $h->scope,
+        $store ?? new ArrayScheduleStore(),
+    );
+    $at = static fn (string $time): \DateTimeImmutable => new \DateTimeImmutable($time);
+
+    it('runs a task due in one of them late, rather than not at all', function () use ($scheduler, $at) {
+        $h = new Harness();
+
+        expect($scheduler($h)->runSince($at('2026-10-24T10:09:30Z'), $at('2026-10-24T10:11:05Z')))->toBe([EveryTenMinutes::class => 'ran'])
+            ->and($h->journal()->entries)->toBe([['ran' => 'every ten minutes']]);
+    });
+
+    it('runs each task once however many of its minutes went by, claimed under the last', function () use ($scheduler, $at) {
+        $h = new Harness();
+        $store = new ArrayScheduleStore();
+
+        expect($scheduler($h, $store)->runSince($at('2026-10-24T09:55:00Z'), $at('2026-10-24T11:02:00Z')))
+            ->toBe([Hourly::class => 'ran', EveryTenMinutes::class => 'ran'])
+            ->and($h->journal()->entries)->toHaveCount(2)
+            // A scheduler that looked at 11:00 in time claimed it, as this
+            // one did: neither runs it a second time.
+            ->and($store->claim(Hourly::class, $at('2026-10-24T11:00:00Z')->getTimestamp()))->toBeFalse()
+            ->and($scheduler($h, $store)->runSince($at('2026-10-24T10:59:00Z'), $at('2026-10-24T11:00:30Z')))
+            ->toBe([Hourly::class => 'skipped', EveryTenMinutes::class => 'skipped']);
+    });
+
+    it('looks at no minute it looked at already, nor back past a day', function () use ($scheduler, $at) {
+        $h = new Harness();
+
+        expect($scheduler($h)->runSince($at('2026-10-24T10:10:30Z'), $at('2026-10-24T10:10:50Z')))->toBe([])
+            ->and($scheduler($h)->runSince($at('2026-10-24T10:11:00Z'), $at('2026-10-24T10:09:00Z')))->toBe([])
+            ->and($scheduler($h)->runSince($at('2026-10-20T10:00:00Z'), $at('2026-10-24T10:05:00Z')))
+            ->toBe([Hourly::class => 'ran', EveryTenMinutes::class => 'ran']);
+    });
+
+    it('is what schedule:work runs each time the minute turns', function () use ($scheduler, $at) {
+        if (!\function_exists('pcntl_signal')) {
+            $this->markTestSkipped('schedule:work traps signals with pcntl.');
+        }
+        $h = new Harness();
+        $times = [$at('2026-10-24T10:09:30Z'), $at('2026-10-24T10:11:05Z')];
+        $console = null;
+        $clock = static function () use (&$times, &$console): \DateTimeImmutable {
+            $now = array_shift($times) ?? throw new \LogicException('asked the time after it was told to stop');
+            if ($times === []) {
+                \assert($console instanceof Console);
+                $console->stop();
+            }
+
+            return $now;
+        };
+        $console = new Console([], $h->orm, $h->container->resolver(), $h->scope, scheduler: $scheduler($h), clock: $clock);
+
+        try {
+            expect($console->run('schedule:work', [], new Output(static function (string $line): void {}, static function (string $line): void {})))->toBe(0)
+                ->and($h->journal()->entries)->toBe([['ran' => 'every ten minutes']]);
+        } finally {
+            // The console trapped them for its loop; this process is a test runner's.
+            foreach ([SIGTERM, SIGINT, SIGQUIT] as $signal) {
+                pcntl_signal($signal, SIG_DFL);
+            }
+            pcntl_async_signals(false);
+        }
+    });
 });

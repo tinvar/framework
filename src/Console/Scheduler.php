@@ -29,6 +29,9 @@ use Tinvar\Orm\Orm;
  */
 final readonly class Scheduler
 {
+    /** How many minutes back runSince() looks for a task that was due: a day's. */
+    public const int CATCH_UP_MINUTES = 1440;
+
     /**
      * @param list<class-string> $tasks
      * @param \Closure(class-string): object $resolver
@@ -91,6 +94,46 @@ final readonly class Scheduler
                 continue;
             }
             $outcomes[$task] = $this->run($task);
+        }
+
+        return $outcomes;
+    }
+
+    /**
+     * Runs every task due in a minute after $since's, up to and including
+     * $now's, that no other scheduler has claimed: what schedule:work does
+     * each time the minute turns.
+     *
+     * Every minute, not only the one it turned to. A task that runs past
+     * its minute -- or a process held up some other way -- leaves the
+     * minutes it held up unlooked at, and a task due in one of them was
+     * skipped without a word: the nightly job missed because the one before
+     * it ran long. So it runs late instead, once however many of its
+     * minutes went by, claimed under the last of them -- a scheduler that
+     * looked at that minute in time has claimed it, and this one skips it.
+     * Looked back over CATCH_UP_MINUTES at most.
+     *
+     * @return array<class-string, 'ran'|'failed'|'skipped'> what became of each task due
+     */
+    public function runSince(\DateTimeImmutable $since, \DateTimeImmutable $now): array
+    {
+        $last = intdiv($now->getTimestamp(), 60);
+        $first = max(intdiv($since->getTimestamp(), 60) + 1, $last - self::CATCH_UP_MINUTES + 1);
+
+        /** @var array<class-string, int> $latest each task due, and the last minute it was due in */
+        $latest = [];
+        for ($minute = $first; $minute <= $last; $minute++) {
+            foreach ($this->due($now->setTimestamp($minute * 60)) as $task) {
+                $latest[$task] = $minute * 60;
+            }
+        }
+
+        $outcomes = [];
+        foreach ($this->tasks as $task) {
+            if (!isset($latest[$task])) {
+                continue;
+            }
+            $outcomes[$task] = $this->store->claim($task, $latest[$task]) ? $this->run($task) : 'skipped';
         }
 
         return $outcomes;
