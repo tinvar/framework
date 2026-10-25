@@ -120,6 +120,25 @@ describe('who may ask', function () {
         ['not an address', false],
     ]);
 
+    // DNS rebinding: a page's own name pointed at 127.0.0.1 reaches the
+    // probes from loopback, naming its domain. So does a reverse proxy on
+    // the same machine, under the public name.
+    it('refuses a loopback peer naming a host that is not this machine', function (string $host, bool $allowed) {
+        expect(new ProbeAccess()->allows(probe('/_metrics', '127.0.0.1', ['host' => $host])))->toBe($allowed);
+    })->with([
+        ['localhost:8080', true],
+        ['127.0.0.1', true],
+        ['[::1]:9000', true],
+        ['rebound.attacker.example', false],
+        ['shop.example.com', false],
+    ]);
+
+    it('lets the token in whatever host is named', function () {
+        $access = new ProbeAccess(token: TOKEN);
+
+        expect($access->allows(probe('/', '127.0.0.1', ['host' => 'shop.example.com', 'authorization' => 'Bearer ' . TOKEN])))->toBeTrue();
+    });
+
     it('lets in the networks it is given', function () {
         $access = new ProbeAccess(['10.0.0.0/8', 'fd00::/8', '192.168.1.17']);
 

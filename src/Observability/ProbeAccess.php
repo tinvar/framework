@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Observability;
 
+use Tinvar\Dev\Loopback;
 use Tinvar\Http\Request;
 
 /**
@@ -19,6 +20,14 @@ use Tinvar\Http\Request;
  *
  * The token is kept as its hash and compared in constant time, and has to
  * be long enough not to be guessed: 32 characters at least.
+ *
+ * A loopback peer is let in by its address only while the Host it names is
+ * this machine's too. A page that points a name of its own at 127.0.0.1 --
+ * DNS rebinding -- reaches the probes from its visitor's loopback address,
+ * but still names its own domain; and a reverse proxy on the same machine
+ * forwards whoever called it under the public name. Neither is a caller on
+ * this machine, so both need the token. A request with no Host header is a
+ * client on the machine itself, and is let in.
  */
 final class ProbeAccess
 {
@@ -59,6 +68,11 @@ final class ProbeAccess
 
         $address = self::packed($request->remoteAddress ?? '');
         if ($address === null) {
+            return false;
+        }
+
+        $host = $request->header('host');
+        if ($host !== null && Loopback::address($request->remoteAddress) && !Loopback::host($host)) {
             return false;
         }
 
