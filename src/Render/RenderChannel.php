@@ -502,7 +502,8 @@ final class RenderChannel
                 if ($errno === \SOCKET_EINTR) {
                     continue;
                 }
-                if ($errno === \SOCKET_EAGAIN || $errno === \SOCKET_EWOULDBLOCK) {
+                // One number on Linux and macOS, two elsewhere.
+                if (\in_array($errno, [\SOCKET_EAGAIN, \SOCKET_EWOULDBLOCK], true)) {
                     // The send timeout ran out, or woke a little early, as a
                     // timeout can (see read()): given up after the one try
                     // past the deadline, and the rest waited out before it.
