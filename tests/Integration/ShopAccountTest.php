@@ -630,6 +630,32 @@ it('does not count a prefetch as the session being used', function () {
         ->and($seen())->toBeGreaterThan(1);
 });
 
+// last_seen_at says a session is in use and nothing else reads it, so it is
+// written only once it is TOUCH_EVERY old: once a minute was 333 writes a
+// second for the load test's 20,000 sessions (ADR 0050).
+it('marks a session in use at most once every five minutes', function () {
+    [$visitor, $pdo] = shop();
+    $visitor->get('/sign-in');
+    signIn($visitor);
+    $id = hash('sha256', (string) $visitor->sessionId());
+    $seen = static fn (): int => (int) (sessionRow($pdo, $visitor->sessionId())['last_seen_at'] ?? 0);
+    $set = static function (int $at) use ($pdo, $id): void {
+        $pdo->prepare('UPDATE sessions SET last_seen_at = ? WHERE id = ?')->execute([$at, $id]);
+    };
+
+    $recent = time() - Sessions::TOUCH_EVERY + 60;
+    $set($recent);
+    $visitor->get('/no-such-page');
+    $afterRecent = $seen();
+
+    $set(time() - Sessions::TOUCH_EVERY - 1);
+    $visitor->get('/no-such-page');
+
+    expect(Sessions::TOUCH_EVERY)->toBe(300)
+        ->and($afterRecent)->toBe($recent)
+        ->and($seen())->toBeGreaterThanOrEqual(time() - 1);
+});
+
 // An order id is not a secret: it is in URLs and screenshots.
 it('shows an order only to the customer who placed it', function () {
     [$visitor, $pdo] = shop();
