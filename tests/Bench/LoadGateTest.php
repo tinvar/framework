@@ -123,6 +123,39 @@ describe('the gate', function () {
     });
 });
 
+describe('the recorded baseline', function () {
+    // bench:gate reads bench/load/baseline.json; a hand edit that broke it, or
+    // results moved out from under it, would only show the next time someone
+    // ran the twenty-minute gate.
+    $root = \dirname(__DIR__, 4);
+
+    it('holds a ceiling for every class it measures', function () use ($root) {
+        $baseline = LoadCommand::readJson("{$root}/bench/load/baseline.json");
+
+        expect($baseline['configs'])->toBeArray()->not->toBe([])
+            ->and($baseline['tolerance'])->toBe(Gate::DEFAULT_TOLERANCE)
+            ->and($baseline['machine']['model'] ?? null)->toBeString();
+        foreach ($baseline['configs'] as $config) {
+            expect($config['workers'])->toBeGreaterThan(0)
+                ->and($config['renderers'])->toBeGreaterThan(0);
+            foreach ($config['classes'] as $class => $was) {
+                expect($was['ceiling'])->toBeNumeric("{$class} has no ceiling to bracket")
+                    ->and($was['reached'])->toBeTrue("{$class}'s ceiling was not reached, so it is not one");
+            }
+        }
+    });
+
+    it('passes the run it was recorded from', function () use ($root) {
+        $baseline = LoadCommand::readJson("{$root}/bench/load/baseline.json");
+        $results = LoadCommand::readJson("{$root}/{$baseline['source']}");
+
+        $gate = Gate::compare($results, $baseline, (float) $baseline['tolerance']);
+
+        expect($gate['regressions'])->toBe([])
+            ->and($gate['warnings'])->toBe([]);
+    });
+});
+
 /**
  * A ceiling run's k6 summary, one step per entry, each judged on document
  * latency: [target, delivered, p95, failed share].
