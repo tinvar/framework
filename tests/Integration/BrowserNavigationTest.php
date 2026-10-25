@@ -684,3 +684,27 @@ it('asks for a customer\'s orders of a product only when they press the button f
         ->and($result['buttonAfter'])->toBe(0)
         ->and($result['sameDocument'])->toBeTrue();
 });
+
+// "Switches act now" (MER-15.1): each marketing list's switch saves the
+// customer's choice as it is flipped, through the action with the session's
+// CSRF token, and the page drawn again shows it kept.
+it('saves an email preference the moment its switch is flipped', function () use ($root) {
+    $output = '';
+    served($root, function (string $origin) use ($root, &$output): void {
+        $output = runWithTimeout(
+            ['node', "{$root}/examples/shop/e2e/email-preferences.mjs", $origin, DemoAccount::EMAIL, DemoAccount::PASSWORD],
+            $root,
+            60,
+        );
+    });
+
+    $result = json_decode((string) $output, true);
+    expect($result)->toBeArray("the browser script failed:\n{$output}");
+
+    expect($result['errors'])->toBe([])
+        ->and($result['before'])->toBeTrue()
+        ->and([$result['offStatus'], $result['onStatus']])->toBe([200, 200])
+        ->and($result['afterFlip'])->toBeFalse()
+        ->and($result['afterReload'])->toBeFalse()
+        ->and($result['restored'])->toBeTrue();
+});
