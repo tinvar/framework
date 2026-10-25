@@ -241,6 +241,37 @@ describe('PdoBuildStore', function () {
         });
     })->with(DRIVERS);
 
+    // A worker keeps its store for request after request. The server
+    // dropping the store's connection -- a restart, a failover -- fails the
+    // read under way; kept, that connection failed every read after it, and
+    // the worker answered for its own build alone until it was restarted.
+    it('opens its connection again once the server has dropped it', function (string $driver) {
+        if (($why = missing($driver)) !== null) {
+            $this->markTestSkipped($why);
+        }
+
+        onDriver($driver, function (\PDO $pdo, string $dsn, string $table) use ($driver): void {
+            command(installed($pdo, $table))->run('build:current', ['b1']);
+            command(installed($pdo, $table))->run('build:current', ['b2']);
+            /** @var list<\PDO> $opened */
+            $opened = [];
+            $store = new PdoBuildStore(static function () use ($driver, &$opened): \PDO {
+                return $opened[] = Databases::another($driver);
+            }, $table);
+            $registry = BuildRegistry::persisted('b2', $store, clock: static fn (): int => NOW);
+            expect($registry->accepts('b1'))->toBeTrue();
+
+            $id = $opened[0]->query($driver === 'pgsql' ? 'SELECT pg_backend_pid()' : 'SELECT CONNECTION_ID()')?->fetchColumn();
+            $pdo->exec($driver === 'pgsql' ? "SELECT pg_terminate_backend({$id})" : "KILL {$id}");
+
+            // The read the drop interrupts fails closed...
+            expect($registry->accepts('b1'))->toBeFalse()
+                // ...and the next is answered on a connection of its own.
+                ->and($registry->accepts('b1'))->toBeTrue()
+                ->and($opened)->toHaveCount(2);
+        });
+    })->with(['pgsql' => ['pgsql'], 'mysql' => ['mysql']]);
+
     it('takes a file\'s history when it has recorded nothing, and never over one it has', function () {
         $pdo = new \PDO('sqlite::memory:');
         $store = installed($pdo, PdoBuildStore::TABLE);

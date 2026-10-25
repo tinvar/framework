@@ -145,6 +145,16 @@ final class PdoBuildStore implements BuildStore
             $row = $statement->fetch(\PDO::FETCH_ASSOC);
             $statement->closeCursor();
         } catch (\PDOException $e) {
+            // A connection the server has dropped -- a restart, a failover --
+            // fails every statement after it, and a worker keeps its store
+            // for request after request: kept, it left the worker answering
+            // for its own build alone until it was restarted. One this store
+            // opened is opened again by the next read; one it was handed, it
+            // cannot open.
+            if ($this->connection instanceof \Closure) {
+                $this->pdo = null;
+            }
+
             throw new \RuntimeException("Cannot read the build history from {$this->table}: {$e->getMessage()}", previous: $e);
         }
 
