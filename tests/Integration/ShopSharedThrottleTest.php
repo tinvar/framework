@@ -144,6 +144,33 @@ describe('SHOP_THROTTLE_STORE', function () {
             expect($store->count())->toBe(0);
         });
     });
+
+    // Opened bare, a new SQLite file kept a rollback journal, where every
+    // reader waits for a writer. Opened as the shop's own database is now
+    // (ADR 0050), it is in WAL mode, and a count waits its turn.
+    it('counts in a SQLite file in WAL mode, waiting its turn while another server writes', function () {
+        $directory = directory();
+        $throttles = "{$directory}/throttle.sqlite";
+        new PdoThrottleStore(new \PDO("sqlite:{$throttles}"))->install();
+
+        withEnv(['SHOP_THROTTLE_STORE' => "sqlite:{$throttles}"], function () use ($throttles): void {
+            $shared = Kernel::sharedThrottleStore();
+            \assert($shared instanceof PdoThrottleStore);
+            $holder = proc_open([
+                PHP_BINARY, '-r',
+                '$pdo = new PDO("sqlite:" . $argv[1]); $pdo->exec("BEGIN IMMEDIATE"); echo "held\n"; usleep(200000); $pdo->exec("COMMIT");',
+                '--', $throttles,
+            ], [1 => ['pipe', 'w']], $pipes);
+            \assert($holder !== false);
+            expect(trim((string) fgets($pipes[1])))->toBe('held');
+
+            [$hits] = $shared->increment('guesses', 60);
+            proc_close($holder);
+
+            expect($hits)->toBe(1)
+                ->and(new \PDO("sqlite:{$throttles}")->query('PRAGMA journal_mode')?->fetchColumn())->toBe('wal');
+        });
+    });
 });
 
 // Two servers, each with a database of its own and APCu or a file of its
