@@ -41,11 +41,12 @@ namespace Tinvar\Packages;
  *   - any PHP file added or deleted;
  *   - any file whose name a patch tool could read as another's, which is
  *     left out of the patch (patchable());
- *   - in a PHP file, every changed line of an attribute block, a `use` or a
- *     namespace declaration, whatever it names, and every class or method
- *     whose authorization attributes, parent or traits differ once names
- *     are resolved (AuthorizationMap); in one that does not parse, every
- *     changed line;
+ *   - in a PHP file, every changed line of an attribute block, a `use`, a
+ *     namespace declaration, or a constant an attribute could name (a
+ *     `const`, an enum case, a define()), whatever it names, and every
+ *     class or method whose authorization attributes, parent or traits
+ *     differ once names are resolved (AuthorizationMap); in one that does
+ *     not parse, every changed line;
  *   - in any file, every changed line that names an authorization
  *     attribute.
  */

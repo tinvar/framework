@@ -237,6 +237,56 @@ it('flags an argument changed inside an attribute written over several lines', f
     ]);
 });
 
+// An attribute's argument can be a constant declared anywhere -- in the
+// class, beside it, in another file, as an enum case -- on a line that is
+// no attribute and names none. Its text in the attribute stays the same
+// while what it says changes.
+it('flags a constant, an enum case or a define() an attribute could name, wherever it is declared', function () {
+    $this->workspace->file('app/src/Refunds.php', <<<'PHP'
+    <?php
+
+    namespace App;
+
+    use Tinvar\Attributes\Authorize;
+
+    const AUDIT = 'refunds.audit';
+    define('App\EXPORT', 'refunds.export');
+
+    final class Refunds
+    {
+        public const string ABILITY = 'refund';
+
+        #[Authorize(self::ABILITY, 'order')]
+        public function load(Order $order): string
+        {
+            return 'refunds';
+        }
+    }
+
+    enum Ability: string
+    {
+        case Refund = 'refund';
+    }
+
+    PHP);
+    $codemods = withCodemod($this, <<<'PHP'
+    <?php
+    $file = $argv[1] . '/src/Refunds.php';
+    file_put_contents($file, str_replace("'refund", "'browse", file_get_contents($file)));
+    PHP);
+
+    expect($codemods->run($this->app, allowed: true)->flagged)->toBe([
+        "src/Refunds.php:7: -const AUDIT = 'refunds.audit';",
+        "src/Refunds.php:8: -define('App\\EXPORT', 'refunds.export');",
+        "src/Refunds.php:7: +const AUDIT = 'browses.audit';",
+        "src/Refunds.php:8: +define('App\\EXPORT', 'browses.export');",
+        "src/Refunds.php:12: -    public const string ABILITY = 'refund';",
+        "src/Refunds.php:12: +    public const string ABILITY = 'browse';",
+        "src/Refunds.php:23: -    case Refund = 'refund';",
+        "src/Refunds.php:23: +    case Refund = 'browse';",
+    ]);
+});
+
 // Neither added line is an attribute, or names one: only comparing what
 // the method declares, before against after, sees the check go.
 it('flags an authorization check commented out by lines that never name it', function () {

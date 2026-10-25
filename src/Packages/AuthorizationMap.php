@@ -23,9 +23,10 @@ namespace Tinvar\Packages;
  *     reads a class's checks off.
  *
  * The lines that decide what a name resolves to or what an attribute says
- * -- every attribute block, every `use` (an import or a trait) and every
- * namespace declaration -- are kept as line ranges, so a change to any line
- * of one is flagged whatever the line spells.
+ * -- every attribute block, every `use` (an import or a trait), every
+ * namespace declaration, and every constant an argument could name: a
+ * `const`, an enum case or a define() -- are kept as line ranges, so a
+ * change to any line of one is flagged whatever the line spells.
  */
 final readonly class AuthorizationMap
 {
@@ -37,7 +38,7 @@ final readonly class AuthorizationMap
     private const array OPENING = ['(', '[', '{', \T_ATTRIBUTE, \T_CURLY_OPEN, \T_DOLLAR_OPEN_CURLY_BRACES];
 
     /**
-     * @param list<array{int, int}> $ranges the first and last line of each attribute block, `use` and namespace declaration
+     * @param list<array{int, int}> $ranges the first and last line of each attribute block, `use`, namespace declaration and constant
      * @param array<string, array{line: int, label: string, parts: list<array{string, string}>}> $entries
      *        by lower-cased class, or class::method; each part a [comparison key, what a reviewer reads]
      */
@@ -157,17 +158,30 @@ final readonly class AuthorizationMap
                     $entries[$key] = ['line' => $name->line, 'label' => $class['label'] . '::' . $name->text . '()', 'parts' => $pending];
                 }
                 $pending = [];
-            } elseif ($token->is([\T_FN, \T_VARIABLE, \T_CONST, \T_CASE])) {
-                // An attribute on a closure, property, parameter, constant
-                // or enum case: none of them is an entry point.
+            } elseif ($token->is(\T_CONST) || ($token->is(\T_CASE) && $class !== null && $class['depth'] === $depth)) {
+                // A constant or an enum case: no entry point, but what an
+                // attribute's argument can name from anywhere, so every line
+                // of its declaration counts.
+                $end = self::statementEnd($tokens, $i);
+                $ranges[] = [$token->line, $tokens[$end]->line];
                 $pending = [];
+                $i = $end;
+            } elseif ($token->is([\T_FN, \T_VARIABLE, \T_CASE])) {
+                // An attribute on a closure, property or parameter: none of
+                // them is an entry point.
+                $pending = [];
+            } elseif (self::defines($tokens, $i)) {
+                // define(): a constant too, declared by a call.
+                $end = self::closing($tokens, $i + 1);
+                $ranges[] = [$token->line, $tokens[$end]->line];
+                $i = $end;
             }
         }
 
         return new self($ranges, $entries);
     }
 
-    /** Whether $line is part of an attribute block, a `use` or a namespace declaration. */
+    /** Whether $line is part of an attribute block, a `use`, a namespace declaration or a constant's. */
     public function covers(int $line): bool
     {
         foreach ($this->ranges as [$first, $last]) {
@@ -292,6 +306,40 @@ final readonly class AuthorizationMap
         }
 
         return $namespace === '' ? $name : $namespace . '\\' . $name;
+    }
+
+    /**
+     * The `;` that ends the statement at $start, past any brackets in it --
+     * a constant's value can hold an array, or a closure with statements of
+     * its own.
+     *
+     * @param list<\PhpToken> $tokens
+     */
+    private static function statementEnd(array $tokens, int $start): int
+    {
+        for ($i = $start, $count = \count($tokens); $i < $count; $i++) {
+            if ($tokens[$i]->is(self::OPENING)) {
+                $i = self::closing($tokens, $i);
+            } elseif ($tokens[$i]->is(';')) {
+                return $i;
+            }
+        }
+
+        throw new \CompileError('A statement with no end.');
+    }
+
+    /**
+     * Whether a call to the global define() starts at $i: not a method or a
+     * function of that name, nor one being declared.
+     *
+     * @param list<\PhpToken> $tokens
+     */
+    private static function defines(array $tokens, int $i): bool
+    {
+        return $tokens[$i]->is([\T_STRING, \T_NAME_FULLY_QUALIFIED])
+            && strcasecmp(ltrim($tokens[$i]->text, '\\'), 'define') === 0
+            && ($tokens[$i + 1] ?? null)?->is('(') === true
+            && !($i > 0 && $tokens[$i - 1]->is([\T_OBJECT_OPERATOR, \T_NULLSAFE_OBJECT_OPERATOR, \T_DOUBLE_COLON, \T_FUNCTION]));
     }
 
     /**
