@@ -17,12 +17,14 @@ use Shop\Auth\StaffMemberships;
 use Shop\Database\Seeder;
 use Shop\DemoAccount;
 use Shop\Kernel;
+use Shop\Models\Customer;
 use Shop\StaffAccount;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;
 use Tinvar\Http\CsrfTokens;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
+use Tinvar\Identity\HandoffConsent;
 use Tinvar\Identity\HandoffEndpoint;
 use Tinvar\Identity\Realm;
 use Tinvar\Identity\Realms;
@@ -198,7 +200,8 @@ it('hands staff signed in on the shop\'s host to the admin host, where the admin
             // The admin host's guard: no session here, so a handoff.
             'admin.shop.test/admin/orders',
             'admin.shop.test/_handoff/start',
-            // Signed in on the shop's host already, so a code at once.
+            // Signed in on the shop's host already, so a code at once: the
+            // admin host is the shop's own, and no consent is asked for it.
             'shop.test/_handoff/authorize',
             'admin.shop.test/_handoff/callback',
             'admin.shop.test/admin/orders',
@@ -310,4 +313,47 @@ it('stays on one host, with nothing mounted, unless SHOP_ADMIN_URL names the adm
     $browser = new Browser(Kernel::fromEnvironment('/tmp/tinvar-shop-handoff-none.sock', key: KEY, database: database()));
 
     expect($browser->get(ADMIN . '/_handoff/start')->status)->toBe(404);
+});
+
+// The shop has no custom domain to be asked about, so its screen is drawn
+// here directly: the page a handoff to one would stop at, rendered by the
+// real renderer in the shop's own kit.
+it('draws the consent screen a custom domain is asked about as a page of its own, with the forms the handoff wrote', function () {
+    $unbuilt = Shop::ensureBuilt();
+    if ($unbuilt !== null) {
+        $this->markTestSkipped($unbuilt);
+    }
+
+    $database = database();
+    $renderer = Renderer::start('msgpack', 'shop-handoff-consent');
+    $kernel = kernel($database, $renderer->socketPath);
+    $staff = $kernel->orm->find(Customer::class, staffId(orm($database)));
+    \assert($staff instanceof Customer);
+    $consent = new HandoffConsent($staff, Realm::domain('https://partner.example', 'partner', 'portal'), 'v1.the-ticket.its-mac', 'the-csrf-token', time() + 300);
+
+    try {
+        $page = $kernel->consentScreen(new Request('GET', HandoffEndpoint::AUTHORIZE, ['host' => 'shop.test', 'accept' => 'text/html']), $consent);
+    } finally {
+        $renderer->stop();
+    }
+
+    preg_match_all('#<form action="/_handoff/authorize" method="post">(.*?)</form>#s', $page->body(), $forms);
+    $fields = array_map(static function (string $form): array {
+        preg_match_all('#<input type="hidden" name="([^"]+)" value="([^"]*)"/?>#', $form, $inputs, PREG_SET_ORDER);
+
+        return array_column($inputs, 2, 1);
+    }, $forms[1]);
+
+    expect($page->status)->toBe(200, $page->body())
+        ->and($page->body())->toContain('partner.example')
+        ->and($page->body())->toContain(StaffAccount::EMAIL)
+        ->and($page->body())->toContain('Sign in to partner.example')
+        // No header, no navigation: a system page.
+        ->and($page->body())->not->toContain('/orders')
+        ->and($page->header('content-security-policy'))->toContain("script-src 'nonce-")
+        // Cancel first, the confirm on the right; each its own form.
+        ->and($fields)->toBe([
+            ['_token' => 'the-csrf-token', 'ticket' => 'v1.the-ticket.its-mac', 'decision' => 'cancel'],
+            ['_token' => 'the-csrf-token', 'ticket' => 'v1.the-ticket.its-mac', 'decision' => 'confirm'],
+        ]);
 });
