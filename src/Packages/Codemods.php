@@ -50,7 +50,8 @@ namespace Tinvar\Packages;
  *     line;
  *   - whenever anything changed, every authorization attribute in the app
  *     whose arguments rest on a global constant, which any code can
- *     declare where nothing shows it (unverifiable());
+ *     declare where nothing shows it, and every class declared in more
+ *     than one file (unverifiable());
  *   - in any file, every changed line that names an authorization
  *     attribute.
  */
@@ -503,17 +504,32 @@ final class Codemods
 
         $constants = [];
         $classes = [];
-        foreach ($maps as $map) {
+        /** @var array<string, list<string>> $declaredAt where each class is declared, as `path:line: Class` */
+        $declaredAt = [];
+        foreach ($maps as $path => $map) {
             foreach ($map->constants as $key => $refs) {
                 // Declared twice, which declaration loads first decides.
                 $constants[$key] = isset($constants[$key]) ? ["unverifiable:{$key}, declared twice"] : $refs;
             }
             foreach ($map->classes as $class) {
                 $classes[$class] = true;
+                $entry = $map->entries[$class] ?? ['line' => 1, 'label' => $class];
+                $declaredAt[$class][] = "{$path}:{$entry['line']}: {$entry['label']}";
             }
         }
 
+        // A class declared a second time stands in for the first wherever
+        // its file loads first, with whatever authorization it declares --
+        // and neither file's own attributes need change.
         $flagged = [];
+        foreach ($declaredAt as $places) {
+            if (\count($places) > 1) {
+                foreach ($places as $place) {
+                    $flagged[] = "{$place} is declared in more than one file, and whichever loads first decides its authorization";
+                }
+            }
+        }
+
         foreach ($maps as $path => $map) {
             foreach ($map->references as $reference) {
                 $why = self::restsOn($reference['refs'], $constants, $classes, []);

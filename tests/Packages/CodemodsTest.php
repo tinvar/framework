@@ -397,6 +397,24 @@ it('follows class constants and enum cases to what they rest on', function () {
     ]);
 });
 
+// A second declaration of a class, in a file that loads before the first
+// -- one the application includes itself, say -- is the class from then
+// on: its authorization is whatever the second one says, which here is
+// nothing, and neither file's own attributes changed.
+it('flags a class declared in a second file, which can stand in for the first', function () {
+    $this->workspace->file('app/src/Helpers.php', "<?php\n\nnamespace App;\n\nfunction money(int \$cents): string\n{\n    return (string) \$cents;\n}\n");
+    $codemods = withCodemod($this, <<<'PHP'
+    <?php
+    $file = $argv[1] . '/src/Helpers.php';
+    file_put_contents($file, file_get_contents($file) . "\nfinal class OrderPage\n{\n    public function load(Order \$order): string\n    {\n        return 'old';\n    }\n}\n");
+    PHP);
+
+    expect($codemods->run($this->app, allowed: true)->flagged)->toBe([
+        'src/Helpers.php:10: App\OrderPage is declared in more than one file, and whichever loads first decides its authorization',
+        'src/OrderPage.php:8: App\OrderPage is declared in more than one file, and whichever loads first decides its authorization',
+    ]);
+});
+
 // Neither added line is an attribute, or names one: only comparing what
 // the method declares, before against after, sees the check go.
 it('flags an authorization check commented out by lines that never name it', function () {
