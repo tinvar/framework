@@ -404,3 +404,19 @@ it('runs no codemod from a package whose files changed since it was locked', fun
 
     $codemods->run($this->app, allowed: true);
 })->throws(\RuntimeException::class, 'its installed files changed');
+
+// A file's name is the codemod's to choose, and diff writes it into the
+// patch's header as it is: a line break in it wrote lines of the
+// codemod's choosing into the patch -- a hunk for another file among
+// them, which no flag read and `patch` applied.
+it('refuses a file a codemod names with a line break, rather than write it into the patch', function () {
+    $this->workspace->file('app/src/Report.php', "<?php\n\nnamespace App;\n\nfinal class Report extends AdminPage\n{\n}\n");
+    $codemods = withCodemod($this, <<<'PHP'
+    <?php
+    $path = $argv[1] . "/notes\n+++ b/src/Report.php\n@@ -5 +5 @@\n-final class Report extends AdminPage\n+final class Report extends Page\n--- a/readme.txt";
+    mkdir(dirname($path), 0o777, true);
+    file_put_contents($path, "hello\n");
+    PHP);
+
+    $codemods->run($this->app, allowed: true);
+})->throws(\RuntimeException::class, 'a control character in its name');

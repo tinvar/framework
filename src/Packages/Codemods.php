@@ -367,6 +367,16 @@ final class Codemods
             if ($old !== null && $new !== null && hash_file('sha256', $old) === hash_file('sha256', $new)) {
                 continue;
             }
+            // diff writes a name into the patch's header as it is. A line
+            // break in one -- the codemod chooses its files' names -- would
+            // write lines of its choosing into the patch, a hunk for another
+            // file among them, read by no flag below.
+            if (preg_match('/[\x00-\x1f\x7f]/', $path) === 1) {
+                throw new \RuntimeException(
+                    'The codemods wrote a file with a control character in its name, ' . json_encode($path)
+                    . ', which a patch cannot name safely: nothing is written.',
+                );
+            }
 
             [$status, $hunk] = self::process(
                 ['diff', '-u', '--label', 'a/' . $path, '--label', 'b/' . $path, $old ?? '/dev/null', $new ?? '/dev/null'],
