@@ -274,6 +274,11 @@ describe('what a statement may carry', function () {
                     return $work();
                 }
 
+                public function durableTransaction(\Closure $work): mixed
+                {
+                    return $work();
+                }
+
                 public function inTransaction(): bool
                 {
                     return false;

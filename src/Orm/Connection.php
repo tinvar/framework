@@ -45,6 +45,25 @@ interface Connection
      */
     public function transaction(\Closure $work): mixed;
 
+    /**
+     * transaction(), with its commit on disk before it returns: for a write
+     * a security decision rests on, which a power cut must not take back --
+     * a session ended, an auth epoch moved, a permission taken away.
+     *
+     * Where every commit is synced already -- Postgres's and MySQL's
+     * defaults, SQLite at FULL -- it is transaction(). A SQLite connection
+     * opened to sync NORMAL (PdoConnection::sqlite(), ADR 0050) syncs this
+     * one commit in full, and with it every commit before it.
+     *
+     * Only the outermost transaction commits, so this must be the outermost:
+     * called inside another, it throws rather than run undurably.
+     *
+     * @template T
+     * @param \Closure(): T $work
+     * @return T
+     */
+    public function durableTransaction(\Closure $work): mixed;
+
     public function inTransaction(): bool;
 
     /**

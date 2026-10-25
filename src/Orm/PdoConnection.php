@@ -85,6 +85,12 @@ final class PdoConnection implements Connection, TenantSetting
      */
     private ?int $writeWaitMs = null;
 
+    /**
+     * How sqlite() told the connection to sync its commits; null for a
+     * connection it did not open, which syncs however its opener said.
+     */
+    private ?string $synchronous = null;
+
     public function __construct(
         private readonly \PDO $pdo,
         private readonly string $name = 'default',
@@ -207,6 +213,7 @@ final class PdoConnection implements Connection, TenantSetting
         $mode = self::switchToWal($connection, $busyTimeoutMs);
         $pdo->exec('PRAGMA foreign_keys = ON');
         $pdo->exec("PRAGMA synchronous = {$synchronous}");
+        $connection->synchronous = $synchronous;
         $connection->writeWaitMs = max(0, $busyTimeoutMs);
 
         // The pragma is setup, not the application's work: query budgets
@@ -543,6 +550,37 @@ final class PdoConnection implements Connection, TenantSetting
         }
 
         return $result;
+    }
+
+    /**
+     * A transaction whose commit is synced in full however the connection
+     * syncs the rest: see Connection::durableTransaction().
+     *
+     * SQLite will not change how it syncs inside a transaction, so FULL is
+     * set before BEGIN and NORMAL put back after the commit -- which is why
+     * this has to be the outermost. In WAL mode a full sync of this commit
+     * syncs the log up to it, so every NORMAL commit before it is on disk
+     * too.
+     */
+    public function durableTransaction(\Closure $work): mixed
+    {
+        if ($this->pdo->inTransaction()) {
+            throw new \LogicException(
+                'A durable transaction cannot run inside another: only the outermost commits, and it was begun without the sync.',
+            );
+        }
+
+        if ($this->synchronous !== 'NORMAL') {
+            return $this->transaction($work);
+        }
+
+        $this->pdo->exec('PRAGMA synchronous = FULL');
+
+        try {
+            return $this->transaction($work);
+        } finally {
+            $this->pdo->exec('PRAGMA synchronous = NORMAL');
+        }
     }
 
     /**

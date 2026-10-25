@@ -93,6 +93,11 @@ final class Watched implements Connection
         return $this->inner->transaction($work);
     }
 
+    public function durableTransaction(\Closure $work): mixed
+    {
+        return $this->inner->durableTransaction($work);
+    }
+
     public function inTransaction(): bool
     {
         return $this->inner->inTransaction();

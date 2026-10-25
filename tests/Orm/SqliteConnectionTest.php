@@ -61,6 +61,56 @@ it('syncs at checkpoints rather than at every commit, unless told otherwise', fu
     }
 });
 
+// A commit a security decision rests on -- a session ended, an epoch moved --
+// is synced in full however the rest are, so a power cut cannot take it back.
+it('syncs a durable transaction\'s commit in full, and goes back to NORMAL after', function () {
+    $connection = PdoConnection::sqlite(':memory:');
+    $connection->execute('CREATE TABLE hits (n INTEGER)');
+
+    $during = $connection->durableTransaction(static function () use ($connection): int {
+        $connection->execute('INSERT INTO hits (n) VALUES (1)');
+
+        return $connection->select('PRAGMA synchronous')[0]['synchronous'];
+    });
+
+    expect($during)->toBe(2)
+        ->and($connection->select('PRAGMA synchronous')[0]['synchronous'])->toBe(1)
+        ->and($connection->select('SELECT n FROM hits'))->toBe([['n' => 1]]);
+});
+
+it('goes back to NORMAL after a durable transaction that fails, having written nothing', function () {
+    $connection = PdoConnection::sqlite(':memory:');
+    $connection->execute('CREATE TABLE hits (n INTEGER)');
+
+    expect(fn () => $connection->durableTransaction(static function () use ($connection): never {
+        $connection->execute('INSERT INTO hits (n) VALUES (1)');
+
+        throw new \RuntimeException('refused');
+    }))->toThrow(\RuntimeException::class, 'refused')
+        ->and($connection->select('PRAGMA synchronous')[0]['synchronous'])->toBe(1)
+        ->and($connection->select('SELECT COUNT(*) AS n FROM hits')[0]['n'])->toBe(0);
+});
+
+it('leaves a connection already syncing in full as it is', function () {
+    $connection = PdoConnection::sqlite(':memory:', synchronous: 'EXTRA');
+
+    $during = $connection->durableTransaction(static fn (): int => $connection->select('PRAGMA synchronous')[0]['synchronous']);
+
+    expect($during)->toBe(3)
+        ->and($connection->select('PRAGMA synchronous')[0]['synchronous'])->toBe(3);
+});
+
+// SQLite will not change how it syncs inside a transaction, and only the
+// outermost commits: run inside another, the durable one would not be.
+it('refuses a durable transaction inside another, rather than run it undurably', function () {
+    $connection = PdoConnection::sqlite(':memory:');
+
+    expect(fn () => $connection->transaction(static fn (): mixed => $connection->durableTransaction(static fn (): int => 1)))
+        ->toThrow(\LogicException::class, 'cannot run inside another')
+        ->and($connection->inTransaction())->toBeFalse()
+        ->and($connection->select('PRAGMA synchronous')[0]['synchronous'])->toBe(1);
+});
+
 // OFF hands the file's consistency to the operating system, which can leave
 // it corrupt after a power cut; and an unknown word would be a setting that
 // looks configured and is not.
