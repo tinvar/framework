@@ -18,6 +18,7 @@ use Tinvar\Orm\Migrations\DatabaseSeeder;
 use Tinvar\Orm\Migrations\MigrateCommand;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\PdoConnection;
+use Tinvar\Support\DevMode;
 use Tinvar\Support\Uuid;
 use Tinvar\Tests\Orm\Fixtures\MigrationFiles;
 
@@ -45,8 +46,15 @@ final class Run
 
     public bool $answer = false;
 
-    /** @var array<string, string> */
-    public array $environment = [];
+    /**
+     * Laid over this process's environment with its production markers
+     * taken out, so a TINVAR_ENV or APP_ENV in the shell running the suite
+     * decides nothing; null takes a variable out. TINVAR_ENV=testing by
+     * default, which is what lets migrate:fresh and db:seed run.
+     *
+     * @var array<string, string|null>
+     */
+    public array $environment = ['TINVAR_ENV' => 'testing'];
 
     public function __construct(public readonly MigrationFiles $files, public string $directory = '') {}
 
@@ -74,7 +82,10 @@ final class Run
 
                 return $this->answer;
             },
-            [...getenv(), ...$this->environment],
+            array_filter(
+                [...array_diff_key(getenv(), array_flip(DevMode::PRODUCTION_MARKERS)), ...$this->environment],
+                \is_string(...),
+            ),
         )->run($command, $arguments);
     }
 }
@@ -199,20 +210,59 @@ it('refuses to drop everything without --force', function () {
         ->and($run->out)->not->toContain('dropped   notes');
 });
 
-it('refuses to drop everything in production, even with --force', function (string $variable) {
+it('refuses to drop everything in production, even with --force and --non-production', function (string $variable) {
     $run = run();
     $run->files->add('2026_10_24_000001_create_notes', CREATE_NOTES);
     $run('migrate');
-    putenv("{$variable}=production");
+    $run->environment = [$variable => 'Production', ...($variable === 'TINVAR_ENV' ? [] : ['TINVAR_ENV' => 'local'])];
 
-    try {
-        expect($run('migrate:fresh', ['--force']))->not->toBe(0)
-            ->and(implode("\n", $run->err))->toContain('production')
-            ->and($run->out)->not->toContain('dropped   notes');
-    } finally {
-        putenv($variable);
-    }
-})->with(['TINVAR_ENV', 'APP_ENV']);
+    expect($run('migrate:fresh', ['--force', '--non-production']))->toBe(MigrateCommand::FAILED)
+        ->and($run->err)->toBe([
+            "migrate:fresh drops every table, and {$variable} says this is production. It is refused here, --non-production or not. "
+            . "If this is not production, set {$variable} to something else.",
+        ])
+        ->and($run->out)->not->toContain('dropped   notes')
+        ->and(PdoConnection::sqlite($run->files->database())->select('SELECT COUNT(*) AS n FROM tinvar_migrations'))->toBe([['n' => 1]]);
+})->with(['TINVAR_ENV', 'APP_ENV', 'NODE_ENV']);
+
+// Unset is not "not production": a server with no environment set is
+// common, and the one place a stray migrate:fresh does the most harm.
+it('refuses to drop everything where nothing says this is not production, and says what to set', function (?string $environment) {
+    $run = run();
+    $run->files->add('2026_10_24_000001_create_notes', CREATE_NOTES);
+    $run('migrate');
+    $run->environment = ['TINVAR_ENV' => $environment, 'APP_ENV' => 'local', 'NODE_ENV' => 'development'];
+
+    expect($run('migrate:fresh', ['--force']))->toBe(MigrateCommand::FAILED)
+        ->and($run->err)->toBe([
+            'migrate:fresh drops every table, and nothing says this is not production. '
+            . 'Set TINVAR_ENV=local (or development, or testing), or pass --non-production to say so for this run.',
+        ])
+        ->and($run->out)->not->toContain('dropped   notes');
+})->with(['unset' => [null], 'empty' => [''], 'staging' => ['staging'], 'prod' => ['prod']]);
+
+it('drops everything where TINVAR_ENV says this is not production', function (string $environment) {
+    $run = run();
+    $run->files->add('2026_10_24_000001_create_notes', CREATE_NOTES);
+    $run('migrate');
+    $run->environment = ['TINVAR_ENV' => $environment];
+
+    expect($run('migrate:fresh', ['--force']))->toBe(0, implode("\n", $run->err))
+        ->and($run->out)->toContain('dropped   notes');
+})->with(['local', 'development', 'testing', ' Local ']);
+
+it('drops everything where --non-production says so, and TINVAR_ENV says nothing', function () {
+    $run = run();
+    $run->files->add('2026_10_24_000001_create_notes', CREATE_NOTES);
+    $run('migrate');
+    $run->environment = ['TINVAR_ENV' => null];
+
+    expect($run('migrate:fresh', ['--non-production', '--force']))->toBe(0, implode("\n", $run->err))
+        ->and($run->out)->toContain('dropped   notes')
+        // The flag says this is not production; it does not stand for --force.
+        ->and($run('migrate:fresh', ['--non-production']))->toBe(MigrateCommand::FAILED)
+        ->and(implode("\n", $run->err))->toContain('--force');
+});
 
 describe('make:migration', function () {
     it('writes the migration the models call for, named for now, and creates the directory', function () {
@@ -327,9 +377,65 @@ describe('db:seed', function () {
             ->and($run->err[0])->toContain("{$variable} says this is production")
             ->and($seeder->given)->toBe([]);
 
-        $run->environment = [];
+        $run->environment = ['TINVAR_ENV' => 'testing'];
         $run->seeder = null;
         expect($run('db:seed'))->toBe(MigrateCommand::FAILED)
             ->and($run->err[0])->toBe('This application has no seeder for db:seed to run.');
     })->with(['TINVAR_ENV', 'APP_ENV', 'NODE_ENV']);
+
+    it('refuses to seed in production with --non-production too', function (string $variable) {
+        $run = run();
+        $run->files->add('2026_10_24_000001_create_notes', CREATE_NOTES);
+        $run->seeder = $seeder = new Notes();
+        $run->environment = [$variable => 'production', ...($variable === 'TINVAR_ENV' ? [] : ['TINVAR_ENV' => 'testing'])];
+
+        expect($run('db:seed', ['--non-production']))->toBe(MigrateCommand::FAILED)
+            ->and($run('db:seed', ['--fresh', '--force', '--non-production']))->toBe(MigrateCommand::FAILED)
+            ->and($run->err)->toBe([
+                "db:seed fills a database with demo data, and {$variable} says this is production. It is refused here, "
+                . "--non-production or not. If this is not production, set {$variable} to something else.",
+            ])
+            ->and($seeder->given)->toBe([])
+            ->and(PdoConnection::sqlite($run->files->database())->select("SELECT name FROM sqlite_master WHERE type = 'table'"))->toBe([]);
+    })->with(['TINVAR_ENV', 'APP_ENV', 'NODE_ENV']);
+
+    // Before it migrates: refused, the database is as it was.
+    it('refuses to seed where nothing says this is not production, and says what to set', function (?string $environment) {
+        $run = run();
+        $run->files->add('2026_10_24_000001_create_notes', CREATE_NOTES);
+        $run->seeder = $seeder = new Notes();
+        $run->environment = ['TINVAR_ENV' => $environment];
+
+        expect($run('db:seed', ['--notes=1']))->toBe(MigrateCommand::FAILED)
+            ->and($run('db:seed', ['--fresh', '--force']))->toBe(MigrateCommand::FAILED)
+            ->and($run->err)->toBe([
+                'db:seed fills a database with demo data, and nothing says this is not production. '
+                . 'Set TINVAR_ENV=local (or development, or testing), or pass --non-production to say so for this run.',
+            ])
+            ->and($seeder->given)->toBe([])
+            ->and(PdoConnection::sqlite($run->files->database())->select("SELECT name FROM sqlite_master WHERE type = 'table'"))->toBe([]);
+    })->with(['unset' => [null], 'staging' => ['staging']]);
+
+    it('seeds where TINVAR_ENV says this is not production', function (string $environment) {
+        $run = run();
+        $run->files->add('2026_10_24_000001_create_notes', CREATE_NOTES);
+        $run->seeder = $seeder = new Notes();
+        $run->environment = ['TINVAR_ENV' => $environment];
+
+        expect($run('db:seed', ['--notes=1']))->toBe(0, implode("\n", $run->err))
+            ->and($seeder->given)->toBe([['notes' => '1']]);
+    })->with(['local', 'development', 'testing']);
+
+    it('seeds, and seeds afresh, where --non-production says so and TINVAR_ENV says nothing', function () {
+        $run = run();
+        $run->files->add('2026_10_24_000001_create_notes', CREATE_NOTES);
+        $run->seeder = $seeder = new Notes();
+        $run->environment = ['TINVAR_ENV' => null];
+
+        expect($run('db:seed', ['--notes=2', '--non-production']))->toBe(0, implode("\n", $run->err))
+            ->and($run('db:seed', ['--non-production', '--fresh', '--force', '--notes=1']))->toBe(0, implode("\n", $run->err))
+            ->and($run->out)->toContain('Dropped every table and ran 1 migration(s).')
+            // The flag is the command's, not an option handed to the seeder.
+            ->and($seeder->given)->toBe([['notes' => '2'], ['notes' => '1']]);
+    });
 });

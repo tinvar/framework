@@ -10,8 +10,9 @@ use Tinvar\Orm\Connection;
  * What `tinvar db:seed` fills a database with: the application's demo or
  * development data, made once the migrations have run.
  *
- * Never data the application needs in production. db:seed refuses to run
- * where the environment says production, since what a seeder makes is
+ * Never data the application needs in production. db:seed runs only
+ * where TINVAR_ENV or --non-production says this is not production, and
+ * never where anything says it is (NonProduction), since what a seeder makes is
  * accounts with passwords printed in the repository and rows nobody
  * entered; data production needs -- a lookup table, a first role -- is a
  * migration's, written by hand beside the generated ones.

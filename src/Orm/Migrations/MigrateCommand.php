@@ -7,7 +7,6 @@ namespace Tinvar\Orm\Migrations;
 use Tinvar\Orm\Connection;
 use Tinvar\Orm\Metadata;
 use Tinvar\Orm\Model;
-use Tinvar\Support\DevMode;
 
 /**
  * The migration commands.
@@ -15,13 +14,17 @@ use Tinvar\Support\DevMode;
  *   tinvar migrate                    run every pending migration, as one batch
  *   tinvar migrate:rollback [--step=N] take back the last batch, or the last N
  *   tinvar migrate:status             each migration, and whether it has run
- *   tinvar migrate:fresh              drop every table and migrate from nothing
+ *   tinvar migrate:fresh --force      drop every table and migrate from nothing
  *   tinvar make:migration <name> [--blank]
  *                                     write the migration the models' difference
  *                                     from the database calls for, or an empty one
  *   tinvar db:seed [--fresh --force] [the seeder's options]
  *                                     migrate, then fill the database with the
  *                                     application's DatabaseSeeder; never in production
+ *
+ * migrate:fresh and db:seed run only where something says this is not
+ * production -- TINVAR_ENV local, development or testing, or
+ * --non-production -- and nothing says it is (NonProduction).
  *
  * migrate, rollback, fresh and db:seed wait up to --lock-timeout seconds
  * (60 by default) for another run to finish.
@@ -103,7 +106,8 @@ final class MigrateCommand
                 'migrate:status' => $this->status(self::options($command, $arguments, [])),
                 'migrate:fresh' => $this->fresh(
                     \in_array('--force', $arguments, true),
-                    self::options($command, array_values(array_diff($arguments, ['--force'])), ['lock-timeout']),
+                    \in_array(NonProduction::FLAG, $arguments, true),
+                    self::options($command, array_values(array_diff($arguments, ['--force', NonProduction::FLAG])), ['lock-timeout']),
                 ),
                 'make:migration' => $this->make($arguments),
                 'db:seed' => $this->seed($arguments),
@@ -186,9 +190,9 @@ final class MigrateCommand
     }
 
     /** @param array<string, string> $options */
-    private function fresh(bool $force, array $options): int
+    private function fresh(bool $force, bool $declared, array $options): int
     {
-        $this->refuseFresh('migrate:fresh', $force);
+        $this->refuseFresh('migrate:fresh', $force, $declared);
 
         $ran = $this->migrator(true, $options)->fresh();
         ($this->out)(\sprintf('Dropped every table and ran %d migration(s).', \count($ran)));
@@ -197,16 +201,13 @@ final class MigrateCommand
     }
 
     /**
-     * Every table dropped, every row with it: never in production, and
-     * nowhere without saying so. A command typed into the wrong shell, or a
-     * script pointed at the wrong DSN, must stop here.
+     * Every table dropped, every row with it: only where this is said not
+     * to be production, and nowhere without saying so. A command typed into
+     * the wrong shell, or a script pointed at the wrong DSN, must stop here.
      */
-    private function refuseFresh(string $command, bool $force): void
+    private function refuseFresh(string $command, bool $force, bool $declared): void
     {
-        $production = DevMode::productionMarker($this->environment);
-        if ($production !== null) {
-            throw new MigrationRefused("{$command} drops every table, and {$production} says this is production. It is refused here.");
-        }
+        NonProduction::require($command, 'drops every table', $this->environment, $declared);
         if (!$force) {
             throw new MigrationRefused("{$command} drops every table and every row in them. Run it again with --force to do that.");
         }
@@ -215,17 +216,16 @@ final class MigrateCommand
     /**
      * Migrates the database -- from nothing with --fresh -- then has the
      * application's seeder fill it. Refused in production whatever it is
-     * given: a seeder makes demo accounts with known passwords, and rows
-     * nobody entered.
+     * given, and wherever nothing says this is not production: a seeder
+     * makes demo accounts with known passwords, and rows nobody entered.
      *
      * @param list<string> $arguments
      */
     private function seed(array $arguments): int
     {
-        $production = DevMode::productionMarker($this->environment);
-        if ($production !== null) {
-            throw new MigrationRefused("db:seed fills a database with demo data, and {$production} says this is production. It is refused here.");
-        }
+        $declared = \in_array(NonProduction::FLAG, $arguments, true);
+        $arguments = array_values(array_diff($arguments, [NonProduction::FLAG]));
+        NonProduction::require('db:seed', 'fills a database with demo data', $this->environment, $declared);
         if ($this->seeder === null) {
             throw new MigrationRefused('This application has no seeder for db:seed to run.');
         }
@@ -237,7 +237,7 @@ final class MigrateCommand
             throw new \InvalidArgumentException('--force goes with --fresh, which drops every table first.');
         }
         if ($fresh) {
-            $this->refuseFresh('db:seed --fresh', $force);
+            $this->refuseFresh('db:seed --fresh', $force, $declared);
         }
 
         $migrator = $this->migrator(true, array_intersect_key($given, ['lock-timeout' => true]));
