@@ -346,6 +346,7 @@ describe('workflows', function () {
               - uses: ./local-action
               - uses: docker://alpine:3
         YAML;
+        $this->workspace->file('local-action/action.yml', "runs:\n  using: composite\n  steps: []\n");
 
         expect(violations($this->workspace))->toBe([
             '.github/workflows/ci.yml jobs.test.steps[0] uses actions/checkout@v6, which is not pinned to a full commit.',
@@ -402,6 +403,29 @@ describe('workflows', function () {
         expect(violations($this->workspace))->toBe([
             ".github/workflows/a.yml triggers on pull_request_target, which runs on a fork's behalf with the repository's secrets.",
             ".github/workflows/b.yml triggers on workflow_run, which runs on a fork's behalf with the repository's secrets.",
+        ]);
+    });
+
+    // A composite action runs the `uses` in its own action.yml as though the
+    // workflow had named them, and a local one is named by its path alone.
+    it('holds a local action\'s own steps to the same rule', function () {
+        $this->workspace->workflows['ci.yml'] = "on: push\njobs:\n  test:\n    steps:\n      - uses: ./.github/actions/setup\n      - uses: ./.github/actions/missing\n      - uses: ./../outside\n";
+        $this->workspace->file('.github/actions/setup/action.yml', <<<'YAML'
+        runs:
+          using: composite
+          steps:
+            - uses: actions/setup-node@v5
+            - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+            - uses: ./.github/actions/inner
+            - uses: ./.github/actions/setup
+        YAML);
+        $this->workspace->file('.github/actions/inner/action.yaml', "runs:\n  using: docker\n  image: docker://alpine:3\n");
+
+        expect(violations($this->workspace))->toBe([
+            '.github/actions/setup/action.yml runs.steps[0] uses actions/setup-node@v5, which is not pinned to a full commit.',
+            '.github/actions/inner/action.yaml runs.image uses docker://alpine:3, which is not pinned to a full commit.',
+            '.github/workflows/ci.yml jobs.test.steps[1] uses ./.github/actions/missing, a local action with no action.yml the check can read.',
+            '.github/workflows/ci.yml jobs.test.steps[2] uses ./../outside, a local action outside the project.',
         ]);
     });
 

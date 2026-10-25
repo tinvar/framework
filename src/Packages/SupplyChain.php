@@ -27,8 +27,9 @@ use Symfony\Component\Yaml\Yaml;
  *     package by a full commit, from an allowed https host; each lockfile in
  *     step with the manifest beside it, so what was reviewed in the
  *     manifest is what the lock installs. Every action and reusable
- *     workflow a GitHub workflow uses is pinned the same way, by commit --
- *     a tag can be moved.
+ *     workflow a GitHub workflow uses -- and every one a local action it
+ *     uses names in turn -- is pinned the same way, by commit: a tag can be
+ *     moved.
  *
  *   trusted-ci-only
  *     "Downstream app test suites run in framework CI only on trusted
@@ -343,6 +344,7 @@ final class SupplyChain
         }
 
         $violations = [];
+        $seen = [];
         foreach ($files as $file) {
             $name = '.github/workflows/' . $file;
             try {
@@ -407,9 +409,87 @@ final class SupplyChain
                                 continue;
                             }
                             foreach (self::field($step, 'uses') as $uses) {
-                                $violations = [...$violations, ...self::unpinned("{$name} jobs.{$id}.steps[{$index}]", $uses)];
+                                $at = "{$name} jobs.{$id}.steps[{$index}]";
+                                $violations = [...$violations, ...self::unpinned($at, $uses), ...$this->localAction($at, $uses, $seen)];
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        return $violations;
+    }
+
+    /**
+     * A local action's own `uses`, held to the same rule: a composite action
+     * runs the steps in its action.yml as though the workflow had named
+     * them, and a Docker action pulls its image. Each local action is read
+     * once, through every local action it names in turn -- all of them
+     * paths from the repository's root, as GitHub resolves them -- and one
+     * whose action.yml is not there, or not inside the project, fails.
+     *
+     * @param array<string, true> $seen the local actions read already
+     * @return list<string>
+     */
+    private function localAction(string $at, mixed $uses, array &$seen): array
+    {
+        if (!\is_string($uses) || !str_starts_with($uses, './')) {
+            return [];
+        }
+        $path = trim(substr($uses, 2), '/');
+        if ($path !== '' && !self::insideProject($path)) {
+            return ["{$at} uses {$uses}, a local action outside the project."];
+        }
+        if (isset($seen[$path])) {
+            return [];
+        }
+        $seen[$path] = true;
+
+        $directory = $path === '' ? '' : $path . '/';
+        $file = array_find(['action.yml', 'action.yaml'], fn (string $name): bool => is_file("{$this->root}/{$directory}{$name}") && !is_link("{$this->root}/{$directory}{$name}"));
+        if ($file === null) {
+            return ["{$at} uses {$uses}, a local action with no action.yml the check can read."];
+        }
+        $name = $directory . $file;
+        try {
+            $action = Yaml::parse((string) file_get_contents("{$this->root}/{$name}"), Yaml::PARSE_EXCEPTION_ON_INVALID_TYPE);
+        } catch (ParseException $e) {
+            return ["{$name} is not YAML the check can read: {$e->getMessage()}"];
+        }
+        if (!\is_array($action)) {
+            return ["{$name} is not a mapping the check can read."];
+        }
+
+        $violations = [];
+        foreach (self::field($action, 'runs') as $runs) {
+            if (!\is_array($runs)) {
+                $violations[] = "{$name} runs is not a mapping the check can read.";
+
+                continue;
+            }
+            // An image pulled is pinned by its digest; a Dockerfile of the
+            // action's own is built from the repository.
+            foreach (self::field($runs, 'image') as $image) {
+                if (!\is_string($image) || str_starts_with(strtolower($image), 'docker://')) {
+                    $violations = [...$violations, ...self::unpinned("{$name} runs.image", $image)];
+                }
+            }
+            foreach (self::field($runs, 'steps') as $steps) {
+                if (!\is_array($steps)) {
+                    $violations[] = "{$name} runs.steps is not a list the check can read.";
+
+                    continue;
+                }
+                foreach ($steps as $index => $step) {
+                    if (!\is_array($step)) {
+                        $violations[] = "{$name} runs.steps[{$index}] is not a mapping the check can read.";
+
+                        continue;
+                    }
+                    foreach (self::field($step, 'uses') as $inner) {
+                        $innerAt = "{$name} runs.steps[{$index}]";
+                        $violations = [...$violations, ...self::unpinned($innerAt, $inner), ...$this->localAction($innerAt, $inner, $seen)];
                     }
                 }
             }
