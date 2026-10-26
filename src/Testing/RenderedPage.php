@@ -6,6 +6,7 @@ namespace Tinvar\Testing;
 
 use PHPUnit\Framework\Assert;
 use Tinvar\Http\Response;
+use Tinvar\Orm\LazyLoad;
 use Tinvar\Render\RenderResult;
 
 /**
@@ -19,6 +20,8 @@ final readonly class RenderedPage
      * @param int $statements statements the request issued, its query bodies included
      * @param list<array{model: class-string, column: string, value: string}> $undeclared
      *        the column values no Data object declares, of every row the request read
+     * @param list<LazyLoad>|null $lazyLoads the lazy relation loads the request ran, its
+     *        query bodies' included, or null when its Orm was not recording them
      */
     public function __construct(
         public string $url,
@@ -27,6 +30,7 @@ final readonly class RenderedPage
         public string $body,
         public int $statements,
         private array $undeclared = [],
+        public ?array $lazyLoads = null,
     ) {}
 
     /** The RSC payload: the document's inline rows joined, or the body of a payload response. */
@@ -102,6 +106,19 @@ final readonly class RenderedPage
     public function assertQueryBudget(int $max): self
     {
         Assert::assertLessThanOrEqual($max, $this->statements, "Rendering {$this->url} issued {$this->statements} statements, over its budget of {$max}.");
+
+        return $this;
+    }
+
+    /**
+     * No relation the request read lazily was loaded for one parent alone:
+     * the loaders' each covered its parent's result set, and the query
+     * bodies' went through the render's scheduler or did the same
+     * (LazyLoad).
+     */
+    public function assertNoLazyLoadsOutsideBatch(): self
+    {
+        LazyLoadAssertion::assertNoneOutsideBatch($this->lazyLoads, "Rendering {$this->url}");
 
         return $this;
     }

@@ -7,6 +7,7 @@ namespace Tinvar\Testing;
 use PHPUnit\Framework\Assert;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
+use Tinvar\Orm\LazyLoad;
 use Tinvar\Routing\LoadedRoute;
 
 /**
@@ -28,6 +29,8 @@ final readonly class PageResponse
      * @param list<RecordedRender> $renders what the Kernel asked to have rendered, in
      *        order: the page, and an error page after it when the request failed
      * @param \Throwable|null $failure what the application reported for a 500
+     * @param list<LazyLoad>|null $lazyLoads the lazy relation loads the request ran, or
+     *        null when its Orm was not recording them
      */
     public function __construct(
         public Client $client,
@@ -36,6 +39,7 @@ final readonly class PageResponse
         public Response $response,
         public array $renders,
         public ?\Throwable $failure = null,
+        public ?array $lazyLoads = null,
     ) {}
 
     public function status(): int
@@ -154,6 +158,20 @@ final readonly class PageResponse
     {
         $statements = $this->recorded()->statements;
         Assert::assertLessThanOrEqual($max, $statements, "GET {$this->url} issued {$statements} statements, over its budget of {$max}.");
+
+        return $this;
+    }
+
+    /**
+     * No relation the request read lazily -- in its middleware, checks and
+     * loaders, and the encoding of what they returned -- was loaded for one
+     * parent alone: each load covered the result set its parent was read in
+     * (LazyLoad). The CI guard for a loader that reads a relation in a loop
+     * over models no batch can reach.
+     */
+    public function assertNoLazyLoadsOutsideBatch(): self
+    {
+        LazyLoadAssertion::assertNoneOutsideBatch($this->lazyLoads, "GET {$this->url}");
 
         return $this;
     }

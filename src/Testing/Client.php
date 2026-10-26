@@ -184,9 +184,12 @@ final readonly class Client
             return Response::make(200, '', ['content-type' => $passed->wantsRscPayload() ? 'text/x-component' : 'text/html; charset=utf-8']);
         };
 
+        $loads = $kernel->orm->lazyLoads();
+        $from = $loads?->count() ?? 0;
+
         $response = $this->app->handleWith($request, $respond);
 
-        return new PageResponse($this, $url, $request, $response, $recorded, $response->status >= 500 ? $this->app->lastFailure() : null);
+        return new PageResponse($this, $url, $request, $response, $recorded, $response->status >= 500 ? $this->app->lastFailure() : null, $loads?->since($from));
     }
 
     /**
@@ -217,13 +220,15 @@ final readonly class Client
             null,
             '127.0.0.1',
         );
+        $loads = $this->app->kernel()->orm->lazyLoads();
+        $from = $loads?->count() ?? 0;
         $response = $this->app->handleWith(
             $request,
             static fn (LoadedRoute $loaded, Request $passed): Response => Response::make(200),
             http_build_query($fields),
         );
 
-        return new PageResponse($this, ActionEndpoint::PREFIX . $name, $request, $response, [], $response->status >= 500 ? $this->app->lastFailure() : null);
+        return new PageResponse($this, ActionEndpoint::PREFIX . $name, $request, $response, [], $response->status >= 500 ? $this->app->lastFailure() : null, $loads?->since($from));
     }
 
     /**
@@ -244,6 +249,8 @@ final readonly class Client
         $body = '';
         $snapshot = null;
         $statements = 0;
+        $loads = $kernel->orm->lazyLoads();
+        $from = $loads?->count() ?? 0;
 
         $rendered = static function (RenderResult $measured, string $bytes) use ($kernel, &$result, &$body, &$snapshot, &$statements): void {
             $result = $measured;
@@ -281,7 +288,7 @@ final readonly class Client
             );
         }
 
-        $page = new RenderedPage($url, $response, $result, $body, $statements, $snapshot ?? []);
+        $page = new RenderedPage($url, $response, $result, $body, $statements, $snapshot ?? [], $loads?->since($from));
 
         // "assertNoModelLeak() runs on every rendered page test by default."
         return $this->leakCheck ? $page->assertNoModelLeak() : $page;

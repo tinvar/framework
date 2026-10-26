@@ -16,6 +16,7 @@ namespace Tinvar\Testing;
 use PHPUnit\Framework\Assert;
 use Tinvar\Auth\Authenticatable;
 use Tinvar\Orm\Connection;
+use Tinvar\Orm\Orm;
 
 /** The current test's client. */
 function testing(): Client
@@ -84,4 +85,24 @@ function expectQueries(int $count, \Closure $work, ?Connection $connection = nul
     Assert::assertSame($count, $issued, "Expected {$count} statements; {$issued} were issued:\n" . implode("\n", $sql));
 
     return $result;
+}
+
+/**
+ * No lazy relation load recorded so far ran outside a batch: each was Level 1
+ * over the result set its parent was read in, or Level 2 through a render's
+ * scheduler, and none was for one parent alone (LazyLoad) -- the 1+N that
+ * expectQueries() counts and this names:
+ *
+ *   expectQueries(2, fn () => $racks->each(fn ($r) => $r->units->count()));
+ *   assertNoLazyLoadsOutsideBatch();
+ *
+ * On the current application's Orm, whose loads Testing::use() records from
+ * the start of the test, unless given an Orm that records its own
+ * (Orm::recordLazyLoads()).
+ */
+function assertNoLazyLoadsOutsideBatch(?Orm $orm = null): void
+{
+    $orm ??= Testing::client()->app->kernel()->orm;
+
+    LazyLoadAssertion::assertNoneOutsideBatch($orm->lazyLoads()?->since(), 'The test');
 }

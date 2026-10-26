@@ -22,6 +22,7 @@ use Shop\Kernel;
 use Shop\Mail\OrderConfirmation;
 use Shop\Models\Customer;
 use Shop\Models\Order;
+use Shop\Models\OrderLine;
 use Shop\Models\Product;
 use Shop\Pages\Catalog;
 use Shop\Pages\Errors\ShopError;
@@ -34,6 +35,7 @@ use Tinvar\Console\Output;
 use Tinvar\Data\Encoder;
 use Tinvar\Jobs\Envelope;
 use Tinvar\Mail\SendMail;
+use Tinvar\Orm\LazyLoad;
 use Tinvar\Orm\Orm;
 use Tinvar\Support\Signer;
 use Tinvar\Support\Uuid;
@@ -48,6 +50,7 @@ use Tinvar\Testing\Testing;
 
 use function Tinvar\Testing\action;
 use function Tinvar\Testing\actingAs;
+use function Tinvar\Testing\assertNoLazyLoadsOutsideBatch;
 use function Tinvar\Testing\expectQueries;
 use function Tinvar\Testing\get;
 use function Tinvar\Testing\query;
@@ -307,6 +310,29 @@ it('counts the statements a piece of work issues', function () {
             \count($order->lines);
         }
     });
+    assertNoLazyLoadsOutsideBatch();
+});
+
+// Each order a line reaches is filled by itself, so its lines are a
+// statement per order: the 1+N, named.
+it('names a relation loaded for one parent alone', function () {
+    $orm = orm();
+    $ids = array_column($orm->connection()->select('SELECT MIN(id) AS id FROM order_lines GROUP BY order_id LIMIT 4'), 'id');
+    $orm->flush();
+
+    expectQueries(6, function () use ($orm, $ids): void {
+        foreach ($orm->whereIn(OrderLine::class, 'id', $ids) as $line) {
+            \count($line->order->lines);
+        }
+    });
+    expect(fn () => assertNoLazyLoadsOutsideBatch())->toThrow(AssertionFailedError::class, Order::class . '::lines (4 times)');
+});
+
+it('holds a page\'s loaders to loading each relation in a batch', function () {
+    $demo = customer();
+    $page = actingAs($demo)->get('/orders/' . orderOf($demo)->id)->assertOk()->assertNoLazyLoadsOutsideBatch();
+
+    expect(array_map(static fn (LazyLoad $load): string => $load->relation, $page->lazyLoads ?? []))->toContain(Order::class . '::lines');
 });
 
 // A client signs anyone in without a password, and so does the shop's seam
@@ -369,6 +395,7 @@ describe('through the real renderer', function () {
         actingAs($demo)->render("/orders/{$order->id}")
             ->assertOk()
             ->assertSee($order->number)
-            ->assertClientComponent('DeferredBoundary');
+            ->assertClientComponent('DeferredBoundary')
+            ->assertNoLazyLoadsOutsideBatch();
     });
 });

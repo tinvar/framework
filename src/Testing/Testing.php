@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Testing;
 
+use Tinvar\Orm\LazyLoads;
 use Tinvar\Testing\Fakes\BodyFakes;
 
 /**
@@ -29,7 +30,8 @@ final class Testing
      * render() goes through and the clock travel() moves, when it has them.
      *
      * The test starts with no query or action faked, whatever an earlier one
-     * left in an application it shares.
+     * left in an application it shares, and with the application's lazy
+     * relation loads recorded, for assertNoLazyLoadsOutsideBatch().
      */
     public static function use(TestableApplication $app, ?RendererPool $renderer = null, ?TestClock $clock = null): Client
     {
@@ -41,6 +43,7 @@ final class Testing
         if ($kernel->standIns instanceof BodyFakes) {
             $kernel->standIns->forget();
         }
+        $kernel->orm->recordLazyLoads(new LazyLoads());
 
         return $client;
     }
@@ -59,8 +62,8 @@ final class Testing
 
     /**
      * Forgets the application, so a later test cannot reach it by accident --
-     * nor meet a query or action this one faked, should it reach the same
-     * application.
+     * nor meet a query or action this one faked, or add to its record of
+     * lazy loads, should it reach the same application.
      */
     public static function forget(): void
     {
@@ -68,6 +71,7 @@ final class Testing
         if ($kernel?->standIns instanceof BodyFakes) {
             $kernel->standIns->forget();
         }
+        $kernel?->orm->recordLazyLoads(null);
 
         self::$client = null;
         self::$clock = null;
