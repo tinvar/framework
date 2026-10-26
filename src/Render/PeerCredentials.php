@@ -18,7 +18,7 @@ namespace Tinvar\Render;
  *
  *   - Linux's SO_PEERCRED is { pid, uid, gid }, so the int is the peer's
  *     pid -- the process that called listen() -- and its user is read from
- *     /proc/<pid>/status.
+ *     /proc/<pid>/status, held to being that process's (see uid()).
  *   - Darwin's LOCAL_PEERCRED is { version, uid, ... }, so the int is the
  *     struct's version, 0 (measured). Its LOCAL_PEERPID gives a pid, but
  *     nothing in PHP turns a pid into a user there without starting a
@@ -59,7 +59,7 @@ final class PeerCredentials
         $this->unsupported = match (true) {
             $os !== 'Linux' => "PHP cannot read a Unix socket peer's user on {$os}: its sockets extension "
                 . 'reads LOCAL_PEERCRED as one int, the struct\'s version, and has no getpeereid()',
-            $this->peerPid === null && !\function_exists('socket_import_stream') => 'PHP has no sockets extension to read SO_PEERCRED with',
+            !\function_exists('socket_import_stream') => 'PHP has no sockets extension to read SO_PEERCRED with',
             $this->peerPid === null && !\in_array($machine, self::GENERIC_SOCKET_OPTIONS, true) => "SO_PEERCRED is numbered otherwise on {$machine}",
             default => null,
         };
@@ -77,13 +77,23 @@ final class PeerCredentials
      * cannot be told.
      *
      * The pid is the kernel's, recorded at listen(); the user is read from
-     * procfs a moment later. A pid reused in between would have to belong
-     * to a renderer that has exited, and with it the listener, so the
-     * render would fail on its first read whatever this said. A procfs
-     * mounted with hidepid, or a peer in a pid namespace this process cannot
-     * see -- the kernel then says pid 0 -- is answered with why, not a user.
+     * procfs after it, so the pid could belong to another process by then:
+     * the one that listened exited, and its pid was taken again. That is
+     * ruled out, not left to chance. A pid is free to be taken only once its
+     * process has exited and closed every descriptor it held -- the far end
+     * of this connection among them, for the process that accepted it -- so
+     * a connection still open after the read was held through it by the
+     * process that listened, and the pid was still its own. Its start time,
+     * the same before the user is read and after, holds the two reads of
+     * procfs to one process. What remains is what SO_PEERCRED itself cannot
+     * say: a listener handed to another process, which only a process of
+     * the user that listened can do.
      *
-     * @param resource $stream a connected Unix socket
+     * A procfs mounted with hidepid, or a peer in a pid namespace this
+     * process cannot see -- the kernel then says pid 0 -- is answered with
+     * why, not a user.
+     *
+     * @param resource $stream a connected Unix socket, nothing yet sent or read on it
      * @return int|string the uid, or why there is none
      */
     public function uid($stream): int|string
@@ -97,19 +107,79 @@ final class PeerCredentials
             return 'the kernel named no peer process for the connection (SO_PEERCRED)';
         }
 
-        // A warning for a process that is gone, or hidden, is an answer here.
-        set_error_handler(static fn (): bool => true);
-        try {
-            $status = file_get_contents("{$this->proc}/{$pid}/status");
-        } finally {
-            restore_error_handler();
-        }
+        $started = $this->startTime($pid);
+        $status = self::read("{$this->proc}/{$pid}/status");
         // Real, effective, saved and filesystem uid; SO_PEERCRED names the effective.
-        if (!\is_string($status) || preg_match('/^Uid:\s+\d+\s+(\d+)\s+\d+\s+\d+\s*$/m', $status, $m) !== 1) {
+        if ($started === null || $status === null || preg_match('/^Uid:\s+\d+\s+(\d+)\s+\d+\s+\d+\s*$/m', $status, $m) !== 1) {
             return "cannot read the user of the peer process {$pid} from {$this->proc}";
+        }
+        if ($this->startTime($pid) !== $started) {
+            return "the peer process {$pid} was replaced by another while it was being read";
+        }
+        if (!self::stillOpen($stream)) {
+            return 'the peer closed the connection while it was being checked, so its pid may be another process\'s';
         }
 
         return (int) $m[1];
+    }
+
+    /**
+     * When the process $pid started, in clock ticks since boot: the 22nd
+     * field of its stat line, counted after the name in parentheses, which
+     * may hold spaces and parentheses of its own.
+     */
+    private function startTime(int $pid): ?string
+    {
+        $stat = self::read("{$this->proc}/{$pid}/stat");
+        $close = $stat === null ? false : strrpos($stat, ')');
+        if ($stat === null || $close === false) {
+            return null;
+        }
+        // Fields 3 onward: the state is the first of them, the start time the 20th.
+        $fields = preg_split('/\s+/', trim(substr($stat, $close + 1))) ?: [];
+
+        return isset($fields[19]) && ctype_digit($fields[19]) ? $fields[19] : null;
+    }
+
+    /** A procfs file, or null for one that is gone or hidden -- an answer here, not a warning. */
+    private static function read(string $path): ?string
+    {
+        set_error_handler(static fn (): bool => true);
+        try {
+            $contents = file_get_contents($path);
+        } finally {
+            restore_error_handler();
+        }
+
+        return \is_string($contents) ? $contents : null;
+    }
+
+    /**
+     * Whether the far end of $stream is still open: a peek, without
+     * waiting, that finds nothing to read yet. An end of file, or a reset,
+     * is a peer that has closed it.
+     *
+     * @param resource $stream
+     */
+    private static function stillOpen($stream): bool
+    {
+        $socket = socket_import_stream($stream);
+        if ($socket === false) {
+            return false;
+        }
+
+        socket_set_nonblock($socket);
+        set_error_handler(static fn (): bool => true);
+        try {
+            $peeked = socket_recv($socket, $byte, 1, \MSG_PEEK);
+            $errno = socket_last_error($socket);
+            socket_clear_error($socket);
+        } finally {
+            restore_error_handler();
+            socket_set_block($socket);
+        }
+
+        return $peeked === false ? \in_array($errno, [\SOCKET_EAGAIN, \SOCKET_EWOULDBLOCK], true) : $peeked > 0;
     }
 
     /** @param resource $stream */

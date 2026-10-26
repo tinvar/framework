@@ -37,8 +37,64 @@ function fakeProc(int $pid, string $uids): string
     $proc = '/tmp/tvproc-' . bin2hex(random_bytes(4));
     mkdir("{$proc}/{$pid}", 0700, true);
     file_put_contents("{$proc}/{$pid}/status", "Name:\tnode\nPid:\t{$pid}\nUid:\t{$uids}\nGid:\t33\t33\t33\t33\n");
+    file_put_contents("{$proc}/{$pid}/stat", statLine($pid, 81234));
 
     return $proc;
+}
+
+/** A /proc/<pid>/stat line, its name holding the spaces and parentheses a name may. */
+function statLine(int $pid, int $startTime): string
+{
+    // The state (field 3), fields 4 to 21, the start time (22), and the rest.
+    return "{$pid} (node (renderer) 1) S " . implode(' ', array_fill(0, 18, '0')) . " {$startTime} 0 0\n";
+}
+
+/**
+ * A procfs whose stat for one process says a different start time each time
+ * it is read: the pid taken by another process between two reads.
+ */
+final class ReplacedProc
+{
+    /** @var resource|null */
+    public $context;
+
+    private static int $reads = 0;
+
+    private string $contents = '';
+
+    private int $at = 0;
+
+    public function stream_open(string $path, string $mode): bool
+    {
+        if (str_ends_with($path, '/stat')) {
+            $this->contents = statLine(4242, 81234 + self::$reads++);
+        } elseif (str_ends_with($path, '/status')) {
+            $this->contents = "Uid:\t990\t990\t990\t990\n";
+        } else {
+            return false;
+        }
+
+        return true;
+    }
+
+    public function stream_read(int $count): string
+    {
+        $chunk = substr($this->contents, $this->at, $count);
+        $this->at += \strlen($chunk);
+
+        return $chunk;
+    }
+
+    public function stream_eof(): bool
+    {
+        return $this->at >= \strlen($this->contents);
+    }
+
+    /** @return array<string, int> */
+    public function stream_stat(): array
+    {
+        return ['size' => \strlen($this->contents)];
+    }
 }
 
 function removeProc(string $proc): void
@@ -72,11 +128,13 @@ function withEnvironment(array $env, \Closure $body): mixed
     }
 }
 
-/** @return resource a connected pair's end, which no test here reads from */
+/** @return resource a connected pair's end, which no test here reads from; the other end is kept open */
 function aStream()
 {
+    static $kept = [];
     $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
     \assert($pair !== false);
+    $kept[] = $pair[1];
 
     return $pair[0];
 }
@@ -163,6 +221,49 @@ describe('telling who is at the other end', function () {
 
         try {
             expect(linuxPeers($proc, 4343)->uid(aStream()))->toBe("cannot read the user of the peer process 4343 from {$proc}");
+        } finally {
+            removeProc($proc);
+        }
+    });
+
+    // ADR 0028: the pid is the kernel's, the user read from procfs after it.
+    // A pid taken by another process in between is not read as the peer's.
+    it('names no user when the process at that pid changed while it was read', function () {
+        stream_wrapper_register('tvreplaced', ReplacedProc::class);
+
+        try {
+            expect(linuxPeers('tvreplaced://proc')->uid(aStream()))->toBe('the peer process 4242 was replaced by another while it was being read');
+        } finally {
+            stream_wrapper_unregister('tvreplaced');
+        }
+    });
+
+    // Its pid is free to be taken only once the process has closed every
+    // descriptor it held, this connection's far end among them: closed, the
+    // pid read may already be another's.
+    it('names no user when the peer has closed the connection', function () {
+        $proc = fakeProc(4242, "990\t990\t990\t990");
+        $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
+        \assert($pair !== false);
+        fclose($pair[1]);
+
+        try {
+            expect(linuxPeers($proc)->uid($pair[0]))->toContain('the peer closed the connection while it was being checked');
+        } finally {
+            removeProc($proc);
+        }
+    });
+
+    it('still names the user when the peer has already written, which only an open connection can', function () {
+        $proc = fakeProc(4242, "990\t990\t990\t990");
+        $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
+        \assert($pair !== false);
+        fwrite($pair[1], 'early');
+
+        try {
+            expect(linuxPeers($proc)->uid($pair[0]))->toBe(990)
+                // A peek: what the peer wrote is still there to be read.
+                ->and(fread($pair[0], 5))->toBe('early');
         } finally {
             removeProc($proc);
         }
