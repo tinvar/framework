@@ -26,7 +26,8 @@ use Tinvar\Support\Signer;
  *   1. The payload's MAC verifies, so the tenant, panel and user in it are
  *      the ones the dispatcher sealed (Envelope).
  *   2. The tenant: the job runs inside Orm::actAs() for it -- no tenant when
- *      it was dispatched with none, whatever the worker last ran as.
+ *      it was dispatched with none, whatever the worker last ran as -- and
+ *      never with its subtree granted, which only a request's panel does.
  *   3. The user, for a job that runs as its dispatcher: still there, on the
  *      auth epoch it was dispatched on. A role change or an impersonation
  *      ending in between moves the epoch, and what was authorised under the
@@ -109,7 +110,9 @@ final readonly class JobRunner
     /** @param \Closure(): void $work */
     private function within(Envelope $envelope, \Closure $work): void
     {
-        $this->orm->actAs($envelope->tenant, function () use ($envelope, $work): void {
+        // Never with the subtree granted (ADR 0047): a sync job runs inside
+        // the request that dispatched it, whose panel may have granted it.
+        $this->orm->withoutSubtreeGrant(fn () => $this->orm->actAs($envelope->tenant, function () use ($envelope, $work): void {
             $user = $this->userFor($envelope);
             $this->auth->actingAs($user, function () use ($envelope, $work): void {
                 $panel = $this->panelFor($envelope);
@@ -125,7 +128,7 @@ final readonly class JobRunner
                 \assert($this->panels !== null);
                 $this->panels->within($panel, $work);
             }, $envelope->epoch);
-        });
+        }));
     }
 
     /**

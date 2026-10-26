@@ -111,6 +111,7 @@ final readonly class RecordContext implements Job
             'script' => $this->script?->name,
             'perJob' => $perJob->id,
             'mapped' => $orm->identityMap()->count(),
+            'subtree' => $orm->isSubtreeGranted(),
         ];
     }
 }

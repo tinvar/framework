@@ -91,7 +91,12 @@ final class Orm
      */
     private ?string $subtreeGrantMain = null;
 
-    /** @var \WeakMap<object, string> */
+    /**
+     * Per fiber, where a fiber's own code granted or withheld it; '' for
+     * withheld, since a fiber with no entry inherits the main context's.
+     *
+     * @var \WeakMap<object, string>
+     */
     private \WeakMap $subtreeGrantByFiber;
 
     /**
@@ -434,18 +439,47 @@ final class Orm
      */
     public function grantSubtree(\Closure $work): mixed
     {
+        // No tenant, nothing to reach below: granted nowhere.
+        $tenant = $this->tenant();
+
+        return $this->withSubtreeGrant($tenant === '' ? null : $tenant, $work);
+    }
+
+    /**
+     * Runs $work with no subtree granted, whatever granted one around it.
+     *
+     * For a job (JobRunner), which ADR 0047 never grants the subtree: a
+     * SyncQueue runs one inside the request that dispatched it, and it must
+     * not read across the subtree that request's panel granted -- a job runs
+     * as the tenant it was dispatched in, and no wider, wherever it runs.
+     *
+     * @template T
+     * @param \Closure(): T $work
+     * @return T
+     */
+    public function withoutSubtreeGrant(\Closure $work): mixed
+    {
+        return $this->withSubtreeGrant(null, $work);
+    }
+
+    /**
+     * @template T
+     * @param string|null $tenant whose subtree is granted, or null for none
+     * @param \Closure(): T $work
+     * @return T
+     */
+    private function withSubtreeGrant(?string $tenant, \Closure $work): mixed
+    {
         $fiber = \Fiber::getCurrent();
         $had = $fiber !== null && isset($this->subtreeGrantByFiber[$fiber]);
         $previous = $fiber === null ? $this->subtreeGrantMain : ($had ? $this->subtreeGrantByFiber[$fiber] : null);
 
-        // No tenant, nothing to reach below: granted nowhere.
-        $tenant = $this->tenant();
+        // A fiber's "none" is kept as '', not as no entry: with no entry it
+        // would inherit the main context's grant, which is what is withheld.
         if ($fiber === null) {
-            $this->subtreeGrantMain = $tenant === '' ? null : $tenant;
-        } elseif ($tenant === '') {
-            unset($this->subtreeGrantByFiber[$fiber]);
+            $this->subtreeGrantMain = $tenant;
         } else {
-            $this->subtreeGrantByFiber[$fiber] = $tenant;
+            $this->subtreeGrantByFiber[$fiber] = $tenant ?? '';
         }
 
         try {
@@ -471,8 +505,9 @@ final class Orm
     private function subtreeGrant(): ?string
     {
         $fiber = \Fiber::getCurrent();
+        $grant = $fiber === null ? $this->subtreeGrantMain : ($this->subtreeGrantByFiber[$fiber] ?? $this->subtreeGrantMain);
 
-        return $fiber === null ? $this->subtreeGrantMain : ($this->subtreeGrantByFiber[$fiber] ?? $this->subtreeGrantMain);
+        return $grant === '' ? null : $grant;
     }
 
     /**

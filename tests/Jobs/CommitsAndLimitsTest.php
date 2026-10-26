@@ -149,6 +149,44 @@ it('runs a sync job after the commit it waited for, through the same checks a wo
         ->and($h->journal()->entries[0]['tenant'])->toBe('acme');
 });
 
+// ADR 0047: a job is never granted the subtree, whoever dispatched it. A
+// sync job runs inside the request that dispatched it, and inherited the
+// grant that request's panel made -- withinSubtree() worked in it.
+it('runs a sync job without the subtree its dispatching request was granted', function () {
+    $h = null;
+    $queue = new SyncQueue(static function ($job) use (&$h): void {
+        \assert($h instanceof Harness);
+        $h->runner->run($h->runner->open($job->payload));
+    });
+    $h = new Harness($queue);
+
+    $kept = $h->orm->actAs('acme', fn (): bool => $h->orm->grantSubtree(function () use ($h): bool {
+        $h->dispatcher->dispatch(new RecordContext(note: 'sync'));
+
+        return $h->orm->isSubtreeGranted();
+    }));
+
+    expect($h->journal()->entries[0]['subtree'])->toBeFalse()
+        ->and($h->journal()->entries[0]['tenant'])->toBe('acme')
+        ->and($kept)->toBeTrue('the request keeps its own grant once the job is done');
+});
+
+it('runs a sync job without the subtree from inside a fiber of a granted request', function () {
+    $h = null;
+    $queue = new SyncQueue(static function ($job) use (&$h): void {
+        \assert($h instanceof Harness);
+        $h->runner->run($h->runner->open($job->payload));
+    });
+    $h = new Harness($queue);
+
+    $h->orm->actAs('acme', fn () => $h->orm->grantSubtree(function () use ($h): void {
+        $fiber = new \Fiber(fn () => $h->dispatcher->dispatch(new RecordContext(note: 'sync, in a fiber')));
+        $fiber->start();
+    }));
+
+    expect($h->journal()->entries[0]['subtree'])->toBeFalse();
+});
+
 it('writes a database queue\'s job inside the transaction around it, so it rolls back with it', function () {
     $path = sys_get_temp_dir() . '/tinvar-jobs-outbox-' . bin2hex(random_bytes(4)) . '.sqlite';
     try {
