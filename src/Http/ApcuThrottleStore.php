@@ -23,6 +23,21 @@ namespace Tinvar\Http;
  * entry when its TTL runs out. The cost of alignment is the usual one for
  * fixed windows: a caller can spend the end of one window and the start of
  * the next back to back.
+ *
+ * **APCu forgets everything at once.** With `apc.ttl` at 0, its default,
+ * APCu clears the whole cache once it is full rather than make room, and
+ * every count goes with it; anyone can fill it, since each new address --
+ * an IPv6 /64 -- is new entries. So a limit that guards something an
+ * attacker would guess at, such as passwords, does not count here at all,
+ * but in a store nothing else fills. What stays here is a budget against
+ * load, and for it this store says when a wipe happened: an entry set with
+ * no TTL, which only a wipe takes, is missing. `$wiped` is told, for the
+ * operator to size APCu by (`apc.shm_size`); and a store built to fail
+ * closed counts every window that began before the wipe as spent, until it
+ * ends, rather than starting it again from nothing. That turns every wipe
+ * into a pause for every caller, which a budget against load is better
+ * without, so it is not the default. A wipe a worker starting meets before
+ * any count reads as the cache starting: nothing marks the difference.
  */
 final class ApcuThrottleStore implements ThrottleStore
 {
@@ -38,6 +53,12 @@ final class ApcuThrottleStore implements ThrottleStore
     /** @var \Closure(string, int, int): bool replace a key's value only if it is still the one read */
     private readonly \Closure $cas;
 
+    /** A window counted as spent once a wipe has taken what it held: past any limit, with room to count. */
+    public const int LOST = PHP_INT_MAX >> 1;
+
+    /** The entry with no TTL, holding when counting last started: gone, APCu has been cleared. */
+    private readonly string $mark;
+
     /**
      * @param string $prefix  set apart from anything else the application keeps in APCu
      * @param (\Closure(): int)|null $clock for tests; defaults to time()
@@ -45,6 +66,8 @@ final class ApcuThrottleStore implements ThrottleStore
      * @param (\Closure(string, int, int): (int|false))|null $inc for tests; defaults to apcu_inc()
      * @param (\Closure(string): mixed)|null $fetch for tests; defaults to apcu_fetch()
      * @param (\Closure(string, int, int): bool)|null $cas for tests; defaults to apcu_cas()
+     * @param bool $failClosed whether a window that began before a wipe counts as spent until it ends
+     * @param (\Closure(): void)|null $wiped told when this store finds APCu has been cleared
      */
     public function __construct(
         private readonly string $prefix = 'tinvar:throttle:',
@@ -53,6 +76,8 @@ final class ApcuThrottleStore implements ThrottleStore
         ?\Closure $inc = null,
         ?\Closure $fetch = null,
         ?\Closure $cas = null,
+        private readonly bool $failClosed = false,
+        private readonly ?\Closure $wiped = null,
     ) {
         if (($add === null || $inc === null || $fetch === null || $cas === null) && !self::available()) {
             throw new \RuntimeException(
@@ -68,6 +93,11 @@ final class ApcuThrottleStore implements ThrottleStore
         };
         $this->fetch = $fetch ?? static fn (string $key): mixed => apcu_fetch($key);
         $this->cas = $cas ?? static fn (string $key, int $old, int $new): bool => apcu_cas($key, $old, $new);
+
+        // From the first worker to start: nothing was counted before it, so
+        // nothing has been lost.
+        $this->mark = $prefix . 'counting-since';
+        ($this->add)($this->mark, 0, 0);
     }
 
     /** Whether APCu is loaded and enabled in this SAPI. */
@@ -80,15 +110,20 @@ final class ApcuThrottleStore implements ThrottleStore
     {
         $window = max(1, $window);
         [$entry, $start] = $this->entry($key, $window);
+        $since = $this->countingSince();
 
         // A second past the window, so the entry outlives every hit counted
         // in it; after that it is garbage APCu collects on its own.
         $ttl = $window + 1;
 
+        // What a window opens at: nothing, unless a wipe has taken what it
+        // held and this store fails closed -- then spent, until it ends.
+        $opening = $this->failClosed && $start < $since ? self::LOST : 0;
+
         // Two tries: the entry can be evicted between the add and the
         // increment when APCu is full, and a second add recreates it.
         for ($attempt = 0; $attempt < 2; $attempt++) {
-            ($this->add)($entry, 0, $ttl);
+            ($this->add)($entry, $opening, $ttl);
             $count = ($this->inc)($entry, 1, $ttl);
             if (\is_int($count)) {
                 return [$count, $start + $window];
@@ -122,6 +157,33 @@ final class ApcuThrottleStore implements ThrottleStore
     }
 
     /**
+     * When counting last started from nothing: 0 for as long as APCu has
+     * kept everything since the first worker, and the moment this store
+     * found it cleared otherwise -- put back by whichever worker finds it
+     * first, which tells $wiped.
+     */
+    private function countingSince(): int
+    {
+        $since = ($this->fetch)($this->mark);
+        if (\is_int($since)) {
+            return $since;
+        }
+
+        $now = $this->now();
+        if (!($this->add)($this->mark, $now, 0)) {
+            $since = ($this->fetch)($this->mark);
+
+            return \is_int($since) ? $since : $now;
+        }
+
+        if ($this->wiped !== null) {
+            ($this->wiped)();
+        }
+
+        return $now;
+    }
+
+    /**
      * The APCu entry counting a key's current window, and when that window
      * started.
      *
@@ -129,11 +191,15 @@ final class ApcuThrottleStore implements ThrottleStore
      */
     private function entry(string $key, int $window): array
     {
-        $now = $this->clock === null ? time() : ($this->clock)();
-        $start = intdiv($now, $window) * $window;
+        $start = intdiv($this->now(), $window) * $window;
 
         // Hashed: a key is built from caller identity and can be long, and
         // APCu's entry names are not where addresses should be listed.
         return [$this->prefix . hash('xxh128', $key) . ':' . $window . ':' . $start, $start];
+    }
+
+    private function now(): int
+    {
+        return $this->clock === null ? time() : ($this->clock)();
     }
 }

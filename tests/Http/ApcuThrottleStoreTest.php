@@ -33,7 +33,8 @@ final class FakeApcu
             if (isset($this->entries[$key]) && $this->entries[$key]['expires'] > $this->now) {
                 return false;
             }
-            $this->entries[$key] = ['value' => $value, 'expires' => $this->now + $ttl];
+            // A TTL of 0 is none: the entry stays until APCu is cleared.
+            $this->entries[$key] = ['value' => $value, 'expires' => $ttl === 0 ? PHP_INT_MAX : $this->now + $ttl];
 
             return true;
         };
@@ -75,7 +76,8 @@ final class FakeApcu
         };
     }
 
-    public function store(): ApcuThrottleStore
+    /** @param (\Closure(): void)|null $wiped */
+    public function store(bool $failClosed = false, ?\Closure $wiped = null): ApcuThrottleStore
     {
         return new ApcuThrottleStore(
             clock: fn (): int => $this->now,
@@ -83,7 +85,15 @@ final class FakeApcu
             inc: $this->inc(),
             fetch: $this->fetch(),
             cas: $this->cas(),
+            failClosed: $failClosed,
+            wiped: $wiped,
         );
+    }
+
+    /** What APCu does once it is full, with `apc.ttl` at 0: every entry goes at once. */
+    public function wipe(): void
+    {
+        $this->entries = [];
     }
 }
 
@@ -142,8 +152,62 @@ it('keeps the caller\'s key out of the entry name', function () {
     $apcu = new FakeApcu();
     $apcu->store()->increment('actions|ip|203.0.113.7', 60);
 
-    expect(array_keys($apcu->entries)[0])->toStartWith('tinvar:throttle:')
-        ->not->toContain('203.0.113.7');
+    foreach (array_keys($apcu->entries) as $entry) {
+        expect($entry)->toStartWith('tinvar:throttle:')
+            ->not->toContain('203.0.113.7');
+    }
+});
+
+// APCu clears every entry once it is full, and anyone can fill it. A budget
+// against load starts again from nothing, as it would after a restart; the
+// operator is told, to size APCu by.
+it('tells when APCu has been cleared, once, and counts on from nothing', function () {
+    $apcu = new FakeApcu();
+    $wipes = 0;
+    $store = $apcu->store(wiped: static function () use (&$wipes): void {
+        $wipes++;
+    });
+
+    $store->increment('k', 60);
+    $store->increment('k', 60);
+    expect($wipes)->toBe(0, 'a store starting on an empty APCu is not told of a wipe');
+
+    $apcu->wipe();
+
+    expect($store->increment('k', 60)[0])->toBe(1)
+        ->and($store->increment('k', 60)[0])->toBe(2)
+        ->and($wipes)->toBe(1)
+        // Another worker's store, on the same APCu, finds it put back.
+        ->and($apcu->store()->increment('k', 60)[0])->toBe(3)
+        ->and($wipes)->toBe(1);
+});
+
+// Built to fail closed, a wipe pauses every window it reached into, as
+// spent, until it ends: what those windows held is not known, and a limit
+// that cannot count fails closed. Windows opened since count as before.
+it('counts a window a wipe reached into as spent until it ends, when built to fail closed', function () {
+    $apcu = new FakeApcu();
+    $apcu->now = 1_000_030;
+    $store = $apcu->store(failClosed: true);
+
+    expect($store->increment('k', 60))->toBe([1, 1_000_080]);
+
+    $apcu->wipe();
+
+    expect($store->increment('k', 60))->toBe([ApcuThrottleStore::LOST + 1, 1_000_080])
+        ->and($store->increment('never-counted', 60)[0])->toBeGreaterThan(ApcuThrottleStore::LOST);
+
+    // The next window counts from nothing.
+    $apcu->now = 1_000_080;
+    expect($store->increment('k', 60))->toBe([1, 1_000_140]);
+});
+
+// A worker starting on an empty APCu is the cache starting, not a wipe:
+// nothing was counted before it, so a deploy pauses nobody.
+it('pauses nobody when it starts, built to fail closed', function () {
+    $apcu = new FakeApcu();
+
+    expect($apcu->store(failClosed: true)->increment('k', 60)[0])->toBe(1);
 });
 
 it('treats a window under a second as one second', function () {
