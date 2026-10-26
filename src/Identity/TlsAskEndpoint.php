@@ -6,6 +6,7 @@ namespace Tinvar\Identity;
 
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
+use Tinvar\Http\ThrottleStore;
 use Tinvar\Observability\ProbeAccess;
 use Tinvar\Tenancy\Host;
 
@@ -90,6 +91,24 @@ use Tinvar\Tenancy\Host;
  * a domain that moved since cannot pass the CA's challenge here, and the
  * next ask after it, or the daily check, deactivates it.
  *
+ * And one check of a domain at a time, across every worker and server:
+ * before resolving, an ask claims the domain in the application's
+ * ThrottleStore -- the one its throttles count in, which every worker
+ * shares -- and an ask that finds it claimed is refused there and then,
+ * with no lookup and no wait. Waiting would hold a worker as long as the
+ * check it waits on, which is what the claim is there to stop: a burst of
+ * handshakes naming a domain no check has yet recorded -- none ever has,
+ * or the last is over a minute old -- each ran a full one. Refused, Caddy
+ * fails that one handshake, and the client's next is answered from the
+ * check that was under way. Under the claim the record is read again, so
+ * an ask that read it just before another's check was recorded is
+ * answered from that check rather than making a second. The claim is let
+ * go when the check ends, however it ends; a worker killed in the middle
+ * of one leaves the domain refused until the claim's window does, at most
+ * CHECK_WINDOW seconds. Windows are the store's, aligned to the clock, so
+ * a check under way as one ends can be joined by one more: two at once,
+ * never a stream.
+ *
  * The Kernel counts it under the route `_tls_ask`, never by the domain: a
  * name chosen by whoever opens a TLS connection is not a label. The access
  * log has the path, which carries no query.
@@ -104,10 +123,23 @@ final readonly class TlsAskEndpoint
     /** Seconds after a check during which a domain is answered from it, without another lookup. */
     public const int RETRY_AFTER = 60;
 
+    /** Seconds a claim to check a domain lasts at most, should the check never end. */
+    public const int CHECK_WINDOW = 60;
+
+    /** What a domain is claimed under in the ThrottleStore: its own prefix, beside the throttles' buckets. */
+    public const string CLAIM = 'tls-ask:';
+
+    /**
+     * @param ThrottleStore $claims where a domain is claimed for its one check at a time:
+     *        the store the application's throttles count in, shared by every worker
+     *        and server that answers the ask -- never one per worker, which would
+     *        claim nothing another worker can see
+     */
     public function __construct(
         private Realms $realms,
         private CustomDomains $domains,
         private CustomDomainVerification $verification,
+        private ThrottleStore $claims,
         private ProbeAccess $access = new ProbeAccess(),
     ) {}
 
@@ -143,26 +175,70 @@ final readonly class TlsAskEndpoint
             return true;
         }
 
-        // A record for another host than asked is a lookup that answered
-        // the wrong question, and is refused, as Realms refuses one.
+        $record = $this->held($host);
+        if ($record === null) {
+            return false;
+        }
+        $recent = $this->recent($record);
+        if ($recent !== null) {
+            return $recent;
+        }
+
+        // One check at a time: another's under way, this one is refused
+        // rather than made to wait or to look the domain up as well.
+        $claim = self::CLAIM . $host;
+        [$claimed] = $this->claims->increment($claim, self::CHECK_WINDOW);
+        if ($claimed !== 1) {
+            return false;
+        }
+
+        try {
+            // Read again: a check recorded since the read above answers.
+            $record = $this->held($host);
+            if ($record === null) {
+                return false;
+            }
+
+            return $this->recent($record) ?? $this->verification->verify($record) === DomainStatus::Verified;
+        } finally {
+            $this->claims->release($claim, self::CHECK_WINDOW, PHP_INT_MAX);
+        }
+    }
+
+    /**
+     * The application's record of a host, while it holds it active. A record
+     * for another host than asked is a lookup that answered the wrong
+     * question, and is refused, as Realms refuses one.
+     */
+    private function held(string $host): ?CustomDomain
+    {
         $record = $this->domains->find($host);
-        if ($record === null || $record->host !== $host || !$record->active) {
+
+        return $record === null || $record->host !== $host || !$record->active ? null : $record;
+    }
+
+    /**
+     * What the domain's last check says, when it was made under RETRY_AFTER
+     * seconds ago: false if it failed, true if it passed. Null when there is
+     * none that recent to go by, and a check is due.
+     */
+    private function recent(CustomDomain $record): ?bool
+    {
+        if ($record->checkedAt === null) {
+            return null;
+        }
+
+        $age = $this->verification->now()->getTimestamp() - $record->checkedAt->getTimestamp();
+        if ($age >= self::RETRY_AFTER) {
+            return null;
+        }
+        if ($record->failingSince !== null) {
             return false;
         }
 
         // A pass is trusted only from the past: one a server with its clock
         // ahead recorded "later" than now would otherwise stand for as long.
-        $age = $record->checkedAt === null ? null : $this->verification->now()->getTimestamp() - $record->checkedAt->getTimestamp();
-        if ($age !== null && $age < self::RETRY_AFTER) {
-            if ($record->failingSince !== null) {
-                return false;
-            }
-            if ($age >= 0) {
-                return true;
-            }
-        }
-
-        return $this->verification->verify($record) === DomainStatus::Verified;
+        return $age >= 0 ? true : null;
     }
 
     private static function plain(int $status, string $body): Response

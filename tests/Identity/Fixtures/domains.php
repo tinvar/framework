@@ -33,6 +33,14 @@ final class Dns implements DnsResolver
     public float $now = 0.0;
 
     /**
+     * Run once, at the next lookup, before it answers: what happens elsewhere
+     * while a check waits on DNS -- another ask arriving, say.
+     *
+     * @var (\Closure(): void)|null
+     */
+    public ?\Closure $meanwhile = null;
+
+    /**
      * @param array<string, string|list<string>|DnsLookupFailed> $names a CNAME target, the A and
      *        AAAA addresses, or the failure a lookup of the name meets
      * @param array<string, float> $costs seconds a lookup of a name takes
@@ -58,6 +66,11 @@ final class Dns implements DnsResolver
     {
         $this->asked[] = $name;
         $this->now += $this->costs[$name] ?? 0.001;
+        if ($this->meanwhile !== null) {
+            $meanwhile = $this->meanwhile;
+            $this->meanwhile = null;
+            $meanwhile();
+        }
         $answer = $this->names[$name] ?? null;
         if ($answer instanceof DnsLookupFailed) {
             throw $answer;
@@ -87,6 +100,14 @@ final class Records implements CustomDomains
     /** @var array<string, true> hosts whose writes throw, a database that is down for them */
     public array $broken = [];
 
+    /**
+     * Run once, at the next find(), once it has read what it answers: what
+     * happens elsewhere between one read of the records and the next.
+     *
+     * @var (\Closure(): void)|null
+     */
+    public ?\Closure $meanwhile = null;
+
     public function __construct(CustomDomain ...$domains)
     {
         foreach ($domains as $domain) {
@@ -105,8 +126,14 @@ final class Records implements CustomDomains
     public function find(string $host): ?CustomDomain
     {
         $this->found[] = $host;
+        $record = $this->domains[$host] ?? null;
+        if ($this->meanwhile !== null) {
+            $meanwhile = $this->meanwhile;
+            $this->meanwhile = null;
+            $meanwhile();
+        }
 
-        return $this->domains[$host] ?? null;
+        return $record;
     }
 
     public function passed(string $host, \DateTimeImmutable $at): void

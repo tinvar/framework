@@ -14,6 +14,7 @@ namespace Tinvar\Tests\Identity\TlsAskEndpoint;
 use Tinvar\Actions\ActionRegistry;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PolicyRegistry;
+use Tinvar\Http\ArrayThrottleStore;
 use Tinvar\Http\Kernel;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Request;
@@ -50,7 +51,7 @@ const TOKEN = 'tls-ask-token-0123456789abcdef0123456789';
 
 /**
  * @param array<string, string|list<string>|DnsLookupFailed> $dns
- * @return array{TlsAskEndpoint, Records, Dns, Clock}
+ * @return array{TlsAskEndpoint, Records, Dns, Clock, ArrayThrottleStore}
  */
 function ask(array $dns = [], array $active = ['shop.acme.example'], array $inactive = []): array
 {
@@ -71,7 +72,11 @@ function ask(array $dns = [], array $active = ['shop.acme.example'], array $inac
         ['admin'],
     );
 
-    return [new TlsAskEndpoint($realms, $records, $verification, new ProbeAccess(token: TOKEN)), $records, $resolver, $clock];
+    // Claims on the records' clock, as a store shared by every worker is
+    // on the one every server keeps.
+    $claims = new ArrayThrottleStore(static fn (): int => $clock->now->getTimestamp());
+
+    return [new TlsAskEndpoint($realms, $records, $verification, $claims, new ProbeAccess(token: TOKEN)), $records, $resolver, $clock, $claims];
 }
 
 /** @param array<string, string> $headers */
@@ -201,6 +206,63 @@ describe('the TLS ask endpoint', function () {
         $records->passed('shop.acme.example', $clock->now->modify('+1 hour'));
 
         expect($endpoint->handle(asking('shop.acme.example'))->status)->toBe(200)
+            ->and($dns->asked)->toBe(['shop.acme.example']);
+    });
+
+    // A burst of handshakes naming a domain no check has recorded: each ask
+    // made a full check of its own, a worker apiece for as long as DNS took.
+    it('refuses an ask that arrives while another\'s check of the domain is under way, with no lookup of its own', function () {
+        [$endpoint, $records, $dns] = ask(['shop.acme.example' => TARGET]);
+        $during = null;
+        $dns->meanwhile = static function () use ($endpoint, &$during): void {
+            $during = $endpoint->handle(asking('shop.acme.example'));
+        };
+
+        $first = $endpoint->handle(asking('shop.acme.example'));
+
+        expect($first->status)->toBe(200)
+            ->and($during?->status)->toBe(404)
+            ->and($dns->asked)->toBe(['shop.acme.example'])
+            // And after it, answered from the check that was under way.
+            ->and($endpoint->handle(asking('shop.acme.example'))->status)->toBe(200)
+            ->and($dns->asked)->toBe(['shop.acme.example']);
+    });
+
+    it('refuses a domain another worker has claimed, and checks it once the claim has gone', function () {
+        [$endpoint, , $dns, $clock, $claims] = ask(['shop.acme.example' => TARGET]);
+        $claims->increment(TlsAskEndpoint::CLAIM . 'shop.acme.example', TlsAskEndpoint::CHECK_WINDOW);
+
+        expect($endpoint->handle(asking('shop.acme.example'))->status)->toBe(404)
+            ->and($dns->asked)->toBe([]);
+
+        // Its worker killed mid-check: the claim lasts its window, no longer.
+        $clock->advance('+' . TlsAskEndpoint::CHECK_WINDOW . ' seconds');
+        expect($endpoint->handle(asking('shop.acme.example'))->status)->toBe(200)
+            ->and($dns->asked)->toBe(['shop.acme.example']);
+    });
+
+    it('lets the claim go however the check ends', function () {
+        [$endpoint, $records, $dns] = ask(['shop.acme.example' => TARGET]);
+        $records->broken['shop.acme.example'] = true;
+
+        expect(static fn () => $endpoint->handle(asking('shop.acme.example')))->toThrow(\RuntimeException::class);
+
+        unset($records->broken['shop.acme.example']);
+        expect($endpoint->handle(asking('shop.acme.example'))->status)->toBe(200)
+            ->and($dns->asked)->toBe(['shop.acme.example', 'shop.acme.example']);
+    });
+
+    // Read before the other's check was recorded, claimed after it let go:
+    // the claim alone would have let it check the domain a second time.
+    it('answers from a check recorded between its first read and its claim', function () {
+        [$endpoint, $records, $dns] = ask(['shop.acme.example' => TARGET]);
+        $other = null;
+        $records->meanwhile = static function () use ($endpoint, &$other): void {
+            $other = $endpoint->handle(asking('shop.acme.example'));
+        };
+
+        expect($endpoint->handle(asking('shop.acme.example'))->status)->toBe(200)
+            ->and($other?->status)->toBe(200)
             ->and($dns->asked)->toBe(['shop.acme.example']);
     });
 
