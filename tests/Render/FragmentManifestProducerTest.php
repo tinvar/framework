@@ -23,6 +23,10 @@ use Tinvar\Tests\Routing\Fixtures\SiteNewPage;
 require_once __DIR__ . '/../Orm/Fixtures/models.php';
 require_once __DIR__ . '/../Routing/Fixtures/routes.php';
 
+/** A page with no route name: nothing can find its allowlist. */
+#[\Tinvar\Attributes\Page('/unnamed', view: 'unnamed')]
+final class UnnamedPage {}
+
 /** A file removed when the test process ends. */
 function file(string $contents = ''): string
 {
@@ -38,10 +42,32 @@ function file(string $contents = ''): string
     return $path;
 }
 
-/** @param array<string, list<string>> $views what the Vite plugin wrote */
-function build(array $views): string
+/**
+ * What the Vite plugin wrote: every view's boundaries and queries, and every
+ * registered deferred component's queries -- each component a view names is
+ * registered, calling nothing, unless $components says otherwise.
+ *
+ * @param array<string, list<string>> $views
+ * @param array<string, list<string>> $queries by view; none where not given
+ * @param array<string, list<string>> $components by deferred component
+ */
+function build(array $views, array $queries = [], array $components = []): string
 {
-    return file(json_encode(['format' => 1, 'views' => $views], JSON_THROW_ON_ERROR));
+    $registered = [];
+    foreach ($views as $named) {
+        foreach ($named as $component) {
+            if ($component !== '*') {
+                $registered[$component] = [];
+            }
+        }
+    }
+
+    return file(json_encode([
+        'format' => 1,
+        'views' => $views,
+        'queries' => array_map(static fn (string $view): array => $queries[$view] ?? [], array_combine(array_keys($views), array_keys($views))),
+        'componentQueries' => (object) [...$registered, ...$components],
+    ], JSON_THROW_ON_ERROR));
 }
 
 function routes(): RouteRegistry
@@ -116,7 +142,92 @@ describe('producing the manifest', function () {
         'another format' => ['{"format": 2, "views": {}}'],
         'a view with no list' => ['{"format": 1, "views": {"health": "x"}}'],
         'a component that is not a string' => ['{"format": 1, "views": {"health": [1]}}'],
+        // Built before the plugin listed queries: read as none, every route
+        // would be refused what it calls.
+        'no queries' => ['{"format": 1, "views": {"health": []}}'],
+        'a query that is not a string' => ['{"format": 1, "views": {"health": []}, "queries": {"health": [1]}, "componentQueries": {}}'],
+        'queries that are not a list' => ['{"format": 1, "views": {"health": []}, "queries": {"health": {"a": "b"}}, "componentQueries": {}}'],
     ]);
+});
+
+// tinvar-spec.md: "At build, the server-component graph of each route gives
+// the list of query names it may call."
+describe("each route's query allowlist", function () {
+    it('is what its page and every layout around it can call', function () {
+        $manifest = FragmentManifestProducer::produce(routes(), build(QUIET, [
+            'root' => ['notices.recent'],
+            'sites/layout' => ['sites.banner'],
+            'racks/show' => ['racks.stats', 'notices.recent'],
+        ]));
+
+        expect($manifest->queriesFor('racks.show'))->toBe(['notices.recent', 'racks.stats', 'sites.banner'])
+            // Under the root layout alone.
+            ->and($manifest->queriesFor('health'))->toBe(['notices.recent'])
+            ->and($manifest->queriesFor('sites.new'))->toBe(['notices.recent']);
+    });
+
+    it('lists a route that may call nothing with nothing, and allows a route it does not know nothing', function () {
+        $manifest = FragmentManifestProducer::produce(routes(), build(QUIET));
+
+        expect($manifest->toArray()['queries'])->toBe(['health' => [], 'racks.show' => [], 'sites.new' => []])
+            ->and($manifest->queriesFor('no.such.route'))->toBe([])
+            ->and($manifest->queriesFor(''))->toBe([]);
+    });
+
+    // A fragment renders under the allowlist of the route that minted its
+    // token, and its component is reachable from no view.
+    it('adds what each deferred component the route may name can call', function () {
+        $manifest = FragmentManifestProducer::produce(
+            routes(),
+            build([...QUIET, 'racks/show' => ['UnitHistory']], ['racks/show' => ['racks.stats']], [
+                'UnitHistory' => ['units.history'],
+                'AuditLog' => ['audit.entries'],
+            ]),
+        );
+
+        expect($manifest->queriesFor('racks.show'))->toBe(['racks.stats', 'units.history'])
+            ->and($manifest->queriesFor('health'))->toBe([]);
+    });
+
+    // A route that may mint for any component may render any registered
+    // one's fragment -- the registry, not the page, bounds it.
+    it('adds every registered component where the build could not read which', function () {
+        $manifest = FragmentManifestProducer::produce(
+            routes(),
+            build([...QUIET, 'racks/show' => ['*']], [], ['UnitHistory' => ['units.history'], 'AuditLog' => ['audit.entries']]),
+        );
+
+        expect($manifest->queriesFor('racks.show'))->toBe(['audit.entries', 'units.history']);
+    });
+
+    it('refuses a route naming a component the registry does not have', function () {
+        $path = file(json_encode([
+            'format' => 1,
+            'views' => [...QUIET, 'racks/show' => ['UnitHistory']],
+            'queries' => array_map(static fn (): array => [], QUIET),
+            'componentQueries' => new \stdClass(),
+        ], JSON_THROW_ON_ERROR));
+
+        expect(fn () => FragmentManifestProducer::produce(routes(), $path))
+            ->toThrow(\RuntimeException::class, "no 'UnitHistory' in the rsc entry's deferredRegistry()");
+    });
+
+    it('refuses an unnamed page that calls a query, whose allowlist could never be found', function () {
+        $routes = routes();
+        $routes->registerAll([UnnamedPage::class]);
+
+        expect(fn () => FragmentManifestProducer::produce($routes, build([...QUIET, 'unnamed' => []], ['unnamed' => ['x.y']])))
+            ->toThrow(\RuntimeException::class, 'calls a query but has no route name');
+    });
+
+    it('is written and read back with the rest of the manifest', function () {
+        $manifest = FragmentManifestProducer::produce(routes(), build(QUIET, ['racks/show' => ['racks.stats']]));
+        $path = file();
+        $manifest->write($path);
+
+        expect(FragmentManifest::fromFile($path)->queriesFor('racks.show'))->toBe(['racks.stats'])
+            ->and(FragmentManifest::fromFile($path)->toArray())->toBe($manifest->toArray());
+    });
 });
 
 describe('the manifest file', function () {
@@ -153,7 +264,17 @@ describe('the manifest file', function () {
         'components as an object' => ['{"format": 1, "routes": {"a": {"x": "Toc"}}, "pages": {}}'],
         'a component that is not a string' => ['{"format": 1, "routes": {"a": [1]}, "pages": {}}'],
         'a boundary without an id' => ['{"format": 1, "routes": {}, "pages": {"a": [{"component": "Toc"}]}}'],
+        'queries as an object' => ['{"format": 1, "routes": {}, "pages": {}, "queries": {"a": {"x": "y"}}}'],
+        'a query that is not a string' => ['{"format": 1, "routes": {}, "pages": {}, "queries": {"a": [1]}}'],
     ]);
+
+    // Written before it listed queries: every route may call nothing.
+    it('allows no route anything when it lists no queries', function () {
+        $manifest = FragmentManifest::fromFile(file('{"format": 1, "routes": {"a": null}, "pages": {}}'));
+
+        expect($manifest->queriesFor('a'))->toBe([])
+            ->and($manifest->defersOn('a'))->toBeTrue();
+    });
 });
 
 describe('what a route may mint for', function () {

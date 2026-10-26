@@ -35,6 +35,15 @@ namespace Tinvar\Render;
  * it renders, so for those the manifest records the route, and the components
  * its boundaries name when the build could read them. FragmentManifestProducer
  * writes both from the renderer build; nothing is declared by hand.
+ *
+ * And the query names each route's renders may call: tinvar-spec.md, "At
+ * build, the server-component graph of each route gives the list of query
+ * names it may call. PHP rejects any other name on that route's socket."
+ * Here because it is made the same way -- the renderer build's graph, per
+ * view, joined with the routes -- from the same file of the same build, and
+ * read where the Kernel already reads this, once, as it boots: a route's
+ * boundaries and its allowlist can never come from two builds. A route this
+ * does not list may call nothing; see queriesFor().
  */
 final class FragmentManifest
 {
@@ -64,6 +73,14 @@ final class FragmentManifest
      * @var array<string, list<string>|null>
      */
     private array $components = [];
+
+    /**
+     * The query names each route's renders may call, by route name. A route
+     * with no entry may call none.
+     *
+     * @var array<string, list<string>>
+     */
+    private array $queries = [];
 
     /**
      * The params of each built page, by the same key as $byPage, so the
@@ -155,8 +172,9 @@ final class FragmentManifest
      * Read on every call and parsed only when the bytes differ from those
      * last parsed, as FileBuildStore reads the build history. Only the
      * built pages are asked of it: which routes may mint, and for which
-     * components, is the build's and stays as the worker booted with it.
-     * A manifest made in memory is its own latest.
+     * components, is the build's and stays as the worker booted with it,
+     * as does what each route may query. A manifest made in memory is its
+     * own latest.
      */
     public function refreshed(): self
     {
@@ -217,8 +235,11 @@ final class FragmentManifest
     {
         $routes = $data['routes'] ?? [];
         $pages = $data['pages'] ?? [];
+        // Absent from a manifest written before the build listed them: every
+        // route may then call nothing, which is the side to fail on.
+        $queries = $data['queries'] ?? [];
 
-        if ($data['format'] !== self::FORMAT || !\is_array($routes) || !\is_array($pages)) {
+        if ($data['format'] !== self::FORMAT || !\is_array($routes) || !\is_array($pages) || !\is_array($queries)) {
             throw new \RuntimeException("The fragment manifest at {$path} is not one this version of Tinvar reads.");
         }
 
@@ -238,6 +259,20 @@ final class FragmentManifest
                 }
             }
             $manifest->declareRoute($route, $names);
+        }
+
+        foreach ($queries as $route => $names) {
+            if (!\is_string($route) || $route === '' || !\is_array($names) || !array_is_list($names)) {
+                throw new \RuntimeException("The fragment manifest at {$path} lists a route's queries that are not a name with a list.");
+            }
+            $allowed = [];
+            foreach ($names as $name) {
+                if (!\is_string($name) || $name === '') {
+                    throw new \RuntimeException("The fragment manifest at {$path} allows a query that is not a name.");
+                }
+                $allowed[] = $name;
+            }
+            $manifest->declareQueries($route, $allowed);
         }
 
         foreach ($pages as $route => $boundaries) {
@@ -262,17 +297,22 @@ final class FragmentManifest
 
     /**
      * The manifest as fromFile() reads it: every route that defers, with the
-     * components its renders may name (null for any), and every built page's
-     * boundaries with the params it was built for.
+     * components its renders may name (null for any), every built page's
+     * boundaries with the params it was built for, and each route's query
+     * allowlist.
      *
      * @return array{
      *     format: int,
      *     routes: array<string, list<string>|null>,
-     *     pages: array<string, list<array{id: string, component: string, props: array<string, mixed>, params: array<string, string>}>>
+     *     pages: array<string, list<array{id: string, component: string, props: array<string, mixed>, params: array<string, string>}>>,
+     *     queries: array<string, list<string>>
      * }
      */
     public function toArray(): array
     {
+        $queries = $this->queries;
+        ksort($queries);
+
         $routes = [];
         foreach (array_keys($this->deferring) as $route) {
             $routes[$route] = $this->componentsFor($route);
@@ -288,7 +328,7 @@ final class FragmentManifest
         }
         ksort($pages);
 
-        return ['format' => self::FORMAT, 'routes' => $routes, 'pages' => $pages];
+        return ['format' => self::FORMAT, 'routes' => $routes, 'pages' => $pages, 'queries' => $queries];
     }
 
     /**
@@ -416,6 +456,40 @@ final class FragmentManifest
     public function componentsFor(string $route): ?array
     {
         return $this->components[$route] ?? null;
+    }
+
+    /**
+     * The query names a route's renders may call -- its page's, its
+     * fragments', its re-renders' -- as the build found them in the route's
+     * server-component graph. Declared twice, a route may call what either
+     * declaration lists.
+     *
+     * @param list<string> $queries
+     */
+    public function declareQueries(string $route, array $queries): self
+    {
+        if ($route === '') {
+            throw new \InvalidArgumentException('A query allowlist belongs to a route, found by its name.');
+        }
+
+        $names = array_values(array_unique([...$this->queries[$route] ?? [], ...$queries]));
+        sort($names, SORT_STRING);
+        $this->queries[$route] = $names;
+
+        return $this;
+    }
+
+    /**
+     * What a render of this route may call: "PHP rejects any other name on
+     * that route's socket". Empty for a route the build did not list -- one
+     * it never saw, or an unnamed page's '' -- so a route the manifest does
+     * not know is allowed nothing, never everything.
+     *
+     * @return list<string>
+     */
+    public function queriesFor(string $route): array
+    {
+        return $this->queries[$route] ?? [];
     }
 
     /**
