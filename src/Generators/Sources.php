@@ -163,7 +163,7 @@ final class Sources
             . 'namespace ' . self::namespaceOf($class) . ";\n\n"
             . $uses->block()
             . "/**\n"
-            . self::wrap("{$name}: what a server component awaits through its generated `@queries` function, answered by this PHP request. Only a route that lists '{$name}' among its queries may call it from the renderer.")
+            . self::wrap("{$name}: what a server component awaits through its generated `@queries` function, answered by this PHP request. A route may call it from the renderer only if its views do: the build reads their calls into the route's allowlist.")
             . " *\n"
             . self::wrap($why)
             . " */\n"

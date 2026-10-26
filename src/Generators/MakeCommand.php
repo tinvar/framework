@@ -186,7 +186,10 @@ final class MakeCommand
             ->add($this->layout->pathOf($class), Sources::query($class, $data, $wire, $model))
             ->add($this->layout->pathOf($data), Sources::data($data, $class));
 
-        $next = ["Next: register {$class} with the application's queries, list '{$wire}' among the queries of each route whose components call it, and run `tinvar codegen`."];
+        // No list to keep: the build reads each view's calls into its
+        // route's allowlist, so the query is allowed exactly where it is
+        // called, and a hand-kept list could only drift from that.
+        $next = ["Next: register {$class} with the application's queries, and run `tinvar codegen` for its `@queries` function. The build allows '{$wire}' on each route whose views call it."];
         if ($model === null) {
             $next[] = "Until a policy with a view() ability is registered for {$class}, every call to the query is refused.";
         }

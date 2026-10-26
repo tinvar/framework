@@ -384,6 +384,25 @@ it('names the class itself where there is no model, so nobody is let in until a 
         ->and(strtolower($app->read('app/Pages/Dashboard.php') . $app->read('app/Queries/Totals.php') . $app->read('app/Actions/ReportActions.php')))->not->toContain('todo');
 });
 
+// The build reads each view's calls into its route's allowlist (ADR 0024's
+// manifest), so there is no list for a developer to keep, and saying there
+// was sent them looking for one.
+it('says what is left to do for a query, and nothing the build does', function () {
+    $app = $this->app;
+    expect($app('make:model', ['Rack']))->toBe(0)
+        ->and($app('make:query', ['Racks/Stats', '--model=Rack'], [$app->class('Models\Rack')]))->toBe(0, implode("\n", $app->err));
+
+    expect($app->out)->toContain(
+        "Next: register {$app->namespace}\\Queries\\Racks\\Stats with the application's queries, and run `tinvar codegen` for its `@queries` function. The build allows 'racks.stats' on each route whose views call it.",
+    )
+        ->and(implode("\n", $app->out))->not->toContain('among the queries');
+
+    // The class's docblock says the same, read as one paragraph.
+    $docblock = str_replace("\n * ", ' ', $app->read('app/Queries/Racks/Stats.php'));
+    expect($docblock)->toContain("the build reads their calls into the route's allowlist")
+        ->and($docblock)->not->toContain('among its queries');
+});
+
 it('refuses, and writes nothing, when any file it would write is there', function () {
     $app = $this->app;
     mkdir("{$app->root}/database/factories", 0o755, true);
