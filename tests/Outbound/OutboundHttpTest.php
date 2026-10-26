@@ -231,6 +231,38 @@ it('refuses a URL outbound requests do not use', function (string $url, string $
     'relative' => ['/just/a/path', 'url_invalid'],
 ]);
 
+// curl reads a CURLOPT_RESOLVE entry that opens with a dash as one to take
+// out of its cache, so a name opening with one was never pinned: curl asked
+// DNS for it itself, the second lookup a rebinding server answers with an
+// internal address, and connected there before the address check stopped it.
+it('refuses a name curl would not pin, before any lookup', function (string $url) {
+    $resolver = new StaticResolver(['-hooks.invalid' => ['127.0.0.1'], 'a.-hooks.invalid' => ['127.0.0.1']]);
+
+    expect(fn () => new PinnedHttp(local(), $resolver)->send(OutboundRequest::get($url)))
+        ->toThrow(fn (OutboundRefused $e) => expect($e->reason)->toBe('url_invalid'))
+        ->and($resolver->lookups)->toBe([]);
+})->with([
+    'a dash first' => ['http://-hooks.invalid:9/'],
+    'a dash alone' => ['https://-.invalid/'],
+    'a character curl refuses' => ['http://hooks!.invalid/'],
+]);
+
+it('refuses a redirect to a name curl would not pin', function () {
+    needsFork();
+    $server = Server::start([Server::reply(302, '', ['Location' => 'http://-hooks.invalid/in'])]);
+    $resolver = new StaticResolver(['hooks.invalid' => ['127.0.0.1'], '-hooks.invalid' => ['127.0.0.1']]);
+
+    try {
+        expect(fn () => new PinnedHttp(local(), $resolver)->send(new OutboundRequest('GET', "http://hooks.invalid:{$server->port}/", maxRedirects: 1)))
+            ->toThrow(fn (OutboundRefused $e) => expect($e->reason)->toBe('url_invalid'));
+    } finally {
+        $requests = $server->stop();
+    }
+
+    expect($requests)->toHaveCount(1)
+        ->and($resolver->lookups)->toBe(['hooks.invalid' => 1]);
+});
+
 it('refuses a literal address before any lookup, and a name by every address it resolves to', function () {
     $resolver = new StaticResolver([
         'internal.test' => ['10.0.0.5'],

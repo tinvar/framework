@@ -23,6 +23,9 @@ use Uri\WhatWg\Url;
  */
 final readonly class Target
 {
+    /** A host name, as the WHATWG parser leaves one: lowercased, in punycode. */
+    private const string NAME = '/^(?!-)[a-z0-9._-]+\z/';
+
     private function __construct(
         public Url $url,
         public string $scheme,
@@ -67,6 +70,16 @@ final readonly class Target
         }
         if ($host === '') {
             throw new OutboundRefused('url_invalid', 'The URL has no host.');
+        }
+
+        // A name of the characters DNS names are made of, and not opening
+        // with a dash. WHATWG allows more than curl does, and curl reads a
+        // pin for a name opening with a dash -- `-x.example:443:<address>`
+        // -- as an entry to remove: the name went unpinned, and curl asked
+        // DNS for it a second time, the lookup a rebinding server answers
+        // with an internal address.
+        if ($literal === null && preg_match(self::NAME, $host) !== 1) {
+            throw new OutboundRefused('url_invalid', 'The URL\'s host is not a name curl can be pinned to.');
         }
 
         $port = $parsed->getPort() ?? ($scheme === 'https' ? 443 : 80);
