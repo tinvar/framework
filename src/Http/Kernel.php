@@ -543,6 +543,8 @@ final class Kernel
         // And every route's query allowlist the Kernel is shown -- the one
         // fragment support carries, by route name -- against the panels of
         // the queries it names: a render runs them behind its page's panel.
+        // And a query with no panel binding that only routes in a panel may
+        // call, which /_query would run behind no panel's stack.
         if ($fragments?->allowedQueries !== null) {
             $entry->checkAllowlists($this->routes, $this->queries, $fragments->allowedQueries);
         }

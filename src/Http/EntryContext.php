@@ -7,10 +7,12 @@ namespace Tinvar\Http;
 use Tinvar\Actions\ActionRegistry;
 use Tinvar\Attributes\Panel;
 use Tinvar\Auth\AuthContext;
+use Tinvar\Auth\BuildRules;
 use Tinvar\Auth\Memberships;
 use Tinvar\Auth\PanelBinding;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\PanelRegistry;
+use Tinvar\Auth\Violation;
 use Tinvar\Http\Middleware\EnterPanel;
 use Tinvar\Http\Middleware\RequirePanelMembership;
 use Tinvar\Http\Middleware\RequirePlatformHost;
@@ -228,10 +230,25 @@ final readonly class EntryContext
      * the query's: the same panel, and every tenant kind and permission the
      * query needs among those the route was held to.
      *
+     * And the other way round, the spec's panel-binding rule for queries
+     * (BuildRules::PANEL_ONLY_QUERY_MUST_BE_BOUND): "an action or query
+     * reachable only from admin-panel pages with no panel binding fails the
+     * build." A query with no binding of its own, which only pages in a
+     * panel may call, was written for those pages -- and over /_query it
+     * runs behind no panel's stack at all, where every page using it runs
+     * behind one. A query some route in no panel may also call is not
+     * theirs alone, and one no route lists is reached over HTTP only; both
+     * pass.
+     *
      * @param \Closure(string): list<string> $allowedQueries the route's query allowlist, by route name
      */
     public function checkAllowlists(RouteRegistry $routes, QueryRegistry $queries, \Closure $allowedQueries): void
     {
+        // Each unbound query's callers, by the panel they are in: '' for
+        // none, which is enough to pass it.
+        /** @var array<string, array<string, list<string>>> $unbound */
+        $unbound = [];
+
         foreach ($routes->pages() as $page) {
             if ($page->name === null) {
                 continue;
@@ -242,6 +259,9 @@ final readonly class EntryContext
 
             foreach ($allowedQueries($page->name) as $name) {
                 $queryPanel = $this->queryPanel($queries, $name);
+                if ($queryPanel === null && $queries->classFor($name) !== null) {
+                    $unbound[$name][$routePanel->name ?? ''][] = $page->name;
+                }
                 if ($queryPanel !== null && ($routePanel === null || !$routePanel->covers($queryPanel))) {
                     throw new \InvalidArgumentException(\sprintf(
                         "Route '%s' may call query '%s', which is in panel '%s'%s; the route is %s. A query called "
@@ -255,6 +275,32 @@ final readonly class EntryContext
                     ));
                 }
             }
+        }
+
+        foreach ($unbound as $name => $callers) {
+            if (isset($callers[''])) {
+                continue;
+            }
+
+            $panels = array_keys($callers);
+            $where = implode(', ', array_map(
+                static fn (string $panel, array $pages): string => "'{$panel}' (" . implode(', ', $pages) . ')',
+                $panels,
+                $callers,
+            ));
+            // One panel to bind it to, or several, which one query cannot be in.
+            $fix = \count($panels) === 1
+                ? "Bind it with #[Panel('{$panels[0]}')], or move it into that panel's namespace."
+                : 'A query is in one panel, so split it, one per panel, each bound with #[Panel] or moved into '
+                    . "that panel's namespace.";
+
+            throw new \InvalidArgumentException((string) new Violation(
+                BuildRules::PANEL_ONLY_QUERY_MUST_BE_BOUND,
+                "query '{$name}' (" . $queries->classFor($name) . ')',
+                "has no panel binding, and every route that may call it is in a panel: {$where}. Over /_query "
+                . "it runs behind no panel's stack -- no guard, no membership check, none of the panel's "
+                . "middleware -- where every page using it runs behind one. {$fix}",
+            ));
         }
     }
 

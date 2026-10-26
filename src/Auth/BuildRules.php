@@ -54,7 +54,17 @@ use Tinvar\Validation\FormRequest;
  *     model input used to need no check at all, so one meant only for an
  *     admin page answered any signed-in caller.
  *
- * The panel-binding rule needs panels, which are a later phase.
+ *   panel-only-query-must-be-bound
+ *     "an action or query reachable only from admin-panel pages with no panel
+ *      binding fails the build." Checked where the Kernel is built, by
+ *      EntryContext::checkAllowlists(), not here: it needs the panel registry
+ *      and the routes' query allowlists, and this class sees one class at a
+ *      time. A query with no #[Panel] and outside every panel's namespace,
+ *      which only routes in a panel may call, fails.
+ *
+ *      Its action half is not built. A query's reachability is its routes'
+ *      allowlists; nothing relates an action to the pages that call it, so
+ *      there is nothing to decide "only from admin-panel pages" with.
  */
 final class BuildRules
 {
@@ -64,6 +74,7 @@ final class BuildRules
     public const string ENTRY_POINT_MUST_NOT_BE_STATIC = 'entry-point-must-not-be-static';
     public const string SHARED_QUERY_MUST_NOT_READ_THE_USER = 'shared-query-must-not-read-the-user';
     public const string QUERY_MUST_DECLARE_AUTHORIZATION = 'query-must-declare-authorization';
+    public const string PANEL_ONLY_QUERY_MUST_BE_BOUND = 'panel-only-query-must-be-bound';
 
     /**
      * Types a `shared: true` query may not reach by injection, directly or
