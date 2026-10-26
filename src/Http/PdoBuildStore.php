@@ -183,6 +183,33 @@ final class PdoBuildStore implements BuildStore
             );
         }
 
+        // Synced to the disk at the commit. A connection opened as ADR 0050
+        // opens the application's -- synchronous = NORMAL -- commits that an
+        // OS crash can take back, and a revocation taken back is a revoked
+        // build served again; so is a floor. FULL for this one commit, as
+        // PdoConnection::durableTransaction() does, set before the
+        // transaction begins and put back after.
+        $synchronous = null;
+        if ($this->driver === 'sqlite') {
+            $asked = $pdo->query('PRAGMA synchronous');
+            $synchronous = $asked === false ? 0 : (int) $asked->fetchColumn();
+        }
+        if ($synchronous !== null && $synchronous < 2) {
+            $pdo->exec('PRAGMA synchronous = FULL');
+        }
+
+        try {
+            return $this->change($pdo, $change);
+        } finally {
+            if ($synchronous !== null && $synchronous < 2) {
+                $pdo->exec("PRAGMA synchronous = {$synchronous}");
+            }
+        }
+    }
+
+    /** @param \Closure(BuildHistory): BuildHistory $change */
+    private function change(\PDO $pdo, \Closure $change): BuildHistory
+    {
         try {
             // SQLite takes the database's write lock at BEGIN IMMEDIATE, so a
             // second command waits here rather than reading what the first is

@@ -293,6 +293,28 @@ describe('PdoBuildStore', function () {
         }
     });
 
+    // ADR 0050 opens the application's SQLite connections at synchronous =
+    // NORMAL, whose commits an OS crash can take back -- and a revocation
+    // taken back is a revoked build served again. Synced at the commit,
+    // whatever the connection was opened with, and left as it was after.
+    it('commits a change to SQLite synced to the disk, on a connection opened at NORMAL', function () {
+        onDriver('sqlite', function (\PDO $pdo, string $dsn, string $table): void {
+            $pdo->exec('PRAGMA synchronous = NORMAL');
+            $store = installed($pdo, $table);
+            $during = null;
+
+            $store->update(static function (BuildHistory $history) use ($pdo, &$during): BuildHistory {
+                $during = (int) $pdo->query('PRAGMA synchronous')->fetchColumn();
+
+                return $history->revoking('b1');
+            });
+
+            expect($during)->toBe(2, 'FULL while the change commits')
+                ->and((int) $pdo->query('PRAGMA synchronous')->fetchColumn())->toBe(1, 'NORMAL again after')
+                ->and($store->read()->revoked)->toBe(['b1']);
+        });
+    });
+
     it('refuses a change on a connection with a transaction open, and a table name that is not one', function () {
         $pdo = new \PDO('sqlite::memory:');
         $store = installed($pdo, PdoBuildStore::TABLE);

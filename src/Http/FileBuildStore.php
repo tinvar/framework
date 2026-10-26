@@ -134,13 +134,29 @@ final class FileBuildStore implements BuildStore
     /**
      * Written whole under a private name and renamed into place, so a worker
      * reading at that moment sees the old history or the new one, never half.
+     *
+     * And synced to the disk on both sides of the rename. Renamed before its
+     * bytes were on the disk, an OS crash could leave the name on a file
+     * with none in it -- a history that cannot be read, and every build
+     * refused; and with the rename not yet on the disk, the old file could
+     * come back under the name -- a build revoked a moment before served
+     * again.
      */
     private function write(string $directory, BuildHistory $history): void
     {
         $json = json_encode($history->toArray(), JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
 
         $temporary = $directory . '/.' . basename($this->path) . '.' . bin2hex(random_bytes(6));
-        if (@file_put_contents($temporary, $json) !== \strlen($json)) {
+        $handle = @fopen($temporary, 'x');
+        if ($handle === false) {
+            throw new \RuntimeException("Cannot write the build history beside {$this->path}.");
+        }
+        try {
+            $written = @fwrite($handle, $json) === \strlen($json) && @fsync($handle);
+        } finally {
+            fclose($handle);
+        }
+        if (!$written) {
             @unlink($temporary);
             throw new \RuntimeException("Cannot write the build history beside {$this->path}.");
         }
@@ -152,6 +168,15 @@ final class FileBuildStore implements BuildStore
         if (!@rename($temporary, $this->path)) {
             @unlink($temporary);
             throw new \RuntimeException("Cannot move the build history into {$this->path}.");
+        }
+
+        // The rename, which lives in the directory. In force already for
+        // every worker, so a directory that cannot be synced is not a failed
+        // change -- only one less certain to outlive a crash.
+        $listing = @fopen($directory, 'r');
+        if ($listing !== false) {
+            @fsync($listing);
+            fclose($listing);
         }
     }
 }
