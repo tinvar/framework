@@ -34,7 +34,8 @@ final class Realms
      * @param list<Realm> $hosts the platform's other hosts: a panel's own host, say
      * @param (\Closure(string): ?Realm)|null $lookup the realm a normalized host beyond those
      *        listed is: a tenant's subdomain of the platform's domain, or a custom domain from
-     *        the application's records -- verified and active ones only -- or null
+     *        the application's records -- verified and active ones only, the records
+     *        CustomDomainVerification deactivates a domain in when its DNS moves -- or null
      * @param list<string> $platformPanels panels only the platform's own hosts may carry, as admin
      */
     public function __construct(
