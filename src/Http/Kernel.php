@@ -132,8 +132,8 @@ final class Kernel
 
     /**
      * The gate every #[Authorize] is asked through, and the query cache the
-     * runners share: read by the testing layer (Tinvar\Testing), which runs
-     * a query in PHP with the same checks and cache a render's call meets.
+     * runners share: read by the testing layer, which runs a query in PHP
+     * with the same checks and cache a render's call meets.
      */
     public readonly Gate $gate;
 
@@ -423,7 +423,7 @@ final class Kernel
      *        answered beside the probes, ahead of everything else, since Caddy is not a
      *        visitor either
      * @param StandIns|null $standIns what answers in place of a query's or an action's
-     *        body: a test's fakes (Tinvar\Testing\Fakes\BodyFakes), asked by both
+     *        body: a test's fakes (the testing layer's BodyFakes), asked by both
      *        runners once a call has passed every check before its body. Refused
      *        wherever the environment says production, as the testing layer is
      * @param bool $clientTelemetry mount POST /_vitals and POST /_errors (TelemetryEndpoint):
