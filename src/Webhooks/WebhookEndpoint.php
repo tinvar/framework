@@ -33,11 +33,12 @@ use Tinvar\Tenancy\TenantSource;
  *   4. The timestamp, within TOLERANCE of now either way (401): a captured
  *      delivery stops working minutes after it was sent.
  *   5. The nonce, unseen for this webhook and tenant within that window
- *      (409): a captured delivery cannot be sent again inside it.
+ *      (409): a captured delivery cannot be sent again inside it -- nor to
+ *      another tenant that shares its secret (claim()).
  *
  * Then the handler runs as the tenant, in the panel the class declares,
- * as nobody. If it throws, the nonce is released, so the sender's retry
- * of the same delivery is not taken for a replay.
+ * as nobody. If it throws, the nonce is released for this tenant, so the
+ * sender's retry of the same delivery is not taken for a replay.
  *
  * No session, cookie, CSRF or global middleware: a webhook is reached by
  * a server, not a browser, and its signature is what a session is to a
@@ -120,21 +121,64 @@ final class WebhookEndpoint
             throw self::unsigned('The delivery\'s timestamp is outside the tolerance: sent too long ago, or by a clock far off.');
         }
 
-        $scope = $class . "\n" . $tenant;
-        if (!$this->nonces->claim($scope, $nonce, $timestamp + self::TOLERANCE, $now)) {
-            throw new HttpException(409, 'The delivery\'s nonce has been seen: it is a replay.', 'webhook_replayed');
-        }
+        [$own, $retry] = $this->claim($class, $tenant, $secret, $nonce, $timestamp + self::TOLERANCE, $now);
 
         $call = new WebhookCall($request, $rawBody, $tenant, $nonce, $timestamp);
         try {
             $response = $this->orm->actAs($tenant, fn (): mixed => $this->inPanel($class, fn (): mixed => $this->invoke($class, $call)));
         } catch (\Throwable $e) {
-            $this->nonces->release($scope, $nonce);
+            // The sender's retry is this tenant's to make, and no other's.
+            $this->nonces->claim($retry, $nonce, $timestamp + self::TOLERANCE, $now);
+            $this->nonces->release($own, $nonce);
 
             throw $e;
         }
 
         return $response instanceof Response ? $response : Response::make(204);
+    }
+
+    /**
+     * Claims the nonce for this webhook and tenant, and for everyone who
+     * holds its secret: the scopes to release and mark if the handler fails.
+     *
+     * What the sender signs names the tenant only when the tenant is in the
+     * path or query -- a signed URL's is; a host, or anything else outside
+     * them, is not. Where tenants share a secret -- one a provider issued,
+     * handed back for each of them -- one tenant's delivery verifies at
+     * another's host, and a nonce kept per tenant alone is new there: a
+     * captured delivery ran again as the other tenant. So it is claimed
+     * twice: per webhook and tenant, which a failed handler releases for
+     * the sender's retry; and per webhook and secret, which nothing
+     * releases. Seen under the secret before, it is a replay unless this
+     * tenant's own try of it failed, marked under a third scope that only
+     * a failed try claims.
+     *
+     * @return array{string, string} the tenant's own scope, and its failed-try scope
+     */
+    private function claim(string $class, string $tenant, #[\SensitiveParameter] string $secret, string $nonce, int $expiresAt, int $now): array
+    {
+        $key = hash_hmac('sha256', 'tinvar-webhook-nonce-scope', $secret);
+        $own = $class . "\n" . $tenant;
+        $shared = $class . "\nkey:" . $key;
+        $retry = $shared . "\nfailed:" . $tenant;
+
+        $replayed = new HttpException(409, 'The delivery\'s nonce has been seen: it is a replay.', 'webhook_replayed');
+        if (!$this->nonces->claim($own, $nonce, $expiresAt, $now)) {
+            throw $replayed;
+        }
+        if (!$this->nonces->claim($shared, $nonce, $expiresAt, $now)) {
+            // Seen under the secret. A retry after this tenant's own try
+            // failed finds that try's mark, and the claim above has made it
+            // the only one running; anything else was another tenant's.
+            if ($this->nonces->claim($retry, $nonce, $expiresAt, $now)) {
+                $this->nonces->release($retry, $nonce);
+                $this->nonces->release($own, $nonce);
+
+                throw $replayed;
+            }
+        }
+
+        return [$own, $retry];
     }
 
     /** @param class-string $class */

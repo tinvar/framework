@@ -12,7 +12,9 @@ namespace Tinvar\Webhooks;
  * The MAC covers the timestamp, the nonce, the method, the path and query
  * the delivery was sent to, and the body, so none can change without it
  * failing: a body cannot be replayed under a new timestamp, nor a delivery
- * for one tenant's URL sent to another's.
+ * for one tenant's URL sent to another's. Not the host: a tenant placed by
+ * its host is bound by its own secret, or -- where tenants share one -- by
+ * the endpoint claiming each nonce for everyone who holds it.
  */
 final class WebhookSignature
 {

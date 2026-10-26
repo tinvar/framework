@@ -27,8 +27,10 @@ use Tinvar\Http\Response;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
+use Tinvar\Tenancy\Host;
 use Tinvar\Tenancy\Signature;
 use Tinvar\Tenancy\SignedUrls;
+use Tinvar\Tenancy\TenantHosts;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\Journal;
 use Tinvar\Tests\Orm\Fixtures\Script;
@@ -38,6 +40,7 @@ use Tinvar\Webhooks\DerivedSecrets;
 use Tinvar\Webhooks\NonceStore;
 use Tinvar\Webhooks\WebhookCall;
 use Tinvar\Webhooks\WebhookEndpoint;
+use Tinvar\Webhooks\WebhookSecrets;
 use Tinvar\Webhooks\WebhookSignature;
 
 use function Tinvar\Tests\Jobs\Fixtures\schemaOf;
@@ -68,6 +71,43 @@ final class ScriptsHook
         ];
 
         return null;
+    }
+}
+
+/** Placed by the host it is sent to, and signed with one secret for every tenant: a provider's, say. */
+#[Webhook('/webhooks/provider'), TenantFrom(Host::class)]
+final class ProviderHook
+{
+    public function __construct(private readonly Journal $journal) {}
+
+    public function __invoke(WebhookCall $call): ?Response
+    {
+        if (($call->json()['fail'] ?? false) === true) {
+            throw new \RuntimeException('handler failed');
+        }
+        $this->journal->entries[] = ['tenant' => $call->tenant];
+
+        return null;
+    }
+}
+
+/** acme.shop.test is acme's, globex.shop.test globex's. */
+final class ProviderHosts implements TenantHosts
+{
+    public function tenantForHost(string $host): ?string
+    {
+        return ['acme.shop.test' => 'acme', 'globex.shop.test' => 'globex'][$host] ?? null;
+    }
+}
+
+/** The provider's one secret, whichever tenant the delivery is for. */
+final class OneSecret implements WebhookSecrets
+{
+    public const string SECRET = 'the-provider-signs-every-tenant-with-this';
+
+    public function secretFor(string $webhook, string $tenant): string
+    {
+        return self::SECRET;
     }
 }
 
@@ -236,6 +276,46 @@ it('refuses a replayed delivery, and accepts the sender\'s retry of one whose ha
     // rather than being refused as a replay.
     expect(fn () => $s->send($retry, $failing))->toThrow(\RuntimeException::class, 'handler failed')
         ->and(fn () => $s->send($retry, $failing))->toThrow(\RuntimeException::class, 'handler failed');
+})->with([
+    'in memory' => [static fn (Harness $h): NonceStore => new ArrayNonceStore()],
+    'in the database' => [static function (Harness $h): NonceStore {
+        DatabaseNonceStore::define(schemaOf($h->fixture->connection));
+
+        return new DatabaseNonceStore($h->fixture->connection);
+    }],
+]);
+
+// Where the tenant is not in what the sender signs -- a host, here -- and
+// its tenants share a secret, one tenant's delivery verifies at another's
+// host. The nonce was kept per tenant, so it was new there, and a captured
+// delivery for acme ran again as globex.
+it('refuses a delivery replayed to another tenant that shares its secret', function (\Closure $store) {
+    $h = new Harness();
+    $nonces = $store($h);
+    $h->container->instance(Host::class, new Host(new ProviderHosts()));
+    $endpoint = new WebhookEndpoint([ProviderHook::class], $h->orm, $h->container->resolver(), new OneSecret(), $nonces, clock: static fn (): int => NOW);
+    $deliver = static function (string $host, string $body, string $nonce) use ($endpoint): Response {
+        $request = new Request('POST', '/webhooks/provider', [
+            'host' => $host,
+            'content-type' => 'application/json',
+            WebhookSignature::HEADER => WebhookSignature::header(OneSecret::SECRET, NOW, $nonce, 'POST', '/webhooks/provider', $body),
+        ]);
+
+        return $endpoint->handle($request, $body);
+    };
+
+    $body = '{"event":"paid"}';
+    expect($deliver('acme.shop.test', $body, 'nonce-0123456789abcdef')->status)->toBe(204)
+        ->and(refusal(fn () => $deliver('globex.shop.test', $body, 'nonce-0123456789abcdef')))->toBe([409, 'webhook_replayed'])
+        ->and(refusal(fn () => $deliver('acme.shop.test', $body, 'nonce-0123456789abcdef')))->toBe([409, 'webhook_replayed']);
+
+    // One whose handler failed is open to the sender's retry, to the tenant
+    // it was sent to -- and still to no other.
+    $failing = '{"fail":true}';
+    expect(fn () => $deliver('acme.shop.test', $failing, 'nonce-fedcba9876543210'))->toThrow(\RuntimeException::class, 'handler failed')
+        ->and(refusal(fn () => $deliver('globex.shop.test', $failing, 'nonce-fedcba9876543210')))->toBe([409, 'webhook_replayed'])
+        ->and(fn () => $deliver('acme.shop.test', $failing, 'nonce-fedcba9876543210'))->toThrow(\RuntimeException::class, 'handler failed')
+        ->and($h->journal()->entries)->toBe([['tenant' => 'acme']]);
 })->with([
     'in memory' => [static fn (Harness $h): NonceStore => new ArrayNonceStore()],
     'in the database' => [static function (Harness $h): NonceStore {
