@@ -211,6 +211,28 @@ it('runs a job that fails once and then works, and keeps no failure', function (
         ->and($h->queue->size('default'))->toBe(0);
 });
 
+// A job's last try that never finished -- its worker killed, out of memory,
+// or gone at a timeout it swallowed -- is still its last try: failed() runs
+// in its context, which checks out as it did. It was skipped, as for a job
+// refused for a context that no longer does.
+it('runs a job\'s failed() hook when its last try never finished', function () {
+    Hooks::$failed = [];
+    $h = new Harness();
+    $h->dispatcher->dispatch(new AlwaysFails('dies on its last try'));
+    $h->work();
+    $h->now += 5;
+    $h->work();
+    $h->now += 30;
+    expect($h->queue->reserve(['default'], $h->now, 90))->not->toBeNull();
+    $h->now += 91;
+    $h->work();
+
+    expect(queueOf($h)->failed())->toHaveCount(1)
+        ->and(queueOf($h)->failed()[0]->error)->toContain('the last try never finished')
+        ->and(Hooks::$failed)->toHaveCount(1)
+        ->and(Hooks::$failed[0])->toContain('the last try never finished');
+});
+
 it('fails a job taken more often than it may be tried, and puts it back on retry', function () {
     $h = new Harness();
     $h->dispatcher->dispatch(new FailsOnce());

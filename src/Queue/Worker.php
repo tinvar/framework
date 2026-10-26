@@ -253,8 +253,10 @@ final class Worker
         }
 
         // The job's own last word, in its context -- not for a refusal,
-        // whose context is exactly what no longer checks out.
-        if ($envelope !== null && !$error instanceof JobRefused) {
+        // whose context is exactly what no longer checks out. Except one
+        // for attempts: its last try never finished, and its context is the
+        // one it was tried in.
+        if ($envelope !== null && (!$error instanceof JobRefused || $error->reason === 'attempts')) {
             try {
                 $this->runner->failed($envelope, $error);
             } catch (\Throwable $e) {
