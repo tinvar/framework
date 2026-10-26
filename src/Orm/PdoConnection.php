@@ -532,6 +532,13 @@ final class PdoConnection implements Connection, TenantSetting
         try {
             $this->pdo->commit();
         } catch (\Throwable $e) {
+            // Postgres rolls back a transaction whose COMMIT it refuses -- a
+            // deferred constraint, a serialization failure -- and a tenant
+            // set inside it with the rest. Nothing is left open for the
+            // rollback below to find, so it is forgotten here, whatever that
+            // finds: believed, it kept the session on the tenant before.
+            $this->tenantSetting = null;
+
             // SQLite leaves the transaction open when a COMMIT fails -- a
             // deferred constraint, a writer it could not wait out -- and the
             // next statement on this connection, on a worker the next

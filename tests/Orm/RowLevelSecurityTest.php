@@ -94,6 +94,8 @@ function withPolicies(\Closure $test): void
     Databases::inScratchSchema('pgsql', static function (\PDO $pdo, string $schema) use ($test): void {
         $pdo->exec('CREATE TABLE scripts (id TEXT PRIMARY KEY, name TEXT NOT NULL, tenant_id TEXT NOT NULL)');
         $pdo->exec('CREATE TABLE script_runs (id TEXT PRIMARY KEY, status TEXT NOT NULL, script_id TEXT NOT NULL, tenant_id TEXT NOT NULL)');
+        // Checked at the commit, so a tag for no script is a commit refused.
+        $pdo->exec('CREATE TABLE script_tags (script_id TEXT NOT NULL REFERENCES scripts (id) DEFERRABLE INITIALLY DEFERRED)');
         foreach (['acme', 'globex'] as $tenant) {
             foreach ([1, 2] as $i) {
                 $id = Uuid::v7();
@@ -284,6 +286,30 @@ describe('on Postgres', function () {
                         throw new \RuntimeException('rolled back');
                     });
                 } catch (\RuntimeException) {
+                }
+
+                return rawNames($connection);
+            });
+
+            expect($names)->toBe(['acme-script-1', 'acme-script-2']);
+        });
+    });
+
+    // A COMMIT Postgres refuses rolls the transaction back, and a setting
+    // made inside it with the rest, leaving no transaction open behind it.
+    // Believing the session held acme, the connection never told it again,
+    // and a query that forgot the predicate read the tenant before: here
+    // globex's rows, for a job that went on as acme after the failure.
+    it('tells the session again after a refused commit took the setting back', function () {
+        withPolicies(function (PdoConnection $connection): void {
+            $orm = new Orm($connection, new IdentityMap('test'));
+            $orm->actAs('globex', static fn (): array => rawNames($connection));
+
+            $names = $orm->actAs('acme', static function () use ($orm, $connection): array {
+                try {
+                    $orm->transaction(static fn (): int => $connection->execute('INSERT INTO script_tags VALUES (?)', [Uuid::v7()]));
+                } catch (\PDOException) {
+                    // the deferred key, refused at the commit
                 }
 
                 return rawNames($connection);
