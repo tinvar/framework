@@ -41,6 +41,7 @@ use Tinvar\Observability\Logger;
 use Tinvar\Observability\Metrics;
 use Tinvar\Observability\Probes;
 use Tinvar\Observability\Telemetry;
+use Tinvar\Observability\TelemetryEndpoint;
 use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
@@ -112,6 +113,9 @@ final class Kernel
     /** /_upload and /_file, mounted only when an application supplies Uploads. */
     public readonly ?UploadEndpoint $uploads_;
     public readonly ?FileEndpoint $files_;
+
+    /** /_vitals and /_errors, mounted only when an application asks for client telemetry. */
+    public readonly ?TelemetryEndpoint $clientTelemetry_;
 
     /**
      * What a loader issues upload tickets and file URLs with, also in the
@@ -202,6 +206,11 @@ final class Kernel
         'uploads' => 30,
         // Images on a page, each its own request.
         'files' => 600,
+        // /_vitals and /_errors: a vitals report when a page is left, and
+        // the errors it saw, gathered -- a handful a minute from anyone
+        // reading the site, and the first budget a flood of fabricated
+        // reports exhausts.
+        'telemetry' => 60,
     ];
 
     private readonly ExceptionHandler $exceptions;
@@ -255,6 +264,7 @@ final class Kernel
     private readonly Pipeline $handoffStack;
     private readonly Pipeline $uploadStack;
     private readonly Pipeline $fileStack;
+    private readonly Pipeline $telemetryStack;
 
     /**
      * The request attribute carrying the page's route token, for the
@@ -416,6 +426,13 @@ final class Kernel
      *        body: a test's fakes (Tinvar\Testing\Fakes\BodyFakes), asked by both
      *        runners once a call has passed every check before its body. Refused
      *        wherever the environment says production, as the testing layer is
+     * @param bool $clientTelemetry mount POST /_vitals and POST /_errors (TelemetryEndpoint):
+     *        a page's web vitals and the errors its script saw, as @tinvar/react/telemetry
+     *        reports them, behind the global stack, CSRF and the telemetry throttle, and
+     *        recorded in $telemetry's metrics and log. Needs $telemetry, with metrics.
+     * @param string|null $clientAssets the directory the build's client assets are served
+     *        from at /assets/: a reported error's source file is kept only when it is one
+     *        of them, and without one, none is
      */
     public function __construct(
         public readonly Orm $orm,
@@ -465,6 +482,8 @@ final class Kernel
         array $redirectOrigins = [],
         private readonly ?TlsAskEndpoint $tlsAsk = null,
         ?StandIns $standIns = null,
+        bool $clientTelemetry = false,
+        ?string $clientAssets = null,
     ) {
         if ($toolbar !== null && !$dev) {
             throw new \InvalidArgumentException(
@@ -486,6 +505,13 @@ final class Kernel
             );
         }
         $this->standIns = $standIns;
+        // A report with nowhere to be recorded would be taken and dropped:
+        // refused here, rather than an endpoint that answers 204 to nothing.
+        if ($clientTelemetry && $telemetry?->metrics === null) {
+            throw new \InvalidArgumentException(
+                'Client telemetry records vitals as metrics and errors in the log: give this Kernel a Telemetry with Metrics.',
+            );
+        }
 
         // Failures go to the structured log unless the application said
         // where else they go.
@@ -812,6 +838,23 @@ final class Kernel
             ...$this->throttleFor($throttle, 'files', $limits, byAddress: false),
         ]);
 
+        // "`throttle:telemetry`, CSRF": a report is a POST from a page, so it
+        // meets the check every POST does, and its own budget after it. No
+        // authentication -- a visitor with no account has a page to report
+        // on too -- and nothing the endpoint does needs one: it names a
+        // route the registry has, and writes a metric and a log line.
+        $this->telemetryStack = new Pipeline([
+            ...$this->floodGuardFor($throttle, 'telemetry', $limits),
+            ...$global,
+            new VerifyCsrfToken(tokens: $csrf),
+            ...$this->throttleFor($throttle, 'telemetry', $limits, byAddress: true),
+            ...$this->throttleFor($throttle, 'telemetry', $limits, byAddress: false),
+        ]);
+        // Checked above to have the Telemetry and Metrics it records into.
+        $this->clientTelemetry_ = $clientTelemetry
+            ? new TelemetryEndpoint($telemetry->logger, $telemetry->metrics, $this->routes, $clientAssets)
+            : null;
+
         $this->uploads_ = $uploads === null ? null : new UploadEndpoint(
             uploads: $uploads,
             actions: $this->actions,
@@ -1110,6 +1153,18 @@ final class Kernel
                 return TranslateRedirects::translate(
                     $request,
                     $this->handoffStack->run($request, fn (Request $passed): Response => $this->handoffStep($passed)),
+                );
+            }
+
+            // A page's own reports about itself. Their paths are their own;
+            // the method is checked before the stack runs, as an action's is.
+            if ($this->clientTelemetry_ !== null && $this->clientTelemetry_->matches($request)) {
+                $this->telemetry?->route(TelemetryEndpoint::endpoint($request));
+                TelemetryEndpoint::assertMethod($request);
+
+                return $this->telemetryStack->run(
+                    $request,
+                    fn (Request $passed): Response => $this->clientTelemetry_->handle($passed, $rawBody),
                 );
             }
 
