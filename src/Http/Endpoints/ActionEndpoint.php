@@ -103,6 +103,19 @@ final class ActionEndpoint
     }
 
     /**
+     * The answer to a browser's own form post that failed CSRF: a 303 back,
+     * with the "page expired" its form shows carried by the flash cookie
+     * itself, never the store (see Flash::expired()). Null for an action
+     * there is no form of: back, and nothing to show.
+     */
+    public function expired(Request $request, ?string $action): Response
+    {
+        $response = Response::redirect(Flash::back($request), 303);
+
+        return $action === null ? $response : $response->withCookie(Flash::COOKIE, Flash::expired($action), maxAge: Flash::LIFETIME);
+    }
+
+    /**
      * How many route tokens one action request will even look at.
      *
      * Distinct from Revalidator::MAX_ROUTES, which bounds RENDERS. This

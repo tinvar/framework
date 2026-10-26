@@ -90,3 +90,29 @@ it('runs no write statement for a page view whose session has no flash waiting, 
     expect($flashes->pull($request))->toBe(['flash' => ['message' => 'Saved']])
         ->and($flashes->pull($request))->toBe([]);
 });
+
+// A browser form post that fails CSRF -- from anyone, with no cookie at all
+// -- is sent back with "page expired" in the flash cookie: nothing in the
+// table, so nothing anybody can make the one writer do.
+it('keeps a page expired out of the table', function () {
+    $database = Shop::testDatabase();
+    $kernel = Kernel::fromEnvironment('/tmp/tinvar-shop-flash-none.sock', key: KEY, database: $database);
+    $watcher = new \PDO("sqlite:{$database}");
+    $count = static fn (): int => (int) $watcher->query('SELECT COUNT(*) FROM flashes')?->fetchColumn();
+    $before = $count();
+
+    $response = $kernel->handle(new Request(
+        'POST',
+        '/_action/account.signIn',
+        ['content-type' => 'application/x-www-form-urlencoded', 'accept' => 'text/html'],
+        [],
+        ['email' => 'someone@example.com'],
+        [],
+        null,
+        '198.51.100.9',
+    ), 'email=someone%40example.com');
+
+    expect($response->status)->toBe(303)
+        ->and($response->cookies()[Flash::COOKIE] ?? '')->toStartWith(Flash::COOKIE . '=' . Flash::expired('account.signIn') . ';')
+        ->and($count())->toBe($before);
+});

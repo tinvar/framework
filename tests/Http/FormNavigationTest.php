@@ -160,6 +160,14 @@ function submitted(string $action, array $fields, array $cookies, string $refere
     ], [], $fields, $cookies);
 }
 
+/** A cookie's value as $response sets it, '' when it sets none. */
+function cookieValue(Response $response, string $name): string
+{
+    $line = $response->cookies()[$name] ?? '';
+
+    return str_starts_with($line, "{$name}=") ? explode(';', substr($line, \strlen($name) + 1), 2)[0] : '';
+}
+
 /** A page, recording the request its responder was handed. */
 function page(?Request &$seen = null): \Closure
 {
@@ -343,9 +351,12 @@ describe('the page it is sent back to', function () {
 // not an error screen." A form left open past its session was answered
 // with the framework's bare 419 page.
 describe('a form posted without script, after its session changed', function () {
-    it('goes back with a page-expired flash rather than an error page', function () {
+    // In the flash cookie itself, never the store: a post that fails CSRF
+    // may be anyone's -- with no cookie, to any name -- and each one kept
+    // was a write on the application's database anybody could ask for.
+    it('goes back with a page-expired flash rather than an error page, carried by the cookie', function () {
         $flashes = new SessionFlashes();
-        [$kernel, , $rack, $signIn] = kernel($flashes);
+        [$kernel, $path, $rack, $signIn] = kernel($flashes);
         $cookies = [...cookies(), VerifyCsrfToken::COOKIE => 'a-token-from-an-older-session'];
         $signIn();
 
@@ -356,12 +367,25 @@ describe('a form posted without script, after its session changed', function () 
 
         expect($response->status)->toBe(303)
             ->and($response->header('location'))->toBe('/racks/r-1?tab=units')
-            ->and($flashes->held['session-a'])->toBe(['form' => [
-                'action' => 'RackActions.moveUnit',
-                'errors' => [],
-                'old' => [],
-                'expired' => true,
-            ]]);
+            ->and($flashes->held)->toBe([])
+            ->and(cookieValue($response, Flash::COOKIE))->toBe(Flash::expired('RackActions.moveUnit'));
+
+        // The page it is sent back to shows it, asks the store nothing, and
+        // lets the cookie go.
+        $signIn();
+        $back = $kernel->handle(
+            new Request('GET', $path, ['accept' => 'text/html'], cookies: [...cookies(), Flash::COOKIE => Flash::expired('RackActions.moveUnit')]),
+            page($seen),
+        );
+
+        expect($seen?->attribute(Kernel::FLASH))->toBe(['form' => [
+            'action' => 'RackActions.moveUnit',
+            'errors' => [],
+            'old' => [],
+            'expired' => true,
+        ]])
+            ->and($flashes->reads)->toBe(0)
+            ->and($back->cookies()[Flash::COOKIE] ?? '')->toContain('Max-Age=0');
     });
 
     // The post failed CSRF, so whoever sent it may not be the person the
@@ -371,12 +395,37 @@ describe('a form posted without script, after its session changed', function () 
         $flashes = new SessionFlashes();
         [$kernel] = kernel($flashes);
 
-        $kernel->handle(
+        $response = $kernel->handle(
             submitted('RackActions.moveUnit', ['note' => 'chosen by another site'], [...cookies(), VerifyCsrfToken::COOKIE => 'x']),
             page(),
         );
 
-        expect(json_encode($flashes->held))->not->toContain('chosen by another site');
+        expect(json_encode($flashes->held))->not->toContain('chosen by another site')
+            // The cookie names the form, and carries nothing posted to it.
+            ->and(cookieValue($response, Flash::COOKIE))->toBe(Flash::expired('RackActions.moveUnit'));
+    });
+
+    // Anyone's post, with no cookie at all, to a name no action has: back,
+    // nothing kept, and nothing for the next page to show. Nor does a cookie
+    // the visitor wrote naming one show anything.
+    it('keeps nothing for a post to no action, and shows no expired cookie naming one', function () {
+        $flashes = new SessionFlashes();
+        [$kernel, $path] = kernel($flashes);
+
+        $response = $kernel->handle(submitted('no.such.action', ['x' => '1'], []), page());
+
+        expect($response->status)->toBe(303)
+            ->and($flashes->held)->toBe([])
+            ->and($response->cookies())->not->toHaveKey(Flash::COOKIE);
+
+        $back = $kernel->handle(
+            new Request('GET', $path, ['accept' => 'text/html'], cookies: [...cookies(), Flash::COOKIE => Flash::expired('no.such.action')]),
+            page($seen),
+        );
+
+        expect($seen?->attribute(Kernel::FLASH))->toBeNull()
+            ->and($flashes->reads)->toBe(0)
+            ->and($back->cookies()[Flash::COOKIE] ?? '')->toContain('Max-Age=0');
     });
 
     it('still refuses a script caller with 419, which retries by itself', function () {

@@ -1067,14 +1067,14 @@ final class Kernel
                     // retries with the refreshed cookie and arranges that
                     // itself; a browser's own post is sent back here. With
                     // no input put back: the post failed CSRF, so whoever
-                    // made it may not be the person it is shown to.
+                    // made it may not be the person it is shown to. And in
+                    // the flash cookie, never the store: such a post may be
+                    // anyone's, and each one kept was a write on the
+                    // application's database anybody could ask for.
                     if ($e->status === 419 && ActionEndpoint::isFormNavigation($request)) {
-                        return $this->actions_->back($request, ['form' => [
-                            'action' => substr($request->path, \strlen(ActionEndpoint::PREFIX)),
-                            'errors' => [],
-                            'old' => [],
-                            'expired' => true,
-                        ]]);
+                        $action = substr($request->path, \strlen(ActionEndpoint::PREFIX));
+
+                        return $this->actions_->expired($request, $this->actions->has($action) ? $action : null);
                     }
                     throw $e;
                 }
@@ -1656,7 +1656,8 @@ final class Kernel
      * script sends, and the flash such a post left for this page.
      *
      * The flash is read only when the cookie says one is waiting, so a page
-     * with nothing flashed asks the store nothing; and only by a document
+     * with nothing flashed asks the store nothing -- and a page expired, the
+     * cookie carries itself (Flash::expired()); and only by a document
      * request, which is where a post made without script lands: its 303 is
      * followed by the browser, as a document load. Never by a prefetch,
      * which runs a page the person may not open -- "Prefetch requests skip
@@ -1674,8 +1675,19 @@ final class Kernel
             $request = $request->withAttribute(self::CSRF_TOKEN, $token);
         }
 
-        if ($this->flashes === null || $request->cookie(Flash::COOKIE) === null
-            || $request->isPrefetch() || $request->wantsRscPayload()) {
+        $cookie = $request->cookie(Flash::COOKIE);
+        if ($cookie === null || $request->isPrefetch() || $request->wantsRscPayload()) {
+            return [$request, false];
+        }
+
+        // A page expired, which the cookie carries itself: shown for an
+        // action there is, and read without asking the store anything.
+        $expired = Flash::expiredAction($cookie);
+        if ($expired !== null) {
+            return [$this->actions->has($expired) ? $request->withAttribute(self::FLASH, Flash::expiredForm($expired)) : $request, true];
+        }
+
+        if ($this->flashes === null) {
             return [$request, false];
         }
 
