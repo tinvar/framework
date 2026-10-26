@@ -8,35 +8,65 @@ namespace Tinvar\Packages;
  * The layer rule of `tinvar check`: which of the framework's own parts may
  * name which, held before they are packages of their own (ADR 0054).
  *
- * Layers are listed lowest first, and each may use itself and the layers
- * below it, never one above. A layer's members are namespaces, written with
- * a trailing `\` and taking everything under them, and single classes: a
- * class sits in the layer of its most specific member, so
+ * Layers are listed lowest first, and each names the layers below it that
+ * it may use: it uses those and itself, never one above, and never one
+ * beside it that it does not name -- testing and codegen both stand on the
+ * framework, and neither on the other. A layer's members are namespaces,
+ * written with a trailing `\` and taking everything under them, and single
+ * classes: a class sits in the layer of its most specific member, so
  * `Tinvar\Attributes\Table` can be the database's while the rest of
  * `Tinvar\Attributes\` is the framework's, with no class moved or renamed.
  *
  * A use is every name SourceReferences finds -- an import, a qualified name
- * or `::class` in code, a class name in a string, a qualified name in a
- * comment or docblock -- so a database class cannot reach the framework by
- * spelling the name out in full, or by putting it in a docblock PHPStan
- * reads. And it fails closed: a file under a source in no layer, or a
- * source that cannot be read, is a violation, not a file skipped.
+ * or `::class` in code, a bare name of a class beside it in a shared
+ * namespace, a class name in a string, a qualified name in a comment or
+ * docblock -- so a database class cannot reach the framework by spelling
+ * the name out in full, by sharing its namespace, or by putting it in a
+ * docblock PHPStan reads. And it fails closed: a file under a source in no
+ * layer, or a source that cannot be read, is a violation, not a file
+ * skipped.
  */
 final readonly class Layers
 {
+    /** @var array<string, list<string>> name => the layers it may use besides itself */
+    private array $uses;
+
     /**
      * @param array<string, list<string>> $layers  name => members, lowest layer first
+     * @param array<string, list<string>> $uses    name => the layers below it that it may use
      * @param list<string>                $sources directories the check reads, relative to the root it is given
+     * @throws \InvalidArgumentException for a layer that would use one not below it
      */
     public function __construct(
         private array $layers,
+        array $uses = [],
         private array $sources = [],
-    ) {}
+    ) {
+        $below = [];
+        $allowed = [];
+        foreach (array_keys($layers) as $layer) {
+            $allowed[$layer] = $uses[$layer] ?? [];
+            foreach ($allowed[$layer] as $used) {
+                if (!isset($below[$used])) {
+                    throw new \InvalidArgumentException("Layer '{$layer}' may use only layers listed before it, and '{$used}' is not one.");
+                }
+            }
+            $below[$layer] = true;
+        }
+
+        $unknown = array_diff(array_keys($uses), array_keys($layers));
+        if ($unknown !== []) {
+            throw new \InvalidArgumentException('No such layer: ' . implode(', ', $unknown) . '.');
+        }
+
+        $this->uses = $allowed;
+    }
 
     /**
      * The framework's layers: support, which uses nothing of Tinvar's; the
      * database, which uses only support; the framework, which uses either;
-     * and codegen, already a package of its own, over all three.
+     * and on the framework, the testing layer and codegen -- already a
+     * package of its own -- each over all three and neither over the other.
      *
      * Where the map is finer than a namespace, the namespace is shared: the
      * attributes the ORM reads are the database's, the container's is
@@ -66,7 +96,14 @@ final readonly class Layers
                     'Tinvar\\Attributes\\TenantScoped',
                 ],
                 'framework' => ['Tinvar\\'],
+                'testing' => ['Tinvar\\Testing\\'],
                 'codegen' => ['Tinvar\\Codegen\\'],
+            ],
+            [
+                'database' => ['support'],
+                'framework' => ['support', 'database'],
+                'testing' => ['support', 'database', 'framework'],
+                'codegen' => ['support', 'database', 'framework'],
             ],
             ['packages/framework/src', 'packages/codegen/src'],
         );
@@ -96,12 +133,11 @@ final readonly class Layers
         return $layer;
     }
 
-    /** Whether a name in layer $from may use one in layer $to: itself, or one below it. */
+    /** Whether a name in layer $from may use one in layer $to: its own, or one it names. */
     public function mayUse(string $from, string $to): bool
     {
-        $order = array_flip(array_keys($this->layers));
-
-        return isset($order[$from], $order[$to]) && $order[$to] <= $order[$from];
+        return isset($this->uses[$from], $this->uses[$to])
+            && ($from === $to || \in_array($to, $this->uses[$from], true));
     }
 
     /**

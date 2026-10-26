@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 /**
  * The layer rule: support uses nothing of Tinvar's, the database uses only
- * support, the framework uses either, and codegen all three (ADR 0054).
+ * support, the framework uses either, and the testing layer and codegen all
+ * three, but not each other (ADR 0054).
  *
  * Every way PHP lets a file name a class counts -- an import, a fully
  * qualified name, a name through an alias or below the namespace, a
@@ -64,6 +65,7 @@ describe('the layers', function () {
         'the rest of Data' => ['Tinvar\Data\Mapper', 'framework'],
         'tenancy' => ['Tinvar\Tenancy\TenantHierarchy', 'framework'],
         'codegen' => ['Tinvar\Codegen\TypeScriptGenerator', 'codegen'],
+        'the testing layer' => ['Tinvar\Testing\ModelLeaks', 'testing'],
         'a namespace by its name' => ['Tinvar\Orm', 'database'],
         'a leading backslash' => ['\Tinvar\Orm\Model', 'database'],
         'in any case' => ['tinvar\orm\model', 'database'],
@@ -73,19 +75,34 @@ describe('the layers', function () {
         'nothing' => ['PDO', null],
     ]);
 
-    it('lets a layer use itself and those below it, never one above', function () {
+    it('lets a layer use itself and the layers below it it names, never one above or beside it', function () {
         $layers = Layers::framework();
 
-        expect($layers->names())->toBe(['support', 'database', 'framework', 'codegen'])
+        expect($layers->names())->toBe(['support', 'database', 'framework', 'testing', 'codegen'])
             ->and($layers->mayUse('database', 'support'))->toBeTrue()
             ->and($layers->mayUse('database', 'database'))->toBeTrue()
             ->and($layers->mayUse('framework', 'database'))->toBeTrue()
+            ->and($layers->mayUse('testing', 'framework'))->toBeTrue()
             ->and($layers->mayUse('codegen', 'support'))->toBeTrue()
             ->and($layers->mayUse('database', 'framework'))->toBeFalse()
             ->and($layers->mayUse('support', 'database'))->toBeFalse()
+            ->and($layers->mayUse('framework', 'testing'))->toBeFalse()
             ->and($layers->mayUse('framework', 'codegen'))->toBeFalse()
-            ->and($layers->mayUse('database', 'nowhere'))->toBeFalse();
+            ->and($layers->mayUse('codegen', 'testing'))->toBeFalse()
+            ->and($layers->mayUse('testing', 'codegen'))->toBeFalse()
+            ->and($layers->mayUse('database', 'nowhere'))->toBeFalse()
+            ->and($layers->mayUse('nowhere', 'nowhere'))->toBeFalse();
     });
+
+    it('refuses a map in which a layer would use one not below it', function (array $uses, string $message) {
+        expect(fn () => new Layers(['low' => ['A\\'], 'high' => ['B\\']], $uses))
+            ->toThrow(\InvalidArgumentException::class, $message);
+    })->with([
+        'one above' => [['low' => ['high']], "Layer 'low' may use only layers listed before it, and 'high' is not one."],
+        'itself' => [['low' => ['low']], "Layer 'low' may use only layers listed before it, and 'low' is not one."],
+        'none there is' => [['high' => ['middle']], "Layer 'high' may use only layers listed before it, and 'middle' is not one."],
+        'for none there is' => [['middle' => ['low']], 'No such layer: middle.'],
+    ]);
 });
 
 describe('a database class', function () {
@@ -168,7 +185,7 @@ describe('a database class', function () {
 
         expect(crossed(orm(docblock: $docblock, body: '// Reset with Http\RequestScope.')))->toBe([
             'Example.php:10: database uses framework, Tinvar\Live\Invalidator (comment)',
-            'Example.php:11: database uses framework, Tinvar\Testing\ModelLeaks (comment)',
+            'Example.php:11: database uses testing, Tinvar\Testing\ModelLeaks (comment)',
             'Example.php:13: database uses framework, Tinvar\Http\Request (comment)',
             'Example.php:17: database uses framework, Tinvar\Http\RequestScope (comment)',
         ]);
@@ -251,6 +268,12 @@ describe('the other layers', function () {
         expect(crossed($source))->toBe([]);
     });
 
+    it('fails the framework naming the testing layer, which is built on it', function () {
+        $source = "<?php\nnamespace Tinvar\\Http;\n\nfinal class Example { public function a(): string { return \\Tinvar\\Testing\\Testing::class; } }\n";
+
+        expect(crossed($source))->toBe(['Example.php:4: framework uses testing, Tinvar\Testing\Testing (code)']);
+    });
+
     it('fails the framework naming codegen, which is built on it', function () {
         $source = "<?php\nnamespace Tinvar\\Generators;\n\n// As \\Tinvar\\Codegen\\TypeScriptGenerator does.\nfinal class Example {}\n";
 
@@ -263,7 +286,7 @@ describe('the other layers', function () {
     });
 
     it('fails a source it cannot read rather than passing it', function () {
-        $layers = new Layers(['only' => ['Tinvar\\']], ['nowhere/src']);
+        $layers = new Layers(['only' => ['Tinvar\\']], sources: ['nowhere/src']);
 
         expect($layers->check(sys_get_temp_dir()))->toBe(['nowhere/src: not a directory, so its layers cannot be checked.']);
     });
@@ -276,7 +299,7 @@ describe('the other layers', function () {
         file_put_contents($root . '/src/Live/Invalidator.php', "<?php\nnamespace Tinvar\\Live;\n\nfinal class Invalidator {}\n");
 
         try {
-            $layers = new Layers(['database' => ['Tinvar\\Orm\\'], 'framework' => ['Tinvar\\']], ['src']);
+            $layers = new Layers(['database' => ['Tinvar\\Orm\\'], 'framework' => ['Tinvar\\']], ['framework' => ['database']], ['src']);
 
             expect($layers->check($root))->toBe(['src/Orm/Example.php:4: database uses framework, Tinvar\Live\Invalidator (comment)']);
         } finally {
