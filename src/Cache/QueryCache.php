@@ -8,7 +8,7 @@ use Tinvar\Attributes\Query;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Orm\Model;
-use Tinvar\Orm\TenantSubtrees;
+use Tinvar\Orm\TenantHierarchy;
 
 /**
  * The query cache.
@@ -143,10 +143,10 @@ final class QueryCache
      * child's write would leave its parent's pages stale for their TTL.
      *
      * @param list<string> $tags
-     * @param TenantSubtrees|null $tenants the tenant tree; null for tenants with none
+     * @param TenantHierarchy|null $tenants the tenant tree; null for tenants with none
      * @return int entries invalidated
      */
-    public function forgetTags(array $tags, string $tenant, ?TenantSubtrees $tenants): int
+    public function forgetTags(array $tags, string $tenant, ?TenantHierarchy $tenants): int
     {
         return $this->store->forgetTags(TagNamespace::written($tags, $tenant, $tenants));
     }

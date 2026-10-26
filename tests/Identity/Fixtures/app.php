@@ -37,8 +37,8 @@ use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
 use Tinvar\Tenancy\Host;
-use Tinvar\Tenancy\TenantHierarchy;
-use Tinvar\Tenancy\TenantTree;
+use Tinvar\Orm\TenantHierarchy;
+use Tinvar\Orm\TenantTree;
 use Tinvar\Webhooks\ArrayNonceStore;
 
 /**

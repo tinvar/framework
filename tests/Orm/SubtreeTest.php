@@ -16,8 +16,8 @@ namespace Tinvar\Tests\Orm\Subtree;
 
 use Tinvar\Orm\MissingRow;
 use Tinvar\Orm\Orm;
-use Tinvar\Tenancy\TenantHierarchy;
-use Tinvar\Tenancy\TenantTree;
+use Tinvar\Orm\TenantHierarchy;
+use Tinvar\Orm\TenantTree;
 use Tinvar\Tests\Orm\Fixtures\Script;
 use Tinvar\Tests\Orm\Fixtures\ScriptRun;
 use Tinvar\Tests\Tenancy\Fixtures\Hierarchy\Tenants;
@@ -112,6 +112,36 @@ describe('the hierarchy', function () {
         ));
 
         expect(fn () => $huge->subtree('root'))->toThrow(\LengthException::class, 'more than the 1000');
+    });
+
+    // The limits ship with the ORM and hold by the Orm's own signature: it
+    // takes this final class, so no tree an application gives it is walked
+    // without them, with this package alone or with the framework (ADR 0055).
+    it('is the final class the Orm takes, so no implementation of it can drop the limits', function () {
+        $parameter = new \ReflectionMethod(Orm::class, '__construct')->getParameters()[2];
+        $type = $parameter->getType();
+        $tenants = new TenantHierarchy(new Tree());
+
+        expect($parameter->getName())->toBe('tenants')
+            ->and($type instanceof \ReflectionNamedType ? $type->getName() : null)->toBe(TenantHierarchy::class)
+            ->and(new \ReflectionClass(TenantHierarchy::class)->isFinal())->toBeTrue()
+            ->and(new \ReflectionMethod(Orm::class, 'tenants')->getReturnType()?->__toString())->toBe('?' . TenantHierarchy::class)
+            ->and(new Orm(new Tenants()->connection, tenants: $tenants)->tenants())->toBe($tenants);
+    });
+
+    it('keeps its names from before the split as aliases, for one release', function () {
+        set_error_handler(static fn (int $level): bool => $level === \E_USER_DEPRECATED);
+
+        try {
+            $hierarchy = new \Tinvar\Tenancy\TenantHierarchy(new Tree());
+            $tree = new \ReflectionClass('Tinvar\Tenancy\TenantTree')->getName();
+        } finally {
+            restore_error_handler();
+        }
+
+        expect($hierarchy)->toBeInstanceOf(TenantHierarchy::class)
+            ->and($tree)->toBe(TenantTree::class)
+            ->and($hierarchy->contains('reseller', 'acme-west'))->toBeTrue();
     });
 });
 

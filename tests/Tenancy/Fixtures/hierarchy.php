@@ -8,8 +8,8 @@ use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Support\Uuid;
-use Tinvar\Tenancy\TenantHierarchy;
-use Tinvar\Tenancy\TenantTree;
+use Tinvar\Orm\TenantHierarchy;
+use Tinvar\Orm\TenantTree;
 
 require_once __DIR__ . '/../../Orm/Fixtures/tenant.php';
 

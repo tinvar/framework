@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Cache;
 
-use Tinvar\Orm\TenantSubtrees;
+use Tinvar\Orm\TenantHierarchy;
 
 /**
  * Where a tag is kept: the namespace a read files it under, and every
@@ -46,14 +46,14 @@ final class TagNamespace
      *
      * The tree is the one reads across a subtree are made with; without one
      * nothing reads across a subtree, and the tenant's own is all there is.
-     * Walked up within the tree's limits (TenantSubtrees), so a tree that
+     * Walked up within the tree's limits (TenantHierarchy), so a tree that
      * loops reaches the tenants above as far as the loop and no further.
      *
      * @param list<string> $tags as the application names them
      * @return list<string> namespace by namespace, the tenant's own first, each
      *         holding $tags in the order given
      */
-    public static function written(array $tags, string $tenant, ?TenantSubtrees $tenants): array
+    public static function written(array $tags, string $tenant, ?TenantHierarchy $tenants): array
     {
         $namespaced = self::under($tags, self::of($tenant, false));
         if ($tenants === null || $tenant === '') {
