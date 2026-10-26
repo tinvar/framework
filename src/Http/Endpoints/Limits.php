@@ -49,6 +49,18 @@ final class Limits
     public const int MAX_JSON_DEPTH_CEILING = 64;
 
     /**
+     * The least an application may set the depth limit to: 2.
+     *
+     * Every body the endpoints take is an object -- an action's input, a
+     * query's arguments -- and PHP counts the object itself as a level, so
+     * a depth of 1 refuses even `{}`. A limit that turns every call away is
+     * no limit an application meant, only endpoints that no longer work;
+     * it is refused like one over the ceiling. At 2, a flat object of
+     * scalars still arrives.
+     */
+    public const int MIN_JSON_DEPTH = 2;
+
+    /**
      * Keys and elements in one body, counted before it is decoded.
      *
      * PHP's arrays are not hash-randomised, so a megabyte of keys chosen to
@@ -68,9 +80,10 @@ final class Limits
     public const int MAX_PRECOGNITION_FIELDS = 32;
 
     /**
-     * Refuses a body or depth limit that is not positive, or is over its
-     * ceiling -- when the endpoints are built, so a misconfiguration stops
-     * the application starting rather than opening the endpoints, and again
+     * Refuses a body limit that is not positive, a depth limit under
+     * MIN_JSON_DEPTH, or either over its ceiling -- when the endpoints are
+     * built, so a misconfiguration stops the application starting rather
+     * than opening the endpoints or closing them to every call, and again
      * by the decoders below, so no caller of theirs can pass one either.
      *
      * @phpstan-assert positive-int $maxBodyBytes
@@ -87,10 +100,12 @@ final class Limits
                 self::MAX_BODY_BYTES,
             ));
         }
-        if ($maxJsonDepth < 1 || $maxJsonDepth > self::MAX_JSON_DEPTH_CEILING) {
+        if ($maxJsonDepth < self::MIN_JSON_DEPTH || $maxJsonDepth > self::MAX_JSON_DEPTH_CEILING) {
             throw new \InvalidArgumentException(\sprintf(
-                'The endpoint JSON depth limit is %d; it must be from 1 to %d (%d is the default).',
+                'The endpoint JSON depth limit is %d; it must be from %d to %d (%d is the default). Every body is '
+                . 'an object, which is itself a level: under %2$d, no call would get through.',
                 $maxJsonDepth,
+                self::MIN_JSON_DEPTH,
                 self::MAX_JSON_DEPTH_CEILING,
                 self::MAX_JSON_DEPTH,
             ));

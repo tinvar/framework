@@ -178,10 +178,22 @@ it('refuses a limit that is not positive or is over its ceiling', function (arra
     'a negative body' => [['maxBodyBytes' => -1], 'The endpoint body limit is -1 bytes'],
     'a body over the ceiling' => [['maxBodyBytes' => Limits::MAX_BODY_BYTES_CEILING + 1], 'it must be from 1 to 8388608'],
     'an unlimited body' => [['maxBodyBytes' => PHP_INT_MAX], 'it must be from 1 to 8388608'],
-    'no depth' => [['maxJsonDepth' => 0], 'The endpoint JSON depth limit is 0; it must be from 1 to 64'],
-    'a depth over the ceiling' => [['maxJsonDepth' => Limits::MAX_JSON_DEPTH_CEILING + 1], 'it must be from 1 to 64'],
-    'PHP\'s own depth' => [['maxJsonDepth' => 512], 'it must be from 1 to 64'],
+    'no depth' => [['maxJsonDepth' => 0], 'The endpoint JSON depth limit is 0; it must be from 2 to 64'],
+    'a depth no body fits' => [['maxJsonDepth' => 1], 'The endpoint JSON depth limit is 1; it must be from 2 to 64'],
+    'a depth over the ceiling' => [['maxJsonDepth' => Limits::MAX_JSON_DEPTH_CEILING + 1], 'it must be from 2 to 64'],
+    'PHP\'s own depth' => [['maxJsonDepth' => 512], 'it must be from 2 to 64'],
 ]);
+
+// The floor is the shallowest depth a call still gets through at: every
+// body is an object, and PHP counts it as a level. One below it refuses
+// `{}` itself, so the Kernel refuses it rather than build endpoints that
+// answer every call 400.
+it('takes a flat body at the shallowest depth it allows', function () {
+    expect(Limits::MIN_JSON_DEPTH)->toBe(2)
+        ->and(post(kernel(maxJsonDepth: Limits::MIN_JSON_DEPTH), ['pad' => 'x']))->toBe(['action' => 200, 'query' => 200])
+        ->and(json_decode('{}', true, Limits::MIN_JSON_DEPTH - 1))->toBeNull()
+        ->and(fn () => Limits::decodeJson('{"pad":"x"}', Limits::MAX_BODY_BYTES, 1))->toThrow(\InvalidArgumentException::class, 'depth limit');
+});
 
 // Held by the decoder too, so a caller of its own -- not the endpoints -- cannot
 // hand it a limit that opens it.
