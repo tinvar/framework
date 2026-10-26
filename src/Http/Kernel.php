@@ -31,6 +31,7 @@ use Tinvar\Http\Middleware\ThrottleRequests;
 use Tinvar\Http\Middleware\VerifyCsrfToken;
 use Tinvar\Identity\HandoffEndpoint;
 use Tinvar\Identity\Realms;
+use Tinvar\Identity\TlsAskEndpoint;
 use Tinvar\Live\LiveMinter;
 use Tinvar\Live\LiveUpdates;
 use Tinvar\Live\SubscribeEndpoint;
@@ -397,6 +398,10 @@ final class Kernel
      *        (ExternalOrigins), matched exactly; none unless given, and then
      *        location() is refused wherever it points. One that is not an https
      *        origin is refused here
+     * @param TlsAskEndpoint|null $tlsAsk Caddy's on-demand TLS `ask` at /_tls/ask, where a
+     *        custom domain is checked before a certificate is obtained or renewed for it:
+     *        answered beside the probes, ahead of everything else, since Caddy is not a
+     *        visitor either
      */
     public function __construct(
         public readonly Orm $orm,
@@ -444,6 +449,7 @@ final class Kernel
         int $maxBodyBytes = Limits::MAX_BODY_BYTES,
         int $maxJsonDepth = Limits::MAX_JSON_DEPTH,
         array $redirectOrigins = [],
+        private readonly ?TlsAskEndpoint $tlsAsk = null,
     ) {
         if ($toolbar !== null && !$dev) {
             throw new \InvalidArgumentException(
@@ -1002,13 +1008,13 @@ final class Kernel
     }
 
     /**
-     * Whether $request is for /_health, /_ready or /_metrics -- for an
-     * application to leave its own per-visitor work, such as issuing a
-     * session, out of a probe's request.
+     * Whether $request is for /_health, /_ready or /_metrics, or Caddy's
+     * /_tls/ask -- for an application to leave its own per-visitor work,
+     * such as issuing a session, out of a probe's request.
      */
     public function answersProbe(Request $request): bool
     {
-        return $this->probes?->matches($request) ?? false;
+        return ($this->probes?->matches($request) ?? false) || ($this->tlsAsk?->matches($request) ?? false);
     }
 
     /**
@@ -1030,6 +1036,15 @@ final class Kernel
                 $this->telemetry?->route(Probes::route($request));
 
                 return $this->probes->handle($request);
+            }
+
+            // Caddy asking whether it may obtain or renew a certificate: an
+            // internal caller as a probe is, answered as one. Counted by the
+            // endpoint, never by the domain asked about.
+            if ($this->tlsAsk !== null && $this->tlsAsk->matches($request)) {
+                $this->telemetry?->route(TlsAskEndpoint::ROUTE);
+
+                return $this->tlsAsk->handle($request);
             }
 
             // The dev toolbar's endpoint: its prefix is its own. Not from
