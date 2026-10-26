@@ -487,6 +487,47 @@ describe('a moved auth epoch', function () {
     });
 });
 
+// A store that outlives the code -- PdoStore across a deploy, or shared by
+// servers on the old build and the new during a rolling one -- handed a
+// build the answer another build's code gave, in that code's shape.
+describe('another build', function () {
+    it('misses for the same query, arguments and user, and keeps each build\'s answer apart', function () {
+        $store = new ArrayStore();
+        $auth = new AuthContext();
+        $auth->login(user('u1'), '1');
+        $declaration = new QueryAttribute(cache: '5m', tags: static fn (int $x): array => ['orders']);
+        $old = new QueryCache($store, $auth, build: 'b-old');
+        $new = new QueryCache($store, $auth, build: 'b-new');
+
+        $old->put('q', $declaration, ['x' => 1], 'acme', ['total' => 3]);
+
+        expect($new->get('q', $declaration, ['x' => 1], 'acme'))->toBe(['hit' => false, 'value' => null]);
+
+        $new->put('q', $declaration, ['x' => 1], 'acme', ['total' => 3, 'currency' => 'USD']);
+
+        expect($old->get('q', $declaration, ['x' => 1], 'acme'))->toBe(['hit' => true, 'value' => ['total' => 3]])
+            ->and($new->get('q', $declaration, ['x' => 1], 'acme'))
+            ->toBe(['hit' => true, 'value' => ['total' => 3, 'currency' => 'USD']]);
+    });
+
+    // Tags are not the build's: a write on a server of one build must reach
+    // what a server of the other cached, or that one goes on serving it.
+    it('is reached by a forget made from either build', function () {
+        $store = new ArrayStore();
+        $auth = new AuthContext();
+        $declaration = new QueryAttribute(cache: '5m', tags: static fn (int $x): array => ['orders']);
+        $old = new QueryCache($store, $auth, build: 'b-old');
+        $new = new QueryCache($store, $auth, build: 'b-new');
+
+        $old->put('q', $declaration, ['x' => 1], 'acme', 'old');
+        $new->put('q', $declaration, ['x' => 1], 'acme', 'new');
+        $new->forgetTags(['orders'], 'acme', null);
+
+        expect($old->get('q', $declaration, ['x' => 1], 'acme')['hit'])->toBeFalse()
+            ->and($new->get('q', $declaration, ['x' => 1], 'acme')['hit'])->toBeFalse();
+    });
+});
+
 describe('the store keeps its index honest', function () {
     // forgetTags used to delete the entry and unset only the tag it was asked
     // about; every other tag kept pointing at a key that no longer existed.

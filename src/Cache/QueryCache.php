@@ -24,10 +24,13 @@ use Tinvar\Tenancy\TenantHierarchy;
  * The last line is the important one, and it is a property of the caller: this
  * class is only ever consulted after the gate has answered.
  *
- * One departure (ADR 0049): beside the user, the key names the user's auth
+ * Two departures (ADR 0049). Beside the user, the key names the user's auth
  * epoch, so nothing computed for them before the application last moved it
  * -- a role taken away, impersonation stopped, every session signed out --
- * is served to them after.
+ * is served to them after. And it names the build: an entry is read only by
+ * the build that cached it, so a store that outlives a deploy, or is shared
+ * by servers on two builds during one, never hands a build the shape
+ * another one's code returned.
  */
 final class QueryCache
 {
@@ -45,20 +48,28 @@ final class QueryCache
      *
      * A null context means an application with no panels at all, which keys
      * as the empty panel rather than guessing a name.
+     *
+     * @param string $build the build this code is (BuildRegistry::$current). Give it
+     *        with any store that outlives a worker -- ApcuStore, PdoStore -- where
+     *        entries cached by the build before a deploy, or by servers still on it
+     *        during one, would otherwise be read: what a query returns is its
+     *        build's, and the next build may return another shape. '' is one build
+     *        for every entry, which only a store as short-lived as the code is can be.
      */
     public function __construct(
         private readonly Store $store,
         private readonly AuthContext $auth,
         private readonly ?PanelContext $panels = null,
         private readonly string $locale = 'en',
+        private readonly string $build = '',
     ) {}
 
     /**
      * Bumped whenever the key's composition changes, so old entries cannot be
-     * read under a new scheme. v2 added the auth epoch (ADR 0049); adding the
-     * feature-flag component will need it again.
+     * read under a new scheme. v2 added the auth epoch, v3 the build (ADR
+     * 0049); adding the feature-flag component will need it again.
      */
-    private const string KEY_SCHEMA = 'v2';
+    private const string KEY_SCHEMA = 'v3';
 
     public function enabledFor(Query $declaration): bool
     {
@@ -233,8 +244,11 @@ final class QueryCache
      */
     public function key(string $name, Query $declaration, array $arguments, string $tenant): string
     {
+        // The build, beside what the spec lists: the same call answered by
+        // another build's code may have another shape (ADR 0049).
         $parts = [
             'v' => self::KEY_SCHEMA,
+            'b' => $this->build,
             'q' => $name,
             'a' => self::canonical($arguments),
             't' => $tenant,

@@ -602,7 +602,9 @@ final class Kernel
 
         $this->panels = $panels;
         $gate ??= new PolicyGate($this->policies, $this->auth);
-        $cache ??= new QueryCache(new \Tinvar\Cache\ArrayStore(), $this->auth, $panels);
+        // Keyed by the build too, as any cache should be: this worker's own
+        // memory holds one build's entries, but it is the default to copy.
+        $cache ??= new QueryCache(new \Tinvar\Cache\ArrayStore(), $this->auth, $panels, build: $this->builds->current ?? '');
         $this->gate = $gate;
         $this->cache = $cache;
 
