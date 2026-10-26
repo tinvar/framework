@@ -143,6 +143,11 @@ final class SupplyChain
                 $violations[] = "{$package->name} is a Composer plugin, and config.allow-plugins does not name it.";
             }
 
+            if ($package->downloadOptions) {
+                $violations[] = "{$package->where} sets transport-options, which Composer applies to its download alone "
+                    . '-- TLS verification, a CA file, headers -- where secure-http and disable-tls do not reach.';
+            }
+
             // A path package included: Composer installs from the source
             // under --prefer-source, or when a dist fails.
             foreach ($package->alternates as $url) {

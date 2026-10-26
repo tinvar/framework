@@ -105,6 +105,7 @@ final class Lockfiles
                         static fn (string $url): bool => $url !== $from,
                     )),
                     unpinned: $local ? [] : self::unpinnedArchives($dist),
+                    downloadOptions: self::downloadOptions($entry['transport-options'] ?? null, $local),
                 );
             }
         }
@@ -215,6 +216,24 @@ final class Lockfiles
         }
 
         return $unpinned;
+    }
+
+    /**
+     * Whether a Composer lock entry's `transport-options` reach its
+     * download. Composer loads them from the lock (its Locker's ArrayLoader
+     * reads options) and merges them into every request for the package:
+     * `ssl.verify_peer` false, a `cafile` of the lockfile's choosing, headers
+     * -- for that one package, where composer.json's secure-http and
+     * disable-tls say nothing. A path package's `symlink` and `relative`,
+     * which say how it is linked into vendor/, download nothing.
+     */
+    private static function downloadOptions(mixed $options, bool $local): bool
+    {
+        if ($options === null || $options === []) {
+            return false;
+        }
+
+        return !$local || !\is_array($options) || array_diff(array_keys($options), ['symlink', 'relative']) !== [];
     }
 
     /**

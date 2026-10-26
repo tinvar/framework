@@ -360,6 +360,33 @@ describe('install scripts and plugins', function () {
             ->toBe(['composer.json turns off secure-http or TLS: packages must download over https.']);
     });
 
+    // Composer reads a lock entry's transport-options and applies them to
+    // that package's download, so a line in composer.lock turned TLS
+    // verification off, or trusted a CA of its own, for one package, where
+    // the composer.json check above never looks. A path package's symlink
+    // and relative say only how it is linked into vendor/.
+    it('refuses transport-options in a lock entry, but a path package\'s link options', function () {
+        $this->workspace->composer('acme/insecure', [
+            'transport-options' => ['ssl' => ['verify_peer' => false, 'verify_peer_name' => false]],
+        ]);
+        $this->workspace->composer('acme/trusting', ['transport-options' => ['ssl' => ['cafile' => 'ca.pem']]]);
+        $this->workspace->composer('acme/inside', [
+            'dist' => ['type' => 'path', 'url' => 'packages/inside', 'reference' => null],
+            'transport-options' => ['symlink' => true, 'relative' => true],
+        ]);
+        $this->workspace->composer('acme/proxied', [
+            'dist' => ['type' => 'path', 'url' => 'packages/proxied', 'reference' => null],
+            'transport-options' => ['symlink' => true, 'http' => ['proxy' => 'tcp://proxy.example:8080']],
+        ]);
+
+        $because = 'sets transport-options, which Composer applies to its download alone -- TLS verification, a CA file, headers -- where secure-http and disable-tls do not reach.';
+        expect(violations($this->workspace))->toBe([
+            "composer.lock acme/insecure {$because}",
+            "composer.lock acme/trusting {$because}",
+            "composer.lock acme/proxied {$because}",
+        ]);
+    });
+
     it('refuses a registry prefix a lookalike host could match', function () {
         new PackagePolicy(registries: ['https://registry.npmjs.org']);
     })->throws(\InvalidArgumentException::class, 'not an https URL prefix ending in a slash');
