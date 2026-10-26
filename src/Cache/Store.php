@@ -25,7 +25,11 @@ interface Store
 
     /**
      * @param list<string> $tags
-     * @return int how many entries went
+     * @return int how many entries went, where the store drops them one by
+     *         one (ArrayStore). A store shared between workers moves each
+     *         tag's version instead and visits no entry, so it cannot say,
+     *         and returns 0 (ApcuStore, PdoStore). Nothing in the framework
+     *         reads the count.
      */
     public function forgetTags(array $tags): int;
 
