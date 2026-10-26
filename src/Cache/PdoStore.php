@@ -46,7 +46,10 @@ namespace Tinvar\Cache;
  * The connection must be the store's own, as PdoThrottleStore's is: a
  * forget made inside the request's transaction would roll back with it,
  * leaving the entries it dropped standing. A connection with a transaction
- * open is refused. Opened on first use when given as a closure.
+ * open is refused. Opened on first use when given as a closure. And a
+ * forget must last as long as the writes it follows: on SQLite, open the
+ * connection with every commit synced in full, or a power cut can take a
+ * forget back and leave its entries beside writes that were kept.
  */
 final class PdoStore implements Store
 {

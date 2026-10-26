@@ -184,7 +184,8 @@ final class ApcuStore implements Store
         }
 
         // Noted for the put that follows (Misses). No clock is one that
-        // could not be made, and a put after such a miss keeps nothing.
+        // could not be made, and a put after such a miss keeps nothing it
+        // would have to tag.
         $this->misses->note($key, $this->clock() ?? PHP_INT_MIN);
 
         return ['hit' => false, 'value' => null];
