@@ -20,6 +20,7 @@ use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Mail\Links;
 use Shop\Mail\MarketingList;
+use Shop\Mail\MarketingPreferences;
 use Shop\Mail\ProductAnnouncement;
 use Shop\Mail\SendProductAnnouncement;
 use Shop\Mail\Unsubscribes;
@@ -199,6 +200,68 @@ describe('one-click unsubscribe', function () {
 
         expect(rows($demo))->toBe(['announcements' => true, 'newsletter' => true])
             ->and(rows(customer('customer1@shop.test')))->toBe([]);
+    });
+
+    // The link is good for months and the endpoint is ahead of any throttle:
+    // a replay that wrote was a write on SQLite's one writer, as often as
+    // anyone holding the link cared to POST it.
+    it('writes a no once, and nothing for the link POSTed again', function () {
+        $path = oneClickPath(MarketingList::Announcements, customer());
+        $pdo = orm()->connection()->pdo();
+        \assert($pdo instanceof \Pdo\Sqlite);
+        $writes = 0;
+        $pdo->setAuthorizer(static function (int $action, ?string $table) use (&$writes): int {
+            // SQLITE_INSERT, SQLITE_UPDATE
+            if (\in_array($action, [18, 23], true) && $table === 'marketing_preferences') {
+                $writes++;
+            }
+
+            return \Pdo\Sqlite::OK;
+        });
+
+        try {
+            expect(oneClick($path)->status)->toBe(200);
+            $first = $writes;
+            for ($i = 0; $i < 20; $i++) {
+                expect(oneClick($path)->status)->toBe(200);
+            }
+        } finally {
+            $pdo->setAuthorizer(null);
+        }
+
+        expect($first)->toBeGreaterThan(0)
+            ->and($writes)->toBe($first)
+            ->and(rows(customer()))->toBe(['announcements' => false, 'newsletter' => true]);
+    });
+
+    // The provider shows the unsubscribe as done; a power cut must not take
+    // the no back and have the next announcement go (ADR 0050).
+    it('commits a no synced in full, and a yes at the next checkpoint', function () {
+        $demo = customer();
+        $pdo = orm()->connection()->pdo();
+        \assert($pdo instanceof \Pdo\Sqlite);
+        $levels = [];
+        $pdo->setAuthorizer(static function (int $action, ?string $pragma, ?string $value) use (&$levels): int {
+            // SQLITE_PRAGMA, setting one
+            if ($action === 19 && $pragma === 'synchronous' && $value !== null) {
+                $levels[] = strtoupper($value);
+            }
+
+            return \Pdo\Sqlite::OK;
+        });
+
+        try {
+            expect(oneClick(oneClickPath(MarketingList::Newsletter, $demo))->status)->toBe(200);
+            $unsubscribed = $levels;
+            $levels = [];
+            new MarketingPreferences(orm())->set($demo->id, MarketingList::Newsletter, true);
+        } finally {
+            $pdo->setAuthorizer(null);
+        }
+
+        expect($unsubscribed)->toBe(['FULL', 'NORMAL'])
+            ->and($levels)->toBe([])
+            ->and(rows($demo))->toBe(['announcements' => true, 'newsletter' => true]);
     });
 
     it('turns nothing on, and turns off nothing but a list the shop sends', function () {
