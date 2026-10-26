@@ -187,8 +187,13 @@ it('serves the shop from source, and shows an edited component without a reload'
     ];
 
     try {
+        // A database of its own, not the one this process shares
+        // (Shop::database()): in a run of the whole suite in one process the
+        // browser tests' shop has written to that one first, and an avatar
+        // uploaded there names a file this server's storage never held, so
+        // every page logged its 404.
         [$url, $stop] = serve($root, ['--dev', "--app={$copy}"], [
-            'SHOP_DATABASE' => Shop::database(),
+            'SHOP_DATABASE' => Shop::testDatabase(),
             'TINVAR_APP_KEY_FILE' => "{$keyDir}/app.key",
         ]);
 
