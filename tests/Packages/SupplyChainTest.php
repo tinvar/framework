@@ -14,6 +14,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Packages\SupplyChain;
 
+use Symfony\Component\Yaml\Yaml;
 use Tinvar\Packages\AllowedPackage;
 use Tinvar\Packages\Ecosystem;
 use Tinvar\Packages\Lockfiles;
@@ -562,6 +563,21 @@ describe('workflows', function () {
 
         expect($workflow)->toContain("if: github.event_name == 'push' && github.ref == 'refs/heads/main'")
             ->and(preg_match('/^  downstream:\n(?:    .*\n|\n)*?    if: github\.event_name == \'push\'/m', $workflow))->toBe(1);
+    });
+
+    // The split holds the mirrors' deploy keys, so it runs for what has
+    // landed -- main and tags -- and nothing a pull request brings (ADR 0055).
+    it('splits the packages to their mirrors only for a push to main or a tag', function () {
+        $workflow = Yaml::parse((string) file_get_contents(\dirname(__DIR__, 4) . '/.github/workflows/split.yml'));
+        $script = (string) file_get_contents(\dirname(__DIR__, 4) . '/.github/ci/split');
+
+        expect($workflow['on'])->toBe(['push' => ['branches' => ['main'], 'tags' => ['v*']]])
+            ->and($workflow['permissions'])->toBe(['contents' => 'read'])
+            ->and(array_column($workflow['jobs']['split']['strategy']['matrix']['include'], 'package'))->toBe(['support', 'database', 'framework', 'testing', 'codegen'])
+            ->and($script)->toContain('refs/heads/main) target=refs/heads/main')
+            ->and($script)->toContain('StrictHostKeyChecking=yes')
+            ->and($script)->toContain('sha256sum -c')
+            ->and($script)->not->toContain('--force');
     });
 });
 
