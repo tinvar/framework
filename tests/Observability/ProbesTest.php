@@ -210,6 +210,24 @@ describe('who may ask', function () {
             ->and($access->allows(probe('/', '127.0.0.1')))->toBeFalse();
     });
 
+    // DNS rebinding works on any network a browser sits on, not only on
+    // loopback: a page pointed at the server's internal address from a
+    // machine inside a network let in reaches the probes from there, still
+    // naming its own domain. An orchestrator's probe names an address, or
+    // nothing; one that names a host by its name presents the token.
+    it('refuses a peer on a network it is given naming a host by name', function (string $host, bool $allowed) {
+        $access = new ProbeAccess(['10.0.0.0/8', 'fd00::/8']);
+
+        expect($access->allows(probe('/_metrics', '10.1.2.3', ['host' => $host])))->toBe($allowed)
+            ->and($access->allows(probe('/_metrics', 'fd12::7', ['host' => $host])))->toBe($allowed);
+    })->with([
+        'an address and port' => ['10.0.0.9:8080', true],
+        'an IPv6 address' => ['[fd12::9]:8080', true],
+        'localhost, from another machine' => ['localhost:8080', false],
+        'a rebound name' => ['rebound.attacker.example:8080', false],
+        'a service name' => ['shop.internal', false],
+    ]);
+
     it('lets in the token from anywhere, and nothing like it', function () {
         $access = new ProbeAccess([], TOKEN);
 
