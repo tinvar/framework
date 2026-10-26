@@ -24,8 +24,8 @@ use Tinvar\Tests\Routing\Fixtures\RackShowPage;
 use Tinvar\Tests\Routing\Fixtures\RootLayout;
 use Tinvar\Tests\Routing\Fixtures\SiteLayout;
 
-require_once __DIR__ . '/../Orm/Fixtures/models.php';
-require_once __DIR__ . '/../Orm/Fixtures/schema.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/../Routing/Fixtures/routes.php';
 
 const FRAGMENT_SESSION = 'session-abc';

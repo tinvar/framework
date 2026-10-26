@@ -46,8 +46,8 @@ use Tinvar\Uploads\ArrayUploadStore;
 use Tinvar\Uploads\FileToken;
 use Tinvar\Uploads\Uploads;
 
-require_once __DIR__ . '/../Orm/Fixtures/models.php';
-require_once __DIR__ . '/../Orm/Fixtures/schema.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/../Auth/Fixtures/policies.php';
 require_once __DIR__ . '/../Identity/Fixtures/app.php';
 

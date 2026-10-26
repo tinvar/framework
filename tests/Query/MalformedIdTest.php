@@ -22,8 +22,8 @@ use Tinvar\Support\Uuid;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
 use Tinvar\Tests\Query\Fixtures\RackSummary;
 
-require_once __DIR__ . '/../Orm/Fixtures/models.php';
-require_once __DIR__ . '/../Orm/Fixtures/schema.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/Fixtures/queries.php';
 
 /** SQLite with Postgres's refusal of a malformed uuid. */

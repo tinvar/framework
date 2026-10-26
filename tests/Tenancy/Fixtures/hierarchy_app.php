@@ -33,9 +33,11 @@ use Tinvar\Routing\RouteRegistry;
 use Tinvar\Tenancy\Host;
 use Tinvar\Tenancy\TenantHosts;
 use Tinvar\Tenancy\TenantSessions;
+use Tinvar\Tests\Orm\Fixtures\Hierarchy\Tenants;
+use Tinvar\Tests\Orm\Fixtures\Hierarchy\Tree;
 use Tinvar\Tests\Orm\Fixtures\Script;
 
-require_once __DIR__ . '/hierarchy.php';
+require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/hierarchy.php';
 
 /**
  * The hierarchy behind a request path: a reseller panel whose memberships

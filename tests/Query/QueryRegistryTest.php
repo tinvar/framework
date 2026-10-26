@@ -5,7 +5,7 @@ declare(strict_types=1);
 use Tinvar\Query\QueryRegistry;
 
 require_once __DIR__ . '/Fixtures/queries.php';
-require_once __DIR__ . '/../Orm/Fixtures/models.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
 
 // Kept for the worker's life, a query a resolver built with a request-lived
 // service would carry one request's state into the next. With a resolver,

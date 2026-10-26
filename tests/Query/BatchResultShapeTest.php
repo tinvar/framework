@@ -24,8 +24,8 @@ use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
 
-require_once __DIR__ . '/../Orm/Fixtures/models.php';
-require_once __DIR__ . '/../Orm/Fixtures/schema.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
 
 /** Keyed by call index, filled in descending order of n -- as rows came back. */
 #[Query(name: 'shape.byIndex', args: ['n' => 'int']), NoAuthorization(reason: 'result shape is what is under test')]

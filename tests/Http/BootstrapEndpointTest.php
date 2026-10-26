@@ -22,8 +22,8 @@ use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
 
-require_once __DIR__ . '/../Orm/Fixtures/models.php';
-require_once __DIR__ . '/../Orm/Fixtures/schema.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/../Routing/Fixtures/routes.php';
 
 /** @return array{0: BootstrapEndpoint, 1: Fixture, 2: Signer} */

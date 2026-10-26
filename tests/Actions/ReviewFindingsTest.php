@@ -26,8 +26,8 @@ use Tinvar\Tests\Orm\Fixtures\Site;
 use Tinvar\Validation\ValidationException;
 use Tinvar\Validation\Validator;
 
-require_once __DIR__ . '/../Orm/Fixtures/models.php';
-require_once __DIR__ . '/../Orm/Fixtures/schema.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/../Auth/Fixtures/policies.php';
 require_once __DIR__ . '/Fixtures/actions.php';
 

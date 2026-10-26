@@ -33,7 +33,7 @@ use Tinvar\Support\Signer;
 use Tinvar\Tests\Orm\Fixtures\Script;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 
-require_once __DIR__ . '/../../Orm/Fixtures/tenant.php';
+require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenant.php';
 
 const KEY = 'jobs-test-key-of-thirty-two-bytes!!';
 

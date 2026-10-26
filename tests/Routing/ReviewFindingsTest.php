@@ -24,8 +24,8 @@ use Tinvar\Routing\RoutingException;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
 use Tinvar\Tests\Routing\Fixtures as F;
 
-require_once __DIR__ . '/../Orm/Fixtures/models.php';
-require_once __DIR__ . '/../Orm/Fixtures/schema.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/Fixtures/routes.php';
 
 function registryOf(array $classes): RouteRegistry

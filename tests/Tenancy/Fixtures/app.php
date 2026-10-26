@@ -44,7 +44,7 @@ use Tinvar\Orm\TenantHierarchy;
 use Tinvar\Tenancy\TenantHosts;
 use Tinvar\Tests\Orm\Fixtures\Script;
 
-require_once __DIR__ . '/../../Orm/Fixtures/tenant.php';
+require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenant.php';
 
 /**
  * A small multi-tenant application: two tenants' scripts behind host

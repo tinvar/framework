@@ -17,7 +17,7 @@ use Tinvar\Tests\Orm\Fixtures\Site;
 use Tinvar\Tests\Query\Fixtures\RackSummary;
 use Tinvar\Tests\Query\Fixtures\UnitLoad;
 
-require_once __DIR__ . '/../Orm/Fixtures/models.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
 require_once __DIR__ . '/../Auth/Fixtures/policies.php';
 require_once __DIR__ . '/../Actions/Fixtures/actions.php';
 require_once __DIR__ . '/../Query/Fixtures/queries.php';

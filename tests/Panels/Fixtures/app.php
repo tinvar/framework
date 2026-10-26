@@ -47,7 +47,7 @@ use Tinvar\Tenancy\TenantHosts;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 use Tinvar\Tests\Panels\Fixtures\Admin\Reports;
 
-require_once __DIR__ . '/../../Orm/Fixtures/tenant.php';
+require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenant.php';
 
 /**
  * A staff panel and a reseller panel in front of a few pages, an action and

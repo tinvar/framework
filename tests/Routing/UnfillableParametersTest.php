@@ -20,7 +20,7 @@ use Tinvar\Routing\RouteRegistry;
 use Tinvar\Routing\RoutingException;
 use Tinvar\Tests\Orm\Fixtures\Rack;
 
-require_once __DIR__ . '/../Orm/Fixtures/models.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
 
 enum Shade: string
 {

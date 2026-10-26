@@ -46,11 +46,11 @@ use Tinvar\Support\Signer;
 use Tinvar\Support\Uuid;
 use Tinvar\Orm\TenantHierarchy;
 use Tinvar\Tests\Orm\Fixtures\Script;
-use Tinvar\Tests\Tenancy\Fixtures\Hierarchy\Tenants;
-use Tinvar\Tests\Tenancy\Fixtures\Hierarchy\Tree;
+use Tinvar\Tests\Orm\Fixtures\Hierarchy\Tenants;
+use Tinvar\Tests\Orm\Fixtures\Hierarchy\Tree;
 use Tinvar\Validation\Validator;
 
-require_once __DIR__ . '/Fixtures/hierarchy.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/hierarchy.php';
 
 const KEY = 'subtree-invalidation-test-key-0123456789';
 

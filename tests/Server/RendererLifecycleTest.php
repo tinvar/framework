@@ -27,8 +27,8 @@ use Tinvar\Render\RendererException;
 use Tinvar\Server\RendererCommand;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
 
-require_once __DIR__ . '/../Orm/Fixtures/models.php';
-require_once __DIR__ . '/../Orm/Fixtures/schema.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
 
 $root = \dirname(__DIR__, 4);
 

@@ -17,8 +17,8 @@ use Tinvar\Render\FragmentToken;
 use Tinvar\Render\FragmentTokenError;
 use Tinvar\Support\Signer;
 
-require_once __DIR__ . '/../Orm/Fixtures/models.php';
-require_once __DIR__ . '/../Orm/Fixtures/schema.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
 
 function minterSigner(): Signer
 {

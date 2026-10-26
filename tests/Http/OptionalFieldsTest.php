@@ -39,8 +39,8 @@ use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
 
-require_once __DIR__ . '/../Orm/Fixtures/models.php';
-require_once __DIR__ . '/../Orm/Fixtures/schema.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
 
 /** What ran, in order: checks, loaders and the optional field's resolver. */
 final class Ran

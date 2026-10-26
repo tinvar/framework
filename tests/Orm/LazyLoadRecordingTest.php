@@ -24,8 +24,8 @@ use Tinvar\Tests\Orm\Fixtures\Site;
 use function Tinvar\Testing\assertNoLazyLoadsOutsideBatch;
 use function Tinvar\Testing\expectQueries;
 
-require_once __DIR__ . '/Fixtures/models.php';
-require_once __DIR__ . '/Fixtures/schema.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
 
 /** @return array{Orm, LazyLoads} */
 function recording(Fixture $fixture): array

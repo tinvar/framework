@@ -13,6 +13,11 @@ use Tinvar\Support\PrivateDirectory;
  * Tests that need one run when it is there and are skipped, saying why, when
  * it is not: the suite has to pass on a machine with PHP alone, and a test
  * that quietly passed without its server would be worse than a skipped one.
+ *
+ * The database package's suite keeps a copy of its own, without Redis
+ * (packages/database/tests/Orm/Fixtures/databases.php), so it runs with
+ * nothing of the framework's installed; a change to how a server is found
+ * belongs in both.
  */
 final class Databases
 {

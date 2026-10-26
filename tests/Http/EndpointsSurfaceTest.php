@@ -41,8 +41,8 @@ use Tinvar\Tests\Routing\Fixtures\RootLayout;
 use Tinvar\Tests\Routing\Fixtures\SiteLayout;
 use Tinvar\Validation\Validator;
 
-require_once __DIR__ . '/../Orm/Fixtures/models.php';
-require_once __DIR__ . '/../Orm/Fixtures/schema.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/../Routing/Fixtures/routes.php';
 require_once __DIR__ . '/../Actions/Fixtures/actions.php';
 require_once __DIR__ . '/../Query/Fixtures/queries.php';
