@@ -83,6 +83,7 @@ final class Worker
      * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
      * @param (\Closure(int): void)|null $exit ends the process; exit() unless given
      * @param int $graceSeconds how long a job may run on after JobTimedOut before the worker exits
+     * @param (\Closure(): int)|null $memory bytes the process holds; memory_get_usage(true) unless given
      */
     public function __construct(
         private readonly Queue $queue,
@@ -93,6 +94,7 @@ final class Worker
         private readonly ?\Closure $clock = null,
         private readonly ?\Closure $exit = null,
         private readonly int $graceSeconds = self::GRACE_SECONDS,
+        private readonly ?\Closure $memory = null,
     ) {
         if ($graceSeconds < 1 || $graceSeconds >= self::RESERVATION_MARGIN) {
             throw new \InvalidArgumentException(
@@ -127,6 +129,30 @@ final class Worker
         // left in the context is not the first job's.
         $this->scope->reset();
 
+        // The memory limit is there to hand a process that has grown to a
+        // fresh one. Counted from nothing, a worker that starts past it --
+        // an application that boots big, or a worker run inside a process
+        // that already holds more, as a test suite's does -- stopped after
+        // every job, and its supervisor gave up restarting it. Measured,
+        // the worker itself holds nothing from one job to the next: 600 of
+        // the shop's emails, each rendered through the renderer, left it
+        // within a kilobyte of where it began. So one that starts past its
+        // limit is held to growing by that much from where it started.
+        $limit = $options->memoryMb * 1024 * 1024;
+        $ceiling = $limit;
+        if ($limit > 0) {
+            $start = $this->memory();
+            if ($start >= $limit) {
+                $ceiling = $start + $limit;
+                $this->say(\sprintf(
+                    'started at %d MB, past its %d MB limit: it stops once it has grown by %d MB',
+                    intdiv($start, 1024 * 1024),
+                    $options->memoryMb,
+                    $options->memoryMb,
+                ));
+            }
+        }
+
         while (!$this->stopRequested()) {
             $job = $this->queue->reserve($options->queues, $this->now(), $this->reservedFor + self::RESERVATION_MARGIN);
             if ($job === null) {
@@ -149,8 +175,10 @@ final class Worker
                 $this->say('stopping: ran for as long as it was told to');
                 break;
             }
-            if ($options->memoryMb > 0 && memory_get_usage(true) > $options->memoryMb * 1024 * 1024) {
-                $this->say("stopping: past {$options->memoryMb} MB, for a fresh process to take over");
+            if ($limit > 0 && $this->memory() > $ceiling) {
+                $this->say($ceiling === $limit
+                    ? "stopping: past {$options->memoryMb} MB, for a fresh process to take over"
+                    : "stopping: grown by more than {$options->memoryMb} MB, for a fresh process to take over");
                 break;
             }
         }
@@ -384,5 +412,11 @@ final class Worker
     private function now(): int
     {
         return $this->clock === null ? time() : ($this->clock)();
+    }
+
+    /** What the process holds, as the operating system sees it: what a limit on it is about. */
+    private function memory(): int
+    {
+        return $this->memory === null ? memory_get_usage(true) : ($this->memory)();
     }
 }

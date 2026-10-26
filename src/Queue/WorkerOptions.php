@@ -15,6 +15,10 @@ use Tinvar\Attributes\Queue as QueueOptions;
  *
  * `timeout` is only how long a reservation lasts past a job's own timeout
  * margin: each job's timeout is its #[Queue]'s.
+ *
+ * `memory` is how much the process may hold, in MB, once a job is done,
+ * before the worker stops for a fresh process to take over; 0 is no limit.
+ * A worker that starts past it may grow by that much from where it started.
  */
 final readonly class WorkerOptions
 {
