@@ -39,6 +39,12 @@ interface Connection
      * so the outer caller decides whether to carry on. What an inner call
      * that returned wrote commits or rolls back with the outer one.
      *
+     * A statement that fails inside it and is caught there is undone alone
+     * on SQLite. On Postgres it aborts the transaction, which can then only
+     * roll back: the outermost call does, and throws rather than return as
+     * if it had committed. A statement that may fail goes in a nested call,
+     * whose savepoint takes the failure back alone, on both.
+     *
      * @template T
      * @param \Closure(): T $work
      * @return T

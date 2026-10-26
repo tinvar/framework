@@ -17,6 +17,9 @@ use Tinvar\Http\RequestScope;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
+use Tinvar\Tests\Support\Fixtures\Databases;
+
+require_once __DIR__ . '/../Support/Fixtures/databases.php';
 
 /** A PDO whose commit is refused, and whose next few rollbacks may be too. */
 final class RefusedCommit extends \PDO
@@ -88,3 +91,88 @@ it('rolls back a transaction still open when the request ends', function () {
         ->and($connection->inTransaction())->toBeFalse()
         ->and($connection->select('SELECT COUNT(*) AS n FROM hits')[0]['n'])->toBe(0);
 });
+
+/**
+ * Runs $test against a connection to a Postgres schema of its own, with a
+ * table of keys to write twice.
+ *
+ * @param \Closure(PdoConnection): void $test
+ */
+function onPostgres(\Closure $test): void
+{
+    Databases::inScratchSchema('pgsql', static function (\PDO $pdo) use ($test): void {
+        $pdo->exec('CREATE TABLE keys (n INTEGER PRIMARY KEY)');
+
+        $test(new PdoConnection($pdo, 'pgsql'));
+    });
+}
+
+function keys(PdoConnection $connection): int
+{
+    return (int) $connection->select('SELECT COUNT(*) AS n FROM keys')[0]['n'];
+}
+
+// A statement that fails aborts a Postgres transaction, and a COMMIT of an
+// aborted transaction rolls it back -- which PDO reports as a commit. Caught
+// inside, the failure left transaction() returning, its afterCommit()
+// callbacks running, and nothing written. SQLite undoes the statement alone
+// and commits the rest.
+describe('on Postgres', function () {
+    it('rolls back, and says so, a transaction a failed statement aborted', function () {
+        onPostgres(function (PdoConnection $connection): void {
+            $orm = new Orm($connection, new IdentityMap('test'));
+            $announced = false;
+
+            expect(fn () => $orm->transaction(static function () use ($orm, $connection, &$announced): void {
+                $connection->execute('INSERT INTO keys (n) VALUES (1)');
+                $orm->afterCommit(static function () use (&$announced): void {
+                    $announced = true;
+                });
+                try {
+                    $connection->execute('INSERT INTO keys (n) VALUES (1)');
+                } catch (\PDOException) {
+                    // the duplicate, caught and carried on from
+                }
+            }))->toThrow(\PDOException::class, 'rolled back, not committed');
+
+            expect($announced)->toBeFalse()
+                ->and($connection->inTransaction())->toBeFalse()
+                ->and(keys($connection))->toBe(0);
+        });
+    });
+
+    // What the message advises: the savepoint takes the failure back alone,
+    // and the transaction around it commits.
+    it('commits around a failure a nested transaction took back', function () {
+        onPostgres(function (PdoConnection $connection): void {
+            $connection->transaction(static function () use ($connection): void {
+                $connection->execute('INSERT INTO keys (n) VALUES (1)');
+                try {
+                    $connection->transaction(static fn (): int => $connection->execute('INSERT INTO keys (n) VALUES (1)'));
+                } catch (\PDOException) {
+                }
+                $connection->execute('INSERT INTO keys (n) VALUES (2)');
+            });
+
+            expect(keys($connection))->toBe(2);
+        });
+    });
+
+    // A read-only scope recovers from its own failures (ADR 0022), so the
+    // transaction it was opened in is not aborted by them.
+    it('commits around a failure a read-only scope recovered', function () {
+        onPostgres(function (PdoConnection $connection): void {
+            $connection->transaction(static function () use ($connection): void {
+                $connection->execute('INSERT INTO keys (n) VALUES (1)');
+                $connection->readOnly(static function () use ($connection): void {
+                    try {
+                        $connection->select("SELECT 'not-a-uuid'::uuid");
+                    } catch (\PDOException) {
+                    }
+                });
+            });
+
+            expect(keys($connection))->toBe(1);
+        });
+    });
+})->group('pgsql')->skip(Databases::postgresMissing() !== null, Databases::postgresMissing() ?? '');

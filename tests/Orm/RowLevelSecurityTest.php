@@ -319,6 +319,33 @@ describe('on Postgres', function () {
         });
     });
 
+    // The same for a transaction a caught failure aborted, whose COMMIT
+    // rolled back while PDO reported it committed: the setting went with it.
+    it('tells the session again after a failed statement aborted the transaction', function () {
+        withPolicies(function (PdoConnection $connection): void {
+            $orm = new Orm($connection, new IdentityMap('test'));
+            $orm->actAs('globex', static fn (): array => rawNames($connection));
+
+            $names = $orm->actAs('acme', static function () use ($orm, $connection): array {
+                try {
+                    $orm->transaction(static function () use ($connection): void {
+                        $connection->select('SELECT 1');
+                        try {
+                            $connection->select("SELECT 'not-a-uuid'::uuid");
+                        } catch (\PDOException) {
+                        }
+                    });
+                } catch (\PDOException) {
+                    // rolled back, not committed
+                }
+
+                return rawNames($connection);
+            });
+
+            expect($names)->toBe(['acme-script-1', 'acme-script-2']);
+        });
+    });
+
     it('refuses a raw write of another tenant\'s row', function () {
         withPolicies(function (PdoConnection $connection): void {
             $orm = new Orm($connection, new IdentityMap('test'));

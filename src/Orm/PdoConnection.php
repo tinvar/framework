@@ -98,6 +98,18 @@ final class PdoConnection implements Connection, TenantSetting
      */
     private ?string $synchronous = null;
 
+    /**
+     * The statement that failed inside the Postgres transaction open now,
+     * and how many savepoints of transaction() were open when it did; null
+     * while nothing has. Postgres aborts the transaction over it -- every
+     * statement after it is refused until the transaction or a savepoint
+     * opened before it rolls back -- and a COMMIT of an aborted transaction
+     * rolls back, which PDO reports as a commit; see transaction().
+     *
+     * @var array{\PDOException, int}|null
+     */
+    private ?array $aborted = null;
+
     public function __construct(
         private readonly \PDO $pdo,
         private readonly string $name = 'default',
@@ -328,6 +340,11 @@ final class PdoConnection implements Connection, TenantSetting
             try {
                 return $statement();
             } catch (\PDOException $e) {
+                // The transaction it ran in is aborted now; see $aborted.
+                if ($this->driver === 'pgsql' && $this->pdo->inTransaction()) {
+                    $this->aborted ??= [$e, $this->savepoints];
+                }
+
                 if ($this->readOnlyMode === null) {
                     throw $e;
                 }
@@ -447,9 +464,20 @@ final class PdoConnection implements Connection, TenantSetting
 
     private function endReadOnly(string $mode): void
     {
-        // Rolled back to, below, which takes back a tenant set inside it.
+        // Rolled back to, below, which takes back a tenant set inside it,
+        // and a failure in the scope with it.
         if ($mode === self::READ_ONLY_SAVEPOINT) {
             $this->tenantSetting = null;
+            if ($this->aborted !== null && $this->aborted[1] >= $this->readOnlySavepoints) {
+                $this->aborted = null;
+            }
+        }
+
+        // A COMMIT of a transaction a failed statement aborted rolls it
+        // back: nothing was written to lose, but a tenant set in it goes.
+        if ($mode === self::READ_ONLY_TRANSACTION && $this->aborted !== null) {
+            $this->tenantSetting = null;
+            $this->aborted = null;
         }
 
         match ($mode) {
@@ -483,6 +511,7 @@ final class PdoConnection implements Connection, TenantSetting
         }
 
         $this->tenantSetting = null;
+        $this->aborted = null;
 
         try {
             match ($this->readOnlyMode) {
@@ -530,14 +559,41 @@ final class PdoConnection implements Connection, TenantSetting
         }
 
         $this->untilWriteLock(fn (): bool => $this->pdo->beginTransaction());
+        // A failure noted in a transaction begun around this class, which
+        // its caller ended, is not this one's.
+        $this->aborted = null;
 
         try {
             $result = $work();
         } catch (\Throwable $e) {
             $this->tenantSetting = null;
+            $this->aborted = null;
             $this->pdo->rollBack();
 
             throw $e;
+        }
+
+        // On Postgres a statement that failed in here aborted the whole
+        // transaction, though $work caught the failure and returned. Its
+        // COMMIT rolls back what came before it, and PDO reports that as a
+        // commit: the caller, its afterCommit() callbacks and the models it
+        // saved were all told of writes that never happened. Rolled back
+        // and said so instead. SQLite undoes the failed statement alone, and
+        // commits the rest.
+        if ($this->aborted !== null) {
+            $failed = $this->aborted[0];
+            try {
+                $this->rollBackTransaction();
+            } catch (\Throwable) {
+                // left to the reset contract, as below
+            }
+
+            throw new \PDOException(
+                'The transaction was rolled back, not committed: a statement in it failed, and Postgres aborts the transaction it fails in. '
+                . 'Run a statement that may fail in a transaction() of its own, whose savepoint takes the failure back alone.',
+                0,
+                $failed,
+            );
         }
 
         try {
@@ -674,6 +730,9 @@ final class PdoConnection implements Connection, TenantSetting
             // until then it refuses every statement that follows.
             $this->tenantSetting = null;
             $this->pdo->exec("ROLLBACK TO SAVEPOINT {$name}");
+            if ($this->aborted !== null && $this->aborted[1] >= $this->savepoints) {
+                $this->aborted = null;
+            }
             $this->pdo->exec("RELEASE SAVEPOINT {$name}");
 
             throw $e;
@@ -702,6 +761,7 @@ final class PdoConnection implements Connection, TenantSetting
         $this->readOnlyMode = null;
         $this->readOnlyScopes = 0;
         $this->readOnlyRun++;
+        $this->aborted = null;
         if ($mode === self::READ_ONLY_QUERY_ONLY) {
             $this->pdo->exec('PRAGMA query_only = OFF');
         }
@@ -719,6 +779,7 @@ final class PdoConnection implements Connection, TenantSetting
         // a tenant set inside it.
         $this->savepoints = 0;
         $this->tenantSetting = null;
+        $this->aborted = null;
         $this->pdo->rollBack();
 
         return true;
