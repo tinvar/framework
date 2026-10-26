@@ -180,6 +180,27 @@ it('refuses meta frames larger in total than one render may send', function () {
     }
 });
 
+// Measured as JSON, a frame's bytes that are not UTF-8 counted as `null`:
+// three frames of 100 KB, each opening with one such byte, were measured at
+// a few dozen bytes and all held.
+it('counts meta bytes that are not UTF-8 against the total', function () {
+    $dir = privateDirectory();
+    $path = $dir . '/r.sock';
+    $frames = [
+        ...array_fill(0, 3, ['t' => Frame::META, 'title' => "\xff" . str_repeat('x', 100_000)]),
+        ['t' => Frame::DONE],
+    ];
+    $pid = hostileRenderer($path, $frames);
+    $done = cleanUp($dir, $pid);
+
+    try {
+        expect(fn () => hardeningChannel($path)->render(['t' => 'render'], [], static function (string $bytes): void {}))
+            ->toThrow(ProtocolException::class, 'more meta');
+    } finally {
+        $done();
+    }
+});
+
 describe('the socket path', function () {
     // Whoever answers there receives the visitor's loader data and writes
     // the HTML they are served.

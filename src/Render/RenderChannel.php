@@ -181,6 +181,7 @@ final class RenderChannel
 
         $buffer = '';
         $offset = 0;
+        $frameFrom = 0;
         $done = false;
 
         // When the deadline's clock started: the start of the render, moved
@@ -199,6 +200,10 @@ final class RenderChannel
             // Left by the break below, once the inner loop has seen `done`.
             while (true) {
                 while (!$done && ($message = $this->codec->decodeFrame($buffer, $offset)) !== null) {
+                    // The frame's size on the wire: what decoding it moved
+                    // the offset past, prefix and all.
+                    $frameBytes = $offset - $frameFrom;
+                    $frameFrom = $offset;
                     $this->tap?->frame(FrameTap::FROM_RENDERER, $message);
                     $type = Frame::assertFromRenderer($message);
 
@@ -299,7 +304,10 @@ final class RenderChannel
                         $this->tap?->frame(FrameTap::TO_RENDERER, $reply);
                         $this->write($socket, $this->codec->encodeFrame($reply), $started, $deadlineFrom);
                     } elseif ($type === Frame::META) {
-                        $metaBytes += \strlen(json_encode($message, JSON_PARTIAL_OUTPUT_ON_ERROR) ?: '');
+                        // Its bytes as they came, not as JSON: re-encoded,
+                        // a string that is not UTF-8 counted as `null`, and a
+                        // frame of 16 MB of such bytes as a few dozen.
+                        $metaBytes += $frameBytes;
                         if (\count($meta) >= self::MAX_META_FRAMES || $metaBytes > self::MAX_META_BYTES) {
                             throw new ProtocolException('The renderer sent more meta than one render may.');
                         }
@@ -333,6 +341,7 @@ final class RenderChannel
                 if ($offset > 0) {
                     $buffer = substr($buffer, $offset);
                     $offset = 0;
+                    $frameFrom = 0;
                 }
 
                 $at = hrtime(true);
