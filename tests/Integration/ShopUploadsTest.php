@@ -24,6 +24,7 @@ use Tinvar\Http\UploadedFile;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Support\PrivateDirectory;
 use Tinvar\Support\Signer;
+use Tinvar\Testing\Fakes\StorageFake;
 use Tinvar\Uploads\UploadTicket;
 
 const KEY = 'shop-uploads-test-key-of-32-bytes!!!';
@@ -124,7 +125,7 @@ final class Visitor
     }
 }
 
-/** A seeded database of the shop's own, in a directory of its own, with its uploads beside it. */
+/** A seeded database of the shop's own, in a directory of its own. */
 function database(): string
 {
     $directory = PrivateDirectory::create('tinvar-shopup');
@@ -174,7 +175,9 @@ function png(): string
 it('uploads an avatar and a receipt from the account page, and shows them to the customer alone', function () {
     $database = database();
     $renderer = Renderer::start('msgpack', 'shop-uploads');
-    $kernel = Kernel::fromEnvironment($renderer->socketPath, key: KEY, database: $database);
+    // The uploaded files in a fake, which says where each was kept.
+    $storage = new StorageFake();
+    $kernel = Kernel::fromEnvironment($renderer->socketPath, key: KEY, database: $database, storage: $storage);
     $customer = new Visitor($kernel);
     $other = new Visitor($kernel);
     $pdo = new \PDO("sqlite:{$database}");
@@ -195,6 +198,7 @@ it('uploads an avatar and a receipt from the account page, and shows them to the
         $other->signIn('customer1@shop.test', 'pellwick-1');
         $refused = $other->upload($tickets['avatar'], $bytes = png(), 'me.png');
         expect($refused->status)->toBe(403);
+        $storage->assertNothingStored();
 
         // The customer uploads, then saves: the action holds the reference
         // to this account, and keeps the key the framework made.
@@ -213,12 +217,13 @@ it('uploads an avatar and a receipt from the account page, and shows them to the
 
         $row = $pdo->query('SELECT avatar_key, avatar_type FROM customers WHERE id = ' . $pdo->quote($demo))?->fetch(\PDO::FETCH_ASSOC);
         expect($row['avatar_key'] ?? null)->toMatch('#^avatars/[a-f0-9]{32}\.png$#')
-            ->and($row['avatar_type'] ?? null)->toBe('image/png')
-            ->and(file_get_contents("{$database}-uploads/" . $row['avatar_key']))->toBe($bytes);
+            ->and($row['avatar_type'] ?? null)->toBe('image/png');
+        $storage->assertStoredUnder('avatars', (string) $row['avatar_key'])->assertContents((string) $row['avatar_key'], $bytes);
 
         // A receipt, kept with the account and listed on the page.
         $receipt = $customer->upload($tickets['receipt'], png(), 'till receipt.png');
         expect($customer->action('account.addReceipt', ['customer' => $demo, 'receipt' => json_decode($receipt->body(), true)['upload']])->status)->toBe(200);
+        $storage->assertCount(2)->assertStoredUnder('receipts');
 
         $again = $customer->payload('/account');
         expect($again->body())->toContain('till receipt.png')
