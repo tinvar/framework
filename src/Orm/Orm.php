@@ -979,9 +979,13 @@ final class Orm
     {
         foreach ($meta->relations as $property => $relation) {
             if ($relation->kind === RelationKind::HasMany) {
-                $meta->set($model, $property, Collection::lazy(
-                    fn (): array => $this->resolveHasMany($relation, $model),
-                ));
+                // Under the scope the parent was read in, as a ghost is.
+                $meta->set($model, $property, Collection::lazy($this->hasManyLoader(
+                    $relation,
+                    $model,
+                    $this->isUnscoped() ? null : $this->captureScope(),
+                    $this->scopeName(),
+                )));
                 continue;
             }
 
@@ -994,6 +998,36 @@ final class Orm
 
             $meta->set($model, $property, $ghost);
         }
+    }
+
+    /**
+     * What loads a #[HasMany] collection: under the scope its parent was
+     * read in, wherever it is first read, for the reason a ghost loads under
+     * its own (singleRelationGhost()). First read inside acrossTenants() or
+     * as another tenant, a collection loaded every row pointing at the
+     * parent there -- another tenant's among them -- and kept them after the
+     * block, in scoped code that would have been refused them; first read
+     * as another tenant, it held that tenant's rows and none of its own.
+     * A parent read inside acrossTenants() has no scope to keep ($scope is
+     * null), and its collections read across tenants wherever they are.
+     *
+     * @param (\Closure(\Closure(): mixed): mixed)|null $scope
+     * @return \Closure(): list<Model>
+     */
+    private function hasManyLoader(RelationMeta $relation, Model $parent, ?\Closure $scope, string $madeIn): \Closure
+    {
+        return function () use ($relation, $parent, $scope, $madeIn): array {
+            if ($scope === null || (!$this->isUnscoped() && $this->scopeName() === $madeIn)) {
+                return $this->resolveHasMany($relation, $parent);
+            }
+
+            $items = [];
+            $scope(function () use ($relation, $parent, &$items): void {
+                $items = $this->resolveHasMany($relation, $parent);
+            });
+
+            return $items;
+        };
     }
 
     /**
@@ -1558,9 +1592,16 @@ final class Orm
         }
 
         // Nothing cached to refill it from, or an unscoped write, whose
-        // hydration would bypass the map: loaded again when next read, under
-        // the reader's scope.
-        $collection->unload(fn (): array => $this->resolveHasMany($relation, $parent));
+        // hydration would bypass the map: loaded again when next read --
+        // under the parent's scope, the tenant's alone, since the map holds
+        // nothing read wider.
+        $tenant = $this->tenant();
+        $collection->unload($this->hasManyLoader(
+            $relation,
+            $parent,
+            fn (\Closure $work): mixed => $this->actAs($tenant, $work),
+            $tenant,
+        ));
     }
 
     private function isSet(Model $model, ModelMeta $meta, string $property): bool
