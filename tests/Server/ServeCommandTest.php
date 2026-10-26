@@ -337,3 +337,54 @@ describe('where the FrankenPHP binary is', function () {
         });
     });
 });
+
+// ADR 0028: with TINVAR_RENDERER_USER set, the renderers run as a user of
+// their own, started by their service manager, and serve starts none of its
+// own -- which would run as this user -- but uses theirs.
+describe('renderers run as a user of their own', function () {
+    /** @param array<string, string|null> $env */
+    $withEnvironment = static function (array $env, \Closure $body): mixed {
+        $saved = [];
+        foreach ($env as $name => $value) {
+            $saved[$name] = getenv($name);
+            putenv($value === null ? $name : "{$name}={$value}");
+        }
+        try {
+            return $body();
+        } finally {
+            foreach ($saved as $name => $value) {
+                putenv($value === false ? $name : "{$name}={$value}");
+            }
+        }
+    };
+
+    it('plans no renderers of its own, and the pool TINVAR_SOCKET names', function () use ($withEnvironment) {
+        withoutEnvironmentBinary(function () use ($withEnvironment) {
+            [$command] = command(project());
+            $plan = $withEnvironment(
+                ['TINVAR_RENDERER_USER' => 'nobody', 'TINVAR_SOCKET' => '/run/tinvar-renderer/'],
+                fn (): array => $command->plan(['--app=' . app()]),
+            );
+
+            expect($plan['pool'])->toBe('/run/tinvar-renderer');
+        });
+    });
+
+    it('refuses what would start a renderer as this user, or leave PHP nowhere to render', function (array $env, array $arguments, string $message) use ($withEnvironment) {
+        withoutEnvironmentBinary(function () use ($withEnvironment, $env, $arguments, $message) {
+            [$command, $errors] = command(project());
+            $status = $withEnvironment($env, fn (): int => $command->run(['--app=' . app(), ...$arguments]));
+
+            expect($status)->toBe(ServeCommand::USAGE)
+                ->and(implode("\n", $errors->getArrayCopy()))->toContain($message);
+        });
+    })->with([
+        'dev mode' => [['TINVAR_RENDERER_USER' => 'nobody', 'TINVAR_SOCKET' => '/run/pool'], ['--dev'], "dev mode's renderer would run as this user"],
+        'a pool size' => [['TINVAR_RENDERER_USER' => 'nobody', 'TINVAR_SOCKET' => '/run/pool'], ['--renderers=2'], 'serve starts none, so --renderers has nothing to size'],
+        'no pool' => [['TINVAR_RENDERER_USER' => 'nobody', 'TINVAR_SOCKET' => null], [], 'set TINVAR_SOCKET to the absolute path'],
+        'a relative pool' => [['TINVAR_RENDERER_USER' => 'nobody', 'TINVAR_SOCKET' => 'run/pool'], [], 'set TINVAR_SOCKET to the absolute path'],
+        'no such user' => [['TINVAR_RENDERER_USER' => 'tinvar-no-such-user', 'TINVAR_SOCKET' => '/run/pool'], [], 'there is no such user here'],
+        'root' => [['TINVAR_RENDERER_USER' => 'root', 'TINVAR_SOCKET' => '/run/pool'], [], 'names root'],
+        'this user' => [['TINVAR_RENDERER_USER' => (string) posix_geteuid(), 'TINVAR_SOCKET' => '/run/pool'], [], 'the user this process runs as'],
+    ]);
+})->skip(fn () => !\function_exists('posix_geteuid') || posix_geteuid() === 0 || posix_getpwnam('nobody') === false, 'needs a user nobody, and not root');

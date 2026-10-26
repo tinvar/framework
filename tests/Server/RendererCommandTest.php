@@ -131,7 +131,59 @@ describe('renderer:start', function () use ($root) {
         'an unknown argument' => [['--verbose'], "Unknown argument '--verbose'"],
         'an app not built' => [['--app=/tmp'], 'is not built'],
         'a relative socket' => [['--app=' . \dirname(__DIR__, 4) . '/examples/shop', '--socket=run/pool'], '--socket must be an absolute path'],
+        'root\'s group' => [['--socket-group=root'], "--socket-group must name a group other than root's"],
+        'a group that is not there' => [['--socket-group=tinvar-no-such-group'], "--socket-group must name a group other than root's"],
+        'a group that is not a name' => [['--socket-group=../wheel'], "--socket-group must name a group other than root's"],
     ]);
+
+    // ADR 0028: run as a user of their own, the renderers share their
+    // sockets with PHP's user through a group, which the renderer is handed
+    // as a number -- it may read no group database inside its sandbox.
+    it('hands the pool the group it shares its sockets with, by number', function () use ($root) {
+        $group = posix_getgrgid(posix_getegid());
+        \assert($group !== false);
+        [$command, , , $execs] = command($root);
+
+        $status = $command->run('renderer:start', ["--app={$root}/examples/shop", '--socket=' . poolPath(), '--processes=1', "--socket-group={$group['name']}"]);
+
+        expect($status)->toBe(0)
+            ->and($execs[0][1])->toContain('--socket-group=' . posix_getegid());
+    })->skip(fn () => !is_file("{$root}/examples/shop/dist/rsc/index.js") || !\function_exists('posix_getgrgid') || posix_getegid() === 0, 'the shop is not built');
+
+    // Started as anyone but the user PHP holds every socket to, the pool
+    // would be refused by every render: refused here instead.
+    it('refuses to start as anyone but the renderers\' user, where one is named', function () use ($root) {
+        [$command, , $err, $execs] = command($root);
+        putenv('TINVAR_RENDERER_USER=nobody');
+
+        try {
+            $status = $command->run('renderer:start', ["--app={$root}/examples/shop", '--socket=' . poolPath()]);
+        } finally {
+            putenv('TINVAR_RENDERER_USER');
+        }
+
+        expect($status)->toBe(RendererCommand::USAGE)
+            ->and(implode("\n", $err->getArrayCopy()))->toContain('TINVAR_RENDERER_USER says the renderers run as nobody')
+            ->and($execs)->toHaveCount(0);
+    })->skip(fn () => !is_file("{$root}/examples/shop/dist/rsc/index.js") || posix_getpwnam('nobody') === false || posix_geteuid() === posix_getpwnam('nobody')['uid'], 'the shop is not built');
+
+    it('starts as the renderers\' user, where it is the one named, sharing its sockets with a group', function () use ($root) {
+        [$command, , $err, $execs] = command($root);
+        putenv('TINVAR_RENDERER_USER=' . posix_geteuid());
+
+        try {
+            $alone = $command->run('renderer:start', ["--app={$root}/examples/shop", '--socket=' . poolPath(), '--processes=1']);
+            $shared = $command->run('renderer:start', ["--app={$root}/examples/shop", '--socket=' . poolPath(), '--processes=1', '--socket-group=' . posix_getegid()]);
+        } finally {
+            putenv('TINVAR_RENDERER_USER');
+        }
+
+        // Without a group, PHP's user could reach none of its sockets.
+        expect($alone)->toBe(RendererCommand::USAGE)
+            ->and(implode("\n", $err->getArrayCopy()))->toContain('name it with --socket-group')
+            ->and($shared)->toBe(0)
+            ->and($execs)->toHaveCount(1);
+    })->skip(fn () => !is_file("{$root}/examples/shop/dist/rsc/index.js") || posix_geteuid() === 0, 'the shop is not built');
 });
 
 // For real: renderer:start becomes the pool, the shop renders through it,

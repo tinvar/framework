@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Server;
 
+use Tinvar\Render\RendererUser;
 use Tinvar\Support\PrivateDirectory;
 
 /**
@@ -14,6 +15,10 @@ use Tinvar\Support\PrivateDirectory;
  * directory, short enough for macOS's 104-byte limit; the production React
  * build; and a scrubbed environment, since the renderer refuses to start
  * holding anything secret-shaped and should never be handed it.
+ *
+ * Never where TINVAR_RENDERER_USER names the renderers' own user: started
+ * here, a renderer runs as this process's user, which is what naming one
+ * rules out. The pool that user runs renders instead (ADR 0028).
  */
 final class RendererProcess
 {
@@ -33,6 +38,18 @@ final class RendererProcess
      */
     public static function start(string $projectRoot, string $entry, float $timeoutSeconds = 20.0): self
     {
+        try {
+            $user = RendererUser::fromEnvironment();
+        } catch (\InvalidArgumentException $e) {
+            throw new \RuntimeException($e->getMessage(), 0, $e);
+        }
+        if ($user !== null) {
+            throw new \RuntimeException(
+                RendererUser::ENV . " says the renderers run as {$user->name}, and one started here would run as this user. "
+                . 'Render through their pool: set TINVAR_SOCKET to its directory.',
+            );
+        }
+
         $bin = null;
         foreach (["{$projectRoot}/node_modules/@tinvar/renderer/bin/renderer.js", "{$projectRoot}/packages/renderer/bin/renderer.js"] as $candidate) {
             if (is_file($candidate)) {

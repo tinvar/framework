@@ -6,6 +6,7 @@ namespace Tinvar\Server;
 
 use Tinvar\Render\RendererException;
 use Tinvar\Render\RendererHealth;
+use Tinvar\Render\RendererUser;
 use Tinvar\Render\SocketTrust;
 use Tinvar\Support\PrivateDirectory;
 
@@ -13,7 +14,7 @@ use Tinvar\Support\PrivateDirectory;
  * The spec's renderer lifecycle commands, for a pool run on its own or under
  * `tinvar serve`:
  *
- *   tinvar renderer:start [--processes=N] [--app=DIR] [--socket=DIR] [--codec=msgpack|json-lines]
+ *   tinvar renderer:start [--processes=N] [--app=DIR] [--socket=DIR] [--codec=msgpack|json-lines] [--socket-group=GROUP]
  *   tinvar renderer:stop [--graceful] [--socket=DIR] [--timeout=SECONDS]
  *   tinvar renderer:check [--socket=PATH]
  *   tinvar renderer:restart [--socket=DIR] [--timeout=SECONDS]
@@ -35,6 +36,15 @@ use Tinvar\Support\PrivateDirectory;
  *   - renderer:restart replaces the renderers one at a time, each only once
  *     its replacement answers: for a deploy, so they load the new build
  *     without a render refused.
+ *
+ * Run as a user of their own (ADR 0028), the renderers are started as that
+ * user by the service manager, in a group shared with PHP's user:
+ * --socket-group names it, and every socket and the directory are opened to
+ * it alone. TINVAR_RENDERER_USER, where it is set, names the user:
+ * renderer:start refuses to run as anyone else, and the others hold the
+ * pool to it as a render would. stop and restart signal the supervisor, so
+ * they work only as its user; under a service manager, it stops and
+ * reloads the pool.
  */
 final class RendererCommand
 {
@@ -64,7 +74,7 @@ final class RendererCommand
 
     /** Each command's options: 'value' takes --name=VALUE, 'flag' is --name alone. */
     private const array OPTIONS = [
-        'renderer:start' => ['processes' => 'value', 'app' => 'value', 'socket' => 'value', 'codec' => 'value'],
+        'renderer:start' => ['processes' => 'value', 'app' => 'value', 'socket' => 'value', 'codec' => 'value', 'socket-group' => 'value'],
         'renderer:stop' => ['graceful' => 'flag', 'socket' => 'value', 'timeout' => 'value'],
         'renderer:check' => ['socket' => 'value'],
         'renderer:restart' => ['socket' => 'value', 'timeout' => 'value'],
@@ -138,6 +148,25 @@ final class RendererCommand
         if (!\in_array($codec, ['msgpack', 'json-lines'], true)) {
             throw new ServeException("--codec must be msgpack or json-lines; got '{$codec}'.");
         }
+        $group = isset($options['socket-group']) ? self::group($options['socket-group']) : null;
+
+        // Started as the user PHP holds every socket to, or not at all: a
+        // pool of PHP's own user would be refused by every render.
+        $user = self::rendererUser();
+        if ($user !== null && \function_exists('posix_geteuid') && posix_geteuid() !== $user->uid) {
+            throw new ServeException(
+                RendererUser::ENV . " says the renderers run as {$user->name}, and this is uid " . posix_geteuid()
+                . ". Start the pool as {$user->name} -- its service manager's User= -- with --socket-group naming the group it shares with PHP's user.",
+            );
+        }
+        // Without a group, its sockets are 0600: no one but this user, which
+        // PHP is not, could connect to them.
+        if ($user !== null && $group === null) {
+            throw new ServeException(
+                RendererUser::ENV . " says the renderers run as a user of their own, and PHP's user can reach their sockets only "
+                . 'through a group the two share: name it with --socket-group.',
+            );
+        }
 
         $entry = $this->entry($options['app'] ?? null);
         $script = RendererBinary::script($this->projectRoot);
@@ -159,7 +188,7 @@ final class RendererCommand
 
         return ($this->exec)(
             $node,
-            [$script, $directory, $entry, "--processes={$count}", "--codec={$codec}"],
+            [$script, $directory, $entry, "--processes={$count}", "--codec={$codec}", ...($group === null ? [] : ["--socket-group={$group}"])],
             [...array_intersect_key(getenv(), array_flip(self::RENDERER_ENV)), 'NODE_ENV' => 'production'],
         );
     }
@@ -175,7 +204,9 @@ final class RendererCommand
         }
 
         // SIGTERM drains; SIGQUIT is the pool's stop-at-once (src/pool.js).
-        posix_kill($pid, $graceful ? SIGTERM : SIGQUIT);
+        if (!$this->signal($pid, $graceful ? SIGTERM : SIGQUIT, $directory)) {
+            return self::FAILED;
+        }
         ($this->err)(sprintf('%s the renderer pool in %s (pid %d)...', $graceful ? 'Draining' : 'Stopping', $directory, $pid));
 
         $deadline = microtime(true) + $seconds;
@@ -209,7 +240,7 @@ final class RendererCommand
             ($this->out)(\sprintf('supervisor  pid %d  %s', $pid, self::running($pid) ? 'running' : 'NOT RUNNING'));
         }
 
-        $answers = new RendererHealth()->checkAll($path);
+        $answers = new RendererHealth(trust: self::trust())->checkAll($path);
         if ($answers === []) {
             ($this->err)("No renderer is listening in {$path}.");
 
@@ -247,7 +278,9 @@ final class RendererCommand
         // Done when no socket of the renderers there now is left and as many
         // answer as before: each is removed only once its replacement is up.
         $before = self::sockets($directory);
-        posix_kill($pid, SIGUSR2);
+        if (!$this->signal($pid, SIGUSR2, $directory)) {
+            return self::FAILED;
+        }
         ($this->err)(sprintf('Replacing %d renderers in %s, one at a time...', \count($before), $directory));
 
         $deadline = microtime(true) + $seconds;
@@ -298,7 +331,7 @@ final class RendererCommand
             return [$directory, null];
         }
 
-        new SocketTrust()->assertPool($directory);
+        self::trust()->assertPool($directory);
 
         $text = trim((string) file_get_contents($pidFile));
         $pid = preg_match('/^[1-9][0-9]{0,9}\z/', $text) === 1 ? (int) $text : 0;
@@ -311,6 +344,62 @@ final class RendererCommand
         }
 
         return [$directory, $pid];
+    }
+
+    /**
+     * Signals the pool's supervisor, saying why not when it cannot be: one
+     * run as the renderers' own user is that user's, or root's, to signal.
+     */
+    private function signal(int $pid, int $signal, string $directory): bool
+    {
+        if (posix_kill($pid, $signal)) {
+            return true;
+        }
+
+        ($this->err)(posix_get_last_error() === 1
+            ? "The renderer pool in {$directory} (pid {$pid}) runs as another user, so this one cannot signal it. "
+                . 'Stop or restart it as that user, or through its service manager (systemctl stop or reload).'
+            : "Could not signal the renderer pool in {$directory} (pid {$pid}): " . posix_strerror(posix_get_last_error()) . '.');
+
+        return false;
+    }
+
+    /**
+     * The checks a render would make of the pool: held to the renderers'
+     * own user where TINVAR_RENDERER_USER names one. Not refused for being
+     * this process's user -- an operator may well check the pool as it.
+     */
+    private static function trust(): SocketTrust
+    {
+        return new SocketTrust(self::rendererUser()?->owners() ?? []);
+    }
+
+    /** @throws ServeException when TINVAR_RENDERER_USER names no one, or root */
+    private static function rendererUser(): ?RendererUser
+    {
+        try {
+            return RendererUser::fromEnvironment();
+        } catch (\InvalidArgumentException $e) {
+            throw new ServeException($e->getMessage());
+        }
+    }
+
+    /**
+     * --socket-group's gid: a number, or a group's name, looked up here --
+     * PHP asks the system's group database, which /etc/group alone is not
+     * everywhere -- so the renderer is handed a number.
+     */
+    private static function group(string $given): int
+    {
+        if (preg_match('/^[1-9][0-9]{0,9}\z/', $given) === 1) {
+            return (int) $given;
+        }
+        $entry = preg_match('/^[A-Za-z_][A-Za-z0-9_.-]{0,63}\z/', $given) === 1 && \function_exists('posix_getgrnam') ? posix_getgrnam($given) : false;
+        if ($entry === false || $entry['gid'] === 0) {
+            throw new ServeException("--socket-group must name a group other than root's, by name or number; got '{$given}'.");
+        }
+
+        return $entry['gid'];
     }
 
     /**
@@ -424,7 +513,7 @@ final class RendererCommand
 
         $options = [];
         foreach ($arguments as $argument) {
-            if (preg_match('/^--([a-z]+)(?:=(.*))?\z/s', $argument, $m) === 1
+            if (preg_match('/^--([a-z]+(?:-[a-z]+)*)(?:=(.*))?\z/s', $argument, $m) === 1
                 && ($allowed[$m[1]] ?? null) === (isset($m[2]) ? 'value' : 'flag')) {
                 $options[$m[1]] = $m[2] ?? '';
             } else {

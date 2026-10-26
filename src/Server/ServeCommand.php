@@ -4,6 +4,13 @@ declare(strict_types=1);
 
 namespace Tinvar\Server;
 
+use Tinvar\Protocol\ProtocolException;
+use Tinvar\Render\RendererException;
+use Tinvar\Render\RendererHealth;
+use Tinvar\Render\RendererSockets;
+use Tinvar\Render\RendererUser;
+use Tinvar\Render\RenderFailure;
+use Tinvar\Render\SocketTrust;
 use Tinvar\Support\DevMode;
 use Tinvar\Support\PrivateDirectory;
 
@@ -37,6 +44,15 @@ use Tinvar\Support\PrivateDirectory;
  * on one socket there. The renderers get a scrubbed environment, as they
  * require; FrankenPHP gets this process's, since the application reads its
  * settings from it.
+ *
+ * With TINVAR_RENDERER_USER set, the renderers run as a user of their own
+ * (ADR 0028), and are not this command's to start: no process here can
+ * change user, and none should run as root to. The service manager starts
+ * the pool as that user (renderer.js with --socket-group, as its User=),
+ * TINVAR_SOCKET names the pool's directory, and serve starts no
+ * renderers: it checks the pool there as a render would -- answered by that
+ * user's processes and no one else's -- before FrankenPHP starts, and
+ * refuses dev mode and --renderers, which would be renderers of its own.
  *
  * `--worker` and `--schedule` start the application's queue worker
  * (`queue:work`) and scheduler (`schedule:work`) beside them, through the
@@ -155,7 +171,7 @@ final class ServeCommand
      * without a process to clean up.
      *
      * @param list<string> $arguments
-     * @return array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string, background: list<string>, renderers: int}
+     * @return array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string, background: list<string>, renderers: int, pool: string|null}
      */
     public function plan(array $arguments): array
     {
@@ -172,6 +188,39 @@ final class ServeCommand
                     . 'and shows raw errors to the browser; it never runs in production. Serve a build there.',
                 );
             }
+        }
+
+        // The renderers' own user, where they run as one: then they are the
+        // service manager's, in the pool TINVAR_SOCKET names, and nothing
+        // here may start a renderer as this user in their place.
+        $pool = null;
+        try {
+            $user = RendererUser::fromEnvironment();
+            $user?->assertNotThisProcess();
+        } catch (\InvalidArgumentException $e) {
+            throw new ServeException($e->getMessage());
+        }
+        if ($user !== null) {
+            if ($dev) {
+                throw new ServeException(
+                    RendererUser::ENV . " says the renderers run as {$user->name}, and dev mode's renderer would run as this user. "
+                    . 'Unset it to develop.',
+                );
+            }
+            if (isset($options['renderers'])) {
+                throw new ServeException(
+                    RendererUser::ENV . " says the renderers run as {$user->name}, started by their service manager; "
+                    . 'serve starts none, so --renderers has nothing to size. Set the pool\'s size where it is started.',
+                );
+            }
+            $pool = getenv('TINVAR_SOCKET');
+            if (!\is_string($pool) || !str_starts_with($pool, '/')) {
+                throw new ServeException(
+                    RendererUser::ENV . " says the renderers run as {$user->name}; set TINVAR_SOCKET to the absolute path of "
+                    . 'the directory their pool runs in.',
+                );
+            }
+            $pool = rtrim($pool, '/');
         }
 
         $host = $options['host'] ?? self::DEFAULT_HOST;
@@ -227,6 +276,7 @@ final class ServeCommand
             'renderer' => $renderer,
             'workers' => $workers,
             'renderers' => $dev ? 1 : ($renderers === null ? self::defaultRenderers(self::cpus(), $workers) : (int) $renderers),
+            'pool' => $pool,
             'background' => $this->background($options),
             'port' => $port,
             'dev' => $dev,
@@ -311,7 +361,7 @@ final class ServeCommand
         return RendererBinary::script($this->projectRoot, $bin);
     }
 
-    /** @param array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string, background: list<string>, renderers: int} $plan */
+    /** @param array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string, background: list<string>, renderers: int, pool: string|null} $plan */
     private function serve(array $plan): int
     {
         // One killed outright had no chance to remove its own.
@@ -331,12 +381,17 @@ final class ServeCommand
             'TINVAR_PORT' => (string) $plan['port'],
             'TINVAR_APP_ROOT' => $plan['app'],
             'TINVAR_WORKERS' => (string) $plan['workers'],
-            // The pool's directory; dev mode's one socket in it.
-            'TINVAR_SOCKET' => $plan['dev'] ? $socket : $directory,
+            // The pool's directory -- this serve's, or the one the renderers'
+            // own user runs -- and dev mode's one socket.
+            'TINVAR_SOCKET' => $plan['dev'] ? $socket : ($plan['pool'] ?? $directory),
         ];
 
         try {
-            if ($plan['dev']) {
+            if ($plan['pool'] !== null) {
+                // Run as a user of their own, by their service manager: held
+                // to that user before anything here relies on them.
+                $plan['renderers'] = $this->awaitPool($plan['pool']);
+            } elseif ($plan['dev']) {
                 // The dev server keeps the views' <Deferred> components up to
                 // date beside the socket, as a build writes them, so a route
                 // mints in dev exactly when its build would let it.
@@ -428,7 +483,7 @@ final class ServeCommand
                 $plan['workers'],
                 $plan['renderers'],
                 $plan['renderers'] === 1 ? 'renderer' : 'renderers',
-                $directory,
+                $plan['pool'] === null ? $directory : "{$plan['pool']}, run as " . (string) getenv(RendererUser::ENV),
             ));
 
         $status = $this->supervise($children, $plan['app'], $environment);
@@ -462,6 +517,8 @@ final class ServeCommand
                 if (isset($children['the renderers']) && proc_get_status($children['the renderers'])['running']) {
                     proc_terminate($children['the renderers'], \defined('SIGUSR2') ? SIGUSR2 : 31);
                     ($this->err)('Restarting the renderers one at a time.');
+                } elseif (!isset($children['the renderers']) && !isset($children['the dev renderer'])) {
+                    ($this->err)('The renderers run as their own user, under their service manager: reload them there (it sends their supervisor SIGUSR2).');
                 }
             }
 
@@ -649,6 +706,68 @@ final class ServeCommand
             }
             proc_close($process);
         }
+    }
+
+    /**
+     * Waits for the pool the renderers' own user runs to answer, as a render
+     * would find it: the directory held to the checks a render makes, and
+     * each renderer to being that user's process (SocketTrust). Returns how
+     * many answered. A pool that fails the checks -- or one that never
+     * answers -- stops serve before FrankenPHP starts, rather than leaving
+     * every render to be refused.
+     */
+    private function awaitPool(string $pool, int $seconds = 30): int
+    {
+        $user = RendererUser::fromEnvironment();
+        \assert($user !== null);
+        $trust = new SocketTrust($user->owners());
+        $health = new RendererHealth(timeoutSeconds: 1.0, trust: $trust);
+        $sockets = new RendererSockets($pool);
+
+        clearstatcache(true, $pool);
+        if (file_exists($pool) && !is_dir($pool)) {
+            throw new ServeException("TINVAR_SOCKET names {$pool}, which is not a directory: it names the pool the renderers' user runs.");
+        }
+
+        $deadline = microtime(true) + $seconds;
+        $why = [];
+        do {
+            if ($sockets->isPool()) {
+                $healthy = 0;
+                $why = [];
+                try {
+                    $trust->assertPool($pool);
+                    foreach ($sockets->candidates(true) as $socket) {
+                        try {
+                            $health->check($socket);
+                            $healthy++;
+                        } catch (RendererException $e) {
+                            // Answered by the wrong user: not a pool still starting.
+                            if ($e->failure() === RenderFailure::RendererUntrusted) {
+                                throw $e;
+                            }
+                            $why[] = basename($socket) . ': ' . $e->getMessage();
+                        } catch (ProtocolException $e) {
+                            $why[] = basename($socket) . ': ' . $e->getMessage();
+                        }
+                    }
+                } catch (RendererException $e) {
+                    throw new ServeException("The renderers' pool is refused: {$e->getMessage()}");
+                }
+                if ($healthy > 0) {
+                    return $healthy;
+                }
+            }
+            if ($this->stopRequested()) {
+                throw new ServeException('Stopped before everything had started.');
+            }
+            usleep(200_000);
+        } while (microtime(true) < $deadline);
+
+        throw new ServeException(
+            "No renderer answered in {$pool} within {$seconds}s, run as {$user->name}"
+            . ($why === [] ? '; is its service started?' : ' (' . implode('; ', $why) . ').'),
+        );
     }
 
     /** How many renderers are listening in a pool's directory. */
