@@ -610,18 +610,35 @@ final class Codemods
         return true;
     }
 
-    /** Whether PHP would run $path: by its name, or by an open tag in it. */
+    /**
+     * Whether PHP could run $path: by its name, or by any `<?` in it. With
+     * short_open_tag on -- PHP's default when no php.ini sets it, as in the
+     * official images and FrankenPHP's static build -- `<?` followed by
+     * anything opens PHP, so `<?namespace App;` in a .tpl file declares a
+     * class. An XML declaration is read as PHP too: a false alarm, where
+     * missing one let a second declaration of a class go unread.
+     */
     private static function isPhp(string $path, ?string $contents): bool
     {
         return preg_match('/\.(php\d?|phtml|phar|inc)$/i', $path) === 1
-            || ($contents !== null && preg_match('/<\?(php|=|\s)/i', $contents) === 1);
+            || ($contents !== null && str_contains($contents, '<?'));
     }
 
-    /** @return AuthorizationMap|null null when $code is not valid PHP */
+    /**
+     * $code read as a runtime with short_open_tag on would run it, whatever
+     * this process's php.ini says: the tokenizer follows the setting, and a
+     * php.ini-development turns it off, which would read the class after a
+     * `<?` as text. Each short tag is written long first; only letters and
+     * a space are added, so every line keeps its number.
+     *
+     * @return AuthorizationMap|null null when $code is not valid PHP
+     */
     private static function read(?string $code): ?AuthorizationMap
     {
         try {
-            return $code === null ? AuthorizationMap::empty() : AuthorizationMap::of($code);
+            return $code === null
+                ? AuthorizationMap::empty()
+                : AuthorizationMap::of((string) preg_replace('/<\?(?!=|php(?:\s|\z))/i', '<?php ', $code));
         } catch (\CompileError) {
             return null;
         }

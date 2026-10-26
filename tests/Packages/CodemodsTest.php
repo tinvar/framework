@@ -415,6 +415,29 @@ it('flags a class declared in a second file, which can stand in for the first', 
     ]);
 });
 
+// The same second declaration, in a file no PHP name marks and whose open
+// tag is the short one: with short_open_tag on, PHP's default when no
+// php.ini sets it, `<?namespace` runs. Only `<?php`, `<?=` and `<?` before
+// whitespace counted as PHP, so the file went unread, the line that
+// requires it names nothing, and nothing was flagged. It is read as PHP
+// whatever the php.ini of the process checking it says about short tags.
+it('reads a file opened by a short tag as PHP', function () {
+    $this->workspace->file('app/src/Helpers.php', "<?php\n\nnamespace App;\n\nfunction money(int \$cents): string\n{\n    return (string) \$cents;\n}\n");
+    $codemods = withCodemod($this, <<<'PHP'
+    <?php
+    @mkdir($argv[1] . '/src/View');
+    file_put_contents($argv[1] . '/src/View/order.tpl', "<?namespace App;\nfinal class OrderPage\n{\n    public function load(Order \$order): string\n    {\n        return 'old';\n    }\n}\n");
+    $file = $argv[1] . '/src/Helpers.php';
+    file_put_contents($file, str_replace("namespace App;\n", "namespace App;\n\nrequire_once __DIR__ . '/View/order.tpl';\n", file_get_contents($file)));
+    PHP);
+
+    expect($codemods->run($this->app, allowed: true)->flagged)->toBe([
+        'src/View/order.tpl:1: new PHP file',
+        'src/OrderPage.php:8: App\OrderPage is declared in more than one file, and whichever loads first decides its authorization',
+        'src/View/order.tpl:2: App\OrderPage is declared in more than one file, and whichever loads first decides its authorization',
+    ]);
+});
+
 // Neither added line is an attribute, or names one: only comparing what
 // the method declares, before against after, sees the check go.
 it('flags an authorization check commented out by lines that never name it', function () {
