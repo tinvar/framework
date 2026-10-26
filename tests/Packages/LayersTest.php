@@ -280,13 +280,22 @@ describe('the other layers', function () {
         expect(crossed($source))->toBe(['Example.php:4: framework uses codegen, Tinvar\Codegen\TypeScriptGenerator (comment)']);
     });
 
+    it('puts a file in the layer its path names, and fails one declaring another class', function () {
+        $source = "<?php\nnamespace Tinvar\\Http;\n\nuse Tinvar\\Http\\Request;\n\nfinal class Escape {}\n";
+
+        expect(Layers::framework()->checkSource($source, 'src/Orm/Escape.php', NAMESPACES, [], 'Tinvar\Orm\Escape'))->toBe([
+            'src/Orm/Escape.php: declares Tinvar\Http\Escape, where its path names Tinvar\Orm\Escape',
+            'src/Orm/Escape.php:4: database uses framework, Tinvar\Http\Request (use)',
+        ]);
+    });
+
     it('fails a file in no layer rather than skipping it', function () {
         expect(crossed("<?php\nnamespace Elsewhere;\n\nfinal class Example {}\n"))
             ->toBe(['Example.php: Elsewhere\Example is in no layer; name it in Layers.']);
     });
 
     it('fails a source it cannot read rather than passing it', function () {
-        $layers = new Layers(['only' => ['Tinvar\\']], sources: ['nowhere/src']);
+        $layers = new Layers(['only' => ['Tinvar\\']], sources: ['nowhere/src' => 'Tinvar\\']);
 
         expect($layers->check(sys_get_temp_dir()))->toBe(['nowhere/src: not a directory, so its layers cannot be checked.']);
     });
@@ -299,7 +308,7 @@ describe('the other layers', function () {
         file_put_contents($root . '/src/Live/Invalidator.php', "<?php\nnamespace Tinvar\\Live;\n\nfinal class Invalidator {}\n");
 
         try {
-            $layers = new Layers(['database' => ['Tinvar\\Orm\\'], 'framework' => ['Tinvar\\']], ['framework' => ['database']], ['src']);
+            $layers = new Layers(['database' => ['Tinvar\\Orm\\'], 'framework' => ['Tinvar\\']], ['framework' => ['database']], ['src' => 'Tinvar\\']);
 
             expect($layers->check($root))->toBe(['src/Orm/Example.php:4: database uses framework, Tinvar\Live\Invalidator (comment)']);
         } finally {

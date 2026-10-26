@@ -22,8 +22,13 @@ namespace Tinvar\Packages;
  * namespace, a class name in a string, a qualified name in a comment or
  * docblock -- so a database class cannot reach the framework by spelling
  * the name out in full, by sharing its namespace, or by putting it in a
- * docblock PHPStan reads. And it fails closed: a file under a source in no
- * layer, or a source that cannot be read, is a violation, not a file
+ * docblock PHPStan reads.
+ *
+ * A file is in the layer of the class its path names, as PSR-4 would load
+ * it, which is where a split will put it; one declaring another class is a
+ * violation, so a database file cannot step out of its layer by declaring
+ * itself in the framework's namespace. And the rule fails closed: a file in
+ * no layer, or a source that cannot be read, is a violation, not a file
  * skipped.
  */
 final readonly class Layers
@@ -34,7 +39,8 @@ final readonly class Layers
     /**
      * @param array<string, list<string>> $layers  name => members, lowest layer first
      * @param array<string, list<string>> $uses    name => the layers below it that it may use
-     * @param list<string>                $sources directories the check reads, relative to the root it is given
+     * @param array<string, string>       $sources directories the check reads, relative to the root it is
+     *                                             given, each with the namespace prefix PSR-4 maps it to
      * @throws \InvalidArgumentException for a layer that would use one not below it
      */
     public function __construct(
@@ -105,7 +111,7 @@ final readonly class Layers
                 'testing' => ['support', 'database', 'framework'],
                 'codegen' => ['support', 'database', 'framework'],
             ],
-            ['packages/framework/src', 'packages/codegen/src'],
+            ['packages/framework/src' => 'Tinvar\\', 'packages/codegen/src' => 'Tinvar\\Codegen\\'],
         );
     }
 
@@ -150,7 +156,8 @@ final readonly class Layers
         $files = [];
         $violations = [];
 
-        foreach ($this->sources as $source) {
+        $named = [];
+        foreach ($this->sources as $source => $prefix) {
             $directory = rtrim($root, '/') . '/' . $source;
             if (!is_dir($directory)) {
                 $violations[] = "{$source}: not a directory, so its layers cannot be checked.";
@@ -167,7 +174,9 @@ final readonly class Layers
 
                         continue;
                     }
-                    $files[$source . substr($file->getPathname(), \strlen($directory))] = $contents;
+                    $relative = substr($file->getPathname(), \strlen($directory) + 1);
+                    $files[$source . '/' . $relative] = $contents;
+                    $named[$source . '/' . $relative] = $prefix . str_replace('/', '\\', substr($relative, 0, -\strlen('.php')));
                 }
             }
         }
@@ -175,7 +184,7 @@ final readonly class Layers
 
         [$namespaces, $classes] = self::declaredIn($files);
         foreach ($files as $path => $contents) {
-            $violations = [...$violations, ...$this->checkSource($contents, $path, $namespaces, $classes)];
+            $violations = [...$violations, ...$this->checkSource($contents, $path, $namespaces, $classes, $named[$path])];
         }
 
         return $violations;
@@ -188,12 +197,14 @@ final readonly class Layers
      *        comments shorten (SourceReferences)
      * @param list<string> $classes    every class there is, for the names a
      *        file's own namespace leaves unqualified
+     * @param string|null  $named      the class the file's path names, which
+     *        puts it in its layer; without one, the class it declares does
      * @return list<string>
      */
-    public function checkSource(string $source, string $path, array $namespaces = [], array $classes = []): array
+    public function checkSource(string $source, string $path, array $namespaces = [], array $classes = [], ?string $named = null): array
     {
         $references = SourceReferences::of($source, $namespaces, $classes);
-        $self = $references->declared ?? $references->namespace . '\\';
+        $self = $named ?? $references->declared ?? $references->namespace . '\\';
         $layer = $this->layerOf($self);
 
         if ($layer === null) {
@@ -201,6 +212,10 @@ final readonly class Layers
         }
 
         $violations = [];
+        if ($named !== null && $references->declared !== null && strcasecmp($named, $references->declared) !== 0) {
+            $violations[] = "{$path}: declares {$references->declared}, where its path names {$named}";
+        }
+
         foreach ($references->references as $reference) {
             $used = $this->layerOf($reference['name']);
             if ($used !== null && !$this->mayUse($layer, $used)) {
