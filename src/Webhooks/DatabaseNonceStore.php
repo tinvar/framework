@@ -15,6 +15,16 @@ use Tinvar\Orm\Schema\Table;
  * refusing: of two workers inserting one nonce, one insert counts -- by
  * `ON CONFLICT DO NOTHING` on SQLite and Postgres, `INSERT IGNORE` on
  * MySQL.
+ *
+ * Durable or not. On a SQLite connection syncing NORMAL (ADR 0050) a claim
+ * an OS crash or power cut takes back is a nonce that can be spent again
+ * for as long as it is valid. A webhook's claim is left to the next
+ * checkpoint: it is lost only with the handler's writes after it, so a
+ * replay re-applies what was lost, where a claim kept without them would
+ * turn the sender's retry into a refused replay and lose the delivery. A
+ * one-time code's is not: a handoff code, a consent ticket -- what a
+ * security decision rests on, and nothing after it here to sync it -- is
+ * claimed `durable`, its commit on disk before claim() returns.
  */
 final readonly class DatabaseNonceStore implements NonceStore
 {
@@ -23,7 +33,13 @@ final readonly class DatabaseNonceStore implements NonceStore
 
     private string $insert;
 
-    public function __construct(private Connection $connection, private string $table = 'webhook_nonces')
+    /**
+     * @param bool $durable whether each claim's commit is synced in full
+     *        (Connection::durableTransaction()) however the connection syncs
+     *        the rest. Inside a transaction of the caller's, a claim is part
+     *        of it, and as durable as its commit.
+     */
+    public function __construct(private Connection $connection, private string $table = 'webhook_nonces', public bool $durable = false)
     {
         if (preg_match('/^[a-z_][a-z0-9_]{0,62}\z/', $table) !== 1) {
             throw new \InvalidArgumentException("'{$table}' is not a table name this store will write.");
@@ -59,9 +75,13 @@ final readonly class DatabaseNonceStore implements NonceStore
             return false;
         }
 
-        $this->connection->execute("DELETE FROM {$this->table} WHERE expires_at < ?", [$now]);
+        $claim = function () use ($scope, $nonce, $expiresAt, $now): bool {
+            $this->connection->execute("DELETE FROM {$this->table} WHERE expires_at < ?", [$now]);
 
-        return $this->connection->execute($this->insert, [hash('sha256', $scope), $nonce, $expiresAt]) === 1;
+            return $this->connection->execute($this->insert, [hash('sha256', $scope), $nonce, $expiresAt]) === 1;
+        };
+
+        return $this->durable && !$this->connection->inTransaction() ? $this->connection->durableTransaction($claim) : $claim();
     }
 
     public function release(string $scope, string $nonce): void

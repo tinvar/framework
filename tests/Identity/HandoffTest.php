@@ -31,6 +31,7 @@ use Tinvar\Tests\Identity\Fixtures\App;
 use Tinvar\Tests\Identity\Fixtures\Browser;
 use Tinvar\Tests\Identity\Fixtures\ResellerOverAcme;
 use Tinvar\Webhooks\ArrayNonceStore;
+use Tinvar\Webhooks\DatabaseNonceStore;
 
 require_once __DIR__ . '/Fixtures/app.php';
 
@@ -583,6 +584,29 @@ describe('realms', function () {
         expect(static fn () => $build(false, true))->toThrow(\InvalidArgumentException::class)
             ->and(static fn () => $build(true, false))->toThrow(\InvalidArgumentException::class)
             ->and($build(true, true))->toBeInstanceOf(HandoffEndpoint::class);
+    });
+
+    // A claim left to SQLite's next checkpoint is lost to an OS crash before
+    // it, and the code or ticket it spent works again until it expires.
+    it('claim codes and tickets in a database only durably', function () {
+        $app = new App();
+        $connection = \Tinvar\Orm\PdoConnection::sqlite(':memory:');
+        $build = static fn (bool $durable) => new HandoffEndpoint(
+            realms: App::realms(),
+            signer: $app->signer,
+            nonces: new DatabaseNonceStore($connection, 'handoff_nonces', durable: $durable),
+            sessionId: static fn (Request $r): string => '',
+            auth: $app->auth,
+            orm: $app->orm,
+            users: $app->directory,
+            sessions: $app->arrivals,
+            signIn: static fn (string $back): Response => Response::make(401),
+            memberships: $app->directory,
+            staff: static fn (): bool => false,
+        );
+
+        expect(static fn () => $build(false))->toThrow(\InvalidArgumentException::class, 'durable')
+            ->and($build(true))->toBeInstanceOf(HandoffEndpoint::class);
     });
 
     it('refuse a Kernel built with a handoff reading another AuthContext', function () {

@@ -17,6 +17,7 @@ use Tinvar\Orm\Orm;
 use Tinvar\Render\TokenClaims;
 use Tinvar\Render\TokenError;
 use Tinvar\Support\Signer;
+use Tinvar\Webhooks\DatabaseNonceStore;
 use Tinvar\Webhooks\NonceStore;
 
 /**
@@ -98,8 +99,9 @@ final class HandoffEndpoint
     /**
      * @param Signer $signer built for HandoffCode::PURPOSE from the application key: signs
      *        codes, derives PKCE verifiers and hashes the user's epoch
-     * @param NonceStore $nonces where redeemed codes are claimed -- shared by every worker
-     *        and server, or a code is single-use per process only
+     * @param NonceStore $nonces where redeemed codes and answered tickets are claimed --
+     *        shared by every worker and server, or a code is single-use per process only;
+     *        and durable, or a claim an OS crash takes back is a code that works again
      * @param \Closure(Request): string $sessionId the session a request carries, '' for
      *        none: the same resolver the CSRF, route and fragment tokens are bound with
      * @param AuthContext $auth the Kernel's: who the global middleware signed in
@@ -141,6 +143,18 @@ final class HandoffEndpoint
             throw new \InvalidArgumentException(
                 'These realms may include custom domains: give the handoff Memberships, to hold a user to a domain\'s '
                 . 'tenant, and a staff check, so staff are never handed to one.',
+            );
+        }
+
+        // A claim is all that makes a code or a ticket single-use, and
+        // nothing after it can be counted on to sync it: a consent's answer
+        // writes nothing more, and the application's arrival may write to
+        // another database, or fail. One left to SQLite's next checkpoint
+        // (ADR 0050) is lost to an OS crash or a power cut before it, and
+        // what it spent is good again until it expires.
+        if ($nonces instanceof DatabaseNonceStore && !$nonces->durable) {
+            throw new \InvalidArgumentException(
+                'Handoff codes and consent tickets are claimed once for good: give the handoff a DatabaseNonceStore that is durable.',
             );
         }
     }

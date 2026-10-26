@@ -87,3 +87,31 @@ it('spells a claim as each database has it', function () {
         ->and(fn () => new MySqlDialect()->insertUnlessTaken('runs; DROP TABLE x', ['task']))
         ->toThrow(\InvalidArgumentException::class);
 });
+
+// On SQLite syncing NORMAL (ADR 0050) a claim an OS crash takes back is a
+// nonce that can be spent again while it is valid. A durable store's claim
+// is committed synced in full, as a trigger on its table sees it written; a
+// webhook's, the default, is left to the next checkpoint with the handler's
+// writes after it.
+it('commits a durable store\'s claim synced in full, and a default store\'s at the next checkpoint', function () {
+    $connection = PdoConnection::sqlite(':memory:');
+    DatabaseNonceStore::define(new Schema($connection, Dialect::for($connection)));
+    $connection->execute('CREATE TABLE claimed_at (synchronous INTEGER)');
+    $connection->execute(
+        'CREATE TRIGGER claims_seen AFTER INSERT ON webhook_nonces '
+        . 'BEGIN INSERT INTO claimed_at SELECT synchronous FROM pragma_synchronous; END',
+    );
+    $seen = static fn (): array => array_column($connection->select('SELECT synchronous FROM claimed_at'), 'synchronous');
+
+    // 1 is NORMAL, 2 FULL.
+    expect(new DatabaseNonceStore($connection)->claim('Hook', 'a', 200, 100))->toBeTrue()
+        ->and(new DatabaseNonceStore($connection, durable: true)->claim('Hook', 'b', 200, 100))->toBeTrue()
+        ->and(new DatabaseNonceStore($connection, durable: true)->claim('Hook', 'b', 200, 100))->toBeFalse()
+        ->and($seen())->toBe([1, 2])
+        ->and($connection->select('PRAGMA synchronous')[0]['synchronous'])->toBe(1);
+
+    // Inside a transaction of the caller's, the claim is part of it, and as
+    // durable as its commit: a durable transaction cannot nest.
+    $connection->durableTransaction(static fn (): bool => new DatabaseNonceStore($connection, durable: true)->claim('Hook', 'c', 200, 100));
+    expect($seen())->toBe([1, 2, 2]);
+});
