@@ -1180,6 +1180,13 @@ final class Orm
      * original column values are snapshotted on hydrate, so an update touches
      * the columns that changed and nothing else.
      *
+     * The model's #[BeforeSave] methods run first, so what they change is in
+     * the diff; one that throws stops the save with nothing written. They
+     * run after the read-only check, so a save refused inside a loader or
+     * query body runs none: a hook cannot do what the scope forbids. They
+     * open no transaction of their own, so a hook's writes to other rows are
+     * undone by a failed save only when the save runs inside transaction().
+     *
      * @template T of Model
      * @param T $model
      * @return T
@@ -1189,6 +1196,7 @@ final class Orm
         $this->refuseWrite('save()');
 
         $meta = Metadata::for($model::class);
+        $meta->beforeSave($model);
 
         return $model->isPersisted()
             ? $this->update($model, $meta)

@@ -49,4 +49,9 @@ final class MappingException extends \RuntimeException
     {
         return new self("{$class}::\${$property} has unsupported column type {$type}.");
     }
+
+    public static function unusableHook(string $class, string $method): self
+    {
+        return new self("{$class}: #[BeforeSave] {$method} must be an instance method that takes no arguments.");
+    }
 }

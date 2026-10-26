@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Orm;
 
+use Tinvar\Attributes\BeforeSave;
 use Tinvar\Attributes\BelongsTo;
 use Tinvar\Attributes\Column;
 use Tinvar\Attributes\HasMany;
@@ -107,6 +108,7 @@ final class Metadata
             write: self::compileWriter($class),
             read: self::compileReader($class),
             columnReader: self::compileColumnReader($class, $plan),
+            beforeSave: self::compileBeforeSave($reflection),
         );
     }
 
@@ -304,6 +306,56 @@ final class Metadata
         $name = $type->getName();
 
         return class_exists($name) || interface_exists($name) ? $name : null;
+    }
+
+    /**
+     * The #[BeforeSave] methods, in the order save() calls them -- the
+     * class's own top to bottom, then its traits', in the order it uses
+     * them, then a parent class's by the same rule (see BeforeSave for why).
+     * Within one class that is the order reflection lists its methods in,
+     * and under the names the class gave them, so a trait's method imported
+     * under an alias is called by its alias.
+     *
+     * Each is a closure bound to the class that declares it: a private
+     * method can be called from there alone, and a parent's private one not
+     * from the model at all.
+     *
+     * @param \ReflectionClass<Model> $reflection
+     * @return list<\Closure(Model): void>
+     */
+    private static function compileBeforeSave(\ReflectionClass $reflection): array
+    {
+        $hooks = [];
+        $registered = [];
+
+        for ($level = $reflection; $level !== false && $level->getName() !== Model::class; $level = $level->getParentClass()) {
+            $scope = $level->getName();
+            foreach ($level->getMethods() as $method) {
+                $name = $method->getName();
+                if ($method->getDeclaringClass()->getName() !== $scope || $method->getAttributes(BeforeSave::class) === []) {
+                    continue;
+                }
+                // Overridden, it is still one method: called once, from the
+                // class lowest down, and what runs is the override.
+                if (!$method->isPrivate() && isset($registered[$name])) {
+                    continue;
+                }
+                if ($method->isStatic() || $method->getNumberOfRequiredParameters() > 0) {
+                    throw MappingException::unusableHook($reflection->getName(), "{$scope}::{$name}()");
+                }
+                if (!$method->isPrivate()) {
+                    $registered[$name] = true;
+                }
+
+                /** @var \Closure(Model): void $hook */
+                $hook = \Closure::bind(static function (Model $model) use ($name): void {
+                    $model->{$name}();
+                }, null, $scope);
+                $hooks[] = $hook;
+            }
+        }
+
+        return $hooks;
     }
 
     /**

@@ -5,13 +5,17 @@ declare(strict_types=1);
 namespace Tinvar\Orm;
 
 /**
- * Compiled metadata for one model: table, columns, relations and a hydrator.
+ * Compiled metadata for one model: table, columns, relations, a hydrator and
+ * the hooks a save runs.
  *
  * Reflection happens once, here. Production never reflects
  * (tinvar-spec.md, "Engine layers").
  */
 final class ModelMeta
 {
+    /** @var \WeakMap<Model, true> the models whose #[BeforeSave] hooks are running */
+    private \WeakMap $saving;
+
     /**
      * @param class-string<Model>          $class
      * @param array<string, string>        $columns  property => column
@@ -20,6 +24,7 @@ final class ModelMeta
      * @param \Closure(Model): string      $readKey
      * @param \Closure(Model, string, mixed): void $write
      * @param \Closure(Model, string): mixed      $read
+     * @param list<\Closure(Model): void>  $beforeSave the #[BeforeSave] methods, in the order they run
      */
     public function __construct(
         public readonly string $class,
@@ -34,7 +39,10 @@ final class ModelMeta
         private readonly \Closure $write,
         private readonly \Closure $read,
         private readonly \Closure $columnReader,
-    ) {}
+        private readonly array $beforeSave = [],
+    ) {
+        $this->saving = new \WeakMap();
+    }
 
     /**
      * The model's declared column values, as the database should see them.
@@ -114,6 +122,32 @@ final class ModelMeta
     public function hydrate(Model $model, array $row): void
     {
         ($this->hydrator)($model, $row);
+    }
+
+    /**
+     * Runs the model's #[BeforeSave] methods, in their compiled order.
+     *
+     * A hook that saves its own model would run the hooks again, and again,
+     * until the stack ran out; it is refused at once instead. Saving another
+     * model from a hook is fine.
+     */
+    public function beforeSave(Model $model): void
+    {
+        if ($this->beforeSave === []) {
+            return;
+        }
+        if (isset($this->saving[$model])) {
+            throw new \LogicException("A #[BeforeSave] hook of {$this->class} saved its own model, which would run the hooks without end.");
+        }
+
+        $this->saving[$model] = true;
+        try {
+            foreach ($this->beforeSave as $hook) {
+                $hook($model);
+            }
+        } finally {
+            unset($this->saving[$model]);
+        }
     }
 
     public function keyOf(Model $model): string
