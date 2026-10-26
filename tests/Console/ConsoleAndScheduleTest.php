@@ -216,6 +216,17 @@ it('refuses a command run without its tenant, with an unknown one, or with one i
         ]);
 });
 
+// Written with a space, as most command lines take an option's value,
+// `--tenant` was read as a flag and the tenant as an argument, and a
+// command declaring none ran over everything while whoever typed it
+// believed it held to one tenant.
+it('refuses --tenant written with a space on a command that runs as no tenant', function () {
+    [$console, $output, , $read] = console();
+
+    expect($console->run('reports:staff', ['--tenant', 'acme'], $output))->toBe(Console::USAGE)
+        ->and($read())->toBe([[], ['reports:staff does not run as a tenant, so --tenant would scope nothing.']]);
+});
+
 it('runs a command declaring no tenant with none, so tenant-scoped reads fail closed', function () {
     [$console, $output, , $read] = console();
 

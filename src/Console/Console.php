@@ -150,7 +150,9 @@ final class Console
                 throw new \InvalidArgumentException("There is no tenant '{$tenant}'.");
             }
             $input = $input->without(TenantArgument::OPTION);
-        } elseif ($input->option(TenantArgument::OPTION) !== null) {
+        } elseif ($input->option(TenantArgument::OPTION) !== null || $input->flag(TenantArgument::OPTION)) {
+            // `--tenant acme`, as most command lines take a value, reads as
+            // a flag and an argument: refused like `--tenant=acme`.
             throw new \InvalidArgumentException("{$name} does not run as a tenant, so --" . TenantArgument::OPTION . ' would scope nothing.');
         }
 
