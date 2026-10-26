@@ -17,6 +17,8 @@ final readonly class LockedPackage
      * @param string $where how the check names it: its lockfile and key
      * @param list<string> $alternates every other URL the lockfile names for it, which an install may download
      *        from instead: for Composer, the source beside a dist, and either one's mirrors
+     * @param list<string> $unpinned for Composer, each archive URL -- the dist's, or a mirror of it -- whose
+     *        bytes the pin does not decide: one fetched as written, with no shasum to check it against
      */
     public function __construct(
         public Ecosystem $ecosystem,
@@ -31,6 +33,7 @@ final readonly class LockedPackage
         public bool $installScript = false,
         public bool $plugin = false,
         public array $alternates = [],
+        public array $unpinned = [],
     ) {}
 
     public function key(): string

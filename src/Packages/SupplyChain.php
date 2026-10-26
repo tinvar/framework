@@ -161,6 +161,13 @@ final class SupplyChain
 
             if ($package->pin === null) {
                 $violations[] = "{$package->where} is not pinned to a commit or checksum.";
+            } else {
+                // A commit pins an archive only where Composer fetches the
+                // archive by it (Lockfiles::unpinnedArchives()).
+                foreach ($package->unpinned as $url) {
+                    $violations[] = "{$package->where} downloads {$url} as written, which its commit does not pin: "
+                        . 'give the dist its shasum, or a URL Composer fetches by the commit.';
+                }
             }
             if ($package->source === null || !$this->policy->composerSourceAllows($package->source)) {
                 $violations[] = "{$package->where} downloads from " . ($package->source ?? 'nowhere it names')

@@ -104,6 +104,7 @@ final class Lockfiles
                         [...self::composerUrls($dist), ...self::composerUrls($source)],
                         static fn (string $url): bool => $url !== $from,
                     )),
+                    unpinned: $local ? [] : self::unpinnedArchives($dist),
                 );
             }
         }
@@ -175,6 +176,45 @@ final class Lockfiles
         }
 
         return null;
+    }
+
+    /**
+     * The archive URLs of a Composer dist whose bytes its pin does not
+     * decide.
+     *
+     * Composer downloads a dist URL as written. It puts the dist's reference
+     * into one only where the URL has a `%reference%` placeholder, or is a
+     * GitHub zipball, tarball or archive URL, which it rewrites to the
+     * reference (Composer\Util\Url::updateDistReference); and it checks an
+     * archive's bytes only against a shasum, which GitHub-hosted packages
+     * leave empty. Any other URL -- a release asset, say, on the allowed
+     * github.com -- serves whatever is there when it is fetched, whatever
+     * commit the entry names. A mirror's URL is taken as written too, but
+     * for its placeholders.
+     *
+     * @param array<mixed> $dist
+     * @return list<string>
+     */
+    private static function unpinnedArchives(array $dist): array
+    {
+        if (\is_string($dist['shasum'] ?? null) && preg_match('/^[0-9a-f]{40,64}$/', $dist['shasum']) === 1) {
+            return [];
+        }
+        $reference = \is_string($dist['reference'] ?? null) && preg_match('/^[0-9a-f]{40}$/', $dist['reference']) === 1;
+
+        $unpinned = [];
+        foreach (self::composerUrls($dist) as $index => $url) {
+            $mirror = $index > 0 || !\array_key_exists('url', $dist);
+            $pinned = $reference && (str_contains($url, '%reference%') || (!$mirror && preg_match(
+                '{^https://(?:api\.github\.com/repos/[^/]+/[^/]+/(?:zip|tar)ball(?:/.+)?|(?:www\.)?github\.com/[^/]+/[^/]+/(?:(?:zip|tar)ball/.+|archive/.+\.(?:zip|tar)(?:\.gz)?))$}i',
+                $url,
+            ) === 1));
+            if (!$pinned) {
+                $unpinned[] = $url;
+            }
+        }
+
+        return $unpinned;
     }
 
     /**

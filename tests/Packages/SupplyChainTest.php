@@ -192,9 +192,40 @@ describe('pins', function () {
         expect(violations($this->workspace))->toBe(['composer.lock acme/tagged is not pinned to a commit or checksum.']);
     });
 
+    // Composer fetches a dist URL as written, but for the GitHub archive
+    // URLs it rewrites to the dist's reference and a `%reference%`
+    // placeholder, and checks the bytes only against a shasum. A release
+    // asset on github.com, an allowed host, named beside a full commit,
+    // passed as pinned while whoever owns the release could replace it.
+    it('refuses a Composer archive its commit does not pin, without a shasum', function () {
+        $this->workspace->composer('acme/released', [
+            'dist' => ['type' => 'zip', 'url' => 'https://github.com/acme/released/releases/download/v1.0.0/released.zip', 'reference' => Workspace::COMMIT, 'shasum' => ''],
+        ]);
+        $this->workspace->composer('acme/mirrored', [
+            'dist' => [
+                'type' => 'zip',
+                'url' => 'https://api.github.com/repos/acme/mirrored/zipball/' . Workspace::COMMIT,
+                'reference' => Workspace::COMMIT,
+                'shasum' => '',
+                'mirrors' => [['url' => 'https://github.com/acme/mirrored/raw/main/mirrored.zip', 'preferred' => true]],
+            ],
+        ]);
+        $this->workspace->composer('acme/archived', [
+            'dist' => ['type' => 'zip', 'url' => 'https://github.com/acme/archived/archive/v1.0.0.zip', 'reference' => Workspace::COMMIT, 'shasum' => ''],
+        ]);
+        $this->workspace->composer('acme/checked', [
+            'dist' => ['type' => 'zip', 'url' => 'https://github.com/acme/checked/releases/download/v1.0.0/checked.zip', 'reference' => Workspace::COMMIT, 'shasum' => str_repeat('a', 40)],
+        ]);
+
+        expect(violations($this->workspace))->toBe([
+            'composer.lock acme/released downloads https://github.com/acme/released/releases/download/v1.0.0/released.zip as written, which its commit does not pin: give the dist its shasum, or a URL Composer fetches by the commit.',
+            'composer.lock acme/mirrored downloads https://github.com/acme/mirrored/raw/main/mirrored.zip as written, which its commit does not pin: give the dist its shasum, or a URL Composer fetches by the commit.',
+        ]);
+    });
+
     it('refuses a Composer package from a host the policy does not name', function () {
         $this->workspace->composer('acme/mirror', [
-            'dist' => ['type' => 'zip', 'url' => 'https://mirror.example/acme/mirror.zip', 'reference' => Workspace::COMMIT],
+            'dist' => ['type' => 'zip', 'url' => 'https://mirror.example/acme/mirror.zip', 'reference' => Workspace::COMMIT, 'shasum' => str_repeat('a', 40)],
         ]);
 
         expect(violations($this->workspace))->toBe([
