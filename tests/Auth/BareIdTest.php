@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Auth\BareId;
 
+use Tinvar\Actions\ActionResult;
+use Tinvar\Attributes\Action;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Page;
+use Tinvar\Attributes\Query;
 use Tinvar\Auth\BuildRules;
 use Tinvar\Data\Data;
 use Tinvar\Tests\Orm\Fixtures\Script;
@@ -72,6 +75,35 @@ final readonly class EitherRequest extends FormRequest
     public function __construct(public MixedIdData|IdData $either) {}
 }
 
+final readonly class RunScriptRequest extends FormRequest
+{
+    public function __construct(public string $scriptId) {}
+}
+
+final readonly class ScriptFilterData extends Data
+{
+    /** @param list<string> $scriptIds */
+    public function __construct(public array $scriptIds) {}
+}
+
+final class ScriptActions
+{
+    #[Action, NoAuthorization(reason: 'a fixture action')]
+    public function run(RunScriptRequest $request): ActionResult
+    {
+        return ActionResult::ok($request->scriptId);
+    }
+}
+
+#[Query(name: 'bare.runs'), NoAuthorization(reason: 'a fixture query')]
+final class ScriptRuns
+{
+    public function __invoke(?ScriptFilterData $filter = null): int
+    {
+        return \count($filter->scriptIds ?? []);
+    }
+}
+
 /**
  * @param list<class-string> $entries
  * @param list<class-string> $payloads
@@ -120,4 +152,25 @@ it('names the bare part of the type in the message', function () {
 // An intersection is of classes, so it can never be a raw id.
 it('passes an intersection-typed parameter', function () {
     expect(bareIdViolations([IntersectionIdPage::class]))->toBe([]);
+});
+
+// `tinvar check` handed the rule its entry points and a list of payloads kept
+// by hand, and only the list was checked: a form request nobody added to it
+// carried its bare id to the action unseen. The payloads an entry point takes
+// are found from its parameters now, listed or not.
+it('checks every payload an entry point takes, listed or not', function () {
+    expect(bareIdViolations([ScriptActions::class, ScriptRuns::class]))->toBe([
+        BuildRules::TENANT_SCOPED_IDS_MUST_BE_TYPED . ' ' . RunScriptRequest::class . '::$scriptId',
+        BuildRules::TENANT_SCOPED_IDS_MUST_BE_TYPED . ' ' . ScriptFilterData::class . '::$scriptIds',
+    ]);
+});
+
+it('reports a payload both taken and listed once', function () {
+    expect(bareIdViolations([ScriptActions::class], [RunScriptRequest::class]))
+        ->toBe([BuildRules::TENANT_SCOPED_IDS_MUST_BE_TYPED . ' ' . RunScriptRequest::class . '::$scriptId']);
+});
+
+it('finds the Data objects and form requests the entry points take, nullable ones included', function () {
+    expect(BuildRules::payloadsTakenBy([ScriptActions::class, ScriptRuns::class, UnionIdPage::class]))
+        ->toBe([RunScriptRequest::class, ScriptFilterData::class]);
 });

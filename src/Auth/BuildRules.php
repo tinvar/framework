@@ -37,7 +37,10 @@ use Tinvar\Validation\FormRequest;
  *
  *   tenant-scoped-ids-must-be-typed
  *     "a form request or Data field typed string or int whose name refers to a
- *      #[TenantScoped] model (siteId, scriptId) fails the build."
+ *      #[TenantScoped] model (siteId, scriptId) fails the build." It needs the
+ *      application's models, which the registries -- checking each class as
+ *      it registers -- are not given; `tinvar check` runs it, over them and
+ *      every payload the entry points take (payloadsTakenBy()).
  *
  *   authorize-must-name-a-subject
  *     An #[Authorize] whose argument names nothing resolvable is a 500 on the
@@ -144,11 +147,59 @@ final class BuildRules
             $violations = [...$violations, ...self::checkSharedQuery($class)];
         }
 
+        // Every Data object and form request an entry point takes, whether
+        // or not the caller listed it. A list kept by hand is a list a new
+        // form request is missing from, and the bare id in it then passed in
+        // silence. Only with a tenant-scoped model to name: without one the
+        // rule cannot fire, and the registries, which check each class as it
+        // registers, build this with none.
+        if ($this->tenantScoped !== []) {
+            $payloads = array_values(array_unique([...$payloads, ...self::payloadsTakenBy($entryPoints)]));
+        }
+
         foreach ($payloads as $class) {
             $violations = [...$violations, ...$this->checkPayload($class, $class, [])];
         }
 
         return $violations;
+    }
+
+    /**
+     * The Data objects and form requests the entry points take: the types of
+     * every parameter of every routable method -- a page's or layout's
+     * loader, an action, a query -- and of every argument a batch query
+     * declares in #[Query(args:)]. Ones nested inside them are reached by
+     * the payload check itself.
+     *
+     * @param list<class-string> $entryPoints
+     * @return list<class-string>
+     */
+    public static function payloadsTakenBy(array $entryPoints): array
+    {
+        $payloads = [];
+
+        foreach ($entryPoints as $class) {
+            $reflection = new \ReflectionClass($class);
+
+            foreach (self::entryMethods($reflection) as [$method]) {
+                $types = array_values(self::batchArguments($reflection, $method));
+                foreach ($method->getParameters() as $parameter) {
+                    foreach (self::membersOf($parameter->getType()) as $member) {
+                        if (!$member->isBuiltin()) {
+                            $types[] = $member->getName();
+                        }
+                    }
+                }
+
+                foreach ($types as $type) {
+                    if (is_subclass_of($type, Data::class) || is_subclass_of($type, FormRequest::class)) {
+                        $payloads[$type] = $type;
+                    }
+                }
+            }
+        }
+
+        return array_values($payloads);
     }
 
     /**
@@ -176,7 +227,7 @@ final class BuildRules
         $reflection = new \ReflectionClass($class);
         $violations = self::checkLoaderlessRoute($reflection);
 
-        foreach ($this->entryMethods($reflection) as [$method, $classLevel]) {
+        foreach (self::entryMethods($reflection) as [$method, $classLevel]) {
             $where = "{$class}::{$method->getName()}";
 
             if ($method->isStatic()) {
@@ -449,7 +500,7 @@ final class BuildRules
      * @param \ReflectionClass<object> $reflection
      * @return list<array{\ReflectionMethod, bool}>
      */
-    private function entryMethods(\ReflectionClass $reflection): array
+    private static function entryMethods(\ReflectionClass $reflection): array
     {
         /** @var array<string, array{\ReflectionMethod, bool}> $methods */
         $methods = [];
