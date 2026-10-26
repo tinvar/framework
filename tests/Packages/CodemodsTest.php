@@ -237,6 +237,46 @@ it('flags an argument changed inside an attribute written over several lines', f
     ]);
 });
 
+// PHP counts a lone carriage return as a line break, and GNU diff does not:
+// six of them on the first line put every line below six further down for
+// AuthorizationMap than in the hunk, and on Linux the import added below
+// -- which sends Abilities, as the attribute's unresolved text names it,
+// to another class -- was checked against a blank line and went
+// unflagged. macOS's diff counts them as PHP does, so what is asked here
+// is the same on both: the file is flagged whole, whichever diff ran.
+it('flags every changed line of a PHP file holding a carriage return that ends no line', function () {
+    $this->workspace->file('app/src/Refunds.php', <<<'PHP'
+    <?php
+
+    namespace App;
+
+    use Tinvar\Attributes\Authorize;
+
+    final class Refunds
+    {
+        #[Authorize(Abilities::REFUND)]
+        public function refund(Order $order): string
+        {
+            return 'refunded';
+        }
+    }
+
+    PHP);
+    $this->workspace->file('app/src/Abilities.php', "<?php\n\nnamespace App;\n\nfinal class Abilities\n{\n    public const REFUND = 'refund-any-order';\n}\n");
+    $this->workspace->file('app/src/Customer/Abilities.php', "<?php\n\nnamespace App\\Customer;\n\nfinal class Abilities\n{\n    public const REFUND = 'refund-own-order';\n}\n");
+    $codemods = withCodemod($this, <<<'PHP'
+    <?php
+    $file = $argv[1] . '/src/Refunds.php';
+    $code = str_replace("<?php\n", "<?php\r\r\r\r\r\r\n", file_get_contents($file));
+    file_put_contents($file, str_replace("use Tinvar\\Attributes\\Authorize;\n", "use Tinvar\\Attributes\\Authorize;\nuse App\\Customer\\Abilities;\n", $code));
+    PHP);
+
+    $flagged = $codemods->run($this->app, allowed: true)->flagged;
+
+    expect($flagged)->toContain('src/Refunds.php:1: holds a carriage return that ends no line, which PHP counts as a line break and diff may not, so every line the codemods change is flagged')
+        ->and(array_values(array_filter($flagged, static fn (string $flag): bool => str_ends_with($flag, ': +use App\Customer\Abilities;'))))->toHaveCount(1);
+});
+
 // An attribute's argument can be a constant declared anywhere -- in the
 // class, beside it, in another file, as an enum case -- on a line that is
 // no attribute and names none. Its text in the attribute stays the same

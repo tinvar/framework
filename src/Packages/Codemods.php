@@ -46,8 +46,8 @@ namespace Tinvar\Packages;
  *     `const`, an enum case, a define()), whatever it names, and every
  *     class or method whose authorization attributes, parent or traits
  *     differ once names are resolved (AuthorizationMap); in one that does
- *     not parse, or that names define() or call_user_func(), every changed
- *     line;
+ *     not parse, that names define() or call_user_func(), or that holds a
+ *     carriage return ending no line, every changed line;
  *   - whenever anything changed, every authorization attribute in the app
  *     whose arguments rest on a global constant, which any code can
  *     declare where nothing shows it, and every class declared in more
@@ -424,6 +424,16 @@ final class Codemods
                 $flagged[] = "{$path}:1: names define() or call_user_func(), which can declare a constant where nothing "
                     . 'shows it, so every line the codemods change is flagged';
             }
+            // PHP counts a lone "\r" as a line break; GNU diff splits lines
+            // on "\n" alone. A carriage return that ends no line numbers the
+            // file's lines two ways, and AuthorizationMap's ranges would be
+            // asked about the wrong ones: such a file is flagged whole.
+            $breaks = !$whole && !$defines && (self::isPhp($path, $before) || self::isPhp($path, $now))
+                && preg_match('/\r(?!\n)/', ($before ?? '') . "\n" . ($now ?? '')) === 1;
+            if ($breaks) {
+                $flagged[] = "{$path}:1: holds a carriage return that ends no line, which PHP counts as a line break and diff "
+                    . 'may not, so every line the codemods change is flagged';
+            }
 
             // A removed line is numbered as it stood, an added one as it
             // will stand. The `---`/`+++` header comes before the first hunk
@@ -450,7 +460,7 @@ final class Codemods
                 if (!$removed && !$added) {
                     continue;
                 }
-                $flag = $was === null || $is === null || $defines
+                $flag = $was === null || $is === null || $defines || $breaks
                     || ($removed ? $was->covers($oldLine) : $is->covers($newLine))
                     || preg_match(self::AUTHORIZATION, $text) === 1;
                 if ($flag) {
