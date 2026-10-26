@@ -121,6 +121,10 @@ final class FragmentMinter
             throw new FragmentTokenError('props are larger than a fragment token may carry');
         }
 
+        if (!TokenClaims::carries($this->params)) {
+            throw new FragmentTokenError('the page\'s params are not text a token can carry');
+        }
+
         if (++$this->minted > Frame::MAX_MINTS_PER_RENDER) {
             throw new FragmentTokenError('more fragment tokens requested than one render may mint');
         }

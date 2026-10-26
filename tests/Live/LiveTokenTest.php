@@ -44,13 +44,14 @@ function orm(): Orm
     return new Orm(PdoConnection::sqlite(':memory:', 'test'), new IdentityMap('test'));
 }
 
-function minter(?TagsRead $loaders = null, string $session = 'session-a', ?string $user = 'u-1', string $epoch = 'e1'): LiveMinter
+/** @param array<string, string> $params */
+function minter(?TagsRead $loaders = null, string $session = 'session-a', ?string $user = 'u-1', string $epoch = 'e1', array $params = []): LiveMinter
 {
     return new LiveMinter(
         signer: signer(),
         topics: topics(),
         route: 'orders.index',
-        params: [],
+        params: $params,
         panel: 'admin',
         tenant: 't-1',
         build: 'b1',
@@ -162,6 +163,13 @@ describe('minting', function () {
 
         expect(minter()->mint($read))->toBeNull()
             ->and(minter()->mint(\array_slice($read, 0, LiveToken::MAX_TOPICS)))->toBeString();
+    });
+
+    // A route whose loader takes any text took a path segment that is not,
+    // and the page was a 500 for it. No token is a page that does not listen.
+    it('mints nothing for a page whose params are not valid UTF-8', function () {
+        expect(minter(params: ['q' => "\xFF"])->mint(["\0orders"]))->toBeNull()
+            ->and(minter(params: ['q' => 'bolts'])->mint(["\0orders"]))->toBeString();
     });
 
     it('refuses to mint without a session', function () {

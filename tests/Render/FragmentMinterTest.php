@@ -134,6 +134,13 @@ describe('what the renderer sends', function () {
             ->toThrow(FragmentTokenError::class, 'cannot be encoded');
     });
 
+    // The page's own params, not the renderer's: a route whose loader takes
+    // any text took one that is not, and the token could not be written.
+    it('refuses a token for a page whose params are not valid UTF-8, as one bad boundary', function () {
+        expect(fn () => minter(minterSigner(), ['params' => ['rack' => "\xFF"]])->mint('X', []))
+            ->toThrow(FragmentTokenError::class);
+    });
+
     it('refuses more tokens than one render may mint', function () {
         $minter = minter(minterSigner());
 

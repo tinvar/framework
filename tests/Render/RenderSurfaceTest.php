@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Render\Surface;
 
+use Tinvar\Attributes\NoAuthorization;
+use Tinvar\Attributes\Page;
 use Tinvar\Render\FragmentManifest;
 use Tinvar\Render\FragmentMinter;
 use Tinvar\Render\FragmentToken;
@@ -12,7 +14,11 @@ use Tinvar\Render\RouteMinter;
 use Tinvar\Render\RouteToken;
 use Tinvar\Render\TokenClaims;
 use Tinvar\Render\TokenError;
+use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
+
+#[Page('/search/{q}', view: 'search', name: 'surface.search'), NoAuthorization(reason: 'a test page')]
+final class SearchPage {}
 
 /**
  * Signs an arbitrary payload segment exactly as the envelope does.
@@ -66,6 +72,26 @@ describe('minter lifetimes', function () {
             ttl: $ttl,
         ))->toThrow(\InvalidArgumentException::class, 'A route token TTL must be between 1 second and 3600');
     })->with([0, RouteToken::DEFAULT_TTL + 1]);
+});
+
+// A path segment is percent-decoded to bytes, and a route whose loader takes
+// any text took `/search/%FF`: its token's params could not be written as
+// JSON, and the page was a 500 for asking. No token is a page that renders.
+describe('a page whose params are not text', function () {
+    it('gets no route token', function () {
+        $routes = new RouteRegistry();
+        $routes->register(SearchPage::class);
+        $minter = new RouteMinter(
+            signer: new Signer('test-app-key', RouteToken::PURPOSE),
+            panel: '',
+            tenant: '',
+            build: 'build-1',
+            sessionId: 'session-abc',
+        );
+
+        expect($minter->mint($routes->chainFor('surface.search', ['q' => "\xFF"])))->toBeNull()
+            ->and($minter->mint($routes->chainFor('surface.search', ['q' => 'bolts'])))->toBeString();
+    });
 });
 
 describe('a correctly signed envelope with a bad payload', function () {

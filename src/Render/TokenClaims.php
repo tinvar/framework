@@ -43,6 +43,26 @@ final readonly class TokenClaims
     ) {}
 
     /**
+     * Whether a page's params can be carried by a token: text, as a token's
+     * JSON is. A path segment is percent-decoded to bytes, so a route whose
+     * loader takes any text took `%FF` too, and the token minted for its
+     * page threw out of the render -- a 500 for asking. A minter mints
+     * nothing for such a page instead, as for a page with no name.
+     *
+     * @param array<array-key, mixed> $params
+     */
+    public static function carries(array $params): bool
+    {
+        foreach ($params as $value) {
+            if (\is_string($value) && preg_match('//u', $value) !== 1) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
      * The session binding: a hash, never the id.
      *
      * Keyed through the signer, so it cannot be precomputed or matched

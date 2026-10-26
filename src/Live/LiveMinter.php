@@ -83,7 +83,7 @@ final readonly class LiveMinter
             $topics[$topic] = [...($topics[$topic] ?? []), ...array_keys($segments)];
         }
 
-        if ($topics === [] || \count($topics) > LiveToken::MAX_TOPICS) {
+        if ($topics === [] || \count($topics) > LiveToken::MAX_TOPICS || !TokenClaims::carries($this->params)) {
             return null;
         }
 

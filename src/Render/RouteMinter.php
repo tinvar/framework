@@ -64,7 +64,7 @@ final readonly class RouteMinter
     public function mint(RouteChain $chain): ?string
     {
         $name = $chain->page->name;
-        if ($name === null) {
+        if ($name === null || !TokenClaims::carries($chain->parameters)) {
             return null;
         }
 
