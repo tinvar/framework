@@ -908,15 +908,19 @@ final class BuildRules
     }
 
     /**
-     * `siteId`, `site_id`, `siteID`, `site` and `siteIds` all name Site.
+     * `siteId`, `site_id`, `siteID`, `site` and `siteIds` all name Site --
+     * and `scriptRunId`, `script_run_id` and `script_run` all name
+     * ScriptRun: the models are keyed by their lowercased short name, which
+     * has no underscores, so a snake_case name loses its own before it is
+     * looked up.
      *
      * @return class-string|null
      */
     private function tenantScopedNamedBy(string $property): ?string
     {
-        $candidate = strtolower((string) preg_replace('/(_ids?|ids?)$/i', '', $property));
+        $candidate = strtolower(str_replace('_', '', (string) preg_replace('/(_ids?|ids?)$/i', '', $property)));
 
-        return $this->tenantScoped[$candidate] ?? $this->tenantScoped[strtolower($property)] ?? null;
+        return $this->tenantScoped[$candidate] ?? $this->tenantScoped[strtolower(str_replace('_', '', $property))] ?? null;
     }
 
     /**

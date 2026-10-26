@@ -13,6 +13,7 @@ use Tinvar\Attributes\Query;
 use Tinvar\Auth\BuildRules;
 use Tinvar\Data\Data;
 use Tinvar\Tests\Orm\Fixtures\Script;
+use Tinvar\Tests\Orm\Fixtures\ScriptRun;
 use Tinvar\Validation\FormRequest;
 
 require_once __DIR__ . '/../Orm/Fixtures/models.php';
@@ -104,6 +105,21 @@ final class ScriptRuns
     }
 }
 
+final readonly class RetryRunRequest extends FormRequest
+{
+    /** @param list<string> $script_run_ids */
+    public function __construct(public string $script_run_id, public array $script_run_ids = []) {}
+}
+
+final class RunActions
+{
+    #[Action, NoAuthorization(reason: 'a fixture action')]
+    public function retry(RetryRunRequest $request, string $script_run): ActionResult
+    {
+        return ActionResult::ok($request->script_run_id . $script_run);
+    }
+}
+
 /**
  * @param list<class-string> $entries
  * @param list<class-string> $payloads
@@ -173,4 +189,19 @@ it('reports a payload both taken and listed once', function () {
 it('finds the Data objects and form requests the entry points take, nullable ones included', function () {
     expect(BuildRules::payloadsTakenBy([ScriptActions::class, ScriptRuns::class, UnionIdPage::class]))
         ->toBe([RunScriptRequest::class, ScriptFilterData::class]);
+});
+
+// A model whose name is more than one word, named the way a form field
+// often is: `script_run_id` names ScriptRun as surely as `scriptRunId` does.
+// Only its underscores told them apart, and the snake_case spelling went
+// through unflagged.
+it('flags a bare id naming a model of more than one word in snake_case', function () {
+    expect(array_map(
+        static fn ($v): string => "{$v->rule} {$v->where}",
+        (new BuildRules([Script::class, ScriptRun::class]))->check([RunActions::class]),
+    ))->toBe([
+        BuildRules::TENANT_SCOPED_IDS_MUST_BE_TYPED . ' ' . RunActions::class . '::retry($script_run)',
+        BuildRules::TENANT_SCOPED_IDS_MUST_BE_TYPED . ' ' . RetryRunRequest::class . '::$script_run_id',
+        BuildRules::TENANT_SCOPED_IDS_MUST_BE_TYPED . ' ' . RetryRunRequest::class . '::$script_run_ids',
+    ]);
 });
