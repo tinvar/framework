@@ -43,6 +43,13 @@ final readonly class TokenClaims
     ) {}
 
     /**
+     * Seconds the server reading a token may be behind the one that minted
+     * it, and still take a fresh token's expiry as one a token is issued
+     * with. A token's expiry, once passed, is never stretched by it.
+     */
+    public const int CLOCK_SKEW = 60;
+
+    /**
      * Whether a page's params can be carried by a token: text, as a token's
      * JSON is. A path segment is percent-decoded to bytes, so a route whose
      * loader takes any text took `%FF` too, and the token minted for its
@@ -163,8 +170,11 @@ final readonly class TokenClaims
         }
 
         // Only the mint side applies the TTL, so nothing else stops a token
-        // claiming PHP_INT_MAX from being honoured forever.
-        if ($this->expiresAt - $at > $ttl) {
+        // claiming PHP_INT_MAX from being honoured forever. Give or take the
+        // minute two servers' clocks may disagree by: minted on one a few
+        // seconds ahead of the one reading it, a fresh token was further out
+        // than any is issued for, and refused until the gap had passed.
+        if ($this->expiresAt - $at > $ttl + self::CLOCK_SKEW) {
             throw new TokenError('expiry is further out than a token may be issued for');
         }
 

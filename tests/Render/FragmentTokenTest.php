@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Tinvar\Render\FragmentToken;
 use Tinvar\Render\FragmentTokenError;
+use Tinvar\Render\TokenClaims;
 use Tinvar\Support\Signer;
 
 function signer(string $secret = 'test-app-key'): Signer
@@ -261,6 +262,25 @@ describe('malleability and bounds', function () {
         $encoded = token($signer, ['expiresAt' => PHP_INT_MAX])->encode($signer);
 
         expect(fn () => FragmentToken::decode($encoded, $signer))
+            ->toThrow(FragmentTokenError::class, 'further out');
+    });
+
+    // Minted on a server whose clock is a few seconds ahead of the one that
+    // reads it -- a boundary loaded at once, a live trade 50 ms after the
+    // page -- a fresh token's expiry was further out than any is issued for,
+    // and refused until the gap had passed. A minute is allowed for; a token
+    // past it is still refused.
+    it('allows for a minute between the clocks of the server that minted it and the one that reads it', function () {
+        $signer = signer();
+        $now = 1_800_000_000;
+        $ahead = static fn (int $by): string => token($signer, [
+            'issuedAt' => $now + $by,
+            'expiresAt' => $now + $by + FragmentToken::DEFAULT_TTL,
+        ])->encode($signer);
+
+        expect(FragmentToken::decode($ahead(5), $signer, $now)->component)->toBe('UnitHistory')
+            ->and(FragmentToken::decode($ahead(TokenClaims::CLOCK_SKEW), $signer, $now)->component)->toBe('UnitHistory')
+            ->and(fn () => FragmentToken::decode($ahead(TokenClaims::CLOCK_SKEW + 1), $signer, $now))
             ->toThrow(FragmentTokenError::class, 'further out');
     });
 
