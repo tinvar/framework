@@ -317,6 +317,9 @@ final readonly class Client
             returned: static function (string $called, array $with, mixed $value) use (&$data): void {
                 $data = $value;
             },
+            // A query faked in this test (Query::fake()) answers here as it
+            // answers a render: after every check, before the encoder.
+            standIn: $kernel->standIns === null ? null : $kernel->standIns->query(...),
         );
 
         // The query's own panel -- by its #[Panel] or its namespace, as an
@@ -487,7 +490,8 @@ final readonly class Client
         };
     }
 
-    private static function queryName(Kernel $kernel, string $query): string
+    /** The name query $query -- its class or its name -- is registered under. */
+    public static function queryName(Kernel $kernel, string $query): string
     {
         if ($kernel->queries->has($query)) {
             return $query;
@@ -501,8 +505,13 @@ final readonly class Client
         throw new \InvalidArgumentException("No query {$query} is registered with the application.");
     }
 
-    /** @param array{0: class-string, 1: string}|string $action */
-    private static function actionName(Kernel $kernel, array|string $action): string
+    /**
+     * The name action $action -- [Class::class, 'method'] or its name -- is
+     * registered under.
+     *
+     * @param array{0: class-string, 1: string}|string $action
+     */
+    public static function actionName(Kernel $kernel, array|string $action): string
     {
         if (\is_string($action)) {
             return $kernel->actions->has($action) ? $action : throw new \InvalidArgumentException("No action named '{$action}' is registered with the application.");

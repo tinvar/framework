@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Testing;
 
+use Tinvar\Testing\Fakes\BodyFakes;
+
 /**
  * The application the current test is about, for the Pest-style functions
  * in test-functions.php: `get('/orders')`, `actingAs($customer)->action(...)`,
@@ -25,12 +27,22 @@ final class Testing
     /**
      * Makes $app the application the functions call, with the renderer pool
      * render() goes through and the clock travel() moves, when it has them.
+     *
+     * The test starts with no query or action faked, whatever an earlier one
+     * left in an application it shares.
      */
     public static function use(TestableApplication $app, ?RendererPool $renderer = null, ?TestClock $clock = null): Client
     {
+        $client = new Client($app, $renderer);
         self::$clock = $clock;
+        self::$client = $client;
 
-        return self::$client = new Client($app, $renderer);
+        $kernel = $app->kernel();
+        if ($kernel->standIns instanceof BodyFakes) {
+            $kernel->standIns->forget();
+        }
+
+        return $client;
     }
 
     /** The current test's client: nobody, in no tenant or panel. */
@@ -45,9 +57,18 @@ final class Testing
         return self::$clock ?? throw new \LogicException('No clock is under test: build the application with a TestClock and pass it to Testing::use().');
     }
 
-    /** Forgets the application, so a later test cannot reach it by accident. */
+    /**
+     * Forgets the application, so a later test cannot reach it by accident --
+     * nor meet a query or action this one faked, should it reach the same
+     * application.
+     */
     public static function forget(): void
     {
+        $kernel = self::$client?->app->kernel();
+        if ($kernel?->standIns instanceof BodyFakes) {
+            $kernel->standIns->forget();
+        }
+
         self::$client = null;
         self::$clock = null;
     }
