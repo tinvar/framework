@@ -6,7 +6,6 @@ namespace Tinvar\Orm;
 
 use Tinvar\Data\Lazy;
 use Tinvar\Support\Uuid;
-use Tinvar\Tenancy\TenantHierarchy;
 
 /**
  * The ORM runtime for one request: a connection, an identity map, a relation-row
@@ -125,14 +124,14 @@ final class Orm
     private ?array $reads = null;
 
     /**
-     * @param TenantHierarchy|null $tenants the application's tenant tree: what
+     * @param TenantSubtrees|null $tenants the application's tenant tree: what
      *        withinSubtree() reads across, and what lets a host's tenant bound a
      *        session's (ResolveTenant). Null for tenants with no hierarchy.
      */
     public function __construct(
         private readonly Connection $connection,
         private readonly IdentityMap $identityMap = new IdentityMap(),
-        private readonly ?TenantHierarchy $tenants = null,
+        private readonly ?TenantSubtrees $tenants = null,
     ) {
         $this->unscopedByFiber = new \WeakMap();
         $this->readOnlyByFiber = new \WeakMap();
@@ -186,7 +185,7 @@ final class Orm
     }
 
     /** The application's tenant tree, or null when its tenants have none. */
-    public function tenants(): ?TenantHierarchy
+    public function tenants(): ?TenantSubtrees
     {
         return $this->tenants;
     }

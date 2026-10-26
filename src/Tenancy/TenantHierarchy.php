@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Tenancy;
 
+use Tinvar\Orm\TenantSubtrees;
+
 /**
  * The application's TenantTree, read with limits: whether one tenant is in
  * another's subtree, and the whole of a subtree.
@@ -13,8 +15,11 @@ namespace Tinvar\Tenancy;
  * request refused, never one let in on a tree that does not hold together.
  * A subtree larger than a read can carry is an error rather than a part of
  * one, since a part would be a silently wrong answer.
+ *
+ * It is what the ORM is given as its TenantSubtrees: the ORM is below
+ * tenancy, so it names the port and this fills it (ADR 0054).
  */
-final readonly class TenantHierarchy
+final readonly class TenantHierarchy implements TenantSubtrees
 {
     /** Levels walked up from a tenant before it is taken to be under nothing. */
     public const int MAX_DEPTH = 32;
