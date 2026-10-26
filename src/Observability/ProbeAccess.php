@@ -6,7 +6,7 @@ namespace Tinvar\Observability;
 
 use Tinvar\Dev\Loopback;
 use Tinvar\Http\Request;
-use Tinvar\Tenancy\Host;
+use Tinvar\Http\HostName;
 
 /**
  * Who may read /_health, /_ready and /_metrics: "Internal network or
@@ -60,7 +60,7 @@ final class ProbeAccess
     /** What a browser may send with what it fetches, and a probe or a scraper never does. */
     private const array BROWSER_HEADERS = ['sec-fetch-site', 'sec-fetch-mode', 'sec-fetch-dest', 'origin'];
 
-    /** @var list<string> the names this server goes by, normalized as Host reads them */
+    /** @var list<string> the names this server goes by, normalized as HostName reads them */
     private readonly array $hosts;
 
     /** @var list<array{string, int}> each network as its packed address and prefix length */
@@ -92,7 +92,7 @@ final class ProbeAccess
 
         $names = [];
         foreach ($hosts as $name) {
-            $names[] = Host::normalize($name) ?? throw new \InvalidArgumentException("'{$name}' is not a host name.");
+            $names[] = HostName::normalize($name) ?? throw new \InvalidArgumentException("'{$name}' is not a host name.");
         }
         $this->hosts = $names;
     }
@@ -157,7 +157,7 @@ final class ProbeAccess
             return filter_var($m[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false;
         }
 
-        $name = Host::normalize($host);
+        $name = HostName::normalize($host);
 
         return $name !== null && \in_array($name, $this->hosts, true);
     }

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Tenancy;
 
+use Tinvar\Http\HostName;
+
 /**
  * Tenants named by one label under the platform's own domains:
  * `acme.shop.test` is the tenant the application calls `acme`.
@@ -30,7 +32,7 @@ final readonly class Subdomains implements TenantHosts
     {
         $normalized = [];
         foreach ($domains as $domain) {
-            $host = Host::normalize($domain);
+            $host = HostName::normalize($domain);
             if ($host === null) {
                 throw new \InvalidArgumentException("'{$domain}' is not a domain subdomains can sit under.");
             }

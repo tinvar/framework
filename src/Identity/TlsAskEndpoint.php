@@ -9,7 +9,7 @@ use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Http\ThrottleStore;
 use Tinvar\Observability\ProbeAccess;
-use Tinvar\Tenancy\Host;
+use Tinvar\Http\HostName;
 
 /**
  * `/_tls/ask?domain=`: Caddy's on-demand TLS `ask` endpoint, where a custom
@@ -75,7 +75,7 @@ use Tinvar\Tenancy\Host;
  *     deactivated by the asking, and one whose lookup fails counts toward
  *     its grace period. Or that passed a check under RETRY_AFTER seconds
  *     ago, as below.
- *   - 404 for anything else, and for what Host::normalize() does not read
+ *   - 404 for anything else, and for what HostName::normalize() does not read
  *     as a host name.
  *
  * A name that is not in the application's records is never resolved: the
@@ -193,7 +193,7 @@ final readonly class TlsAskEndpoint
     /** Whether a certificate may be obtained or renewed for the domain Caddy asks about. */
     private function allows(mixed $domain): bool
     {
-        $host = \is_string($domain) ? Host::normalize($domain) : null;
+        $host = \is_string($domain) ? HostName::normalize($domain) : null;
         if ($host === null) {
             return false;
         }

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Identity;
 
-use Tinvar\Tenancy\Host;
+use Tinvar\Http\HostName;
 
 /**
  * One host's authentication realm: the origin a session made there belongs
@@ -112,7 +112,7 @@ final readonly class Realm
         [, $scheme, $host] = $m;
         $port = $m[3] ?? '';
 
-        if (Host::normalize($host) !== $host || ($port !== '' && (int) $port > 65535)) {
+        if (HostName::normalize($host) !== $host || ($port !== '' && (int) $port > 65535)) {
             return null;
         }
         if (($scheme === 'https' && $port === '443') || ($scheme === 'http' && $port === '80')) {

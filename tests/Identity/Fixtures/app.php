@@ -36,7 +36,7 @@ use Tinvar\Query\QueryRegistry;
 use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
-use Tinvar\Tenancy\Host;
+use Tinvar\Http\HostName;
 use Tinvar\Orm\TenantHierarchy;
 use Tinvar\Orm\TenantTree;
 use Tinvar\Webhooks\ArrayNonceStore;
@@ -169,7 +169,7 @@ final readonly class StartSession implements Middleware
     {
         $id = $request->cookie(SESSION_COOKIE) ?? '';
         $row = $this->store->sessions[$id] ?? null;
-        if ($row !== null && $row['realm'] === Host::normalize($request->header('host') ?? '')) {
+        if ($row !== null && $row['realm'] === HostName::normalize($request->header('host') ?? '')) {
             $user = new User($row['user']);
             $this->auth->login($user, $this->directory->epoch($user));
         }

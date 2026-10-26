@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Identity;
 
 use Tinvar\Http\Request;
-use Tinvar\Tenancy\Host;
+use Tinvar\Http\HostName;
 
 /**
  * The application's hosts, as realms: the platform host sign-in happens on
@@ -112,10 +112,10 @@ final class Realms
         return $realm;
     }
 
-    /** The realm a request's Host header names, read as Host reads it -- never X-Forwarded-Host. */
+    /** The realm a request's Host header names, read as HostName reads it -- never X-Forwarded-Host. */
     public function forRequest(Request $request): ?Realm
     {
-        $host = Host::normalize($request->header('host') ?? '');
+        $host = HostName::normalize($request->header('host') ?? '');
 
         return $host === null ? null : $this->forHost($host);
     }

@@ -23,7 +23,7 @@ namespace Tinvar\Identity;
  * service is the application's, after the tenant proves it is theirs anew,
  * since the name may by then be somebody else's.
  *
- * Every host is normalized, as Host::normalize() leaves it.
+ * Every host is normalized, as HostName::normalize() leaves it.
  */
 interface CustomDomains
 {

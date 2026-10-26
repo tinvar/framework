@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Identity;
 
 use Tinvar\Outbound\Cidr;
-use Tinvar\Tenancy\Host;
+use Tinvar\Http\HostName;
 
 /**
  * Whether a custom domain's DNS points at the platform.
@@ -74,7 +74,7 @@ final readonly class DomainVerifier
 
         $named = [];
         foreach ($targets as $target) {
-            if (Host::normalize($target) !== $target) {
+            if (HostName::normalize($target) !== $target) {
                 throw new \InvalidArgumentException("'{$target}' is not a CNAME target: a host name, normalized.");
             }
             $named[$target] = true;
@@ -144,7 +144,7 @@ final readonly class DomainVerifier
 
     /**
      * An alias as a host name, or null when it is not one. Not
-     * Host::normalize() alone, which reads a Host header and drops a port
+     * HostName::normalize() alone, which reads a Host header and drops a port
      * from its end: a DNS label may hold a colon, and an alias of
      * `domains.platform.example:443` -- a name under a top-level domain
      * that does not exist -- would have been read as the platform's target.
@@ -153,7 +153,7 @@ final readonly class DomainVerifier
     {
         $name = rtrim(strtolower($alias), '.');
 
-        return Host::normalize($name) === $name ? $name : null;
+        return HostName::normalize($name) === $name ? $name : null;
     }
 
     private function ours(string $address): bool

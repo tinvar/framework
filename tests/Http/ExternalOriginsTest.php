@@ -21,7 +21,7 @@ describe('a URL', function () {
         'a fragment' => ['https://pay.example/#done'],
         'the default port spelled out' => ['https://pay.example:443/checkout'],
         'another port, allowlisted' => ['https://sso.example:8443/login'],
-        // As Tenancy\Host normalizes a host: one origin, one spelling.
+        // As HostName normalizes a host: one origin, one spelling.
         'the host in capitals' => ['https://PAY.Example/checkout'],
         'the host with a trailing dot' => ['https://pay.example./checkout'],
         'the scheme in capitals' => ['HTTPS://pay.example/checkout'],

@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Tinvar\Http;
 
-use Tinvar\Tenancy\Host;
-
 /**
  * The external origins an action may send a browser to, with
  * ActionResult::location().
@@ -19,7 +17,7 @@ use Tinvar\Tenancy\Host;
  * an action's redirect is a person following it, and a plain-http hop hands
  * the URL and whatever it carries to the network. No wildcards and no
  * parent domains: `pay.example` does not let in `evil.pay.example`, whose
- * DNS someone else may control. Hosts are normalized as Tenancy\Host
+ * DNS someone else may control. Hosts are normalized as HostName
  * normalizes a Host header -- lowercase, no trailing dot -- so that
  * `https://Pay.Example.` and `https://pay.example:443` are the one origin
  * they are to a browser, and anything that is not a host name, an address
@@ -114,7 +112,7 @@ final readonly class ExternalOrigins
             return null;
         }
 
-        $host = Host::normalize($m[1]);
+        $host = HostName::normalize($m[1]);
         $port = ($m[2] ?? '') === '' ? 443 : (int) $m[2];
         if ($host === null || $port < 1 || $port > 65535) {
             return null;
