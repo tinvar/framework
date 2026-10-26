@@ -20,6 +20,7 @@ use Tinvar\Http\Endpoints\FragmentEndpoint;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Render\FragmentToken;
+use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenClaims;
 use Tinvar\Support\Signer;
 
@@ -87,7 +88,7 @@ function demoAuthHash(Signer $signer): string
 }
 
 /** A token the order page would have minted for this session, issued `$ago` seconds ago. */
-function shippingToken(string $session, string $order, int $ago = 0): string
+function shippingToken(string $session, string $order, string $tenant, int $ago = 0): string
 {
     $signer = new Signer(KEY, FragmentToken::PURPOSE);
 
@@ -97,7 +98,7 @@ function shippingToken(string $session, string $order, int $ago = 0): string
         route: 'orders.show',
         params: ['order' => $order],
         panel: '',
-        tenant: '',
+        tenant: $tenant,
         build: 'dev',
         sessionHash: FragmentToken::hashSession($signer, $session),
         authHash: demoAuthHash($signer),
@@ -112,11 +113,12 @@ it('renders a group in one render, as a list with a subtree per boundary', funct
         $kernel = Kernel::fromEnvironment($renderer->socketPath, key: KEY, database: Shop::database());
         [$cookies, $order] = signedIn($kernel);
         $session = (string) Kernel::sessionFrom($cookies[Kernel::SESSION_COOKIE], KEY);
+        $tenant = TenantClaim::current($kernel->orm);
 
         // Two issues of the one boundary: two tokens, two subtrees.
         $response = $kernel->handle(new Request(
             'GET',
-            FragmentEndpoint::PREFIX . shippingToken($session, $order) . '/' . shippingToken($session, $order, ago: 5),
+            FragmentEndpoint::PREFIX . shippingToken($session, $order, $tenant) . '/' . shippingToken($session, $order, $tenant, ago: 5),
             ['rsc' => '1', 'accept' => 'text/x-component'],
             cookies: $cookies,
         ));

@@ -31,18 +31,20 @@ use Tinvar\Tests\Auth\Fixtures\User as AuthUser;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
 use Tinvar\Tests\Orm\Fixtures\Rack;
 use Tinvar\Tests\Orm\Fixtures\Site;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 
 require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
 require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/../Auth/Fixtures/policies.php';
 require_once __DIR__ . '/../Actions/Fixtures/actions.php';
 require_once __DIR__ . '/../Routing/Fixtures/routes.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
 
 /** @return array{0: Kernel, 1: Fixture} */
 function kernel(?AuthUser $user = null): array
 {
     $fixture = new Fixture(racks: 2, unitsPerRack: 2, sites: 1);
-    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+    $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat());
 
     $auth = new AuthContext();
     $auth->login($user);
@@ -90,7 +92,7 @@ function showPath(Fixture $fixture): string
 function throttledKernel(int $limit = 2): array
 {
     $fixture = new Fixture(racks: 2, unitsPerRack: 2, sites: 1);
-    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+    $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat());
 
     $auth = new AuthContext();
     $auth->login(new AuthUser('u-1'));
@@ -152,7 +154,7 @@ function bootstrapKernel(?AuthUser $user = null): array
     $auth->login($user);
 
     $kernel = new Kernel(
-        orm: new Orm($fixture->connection, new IdentityMap('test')),
+        orm: new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat()),
         routes: $routes,
         queries: new QueryRegistry(),
         actions: new ActionRegistry(),
@@ -526,7 +528,7 @@ describe('the reset contract', function () {
         $panels = new Tinvar\Auth\PanelContext();
         $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
         $kernel = new Kernel(
-            orm: new Orm($fixture->connection, new IdentityMap('test')),
+            orm: new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat()),
             routes: new RouteRegistry(),
             queries: new QueryRegistry(),
             actions: new ActionRegistry(),
@@ -699,7 +701,7 @@ describe('bootstrap through the kernel', function () {
 describe('post-action revalidation through the kernel', function () {
     it('re-renders a mounted route the action invalidated', function () {
         $fixture = new Fixture(racks: 2, unitsPerRack: 1, sites: 1);
-        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat());
         // Two signers, as an application must supply: one per purpose.
         $fragmentSigner = new Tinvar\Support\Signer('k', Tinvar\Render\FragmentToken::PURPOSE);
         $signer = new Tinvar\Support\Signer('k', Tinvar\Render\RouteToken::PURPOSE);
@@ -772,7 +774,7 @@ describe('post-action revalidation through the kernel', function () {
      */
     it('hands a page its route token', function () {
         $fixture = new Fixture(racks: 2, unitsPerRack: 1, sites: 1);
-        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat());
         // Two signers, as an application must supply: one per purpose.
         $fragmentSigner = new Tinvar\Support\Signer('k', Tinvar\Render\FragmentToken::PURPOSE);
         $signer = new Tinvar\Support\Signer('k', Tinvar\Render\RouteToken::PURPOSE);
@@ -844,7 +846,7 @@ describe('post-action revalidation through the kernel', function () {
 describe('revalidation transport', function () {
     it('keeps the token list out of the action input', function () {
         $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
-        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat());
         $registry = new ActionRegistry();
         $registry->register(A\RackActions::class);
 
@@ -874,7 +876,7 @@ describe('revalidation transport', function () {
 
     it('does not let a page token be cached across visitors', function () {
         $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
-        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat());
         $fragmentSigner = new Tinvar\Support\Signer('k', Tinvar\Render\FragmentToken::PURPOSE);
         $routeSigner = new Tinvar\Support\Signer('k', Tinvar\Render\RouteToken::PURPOSE);
 
@@ -947,7 +949,7 @@ describe('version skew through the kernel', function () {
         $auth->login(new AuthUser('u-1'));
 
         $kernel = new Kernel(
-            orm: new Orm($fixture->connection, new IdentityMap('test')),
+            orm: new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat()),
             routes: $routes,
             queries: new QueryRegistry(),
             actions: new ActionRegistry(),
@@ -1021,7 +1023,7 @@ it('names a resolver that builds something other than middleware', function () {
     $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
 
     expect(fn () => new Kernel(
-        orm: new Orm($fixture->connection, new IdentityMap('test')),
+        orm: new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat()),
         routes: new RouteRegistry(),
         queries: new QueryRegistry(),
         actions: new ActionRegistry(),
@@ -1049,7 +1051,7 @@ describe('the kernel with a container', function () {
         $auth->login(new AuthUser('u-1'));
 
         $kernel = new Kernel(
-            orm: new Orm($fixture->connection, new IdentityMap('test')),
+            orm: new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat()),
             routes: $routes,
             queries: new QueryRegistry(),
             actions: new ActionRegistry(),
@@ -1114,7 +1116,7 @@ it('refuses global middleware that would hold a request-lived service', function
     $container = new Tinvar\Container\Container();
 
     expect(fn () => new Kernel(
-        orm: new Orm($fixture->connection, new IdentityMap('test')),
+        orm: new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat()),
         routes: new RouteRegistry(),
         queries: new QueryRegistry(),
         actions: new ActionRegistry(),

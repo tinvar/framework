@@ -23,6 +23,7 @@ use Tinvar\Http\Response;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
+use Tinvar\Render\TenantClaim;
 use Tinvar\Support\Signer;
 
 const KEY = 'shop-history-key-test-key-32-bytes!!';
@@ -80,7 +81,7 @@ final class Visitor
         [$user, $epoch] = $signedIn ? demo() : ['', ''];
 
         return new HistoryKeys(new Signer(KEY, HistoryKeys::PURPOSE), self::session(...))
-            ->for(new Request('GET', '/', cookies: $this->cookies), user: $user, epoch: $epoch);
+            ->for(new Request('GET', '/', cookies: $this->cookies), TenantClaim::current($this->kernel->orm), user: $user, epoch: $epoch);
     }
 
     private static function session(Request $r): string

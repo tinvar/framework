@@ -35,6 +35,7 @@ use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
 use Tinvar\Tests\Actions\Fixtures\RackActions;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Tests\Query\Fixtures\RackSummary;
 use Tinvar\Tests\Routing\Fixtures\RackShowPage;
 use Tinvar\Tests\Routing\Fixtures\RootLayout;
@@ -46,6 +47,7 @@ require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/../Routing/Fixtures/routes.php';
 require_once __DIR__ . '/../Actions/Fixtures/actions.php';
 require_once __DIR__ . '/../Query/Fixtures/queries.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
 
 const SESSION = 'session-abc';
 
@@ -68,7 +70,7 @@ function chainClasses(): array
 function actionEndpoint(bool $revalidating = false): array
 {
     $fixture = new Fixture(racks: 2, unitsPerRack: 1, sites: 1);
-    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+    $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat());
     $registry = new ActionRegistry();
     $registry->register(RackActions::class);
     $registry->register(RedirectActions::class);
@@ -210,7 +212,7 @@ describe('the bootstrap endpoint', function () {
 function fragmentEndpoint(\Closure $render): array
 {
     $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
-    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+    $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat());
     $routes = new RouteRegistry();
     $routes->registerAll(chainClasses());
     $signer = new Signer('test-app-key', FragmentToken::PURPOSE);
@@ -285,7 +287,7 @@ describe('the fragment endpoint', function () {
 function queryEndpoint(): array
 {
     $fixture = new Fixture(racks: 1, unitsPerRack: 2);
-    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+    $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat());
     $registry = new QueryRegistry(static fn (string $c): object => new $c());
     $registry->register(RackSummary::class);
     $runner = new QueryRunner($registry, $orm, new AllowAllGate());

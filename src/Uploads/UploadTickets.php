@@ -88,7 +88,7 @@ final readonly class UploadTickets
             targetClass: $targetClass,
             targetId: $target->primaryKey(),
             prefix: $declared->prefix,
-            tenant: $this->entry->tenantFor($compiled->tenantFrom, $request),
+            tenant: $this->entry->tenantClaimFor($compiled->tenantFrom, $request),
             panel: $panel->name ?? '',
             sessionHash: $this->uploads->sessionHash($session),
             authHash: $this->uploads->authHash($this->auth->id(), $this->auth->epoch()),

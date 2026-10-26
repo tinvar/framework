@@ -17,6 +17,7 @@ use Tinvar\Live\LiveMinter;
 use Tinvar\Live\TagsRead;
 use Tinvar\Orm\Orm;
 use Tinvar\Render\RouteToken;
+use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenClaims;
 use Tinvar\Render\TokenError;
 use Tinvar\Routing\LoadedRoute;
@@ -339,7 +340,7 @@ final class Revalidator
                     // client-held state is bound to (user, tenant). Against
                     // the tenant the route runs as now -- resolved from this
                     // request, never from the token.
-                    if ($this->orm->tenant() !== $claims->tenant) {
+                    if (TenantClaim::current($this->orm) !== $claims->tenant) {
                         return Response::make(200, '');
                     }
 

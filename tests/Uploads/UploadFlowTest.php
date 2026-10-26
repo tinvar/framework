@@ -10,6 +10,7 @@ declare(strict_types=1);
  */
 
 use Tinvar\Actions\ActionRunner;
+use Tinvar\Render\TenantClaim;
 use Tinvar\Storage\LocalStorage;
 use Tinvar\Storage\MemoryStorage;
 use Tinvar\Tests\Uploads\Fixtures\App;
@@ -162,6 +163,19 @@ describe('/_upload', function () {
         expect($app->upload($ticket, png(), headers: ['x-test-tenant' => 'globex'])->status)->toBe(403)
             ->and($app->upload($ticket, png(), headers: ['x-test-tenant' => 'acme'])->status)->toBe(201);
     });
+
+    // ADR 0056: with no tenancy registered a ticket names the claim no
+    // tenant can be, so a ticket bound in either mode is refused in the other.
+    it('names the claim of its tenancy mode, and is refused with the other\'s', function (bool $tenancy) {
+        $app = new App(new MemoryStorage(), tenancy: $tenancy);
+        $signer = $app->uploads->ticketSigner;
+        $ticket = UploadTicket::decode($app->ticket($app->profile(P1)), $signer, $app->uploads->now());
+        $other = new UploadTicket(...[...get_object_vars($ticket), 'tenant' => $tenancy ? TenantClaim::NONE : '']);
+
+        expect($ticket->tenant)->toBe($tenancy ? '' : TenantClaim::NONE)
+            ->and($app->upload($other->encode($signer), png())->status)->toBe(403)
+            ->and($app->upload($ticket->encode($signer), png())->status)->toBe(201);
+    })->with(['tenancy' => [true], 'no tenancy' => [false]]);
 
     it('keeps a path in the client\'s filename as metadata, and stores nothing outside its root', function () {
         $root = sys_get_temp_dir() . '/tinvar-upload-root-' . bin2hex(random_bytes(4));

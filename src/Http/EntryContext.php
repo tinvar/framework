@@ -20,6 +20,7 @@ use Tinvar\Http\Middleware\ResolveTenant;
 use Tinvar\Identity\Realms;
 use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
+use Tinvar\Render\TenantClaim;
 use Tinvar\Routing\RouteChain;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Tenancy\TenantSource;
@@ -159,6 +160,18 @@ final readonly class EntryContext
         return $tenantSource === null
             ? $this->orm->tenant()
             : ResolveTenant::resolve($this->orm, $this->source($tenantSource), $request);
+    }
+
+    /**
+     * The tenant claim a token minted for that entry point carries: the
+     * tenant of tenantFor(), as TenantClaim binds a token to it.
+     *
+     * @param class-string<TenantSource>|null $tenantSource
+     * @throws HttpException as ResolveTenant refuses
+     */
+    public function tenantClaimFor(?string $tenantSource, Request $request): string
+    {
+        return TenantClaim::of($this->orm, $this->tenantFor($tenantSource, $request));
     }
 
     /**

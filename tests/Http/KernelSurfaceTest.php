@@ -28,6 +28,7 @@ use Tinvar\Support\Signer;
 use Tinvar\Tests\Actions\Fixtures\RackActions;
 use Tinvar\Tests\Auth\Fixtures\User as AuthUser;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Tests\Routing\Fixtures\RackShowPage;
 use Tinvar\Tests\Routing\Fixtures\RootLayout;
 use Tinvar\Tests\Routing\Fixtures\SiteLayout;
@@ -37,6 +38,7 @@ require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/../Auth/Fixtures/policies.php';
 require_once __DIR__ . '/../Actions/Fixtures/actions.php';
 require_once __DIR__ . '/../Routing/Fixtures/routes.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
 
 const SESSION = 'session-abc';
 
@@ -60,7 +62,7 @@ function kernel(?FragmentSupport $fragments = null, ?AuthUser $user = new AuthUs
     $auth->login($user);
 
     $kernel = new Kernel(...[
-        'orm' => new Orm($fixture->connection, new IdentityMap('test')),
+        'orm' => new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat()),
         'routes' => $routes,
         'queries' => new QueryRegistry(),
         'actions' => $actions,

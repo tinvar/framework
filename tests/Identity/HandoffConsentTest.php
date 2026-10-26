@@ -28,6 +28,7 @@ use Tinvar\Identity\HandoffEndpoint;
 use Tinvar\Identity\Realm;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Render\SignedToken;
+use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenError;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
@@ -502,14 +503,61 @@ describe('a cancel', function () {
     });
 });
 
+describe('a ticket\'s tenant', function () {
+    // ADR 0056: the realm's tenant with tenancy registered, as it always
+    // was; with none, the claim no tenant can be (TenantClaim). A ticket
+    // carrying the other mode's claim is refused as one whose destination
+    // is no longer the realm it named.
+    it('is the claim of the mode the screen was shown in, and refused in the other', function (bool $tenancy) {
+        $app = new App(tenancy: $tenancy);
+        $browser = asking($app);
+        $screen = screenFor($browser);
+        [, $fields] = Browser::form($screen, HandoffConsent::CONFIRM);
+        $ticket = ConsentTicket::decode((string) $fields[HandoffConsent::TICKET], $app->signer, $app->now);
+        $flipped = new ConsentTicket(
+            sessionHash: $ticket->sessionHash,
+            authHash: $ticket->authHash,
+            origin: $ticket->origin,
+            tenant: $tenancy ? TenantClaim::NONE : 'acme',
+            panel: $ticket->panel,
+            challenge: $ticket->challenge,
+            state: $ticket->state,
+            returnTo: $ticket->returnTo,
+            id: $ticket->id,
+            issuedAt: $ticket->issuedAt,
+            expiresAt: $ticket->expiresAt,
+        )->encode($app->signer);
+
+        expect($ticket->tenant)->toBe($tenancy ? 'acme' : TenantClaim::NONE);
+
+        $refused = $browser->answer($screen, edit: [HandoffConsent::TICKET => $flipped]);
+
+        expect($refused->status)->toBe(403)
+            ->and(errorCode($refused))->toBe('handoff_refused')
+            ->and($app->lastLogged())->toContain('no longer the realm it named');
+    })->with(['tenancy' => [true], 'no tenancy' => [false]]);
+
+    it('lands the person signed in, in either mode', function (bool $tenancy) {
+        $app = new App(tenancy: $tenancy);
+        $browser = asking($app);
+
+        $confirmed = $browser->answer(screenFor($browser));
+        $browser->consent = HandoffConsent::CONFIRM;
+        $landed = $browser->follow((string) $confirmed->header('location'));
+
+        expect($confirmed->status)->toBe(303)
+            ->and(json($landed))->toBe(['user' => 'alice']);
+    })->with(['tenancy' => [true], 'no tenancy' => [false]]);
+});
+
 describe('a ticket\'s claims', function () {
     it('carry the session and the epoch only as keyed hashes, and verify only as a ticket', function () {
         $app = new App();
         $realm = Realm::domain('https://acme.example', 'acme', 'portal');
-        $ticket = ConsentTicket::mint($app->signer, 'session-id-1', 'alice', '7', $realm, str_repeat('c', 43), str_repeat('s', 22), '/', $app->now);
+        $ticket = ConsentTicket::mint($app->signer, 'session-id-1', 'alice', '7', $realm, str_repeat('c', 43), str_repeat('s', 22), '/', $app->now, $realm->tenant);
         $encoded = $ticket->encode($app->signer);
         $payload = (string) Signer::decode(explode('.', $encoded)[1]);
-        $code = HandoffCode::mint($app->signer, $realm, 'alice', '7', str_repeat('c', 43), str_repeat('s', 22), '/', $app->now)->encode($app->signer);
+        $code = HandoffCode::mint($app->signer, $realm, 'alice', '7', str_repeat('c', 43), str_repeat('s', 22), '/', $app->now, $realm->tenant)->encode($app->signer);
 
         expect(ConsentTicket::decode($encoded, $app->signer, $app->now))->toEqual($ticket)
             ->and($ticket->belongsTo($app->signer, 'session-id-1'))->toBeTrue()
@@ -534,6 +582,6 @@ describe('a ticket\'s claims', function () {
         expect(static fn () => ConsentTicket::decode($long->encode($app->signer), $app->signer, $app->now))->toThrow(TokenError::class)
             ->and(static fn () => ConsentTicket::decode($ahead->encode($app->signer), $app->signer, $app->now))->toThrow(TokenError::class)
             ->and(static fn () => ConsentTicket::decode(SignedToken::encode($app->signer, ConsentTicket::PURPOSE, ['s' => 'x']), $app->signer, $app->now))->toThrow(TokenError::class)
-            ->and(static fn () => ConsentTicket::mint($app->signer, '', 'alice', '1', $realm, str_repeat('c', 43), str_repeat('s', 22), '/', $app->now))->toThrow(\InvalidArgumentException::class);
+            ->and(static fn () => ConsentTicket::mint($app->signer, '', 'alice', '1', $realm, str_repeat('c', 43), str_repeat('s', 22), '/', $app->now, $realm->tenant))->toThrow(\InvalidArgumentException::class);
     });
 });

@@ -49,6 +49,9 @@ use Tinvar\Query\QueryRegistry;
 use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Tenancy\TenantSource;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
+
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
 
 const KEY = 'live-admission-test-application-key-012345';
 const SESSION_COOKIE = '__Host-test_session';
@@ -134,7 +137,7 @@ final class StoreOrders
 /** @return array{Kernel, MemoryHub, LiveUpdates} */
 function kernel(): array
 {
-    $orm = new Orm(PdoConnection::sqlite(':memory:', 'test'), new IdentityMap('test'));
+    $orm = new Orm(PdoConnection::sqlite(':memory:', 'test'), new IdentityMap('test'), tenants: Tenancy::flat());
     $auth = new AuthContext();
     SignIn::$auth = $auth;
     Staff::$members = ['staff-1' => true];

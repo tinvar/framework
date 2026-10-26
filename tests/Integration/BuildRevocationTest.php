@@ -21,6 +21,7 @@ use Tinvar\Http\Endpoints\FragmentEndpoint;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Render\FragmentToken;
+use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenClaims;
 use Tinvar\Support\Signer;
 
@@ -112,7 +113,7 @@ function demoAuthHash(Signer $signer, string $database): string
 }
 
 /** What the order page minted for this session while it ran build $build. */
-function shippingToken(string $session, string $order, string $build, string $database): string
+function shippingToken(string $session, string $order, string $build, string $database, string $tenant): string
 {
     $signer = new Signer(KEY, FragmentToken::PURPOSE);
 
@@ -122,7 +123,7 @@ function shippingToken(string $session, string $order, string $build, string $da
         route: 'orders.show',
         params: ['order' => $order],
         panel: '',
-        tenant: '',
+        tenant: $tenant,
         build: $build,
         sessionHash: FragmentToken::hashSession($signer, $session),
         authHash: demoAuthHash($signer, $database),
@@ -149,7 +150,7 @@ it('refuses a build revoked from the CLI on the next request, without a restart'
         $session = (string) Kernel::sessionFrom($cookies[Kernel::SESSION_COOKIE], KEY);
         $fragment = new Request(
             'GET',
-            FragmentEndpoint::PREFIX . shippingToken($session, $order, 'r-old', $database),
+            FragmentEndpoint::PREFIX . shippingToken($session, $order, 'r-old', $database, TenantClaim::current($kernel->orm)),
             ['rsc' => '1', 'accept' => 'text/x-component'],
             cookies: $cookies,
         );

@@ -16,10 +16,12 @@ use Tinvar\Http\Response;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Render\FragmentToken;
+use Tinvar\Render\TenantClaim;
 use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Tests\Routing\Fixtures\RackShowPage;
 use Tinvar\Tests\Routing\Fixtures\RootLayout;
 use Tinvar\Tests\Routing\Fixtures\SiteLayout;
@@ -27,6 +29,7 @@ use Tinvar\Tests\Routing\Fixtures\SiteLayout;
 require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
 require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/../Routing/Fixtures/routes.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
 
 const FRAGMENT_SESSION = 'session-abc';
 
@@ -38,11 +41,11 @@ final class RenderLog
 }
 
 /** @return array{0: FragmentEndpoint, 1: Fixture, 2: Signer, 3: BuildRegistry, 4: RenderLog, 5: PanelContext, 6: Orm} */
-function fragmentEndpoint(?object $gate = null, array $globalMiddleware = []): array
+function fragmentEndpoint(?object $gate = null, array $globalMiddleware = [], bool $tenancy = true): array
 {
     $panels = new PanelContext();
     $fixture = new Fixture(racks: 2, unitsPerRack: 1, sites: 1);
-    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+    $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: $tenancy ? Tenancy::flat() : null);
 
     $routes = new RouteRegistry();
     $routes->registerAll([RootLayout::class, SiteLayout::class, RackShowPage::class]);
@@ -123,6 +126,26 @@ describe('the fragment endpoint', function () {
             ->and($refreshed->component)->toBe($token->component)
             ->and($response->header('vary'))->toContain('RSC');
     });
+
+    // ADR 0056: with no tenancy registered a token carries the claim no
+    // tenant can be, so one minted in either mode is refused in the other --
+    // the empty tenant included, which both modes could otherwise have named.
+    it('takes a token minted in its own tenancy mode, and refuses one minted in the other', function (bool $tenancy, string $claim, bool $taken) {
+        [$endpoint, $fixture, $signer] = fragmentEndpoint(tenancy: $tenancy);
+        $handle = static fn () => $endpoint->handle(fragmentRequest($signer, fragmentToken($signer, $fixture, ['tenant' => $claim])));
+
+        if ($taken) {
+            expect($handle()->status)->toBe(200);
+        } else {
+            expect($handle)->toThrow(HttpException::class, 'minted for a different tenant');
+        }
+    })->with([
+        'tenancy, no tenant' => [true, '', true],
+        'tenancy, the no-tenancy claim' => [true, TenantClaim::NONE, false],
+        'no tenancy, the no-tenancy claim' => [false, TenantClaim::NONE, true],
+        'no tenancy, no tenant' => [false, '', false],
+        'no tenancy, a tenant' => [false, 'acme', false],
+    ]);
 
     it('refuses anything but GET', function (string $method) {
         [$endpoint, $fixture, $signer] = fragmentEndpoint();

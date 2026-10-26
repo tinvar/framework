@@ -54,6 +54,7 @@ use Tinvar\Render\RenderFailure;
 use Tinvar\Render\RendererException;
 use Tinvar\Render\RouteMinter;
 use Tinvar\Render\RouteToken;
+use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenError;
 use Tinvar\Data\PayloadContext;
 use Tinvar\Routing\LoaderRunner;
@@ -1624,7 +1625,7 @@ final class Kernel
             route: $route,
             params: $params,
             panel: $this->panels?->currentOrNull() ?? '',
-            tenant: $this->orm->tenant(),
+            tenant: TenantClaim::current($this->orm),
             build: $this->builds->current ?? 'dev',
             sessionId: $session,
             user: $this->auth->id(),
@@ -1900,7 +1901,7 @@ final class Kernel
 
         return $this->historyKeys->for(
             $request,
-            $this->orm->tenant(),
+            TenantClaim::current($this->orm),
             $this->panels?->currentOrNull() ?? '',
             $this->auth->id() ?? '',
             $this->auth->epoch(),
@@ -2042,7 +2043,7 @@ final class Kernel
         return (new RouteMinter(
             signer: $routeSigner,
             panel: $this->panels?->currentOrNull() ?? '',
-            tenant: $this->orm->tenant(),
+            tenant: TenantClaim::current($this->orm),
             build: $this->support->builds->current,
             sessionId: $session,
             user: $this->auth->id(),

@@ -25,6 +25,7 @@ use Tinvar\Identity\Realm;
 use Tinvar\Identity\Realms;
 use Tinvar\Render\RouteToken;
 use Tinvar\Render\SignedToken;
+use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenClaims;
 use Tinvar\Support\Signer;
 use Tinvar\Tests\Identity\Fixtures\App;
@@ -354,6 +355,7 @@ describe('across tenants', function () {
             $state,
             '/whoami',
             $app->now,
+            'acme',
         );
 
         $response = $browser->get('https://globex.example/_handoff/callback?code=' . $code->encode($app->signer));
@@ -362,6 +364,41 @@ describe('across tenants', function () {
             ->and(errorCode($response))->toBe('handoff_refused')
             ->and($app->lastLogged())->toContain('another tenant');
     });
+
+    // ADR 0056: with tenancy registered a code names the realm's tenant, as
+    // it always did; with none, the claim no tenant can be (TenantClaim). A
+    // code minted in one mode never verifies in the other.
+    it('is bound to the tenant claim of the mode it was minted in', function (bool $tenancy, string $claim, bool $accepted) {
+        $app = new App(tenancy: $tenancy);
+        $browser = new Browser($app);
+        $session = $browser->sessionAt('globex.example');
+        $state = Signer::encode(random_bytes(16));
+        $code = HandoffCode::mint(
+            $app->signer,
+            Realm::domain('https://globex.example', 'globex', 'portal'),
+            'bob',
+            '1',
+            Pkce::challenge(Pkce::verifier($app->signer, $session, $state)),
+            $state,
+            '/whoami',
+            $app->now,
+            $claim,
+        );
+
+        $response = $browser->get('https://globex.example/_handoff/callback?code=' . $code->encode($app->signer));
+
+        expect($response->status)->toBe($accepted ? 303 : 403, $response->body());
+        if (!$accepted) {
+            expect($app->lastLogged())->toContain('another tenant');
+        }
+    })->with([
+        'tenancy, the realm\'s tenant' => [true, 'globex', true],
+        'tenancy, the no-tenancy claim' => [true, TenantClaim::NONE, false],
+        'tenancy, no tenant' => [true, '', false],
+        'no tenancy, the no-tenancy claim' => [false, TenantClaim::NONE, true],
+        'no tenancy, the realm\'s tenant' => [false, 'globex', false],
+        'no tenancy, no tenant' => [false, '', false],
+    ]);
 
     it('keeps the session it makes to the host it was made on', function () {
         $app = new App();
@@ -452,6 +489,7 @@ describe('a tenant\'s subtree', function () {
             $state,
             '/whoami',
             $app->now,
+            'acme',
         );
 
         $response = $browser->get('https://reseller.example/_handoff/callback?code=' . $code->encode($app->signer));
@@ -640,7 +678,7 @@ describe('realms', function () {
 describe('a code\'s claims', function () {
     it('carry the epoch only as a keyed hash, and verify only under their own purpose', function () {
         $app = new App();
-        $code = HandoffCode::mint($app->signer, Realm::domain('https://acme.example', 'acme', 'portal'), 'alice', '7', str_repeat('c', 43), str_repeat('s', 22), '/', $app->now);
+        $code = HandoffCode::mint($app->signer, Realm::domain('https://acme.example', 'acme', 'portal'), 'alice', '7', str_repeat('c', 43), str_repeat('s', 22), '/', $app->now, 'acme');
         $encoded = $code->encode($app->signer);
 
         expect(HandoffCode::decode($encoded, $app->signer, $app->now))->toEqual($code)

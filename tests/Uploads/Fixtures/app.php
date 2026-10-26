@@ -37,10 +37,13 @@ use Tinvar\Query\QueryRegistry;
 use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Storage\Storage;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Uploads\ArrayUploadStore;
 use Tinvar\Uploads\Upload;
 use Tinvar\Uploads\Uploads;
 use Tinvar\Uploads\UploadStore;
+
+require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenancy.php';
 
 const KEY = 'upload-flow-test-application-key-0123456789';
 const SESSION_COOKIE = '__Host-test_session';
@@ -180,15 +183,18 @@ final class App
     public readonly Uploads $uploads;
     public readonly Container $container;
 
-    public function __construct(public readonly Storage $storage, public readonly UploadStore $store = new ArrayUploadStore())
-    {
+    public function __construct(
+        public readonly Storage $storage,
+        public readonly UploadStore $store = new ArrayUploadStore(),
+        bool $tenancy = true,
+    ) {
         $connection = PdoConnection::sqlite(':memory:', 'test');
         $connection->execute('CREATE TABLE profiles (id TEXT PRIMARY KEY, owner TEXT NOT NULL, avatar_key TEXT NULL)');
         $connection->execute('CREATE TABLE albums (id TEXT PRIMARY KEY, owner TEXT NOT NULL)');
         $connection->execute('INSERT INTO profiles (id, owner) VALUES (?, ?), (?, ?), (?, ?)', [P1, 'u-1', P2, 'u-1', P3, 'u-2']);
         $connection->execute('INSERT INTO albums (id, owner) VALUES (?, ?)', [A1, 'u-1']);
 
-        $this->orm = new Orm($connection, new IdentityMap('test'));
+        $this->orm = new Orm($connection, new IdentityMap('test'), tenants: $tenancy ? Tenancy::flat() : null);
         $this->auth = new AuthContext();
         SignIn::$auth = $this->auth;
         SignIn::$orm = $this->orm;

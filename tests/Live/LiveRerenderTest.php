@@ -46,6 +46,9 @@ use Tinvar\Render\TokenClaims;
 use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
+
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
 
 const KEY = 'live-rerender-test-application-key-0123456789';
 const SESSION_COOKIE = '__Host-test_session';
@@ -125,7 +128,7 @@ final class OrderActions
  */
 function kernel(\Closure $renderRoute, bool $live = true): array
 {
-    $orm = new Orm(PdoConnection::sqlite(':memory:', 'test'), new IdentityMap('test'));
+    $orm = new Orm(PdoConnection::sqlite(':memory:', 'test'), new IdentityMap('test'), tenants: Tenancy::flat());
     $auth = new AuthContext();
     SignIn::$auth = $auth;
     SignIn::$epoch = 'e1';

@@ -20,12 +20,14 @@ use Tinvar\Http\Request;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Render\RouteToken;
+use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenClaims;
 use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Tests\Routing\Fixtures\HealthPage;
 use Tinvar\Tests\Routing\Fixtures\RackShowPage;
 use Tinvar\Tests\Routing\Fixtures\RootLayout;
@@ -35,14 +37,15 @@ require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
 require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/../Routing/Fixtures/routes.php';
 require_once __DIR__ . '/Fixtures/actions.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
 
 const REVALIDATE_SESSION = 'session-abc';
 
 /** @return array{0: Revalidator, 1: Fixture, 2: Signer, 3: PanelContext, 4: Orm} */
-function revalidator(?object $gate = null): array
+function revalidator(?object $gate = null, bool $tenancy = true): array
 {
     $fixture = new Fixture(racks: 2, unitsPerRack: 1, sites: 1);
-    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+    $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: $tenancy ? Tenancy::flat() : null);
     $signer = new Signer('test-app-key', RouteToken::PURPOSE);
     $panels = new PanelContext();
 
@@ -176,7 +179,7 @@ describe('re-rendering after an action', function () {
         // 404 in the loaders and never reach the render closure, so the
         // count would be zero whether or not the cap worked.
         $fixture = new Fixture(racks: Revalidator::MAX_ROUTES + 12, unitsPerRack: 1, sites: 1);
-        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat());
         $signer = new Signer('test-app-key', RouteToken::PURPOSE);
         $panels = new PanelContext();
 
@@ -285,6 +288,21 @@ describe('a token this server will not act on', function () {
         expect($payloads)->toBe([]);
     });
 
+    // ADR 0056: a route token minted with tenancy registered is refused
+    // where there is none, and one minted with none where there is.
+    it('renders a token of its own tenancy mode, and omits one of the other', function (bool $tenancy, string $claim, bool $rendered) {
+        [$revalidator, $fixture, $signer] = revalidator(tenancy: $tenancy);
+
+        $payloads = $revalidator->rerender(['racks.show'], [routeToken($signer, $fixture, ['tenant' => $claim])], Request::post('/_action/x'), session());
+
+        expect($payloads)->toHaveCount($rendered ? 1 : 0);
+    })->with([
+        'tenancy, no tenant' => [true, '', true],
+        'tenancy, the no-tenancy claim' => [true, TenantClaim::NONE, false],
+        'no tenancy, the no-tenancy claim' => [false, TenantClaim::NONE, true],
+        'no tenancy, no tenant' => [false, '', false],
+    ]);
+
     it('omits it for another panel', function () {
         [$revalidator, $fixture, $signer, $panels] = revalidator();
 
@@ -368,7 +386,7 @@ describe('a token this server will not act on', function () {
 describe('through the action endpoint', function () {
     it('carries payloads for the routes the client was holding', function () {
         [$revalidator, $fixture, $signer] = revalidator();
-        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat());
         $registry = new Tinvar\Actions\ActionRegistry();
         $registry->register(Tinvar\Tests\Actions\Fixtures\RackActions::class);
 
@@ -398,7 +416,7 @@ describe('through the action endpoint', function () {
     // different limit from how many pages render.
     it('looks at no more tokens than it will parse', function () {
         [$revalidator, $fixture, $signer] = revalidator();
-        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat());
         $registry = new Tinvar\Actions\ActionRegistry();
         $registry->register(Tinvar\Tests\Actions\Fixtures\RackActions::class);
 
@@ -428,7 +446,7 @@ describe('through the action endpoint', function () {
 
     it('carries no payloads when the client sends no tokens', function () {
         [$revalidator, $fixture] = revalidator();
-        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat());
         $registry = new Tinvar\Actions\ActionRegistry();
         $registry->register(Tinvar\Tests\Actions\Fixtures\RackActions::class);
 

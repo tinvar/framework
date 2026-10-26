@@ -17,6 +17,7 @@ use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Http\UploadedFile;
 use Tinvar\Orm\Orm;
+use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenError;
 use Tinvar\Storage\StorageKey;
 
@@ -173,7 +174,7 @@ final class UploadEndpoint
         // is, and can put it nowhere.
         $session = $this->uploads->sessionOf($request);
         $user = $this->auth->id();
-        if ($this->orm->tenant() !== $ticket->tenant
+        if (TenantClaim::current($this->orm) !== $ticket->tenant
             || ($this->panels?->currentOrNull() ?? '') !== $ticket->panel
             || $session === ''
             || $user === null

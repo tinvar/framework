@@ -34,6 +34,7 @@ use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Tests\Routing\Fixtures\RackShowPage;
 use Tinvar\Tests\Routing\Fixtures\RootLayout;
 use Tinvar\Tests\Routing\Fixtures\SiteLayout;
@@ -41,6 +42,7 @@ use Tinvar\Tests\Routing\Fixtures\SiteLayout;
 require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
 require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/../Routing/Fixtures/routes.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
 
 const SESSION = 'session-abc';
 
@@ -255,7 +257,7 @@ describe('refused everywhere a build is checked', function () {
         $store = store();
         released($store);
         $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
-        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat());
         $routes = new RouteRegistry();
         $routes->registerAll([RootLayout::class, SiteLayout::class, RackShowPage::class]);
         $signer = new Signer('test-app-key', FragmentToken::PURPOSE);
@@ -298,7 +300,7 @@ describe('refused everywhere a build is checked', function () {
         $store = store();
         released($store);
         $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
-        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat());
         $routes = new RouteRegistry();
         $routes->registerAll([RootLayout::class, SiteLayout::class, RackShowPage::class]);
         $signer = new Signer('test-app-key', RouteToken::PURPOSE);

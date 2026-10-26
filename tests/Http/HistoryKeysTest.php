@@ -27,8 +27,10 @@ use Tinvar\Routing\RouteRegistry;
 use Tinvar\Routing\RoutingException;
 use Tinvar\Support\Signer;
 use Tinvar\Tests\Auth\Fixtures\User as AuthUser;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 
 require_once __DIR__ . '/../Auth/Fixtures/policies.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
 
 /**
  * History encryption, the server's half: the session-scoped key, which pages
@@ -104,7 +106,7 @@ function kernel(?HistoryKeys $keys = null): array
     $auth = new AuthContext();
 
     return [new Kernel(
-        orm: new Orm(PdoConnection::sqlite(':memory:', 'test'), new IdentityMap('test')),
+        orm: new Orm(PdoConnection::sqlite(':memory:', 'test'), new IdentityMap('test'), tenants: Tenancy::flat()),
         routes: $routes,
         queries: new QueryRegistry(),
         actions: new ActionRegistry(),

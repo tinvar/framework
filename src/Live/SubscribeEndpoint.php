@@ -16,6 +16,7 @@ use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Orm\NoTenantContext;
 use Tinvar\Orm\Orm;
+use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenClaims;
 use Tinvar\Render\TokenError;
 use Tinvar\Routing\LoaderRunner;
@@ -267,7 +268,7 @@ final class SubscribeEndpoint
         $run = fn (): Response => $pipeline->run($request, function (Request $inner) use ($chain, $claims): Response {
             // Checked, never applied: a token agrees with where the request
             // is, and can put it nowhere.
-            if (($this->panels?->currentOrNull() ?? '') !== $claims->panel || $this->orm->tenant() !== $claims->tenant) {
+            if (($this->panels?->currentOrNull() ?? '') !== $claims->panel || TenantClaim::current($this->orm) !== $claims->tenant) {
                 throw new HttpException(404, 'The page is in another tenant or panel than the token.', 'live_unavailable');
             }
 

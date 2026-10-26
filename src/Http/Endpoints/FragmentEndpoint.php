@@ -14,6 +14,7 @@ use Tinvar\Orm\Orm;
 use Tinvar\Http\Response;
 use Tinvar\Render\FragmentToken;
 use Tinvar\Render\FragmentTokenError;
+use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenClaims;
 use Tinvar\Routing\LoaderRunner;
 use Tinvar\Auth\AuthContext;
@@ -285,9 +286,10 @@ final class FragmentEndpoint
             // when the live tenant was null or empty -- and the Orm was
             // never passed in, so it was null on every request and the
             // check never ran at all. An application with no tenancy
-            // mints '' and matches '', so comparing always is correct
-            // there too, and there is no state in which this is skipped.
-            if ($this->orm->tenant() !== $token->tenant) {
+            // mints the claim that says so and matches it (TenantClaim), so
+            // comparing always is correct there too, and there is no state
+            // in which this is skipped.
+            if (TenantClaim::current($this->orm) !== $token->tenant) {
                 throw self::refuse('token was minted for a different tenant');
             }
 

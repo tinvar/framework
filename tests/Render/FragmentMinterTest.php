@@ -16,9 +16,11 @@ use Tinvar\Render\FragmentMinter;
 use Tinvar\Render\FragmentToken;
 use Tinvar\Render\FragmentTokenError;
 use Tinvar\Support\Signer;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 
 require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
 require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
 
 function minterSigner(): Signer
 {
@@ -210,7 +212,7 @@ describe('FragmentSupport owns the minter', function () {
  */
 it('mints with the live tenant, from the same source the endpoint checks', function () {
     $fixture = new Tinvar\Tests\Orm\Fixtures\Fixture(racks: 1, unitsPerRack: 1, sites: 1);
-    $orm = new Tinvar\Orm\Orm($fixture->connection, new Tinvar\Orm\IdentityMap('test'));
+    $orm = new Tinvar\Orm\Orm($fixture->connection, new Tinvar\Orm\IdentityMap('test'), Tenancy::flat());
     $orm->switchTenant('acme');
 
     $signer = minterSigner();

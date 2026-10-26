@@ -39,7 +39,10 @@ use Tinvar\Support\Signer;
 use Tinvar\Http\HostName;
 use Tinvar\Orm\TenantHierarchy;
 use Tinvar\Orm\TenantTree;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Webhooks\ArrayNonceStore;
+
+require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenancy.php';
 
 /**
  * A platform with hosts of every kind: the platform host sign-in happens on,
@@ -252,13 +255,18 @@ final class App
     /**
      * @param (\Closure(Request, HandoffConsent): Response)|null $consent the application's own
      *        consent screen; the framework's unless given
+     * @param bool $tenancy whether tenancy is registered with the Orm; without it, no tree
      */
-    public function __construct(?TenantTree $tree = null, ?\Closure $consent = null)
+    public function __construct(?TenantTree $tree = null, ?\Closure $consent = null, bool $tenancy = true)
     {
         $this->orm = new Orm(
             new PdoConnection(new \PDO('sqlite::memory:'), 'identity-test'),
             new IdentityMap('identity-test'),
-            $tree === null ? null : new TenantHierarchy($tree),
+            match (true) {
+                $tree !== null => new TenantHierarchy($tree),
+                $tenancy => Tenancy::flat(),
+                default => null,
+            },
         );
         $this->auth = new AuthContext();
         $this->directory = new Directory($this->orm);

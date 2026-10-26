@@ -29,6 +29,7 @@ use Tinvar\Live\SubscribeEndpoint;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
+use Tinvar\Render\TenantClaim;
 use Tinvar\Support\Signer;
 
 const KEY = 'shop-live-admission-key-of-32-bytes!';
@@ -85,7 +86,7 @@ final class Staff
             route: 'admin.orders',
             params: [],
             panel: StaffMemberships::PANEL,
-            tenant: '',
+            tenant: TenantClaim::current($this->kernel->orm),
             build: Kernel::build(),
             sessionId: (string) Kernel::sessionFrom($this->cookies[Kernel::SESSION_COOKIE] ?? null, KEY),
             user: $this->id,

@@ -10,6 +10,7 @@ use Tinvar\Auth\PanelContext;
 use Tinvar\Http\Request;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
+use Tinvar\Render\TenantClaim;
 
 /**
  * Hands an action the uploads it was called with, after holding each to
@@ -79,7 +80,7 @@ final readonly class UploadBinder
             && str_starts_with($pending->key, $declared->prefix . '/')
             && \in_array($pending->type, $declared->types, true)
             && $pending->size <= $declared->maxBytes
-            && $pending->tenant === $this->orm->tenant()
+            && $pending->tenant === TenantClaim::current($this->orm)
             && $pending->panel === ($this->panels?->currentOrNull() ?? '')
             && $session !== ''
             && hash_equals($pending->sessionHash, $this->uploads->sessionHash($session))

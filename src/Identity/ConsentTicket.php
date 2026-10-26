@@ -72,7 +72,11 @@ final readonly class ConsentTicket
         public int $expiresAt,
     ) {}
 
-    /** A new ticket for the session $sessionId, signed in as $user at $epoch, asked about $target. */
+    /**
+     * A new ticket for the session $sessionId, signed in as $user at $epoch, asked about $target.
+     *
+     * @param string $tenant the target's tenant as a token claims it (TenantClaim::of())
+     */
     public static function mint(
         Signer $signer,
         #[\SensitiveParameter]
@@ -84,6 +88,7 @@ final readonly class ConsentTicket
         string $state,
         string $returnTo,
         int $now,
+        string $tenant,
     ): self {
         if ($sessionId === '' || $user === '') {
             // A ticket bound to no session, or to nobody, is one anyone holds.
@@ -94,7 +99,7 @@ final readonly class ConsentTicket
             sessionHash: TokenClaims::hashSession($signer, $sessionId),
             authHash: TokenClaims::hashAuth($signer, $user, $epoch),
             origin: $target->origin,
-            tenant: $target->tenant,
+            tenant: $tenant,
             panel: $target->panel,
             challenge: $challenge,
             state: $state,

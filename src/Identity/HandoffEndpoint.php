@@ -14,6 +14,7 @@ use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Jobs\UserLookup;
 use Tinvar\Orm\Orm;
+use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenClaims;
 use Tinvar\Render\TokenError;
 use Tinvar\Support\Signer;
@@ -313,6 +314,7 @@ final class HandoffEndpoint
             $state,
             $returnTo,
             $this->now(),
+            TenantClaim::of($this->orm, $target->tenant),
         );
         $consent = new HandoffConsent($user, $target, $ticket->encode($this->signer), $csrf, $ticket->expiresAt);
         $screen = $this->consent === null ? new HandoffConsentShell()->respond($request, $consent) : ($this->consent)($request, $consent);
@@ -358,7 +360,7 @@ final class HandoffEndpoint
         // open is not what the person agreed to.
         $target = $this->realms->forOrigin($ticket->origin);
         if ($target === null || $this->realms->isAuthority($target)
-            || $target->tenant !== $ticket->tenant || $target->panel !== $ticket->panel) {
+            || TenantClaim::of($this->orm, $target->tenant) !== $ticket->tenant || $target->panel !== $ticket->panel) {
             throw self::declined("its destination {$ticket->origin} is no longer the realm it named");
         }
 
@@ -397,6 +399,7 @@ final class HandoffEndpoint
             $state,
             $returnTo,
             $this->now(),
+            TenantClaim::of($this->orm, $target->tenant),
         );
 
         return self::private(Response::location($target->url(self::CALLBACK . '?code=' . rawurlencode($code->encode($this->signer))), 303));
@@ -439,7 +442,7 @@ final class HandoffEndpoint
         if (!hash_equals($realm->origin, $code->origin) || $this->realms->isAuthority($realm)) {
             throw self::refused("it was minted for {$code->origin}, and this is {$realm->origin}");
         }
-        if ($code->tenant !== $realm->tenant) {
+        if ($code->tenant !== TenantClaim::of($this->orm, $realm->tenant)) {
             throw self::refused('it was minted for another tenant than this realm\'s');
         }
         if ($code->panel !== $realm->panel) {

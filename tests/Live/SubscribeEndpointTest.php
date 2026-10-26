@@ -37,6 +37,9 @@ use Tinvar\Orm\PdoConnection;
 use Tinvar\Render\TokenClaims;
 use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\RouteRegistry;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
+
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
 
 const KEY = 'subscribe-endpoint-test-key-0123456789abcdef';
 const SESSION_COOKIE = '__Host-test_session';
@@ -71,7 +74,7 @@ function endpoint(?BuildRegistry $builds = null): array
     $hub = new MemoryHub();
     $live = LiveUpdates::fromKey(KEY, $hub, static fn (Request $r): string => $r->cookie(SESSION_COOKIE) ?? '');
     $auth = new AuthContext();
-    $orm = new Orm(PdoConnection::sqlite(':memory:', 'test'), new IdentityMap('test'));
+    $orm = new Orm(PdoConnection::sqlite(':memory:', 'test'), new IdentityMap('test'), tenants: Tenancy::flat());
     $routes = new RouteRegistry();
     $routes->register(OrdersPage::class);
     $resolver = static fn (string $class): object => new $class();

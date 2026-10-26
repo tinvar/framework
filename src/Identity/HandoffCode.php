@@ -75,7 +75,11 @@ final readonly class HandoffCode
         public int $expiresAt,
     ) {}
 
-    /** A new code for $user at $epoch, into $target, for the session that made $challenge. */
+    /**
+     * A new code for $user at $epoch, into $target, for the session that made $challenge.
+     *
+     * @param string $tenant the target's tenant as a token claims it (TenantClaim::of())
+     */
     public static function mint(
         Signer $signer,
         Realm $target,
@@ -85,10 +89,11 @@ final readonly class HandoffCode
         string $state,
         string $returnTo,
         int $now,
+        string $tenant,
     ): self {
         return new self(
             origin: $target->origin,
-            tenant: $target->tenant,
+            tenant: $tenant,
             panel: $target->panel,
             user: $user,
             authHash: TokenClaims::hashAuth($signer, $user, $epoch),

@@ -8,6 +8,7 @@ use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Orm\Orm;
 use Tinvar\Render\FragmentMinter;
+use Tinvar\Render\TenantClaim;
 use Tinvar\Support\Signer;
 
 /**
@@ -102,7 +103,10 @@ final readonly class FragmentSupport
         // to '', so every token minted as tenant-less whatever tenant the
         // request was in -- the read side and the write side disagreeing,
         // which is the second time that exact split has appeared here.
-        $tenant ??= $this->orm?->tenant() ?? '';
+        // As a claim (TenantClaim), which is what the endpoint compares:
+        // the tenant itself with tenancy registered, and with none a value
+        // no tenant can be.
+        $tenant = $this->orm === null ? $tenant ?? '' : TenantClaim::of($this->orm, $tenant ?? $this->orm->tenant());
 
         // The LIVE panel by default. It used to default to '', so the read
         // side consulted the context and the write side never did: every

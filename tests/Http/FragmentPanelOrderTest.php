@@ -21,11 +21,13 @@ use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Tests\Routing\Fixtures\RootLayout;
 
 require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
 require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/../Routing/Fixtures/routes.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
 
 /**
  * Which panel a fragment's route middleware runs in.
@@ -72,7 +74,7 @@ function endpoint(?string $refuse = null, ?string $switchTo = null): array
 {
     $panels = new PanelContext();
     $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
-    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+    $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat());
 
     $routes = new RouteRegistry();
     $routes->registerAll([RootLayout::class, GuardedPage::class]);
