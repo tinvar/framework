@@ -18,6 +18,7 @@ use Tinvar\Cache\QueryCache;
 use Tinvar\Http\Endpoints\ActionEndpoint;
 use Tinvar\Http\Endpoints\BootstrapEndpoint;
 use Tinvar\Http\Endpoints\FragmentEndpoint;
+use Tinvar\Http\Endpoints\Limits;
 use Tinvar\Http\Endpoints\QueryEndpoint;
 use Tinvar\Http\Middleware\CheckVersion;
 use Tinvar\Http\Middleware\TranslateRedirects;
@@ -384,6 +385,13 @@ final class Kernel
      *        the application does not know
      * @param StaticPages|null $staticPages the static pages an action's invalidated
      *        tags take out of service, once its writes commit
+     * @param int $maxBodyBytes the largest body /_action and /_query take, uploads
+     *        apart: the endpoints table's 1 MB unless given. "The limits are proposed
+     *        defaults, configurable per app" -- up to Limits::MAX_BODY_BYTES_CEILING,
+     *        and anything else is refused here, so a misconfiguration stops the
+     *        application starting rather than opening the endpoints
+     * @param int $maxJsonDepth how deep a body to either may nest: the table's 32
+     *        unless given, up to Limits::MAX_JSON_DEPTH_CEILING, refused as above
      */
     public function __construct(
         public readonly Orm $orm,
@@ -428,6 +436,8 @@ final class Kernel
         private readonly ?UnsubscribeEndpoint $unsubscribe = null,
         ?Realms $realms = null,
         ?StaticPages $staticPages = null,
+        int $maxBodyBytes = Limits::MAX_BODY_BYTES,
+        int $maxJsonDepth = Limits::MAX_JSON_DEPTH,
     ) {
         if ($toolbar !== null && !$dev) {
             throw new \InvalidArgumentException(
@@ -622,12 +632,14 @@ final class Kernel
                 $uploads === null ? null : new UploadBinder($uploads, $this->auth, $this->orm, $panels),
                 $staticPages,
             ),
+            maxBodyBytes: $maxBodyBytes,
             revalidator: $revalidator,
             sessionId: $fragments?->sessionId,
             middlewareResolver: self::middlewareFrom($resolver),
             globalMiddleware: $globalMiddleware,
             flashes: $flashes,
             entry: $entry,
+            maxJsonDepth: $maxJsonDepth,
         );
 
         $queryRunner = new QueryRunner(
@@ -644,9 +656,11 @@ final class Kernel
         $this->queries_ = new QueryEndpoint(
             $queryRunner,
             $allowedQueries,
+            maxBodyBytes: $maxBodyBytes,
             middlewareResolver: self::middlewareFrom($resolver),
             globalMiddleware: $globalMiddleware,
             entry: $entry,
+            maxJsonDepth: $maxJsonDepth,
         );
 
         // Built once, here, and kept for the worker's life by the endpoint

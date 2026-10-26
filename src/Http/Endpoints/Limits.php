@@ -13,11 +13,40 @@ use Tinvar\Http\Request;
  * "Body 1 MB (uploads separate), JSON depth 32." Enforced at the decode
  * boundary, which is the only place that can: everything downstream has
  * already paid for whatever arrived.
+ *
+ * "The limits are proposed defaults, configurable per app": an application
+ * gives the Kernel its own body size and depth for /_action and /_query,
+ * held by assertConfigurable() to a ceiling each, so that a typo or a
+ * well-meant "unlimited" cannot open the endpoints wide.
  */
 final class Limits
 {
     public const int MAX_BODY_BYTES = 1_048_576;
     public const int MAX_JSON_DEPTH = 32;
+
+    /**
+     * The most an application may set the body limit to: 8 MB.
+     *
+     * Uploads are separate -- a file goes to /_upload, with a ticket and a
+     * limit of its own -- so what reaches an action or query is fields and
+     * arguments. The body is held in memory whole, read from the request and
+     * then decoded, in a worker that goes on to serve request after request,
+     * and before any authorization has run: anyone who can reach the
+     * endpoint chooses what it costs. Eight times the default leaves room for
+     * a long rich-text field; a body larger than that is a file.
+     */
+    public const int MAX_BODY_BYTES_CEILING = 8 * 1_048_576;
+
+    /**
+     * The most an application may set the depth limit to: 64.
+     *
+     * Every level is recursion -- in the JSON parser, in the walk over a
+     * parsed form below, in the Data mapper after them -- and
+     * no form or argument list nests anywhere near the default. Twice it is
+     * room to spare; PHP's own default of 512 is a stack depth an
+     * unauthenticated caller would choose.
+     */
+    public const int MAX_JSON_DEPTH_CEILING = 64;
 
     /**
      * Keys and elements in one body, counted before it is decoded.
@@ -39,6 +68,36 @@ final class Limits
     public const int MAX_PRECOGNITION_FIELDS = 32;
 
     /**
+     * Refuses a body or depth limit that is not positive, or is over its
+     * ceiling -- when the endpoints are built, so a misconfiguration stops
+     * the application starting rather than opening the endpoints, and again
+     * by the decoders below, so no caller of theirs can pass one either.
+     *
+     * @phpstan-assert positive-int $maxBodyBytes
+     * @phpstan-assert positive-int $maxJsonDepth
+     */
+    public static function assertConfigurable(int $maxBodyBytes, int $maxJsonDepth): void
+    {
+        if ($maxBodyBytes < 1 || $maxBodyBytes > self::MAX_BODY_BYTES_CEILING) {
+            throw new \InvalidArgumentException(\sprintf(
+                'The endpoint body limit is %d bytes; it must be from 1 to %d (%d is the default). A larger body '
+                . 'is a file, which /_upload takes.',
+                $maxBodyBytes,
+                self::MAX_BODY_BYTES_CEILING,
+                self::MAX_BODY_BYTES,
+            ));
+        }
+        if ($maxJsonDepth < 1 || $maxJsonDepth > self::MAX_JSON_DEPTH_CEILING) {
+            throw new \InvalidArgumentException(\sprintf(
+                'The endpoint JSON depth limit is %d; it must be from 1 to %d (%d is the default).',
+                $maxJsonDepth,
+                self::MAX_JSON_DEPTH_CEILING,
+                self::MAX_JSON_DEPTH,
+            ));
+        }
+    }
+
+    /**
      * An endpoint's input, decoded as its Content-Type says the body is.
      *
      * Chosen by the header, not by whether the raw body was empty: a form
@@ -56,14 +115,20 @@ final class Limits
      *
      * @return array<mixed>
      */
-    public static function input(Request $request, string $rawBody, int $maxBytes = self::MAX_BODY_BYTES): array
-    {
+    public static function input(
+        Request $request,
+        string $rawBody,
+        int $maxBytes = self::MAX_BODY_BYTES,
+        int $maxDepth = self::MAX_JSON_DEPTH,
+    ): array {
         $type = strtolower(trim(explode(';', $request->header('content-type') ?? '', 2)[0]));
 
         return match ($type) {
-            'application/json' => self::decodeJson($rawBody, $maxBytes),
-            'application/x-www-form-urlencoded', 'multipart/form-data' => self::form($request->body, $maxBytes),
-            '' => $rawBody === '' ? self::form($request->body, $maxBytes) : self::decodeJson($rawBody, $maxBytes),
+            'application/json' => self::decodeJson($rawBody, $maxBytes, $maxDepth),
+            'application/x-www-form-urlencoded', 'multipart/form-data' => self::form($request->body, $maxBytes, $maxDepth),
+            '' => $rawBody === ''
+                ? self::form($request->body, $maxBytes, $maxDepth)
+                : self::decodeJson($rawBody, $maxBytes, $maxDepth),
             default => throw new HttpException(
                 415,
                 'Send the body as application/json, or as a form.',
@@ -77,8 +142,10 @@ final class Limits
      *
      * @return array<string, mixed>
      */
-    public static function decodeJson(string $body, int $maxBytes = self::MAX_BODY_BYTES): array
+    public static function decodeJson(string $body, int $maxBytes = self::MAX_BODY_BYTES, int $maxDepth = self::MAX_JSON_DEPTH): array
     {
+        self::assertConfigurable($maxBytes, $maxDepth);
+
         if (\strlen($body) > $maxBytes) {
             throw new HttpException(413, 'Request body is too large.', 'body_too_large');
         }
@@ -92,7 +159,7 @@ final class Limits
         }
 
         try {
-            $decoded = json_decode($body, true, self::MAX_JSON_DEPTH, JSON_THROW_ON_ERROR);
+            $decoded = json_decode($body, true, $maxDepth, JSON_THROW_ON_ERROR);
         } catch (\JsonException $e) {
             // Depth and syntax both land here. The message is not forwarded:
             // it quotes the body.
@@ -118,12 +185,14 @@ final class Limits
      * @param array<mixed> $body
      * @return array<mixed>
      */
-    public static function form(array $body, int $maxBytes = self::MAX_BODY_BYTES): array
+    public static function form(array $body, int $maxBytes = self::MAX_BODY_BYTES, int $maxDepth = self::MAX_JSON_DEPTH): array
     {
+        self::assertConfigurable($maxBytes, $maxDepth);
+
         $bytes = 0;
         $elements = 0;
-        $walk = static function (array $level, int $depth) use (&$walk, &$bytes, &$elements, $maxBytes): void {
-            if ($depth > self::MAX_JSON_DEPTH) {
+        $walk = static function (array $level, int $depth) use (&$walk, &$bytes, &$elements, $maxBytes, $maxDepth): void {
+            if ($depth > $maxDepth) {
                 throw new HttpException(400, 'Request body nests too deeply.', 'bad_json');
             }
             foreach ($level as $key => $value) {

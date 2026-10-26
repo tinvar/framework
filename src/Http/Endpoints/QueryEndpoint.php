@@ -45,6 +45,8 @@ final class QueryEndpoint
      * @param EntryContext|null $entry what the query's declarations put around
      *        it -- its tenant, its panel and the panel's stack -- ahead of its
      *        own middleware
+     * @param int $maxBodyBytes the body limit, up to Limits::MAX_BODY_BYTES_CEILING
+     * @param int $maxJsonDepth the nesting limit, up to Limits::MAX_JSON_DEPTH_CEILING
      */
     public function __construct(
         private readonly QueryRunner $runner,
@@ -53,7 +55,10 @@ final class QueryEndpoint
         private readonly ?\Closure $middlewareResolver = null,
         private readonly array $globalMiddleware = [],
         private readonly ?EntryContext $entry = null,
-    ) {}
+        private readonly int $maxJsonDepth = Limits::MAX_JSON_DEPTH,
+    ) {
+        Limits::assertConfigurable($maxBodyBytes, $maxJsonDepth);
+    }
 
     public function matches(Request $request): bool
     {
@@ -111,7 +116,7 @@ final class QueryEndpoint
 
     private function dispatch(Request $request, string $name, string $rawBody): Response
     {
-        $body = Limits::input($request, $rawBody, $this->maxBodyBytes);
+        $body = Limits::input($request, $rawBody, $this->maxBodyBytes, $this->maxJsonDepth);
         $args = $body['args'] ?? [];
 
         // {} decodes to [], which array_is_list() calls a list: an

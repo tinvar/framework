@@ -48,6 +48,8 @@ final class ActionEndpoint
      * @param EntryContext|null $entry what the action's declarations put around
      *        it -- its tenant, its panel and the panel's stack -- ahead of its
      *        own middleware
+     * @param int $maxBodyBytes the body limit, up to Limits::MAX_BODY_BYTES_CEILING
+     * @param int $maxJsonDepth the nesting limit, up to Limits::MAX_JSON_DEPTH_CEILING
      */
     public function __construct(
         private readonly ActionRunner $runner,
@@ -58,7 +60,10 @@ final class ActionEndpoint
         private readonly array $globalMiddleware = [],
         private readonly ?FlashStore $flashes = null,
         private readonly ?EntryContext $entry = null,
-    ) {}
+        private readonly int $maxJsonDepth = Limits::MAX_JSON_DEPTH,
+    ) {
+        Limits::assertConfigurable($maxBodyBytes, $maxJsonDepth);
+    }
 
     /**
      * Whether a request is a browser submitting a form itself -- no script
@@ -188,7 +193,7 @@ final class ActionEndpoint
 
     private function dispatch(Request $request, string $name, string $rawBody): Response
     {
-        $input = Limits::input($request, $rawBody, $this->maxBodyBytes);
+        $input = Limits::input($request, $rawBody, $this->maxBodyBytes, $this->maxJsonDepth);
 
         // "Precognition / Precognition-Validate-Only": validate without
         // running the body, optionally one field at a time.
