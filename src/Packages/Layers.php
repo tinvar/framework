@@ -5,17 +5,17 @@ declare(strict_types=1);
 namespace Tinvar\Packages;
 
 /**
- * The layer rule of `tinvar check`: which of the framework's own parts may
- * name which, held before they are packages of their own (ADR 0054).
+ * The layer rule of `tinvar check`: which of the framework's packages may
+ * name which (ADR 0054), each layer now a package of its own (ADR 0055).
  *
  * Layers are listed lowest first, and each names the layers below it that
  * it may use: it uses those and itself, never one above, and never one
  * beside it that it does not name -- testing and codegen both stand on the
  * framework, and neither on the other. A layer's members are namespaces,
  * written with a trailing `\` and taking everything under them, and single
- * classes: a class sits in the layer of its most specific member, so
- * `Tinvar\Attributes\Table` can be the database's while the rest of
- * `Tinvar\Attributes\` is the framework's, with no class moved or renamed.
+ * classes: a class sits in the layer of its most specific member. The
+ * framework's map is namespaces alone, since the classes it once shared out
+ * one by one were renamed into their packages' namespaces.
  *
  * A use is every name SourceReferences finds -- an import, a qualified name
  * or `::class` in code, a bare name of a class beside it in a shared
@@ -24,12 +24,15 @@ namespace Tinvar\Packages;
  * the name out in full, by sharing its namespace, or by putting it in a
  * docblock PHPStan reads.
  *
- * A file is in the layer of the class its path names, as PSR-4 would load
- * it, which is where a split will put it; one declaring another class is a
- * violation, so a database file cannot step out of its layer by declaring
- * itself in the framework's namespace. And the rule fails closed: a file in
- * no layer, or a source that cannot be read, is a violation, not a file
- * skipped.
+ * A file is in the layer of the package whose directory holds it, and the
+ * class its path names, as the package's PSR-4 map loads it, has to be in
+ * that layer too: a class of the ORM's namespace in the framework's
+ * directory would ship in the wrong package. One declaring another class
+ * than its path names is a violation, so a database file cannot step out
+ * of its layer by declaring itself in the framework's namespace. And the
+ * rule fails closed: a file in no layer, a file in a package's directory
+ * that none of its PSR-4 directories holds, and a source that cannot be
+ * read are violations, not files skipped.
  */
 final readonly class Layers
 {
@@ -39,14 +42,18 @@ final readonly class Layers
     /**
      * @param array<string, list<string>> $layers  name => members, lowest layer first
      * @param array<string, list<string>> $uses    name => the layers below it that it may use
-     * @param array<string, string>       $sources directories the check reads, relative to the root it is
-     *                                             given, each with the namespace prefix PSR-4 maps it to
+     * @param array<string, string>       $sources  directories the check reads, relative to the root it is
+     *                                              given, each with the namespace prefix PSR-4 maps it to
+     * @param array<string, string>       $packages directories each holding one package's sources, relative
+     *                                              to the root, with the layer the package is; with none,
+     *                                              a file's layer is its class's
      * @throws \InvalidArgumentException for a layer that would use one not below it
      */
     public function __construct(
         private array $layers,
         array $uses = [],
         private array $sources = [],
+        private array $packages = [],
     ) {
         $below = [];
         $allowed = [];
@@ -69,38 +76,22 @@ final readonly class Layers
     }
 
     /**
-     * The framework's layers: support, which uses nothing of Tinvar's; the
-     * database, which uses only support; the framework, which uses either;
-     * and on the framework, the testing layer and codegen -- already a
-     * package of its own -- each over all three and neither over the other.
+     * The framework's layers, each a package: support, which uses nothing of
+     * Tinvar's; the database, which uses only support; the framework, which
+     * uses either; and on the framework, the testing layer and codegen, each
+     * over all three and neither over the other.
      *
-     * Where the map is finer than a namespace, the namespace is shared: the
-     * attributes the ORM reads are the database's, the container's is
-     * support's, and so is Data\Lazy, the deferred value the ORM's read-only
-     * scope reaches into -- the rest of Data, which maps models, is the
-     * framework's.
+     * The sources are each package's PSR-4 directories, as its composer.json
+     * maps them -- tinvar check holds the two to each other (Workspace) --
+     * and each package's src/ is read whole, so a file none of them holds is
+     * found rather than skipped.
      */
     public static function framework(): self
     {
         return new self(
             [
-                'support' => [
-                    'Tinvar\\Support\\',
-                    'Tinvar\\Codec\\',
-                    'Tinvar\\Container\\',
-                    'Tinvar\\Attributes\\Dependency',
-                    'Tinvar\\Data\\Lazy',
-                ],
-                'database' => [
-                    'Tinvar\\Orm\\',
-                    'Tinvar\\Attributes\\Table',
-                    'Tinvar\\Attributes\\Column',
-                    'Tinvar\\Attributes\\Id',
-                    'Tinvar\\Attributes\\BelongsTo',
-                    'Tinvar\\Attributes\\HasMany',
-                    'Tinvar\\Attributes\\BeforeSave',
-                    'Tinvar\\Attributes\\TenantScoped',
-                ],
+                'support' => ['Tinvar\\Support\\', 'Tinvar\\Codec\\', 'Tinvar\\Container\\'],
+                'database' => ['Tinvar\\Orm\\'],
                 'framework' => ['Tinvar\\'],
                 'testing' => ['Tinvar\\Testing\\'],
                 'codegen' => ['Tinvar\\Codegen\\'],
@@ -112,13 +103,42 @@ final readonly class Layers
                 'codegen' => ['support', 'database', 'framework'],
             ],
             [
-                'packages/support/src' => 'Tinvar\\',
-                'packages/database/src' => 'Tinvar\\',
+                'packages/support/src/Codec' => 'Tinvar\\Codec\\',
+                'packages/support/src/Container' => 'Tinvar\\Container\\',
+                'packages/support/src/Support' => 'Tinvar\\Support\\',
+                'packages/database/src/Orm' => 'Tinvar\\Orm\\',
                 'packages/framework/src' => 'Tinvar\\',
-                'packages/testing/src' => 'Tinvar\\',
+                'packages/testing/src/Testing' => 'Tinvar\\Testing\\',
                 'packages/codegen/src' => 'Tinvar\\Codegen\\',
             ],
+            [
+                'packages/support/src' => 'support',
+                'packages/database/src' => 'database',
+                'packages/framework/src' => 'framework',
+                'packages/testing/src' => 'testing',
+                'packages/codegen/src' => 'codegen',
+            ],
         );
+    }
+
+    /**
+     * The directories the check reads, each with its PSR-4 prefix.
+     *
+     * @return array<string, string>
+     */
+    public function sources(): array
+    {
+        return $this->sources;
+    }
+
+    /**
+     * Each package's directory, with the layer it is.
+     *
+     * @return array<string, string>
+     */
+    public function packages(): array
+    {
+        return $this->packages;
     }
 
     /** The layer $name is in, by its most specific member; null for a name in none. */
@@ -159,38 +179,58 @@ final readonly class Layers
      */
     public function check(string $root): array
     {
+        $root = rtrim($root, '/');
         $files = [];
+        $named = [];
+        $packageOf = [];
         $violations = [];
 
-        $named = [];
-        foreach ($this->sources as $source => $prefix) {
-            $directory = rtrim($root, '/') . '/' . $source;
-            if (!is_dir($directory)) {
-                $violations[] = "{$source}: not a directory, so its layers cannot be checked.";
+        // Each package's directory read whole, or each source when the map
+        // has no packages: a file is named by the PSR-4 source holding it.
+        $sources = $this->sources;
+        uksort($sources, static fn (string $a, string $b): int => \strlen($b) <=> \strlen($a));
+        $roots = $this->packages !== [] ? $this->packages : array_fill_keys(array_keys($this->sources), null);
+        foreach ($sources as $source => $prefix) {
+            if ($this->packages !== [] && self::within($source, array_keys($this->packages)) === null) {
+                $violations[] = "{$source}: a source in none of the packages, so its layer cannot be checked.";
+            }
+        }
+
+        foreach ($roots as $directory => $package) {
+            if (!is_dir("{$root}/{$directory}")) {
+                $violations[] = "{$directory}: not a directory, so its layers cannot be checked.";
 
                 continue;
             }
 
-            $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS));
+            $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator("{$root}/{$directory}", \FilesystemIterator::SKIP_DOTS));
             foreach ($iterator as $file) {
-                if ($file instanceof \SplFileInfo && $file->isFile() && $file->getExtension() === 'php') {
-                    $contents = file_get_contents($file->getPathname());
-                    if ($contents === false) {
-                        $violations[] = "{$file->getPathname()}: cannot be read, so its layer cannot be checked.";
-
-                        continue;
-                    }
-                    $relative = substr($file->getPathname(), \strlen($directory) + 1);
-                    $files[$source . '/' . $relative] = $contents;
-                    $named[$source . '/' . $relative] = $prefix . str_replace('/', '\\', substr($relative, 0, -\strlen('.php')));
+                if (!$file instanceof \SplFileInfo || !$file->isFile() || $file->getExtension() !== 'php') {
+                    continue;
                 }
+                $path = substr($file->getPathname(), \strlen($root) + 1);
+                $source = self::within($path, array_keys($sources));
+                if ($source === null) {
+                    $violations[] = "{$path}: in the {$package} package, and in none of its PSR-4 directories, so its layer cannot be checked.";
+
+                    continue;
+                }
+                $contents = file_get_contents($file->getPathname());
+                if ($contents === false) {
+                    $violations[] = "{$file->getPathname()}: cannot be read, so its layer cannot be checked.";
+
+                    continue;
+                }
+                $files[$path] = $contents;
+                $named[$path] = $sources[$source] . str_replace('/', '\\', substr($path, \strlen($source) + 1, -\strlen('.php')));
+                $packageOf[$path] = $package;
             }
         }
         ksort($files, \SORT_STRING);
 
         [$namespaces, $classes] = self::declaredIn($files);
         foreach ($files as $path => $contents) {
-            $violations = [...$violations, ...$this->checkSource($contents, $path, $namespaces, $classes, $named[$path])];
+            $violations = [...$violations, ...$this->checkSource($contents, $path, $namespaces, $classes, $named[$path], $packageOf[$path])];
         }
 
         return $violations;
@@ -205,9 +245,12 @@ final readonly class Layers
      *        file's own namespace leaves unqualified
      * @param string|null  $named      the class the file's path names, which
      *        puts it in its layer; without one, the class it declares does
+     * @param string|null  $package    the layer of the package whose directory
+     *        holds the file, which is then the file's layer, and its class's
+     *        has to be the same
      * @return list<string>
      */
-    public function checkSource(string $source, string $path, array $namespaces = [], array $classes = [], ?string $named = null): array
+    public function checkSource(string $source, string $path, array $namespaces = [], array $classes = [], ?string $named = null, ?string $package = null): array
     {
         $references = SourceReferences::of($source, $namespaces, $classes);
         $self = $named ?? $references->declared ?? $references->namespace . '\\';
@@ -218,6 +261,10 @@ final readonly class Layers
         }
 
         $violations = [];
+        if ($package !== null && $package !== $layer) {
+            $violations[] = "{$path}: " . ltrim($self, '\\') . " is in the {$layer} layer, and its file is in the {$package} package";
+            $layer = $package;
+        }
         if ($named !== null && $references->declared !== null && strcasecmp($named, $references->declared) !== 0) {
             $violations[] = "{$path}: declares {$references->declared}, where its path names {$named}";
         }
@@ -240,6 +287,23 @@ final readonly class Layers
     public function names(): array
     {
         return array_keys($this->layers);
+    }
+
+    /**
+     * The longest of $directories that $path is, or is in; null for none.
+     *
+     * @param list<string> $directories
+     */
+    private static function within(string $path, array $directories): ?string
+    {
+        $found = null;
+        foreach ($directories as $directory) {
+            if (($path === rtrim($directory, '/') || str_starts_with($path, rtrim($directory, '/') . '/')) && ($found === null || \strlen($directory) > \strlen($found))) {
+                $found = $directory;
+            }
+        }
+
+        return $found;
     }
 
     /**

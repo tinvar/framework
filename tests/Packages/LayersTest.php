@@ -5,7 +5,8 @@ declare(strict_types=1);
 /**
  * The layer rule: support uses nothing of Tinvar's, the database uses only
  * support, the framework uses either, and the testing layer and codegen all
- * three, but not each other (ADR 0054).
+ * three, but not each other (ADR 0054). Each layer is a package, and a file
+ * is in the layer of the package whose directory holds it (ADR 0055).
  *
  * Every way PHP lets a file name a class counts -- an import, a fully
  * qualified name, a name through an alias or below the namespace, a
@@ -25,6 +26,41 @@ const NAMESPACES = ['Tinvar', 'Tinvar\Orm', 'Tinvar\Orm\Schema', 'Tinvar\Http', 
 function crossed(string $source): array
 {
     return Layers::framework()->checkSource($source, 'Example.php', NAMESPACES);
+}
+
+/**
+ * A map with a namespace shared class by class, as the framework's was
+ * before its packages were split: the map can still say so.
+ */
+function shared(): Layers
+{
+    return new Layers(
+        ['database' => ['Tinvar\\Orm\\', 'Tinvar\\Attributes\\Table', 'Tinvar\\Attributes\\Column'], 'framework' => ['Tinvar\\']],
+        ['framework' => ['database']],
+    );
+}
+
+/**
+ * A workspace of files under a temporary root, read by $layers' check().
+ *
+ * @param array<string, string> $files path => contents
+ * @return list<string>
+ */
+function checked(Layers $layers, array $files): array
+{
+    $root = sys_get_temp_dir() . '/tinvar-layers-' . bin2hex(random_bytes(4));
+    foreach ($files as $path => $contents) {
+        if (!is_dir(\dirname("{$root}/{$path}"))) {
+            mkdir(\dirname("{$root}/{$path}"), 0o777, true);
+        }
+        file_put_contents("{$root}/{$path}", $contents);
+    }
+
+    try {
+        return $layers->check($root);
+    } finally {
+        exec('rm -rf ' . escapeshellarg($root));
+    }
 }
 
 /** A file in the database layer, with $body in its class. */
@@ -57,13 +93,15 @@ describe('the layers', function () {
     })->with([
         'the ORM' => ['Tinvar\Orm\Orm', 'database'],
         'below the ORM' => ['Tinvar\Orm\Schema\Table', 'database'],
-        'an attribute the ORM reads' => ['Tinvar\Attributes\Table', 'database'],
-        'an attribute it does not' => ['Tinvar\Attributes\Panel', 'framework'],
+        'an attribute the ORM reads' => ['Tinvar\Orm\Attributes\Table', 'database'],
+        'its name before the split' => ['Tinvar\Attributes\Table', 'framework'],
+        'an attribute it does not read' => ['Tinvar\Attributes\Panel', 'framework'],
         'the container' => ['Tinvar\Container\Container', 'support'],
-        'its attribute' => ['Tinvar\Attributes\Dependency', 'support'],
-        'a lazy value' => ['Tinvar\Data\Lazy', 'support'],
-        'the rest of Data' => ['Tinvar\Data\Mapper', 'framework'],
-        'tenancy' => ['Tinvar\Tenancy\TenantHierarchy', 'framework'],
+        'its attribute' => ['Tinvar\Container\Dependency', 'support'],
+        'a lazy value' => ['Tinvar\Support\Lazy', 'support'],
+        'Data' => ['Tinvar\Data\Mapper', 'framework'],
+        'the tenant walk' => ['Tinvar\Orm\TenantHierarchy', 'database'],
+        'tenancy' => ['Tinvar\Tenancy\TenantHosts', 'framework'],
         'codegen' => ['Tinvar\Codegen\TypeScriptGenerator', 'codegen'],
         'the testing layer' => ['Tinvar\Testing\ModelLeaks', 'testing'],
         'a namespace by its name' => ['Tinvar\Orm', 'database'],
@@ -108,7 +146,7 @@ describe('the layers', function () {
 describe('a database class', function () {
     it('passes using only support and itself', function () {
         $source = orm(
-            "use Tinvar\\Support\\Str;\nuse Tinvar\\Attributes\\Table;\nuse Tinvar\\Data\\Lazy;",
+            "use Tinvar\\Support\\Str;\nuse Tinvar\\Orm\\Attributes\\Table;\nuse Tinvar\\Support\\Lazy;",
             'public function a(): string { return Schema\Table::class . \Tinvar\Orm\Model::class . namespace\Model::class; }',
         );
 
@@ -148,8 +186,9 @@ describe('a database class', function () {
     });
 
     it('fails on the one name of a group that crosses', function () {
-        expect(crossed(orm('use Tinvar\Attributes\{Table, Column as Field, Panel};')))
-            ->toBe(['Example.php:7: database uses framework, Tinvar\Attributes\Panel (use)']);
+        expect(crossed(orm('use Tinvar\Orm\Attributes\{Table, Column as Field};')))->toBe([])
+            ->and(crossed(orm('use Tinvar\{Orm\Model, Http\Request as Incoming, Support\Str};')))
+            ->toBe(['Example.php:7: database uses framework, Tinvar\Http\Request (use)']);
     });
 
     it('fails importing a framework function or constant', function () {
@@ -229,8 +268,8 @@ describe('the other layers', function () {
         $table = "<?php\nnamespace Tinvar\\Attributes;\n\nuse Tinvar\\Http\\Request;\n\nfinal class Table {}\n";
         $panel = "<?php\nnamespace Tinvar\\Attributes;\n\nuse Tinvar\\Http\\Request;\n\nfinal class Panel {}\n";
 
-        expect(crossed($table))->toBe(['Example.php:4: database uses framework, Tinvar\Http\Request (use)'])
-            ->and(crossed($panel))->toBe([]);
+        expect(shared()->checkSource($table, 'Example.php', NAMESPACES))->toBe(['Example.php:4: database uses framework, Tinvar\Http\Request (use)'])
+            ->and(shared()->checkSource($panel, 'Example.php', NAMESPACES))->toBe([]);
     });
 
     it('fails a class of a shared namespace named bare, with no import to catch', function () {
@@ -266,7 +305,7 @@ describe('the other layers', function () {
             PHP;
         $classes = ['Tinvar\Attributes\Panel', 'Tinvar\Attributes\ClassAttributes', 'Tinvar\Attributes\Concerns', 'Tinvar\Attributes\Kind', 'Tinvar\Attributes\Column'];
 
-        expect(Layers::framework()->checkSource($source, 'Column.php', NAMESPACES, $classes))->toBe([
+        expect(shared()->checkSource($source, 'Column.php', NAMESPACES, $classes))->toBe([
             'Column.php:4: database uses framework, Tinvar\Attributes\Panel (code)',
             'Column.php:7: database uses framework, Tinvar\Attributes\Concerns (code)',
             'Column.php:9: database uses framework, Tinvar\Attributes\Panel (code)',
@@ -299,6 +338,48 @@ describe('the other layers', function () {
         expect(Layers::framework()->checkSource($source, 'src/Orm/Escape.php', NAMESPACES, [], 'Tinvar\Orm\Escape'))->toBe([
             'src/Orm/Escape.php: declares Tinvar\Http\Escape, where its path names Tinvar\Orm\Escape',
             'src/Orm/Escape.php:4: database uses framework, Tinvar\Http\Request (use)',
+        ]);
+    });
+
+    it('puts a file in its package\'s layer, and fails a class of another layer\'s namespace there', function () {
+        $source = "<?php\nnamespace Tinvar\\Orm;\n\nuse Tinvar\\Http\\Request;\n\nfinal class Escape {}\n";
+
+        expect(Layers::framework()->checkSource($source, 'packages/framework/src/Orm/Escape.php', NAMESPACES, [], 'Tinvar\Orm\Escape', 'framework'))->toBe([
+            'packages/framework/src/Orm/Escape.php: Tinvar\Orm\Escape is in the database layer, and its file is in the framework package',
+        ]);
+    });
+
+    it('reads each package whole, and fails a file in none of its PSR-4 directories', function () {
+        $layers = new Layers(
+            ['support' => ['Tinvar\\Support\\'], 'database' => ['Tinvar\\Orm\\'], 'framework' => ['Tinvar\\']],
+            ['database' => ['support'], 'framework' => ['support', 'database']],
+            ['packages/support/src/Support' => 'Tinvar\\Support\\', 'packages/database/src/Orm' => 'Tinvar\\Orm\\', 'packages/framework/src' => 'Tinvar\\'],
+            ['packages/support/src' => 'support', 'packages/database/src' => 'database', 'packages/framework/src' => 'framework'],
+        );
+
+        expect(checked($layers, [
+            'packages/support/src/Support/Str.php' => "<?php\nnamespace Tinvar\\Support;\n\nfinal class Str {}\n",
+            'packages/support/src/Stray.php' => "<?php\nnamespace Tinvar\\Support;\n\nfinal class Stray {}\n",
+            'packages/database/src/Orm/Model.php' => "<?php\nnamespace Tinvar\\Orm;\n\nuse Tinvar\\Support\\Str;\n\nfinal class Model {}\n",
+            'packages/framework/src/Orm/Escape.php' => "<?php\nnamespace Tinvar\\Orm;\n\nfinal class Escape {}\n",
+            'packages/framework/src/Http/Kernel.php' => "<?php\nnamespace Tinvar\\Http;\n\nuse Tinvar\\Orm\\Model;\n\nfinal class Kernel {}\n",
+        ]))->toBe([
+            'packages/support/src/Stray.php: in the support package, and in none of its PSR-4 directories, so its layer cannot be checked.',
+            'packages/framework/src/Orm/Escape.php: Tinvar\Orm\Escape is in the database layer, and its file is in the framework package',
+        ]);
+    });
+
+    it('fails a source in none of the packages, and a package that is not there', function () {
+        $layers = new Layers(
+            ['framework' => ['Tinvar\\']],
+            [],
+            ['elsewhere/src' => 'Tinvar\\'],
+            ['packages/framework/src' => 'framework'],
+        );
+
+        expect($layers->check(sys_get_temp_dir()))->toBe([
+            'elsewhere/src: a source in none of the packages, so its layer cannot be checked.',
+            'packages/framework/src: not a directory, so its layers cannot be checked.',
         ]);
     });
 
