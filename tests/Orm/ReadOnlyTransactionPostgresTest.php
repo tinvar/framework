@@ -196,6 +196,29 @@ describe('on Postgres', function () {
         });
     });
 
+    // Recovery waits for a savepoint of transaction() opened inside the
+    // scope, which recovers on its own way out. One the scope was opened
+    // inside is no such savepoint: waiting for it, one malformed uuid failed
+    // every statement after it until the scope ended.
+    it('recovers a scope opened inside a nested transaction, for the statement after a failed one', function () {
+        onPostgres(function (PdoConnection $connection): void {
+            $orm = new Orm($connection, new IdentityMap('test'));
+
+            $count = $connection->transaction(static fn (): int => $connection->transaction(
+                static fn (): int => $orm->readOnly(static function () use ($connection): int {
+                    try {
+                        $connection->select('SELECT id FROM things WHERE id = ?', ['not-a-uuid']);
+                    } catch (\PDOException) {
+                    }
+
+                    return (int) $connection->select('SELECT COUNT(*) AS c FROM racks')[0]['c'];
+                }),
+            ));
+
+            expect($count)->toBe(2);
+        });
+    });
+
     it('ends a transaction the reset finds a fiber left open', function () {
         onPostgres(function (PdoConnection $connection, \PDO $pdo): void {
             $orm = new Orm($connection, new IdentityMap('test'));

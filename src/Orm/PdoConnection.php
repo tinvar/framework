@@ -57,6 +57,13 @@ final class PdoConnection implements Connection, TenantSetting
     /** How the open run told the database (one of the READ_ONLY_ constants); null when none is open. */
     private ?string $readOnlyMode = null;
 
+    /**
+     * The savepoints of transaction() already open when the run began: a
+     * scope opened inside a nested transaction() sits inside them, and
+     * only one opened since is inside the scope; see recoverReadOnly().
+     */
+    private int $readOnlySavepoints = 0;
+
     private readonly string $driver;
 
     /**
@@ -382,6 +389,7 @@ final class PdoConnection implements Connection, TenantSetting
     private function enterReadOnly(): int
     {
         if ($this->readOnlyScopes === 0) {
+            $this->readOnlySavepoints = $this->savepoints;
             $this->readOnlyMode = $this->beginReadOnly();
             $this->readOnlyRun++;
         }
@@ -462,12 +470,15 @@ final class PdoConnection implements Connection, TenantSetting
      * Not while a savepoint of transaction() is open inside the scope: that
      * savepoint rolls back to itself on the way out, which recovers the
      * transaction too, and beginning it again here would take the savepoint
-     * away from under it. SQLite does not abort a transaction over a failed
-     * statement, so there is nothing to recover.
+     * away from under it. One open around the scope is not inside it: a
+     * scope opened in a nested transaction() was never recovered, and one
+     * failed statement failed every one after it until the scope ended.
+     * SQLite does not abort a transaction over a failed statement, so there
+     * is nothing to recover.
      */
     private function recoverReadOnly(): void
     {
-        if ($this->savepoints > 0) {
+        if ($this->savepoints > $this->readOnlySavepoints) {
             return;
         }
 
