@@ -71,17 +71,24 @@ use Tinvar\Tenancy\Host;
  *     verifies now (CustomDomainVerification::verify()), the outcome
  *     recorded as any check's is: a domain pointing elsewhere is
  *     deactivated by the asking, and one whose lookup fails counts toward
- *     its grace period.
+ *     its grace period. Or that passed a check under RETRY_AFTER seconds
+ *     ago, as below.
  *   - 404 for anything else, and for what Host::normalize() does not read
  *     as a host name.
  *
  * A name that is not in the application's records is never resolved: the
  * caller learns nothing about any name's DNS from the answer, so the
- * endpoint is no oracle for it. And a domain whose last check failed under
- * RETRY_AFTER seconds ago is refused without resolving it again: Caddy asks
- * at every handshake naming a host it has no certificate for, and a stream
- * of handshakes naming one whose DNS times out would otherwise hold a
- * worker for a full check each.
+ * endpoint is no oracle for it. And a domain checked under RETRY_AFTER
+ * seconds ago is answered from that check without resolving it again --
+ * refused if it failed, allowed if it passed: Caddy asks at every handshake
+ * naming a host it has no certificate for, and a stream of handshakes
+ * would otherwise hold a worker for a full check each. Naming one whose DNS
+ * times out, after a failure; and after a pass, naming one whose issuance
+ * keeps failing -- which whoever controls its DNS can arrange with a CAA
+ * record -- while its DNS answers just inside the check's time and is
+ * cached nowhere. A minute-old pass is the renewal's check all the same:
+ * a domain that moved since cannot pass the CA's challenge here, and the
+ * next ask after it, or the daily check, deactivates it.
  *
  * The Kernel counts it under the route `_tls_ask`, never by the domain: a
  * name chosen by whoever opens a TLS connection is not a label. The access
@@ -94,7 +101,7 @@ final readonly class TlsAskEndpoint
     /** The route a request to it is counted under in the metrics and the log. */
     public const string ROUTE = '_tls_ask';
 
-    /** Seconds after a failed check during which a domain is refused without another lookup. */
+    /** Seconds after a check during which a domain is answered from it, without another lookup. */
     public const int RETRY_AFTER = 60;
 
     public function __construct(
@@ -143,9 +150,16 @@ final readonly class TlsAskEndpoint
             return false;
         }
 
-        if ($record->failingSince !== null && $record->checkedAt !== null
-            && $this->verification->now()->getTimestamp() - $record->checkedAt->getTimestamp() < self::RETRY_AFTER) {
-            return false;
+        // A pass is trusted only from the past: one a server with its clock
+        // ahead recorded "later" than now would otherwise stand for as long.
+        $age = $record->checkedAt === null ? null : $this->verification->now()->getTimestamp() - $record->checkedAt->getTimestamp();
+        if ($age !== null && $age < self::RETRY_AFTER) {
+            if ($record->failingSince !== null) {
+                return false;
+            }
+            if ($age >= 0) {
+                return true;
+            }
         }
 
         return $this->verification->verify($record) === DomainStatus::Verified;

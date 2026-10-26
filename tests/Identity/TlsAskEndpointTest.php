@@ -172,6 +172,47 @@ describe('the TLS ask endpoint', function () {
         $endpoint->handle(asking('shop.acme.example'));
         expect($dns->asked)->toBe(['shop.acme.example', 'shop.acme.example']);
     });
+
+    // And one that passed: Caddy asks again at each handshake while it holds
+    // no certificate -- one whose issuance keeps failing, say, which whoever
+    // controls the domain's DNS can arrange with a CAA record -- and each
+    // ask was a full check. DNS that answers just inside the check's time,
+    // and is never cached, then held a worker for most of four seconds per
+    // handshake.
+    it('answers a domain that passed under a minute ago from that check, without resolving it again', function () {
+        [$endpoint, $records, $dns, $clock] = ask(['shop.acme.example' => TARGET]);
+
+        expect($endpoint->handle(asking('shop.acme.example'))->status)->toBe(200);
+        $checked = $records->domains['shop.acme.example']->checkedAt;
+
+        $clock->advance('+59 seconds');
+        expect($endpoint->handle(asking('shop.acme.example'))->status)->toBe(200)
+            ->and($endpoint->handle(asking('shop.acme.example'))->status)->toBe(200)
+            ->and($dns->asked)->toBe(['shop.acme.example'])
+            ->and($records->domains['shop.acme.example']->checkedAt)->toEqual($checked);
+
+        $clock->advance('+1 second');
+        expect($endpoint->handle(asking('shop.acme.example'))->status)->toBe(200)
+            ->and($dns->asked)->toBe(['shop.acme.example', 'shop.acme.example']);
+    });
+
+    it('checks again a domain whose pass is recorded later than now', function () {
+        [$endpoint, $records, $dns, $clock] = ask(['shop.acme.example' => TARGET]);
+        $records->passed('shop.acme.example', $clock->now->modify('+1 hour'));
+
+        expect($endpoint->handle(asking('shop.acme.example'))->status)->toBe(200)
+            ->and($dns->asked)->toBe(['shop.acme.example']);
+    });
+
+    it('still checks a recently passed domain the application has since deactivated as inactive', function () {
+        [$endpoint, $records, $dns] = ask(['shop.acme.example' => TARGET]);
+        expect($endpoint->handle(asking('shop.acme.example'))->status)->toBe(200);
+
+        $records->deactivate('shop.acme.example', 'moved', new \DateTimeImmutable());
+
+        expect($endpoint->handle(asking('shop.acme.example'))->status)->toBe(404)
+            ->and($dns->asked)->toBe(['shop.acme.example']);
+    });
 });
 
 /** Counts how often the application's own stack ran: a session would start here. */
