@@ -353,6 +353,15 @@ describe('install scripts and plugins', function () {
         expect(violations($this->workspace))->toBe([]);
     });
 
+    // Composer 1's plugin type, which Composer 2 still loads as a plugin:
+    // only composer-plugin was read as one, so a package of this type
+    // passed with allow-plugins naming nothing.
+    it('refuses a composer-installer allow-plugins does not name', function () {
+        $this->workspace->composer('acme/installer', ['type' => 'composer-installer', 'extra' => ['class' => 'Acme\\Installer']]);
+
+        expect(violations($this->workspace))->toBe(['acme/installer is a Composer plugin, and config.allow-plugins does not name it.']);
+    });
+
     it('refuses turning off https for Composer', function () {
         $this->workspace->composerJson['config']['secure-http'] = false;
 

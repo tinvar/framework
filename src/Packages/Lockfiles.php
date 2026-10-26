@@ -99,7 +99,9 @@ final class Lockfiles
                     metadata: self::metadataIn($entry['extra'] ?? null) ?? self::metadataIn($installed['extra'] ?? null),
                     where: self::COMPOSER . " {$name}",
                     local: $local,
-                    plugin: ($entry['type'] ?? null) === 'composer-plugin',
+                    // Composer 2 still loads Composer 1's composer-installer
+                    // type as a plugin (PluginManager::loadRepository).
+                    plugin: \in_array($entry['type'] ?? null, ['composer-plugin', 'composer-installer'], true),
                     alternates: array_values(array_filter(
                         [...self::composerUrls($dist), ...self::composerUrls($source)],
                         static fn (string $url): bool => $url !== $from,
