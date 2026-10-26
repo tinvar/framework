@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Observability;
 
 use Tinvar\Http\HttpException;
+use Tinvar\Http\Middleware\VerifyCsrfToken;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Routing\RouteRegistry;
@@ -32,11 +33,14 @@ use Tinvar\Support\Str;
  *   than a slow page would.
  * - **Errors keep only bounded fields.** A message cut short, the digest a
  *   server failure was shown under, the kind, a stack trimmed to a few
- *   frames with their URLs' queries cut, and the source file and line --
- *   the file only when it is one of the build's assets, which a client
- *   cannot know apart from any other path, so it is dropped rather than
- *   refused. Each is one line in the application's log, through its Logger
- *   and so its Redactor, under the request's id.
+ *   frames, and the source file and line -- the file only when it is one
+ *   of the build's assets, which a client cannot know apart from any other
+ *   path, so it is dropped rather than refused. In the message and the
+ *   stack every URL's query and fragment is cut, relative or not, and
+ *   every value the request's own cookies and CSRF header carry is taken
+ *   out: the client does both before it sends, and a client is not what
+ *   this relies on. Each is then one line in the application's log, through
+ *   its Logger and so its Redactor, under the request's id.
  * - **Nothing comes back.** 204, no body, no cookie; nothing is written to
  *   the session. A refusal is the framework's fixed answer for its status,
  *   never a word of what was sent.
@@ -160,7 +164,7 @@ final class TelemetryEndpoint
             $this->recordVitals($route, $this->vitals($body['metrics'] ?? null));
         } else {
             self::fields($body, ['route', 'errors']);
-            $this->recordErrors($route, $this->errors($body['errors'] ?? null));
+            $this->recordErrors($route, $this->errors($body['errors'] ?? null, self::secretsOf($request)));
         }
 
         return Response::make(204, '', ['cache-control' => 'no-store']);
@@ -274,9 +278,10 @@ final class TelemetryEndpoint
      * Each error, reduced to the fields kept -- every one checked before any
      * is recorded.
      *
+     * @param list<string> $secrets what the request's cookies and CSRF header carry
      * @return list<array{kind: string, error: array<string, mixed>}>
      */
-    private function errors(mixed $errors): array
+    private function errors(mixed $errors, array $secrets): array
     {
         if (!\is_array($errors) || $errors === [] || !array_is_list($errors) || \count($errors) > self::MAX_ERRORS) {
             throw new HttpException(422, 'An errors report carries a list of up to ' . self::MAX_ERRORS . ' errors.', 'bad_errors');
@@ -288,7 +293,7 @@ final class TelemetryEndpoint
                 throw new HttpException(422, 'Each reported error is an object.', 'bad_errors');
             }
             self::fields($error, ['kind', 'message', 'digest', 'file', 'line', 'stack']);
-            $kept[] = $this->error($error);
+            $kept[] = $this->error($error, $secrets);
         }
 
         return $kept;
@@ -296,9 +301,10 @@ final class TelemetryEndpoint
 
     /**
      * @param array<array-key, mixed> $error
+     * @param list<string> $secrets
      * @return array{kind: string, error: array<string, mixed>}
      */
-    private function error(array $error): array
+    private function error(array $error, array $secrets): array
     {
         $kind = $error['kind'] ?? null;
         if (!\is_string($kind) || !\in_array($kind, self::ERROR_KINDS, true)) {
@@ -318,7 +324,7 @@ final class TelemetryEndpoint
             throw new HttpException(422, 'A reported error has a message, and its other fields are of their documented shapes.', 'bad_errors');
         }
 
-        $kept = ['message' => self::cut($message, self::MAX_MESSAGE)];
+        $kept = ['message' => self::cut(self::clean($message, $secrets), self::MAX_MESSAGE)];
         if (\is_string($digest)) {
             $kept['digest'] = $digest;
         }
@@ -330,7 +336,7 @@ final class TelemetryEndpoint
                 $kept['line'] = $line;
             }
         }
-        $frames = $stack === null ? [] : self::stack($stack);
+        $frames = $stack === null ? [] : self::stack($stack, $secrets);
         if ($frames !== []) {
             $kept['stack'] = $frames;
         }
@@ -372,13 +378,13 @@ final class TelemetryEndpoint
     }
 
     /**
-     * A stack as a few lines: control characters gone, each frame's URL
-     * without its query or fragment -- where a script's address would carry
-     * a token -- each line cut short, and no more than MAX_STACK_LINES.
+     * A stack as a few lines: control characters gone, cleaned as a message
+     * is, each line cut short, and no more than MAX_STACK_LINES.
      *
+     * @param list<string> $secrets
      * @return list<string>
      */
-    private static function stack(string $stack): array
+    private static function stack(string $stack, array $secrets): array
     {
         $lines = [];
         foreach (preg_split('/\R/', $stack) ?: [] as $line) {
@@ -386,13 +392,52 @@ final class TelemetryEndpoint
             if ($line === '') {
                 continue;
             }
-            $lines[] = self::cut((string) preg_replace('/[?#][^\s():]*/', '', $line), self::MAX_STACK_LINE);
+            $lines[] = self::cut(self::clean($line, $secrets), self::MAX_STACK_LINE);
             if (\count($lines) === self::MAX_STACK_LINES) {
                 break;
             }
         }
 
         return $lines;
+    }
+
+    /**
+     * $text without the request's own secrets, and with every query and
+     * fragment cut -- where a token in an address would be: an absolute
+     * URL's, and a relative or path-only one's (`/reset?token=...`,
+     * `./x#access_token=...`) alike. A `?` or `#` in prose goes with them,
+     * which costs a message little; the Redactor's patterns, which follow,
+     * know a query parameter only by a name like a secret's.
+     *
+     * @param list<string> $secrets
+     */
+    private static function clean(string $text, array $secrets): string
+    {
+        $text = str_replace($secrets, Redactor::REDACTED, $text);
+        $cut = preg_replace('/[?#][^\s():\'"]*/', '', $text);
+
+        // A pattern that could not run to the end leaves nothing, rather
+        // than the text it did not finish with.
+        return \is_string($cut) ? $cut : Redactor::REDACTED;
+    }
+
+    /**
+     * What the request carries that a page's script could have quoted into
+     * an error: the values of its cookies -- the session's among them, which
+     * script cannot read but a server-made message can still hold -- and its
+     * CSRF header. Short values are left: they are no secret, and taking
+     * them out would take every word they match with them.
+     *
+     * @return list<string>
+     */
+    private static function secretsOf(Request $request): array
+    {
+        $values = [...array_values($request->cookies), $request->header(VerifyCsrfToken::HEADER) ?? ''];
+        $secrets = array_values(array_unique(array_filter($values, static fn (string $v): bool => \strlen($v) >= 8)));
+        // Longest first, so one that contains another is taken out whole.
+        usort($secrets, static fn (string $a, string $b): int => \strlen($b) <=> \strlen($a));
+
+        return $secrets;
     }
 
     /** At most $bytes of $text, never splitting a UTF-8 character. */

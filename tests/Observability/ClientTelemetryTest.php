@@ -92,10 +92,10 @@ function kernel(array $more = []): array
     return [$kernel, $sink, $metrics];
 }
 
-/** A report from a page whose session is `s1`, carrying that session's token unless told otherwise. */
-function report(string $path, string $body, ?string $token = null, string $method = 'POST', string $type = 'application/json', string $address = '10.0.0.1'): Request
+/** A report from a page whose session is $session, carrying that session's token unless told otherwise. */
+function report(string $path, string $body, ?string $token = null, string $method = 'POST', string $type = 'application/json', string $address = '10.0.0.1', string $sessionId = 's1'): Request
 {
-    $session = [SESSION => 's1'];
+    $session = [SESSION => $sessionId];
     $token ??= (string) tokens()->for(new Request('GET', '/', cookies: $session));
 
     return new Request(
@@ -327,6 +327,30 @@ describe('errors', function () {
         'not a script' => ['/assets/index-Bx12.css', 'built'],
         'with a query' => ['/assets/index-Bx12.js?token=abc', 'built'],
     ]);
+
+    // The client cuts queries and takes cookie values out before it sends;
+    // the server does both again, since a client is not what it relies on.
+    it('cuts every query and fragment, relative or not, and takes out what the request carries', function () {
+        [$kernel, $sink] = kernel();
+        $session = 'a-long-session-id-42';
+        $csrf = (string) tokens()->for(new Request('GET', '/', cookies: [SESSION => $session]));
+        $raw = json_encode(['route' => 'shop.catalog', 'errors' => [[
+            'kind' => 'error',
+            'message' => "reset failed at /reset?token=abc123 and ./x#access_token=xyz from '/a?b=c' in {$session} with {$csrf}",
+            'stack' => "at /assets/a.js?token=abc:1:2\nat x ({$session})\nat y (/p#code=9)",
+        ]]], JSON_THROW_ON_ERROR);
+
+        $response = $kernel->handle(report('/_errors', $raw, sessionId: $session), page(), $raw);
+        $error = clientErrors($sink)[0]['error'] ?? [];
+
+        expect($response->status)->toBe(204)
+            ->and($error['message'] ?? null)->toBe("reset failed at /reset and ./x from '/a' in [redacted] with [redacted]")
+            ->and($error['stack'] ?? null)->toBe(['at /assets/a.js:1:2', 'at x ([redacted])', 'at y (/p)'])
+            ->and(implode("\n", $sink->lines))->not->toContain('abc123')
+            ->and(implode("\n", $sink->lines))->not->toContain('xyz')
+            ->and(implode("\n", $sink->lines))->not->toContain($session)
+            ->and(implode("\n", $sink->lines))->not->toContain($csrf);
+    });
 
     it('cuts a long message and trims the stack to a few short frames', function () {
         [$kernel, $sink] = kernel();
