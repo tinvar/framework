@@ -257,6 +257,52 @@ namespace Tinvar\Tests\Render\StaticRevalidation {
                 ->and(is_file("{$directory}/docs/intro/index.html"))->toBeFalse()
                 ->and($pages->stale())->toContain('/docs/intro');
         });
+
+        // Checked once the whole run was over, the page drawn before the
+        // action's commit was served from the moment it was moved in until
+        // then -- while every page after it rendered.
+        it('takes a page invalidated while it was built out of service before the run goes on', function () {
+            [$directory, $manifest] = built();
+            $pages = new StaticPages(builder(), $directory, $manifest, static fn (): int => NOW);
+            $servedMeanwhile = null;
+            Content::$during = static function (string $path) use ($pages, $directory, &$servedMeanwhile): void {
+                if ($path === '/docs/intro') {
+                    $pages->invalidate(['docs']);
+                }
+                if ($path === '/docs/guide') {
+                    $servedMeanwhile = is_file("{$directory}/docs/intro/index.html");
+                }
+            };
+
+            $pages->revalidate(['/docs/intro', '/docs/guide']);
+
+            expect($servedMeanwhile)->toBeFalse()
+                ->and(is_file("{$directory}/docs/intro/index.html"))->toBeFalse();
+        });
+
+        // A run that dies between moving a page in and finding it invalidated
+        // left it serving, its marker older than any later run: never built
+        // again for a page with no interval, and not before its interval for
+        // one with.
+        it('finds stale a page whose invalidation no build has answered, whatever its file', function () {
+            [$directory, $manifest] = built();
+            $pages = new StaticPages(builder(), $directory, $manifest, static fn (): int => NOW);
+            $pages->invalidate(['docs']);
+            file_put_contents("{$directory}/docs/intro/index.html", 'drawn before the commit');
+            age($directory, '/docs/intro', 0);
+            age($directory, '/home', 0);
+
+            expect($pages->stale())->toContain('/docs/intro')
+                ->and($pages->stale())->not->toContain('/home');
+
+            $later = new StaticPages(builder(), $directory, $manifest, static fn (): int => NOW + 60);
+            $later->revalidate();
+            age($directory, '/docs/intro', -60);
+            age($directory, '/docs/guide', -60);
+
+            expect(file_get_contents("{$directory}/docs/intro/index.html"))->toContain('first /docs/intro')
+                ->and($later->stale())->toBe([]);
+        });
     });
 
     describe('the scheduled task', function () {

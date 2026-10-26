@@ -47,7 +47,9 @@ final class StaticPages
 
     /**
      * The pages to build again now: missing -- invalidated, or never built
-     * -- or older than their revalidate interval.
+     * -- older than their revalidate interval, or invalidated with no build
+     * since to answer it, whatever their file: a run that died between
+     * moving a page in and taking it out again left one serving.
      *
      * @return list<string> their paths
      */
@@ -57,9 +59,11 @@ final class StaticPages
         $stale = [];
         foreach ($this->builder->pages() as $page) {
             $file = StaticBuilder::fileOf($this->directory, $page['path']);
+            $marker = $this->markerOf($page['path']);
             clearstatcache(true, $file);
+            clearstatcache(true, $marker);
             $built = is_file($file) ? filemtime($file) : false;
-            if ($built === false || ($page['revalidate'] !== null && $built + $page['revalidate'] <= $now)) {
+            if ($built === false || is_file($marker) || ($page['revalidate'] !== null && $built + $page['revalidate'] <= $now)) {
                 $stale[] = $page['path'];
             }
         }
@@ -81,7 +85,13 @@ final class StaticPages
         }
 
         $started = $this->now();
-        $result = $this->builder->rebuild($this->directory, $this->manifest, $paths);
+        // Each page asked as soon as it is in place, against when its own
+        // render began; and every page once more below, against the run's.
+        $result = $this->builder->rebuild($this->directory, $this->manifest, $paths, function (string $path): \Closure {
+            $since = $this->now();
+
+            return fn (): bool => $this->invalidatedSince($path, $since);
+        });
 
         // Invalidated while it was being built: rendered, perhaps, from what
         // the invalidating action changed. Out of service again, for the
@@ -143,6 +153,16 @@ final class StaticPages
         }
 
         return $taken;
+    }
+
+    /** Whether the page at $path was invalidated at $since or after. */
+    private function invalidatedSince(string $path, int $since): bool
+    {
+        $marker = $this->markerOf($path);
+        clearstatcache(true, $marker);
+        $invalidated = is_file($marker) ? filemtime($marker) : false;
+
+        return $invalidated !== false && $invalidated >= $since;
     }
 
     private function markerOf(string $path): string

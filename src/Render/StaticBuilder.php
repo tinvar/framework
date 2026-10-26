@@ -191,10 +191,15 @@ final class StaticBuilder
      *
      * @param list<string>|null $paths the pages to build again, by path; every
      *        one when null. A path that is no static page is reported as failed.
+     * @param (\Closure(string): (\Closure(): bool))|null $watch told of each
+     *        page as its render begins, by path; what it returns says, once
+     *        the page has been moved in, whether it was invalidated since --
+     *        and then it is taken out again at once, not left serving while
+     *        the rest are built (StaticPages)
      * @return array{built: list<string>, failed: array<string, string>} what
      *         was built, and why each that was not
      */
-    public function rebuild(string $directory, string $manifestPath, ?array $paths = null): array
+    public function rebuild(string $directory, string $manifestPath, ?array $paths = null, ?\Closure $watch = null): array
     {
         $directory = rtrim($directory, '/');
         if (!is_dir($directory) && !@mkdir($directory, 0o755, true) && !is_dir($directory)) {
@@ -222,6 +227,7 @@ final class StaticBuilder
                 }
 
                 try {
+                    $invalidated = $watch === null ? null : $watch($page['path']);
                     $manifest = FragmentManifest::fromFile($manifestPath);
                     [$html, $boundaries] = $this->renderPage($page, $manifest);
                     $file = self::fileOf($directory, $page['path']);
@@ -246,6 +252,17 @@ final class StaticBuilder
                     if (!@rename($temporary, $file)) {
                         @unlink($temporary);
                         throw new \RuntimeException("Cannot move the new page into {$file}.");
+                    }
+
+                    // Asked once it is in place, so an invalidation that came
+                    // while it rendered -- whose action's writes it may not
+                    // show -- or as it was moved in takes it out again here,
+                    // rather than once every page after it has been built.
+                    if ($invalidated !== null && $invalidated()) {
+                        @unlink($file);
+                        $failed[$page['path']] = 'invalidated while it was built; built again on the next run';
+
+                        continue;
                     }
                     $built[] = $page['path'];
                 } catch (\Throwable $e) {
