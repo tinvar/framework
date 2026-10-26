@@ -51,6 +51,12 @@ final class QueryRunner
      *        encoder sees the value -- for the testing layer, which hands a test the
      *        Data object a query returned rather than its encoding. Never told of a
      *        cache hit, which has no value but its encoding.
+     * @param (\Closure(string): ?\Closure)|null $standIn what answers in place of a
+     *        query's body, by its name, or null for the body -- a test's fake
+     *        (StandIns::query()); none in production. Asked only for a call that
+     *        passed every step before the body, and what it returns is encoded
+     *        as the body's value would be, so a fake returning a model fails as
+     *        production would.
      */
     public function __construct(
         private readonly QueryRegistry $registry,
@@ -62,6 +68,7 @@ final class QueryRunner
         private readonly ?\Closure $report = null,
         private readonly ?\Closure $panels = null,
         private readonly ?\Closure $returned = null,
+        private readonly ?\Closure $standIn = null,
     ) {}
 
     /**
@@ -538,8 +545,28 @@ final class QueryRunner
         $tasks = [];
         /** @var array<string, array{error: array{code: string, digest: string, message?: string}}|array{value: mixed}> $cached */
         $cached = [];
+        /** @var array<string, true> $faked group keys a stand-in answers */
+        $faked = [];
 
         foreach ($groups as $key => $group) {
+            // A test's fake answers in place of the body, and only the body:
+            // every step before it has run. Its call is never looked up in the
+            // cache, where a real answer would hide it, nor stored there, where
+            // it would be served as one; and never batched, since it answers
+            // each call by itself. What it read is still recorded, as any
+            // call's is.
+            $standIn = $this->standIn === null ? null : ($this->standIn)($group['name']);
+            if ($standIn !== null) {
+                $this->recordTags($this->registry->declarationFor($group['name']), $group['args']);
+                $arguments = $group['args'];
+                $orm = $this->orm;
+                $tasks[$key] = static fn (): mixed => $orm->readOnly(
+                    static fn (): mixed => $standIn(...$arguments),
+                );
+                $faked[$key] = true;
+                continue;
+            }
+
             // The lookup is here, after the gate: "Declarative #[Authorize]
             // runs before the lookup, so a cache hit never skips it."
             $hit = $this->cachedValue($group['name'], $group['args']);
@@ -583,13 +610,15 @@ final class QueryRunner
 
         $outcomes = $cached;
         foreach ($groups as $key => $group) {
-            if (isset($outcomes[$key]) || $this->registry->isBatch($group['name'])) {
+            if (isset($outcomes[$key]) || (!isset($faked[$key]) && $this->registry->isBatch($group['name']))) {
                 continue;
             }
 
             $this->tell($group['name'], $group['args'], $raw[$key] ?? null);
             $outcomes[$key] = $this->settle($raw[$key] ?? null);
-            $this->remember($group['name'], $group['args'], $outcomes[$key]);
+            if (!isset($faked[$key])) {
+                $this->remember($group['name'], $group['args'], $outcomes[$key]);
+            }
         }
 
         foreach ($byQuery as $name => $keys) {

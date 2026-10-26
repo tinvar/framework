@@ -61,6 +61,11 @@ final class ActionRunner
         // Takes the static pages showing what the tags name out of service,
         // once the action's writes are committed.
         private readonly ?StaticPages $static = null,
+        // What runs in place of an action's body, by its name, or null for
+        // the body -- a test's fake (StandIns::action()); none in production.
+        // Asked only once the call has passed resolution, #[Authorize] and
+        // validation, and what it returns goes on as the body's result does.
+        private readonly ?\Closure $standIn = null,
     ) {}
 
     /**
@@ -139,12 +144,20 @@ final class ActionRunner
 
         $arguments = $this->bind($action, $models, $requests, $scalars, $request, $uploads);
 
-        // 5. Run the body, noting every tenant it ran as: a row it wrote by
-        //    actAs()ing a child is the child's, and so are the pages to tell.
-        $instance = $this->registry->instanceFor($action);
+        // 5. Run the body -- or a test's fake in its place, handed what the
+        //    body would have been, uploads claimed for it as for the body --
+        //    noting every tenant it ran as: a row it wrote by actAs()ing a
+        //    child is the child's, and so are the pages to tell.
+        $standIn = $this->standIn === null ? null : ($this->standIn)($name);
+        if ($standIn === null) {
+            $instance = $this->registry->instanceFor($action);
+            $body = static fn (): mixed => $instance->{$action->method}(...$arguments);
+        } else {
+            $body = static fn (): mixed => $standIn(...$arguments);
+        }
         [$result, $tenants] = $this->orm->tenantsEnteredBy(fn (): mixed => $this->hasUploads($uploads)
-            ? $this->runWithUploads($uploads, static fn (): mixed => $instance->{$action->method}(...$arguments))
-            : $instance->{$action->method}(...$arguments));
+            ? $this->runWithUploads($uploads, $body)
+            : $body());
 
         if (!$result instanceof ActionResult) {
             throw ActionException::badReturn($action->where(), get_debug_type($result));

@@ -60,6 +60,8 @@ use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\RouteChain;
 use Tinvar\Routing\Router;
 use Tinvar\Routing\RouteRegistry;
+use Tinvar\Support\DevMode;
+use Tinvar\Support\StandIns;
 use Tinvar\Uploads\FileEndpoint;
 use Tinvar\Uploads\FileUrls;
 use Tinvar\Uploads\UploadBinder;
@@ -132,6 +134,14 @@ final class Kernel
     public readonly Gate $gate;
 
     public readonly QueryCache $cache;
+
+    /**
+     * What stands in for a query's or an action's body: a test's fakes, or
+     * null -- always null in production, where the constructor refuses one.
+     * Read by the testing layer, which installs fakes in it and runs its own
+     * direct query calls through it as the Kernel's runners do.
+     */
+    public readonly ?StandIns $standIns;
 
     /** The hub and keys live tokens need; null when the application has none. */
     private readonly ?LiveUpdates $live;
@@ -402,6 +412,10 @@ final class Kernel
      *        custom domain is checked before a certificate is obtained or renewed for it:
      *        answered beside the probes, ahead of everything else, since Caddy is not a
      *        visitor either
+     * @param StandIns|null $standIns what answers in place of a query's or an action's
+     *        body: a test's fakes (Tinvar\Testing\Fakes\BodyFakes), asked by both
+     *        runners once a call has passed every check before its body. Refused
+     *        wherever the environment says production, as the testing layer is
      */
     public function __construct(
         public readonly Orm $orm,
@@ -450,6 +464,7 @@ final class Kernel
         int $maxJsonDepth = Limits::MAX_JSON_DEPTH,
         array $redirectOrigins = [],
         private readonly ?TlsAskEndpoint $tlsAsk = null,
+        ?StandIns $standIns = null,
     ) {
         if ($toolbar !== null && !$dev) {
             throw new \InvalidArgumentException(
@@ -459,6 +474,18 @@ final class Kernel
         }
         $this->toolbar = $toolbar;
         $this->events = $events;
+
+        // A fake answers for a query or an action without its body, so it
+        // exists only under test. Fail closed where the environment says this
+        // is production, as the testing Client does.
+        $marker = $standIns === null ? null : DevMode::productionMarker(getenv());
+        if ($marker !== null) {
+            throw new \InvalidArgumentException(
+                "A Kernel was given stand-ins for query and action bodies under {$marker}=production. "
+                . 'They are a test\'s fakes, and never answer in production.',
+            );
+        }
+        $this->standIns = $standIns;
 
         // Failures go to the structured log unless the application said
         // where else they go.
@@ -643,6 +670,7 @@ final class Kernel
                 $live?->invalidator($this->orm, $this->report(...)),
                 $uploads === null ? null : new UploadBinder($uploads, $this->auth, $this->orm, $panels),
                 $staticPages,
+                $standIns === null ? null : $standIns->action(...),
             ),
             maxBodyBytes: $maxBodyBytes,
             revalidator: $revalidator,
@@ -664,6 +692,7 @@ final class Kernel
             debug: $debug,
             report: $this->report(...),
             panels: $this->queryPanelRefusal(...),
+            standIn: $standIns === null ? null : $standIns->query(...),
         );
 
         $this->queries_ = new QueryEndpoint(
