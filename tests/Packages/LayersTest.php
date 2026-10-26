@@ -250,15 +250,28 @@ describe('the other layers', function () {
                     f(Panel: 1);
                     return ClassAttributes::of($r, self::class);
                 }
+
+                public function b(mixed $kind): int
+                {
+                    switch ($kind) {
+                        case Kind::Admin:
+                            return 1;
+                    }
+
+                    return 0;
+                }
             }
+
+            enum Local { case Panel; }
             PHP;
-        $classes = ['Tinvar\Attributes\Panel', 'Tinvar\Attributes\ClassAttributes', 'Tinvar\Attributes\Concerns', 'Tinvar\Attributes\Column'];
+        $classes = ['Tinvar\Attributes\Panel', 'Tinvar\Attributes\ClassAttributes', 'Tinvar\Attributes\Concerns', 'Tinvar\Attributes\Kind', 'Tinvar\Attributes\Column'];
 
         expect(Layers::framework()->checkSource($source, 'Column.php', NAMESPACES, $classes))->toBe([
             'Column.php:4: database uses framework, Tinvar\Attributes\Panel (code)',
             'Column.php:7: database uses framework, Tinvar\Attributes\Concerns (code)',
             'Column.php:9: database uses framework, Tinvar\Attributes\Panel (code)',
             'Column.php:14: database uses framework, Tinvar\Attributes\ClassAttributes (code)',
+            'Column.php:20: database uses framework, Tinvar\Attributes\Kind (code)',
         ]);
     });
 

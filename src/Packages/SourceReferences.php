@@ -279,8 +279,9 @@ final readonly class SourceReferences
 
     /**
      * Whether the bare name at $at can be a class's: not a member after
-     * `->` or `::`, not the name a function, constant, case or class is
-     * declared with, not an alias or a label, and not a named argument.
+     * `->` or `::`; a class before `::` wherever it is, `case Panel::Admin:`
+     * included; otherwise not the name a function, constant, case or class
+     * is declared with, not an alias or a label, and not a named argument.
      * A class's name is matched as written, so a method or argument named
      * like a class in lower case is not taken for it.
      *
@@ -298,10 +299,13 @@ final readonly class SourceReferences
         }
         $next = self::next($tokens, $at);
 
-        if ($previous !== null && $previous->is([
-            \T_OBJECT_OPERATOR, \T_NULLSAFE_OBJECT_OPERATOR, \T_DOUBLE_COLON, \T_FUNCTION, \T_CONST,
-            \T_CLASS, \T_INTERFACE, \T_TRAIT, \T_ENUM, \T_CASE, \T_GOTO, \T_AS,
-        ])) {
+        if ($previous !== null && $previous->is([\T_OBJECT_OPERATOR, \T_NULLSAFE_OBJECT_OPERATOR, \T_DOUBLE_COLON])) {
+            return false;
+        }
+        if ($next !== null && $tokens[$next]->is(\T_DOUBLE_COLON)) {
+            return true;
+        }
+        if ($previous !== null && $previous->is([\T_FUNCTION, \T_CONST, \T_CLASS, \T_INTERFACE, \T_TRAIT, \T_ENUM, \T_CASE, \T_GOTO, \T_AS])) {
             return false;
         }
 
