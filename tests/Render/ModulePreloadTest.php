@@ -68,6 +68,23 @@ it('writes only paths on this origin into the header', function (mixed $href) {
     'relative' => ['assets/x.js'],
 ]);
 
+// Read after the render has returned, so past its deadline and its overall
+// cap: a renderer naming the 29,000 paths a meta frame's 256 KB holds had
+// each checked against every one kept before it, a second and a third of
+// this process's time for a header of sixteen.
+it('reads every path the renderer names once, however many it names', function () {
+    $paths = array_map(static fn (int $i): string => "/a/{$i}.js", range(1, 29_000));
+    $meta = [['t' => 'meta', 'preload' => $paths]];
+
+    $started = hrtime(true);
+    $header = (string) ModulePreload::header(result($meta));
+    $modules = ModulePreload::modulesOf([...$meta, ['t' => 'meta', 'preload' => ['/a/1.js', '/a/2.js']]]);
+
+    expect((hrtime(true) - $started) / 1e9)->toBeLessThan(0.3)
+        ->and(substr_count($header, 'rel=modulepreload'))->toBe(ModulePreload::MAX_ENTRIES)
+        ->and($modules)->toBe($paths);
+});
+
 it('takes the dev server\'s module paths as they are', function () {
     expect(ModulePreload::modulesOf([['t' => 'meta', 'preload' => ['/_vite/@id/__x00__virtual:vite-rsc/entry-browser']]]))
         ->toBe(['/_vite/@id/__x00__virtual:vite-rsc/entry-browser']);

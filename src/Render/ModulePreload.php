@@ -66,6 +66,10 @@ final class ModulePreload
      */
     public static function modulesOf(array $meta): array
     {
+        // Kept by key, so each path is looked for once: read after the
+        // render has returned, past its deadline, a list searched for every
+        // path the renderer named took it a second and more to answer
+        // the 29,000 a meta frame's 256 KB holds.
         $modules = [];
         foreach ($meta as $frame) {
             $preload = $frame['preload'] ?? null;
@@ -73,12 +77,12 @@ final class ModulePreload
                 continue;
             }
             foreach ($preload as $href) {
-                if (\is_string($href) && preg_match(self::PATH, $href) === 1 && !\in_array($href, $modules, true)) {
-                    $modules[] = $href;
+                if (\is_string($href) && !isset($modules[$href]) && preg_match(self::PATH, $href) === 1) {
+                    $modules[$href] = true;
                 }
             }
         }
 
-        return $modules;
+        return array_map(strval(...), array_keys($modules));
     }
 }
