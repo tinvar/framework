@@ -63,6 +63,16 @@ final class Recording
      */
     private const string SECRET_KEYS = '/token|nonce|csrf|password|passwd|secret|historykey|signature|cookie|authorization|api[_-]?key/i';
 
+    /**
+     * And in the URL's query, the names the Redactor takes out of a query
+     * too: a handoff's one-time `code`, a `session`, a `sig`. Not in frames,
+     * where `code` is an error's and `key` a list item's.
+     */
+    private const string QUERY_SECRET_KEYS = '/token|nonce|csrf|passw|secret|historykey|signature|sig|cookie|auth|api[_-]?key|code|session/i';
+
+    /** A signed token (Render\SignedToken) -- a fragment's or a file's, in a path. */
+    private const string SIGNED_TOKEN = '/\bv1\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}/';
+
     private const int MAX_DEPTH = 32;
 
     public readonly string $id;
@@ -106,9 +116,23 @@ final class Recording
         $this->startedNs = hrtime(true);
         $this->at = microtime(true);
         $this->method = $request->method;
-        $this->path = self::text(substr($request->path, 0, self::MAX_PATH_BYTES));
-        $query = self::redact($request->query);
+
+        // A fragment's or a file's token is in its path, and a reset link's
+        // in its query: kept out of the summary and the query shown, and --
+        // remembered, as the secrets of a frame PHP sent are -- out of every
+        // frame, where the render frame's page url and whatever the renderer
+        // drew with it carry them whole.
+        $found = [];
+        preg_match_all(self::SIGNED_TOKEN, $request->path, $tokens);
+        array_push($found, ...$tokens[0]);
+        $this->path = self::text(substr((string) preg_replace(self::SIGNED_TOKEN, '[token]', $request->path), 0, self::MAX_PATH_BYTES));
+        $query = self::walk($request->query, null, 0, $found, self::QUERY_SECRET_KEYS);
         $this->query = \is_array($query) ? $query : [];
+        foreach ($found as $secret) {
+            if (\strlen($secret) >= self::SHORTEST_SECRET) {
+                $this->secrets[$secret] = true;
+            }
+        }
         $this->kind = self::kindOf($request);
     }
 
@@ -263,12 +287,21 @@ final class Recording
      *
      * @param list<string> $found
      */
-    private static function walk(mixed $value, ?string $key, int $depth, array &$found): mixed
+    private static function walk(mixed $value, ?string $key, int $depth, array &$found, string $secretKeys = self::SECRET_KEYS): mixed
     {
-        if ($key !== null && preg_match(self::SECRET_KEYS, $key) === 1 && (\is_string($value) || \is_int($value))) {
-            $found[] = (string) $value;
+        if ($key !== null && preg_match($secretKeys, $key) === 1) {
+            if (\is_string($value) || \is_int($value)) {
+                $found[] = (string) $value;
 
-            return self::REDACTED;
+                return self::REDACTED;
+            }
+            // `?token[]=...` is a secret too, given as a list.
+            if (\is_array($value) && $value !== [] && array_is_list($value)
+                && array_filter($value, static fn (mixed $item): bool => \is_string($item) || \is_int($item)) === $value) {
+                array_push($found, ...array_map(strval(...), $value));
+
+                return self::REDACTED;
+            }
         }
 
         if (\is_array($value)) {
@@ -277,7 +310,7 @@ final class Recording
             }
             $out = [];
             foreach ($value as $name => $item) {
-                $out[$name] = self::walk($item, (string) $name, $depth + 1, $found);
+                $out[$name] = self::walk($item, (string) $name, $depth + 1, $found, $secretKeys);
             }
 
             return $out;
@@ -296,8 +329,8 @@ final class Recording
 
     /**
      * $value with every secret PHP sent the renderer taken out of its
-     * strings: as sent, and as JSON writes it, `/` escaped -- the page
-     * metadata is JSON in the HTML.
+     * strings: as sent, as JSON writes it, `/` escaped -- the page metadata
+     * is JSON in the HTML -- and as a URL writes it, a link's query.
      */
     private function scrubbed(mixed $value): mixed
     {
@@ -311,8 +344,13 @@ final class Recording
             return $value;
         }
 
-        $secrets = array_keys($this->secrets);
-        $forms = [...$secrets, ...array_map(static fn (string $secret): string => str_replace('/', '\\/', $secret), $secrets)];
+        $secrets = array_map(strval(...), array_keys($this->secrets));
+        $forms = array_values(array_unique([
+            ...$secrets,
+            ...array_map(static fn (string $secret): string => str_replace('/', '\\/', $secret), $secrets),
+            ...array_map(rawurlencode(...), $secrets),
+            ...array_map(urlencode(...), $secrets),
+        ]));
 
         return str_replace($forms, self::REDACTED, $value);
     }

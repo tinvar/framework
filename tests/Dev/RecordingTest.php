@@ -124,3 +124,34 @@ it('keeps a summary to one short line, however long the path', function () {
     expect(\strlen($summary['path']))->toBe(Recording::MAX_PATH_BYTES)
         ->and(\strlen((string) json_encode($summary)))->toBeLessThan(4096);
 });
+
+// The request's own query was redacted where the recording keeps it, and
+// left whole everywhere else: in the render frame's page url, the path and
+// query, and in whatever the renderer drew with it.
+it('takes a secret in the request\'s query out of every frame', function () {
+    $recording = recording(new Request('GET', '/reset', ['accept' => 'text/html'], ['token' => 'reset-secret-0123456789', 'code' => 'one-time-code-0123456789']));
+    $recording->frame(FrameTap::TO_RENDERER, ['t' => 'render', 'page' => ['url' => '/reset?token=reset-secret-0123456789&code=one-time-code-0123456789']]);
+    $recording->frame(FrameTap::FROM_RENDERER, ['t' => 'chunk', 'b' => '<a href="/reset?token=reset-secret-0123456789">again</a> ' . rawurlencode('/x?token=reset-secret-0123456789')]);
+    $detail = detail($recording);
+
+    expect($detail['query'])->toBe(['token' => Recording::REDACTED, 'code' => Recording::REDACTED])
+        ->and((string) json_encode($detail))->not->toContain('reset-secret-0123456789')
+        ->and((string) json_encode($detail))->not->toContain('one-time-code-0123456789');
+});
+
+it('takes out a secret-named value given as a list', function () {
+    $detail = detail(recording(new Request('GET', '/reset', ['accept' => 'text/html'], ['token' => ['reset-secret-0123456789']])));
+
+    expect((string) json_encode($detail))->not->toContain('reset-secret-0123456789');
+});
+
+// A fragment's and a file's token are in the path, not the query.
+it('keeps no signed token a path carries', function () {
+    $token = 'v1.eyJwYXlsb2FkIjoiZnJhZ21lbnQifQ.c2lnbmF0dXJlLW9mLXRoZS10b2tlbg';
+    $recording = recording(new Request('GET', "/_fragment/{$token}", ['accept' => 'text/x-component']));
+    $recording->frame(FrameTap::TO_RENDERER, ['t' => 'render', 'page' => ['url' => "/_fragment/{$token}"]]);
+    $finished = $recording->finish(200, 's', 'u');
+
+    expect($finished['summary']['path'])->toBe('/_fragment/[token]')
+        ->and((string) json_encode($finished))->not->toContain($token);
+});
