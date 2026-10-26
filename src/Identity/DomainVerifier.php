@@ -89,6 +89,12 @@ final readonly class DomainVerifier
         $this->clock = $clock ?? static fn (): float => hrtime(true) / 1e9;
     }
 
+    /** Seconds one domain's check may take, every lookup in it. */
+    public function timeout(): float
+    {
+        return $this->timeout;
+    }
+
     /** Where $host, normalized, points now. A lookup that fails is an answer of its own, Unknown. */
     public function check(string $host): DomainCheck
     {

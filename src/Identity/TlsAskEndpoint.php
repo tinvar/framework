@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Identity;
 
+use Tinvar\Http\ApcuThrottleStore;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Http\ThrottleStore;
@@ -94,20 +95,33 @@ use Tinvar\Tenancy\Host;
  * And one check of a domain at a time, across every worker and server:
  * before resolving, an ask claims the domain in the application's
  * ThrottleStore -- the one its throttles count in, which every worker
- * shares -- and an ask that finds it claimed is refused there and then,
- * with no lookup and no wait. Waiting would hold a worker as long as the
- * check it waits on, which is what the claim is there to stop: a burst of
- * handshakes naming a domain no check has yet recorded -- none ever has,
- * or the last is over a minute old -- each ran a full one. Refused, Caddy
- * fails that one handshake, and the client's next is answered from the
- * check that was under way. Under the claim the record is read again, so
- * an ask that read it just before another's check was recorded is
- * answered from that check rather than making a second. The claim is let
- * go when the check ends, however it ends; a worker killed in the middle
- * of one leaves the domain refused until the claim's window does, at most
- * CHECK_WINDOW seconds. Windows are the store's, aligned to the clock, so
- * a check under way as one ends can be joined by one more: two at once,
- * never a stream.
+ * shares. A burst of handshakes naming a domain no check has recorded in
+ * the last minute otherwise ran a full check each. An ask that finds the
+ * domain claimed makes no lookup of its own, and is never refused for the
+ * contention alone, which anyone opening handshakes could cause:
+ *
+ *   - A domain with a check on record is answered from it while the other
+ *     check runs, however old it is: allowed if it passed, refused if it
+ *     failed. A renewal is not lost to a burst of handshakes.
+ *   - A domain never checked waits for the check under way, a step at a
+ *     time and no longer than a check may take (the verifier's timeout),
+ *     and follows what it records; nothing recorded by then, it is
+ *     refused. A domain never verified is no worse off refused.
+ *   - A window the store counts as spent -- ApcuThrottleStore's, after a
+ *     wipe -- is no claim at all, and nobody's check: answered from the
+ *     record as above, and a domain never checked refused without the
+ *     wait, since no check under way will record anything.
+ *
+ * Under the claim the record is read again, so an ask that read it just
+ * before another's check was recorded is answered from that check rather
+ * than making a second. The claim is let go when the check ends, however
+ * it ends -- its own hit taken back, and only while the window it was
+ * counted in is still the store's current one, with a second to spare, so
+ * a check that outlasts its window never takes back a hit from the next,
+ * where another ask may hold the claim. A worker killed in the middle of a
+ * check leaves the claim to its window, CHECK_WINDOW seconds at most.
+ * Windows are the store's, aligned to the clock, so a check under way as
+ * one ends can be joined by one more: two at once, never a stream.
  *
  * The Kernel counts it under the route `_tls_ask`, never by the domain: a
  * name chosen by whoever opens a TLS connection is not a label. The access
@@ -129,11 +143,21 @@ final readonly class TlsAskEndpoint
     /** What a domain is claimed under in the ThrottleStore: its own prefix, beside the throttles' buckets. */
     public const string CLAIM = 'tls-ask:';
 
+    /** Seconds between two reads of the records, for an ask waiting on another's check. */
+    public const float WAIT_STEP = 0.1;
+
+    /** Seconds a claim's window must still have to run for its hit to be taken back. */
+    private const int RELEASE_MARGIN = 1;
+
+    /** @var \Closure(float): void */
+    private \Closure $sleep;
+
     /**
      * @param ThrottleStore $claims where a domain is claimed for its one check at a time:
      *        the store the application's throttles count in, shared by every worker
      *        and server that answers the ask -- never one per worker, which would
      *        claim nothing another worker can see
+     * @param (\Closure(float): void)|null $sleep waits so many seconds; usleep() unless given
      */
     public function __construct(
         private Realms $realms,
@@ -141,7 +165,12 @@ final readonly class TlsAskEndpoint
         private CustomDomainVerification $verification,
         private ThrottleStore $claims,
         private ProbeAccess $access = new ProbeAccess(),
-    ) {}
+        ?\Closure $sleep = null,
+    ) {
+        $this->sleep = $sleep ?? static function (float $seconds): void {
+            usleep((int) ($seconds * 1_000_000));
+        };
+    }
 
     public function matches(Request $request): bool
     {
@@ -184,12 +213,12 @@ final readonly class TlsAskEndpoint
             return $recent;
         }
 
-        // One check at a time: another's under way, this one is refused
-        // rather than made to wait or to look the domain up as well.
+        // One check at a time. Claimed elsewhere, this ask looks nothing up
+        // and is answered from the record; see the class comment.
         $claim = self::CLAIM . $host;
-        [$claimed] = $this->claims->increment($claim, self::CHECK_WINDOW);
-        if ($claimed !== 1) {
-            return false;
+        [$count, $resetsAt] = $this->claims->increment($claim, self::CHECK_WINDOW);
+        if ($count !== 1) {
+            return $this->fromRecord($host, $record, wait: $count < ApcuThrottleStore::LOST);
         }
 
         try {
@@ -201,8 +230,43 @@ final readonly class TlsAskEndpoint
 
             return $this->recent($record) ?? $this->verification->verify($record) === DomainStatus::Verified;
         } finally {
-            $this->claims->release($claim, self::CHECK_WINDOW, PHP_INT_MAX);
+            // This ask's own hit, from the window it was counted in and no
+            // other: the store takes back from whichever window is current.
+            if ($this->verification->now()->getTimestamp() < $resetsAt - self::RELEASE_MARGIN) {
+                $this->claims->release($claim, self::CHECK_WINDOW);
+            }
         }
+    }
+
+    /**
+     * The answer while another ask's check of the domain is under way, or
+     * while the store has no claim to give: the last check on record --
+     * allowed if it passed, refused if it failed -- and for a domain never
+     * checked, what the check under way records, waited for no longer than
+     * a check may take. Nothing recorded by then, or no check to wait for,
+     * is refused.
+     */
+    private function fromRecord(string $host, CustomDomain $record, bool $wait): bool
+    {
+        if ($record->checkedAt !== null) {
+            return $record->failingSince === null;
+        }
+        if (!$wait) {
+            return false;
+        }
+
+        for ($waited = 0.0; $waited < $this->verification->timeout(); $waited += self::WAIT_STEP) {
+            ($this->sleep)(self::WAIT_STEP);
+            $record = $this->held($host);
+            if ($record === null) {
+                return false;
+            }
+            if ($record->checkedAt !== null) {
+                return $record->failingSince === null;
+            }
+        }
+
+        return false;
     }
 
     /**
