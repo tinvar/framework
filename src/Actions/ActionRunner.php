@@ -156,12 +156,11 @@ final class ActionRunner
         //    cache was never touched, so a #[Query(cache: '5m')] kept serving
         //    the pre-write answer for the rest of its TTL. With the tenant
         //    tree, so a write made as a child reaches its parents' reads
-        //    across the subtree it is part of.
-        //    In each tenant it ran as, the one it was called in first.
+        //    across the subtree it is part of. In each tenant it ran as, the
+        //    one it was called in first. Now, and again once the writes
+        //    commit (forgetCached()).
         if ($this->cache !== null && $result->revalidatedTags !== []) {
-            foreach ($tenants as $tenant) {
-                $this->cache->forgetTags($result->revalidatedTags, $tenant, $this->orm->tenants());
-            }
+            $this->forgetCached($this->cache, $result->revalidatedTags, $tenants);
         }
 
         //    And the clients holding pages that read them -- in other tabs,
@@ -195,6 +194,50 @@ final class ActionRunner
         //    leave, in every environment -- an action's value and flash were
         //    reaching the browser unchecked.
         return $result->encoded($this->encoder);
+    }
+
+    /**
+     * Forgets the tags in the query cache: at once, and -- when the action
+     * ran inside a transaction -- again after the outermost one commits.
+     *
+     * At once, for what reads inside the transaction and sees its writes: a
+     * re-render made there must not be handed an entry from before them.
+     * After the commit, because a store shared between workers (ApcuStore,
+     * PdoStore) is read by requests the transaction does not cover: one can
+     * miss between the forget and the commit, read the rows as they were --
+     * the writes are not visible to it yet -- and keep that answer for its
+     * whole TTL. The second forget drops it. With no transaction open the
+     * writes are in already, and the one forget is enough. A rollback
+     * forgets nothing more: nothing changed.
+     *
+     * A failure at once is the action's, as it always was. After a commit
+     * it is logged, as a static page that could not be taken down is:
+     * thrown there, it would make transaction() throw for writes that are
+     * in, and a caller that retries would write them twice.
+     *
+     * @param list<string> $tags
+     * @param list<string> $tenants every tenant the action ran as
+     */
+    private function forgetCached(QueryCache $cache, array $tags, array $tenants): void
+    {
+        $tree = $this->orm->tenants();
+        $forget = static function () use ($cache, $tags, $tenants, $tree): void {
+            foreach ($tenants as $tenant) {
+                $cache->forgetTags($tags, $tenant, $tree);
+            }
+        };
+
+        $forget();
+
+        if ($this->orm->connection()->inTransaction()) {
+            $this->orm->afterCommit(static function () use ($forget): void {
+                try {
+                    $forget();
+                } catch (\Throwable $e) {
+                    error_log('[tinvar] cached queries could not be invalidated after a commit: ' . $e->getMessage());
+                }
+            });
+        }
     }
 
     /**
