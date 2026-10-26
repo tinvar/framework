@@ -33,6 +33,10 @@ interface FlashStore
      * The request's session's flash, removed as it is read; [] when it has
      * none, or when it has waited longer than Flash::LIFETIME.
      *
+     * Asked whenever a document load carries Flash::COOKIE, which anyone can
+     * send with every page view: with nothing waiting it must write nothing
+     * -- on SQLite, a DELETE that matches no row still takes the write lock.
+     *
      * @return array<string, mixed>
      */
     public function pull(Request $request): array;

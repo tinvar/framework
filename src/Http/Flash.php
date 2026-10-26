@@ -12,7 +12,8 @@ namespace Tinvar\Http;
  * ask the store whether its session had one -- a database read on every
  * request, for something almost none of them have. So the redirect that
  * writes a flash also sets COOKIE, and only a request carrying it asks. The
- * cookie carries nothing but its presence: forged, it costs one empty read.
+ * cookie carries nothing but its presence: forged, it costs one empty read,
+ * and a store must keep it to that (FlashStore::pull()).
  */
 final class Flash
 {
