@@ -23,10 +23,23 @@
 		php_ini upload_max_filesize 10M
 		php_ini post_max_size 11M
 	}
+
+	# The Host check below goes ahead of everything, the hub and the dev
+	# server's modules included.
+	order respond first
 }
 
 http://:{$TINVAR_PORT} {
 	bind {$TINVAR_HOST}
+
+	# Only a request naming this machine. Dev listens on loopback, and a page
+	# that points a name of its own at 127.0.0.1 -- DNS rebinding -- reaches
+	# it same-origin from its visitor's machine, to read the pages, the raw
+	# errors dev shows, and the source the dev server serves. What it cannot
+	# change is the Host its requests name: an address, localhost, or a name
+	# under .localhost, which a browser resolves to loopback itself.
+	@foreignhost not host localhost 127.0.0.1 ::1 [::1] *.localhost *.*.localhost
+	respond @foreignhost "Misdirected Request" 421
 
 	# The live hub, as an app's own Caddyfile runs it (Tinvar\Live, ADR
 	# 0030): FrankenPHP's built-in Mercure, which the front controller

@@ -196,6 +196,12 @@ it('serves the shop from source, and shows an edited component without a reload'
             [$status, $headers, $body] = fetch("{$url}/sign-in", ['Accept: text/html']);
             [$clientStatus, $clientHeaders] = fetch("{$url}/_vite/@vite/client");
             [$missing, , $missingBody] = fetch("{$url}/no-such-shelf", ['Accept: text/html']);
+            // A page that points a name of its own at loopback -- DNS
+            // rebinding -- names that name, and is refused before anything.
+            $port = (string) parse_url($url, PHP_URL_PORT);
+            [$rebound] = fetch("{$url}/sign-in", ['Accept: text/html', "Host: rebound.attacker.example:{$port}"]);
+            [$reboundModule] = fetch("{$url}/_vite/@vite/client", ["Host: rebound.attacker.example:{$port}"]);
+            [$named] = fetch("{$url}/sign-in", ['Accept: text/html', "Host: shop.localhost:{$port}"]);
             $output = runWithTimeout(['node', "{$root}/examples/shop/e2e/dev-hmr.mjs", $url, $copy], $root, 150);
             // Live updates through the dev Caddyfile's hub, as from a build.
             $live = runWithTimeout(
@@ -223,6 +229,11 @@ it('serves the shop from source, and shows an edited component without a reload'
         // The error pages render in dev as anywhere.
         expect($missing)->toBe(404)
             ->and($missingBody)->toContain('Nothing lives at this address');
+
+        // Answered only to a request naming this machine.
+        expect($rebound)->toBe(421)
+            ->and($reboundModule)->toBe(421)
+            ->and($named)->toBe(200);
 
         $result = json_decode($output, true);
         expect($result)->toBeArray("the browser script failed:\n{$output}");

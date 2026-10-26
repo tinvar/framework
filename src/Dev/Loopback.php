@@ -29,6 +29,9 @@ final class Loopback
     /** A Host header that names this machine: an address or `localhost`, with any port. */
     private const string HOST = '/^(?:127\.0\.0\.1|localhost|\[::1\])(?::[0-9]{1,5})?\z/i';
 
+    /** And a name under `.localhost` too, as dev serves a second host on (`admin.localhost`). */
+    private const string NAME = '/^(?:127\.0\.0\.1|\[::1\]|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*localhost)(?::[0-9]{1,5})?\z/i';
+
     public static function address(?string $address): bool
     {
         return $address !== null && \in_array(strtolower($address), self::ADDRESSES, true);
@@ -37,6 +40,16 @@ final class Loopback
     public static function host(?string $host): bool
     {
         return $host !== null && preg_match(self::HOST, $host) === 1;
+    }
+
+    /**
+     * Whether a Host header names this machine by any of its names: an
+     * address, `localhost`, or a name under it, which a browser resolves to
+     * loopback itself (RFC 6761) -- so no page elsewhere can rebind one.
+     */
+    public static function name(?string $host): bool
+    {
+        return $host !== null && preg_match(self::NAME, $host) === 1;
     }
 
     /** From loopback, naming loopback; a request with no Host header names nothing, and is refused. */

@@ -167,6 +167,26 @@ it('carries the overlay on the shell when the failure has no error page of its o
         ->and($response->body())->toContain('<script nonce="' . $nonce . '">');
 });
 
+// Dev listens on loopback, and a page that points a name of its own at
+// 127.0.0.1 -- DNS rebinding -- reaches it from its visitor's machine, same
+// origin. What it cannot change is the Host its requests name, which the
+// overlay -- the raw failure, its files and its stack -- now asks about.
+it('lays the overlay over a page only for a request that names this machine', function (string $host, bool $shown) {
+    $request = new Request('GET', '/broken', ['accept' => 'text/html', 'host' => $host], remoteAddress: '127.0.0.1');
+    $body = kernel(dev: true)->handle($request, respond())->body();
+
+    expect(str_contains($body, 'id="' . DevOverlay::ID . '"'))->toBe($shown)
+        ->and(str_contains($body, 'SKU-14'))->toBe($shown)
+        ->and(str_contains($body, __FILE__))->toBe($shown)
+        ->and($body)->toContain('<main>errors/page</main>');
+})->with([
+    'localhost' => ['localhost:8000', true],
+    'an address' => ['127.0.0.1:8000', true],
+    'a name under localhost' => ['admin.localhost:8000', true],
+    'a rebound name' => ['rebound.attacker.example:8000', false],
+    'a name ending like localhost' => ['evil-localhost:8000', false],
+]);
+
 it('lays nothing over an answer: a 404 is not a bug', function () {
     $body = kernel(dev: true)->handle(document('/nowhere'), respond())->body();
 

@@ -1274,7 +1274,12 @@ final class Kernel
     /** @param \Closure(LoadedRoute, Request): Response $respond */
     private function drawErrorPage(Request $request, Response $response, \Closure $respond, ?\Throwable $failure): Response
     {
-        $overlaid = $this->dev && $failure !== null && DevOverlay::shows($failure);
+        // Dev listens on loopback, and a page that points a name of its own
+        // at 127.0.0.1 -- DNS rebinding -- reaches it same-origin from its
+        // visitor's machine: the raw failure goes only to a request naming
+        // this machine, or naming nothing, as a client on it may.
+        $host = $request->header('host');
+        $overlaid = $this->dev && $failure !== null && DevOverlay::shows($failure) && ($host === null || Loopback::name($host));
         $chain = $this->routes->errorChain($response->status);
         if ($chain === null && !$overlaid) {
             return $response;
