@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Queue;
 
+use Tinvar\Jobs\JobRunner;
 use Tinvar\Orm\Connection;
 
 /**
@@ -11,19 +12,24 @@ use Tinvar\Orm\Connection;
  * tests and for local work where no worker runs.
  *
  * The job still goes through the runner -- its payload sealed and verified,
- * its tenant, panel and user entered, the request state reset after it --
- * so a job that passes here passes the checks a worker makes. What it does
- * not do is retry: a failure is thrown to whoever dispatched it, after the
+ * its tenant, panel and user entered, and each put back after it -- so a
+ * job that passes here passes the checks a worker makes. What it does not
+ * do is retry: a failure is thrown to whoever dispatched it, after the
  * commit it waited for.
+ *
+ * Nor does it run the reset contract, as a worker does after each job: the
+ * job runs inside the request that dispatched it, and that request goes on
+ * after it. Run through Worker::process(), as this once took, the reset
+ * ended the request where it stood, and the rest of it ran as no tenant
+ * and nobody.
  */
 final readonly class SyncQueue implements Queue
 {
-    /** @param \Closure(ReservedJob): void $run runs one job; see Worker::process() */
-    public function __construct(private \Closure $run) {}
+    public function __construct(private JobRunner $runner) {}
 
     public function push(PendingJob $job): void
     {
-        ($this->run)(new ReservedJob($job->id, $job->queue, $job->payload, 1, 'sync'));
+        $this->runner->run($this->runner->open($job->payload));
     }
 
     public function reserve(array $queues, int $now, int $reserveFor): ?ReservedJob

@@ -31,6 +31,7 @@ use Tinvar\Queue\SyncQueue;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\RecordContext;
 use Tinvar\Tests\Jobs\Fixtures\Sleeps;
+use Tinvar\Tests\Jobs\Fixtures\User;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 
 use function Tinvar\Tests\Jobs\Fixtures\databaseQueue;
@@ -127,38 +128,54 @@ it('drops what a nested transaction dispatched when it rolls back, and keeps the
     expect(array_column($h->journal()->entries, 'note'))->toBe(['outer', 'inner, kept']);
 });
 
+/** A harness whose jobs run as they are dispatched, through its own runner. */
+function syncHarness(): Harness
+{
+    $h = new Harness();
+    $h->queue = new SyncQueue($h->runner);
+    $h->dispatcher = new Dispatcher($h->queue, $h->orm, $h->signer, $h->auth, $h->panels, $h->registry);
+
+    return $h;
+}
+
 it('runs a sync job after the commit it waited for, through the same checks a worker makes', function () {
-    $order = [];
-    $h = null;
-    $queue = new SyncQueue(static function ($job) use (&$h, &$order): void {
-        \assert($h instanceof Harness);
-        $order[] = 'ran';
-        $h->runner->run($h->runner->open($job->payload));
-    });
-    $h = new Harness($queue);
+    $h = syncHarness();
+    $ran = [];
 
-    $h->orm->actAs('acme', function () use ($h, &$order): void {
-        $h->orm->transaction(function () use ($h, &$order): void {
+    $h->orm->actAs('acme', function () use ($h, &$ran): void {
+        $h->orm->transaction(function () use ($h, &$ran): void {
             $h->dispatcher->dispatch(new RecordContext(note: 'sync'));
-            $order[] = 'dispatched';
+            $ran['dispatched'] = \count($h->journal()->entries);
         });
+        $ran['committed'] = \count($h->journal()->entries);
     });
-    $order[] = 'committed';
 
-    expect($order)->toBe(['dispatched', 'ran', 'committed'])
+    expect($ran)->toBe(['dispatched' => 0, 'committed' => 1])
         ->and($h->journal()->entries[0]['tenant'])->toBe('acme');
+});
+
+// The request a sync job runs inside goes on after it. Run through
+// Worker::process(), as SyncQueue once took, the reset after the job ended
+// that request where it stood: the rest of it ran as no tenant and nobody.
+it('runs a sync job inside the request that dispatched it, and leaves the request as it was', function () {
+    $h = syncHarness();
+    $h->users->epochs['u1'] = 'e1';
+
+    $after = $h->orm->actAs('acme', fn (): array => $h->auth->actingAs(new User('u1'), function () use ($h): array {
+        $h->dispatcher->dispatch(new RecordContext(note: 'sync'));
+
+        return [$h->orm->tenant(), $h->auth->id()];
+    }, 'e1'));
+
+    expect($h->journal()->entries[0]['tenant'])->toBe('acme')
+        ->and($after)->toBe(['acme', 'u1']);
 });
 
 // ADR 0047: a job is never granted the subtree, whoever dispatched it. A
 // sync job runs inside the request that dispatched it, and inherited the
 // grant that request's panel made -- withinSubtree() worked in it.
 it('runs a sync job without the subtree its dispatching request was granted', function () {
-    $h = null;
-    $queue = new SyncQueue(static function ($job) use (&$h): void {
-        \assert($h instanceof Harness);
-        $h->runner->run($h->runner->open($job->payload));
-    });
-    $h = new Harness($queue);
+    $h = syncHarness();
 
     $kept = $h->orm->actAs('acme', fn (): bool => $h->orm->grantSubtree(function () use ($h): bool {
         $h->dispatcher->dispatch(new RecordContext(note: 'sync'));
@@ -172,12 +189,7 @@ it('runs a sync job without the subtree its dispatching request was granted', fu
 });
 
 it('runs a sync job without the subtree from inside a fiber of a granted request', function () {
-    $h = null;
-    $queue = new SyncQueue(static function ($job) use (&$h): void {
-        \assert($h instanceof Harness);
-        $h->runner->run($h->runner->open($job->payload));
-    });
-    $h = new Harness($queue);
+    $h = syncHarness();
 
     $h->orm->actAs('acme', fn () => $h->orm->grantSubtree(function () use ($h): void {
         $fiber = new \Fiber(fn () => $h->dispatcher->dispatch(new RecordContext(note: 'sync, in a fiber')));
