@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Tinvar\Support;
 
 /**
- * What stands in for a query's or an action's body: a test's fakes
- * (Tinvar\Testing\Fakes\BodyFakes), and nothing else.
+ * What stands in for a query's or an action's body: a test's fakes (the
+ * testing layer's BodyFakes), and nothing else.
  *
  * tinvar-spec.md, "Fakes": "`Query::fake(RackStats::class, fn () => ...)`
  * and `Action::fake(...)` isolate a page from its data." From its data, and

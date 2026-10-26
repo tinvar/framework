@@ -42,7 +42,7 @@ final class Names
         'parent', 'print', 'private', 'protected', 'public', 'readonly', 'require', 'require_once', 'resource',
         'return', 'self', 'static', 'string', 'switch', 'throw', 'trait', 'true', 'try', 'unset', 'use', 'var',
         'void', 'while', 'xor', 'yield',
-        // TypeScript, as Tinvar\Codegen\TypeScriptGenerator refuses them.
+        // TypeScript, as codegen's TypeScriptGenerator refuses them.
         'arguments', 'await', 'debugger', 'delete', 'export', 'import', 'in', 'let', 'package', 'super', 'this',
         'typeof', 'with',
     ];

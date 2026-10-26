@@ -174,9 +174,9 @@ final class IdentityMap
 
     /**
      * Every row held, in every tenant: what a request read, for the testing
-     * layer's model-leak check (Tinvar\Testing\ModelLeaks), which looks for
-     * their columns in what the render sent. Ghosts a relation registered and
-     * nothing loaded are among them; the caller tells them apart.
+     * layer's model-leak check, which looks for their columns in what the
+     * render sent. Ghosts a relation registered and nothing loaded are among
+     * them; the caller tells them apart.
      *
      * @return list<object>
      */

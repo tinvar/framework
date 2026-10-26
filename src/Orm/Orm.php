@@ -162,11 +162,11 @@ final class Orm
     /**
      * Turns on or off the record of every model a read fills, which
      * readsRecorded() answers with: for the testing layer's model-leak
-     * check (Tinvar\Testing\ModelLeaks), which looks for what a request
-     * read in what it sent. The identity map is not that record: reads
-     * across tenants or a subtree never enter it, and leaving
-     * acrossTenants() empties it, so a page reading there was not checked
-     * at all. Off unless a test turns it on; flush() empties it.
+     * check, which looks for what a request read in what it sent. The
+     * identity map is not that record: reads across tenants or a subtree
+     * never enter it, and leaving acrossTenants() empties it, so a page
+     * reading there was not checked at all. Off unless a test turns it on;
+     * flush() empties it.
      */
     public function recordReads(bool $on): void
     {
@@ -225,9 +225,10 @@ final class Orm
     /**
      * Reset at every request, job and tenant boundary.
      *
-     * This is the ORM's half of the reset contract (Http\RequestScope), and
-     * the spec's clause starts with the tenant: "Tenant, auth, panel, identity
-     * map and #[Scoped] services reset at the end of each request and job."
+     * This is the ORM's half of the reset contract the request scope keeps,
+     * and the spec's clause starts with the tenant: "Tenant, auth, panel,
+     * identity map and #[Scoped] services reset at the end of each request
+     * and job."
      * It used to clear the caches and leave the CONTEXT -- tenant, unscoped
      * depth, read-only depth -- exactly as the last request left it. actAs()
      * restores in a finally so the usual path was safe, but switchTenant() is
@@ -1434,11 +1435,10 @@ final class Orm
      * no transaction() open, after the outermost one commits otherwise, and
      * never if it rolls back.
      *
-     * For what tells someone else about a write -- a live invalidation (see
-     * Tinvar\Live\Invalidator), a job, a mail. Told before the commit, they
-     * ask for the data and read it as it was, or are told of a write that
-     * is then rolled back; either way what they hold is wrong and nothing
-     * corrects it.
+     * For what tells someone else about a write -- a live invalidation, a
+     * job, a mail. Told before the commit, they ask for the data and read it
+     * as it was, or are told of a write that is then rolled back; either way
+     * what they hold is wrong and nothing corrects it.
      *
      * Only transactions opened here are seen. One begun on the connection
      * around this class commits when its caller says, which nothing here
