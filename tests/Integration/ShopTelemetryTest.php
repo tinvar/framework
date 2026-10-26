@@ -6,7 +6,8 @@ declare(strict_types=1);
  * The shop's telemetry (ADR 0041), against the real renderer pool: JSON log
  * lines in a file, filed under the id the response carries; /_health,
  * /_ready and /_metrics answered to loopback with no session issued; the
- * pool's renderers and the queues in the metrics.
+ * pool's renderers and the queues in the metrics; and a page's own vitals
+ * report, taken at /_vitals.
  *
  * Skipped when the shop cannot be built.
  */
@@ -148,4 +149,45 @@ it('takes a test\'s telemetry, and logs to it under the id the response carries'
     $access = array_values(array_filter($sink->records(), static fn (array $r): bool => $r['message'] === 'request'));
     expect($access)->toHaveCount(1)
         ->and($access[0])->toMatchArray(['route' => 'shop.catalog', 'status' => 200, 'request_id' => $response->header('x-request-id')]);
+});
+
+// What the client entry's reporter does as a page is left: the route name
+// from the page's route token, the CSRF token from its cookie, and the
+// vitals as a histogram filed under that route.
+it('takes a vitals report from a page it served, under the route its token names', function () {
+    $renderer = Renderer::start('msgpack', 'telemetry-vitals');
+    $metrics = new Metrics();
+    try {
+        $kernel = Kernel::fromEnvironment(
+            $renderer->socketPath,
+            key: KEY,
+            database: Shop::database(customers: 17),
+            telemetry: new Telemetry(new Logger(new MemorySink()), $metrics),
+        );
+
+        $page = $kernel->handle(from('/'));
+        $cookies = [];
+        foreach ($page->cookies() as $name => $line) {
+            $cookies[$name] = explode(';', substr($line, \strlen($name) + 1))[0];
+        }
+        $claims = json_decode((string) base64_decode(strtr(explode('.', (string) $page->header('x-route-token'))[1] ?? '', '-_', '+/')), true);
+        $csrf = $cookies['__Host-XSRF-TOKEN'] ?? '';
+        $body = json_encode(['route' => $claims['r'] ?? null, 'metrics' => ['LCP' => 1840.5, 'CLS' => 0.02, 'TTFB' => 95]], JSON_THROW_ON_ERROR);
+
+        $report = $kernel->handle(new Request(
+            'POST',
+            '/_vitals',
+            ['content-type' => 'application/json', 'x-xsrf-token' => $csrf],
+            cookies: $cookies,
+            remoteAddress: '127.0.0.1',
+        ), $body);
+    } finally {
+        $renderer->stop();
+    }
+
+    expect($claims['r'] ?? null)->toBe('shop.catalog')
+        ->and($report->status)->toBe(204)
+        ->and($report->cookies())->toBe([])
+        ->and($metrics->exposition())->toContain('tinvar_web_vitals_seconds_count{route="shop.catalog",metric="LCP"} 1')
+        ->and($metrics->exposition())->toContain('tinvar_web_vitals_score_count{route="shop.catalog",metric="CLS"} 1');
 });
