@@ -515,3 +515,46 @@ it('does not fail a send the server accepted, whatever it answers QUIT with', fu
     expect($thrown)->toBeNull()
         ->and($conversation)->toContain("QUIT\r\n");
 });
+
+// The timeout bounded each read, not the reply: a server -- or whoever sits
+// on the path before STARTTLS -- sending a byte just inside it, and never
+// the end of the line, held the send for as long as it liked, and a job's
+// alarm with it, past the reservation that keeps another worker off it.
+it('gives a reply its timeout as a whole, however it trickles in', function () {
+    if (!\function_exists('pcntl_fork')) {
+        test()->markTestSkipped('pcntl is not available.');
+    }
+
+    $server = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
+    \assert($server !== false);
+    $port = (int) substr((string) strrchr((string) stream_socket_get_name($server, false), ':'), 1);
+    $pid = pcntl_fork();
+    if ($pid === 0) {
+        $client = stream_socket_accept($server, 5);
+        if ($client !== false) {
+            for ($i = 0; $i < 100; $i++) {
+                if (@fwrite($client, '2') === false) {
+                    break;
+                }
+                usleep(200_000);
+            }
+        }
+        leave();
+    }
+    fclose($server);
+
+    $transport = new SmtpTransport('127.0.0.1', $port, encryption: SmtpTransport::NONE, timeout: 1);
+    $started = microtime(true);
+    try {
+        $transport->send(message());
+        $thrown = null;
+    } catch (MailTransportException $e) {
+        $thrown = $e->getMessage();
+    } finally {
+        posix_kill($pid, SIGKILL);
+        pcntl_waitpid($pid, $status);
+    }
+
+    expect($thrown)->toContain('did not answer within 1s')
+        ->and(microtime(true) - $started)->toBeLessThan(2.5);
+});

@@ -21,6 +21,9 @@ final readonly class SmtpTransport implements Transport
     public const string STARTTLS = 'starttls';
     public const string TLS = 'tls';
 
+    /** The longest reply line read as one; RFC 5321 allows 512 bytes. */
+    private const int LONGEST_LINE = 4096;
+
     public function __construct(
         private string $host,
         private int $port = 587,
@@ -162,20 +165,39 @@ final readonly class SmtpTransport implements Transport
     /**
      * Reads one reply, every line of it, and refuses a code not in $accepted.
      *
+     * Within the timeout as a whole, not per read. fgets() waits up to the
+     * timeout for each read and goes on until the line ends, so a server --
+     * or whoever sits on the path before STARTTLS -- sending a byte just
+     * inside it, and never the end of the line, held the send as long as it
+     * liked; and inside fgets() a job's alarm (Queue\Worker) waited too, so
+     * the job ran on past the reservation that keeps another worker off it.
+     * Read a byte at a time instead, each read given what is left: PHP is
+     * back between bytes, to see the deadline and run a pending signal. A
+     * reply is a few lines, and the stream buffers what has arrived.
+     *
      * @param resource  $socket
      * @param list<int> $accepted
      * @return list<string>
      */
     private function expect($socket, array $accepted, string $after = 'connecting'): array
     {
+        $deadline = microtime(true) + $this->timeout;
         $lines = [];
         do {
-            $line = fgets($socket, 4096);
-            if ($line === false) {
-                $timedOut = stream_get_meta_data($socket)['timed_out'];
-                throw new MailTransportException($timedOut
-                    ? "The SMTP server did not answer within {$this->timeout}s, after {$after}."
-                    : "The SMTP connection closed, after {$after}.");
+            $line = '';
+            while (!str_ends_with($line, "\n") && \strlen($line) < self::LONGEST_LINE) {
+                $left = $deadline - microtime(true);
+                if ($left <= 0) {
+                    throw $this->unanswered($after);
+                }
+                stream_set_timeout($socket, (int) $left, (int) (($left - floor($left)) * 1_000_000));
+                $byte = fread($socket, 1);
+                if ($byte === false || $byte === '') {
+                    throw stream_get_meta_data($socket)['timed_out']
+                        ? $this->unanswered($after)
+                        : new MailTransportException("The SMTP connection closed, after {$after}.");
+                }
+                $line .= $byte;
             }
             $line = rtrim($line, "\r\n");
             $lines[] = $line;
@@ -187,5 +209,10 @@ final readonly class SmtpTransport implements Transport
         }
 
         return $lines;
+    }
+
+    private function unanswered(string $after): MailTransportException
+    {
+        return new MailTransportException("The SMTP server did not answer within {$this->timeout}s, after {$after}.");
     }
 }
