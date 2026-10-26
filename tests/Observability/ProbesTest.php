@@ -145,20 +145,45 @@ describe('who may ask', function () {
 
     // DNS rebinding on an internal network: a page's own name pointed at
     // this server's address there reaches the probes from its visitor's
-    // address on that network, naming its domain. The browser says it is
-    // one, which a probe or a scraper never does.
-    it('refuses a browser on a network it is given, and lets in its probes', function (string $header, string $value) {
+    // address on that network, naming its domain -- over plain http, with
+    // no Fetch Metadata at all. A peer there names this server by an
+    // address, which no page can rebind, or by a name it is listed as.
+    it('holds a peer on a network it is given to naming this server', function (?string $host, bool $allowed) {
+        $access = new ProbeAccess(['10.0.0.0/8', 'fd00::/8'], hosts: ['Shop.Default.svc.cluster.local.']);
+        $headers = $host === null ? [] : ['host' => $host];
+
+        expect($access->allows(probe('/_metrics', '10.1.2.3', $headers)))->toBe($allowed)
+            ->and($access->allows(probe('/_metrics', 'fd12::7', $headers)))->toBe($allowed);
+    })->with([
+        'a rebound name' => ['rebound.attacker.example:8080', false],
+        'a rebound name, no port' => ['rebound.attacker.example', false],
+        'loopback\'s name' => ['localhost:8080', false],
+        'an unlisted name' => ['shop.example.com', false],
+        'its address' => ['10.0.0.5:8080', true],
+        'its address, no port' => ['10.0.0.5', true],
+        'its IPv6 address' => ['[fd00::5]:8080', true],
+        'a listed name' => ['shop.default.svc.cluster.local:8080', true],
+        'no Host' => [null, true],
+    ]);
+
+    // And, a layer beside that, a browser that says it is one is no probe,
+    // whatever it names.
+    it('refuses a browser on a network it is given', function (string $header, string $value) {
         $access = new ProbeAccess(['10.0.0.0/8']);
 
-        expect($access->allows(probe('/_metrics', '10.1.2.3', ['host' => 'rebound.attacker.example:8080', $header => $value])))->toBeFalse()
-            ->and($access->allows(probe('/_ready', '10.1.2.3', ['host' => '10.0.0.5:8080', 'user-agent' => 'kube-probe/1.31'])))->toBeTrue()
-            ->and($access->allows(probe('/_metrics', '10.1.2.3', ['host' => 'shop.svc.cluster.local:8080', 'user-agent' => 'Prometheus/3.1.0'])))->toBeTrue();
+        expect($access->allows(probe('/_metrics', '10.1.2.3', ['host' => '10.0.0.5:8080', $header => $value])))->toBeFalse()
+            ->and($access->allows(probe('/_ready', '10.1.2.3', ['host' => '10.0.0.5:8080', 'user-agent' => 'kube-probe/1.31'])))->toBeTrue();
     })->with([
         ['sec-fetch-site', 'same-origin'],
         ['sec-fetch-mode', 'cors'],
         ['sec-fetch-dest', 'empty'],
-        ['origin', 'http://rebound.attacker.example:8080'],
+        ['origin', 'http://10.0.0.5:8080'],
     ]);
+
+    it('refuses a name for this server that is not one', function () {
+        expect(fn () => new ProbeAccess(['10.0.0.0/8'], hosts: ['not a host']))->toThrow(\InvalidArgumentException::class)
+            ->and(fn () => new ProbeAccess(['10.0.0.0/8'], hosts: ['10.0.0.5']))->toThrow(\InvalidArgumentException::class);
+    });
 
     // A proxy in front that keeps the loopback Host, or sits on an internal
     // network, still says what it is in the headers it adds.

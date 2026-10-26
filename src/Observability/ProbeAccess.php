@@ -6,6 +6,7 @@ namespace Tinvar\Observability;
 
 use Tinvar\Dev\Loopback;
 use Tinvar\Http\Request;
+use Tinvar\Tenancy\Host;
 
 /**
  * Who may read /_health, /_ready and /_metrics: "Internal network or
@@ -35,21 +36,32 @@ use Tinvar\Http\Request;
  *   the probes from its visitor's loopback address, but still names its own
  *   domain. A request with no Host header is a client on the machine
  *   itself.
- * - A peer elsewhere on a network it was given must not be a browser. A
- *   page can point a name of its own at this server's address on that
- *   network as well, and reach the probes from its visitor's address
- *   there; the Host it names is no different in kind from a scraper's name
- *   for this server, but the browser says what it is -- Fetch Metadata on
- *   every request, Origin on a cross-origin one -- and no probe or scraper
- *   sends either.
+ * - A peer elsewhere on a network it was given must name this server in
+ *   its Host as well: an address -- which no page can rebind, since a
+ *   browser fetching one connects to that address and no other -- or one
+ *   of the names listed as this server's (`hosts`), as a scraper may know
+ *   it by its service's name. A page can point a name of its own at this
+ *   server's address on that network too, and reach the probes from its
+ *   visitor's address there, naming its own domain; it is refused, and
+ *   needs the token like anyone else. A request with no Host header is no
+ *   browser's.
+ * - And, a layer beside that, it must not say it is a browser: a browser
+ *   sends Fetch Metadata with what it fetches from a secure origin, and
+ *   Origin with a cross-origin request, and no probe or scraper sends
+ *   either. Not on every request -- none of it over plain http to another
+ *   origin's name, which is how a rebinding page reaches a server -- so it
+ *   is never what lets a request in.
  */
 final class ProbeAccess
 {
     /** What a proxy adds to what it passes on: a request carrying one came through something in front. */
     private const array PROXY_HEADERS = ['forwarded', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'x-real-ip', 'via'];
 
-    /** What a browser sends with what it fetches, and a probe or a scraper never does. */
+    /** What a browser may send with what it fetches, and a probe or a scraper never does. */
     private const array BROWSER_HEADERS = ['sec-fetch-site', 'sec-fetch-mode', 'sec-fetch-dest', 'origin'];
+
+    /** @var list<string> the names this server goes by, normalized as Host reads them */
+    private readonly array $hosts;
 
     /** @var list<array{string, int}> each network as its packed address and prefix length */
     private readonly array $networks;
@@ -58,11 +70,14 @@ final class ProbeAccess
 
     /**
      * @param list<string> $networks CIDR blocks, as `10.0.0.0/8` or `fd00::/8`
+     * @param list<string> $hosts the names a peer on one of `networks` may know this
+     *        server by, as `shop.default.svc.cluster.local`; an address it may always use
      */
     public function __construct(
         array $networks = ['127.0.0.0/8', '::1/128'],
         #[\SensitiveParameter]
         ?string $token = null,
+        array $hosts = [],
     ) {
         $parsed = [];
         foreach ($networks as $network) {
@@ -74,6 +89,12 @@ final class ProbeAccess
             throw new \InvalidArgumentException('A probe token is 32 characters or more.');
         }
         $this->tokenHash = $token === null ? null : hash('sha256', $token, true);
+
+        $names = [];
+        foreach ($hosts as $name) {
+            $names[] = Host::normalize($name) ?? throw new \InvalidArgumentException("'{$name}' is not a host name.");
+        }
+        $this->hosts = $names;
     }
 
     public function allows(Request $request): bool
@@ -98,13 +119,14 @@ final class ProbeAccess
         }
 
         $host = $request->header('host');
-        if ($host !== null && self::loopback($address) && !Loopback::host($host)) {
-            return false;
-        }
-
-        // A browser on the machine itself is held to the Host rule above;
-        // one anywhere else, to saying it is one.
-        if (!self::loopback($address)) {
+        if (self::loopback($address)) {
+            if ($host !== null && !Loopback::host($host)) {
+                return false;
+            }
+        } else {
+            if ($host !== null && !$this->namesThisServer($host)) {
+                return false;
+            }
             foreach (self::BROWSER_HEADERS as $name) {
                 if ($request->header($name) !== null) {
                     return false;
@@ -119,6 +141,25 @@ final class ProbeAccess
         }
 
         return false;
+    }
+
+    /**
+     * Whether a peer elsewhere on a network names this server: by an
+     * address, with any port, or by a name it is listed as going by.
+     */
+    private function namesThisServer(string $host): bool
+    {
+        $host = trim($host);
+        if (preg_match('/^\[([0-9a-f:.]+)\](?::[0-9]{1,5})?\z/i', $host, $m) === 1) {
+            return filter_var($m[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false;
+        }
+        if (preg_match('/^([0-9.]+)(?::[0-9]{1,5})?\z/', $host, $m) === 1) {
+            return filter_var($m[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false;
+        }
+
+        $name = Host::normalize($host);
+
+        return $name !== null && \in_array($name, $this->hosts, true);
     }
 
     /** Whether a packed address is this machine's, by the same test the networks use. */
