@@ -23,6 +23,14 @@ final class Orm
     private ?BatchScheduler $scheduler = null;
 
     /**
+     * Where each lazy relation load is recorded, with whether it ran in a
+     * batch (LazyLoad) -- for the testing layer's
+     * assertNoLazyLoadsOutsideBatch(). Null unless a test turned it on, so a
+     * load in a request pays a null check for it and nothing more.
+     */
+    private ?LazyLoads $lazyLoads = null;
+
+    /**
      * What a rollback has to put back: one frame per open transaction(),
      * each a list of undo steps recorded before a write replaced what they
      * restore -- a model's snapshot, a loaded relation's items. A nested
@@ -186,6 +194,22 @@ final class Orm
     public function scheduler(): ?BatchScheduler
     {
         return $this->scheduler;
+    }
+
+    /**
+     * Records every lazy relation load from now on in $loads, or none with
+     * null: for a test, never a request. Kept across flush(), which is a
+     * request's reset, since a test records across its requests.
+     */
+    public function recordLazyLoads(?LazyLoads $loads): void
+    {
+        $this->lazyLoads = $loads;
+    }
+
+    /** Where lazy relation loads are being recorded, or null when they are not. */
+    public function lazyLoads(): ?LazyLoads
+    {
+        return $this->lazyLoads;
     }
 
     /** Installs a scheduler for the duration of one render, enabling Level 2. */
@@ -1162,8 +1186,9 @@ final class Orm
         // that already existed.
         // The object joins the result set it is settled into, so a
         // relation read on it afterwards has a batch to widen to
-        // rather than an empty set.
-        $set = new ResultSet();
+        // rather than an empty set -- a set of itself alone, since it
+        // was filled by itself, and a load for it is one parent's.
+        $set = new ResultSet(alone: true);
         $this->settle($object, $targetMeta, $row, $set);
         $set->add($object);
     }
@@ -1676,6 +1701,9 @@ final class Orm
      * touching a relation and then reading a #[HasMany] on what came back
      * answered [].
      *
+     * Just this model is a load for one parent alone, outside any batch --
+     * see batchOf(), which says which a load was for the record a test reads.
+     *
      * @return list<Model>
      */
     private function batchWith(Model $parent): array
@@ -1730,7 +1758,8 @@ final class Orm
         // instead; the batch has already had its chance to be cheap.
         //
         // This parent alone, not its result set: if the set is what came back
-        // empty, widening to it again would repeat the miss.
+        // empty, widening to it again would repeat the miss. A load outside
+        // any batch, and recorded as one (LazyLoad::ALONE).
         if (!$this->hasRows($key, $groupKey)) {
             $this->loadRelationRows($relation, [$parent], $key);
         }
@@ -1774,9 +1803,13 @@ final class Orm
      * empty collection for every relation.
      *
      * @param list<Model> $parents
+     * @param LazyLoad::RENDER|null $batch how the parents were chosen, when the caller
+     *        knows better than the parents can say: the scheduler, which hands in
+     *        every parent a tick awaited. Otherwise read from the parents (batchOf())
+     *        -- and only when a test records lazy loads.
      * @return array<string, list<array<string, mixed>>>
      */
-    public function loadRelationRows(RelationMeta $relation, array $parents, ?string $key = null): array
+    public function loadRelationRows(RelationMeta $relation, array $parents, ?string $key = null, ?string $batch = null): array
     {
         // The scheduler passes the key the awaiting fiber computed, because
         // the tenant it was namespaced under is the one being re-entered, not
@@ -1805,6 +1838,10 @@ final class Orm
         if ($groupKeys === []) {
             return [];
         }
+
+        // A statement is about to run: told to a test recording lazy loads,
+        // with whether it ran in a batch. Never evaluated otherwise.
+        $this->lazyLoads?->record(new LazyLoad($relation->key(), \count($parents), $batch ?? self::batchOf($parents)));
 
         $ids = array_keys($groupKeys);
         $targetMeta = Metadata::for($relation->target);
@@ -1842,6 +1879,34 @@ final class Orm
         }
 
         return $grouped;
+    }
+
+    /**
+     * Whether a Level 1 load handed $parents ran in a batch, for the record a
+     * test reads (LazyLoad).
+     *
+     * In a batch when it was for several parents -- batchWith()'s result set,
+     * or what of it had not loaded the relation -- or for one parent that is
+     * the whole of the result set it was hydrated in: a statement that
+     * returned one row, read by one load, is batched as far as it can be.
+     * Alone when it was for one parent that has no result set of rows to
+     * widen to -- a ghost, filled by itself, or a model whose set is empty
+     * or missing -- or that has siblings it was not loaded with:
+     * resolveHasMany()'s retry. Each is a statement per parent when it is
+     * read in a loop.
+     *
+     * @param list<Model> $parents
+     * @return LazyLoad::RESULT_SET|LazyLoad::ALONE
+     */
+    private static function batchOf(array $parents): string
+    {
+        if (\count($parents) !== 1) {
+            return LazyLoad::RESULT_SET;
+        }
+
+        $set = $parents[0]->resultSet();
+
+        return $set !== null && !$set->alone && $set->models === $parents ? LazyLoad::RESULT_SET : LazyLoad::ALONE;
     }
 
     public function hasRows(string $relationKey, string $groupKey): bool

@@ -84,12 +84,14 @@ final class BatchScheduler
                 // Back into the tenant that awaited, so the statement carries
                 // that fiber's scope and the rows are cached under its
                 // namespace. The key is passed in rather than recomputed, for
-                // the same reason.
+                // the same reason. A load in a batch, Level 2's, whoever its
+                // parents are -- for the record a test reads (LazyLoad).
                 $this->loadAs($group['tenant'], function () use ($group, $key): void {
                     $this->orm->loadRelationRows(
                         $group['relation'],
                         array_values($group['parents']),
                         $key,
+                        LazyLoad::RENDER,
                     );
                 });
             } catch (\Throwable) {

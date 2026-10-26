@@ -16,6 +16,15 @@ final class ResultSet
     /** @var list<Model> */
     public private(set) array $models = [];
 
+    /**
+     * @param bool $alone a set made for one model hydrated by itself -- a
+     *        #[BelongsTo] ghost filled from its row -- rather than the rows a
+     *        statement returned together. A relation read on its model loads
+     *        for that model alone, which the record a test reads says
+     *        (LazyLoad::ALONE).
+     */
+    public function __construct(public readonly bool $alone = false) {}
+
     public function add(Model $model): void
     {
         $this->models[] = $model;
