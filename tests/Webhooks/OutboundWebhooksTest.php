@@ -233,6 +233,36 @@ it('tries again with backoff, signed afresh under the same nonce, and records ea
         ->and($s->queue()->failed())->toBe([]);
 });
 
+// Every try goes under one nonce so that a receiver which handled a try
+// whose answer was lost refuses the next as a replay: a 409. Taken for a
+// failure, the tries went on until the receiver's window had passed, and
+// the next one was handled again.
+it('ends a delivery the receiver refuses as a replay: it has it already', function () {
+    $tries = 0;
+    $s = new Sender(static function () use (&$tries): OutboundResponse {
+        $tries++;
+        if ($tries === 1) {
+            throw new OutboundFailed(OutboundFailed::TIMEOUT, 'POST https://receiver.test:443 failed: Timeout was reached.', null, 10_000);
+        }
+
+        return new OutboundResponse(409, [], '', 8);
+    });
+    $id = $s->sendAsAcme();
+
+    foreach ([0, 30, 120, 600, 1800] as $wait) {
+        $s->h->now += $wait;
+        $s->work();
+    }
+
+    expect($tries)->toBe(2)
+        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->status, $a->reason], $s->log->attempts($id)))->toBe([
+            [DeliveryAttempt::FAILED, null, OutboundFailed::TIMEOUT],
+            [DeliveryAttempt::DELIVERED, 409, 'already_received'],
+        ])
+        ->and($s->queue()->size(DeliverWebhook::QUEUE))->toBe(0)
+        ->and($s->queue()->failed())->toBe([]);
+});
+
 it('ends a delivery the receiver answers 410, without trying again', function () {
     $s = new Sender(static fn (): OutboundResponse => new OutboundResponse(410));
     $id = $s->sendAsAcme();
