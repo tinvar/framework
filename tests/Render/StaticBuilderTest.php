@@ -75,6 +75,12 @@ namespace Tinvar\Tests\Render\StaticBuilder {
         };
     }
 
+    /** The manifest the renderer build gives these routes: the doc pages render a Toc. */
+    function docs(): FragmentManifest
+    {
+        return new FragmentManifest()->declareRoute('static.doc', ['Toc']);
+    }
+
     describe('the pages to build', function () {
         it('lists each #[StaticPage] route once per set of params', function () {
             expect(new StaticBuilder(routes(), static fn (): string => '')->pages())->toEqualCanonicalizing([
@@ -109,7 +115,7 @@ namespace Tinvar\Tests\Render\StaticBuilder {
             $out = scratch() . '/static';
             $requests = new \ArrayObject();
 
-            $built = new StaticBuilder(routes(), renderer($requests))->build($out, new FragmentManifest());
+            $built = new StaticBuilder(routes(), renderer($requests))->build($out, docs());
 
             expect($built)->toEqualCanonicalizing(['/home', '/docs/intro', '/docs/guide-2'])
                 ->and(file_get_contents("{$out}/home/index.html"))->toContain('page /home')
@@ -126,7 +132,7 @@ namespace Tinvar\Tests\Render\StaticBuilder {
         // will mint for it -- for the visitor's own session.
         it('records each boundary for /_bootstrap and puts a placeholder in the page', function () {
             $out = scratch() . '/static';
-            $manifest = new FragmentManifest();
+            $manifest = docs();
 
             new StaticBuilder(routes(), renderer(new \ArrayObject()))->build($out, $manifest);
 
@@ -145,7 +151,7 @@ namespace Tinvar\Tests\Render\StaticBuilder {
             mkdir("{$out}/gone", 0o755, true);
             file_put_contents("{$out}/gone/index.html", 'stale');
 
-            new StaticBuilder(routes(), renderer(new \ArrayObject()))->build($out, new FragmentManifest());
+            new StaticBuilder(routes(), renderer(new \ArrayObject()))->build($out, docs());
 
             expect(is_dir("{$out}/gone"))->toBeFalse()
                 ->and(glob(\dirname($out) . '/*'))->toBe([$out], 'nothing left beside it');
@@ -173,6 +179,20 @@ namespace Tinvar\Tests\Render\StaticBuilder {
 
             expect(fn () => new StaticBuilder(routes(), renderer(new \ArrayObject()))->build(scratch() . '/static', $manifest))
                 ->toThrow(\RuntimeException::class, 'not one this route renders');
+        });
+
+        // ADR 0009: a page with no deferred boundaries cannot be talked into
+        // minting. Read as "any component" for a route the renderer build
+        // found no boundary on, the build signed what the renderer asked and
+        // wrote the route into the manifest as one that may mint anything --
+        // for /_bootstrap, and for every dynamic render of it after.
+        it('refuses a boundary on a route the renderer build found none on', function () {
+            $manifest = new FragmentManifest()->declareRoute('static.home', ['Toc']);
+
+            expect(fn () => new StaticBuilder(routes(), renderer(new \ArrayObject()))->build(scratch() . '/static', $manifest))
+                ->toThrow(\RuntimeException::class, 'not one this route renders')
+                ->and($manifest->defersOn('static.doc'))->toBeFalse()
+                ->and($manifest->componentsFor('static.doc'))->toBeNull();
         });
     });
 

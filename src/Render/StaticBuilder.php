@@ -277,7 +277,13 @@ final class StaticBuilder
      */
     private function renderPage(array $page, FragmentManifest $manifest): array
     {
-        $minter = new StaticMinter($page['route'], $page['params'], $manifest->componentsFor($page['route']));
+        // The components the renderer build found the route's boundaries
+        // naming -- and none at all for a route it found no boundary on, as
+        // a page render of that route gets no minter (ADR 0009). Taken for
+        // "any", what the renderer asked was recorded, and the route went
+        // into the manifest as one whose renders may mint anything.
+        $components = $manifest->defersOn($page['route']) ? $manifest->componentsFor($page['route']) : [];
+        $minter = new StaticMinter($page['route'], $page['params'], $components);
         // No cookies, no address: a visitor the server has never met.
         $html = ($this->render)(new Request('GET', $page['path'], ['accept' => 'text/html']), $minter->closure());
 
