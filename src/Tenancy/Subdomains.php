@@ -37,11 +37,23 @@ final readonly class Subdomains implements TenantHosts
             $normalized[] = $host;
         }
 
+        // The most specific first. With one platform domain under another --
+        // `shop.test` and `eu.shop.test` -- `acme.eu.shop.test` is the inner
+        // domain's acme, whatever order they were listed in: tried against
+        // the outer first, its label was `acme.eu`, two labels, and nobody's.
+        usort($normalized, static fn (string $a, string $b): int => \strlen($b) <=> \strlen($a));
         $this->domains = $normalized;
     }
 
     public function tenantForHost(string $host): ?string
     {
+        // A platform domain is the platform's, even one that is a single
+        // label under another: `eu.shop.test` is not the tenant whose slug
+        // is `eu`.
+        if (\in_array($host, $this->domains, true)) {
+            return null;
+        }
+
         foreach ($this->domains as $domain) {
             $suffix = '.' . $domain;
             if (!str_ends_with($host, $suffix)) {

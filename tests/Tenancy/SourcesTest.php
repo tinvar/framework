@@ -119,6 +119,22 @@ describe('subdomains', function () {
             ->and($subdomains()->tenantForHost('acmeshop.test'))->toBeNull();
     });
 
+    // One platform domain under another: a host under the inner one is the
+    // inner one's, in whichever order they are listed, and the inner domain
+    // itself is the platform's -- never the tenant whose slug is its label.
+    it('reads a host against the most specific platform domain, and gives no platform domain to a tenant', function () {
+        $lookup = static fn (string $label): ?string => \in_array($label, ['acme', 'eu'], true) ? "tenant-{$label}" : null;
+
+        foreach ([['shop.test', 'eu.shop.test'], ['eu.shop.test', 'shop.test']] as $domains) {
+            $subdomains = new Subdomains($domains, $lookup);
+
+            expect($subdomains->tenantForHost('acme.eu.shop.test'))->toBe('tenant-acme')
+                ->and($subdomains->tenantForHost('acme.shop.test'))->toBe('tenant-acme')
+                ->and($subdomains->tenantForHost('eu.shop.test'))->toBeNull()
+                ->and($subdomains->tenantForHost('shop.test'))->toBeNull();
+        }
+    });
+
     it('refuses a platform domain that is not one', function () {
         expect(fn () => new Subdomains(['not a domain'], static fn (string $l): ?string => $l))
             ->toThrow(\InvalidArgumentException::class);
