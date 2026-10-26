@@ -24,6 +24,8 @@ final readonly class ActionResult
      *        name ('racks.show') or the view of named pages ('racks/show')
      * @param list<string>         $revalidatedTags   cache tags to invalidate
      * @param array<string, mixed> $flash             a side channel, kept out of the RSC tree
+     * @param bool                 $back              redirect to wherever the request came from; see back()
+     * @param string|null          $location          redirect off this origin; see location()
      */
     private function __construct(
         public int $status = 200,
@@ -32,15 +34,19 @@ final readonly class ActionResult
         public array $flash = [],
         public ?string $redirect = null,
         public mixed $value = null,
+        public bool $back = false,
+        public ?string $location = null,
     ) {
         // A redirect is answered with a 303 and no body, and there is no
         // session flash store to carry anything across it yet. A flash or a
         // value on one was dropped without a word -- the "Site archived"
         // message simply never appeared. Refused here, where every result is
         // built, until there is somewhere for it to go.
-        if ($redirect !== null && ($flash !== [] || $value !== null)) {
+        if ($this->isRedirect() && ($flash !== [] || $value !== null)) {
+            $where = $redirect !== null ? "to '{$redirect}'" : ($back ? 'back' : 'off this origin');
+
             throw new \LogicException(
-                "An ActionResult redirecting to '{$redirect}' cannot also carry a flash or a value: the "
+                "An ActionResult redirecting {$where} cannot also carry a flash or a value: the "
                 . 'redirect is answered with no body, and there is no session flash store to carry them '
                 . 'across it. Return ok() with the flash and let the client navigate, or redirect alone.',
             );
@@ -83,6 +89,35 @@ final readonly class ActionResult
         return new self(status: 303, redirect: $location);
     }
 
+    /**
+     * Back to the page the action was called from: the path and query its
+     * Referer names on this origin, or else the session's previous URL, or
+     * else the root -- where a browser's own form post is sent back to
+     * (Flash::back()). Same-origin, whatever the Referer said: "redirect(),
+     * back() and the 419 redirect accept same-origin URLs only."
+     */
+    #[\NoDiscard]
+    public static function back(): self
+    {
+        return new self(status: 303, back: true);
+    }
+
+    /**
+     * Off this origin: "External URLs go through location() with an
+     * allowlist."
+     *
+     * Checked when the result is answered, against the external origins the
+     * application gave the Kernel (ExternalOrigins): an https URL whose
+     * scheme, host and port are exactly one of them. Any other URL is a 500
+     * the exception handler classifies, never a redirect -- and with no
+     * allowlist given, every URL is.
+     */
+    #[\NoDiscard]
+    public static function location(string $url): self
+    {
+        return new self(status: 303, location: $url);
+    }
+
     #[\NoDiscard]
     public function withRoutes(string ...$routes): self
     {
@@ -93,6 +128,8 @@ final readonly class ActionResult
             $this->flash,
             $this->redirect,
             $this->value,
+            $this->back,
+            $this->location,
         );
     }
 
@@ -106,6 +143,8 @@ final readonly class ActionResult
             $this->flash,
             $this->redirect,
             $this->value,
+            $this->back,
+            $this->location,
         );
     }
 
@@ -124,6 +163,8 @@ final readonly class ActionResult
             [...$this->flash, ...$flash],
             $this->redirect,
             $this->value,
+            $this->back,
+            $this->location,
         );
     }
 
@@ -137,6 +178,8 @@ final readonly class ActionResult
             $this->flash,
             $this->redirect,
             $value,
+            $this->back,
+            $this->location,
         );
     }
 
@@ -167,11 +210,14 @@ final readonly class ActionResult
             $flash,
             $this->redirect,
             $encoder->encode($this->value),
+            $this->back,
+            $this->location,
         );
     }
 
+    /** Whether the action is answered with a redirect: redirect(), back() or location(). */
     public function isRedirect(): bool
     {
-        return $this->redirect !== null;
+        return $this->redirect !== null || $this->back || $this->location !== null;
     }
 }

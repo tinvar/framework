@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace Tinvar\Http\Endpoints;
 
+use Tinvar\Actions\ActionResult;
 use Tinvar\Actions\ActionRunner;
 use Tinvar\Actions\Revalidator;
 use Tinvar\Http\EntryContext;
+use Tinvar\Http\ExternalOrigins;
 use Tinvar\Http\Flash;
 use Tinvar\Http\FlashStore;
 use Tinvar\Http\HttpException;
@@ -50,6 +52,8 @@ final class ActionEndpoint
      *        own middleware
      * @param int $maxBodyBytes the body limit, up to Limits::MAX_BODY_BYTES_CEILING
      * @param int $maxJsonDepth the nesting limit, up to Limits::MAX_JSON_DEPTH_CEILING
+     * @param ExternalOrigins|null $externalOrigins where ActionResult::location() may
+     *        send a browser; without them, nowhere
      */
     public function __construct(
         private readonly ActionRunner $runner,
@@ -61,6 +65,7 @@ final class ActionEndpoint
         private readonly ?FlashStore $flashes = null,
         private readonly ?EntryContext $entry = null,
         private readonly int $maxJsonDepth = Limits::MAX_JSON_DEPTH,
+        private readonly ?ExternalOrigins $externalOrigins = null,
     ) {
         Limits::assertConfigurable($maxBodyBytes, $maxJsonDepth);
     }
@@ -282,8 +287,9 @@ final class ActionEndpoint
             // 303 after a write, so a reload does not repeat it. No body:
             // ActionResult refuses a flash or a value on a redirect, which
             // this response would have nowhere to put. A client-router call
-            // reads it as 409 + X-Redirect; the Kernel translates it.
-            return Response::redirect((string) $result->redirect, 303)
+            // reads it as 409 + X-Redirect -- X-Location for location()'s,
+            // which it loads as a document; the Kernel translates it.
+            return $this->redirectFor($result, $request)
                 ->withHeader('x-invalidated-tags', implode(',', $result->revalidatedTags));
         }
 
@@ -316,6 +322,25 @@ final class ActionEndpoint
             // invalidated, and the client flushes matching prefetch entries
             // automatically."
             ->withHeader('x-invalidated-tags', implode(',', $result->revalidatedTags));
+    }
+
+    /**
+     * The 303 an action's redirect is answered with.
+     *
+     * redirect() and back() on this origin alone, by Response::redirect()'s
+     * rules: back() to where a browser's own post is sent back to, the
+     * Referer's path on this origin or the session's previous URL. location()
+     * off it, to an origin the application allowlisted and nowhere else: a
+     * URL on any other, or any URL with no allowlist given, throws -- a 500
+     * the exception handler classifies, never a redirect.
+     */
+    private function redirectFor(ActionResult $result, Request $request): Response
+    {
+        if ($result->location !== null) {
+            return Response::location(($this->externalOrigins ?? new ExternalOrigins())->checked($result->location), 303);
+        }
+
+        return Response::redirect($result->back ? Flash::back($request) : (string) $result->redirect, 303);
     }
 
     /** @param array<string, mixed> $payload */

@@ -392,6 +392,11 @@ final class Kernel
      *        application starting rather than opening the endpoints
      * @param int $maxJsonDepth how deep a body to either may nest: the table's 32
      *        unless given, up to Limits::MAX_JSON_DEPTH_CEILING, refused as above
+     * @param list<string> $redirectOrigins the external origins ActionResult::location()
+     *        may send a browser to, each `https://host` or `https://host:port`
+     *        (ExternalOrigins), matched exactly; none unless given, and then
+     *        location() is refused wherever it points. One that is not an https
+     *        origin is refused here
      */
     public function __construct(
         public readonly Orm $orm,
@@ -438,6 +443,7 @@ final class Kernel
         ?StaticPages $staticPages = null,
         int $maxBodyBytes = Limits::MAX_BODY_BYTES,
         int $maxJsonDepth = Limits::MAX_JSON_DEPTH,
+        array $redirectOrigins = [],
     ) {
         if ($toolbar !== null && !$dev) {
             throw new \InvalidArgumentException(
@@ -640,6 +646,7 @@ final class Kernel
             flashes: $flashes,
             entry: $entry,
             maxJsonDepth: $maxJsonDepth,
+            externalOrigins: new ExternalOrigins(...$redirectOrigins),
         );
 
         $queryRunner = new QueryRunner(

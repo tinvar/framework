@@ -148,6 +148,8 @@ final class Response
      *
      * Separate from redirect() on purpose: the allowlist decision belongs to
      * the caller, and making it type out a different method name is the point.
+     * An action's is ActionResult::location(), which the action endpoint
+     * checks against the application's ExternalOrigins before it gets here.
      */
     public static function location(string $url, int $status = 302): self
     {
