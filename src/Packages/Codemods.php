@@ -150,10 +150,10 @@ final class Codemods
                 mkdir($run . '/tmp', 0o700);
 
                 [$status, $output] = $this->sandboxed($run, $run . '/package/' . $codemod['script']);
-                $label = "{$codemod['package']} {$codemod['script']}";
+                $label = self::printable("{$codemod['package']} {$codemod['script']}");
                 if ($status !== 0) {
                     $failed[] = "{$label}: " . ($status === 124 ? "killed after {$this->timeout}s" : "exited {$status}")
-                        . ($output === '' ? '' : ': ' . trim(substr($output, 0, 2000)));
+                        . ($output === '' ? '' : ': ' . self::printable(trim(substr($output, 0, 2000)), lines: true));
 
                     break;
                 }
@@ -163,7 +163,7 @@ final class Codemods
 
             [$patch, $flagged] = self::diff($app, $files, $current);
 
-            return new CodemodResult($patch, $flagged, $ran, $failed);
+            return new CodemodResult($patch, array_map(self::printable(...), $flagged), $ran, $failed);
         } finally {
             self::remove($sandbox);
         }
@@ -595,6 +595,27 @@ final class Codemods
         }
 
         return null;
+    }
+
+    /**
+     * $text with each control character written out as an escape, `\x1b`
+     * for ESC. The flags and failures are printed to the terminal of whoever
+     * runs the codemods, and a codemod chooses part of them -- a line it
+     * changed, an attribute's argument, what it printed -- where an escape
+     * sequence moves the cursor and erases the lines above, the REVIEW block
+     * among them. UTF-8's C1 controls too, which some terminals read as ESC
+     * sequences. A tab stays, and so does a line break where $lines says the
+     * text is several lines.
+     */
+    private static function printable(string $text, bool $lines = false): string
+    {
+        return (string) preg_replace_callback(
+            $lines ? '/[\x00-\x08\x0b-\x1f\x7f]|\xc2[\x80-\x9f]/' : '/[\x00-\x08\x0a-\x1f\x7f]|\xc2[\x80-\x9f]/',
+            static fn (array $match): string => \strlen($match[0]) === 1
+                ? \sprintf('\x%02x', \ord($match[0]))
+                : \sprintf('\u{%x}', \ord($match[0][1])),
+            $text,
+        );
     }
 
     /**

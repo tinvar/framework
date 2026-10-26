@@ -623,6 +623,28 @@ it('keeps a codemod off the network through the clients PHP was built with', fun
         ->and($pending)->toBe(0);
 });
 
+// The flags and failures are printed to the terminal of whoever runs the
+// codemods, and a codemod chooses part of them: a line it changed, what it
+// printed. An escape sequence in either moved the cursor and erased the
+// lines above it -- the REVIEW block among them -- so each control
+// character is written out instead.
+it('writes out the control characters a codemod puts in its flags and failures', function () {
+    $codemods = withCodemod($this, <<<'PHP'
+    <?php
+    $file = $argv[1] . '/src/OrderPage.php';
+    file_put_contents($file, str_replace("#[Authorize('view', 'order')]", "#[\\Tinvar\\Attributes\\PublicAccess] // \e[1A\e[2K\e[1A\e[2K", file_get_contents($file)));
+    PHP);
+
+    expect($codemods->run($this->app, allowed: true)->flagged)
+        ->toContain('src/OrderPage.php:11: +    #[\Tinvar\Attributes\PublicAccess] // \x1b[1A\x1b[2K\x1b[1A\x1b[2K');
+
+    $this->workspace->file('vendor/acme/billing/codemods/upgrade.php', "<?php fwrite(STDERR, \"\\e[2J\\e[H\\u{9b}2J\\nsecond line\"); exit(1);\n");
+    PackageLock::of($this->policy, [...(new Lockfiles($this->workspace->root))->composer()])->write($this->workspace->root);
+
+    expect($codemods->run($this->app, allowed: true)->failed)
+        ->toBe(["acme/billing codemods/upgrade.php: exited 1: \\x1b[2J\\x1b[H\\u{9b}2J\nsecond line"]);
+});
+
 it('stops a codemod that runs too long, and keeps nothing it did', function () {
     $codemods = withCodemod($this, "<?php file_put_contents(\$argv[1] . '/half', 'x'); while (true) {}\n", timeout: 1);
 
