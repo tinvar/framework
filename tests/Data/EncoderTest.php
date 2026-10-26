@@ -5,7 +5,7 @@ declare(strict_types=1);
 use Tinvar\Data\Data;
 use Tinvar\Data\DataBoundaryException;
 use Tinvar\Data\Encoder;
-use Tinvar\Data\Lazy;
+use Tinvar\Support\Lazy;
 
 final readonly class UnitFixture extends Data
 {

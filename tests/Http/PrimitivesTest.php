@@ -7,7 +7,7 @@ declare(strict_types=1);
  * the pipeline's order, and the SAPI adapter's real output.
  */
 
-use Tinvar\Data\Lazy;
+use Tinvar\Support\Lazy;
 use Tinvar\Http\ArrayThrottleStore;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Pipeline;

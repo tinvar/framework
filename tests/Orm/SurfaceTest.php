@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Orm\Surface;
 
-use Tinvar\Attributes\BelongsTo;
-use Tinvar\Attributes\Column;
-use Tinvar\Attributes\Id;
-use Tinvar\Attributes\Table;
+use Tinvar\Orm\Attributes\BelongsTo;
+use Tinvar\Orm\Attributes\Column;
+use Tinvar\Orm\Attributes\Id;
+use Tinvar\Orm\Attributes\Table;
 use Tinvar\Orm\BatchScheduler;
 use Tinvar\Orm\Collection;
 use Tinvar\Orm\Factory;

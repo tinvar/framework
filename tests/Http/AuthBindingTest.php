@@ -28,7 +28,7 @@ use Tinvar\Auth\Authenticatable;
 use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Data\Data;
 use Tinvar\Data\Encoder;
-use Tinvar\Data\Lazy;
+use Tinvar\Support\Lazy;
 use Tinvar\Http\BuildRegistry;
 use Tinvar\Http\FragmentSupport;
 use Tinvar\Http\Kernel;

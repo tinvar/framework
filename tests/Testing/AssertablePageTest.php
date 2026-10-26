@@ -15,7 +15,7 @@ use Tinvar\Attributes\Once;
 use Tinvar\Attributes\Optional;
 use Tinvar\Data\Data;
 use Tinvar\Data\Encoder;
-use Tinvar\Data\Lazy;
+use Tinvar\Support\Lazy;
 use Tinvar\Data\PayloadContext;
 use Tinvar\Testing\AssertablePage;
 

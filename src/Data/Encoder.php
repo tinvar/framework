@@ -6,6 +6,7 @@ namespace Tinvar\Data;
 
 use Tinvar\Codec\Bin;
 use Tinvar\Support\Digest;
+use Tinvar\Support\Lazy;
 
 /**
  * Converts a loader or query return value into the scalars, lists and maps the

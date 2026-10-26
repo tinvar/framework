@@ -20,7 +20,7 @@ use Tinvar\Attributes\Query;
 use Tinvar\Auth\AllowAllGate;
 use Tinvar\Data\Data;
 use Tinvar\Data\Encoder;
-use Tinvar\Data\Lazy;
+use Tinvar\Support\Lazy;
 use Tinvar\Http\Request;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;

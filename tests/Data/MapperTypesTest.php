@@ -6,7 +6,7 @@ namespace Tinvar\Tests\Data\Types;
 
 use Tinvar\Data\Data;
 use Tinvar\Data\DataMappingException;
-use Tinvar\Data\Lazy;
+use Tinvar\Support\Lazy;
 use Tinvar\Tests\Data\Elsewhere\ItemData;
 use Tinvar\Tests\Data\Elsewhere\ItemData as Aliased;
 use Tinvar\Tests\Data\Elsewhere;

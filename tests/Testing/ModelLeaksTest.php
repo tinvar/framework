@@ -11,10 +11,10 @@ declare(strict_types=1);
 
 namespace ModelLeaksFixture;
 
-use Tinvar\Attributes\Column;
-use Tinvar\Attributes\Id;
-use Tinvar\Attributes\Table;
-use Tinvar\Attributes\TenantScoped;
+use Tinvar\Orm\Attributes\Column;
+use Tinvar\Orm\Attributes\Id;
+use Tinvar\Orm\Attributes\Table;
+use Tinvar\Orm\Attributes\TenantScoped;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;

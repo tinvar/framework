@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Data\Scope;
 
 use Tinvar\Data\Data;
-use Tinvar\Data\Lazy;
+use Tinvar\Support\Lazy;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Tests\Orm\Fixtures\Script;

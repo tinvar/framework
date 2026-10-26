@@ -15,10 +15,10 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Orm\BeforeSave;
 
-use Tinvar\Attributes\BeforeSave;
-use Tinvar\Attributes\Column;
-use Tinvar\Attributes\Id;
-use Tinvar\Attributes\Table;
+use Tinvar\Orm\Attributes\BeforeSave;
+use Tinvar\Orm\Attributes\Column;
+use Tinvar\Orm\Attributes\Id;
+use Tinvar\Orm\Attributes\Table;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\MappingException;
 use Tinvar\Orm\Metadata;

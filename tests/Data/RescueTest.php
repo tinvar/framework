@@ -15,7 +15,7 @@ use Tinvar\Attributes\Rescue;
 use Tinvar\Data\Data;
 use Tinvar\Data\DataBoundaryException;
 use Tinvar\Data\Encoder;
-use Tinvar\Data\Lazy;
+use Tinvar\Support\Lazy;
 use Tinvar\Support\Digest;
 
 final readonly class UpdateData extends Data

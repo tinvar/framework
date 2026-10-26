@@ -16,7 +16,7 @@ use Tinvar\Attributes\MapsFrom;
 use Tinvar\Data\Data;
 use Tinvar\Data\DataMappingException;
 use Tinvar\Data\Encoder;
-use Tinvar\Data\Lazy;
+use Tinvar\Support\Lazy;
 
 final class UnitModel
 {

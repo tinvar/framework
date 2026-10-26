@@ -5,12 +5,12 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Auth\Fixtures\Review;
 
 use Tinvar\Attributes\Authorize;
-use Tinvar\Attributes\Column;
-use Tinvar\Attributes\Id;
+use Tinvar\Orm\Attributes\Column;
+use Tinvar\Orm\Attributes\Id;
 use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Page;
 use Tinvar\Attributes\Query;
-use Tinvar\Attributes\Table;
+use Tinvar\Orm\Attributes\Table;
 use Tinvar\Auth\Authenticatable;
 use Tinvar\Data\Data;
 use Tinvar\Orm\Model;

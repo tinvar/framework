@@ -22,7 +22,7 @@ use Tinvar\Attributes\Rescue;
 use Tinvar\Data\Data;
 use Tinvar\Data\DataShape;
 use Tinvar\Data\Encoder;
-use Tinvar\Data\Lazy;
+use Tinvar\Support\Lazy;
 use Tinvar\Data\PayloadContext;
 
 /** How often each resolver ran. */

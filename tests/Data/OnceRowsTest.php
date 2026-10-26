@@ -19,7 +19,7 @@ use Tinvar\Attributes\Once;
 use Tinvar\Data\Data;
 use Tinvar\Data\DataShape;
 use Tinvar\Data\Encoder;
-use Tinvar\Data\Lazy;
+use Tinvar\Support\Lazy;
 use Tinvar\Data\PayloadContext;
 
 final readonly class RowData extends Data

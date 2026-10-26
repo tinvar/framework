@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Container\Surface;
 
-use Tinvar\Attributes\Dependency;
+use Tinvar\Container\Dependency;
 use Tinvar\Container\Container;
 use Tinvar\Container\ContainerException;
 

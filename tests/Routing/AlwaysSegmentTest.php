@@ -23,7 +23,7 @@ use Tinvar\Attributes\Page;
 use Tinvar\Auth\AllowAllGate;
 use Tinvar\Data\Data;
 use Tinvar\Data\Encoder;
-use Tinvar\Data\Lazy;
+use Tinvar\Support\Lazy;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;

@@ -10,7 +10,7 @@ use Tinvar\Attributes\Layout;
 use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Page;
 use Tinvar\Attributes\Query;
-use Tinvar\Attributes\TenantScoped;
+use Tinvar\Orm\Attributes\TenantScoped;
 use Tinvar\Data\Data;
 use Tinvar\Orm\Model;
 use Tinvar\Support\Str;
@@ -126,7 +126,7 @@ final class BuildRules
     public function __construct(array $models = [])
     {
         foreach ($models as $model) {
-            if ((new \ReflectionClass($model))->getAttributes(TenantScoped::class) !== []) {
+            if ((new \ReflectionClass($model))->getAttributes(TenantScoped::class, \ReflectionAttribute::IS_INSTANCEOF) !== []) {
                 $this->tenantScoped[strtolower(Str::shortName($model))] = $model;
             }
         }

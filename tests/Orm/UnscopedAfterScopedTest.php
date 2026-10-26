@@ -13,11 +13,11 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Orm\UnscopedAfterScoped;
 
-use Tinvar\Attributes\BelongsTo;
-use Tinvar\Attributes\Column;
-use Tinvar\Attributes\Id;
-use Tinvar\Attributes\Table;
-use Tinvar\Attributes\TenantScoped;
+use Tinvar\Orm\Attributes\BelongsTo;
+use Tinvar\Orm\Attributes\Column;
+use Tinvar\Orm\Attributes\Id;
+use Tinvar\Orm\Attributes\Table;
+use Tinvar\Orm\Attributes\TenantScoped;
 use Tinvar\Orm\DanglingRelation;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Model;

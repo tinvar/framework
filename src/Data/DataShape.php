@@ -10,6 +10,7 @@ use Tinvar\Attributes\Once;
 use Tinvar\Attributes\Optional;
 use Tinvar\Attributes\Rescue;
 use Tinvar\Cache\Duration;
+use Tinvar\Support\Lazy;
 
 /**
  * The fields of a Data class that cross the boundary.
@@ -267,7 +268,7 @@ final class DataShape
 
             $where = "{$class}::\${$property->getName()}";
             $type = $property->getType();
-            if (!$type instanceof \ReflectionNamedType || $type->getName() !== Lazy::class) {
+            if (!$type instanceof \ReflectionNamedType || !is_a($type->getName(), Lazy::class, true)) {
                 throw new \LogicException(
                     "{$where} is #[Optional], which only a Lazy field can be: its value is produced "
                     . 'before encoding, so there would be nothing left to skip.',

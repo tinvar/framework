@@ -7,6 +7,7 @@ namespace Tinvar\Data;
 use Tinvar\Attributes\From;
 use Tinvar\Attributes\MapsFrom;
 use Tinvar\Orm\Model;
+use Tinvar\Support\Lazy;
 
 /**
  * Builds a Data object from a model, another object or an array.
@@ -337,7 +338,7 @@ final class Mapper
             $where = "{$class}::\${$name}";
 
             [$kind, $target, $keyed] = match (true) {
-                $typeName === Lazy::class => self::lazyShape($hint, $reflection, $where),
+                $typeName !== null && is_a($typeName, Lazy::class, true) => self::lazyShape($hint, $reflection, $where),
                 $typeName === 'array' => ['list', self::dataIn(self::elementOf($hint), $reflection, $where), self::isKeyed($hint)],
                 $typeName !== null && is_subclass_of($typeName, Data::class) => ['one', $typeName, false],
                 default => ['value', null, false],

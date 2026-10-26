@@ -11,7 +11,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Auth\PolicyLifetime;
 
-use Tinvar\Attributes\Dependency;
+use Tinvar\Container\Dependency;
 use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Container\Container;
 use Tinvar\Container\Lifetime;

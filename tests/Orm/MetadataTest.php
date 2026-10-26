@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-use Tinvar\Attributes\HasMany;
-use Tinvar\Attributes\Id;
-use Tinvar\Attributes\Table;
+use Tinvar\Orm\Attributes\HasMany;
+use Tinvar\Orm\Attributes\Id;
+use Tinvar\Orm\Attributes\Table;
 use Tinvar\Orm\Collection;
 use Tinvar\Orm\MappingException;
 use Tinvar\Orm\Metadata;

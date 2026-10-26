@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Jobs\Fixtures;
 
-use Tinvar\Attributes\Dependency;
+use Tinvar\Container\Dependency;
 use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\Queue;
 use Tinvar\Auth\AuthContext;

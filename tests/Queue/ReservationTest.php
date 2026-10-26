@@ -14,7 +14,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Queue\Reservation;
 
-use Tinvar\Attributes\Dependency;
+use Tinvar\Container\Dependency;
 use Tinvar\Attributes\Queue as QueueOptions;
 use Tinvar\Container\Lifetime;
 use Tinvar\Jobs\Job;

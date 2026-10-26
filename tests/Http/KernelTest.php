@@ -1033,7 +1033,7 @@ it('names a resolver that builds something other than middleware', function () {
     ))->toThrow(LogicException::class, 'VerifyCsrfToken as stdClass, not middleware');
 });
 
-#[Tinvar\Attributes\Dependency(Tinvar\Container\Lifetime::Request)]
+#[Tinvar\Container\Dependency(Tinvar\Container\Lifetime::Request)]
 final class KernelRequestService
 {
     public function __construct(public Orm $orm) {}
