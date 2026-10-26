@@ -378,6 +378,81 @@ describe('an action taking an upload', function () {
             ->and($app->call('profiles.avatar', ['profile' => P1, 'avatar' => $reference])->status)->toBe(200);
     });
 
+    // A store on the ORM's connection gives the claim back with the rollback.
+    // Given back again after it, the release cleared whatever claim was made
+    // in between: the same reference posted twice, the second call claiming
+    // the moment the first rolled back and committing a record naming the
+    // file -- which, unclaimed again, was pruned from under that record.
+    it('gives a failed body\'s claim back before its transaction ends, never over a claim made since', function () {
+        $store = new class implements Tinvar\Uploads\UploadStore {
+            public ?Tinvar\Uploads\UploadStore $inner = null;
+
+            public ?Tinvar\Orm\Connection $connection = null;
+
+            public bool $secondClaimed = false;
+
+            /** A second call's claim, made the moment this one's transaction is over. */
+            public function release(string $id): void
+            {
+                if ($this->connection?->inTransaction() === false) {
+                    $this->secondClaimed = $this->inner?->claim($id, 1_800_000_000) === true;
+                }
+                $this->inner?->release($id);
+            }
+
+            public function add(PendingUpload $upload): void
+            {
+                $this->inner?->add($upload);
+            }
+
+            public function find(string $id): ?PendingUpload
+            {
+                return $this->inner?->find($id);
+            }
+
+            public function pendingCount(string $ownerHash, int $now): int
+            {
+                return $this->inner?->pendingCount($ownerHash, $now) ?? 0;
+            }
+
+            public function claim(string $id, int $now): bool
+            {
+                return $this->inner?->claim($id, $now) === true;
+            }
+
+            public function expired(int $now, int $limit): array
+            {
+                return $this->inner?->expired($now, $limit) ?? [];
+            }
+
+            public function forget(string $id): void
+            {
+                $this->inner?->forget($id);
+            }
+
+            public function forgetClaimedBefore(int $before): int
+            {
+                return $this->inner?->forgetClaimedBefore($before) ?? 0;
+            }
+        };
+        $app = new App(new MemoryStorage(), $store);
+        $connection = $app->orm->connection();
+        Tinvar\Uploads\DatabaseUploadStore::define(new Tinvar\Orm\Schema\Schema($connection, Tinvar\Orm\Schema\Dialect::for($connection)));
+        $store->inner = new Tinvar\Uploads\DatabaseUploadStore($connection);
+        $store->connection = $connection;
+        $reference = uploadedPng($app);
+
+        Tinvar\Tests\Uploads\Fixtures\ProfileActions::$fail = true;
+        $app->call('profiles.avatar', ['profile' => P1, 'avatar' => $reference]);
+
+        // The second call claims once the first is over, if it has not yet;
+        // whenever it did, its claim stands.
+        if (!$store->secondClaimed) {
+            expect($store->inner->claim($reference, $app->now))->toBeTrue();
+        }
+        expect($store->inner->find($reference)?->claimedAt)->not->toBeNull();
+    });
+
     // Given back after a body that had saved the key, the upload would be
     // pruned as unclaimed and the record left naming a file that is gone:
     // the body's writes roll back with the claim, so it is given back only

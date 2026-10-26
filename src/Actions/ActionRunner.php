@@ -388,20 +388,27 @@ final class ActionRunner
      */
     private function runWithUploads(array $uploads, \Closure $body): mixed
     {
-        $claimed = [];
-        try {
-            return $this->orm->transaction(function () use ($uploads, $body, &$claimed): mixed {
-                $claimed = $this->claim($uploads);
+        return $this->orm->transaction(function () use ($uploads, $body): mixed {
+            $claimed = $this->claim($uploads);
 
+            try {
                 return $body();
-            });
-        } catch (\Throwable $e) {
-            foreach ($claimed as $upload) {
-                $this->uploads?->release($upload);
-            }
+            } catch (\Throwable $e) {
+                // Given back inside the transaction, while the claim still
+                // holds the upload. A store on another connection gives it
+                // back now; one on this connection gives it back again with
+                // the rollback. Given back after the rollback, as it was, the
+                // release cleared whatever claim another call had made in
+                // between -- the same reference posted twice, the second
+                // claiming the moment the first rolled back -- and the upload
+                // was pruned from under the record that call committed.
+                foreach ($claimed as $upload) {
+                    $this->uploads?->release($upload);
+                }
 
-            throw $e;
-        }
+                throw $e;
+            }
+        });
     }
 
     /**
