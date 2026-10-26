@@ -9,9 +9,11 @@ use Tinvar\Support\Lazy;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Tests\Orm\Fixtures\Script;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 
 require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenant.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
 
 final readonly class RunData extends Data
 {
@@ -31,7 +33,7 @@ final readonly class ScriptData extends Data
  */
 it('reads a lazy relation under the tenant it was mapped in', function () {
     $fixture = new TenantFixture();
-    $orm = new Orm($fixture->connection, new IdentityMap('scope-test'));
+    $orm = new Orm($fixture->connection, new IdentityMap('scope-test'), tenants: Tenancy::flat());
     $acmeScript = $fixture->scripts['acme'][0];
 
     $data = $orm->actAs('acme', fn (): ScriptData => ScriptData::from($orm->find(Script::class, $acmeScript)));
@@ -48,7 +50,7 @@ it('reads a lazy relation under the tenant it was mapped in', function () {
 // around work run later.
 it('captures tenant and read-only state for work run later', function () {
     $fixture = new TenantFixture();
-    $orm = new Orm($fixture->connection, new IdentityMap('scope-test'));
+    $orm = new Orm($fixture->connection, new IdentityMap('scope-test'), tenants: Tenancy::flat());
 
     $scoped = $orm->actAs('acme', fn (): \Closure => $orm->readOnly(fn (): \Closure => $orm->captureScope()));
     $orm->switchTenant('globex');
@@ -60,7 +62,7 @@ it('captures tenant and read-only state for work run later', function () {
 // acrossTenants() is an explicit escape hatch; deferred work that re-entered
 // it later would lift scoping outside the block that opened it.
 it('refuses to capture an unscoped context', function () {
-    $orm = new Orm((new TenantFixture())->connection, new IdentityMap('scope-test'));
+    $orm = new Orm((new TenantFixture())->connection, new IdentityMap('scope-test'), tenants: Tenancy::flat());
 
     expect(fn () => $orm->acrossTenants(fn (): \Closure => $orm->captureScope()))
         ->toThrow(\LogicException::class, 'An unscoped read cannot be deferred');
@@ -68,7 +70,7 @@ it('refuses to capture an unscoped context', function () {
 
 it('reads a lazy relation mapped inside acrossTenants() there and then', function () {
     $fixture = new TenantFixture();
-    $orm = new Orm($fixture->connection, new IdentityMap('scope-test'));
+    $orm = new Orm($fixture->connection, new IdentityMap('scope-test'), tenants: Tenancy::flat());
     $acmeScript = $fixture->scripts['acme'][0];
 
     $data = $orm->acrossTenants(fn (): ScriptData => ScriptData::from($orm->find(Script::class, $acmeScript)));

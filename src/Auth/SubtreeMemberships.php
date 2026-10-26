@@ -18,8 +18,8 @@ use Tinvar\Orm\Orm;
  *
  * Every answer is the application's Memberships, asked as the tenant in
  * question -- as the panel's own membership check asks it -- and a tenant
- * is in a subtree by the Orm's TenantHierarchy, walked up from the tenant.
- * With no hierarchy, a tenant's subtree is the tenant.
+ * is in a subtree by the Orm's checked tree (TenantBounds), walked up from
+ * the tenant. With no hierarchy, a tenant's subtree is the tenant.
  */
 final readonly class SubtreeMemberships
 {

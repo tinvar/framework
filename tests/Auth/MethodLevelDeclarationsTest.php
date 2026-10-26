@@ -33,10 +33,12 @@ use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Tests\Orm\Fixtures\Script;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 
 require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
 require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenant.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
 
 final class RequireMfa implements Middleware
 {
@@ -131,7 +133,7 @@ final class BatchWithInvoke implements BatchQuery
 function scoped(\Closure $work): mixed
 {
     $fixture = new TenantFixture();
-    $orm = new Orm($fixture->connection, new IdentityMap('tenant-test'));
+    $orm = new Orm($fixture->connection, new IdentityMap('tenant-test'), tenants: Tenancy::flat());
 
     return $orm->actAs('acme', static fn (): mixed => $work($orm, $fixture->scripts['acme'][0]));
 }

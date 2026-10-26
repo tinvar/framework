@@ -31,9 +31,11 @@ use Tinvar\Queue\Queue as JobQueue;
 use Tinvar\Queue\Worker;
 use Tinvar\Support\Signer;
 use Tinvar\Tests\Orm\Fixtures\Script;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 
 require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenant.php';
+require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenancy.php';
 
 const KEY = 'jobs-test-key-of-thirty-two-bytes!!';
 
@@ -281,7 +283,7 @@ final class Harness
     public function __construct(?JobQueue $queue = null, ?TenantFixture $fixture = null)
     {
         $this->fixture = $fixture ?? new TenantFixture();
-        $this->orm = new Orm($this->fixture->connection, new IdentityMap('tenant-test'));
+        $this->orm = new Orm($this->fixture->connection, new IdentityMap('tenant-test'), tenants: Tenancy::flat());
         $this->auth = new AuthContext();
         $this->panels = new PanelContext();
         $this->registry = new PanelRegistry(new PanelDefinition('admin'), new PanelDefinition('reseller'));

@@ -32,11 +32,13 @@ use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\RecordContext;
 use Tinvar\Tests\Jobs\Fixtures\Sleeps;
 use Tinvar\Tests\Jobs\Fixtures\User;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 
 use function Tinvar\Tests\Jobs\Fixtures\databaseQueue;
 
 require_once __DIR__ . '/Fixtures/jobs.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
 
 final readonly class DispatchedData extends Data
 {
@@ -205,7 +207,7 @@ it('writes a database queue\'s job inside the transaction around it, so it rolls
         $connection = PdoConnection::sqlite($path, 'outbox', create: true);
         $queue = databaseQueue($connection);
         $h = new Harness($queue, new TenantFixture());
-        $dispatcher = new Dispatcher($queue, $orm = new Orm($connection, new IdentityMap('outbox')), $h->signer, $h->auth);
+        $dispatcher = new Dispatcher($queue, $orm = new Orm($connection, new IdentityMap('outbox'), tenants: Tenancy::flat()), $h->signer, $h->auth);
 
         expect($queue->enlistsIn($connection))->toBeTrue();
 

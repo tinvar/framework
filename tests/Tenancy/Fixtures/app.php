@@ -43,6 +43,7 @@ use Tinvar\Tenancy\SignedUrls;
 use Tinvar\Orm\TenantHierarchy;
 use Tinvar\Tenancy\TenantHosts;
 use Tinvar\Tests\Orm\Fixtures\Script;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 
 require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenant.php';
 
@@ -259,7 +260,7 @@ final class App
         ?FragmentManifest $manifest = null,
         ?TenantHierarchy $tenants = null,
     ) {
-        $this->orm = new Orm($connection, new IdentityMap('tenant-test'), $tenants);
+        $this->orm = new Orm($connection, new IdentityMap('tenant-test'), $tenants ?? Tenancy::flat());
         $this->auth = new AuthContext();
         $this->fragmentSigner = new Signer(KEY, FragmentToken::PURPOSE);
         $this->routeSigner = new Signer(KEY, RouteToken::PURPOSE);
