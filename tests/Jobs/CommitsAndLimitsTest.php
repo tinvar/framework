@@ -295,8 +295,13 @@ it('stops when asked, after the job in hand', function () {
     $h = new Harness();
     $h->dispatcher->dispatch(new RecordContext(note: 'one'));
     $h->dispatcher->dispatch(new RecordContext(note: 'two'));
+    // Asked on the line the first job is logged with. Not on any line: a
+    // worker starting past its memory limit -- inside a test process that
+    // has grown, say -- says so before it takes a job.
     $worker = new \Tinvar\Queue\Worker($h->queue, $h->runner, $h->scope, log: function (string $line) use (&$worker): void {
-        $worker?->stop();
+        if (str_contains($line, '(attempt ')) {
+            $worker?->stop();
+        }
     }, clock: fn (): int => $h->now);
 
     expect($worker->run(new \Tinvar\Queue\WorkerOptions(signals: false)))->toBe(1)
