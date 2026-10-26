@@ -143,6 +143,23 @@ describe('who may ask', function () {
             ->and(new ProbeAccess()->allows(probe('/_metrics', $address, ['host' => 'localhost'])))->toBeTrue();
     })->with(['127.0.0.1', '127.8.9.10', '::1', '::ffff:127.0.0.2']);
 
+    // DNS rebinding on an internal network: a page's own name pointed at
+    // this server's address there reaches the probes from its visitor's
+    // address on that network, naming its domain. The browser says it is
+    // one, which a probe or a scraper never does.
+    it('refuses a browser on a network it is given, and lets in its probes', function (string $header, string $value) {
+        $access = new ProbeAccess(['10.0.0.0/8']);
+
+        expect($access->allows(probe('/_metrics', '10.1.2.3', ['host' => 'rebound.attacker.example:8080', $header => $value])))->toBeFalse()
+            ->and($access->allows(probe('/_ready', '10.1.2.3', ['host' => '10.0.0.5:8080', 'user-agent' => 'kube-probe/1.31'])))->toBeTrue()
+            ->and($access->allows(probe('/_metrics', '10.1.2.3', ['host' => 'shop.svc.cluster.local:8080', 'user-agent' => 'Prometheus/3.1.0'])))->toBeTrue();
+    })->with([
+        ['sec-fetch-site', 'same-origin'],
+        ['sec-fetch-mode', 'cors'],
+        ['sec-fetch-dest', 'empty'],
+        ['origin', 'http://rebound.attacker.example:8080'],
+    ]);
+
     // A proxy in front that keeps the loopback Host, or sits on an internal
     // network, still says what it is in the headers it adds.
     it('refuses what a proxy passed on, by address alone', function (string $header) {

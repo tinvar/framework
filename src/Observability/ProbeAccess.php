@@ -35,11 +35,21 @@ use Tinvar\Http\Request;
  *   the probes from its visitor's loopback address, but still names its own
  *   domain. A request with no Host header is a client on the machine
  *   itself.
+ * - A peer elsewhere on a network it was given must not be a browser. A
+ *   page can point a name of its own at this server's address on that
+ *   network as well, and reach the probes from its visitor's address
+ *   there; the Host it names is no different in kind from a scraper's name
+ *   for this server, but the browser says what it is -- Fetch Metadata on
+ *   every request, Origin on a cross-origin one -- and no probe or scraper
+ *   sends either.
  */
 final class ProbeAccess
 {
     /** What a proxy adds to what it passes on: a request carrying one came through something in front. */
     private const array PROXY_HEADERS = ['forwarded', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'x-real-ip', 'via'];
+
+    /** What a browser sends with what it fetches, and a probe or a scraper never does. */
+    private const array BROWSER_HEADERS = ['sec-fetch-site', 'sec-fetch-mode', 'sec-fetch-dest', 'origin'];
 
     /** @var list<array{string, int}> each network as its packed address and prefix length */
     private readonly array $networks;
@@ -90,6 +100,16 @@ final class ProbeAccess
         $host = $request->header('host');
         if ($host !== null && self::loopback($address) && !Loopback::host($host)) {
             return false;
+        }
+
+        // A browser on the machine itself is held to the Host rule above;
+        // one anywhere else, to saying it is one.
+        if (!self::loopback($address)) {
+            foreach (self::BROWSER_HEADERS as $name) {
+                if ($request->header($name) !== null) {
+                    return false;
+                }
+            }
         }
 
         foreach ($this->networks as [$network, $prefix]) {
