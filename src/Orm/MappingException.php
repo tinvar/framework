@@ -50,6 +50,51 @@ final class MappingException extends \RuntimeException
         return new self("{$class}::\${$property} has unsupported column type {$type}.");
     }
 
+    /**
+     * A stored value that is not one of the property's type. Named by the
+     * type of what was found, never the value: a column may hold what an
+     * error page or a log should not show.
+     */
+    public static function undecodable(string $class, string $property, string $column, string $type, string $found, ?\Throwable $previous = null): self
+    {
+        return new self(
+            "{$class}::\${$property}: column '{$column}' holds {$found}, which does not decode into {$type}"
+            . ($previous === null ? '.' : ': ' . $previous::class . '.'),
+            previous: $previous,
+        );
+    }
+
+    public static function notACast(string $class, string $property, string $named): self
+    {
+        return new self("{$class}::\${$property} names {$named} as its cast, which does not implement " . Cast::class . '.');
+    }
+
+    public static function castNeedsClass(string $class, string $property): self
+    {
+        return new self("{$class}::\${$property} has a cast, so it must be typed as one class: the class the cast makes.");
+    }
+
+    public static function castNotScalar(string $class, string $property, string $cast): self
+    {
+        return new self(
+            "{$class}::\${$property}: {$cast}::toColumn() returned an array for a column that is not JSON; "
+            . "return a scalar, or make columnType() 'json'.",
+        );
+    }
+
+    public static function mutableValue(string $class, string $property, string $valueClass, string $mutable): self
+    {
+        return new self(
+            "{$class}::\${$property} holds {$valueClass}, which is mutable: {$mutable} is not readonly. "
+            . 'A value-object column holds an immutable object, so a column changes only by assignment.',
+        );
+    }
+
+    public static function unbackedEnum(string $class, string $property, string $enum): self
+    {
+        return new self("{$class}::\${$property} is the pure enum {$enum}, which has no value to store; give it a string or int backing.");
+    }
+
     public static function unusableHook(string $class, string $method): self
     {
         return new self("{$class}: #[BeforeSave] {$method} must be an instance method that takes no arguments.");

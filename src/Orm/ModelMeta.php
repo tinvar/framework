@@ -20,7 +20,8 @@ final class ModelMeta
      * @param class-string<Model>          $class
      * @param array<string, string>        $columns  property => column
      * @param array<string, RelationMeta>  $relations property => relation
-     * @param \Closure(Model, array<string, mixed>): void $hydrator
+     * @param \Closure(array<string, mixed>): array<string, mixed> $decoder row => property values
+     * @param \Closure(Model, array<string, mixed>): void $filler
      * @param \Closure(Model): string      $readKey
      * @param \Closure(Model, string, mixed): void $write
      * @param \Closure(Model, string): mixed      $read
@@ -34,7 +35,8 @@ final class ModelMeta
         public readonly array $columns,
         public readonly array $relations,
         public readonly ?string $tenantColumn,
-        private readonly \Closure $hydrator,
+        private readonly \Closure $decoder,
+        private readonly \Closure $filler,
         private readonly \Closure $readKey,
         private readonly \Closure $write,
         private readonly \Closure $read,
@@ -121,7 +123,30 @@ final class ModelMeta
     /** @param array<string, mixed> $row */
     public function hydrate(Model $model, array $row): void
     {
-        ($this->hydrator)($model, $row);
+        ($this->filler)($model, ($this->decoder)($row));
+    }
+
+    /**
+     * A row's columns as the values of the properties they map to, cast but
+     * not yet assigned: a row that does not decode throws here and leaves
+     * every model as it was.
+     *
+     * @param array<string, mixed> $row
+     * @return array<string, mixed> property => value
+     */
+    public function decode(array $row): array
+    {
+        return ($this->decoder)($row);
+    }
+
+    /**
+     * Assigns what decode() returned.
+     *
+     * @param array<string, mixed> $values property => value
+     */
+    public function fill(Model $model, array $values): void
+    {
+        ($this->filler)($model, $values);
     }
 
     /**

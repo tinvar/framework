@@ -23,6 +23,16 @@ final class Metadata
     /** @var array<class-string<Model>, ModelMeta> */
     private static array $compiled = [];
 
+    /**
+     * By value class, the first instance property it or a class it extends
+     * declares that is not readonly -- what makes it mutable -- or false for
+     * none. Shallow, as PHP's readonly is: a readonly property may still
+     * hold a mutable object.
+     *
+     * @var array<string, string|false>
+     */
+    private static array $mutable = [];
+
     /** @param class-string<Model> $class */
     public static function for(string $class): ModelMeta
     {
@@ -65,7 +75,7 @@ final class Metadata
         $columns = [];
         $relations = [];
         $idProperty = null;
-        /** @var list<array{string, string, (\Closure(mixed): mixed)|null}> $plan */
+        /** @var list<array{string, string, (\Closure(mixed): mixed)|null, (\Closure(object): mixed)|null}> $plan */
         $plan = [];
 
         foreach ($reflection->getProperties() as $property) {
@@ -84,7 +94,7 @@ final class Metadata
 
             $column = $columnAttribute?->newInstance()->name ?? Str::snake($name);
             $columns[$name] = $column;
-            $plan[] = [$name, $column, self::castFor($class, $property)];
+            $plan[] = [$name, $column, ...self::castFor($class, $property, $column)];
 
             if ($isId) {
                 $idProperty = $name;
@@ -103,7 +113,8 @@ final class Metadata
             columns: $columns,
             relations: $relations,
             tenantColumn: $tenant?->newInstance()->column,
-            hydrator: self::compileHydrator($class, $plan),
+            decoder: self::compileDecoder($plan),
+            filler: self::compileFiller($class),
             readKey: self::compileKeyReader($class, $idProperty),
             write: self::compileWriter($class),
             read: self::compileReader($class),
@@ -113,25 +124,49 @@ final class Metadata
     }
 
     /**
-     * One closure per model, bound to the model's own scope so ORM-owned
-     * properties stay `private(set)` to everyone else. This is what the spec
-     * means by a generated hydrator: no reflection on the hot path.
+     * The generated hydrator's first half: a row's columns as the values of
+     * the properties they map to, each cast to its property's type. This,
+     * with the filler, is what the spec means by a generated hydrator: no
+     * reflection on the hot path.
+     *
+     * Two halves so that every column is decoded before any is assigned. A
+     * value-object column that does not decode then leaves the model as it
+     * was -- a ghost still a ghost -- rather than half filled under an
+     * identity every holder of it shares.
+     *
+     * @param list<array{string, string, (\Closure(mixed): mixed)|null, (\Closure(object): mixed)|null}> $plan
+     * @return \Closure(array<string, mixed>): array<string, mixed>
+     */
+    private static function compileDecoder(array $plan): \Closure
+    {
+        return static function (array $row) use ($plan): array {
+            $values = [];
+            foreach ($plan as [$property, $column, $cast]) {
+                if (!\array_key_exists($column, $row)) {
+                    continue;
+                }
+                $value = $row[$column];
+                $values[$property] = ($cast === null || $value === null) ? $value : $cast($value);
+            }
+
+            return $values;
+        };
+    }
+
+    /**
+     * The second half: decoded values assigned, from the model's own scope so
+     * ORM-owned properties stay `private(set)` to everyone else.
      *
      * @param class-string<Model> $class
-     * @param list<array{string, string, (\Closure(mixed): mixed)|null}> $plan
      * @return \Closure(Model, array<string, mixed>): void
      */
-    private static function compileHydrator(string $class, array $plan): \Closure
+    private static function compileFiller(string $class): \Closure
     {
         /** @var \Closure(Model, array<string, mixed>): void $bound */
         $bound = \Closure::bind(
-            static function (Model $model, array $row) use ($plan): void {
-                foreach ($plan as [$property, $column, $cast]) {
-                    if (!\array_key_exists($column, $row)) {
-                        continue;
-                    }
-                    $value = $row[$column];
-                    $model->{$property} = ($cast === null || $value === null) ? $value : $cast($value);
+            static function (Model $model, array $values): void {
+                foreach ($values as $property => $value) {
+                    $model->{$property} = $value;
                 }
             },
             null,
@@ -164,8 +199,13 @@ final class Metadata
      * Bound to the model's scope like the hydrator, so private(set) fields are
      * readable here without being readable anywhere else.
      *
+     * A column with a cast of its own -- a value object's -- is written by
+     * it. What this returns is what change tracking compares, so a value
+     * object is compared by its stored form: one left alone, or replaced by
+     * an equal one, writes nothing.
+     *
      * @param class-string<Model> $class
-     * @param list<array{string, string, (\Closure(mixed): mixed)|null}> $plan
+     * @param list<array{string, string, (\Closure(mixed): mixed)|null, (\Closure(object): mixed)|null}> $plan
      * @return \Closure(Model): array<string, mixed>
      */
     private static function compileColumnReader(string $class, array $plan): \Closure
@@ -174,7 +214,7 @@ final class Metadata
         $bound = \Closure::bind(
             static function (Model $model) use ($plan): array {
                 $values = [];
-                foreach ($plan as [$property, $column, $_cast]) {
+                foreach ($plan as [$property, $column, $_cast, $store]) {
                     $reflection = new \ReflectionProperty($model, $property);
                     if (!$reflection->isInitialized($model)) {
                         continue;
@@ -182,6 +222,7 @@ final class Metadata
 
                     $value = $model->{$property};
                     $values[$column] = match (true) {
+                        $store !== null && $value !== null => $store($value),
                         // In UTC, to the microsecond, with the offset spelled
                         // out. 'Y-m-d H:i:s' wrote the wall-clock time in
                         // whatever zone the value carried and dropped the
@@ -309,6 +350,213 @@ final class Metadata
     }
 
     /**
+     * The Cast a column maps through, if any: the one #[Column(cast:)] names,
+     * or else the property's own type, where that implements Cast. Public for
+     * make:migration, which types the column from it.
+     *
+     * @param class-string $class the model
+     * @return class-string<Cast<object>>|null
+     */
+    public static function castOf(string $class, \ReflectionProperty $property): ?string
+    {
+        $named = ($property->getAttributes(Column::class)[0] ?? null)?->newInstance()->cast;
+        $typeName = self::typeOf($property);
+
+        if ($named !== null) {
+            if (!is_subclass_of($named, Cast::class)) {
+                throw MappingException::notACast($class, $property->getName(), $named);
+            }
+            // One class, so what fromColumn() returns can be checked to be
+            // it before anything is assigned.
+            if ($typeName === null) {
+                throw MappingException::castNeedsClass($class, $property->getName());
+            }
+
+            return $named;
+        }
+
+        return $typeName !== null && is_subclass_of($typeName, Cast::class) ? $typeName : null;
+    }
+
+    /**
+     * How a column is read, and how it is written where the column reader's
+     * own rules do not say: [read, store], either null for as it is.
+     *
+     * @param class-string<Model> $class
+     * @return array{(\Closure(mixed): mixed)|null, (\Closure(object): mixed)|null}
+     */
+    private static function castFor(string $class, \ReflectionProperty $property, string $column): array
+    {
+        $type = $property->getType();
+
+        // castOf() returns a cast only for a property typed as one class.
+        $cast = self::castOf($class, $property);
+        $valueClass = self::typeOf($property);
+        if ($cast !== null && $valueClass !== null) {
+            return self::throughCast($class, $property->getName(), $column, $cast, $valueClass, $type?->allowsNull() ?? false);
+        }
+
+        if (!$type instanceof \ReflectionNamedType) {
+            return [null, null];
+        }
+
+        if (enum_exists($type->getName())) {
+            return [self::enumReader($class, $property->getName(), $column, $type->getName()), null];
+        }
+
+        return [self::builtinReader($class, $property, $type), null];
+    }
+
+    /**
+     * A column mapped through a Cast.
+     *
+     * JSON is decoded here rather than by each cast, so it is always
+     * json_decode() into arrays and never unserialize(), which builds
+     * whatever object the stored text names. A value that does not decode,
+     * that fromColumn() refuses, or that comes back as something else is a
+     * MappingException naming the model and column, raised before the row
+     * assigns anything (see compileDecoder()).
+     *
+     * @param class-string<Model> $class
+     * @param class-string<Cast<object>> $cast
+     * @param class-string $type the property's type, which the cast makes
+     * @return array{\Closure(mixed): ?object, \Closure(object): mixed}
+     */
+    private static function throughCast(string $class, string $property, string $column, string $cast, string $type, bool $nullable): array
+    {
+        self::assertImmutable($class, $property, $type);
+        $json = \in_array(strtolower($cast::columnType()), ['json', 'jsonb'], true);
+
+        $read = static function (mixed $stored) use ($class, $property, $column, $cast, $type, $nullable, $json): ?object {
+            // A row put together in PHP rather than read, as hydrateAll()
+            // can be handed: the object is already there.
+            if ($stored instanceof $type) {
+                $value = $stored;
+            } else {
+                try {
+                    $decoded = $json && \is_string($stored) ? json_decode($stored, true, flags: JSON_THROW_ON_ERROR) : $stored;
+                } catch (\JsonException $e) {
+                    throw MappingException::undecodable($class, $property, $column, $type, 'malformed JSON', $e);
+                }
+
+                // JSON's own null in a JSON column: no value, which only a
+                // nullable property can hold.
+                if ($decoded === null) {
+                    return $nullable ? null : throw MappingException::undecodable($class, $property, $column, $type, 'null');
+                }
+
+                try {
+                    $value = $cast::fromColumn($decoded);
+                } catch (\Throwable $e) {
+                    throw MappingException::undecodable($class, $property, $column, $type, get_debug_type($decoded), $e);
+                }
+            }
+
+            if (!$value instanceof $type) {
+                throw MappingException::undecodable($class, $property, $column, $type, get_debug_type($value));
+            }
+            if ($value::class !== $type) {
+                self::assertImmutable($class, $property, $value::class);
+            }
+
+            return $value;
+        };
+
+        // Given what the property holds, never null: of the property's type.
+        $store = static function (object $value) use ($class, $property, $cast, $type, $json): mixed {
+            // A subclass of the declared type is held to it as well: checked
+            // here, once per class, since the type alone cannot say.
+            if ($value::class !== $type) {
+                self::assertImmutable($class, $property, $value::class);
+            }
+            $stored = $cast::toColumn($value);
+
+            if ($json) {
+                // Zero fractions kept, so a float comes back a float.
+                return json_encode($stored, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION);
+            }
+            if (\is_array($stored)) {
+                throw MappingException::castNotScalar($class, $property, $cast);
+            }
+
+            return \is_bool($stored) ? (int) $stored : $stored;
+        };
+
+        return [$read, $store];
+    }
+
+    /**
+     * A backed enum, read by value: the case whose value the column holds.
+     * The column reader writes ->value back, so change tracking compares the
+     * value too. A value no case has is a MappingException naming the model
+     * and column, as a value object's is.
+     *
+     * @param class-string<Model> $class
+     * @return \Closure(mixed): \BackedEnum
+     */
+    private static function enumReader(string $class, string $property, string $column, string $enum): \Closure
+    {
+        if (!is_subclass_of($enum, \BackedEnum::class)) {
+            throw MappingException::unbackedEnum($class, $property, $enum);
+        }
+        $int = (new \ReflectionEnum($enum))->getBackingType()?->getName() === 'int';
+
+        return static function (mixed $stored) use ($class, $property, $column, $enum, $int): \BackedEnum {
+            if ($stored instanceof $enum) {
+                return $stored;
+            }
+
+            // As the driver read it: an integer column may come back as a
+            // numeric string, a text column holding digits as an integer.
+            $value = match (true) {
+                $int && \is_int($stored), !$int && \is_string($stored) => $stored,
+                $int && \is_string($stored) && preg_match('/^-?\d+\z/', $stored) === 1 => (int) $stored,
+                !$int && \is_int($stored) => (string) $stored,
+                default => null,
+            };
+
+            return ($value === null ? null : $enum::tryFrom($value))
+                ?? throw MappingException::undecodable($class, $property, $column, $enum, get_debug_type($stored));
+        };
+    }
+
+    /**
+     * Refuses a value class that can change after it is made.
+     *
+     * Change tracking compares stored forms, so a mutated object would still
+     * be written. It is refused anyway because of how it would be: changed
+     * through a reference something else kept -- another model it was
+     * assigned to, a variable from before -- and written by whichever save()
+     * came next, as a change nobody made to the model. Immutable, a column
+     * changes only by assignment to the model, which is what the model's
+     * changes() then describe.
+     *
+     * @param class-string<Model> $class
+     * @param class-string $valueClass
+     */
+    private static function assertImmutable(string $class, string $property, string $valueClass): void
+    {
+        if (!\array_key_exists($valueClass, self::$mutable)) {
+            self::$mutable[$valueClass] = false;
+            for ($level = new \ReflectionClass($valueClass); $level !== false; $level = $level->getParentClass()) {
+                foreach ($level->getProperties() as $declared) {
+                    if ($declared->getDeclaringClass()->getName() !== $level->getName()
+                        || $declared->isStatic() || $declared->isReadOnly() || $declared->isVirtual()) {
+                        continue;
+                    }
+                    self::$mutable[$valueClass] = "{$level->getName()}::\${$declared->getName()}";
+                    break 2;
+                }
+            }
+        }
+
+        $mutable = self::$mutable[$valueClass];
+        if ($mutable !== false) {
+            throw MappingException::mutableValue($class, $property, $valueClass, $mutable);
+        }
+    }
+
+    /**
      * The #[BeforeSave] methods, in the order save() calls them -- the
      * class's own top to bottom, then its traits', in the order it uses
      * them, then a parent class's by the same rule (see BeforeSave for why).
@@ -362,13 +610,8 @@ final class Metadata
      * @param class-string<Model> $class
      * @return (\Closure(mixed): mixed)|null
      */
-    private static function castFor(string $class, \ReflectionProperty $property): ?\Closure
+    private static function builtinReader(string $class, \ReflectionProperty $property, \ReflectionNamedType $type): ?\Closure
     {
-        $type = $property->getType();
-        if (!$type instanceof \ReflectionNamedType) {
-            return null;
-        }
-
         return match ($type->getName()) {
             'string' => static fn (mixed $v): string => (string) $v,
             'int' => static fn (mixed $v): int => (int) $v,

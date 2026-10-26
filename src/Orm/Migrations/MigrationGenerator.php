@@ -253,7 +253,8 @@ final class MigrationGenerator
      * A column from a property: its type and nullability are the column's,
      * and a default it declares the column's default. #[Column(type:)]
      * names a storage type where PHP's says too little -- jsonb for a
-     * value object.
+     * value object. Without one, a value object's column is what its Cast
+     * says it stores, and a backed enum's is its backing type.
      *
      * @return array<string, mixed>
      */
@@ -261,21 +262,27 @@ final class MigrationGenerator
     {
         $type = $property->getType();
         $declared = $property->getAttributes(ColumnAttribute::class)[0] ?? null;
-        $storage = $declared?->newInstance()->type;
+        $cast = Metadata::castOf($property->getDeclaringClass()->getName(), $property);
+        $storage = $declared?->newInstance()->type ?? ($cast === null ? null : $cast::columnType());
+        $typeName = $type instanceof \ReflectionNamedType ? $type->getName() : 'mixed';
 
-        $builderType = $storage !== null ? self::storageType($storage) : match ($type instanceof \ReflectionNamedType ? $type->getName() : 'mixed') {
-            'int' => 'integer',
-            'float' => 'float',
-            'bool' => 'boolean',
-            'array' => 'json',
-            \DateTimeImmutable::class => 'timestamp',
-            'string' => 'string',
+        $builderType = $storage !== null ? self::storageType($storage) : match (true) {
+            $typeName === 'int' => 'integer',
+            $typeName === 'float' => 'float',
+            $typeName === 'bool' => 'boolean',
+            $typeName === 'array' => 'json',
+            $typeName === \DateTimeImmutable::class => 'timestamp',
+            $typeName === 'string' => 'string',
+            is_subclass_of($typeName, \BackedEnum::class) => (new \ReflectionEnum($typeName))->getBackingType()?->getName() === 'int' ? 'integer' : 'string',
             default => 'text',
         };
 
         $column = ['type' => $builderType, 'nullable' => $type?->allowsNull() ?? true];
         if ($property->hasDefaultValue()) {
             $default = $property->getDefaultValue();
+            if ($default instanceof \BackedEnum) {
+                $default = $default->value;
+            }
             if (\is_int($default) || \is_float($default) || \is_string($default) || \is_bool($default)) {
                 $column['default'] = $default;
             }

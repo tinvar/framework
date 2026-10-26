@@ -999,11 +999,16 @@ final class Orm
                 // reference it and identity is the point of this map. A live
                 // ghost is marked initialized FIRST: writing to one would run
                 // its initializer, which is the fetch being avoided.
+                //
+                // Decoded before either: a row that does not decode -- a
+                // value-object column that fails its cast -- throws with the
+                // ghost still a ghost, not marked initialized and empty.
+                $values = $meta->decode($row);
                 if ($reflection->isUninitializedLazyObject($model)) {
                     $reflection->markLazyObjectAsInitialized($model);
                 }
 
-                $meta->hydrate($model, $row);
+                $meta->fill($model, $values);
                 $this->settle($model, $meta, $row, $resultSet);
             }
 
