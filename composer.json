@@ -10,12 +10,21 @@
     "tinvar/database": "0.4.*",
     "tinvar/support": "0.4.*"
   },
+  "require-dev": {
+    "pestphp/pest": "^4.0",
+    "symfony/yaml": "^8.1",
+    "tinvar/codegen": "0.4.*",
+    "tinvar/testing": "0.4.*"
+  },
   "suggest": {
     "ext-msgpack": "Native MessagePack codec; the pure-PHP fallback is used when absent.",
-    "ext-pdo_pgsql": "PostgreSQL driver for the ORM."
+    "ext-pdo_pgsql": "PostgreSQL driver for the ORM.",
+    "symfony/yaml": "Lets tinvar check parse the workflows it holds to the supply-chain rules."
   },
   "autoload": {
-    "psr-4": { "Tinvar\\": "src/" }
+    "psr-4": {
+      "Tinvar\\": "src/"
+    }
   },
   "config": { "sort-packages": true },
   "minimum-stability": "stable"
