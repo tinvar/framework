@@ -77,7 +77,13 @@ final readonly class SmtpTransport implements Transport
             $this->write($socket, $data . ".\r\n");
             $this->expect($socket, [250]);
 
-            $this->command($socket, 'QUIT', [221]);
+            // Accepted: the message is the server's to deliver now, and
+            // nothing after this fails the send. A QUIT that went wrong
+            // failed it, and the job's retry sent the message again.
+            try {
+                $this->command($socket, 'QUIT', [221]);
+            } catch (MailTransportException) {
+            }
         } finally {
             fclose($socket);
         }

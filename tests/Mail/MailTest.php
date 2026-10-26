@@ -490,3 +490,28 @@ it('keeps the credentials out of a failed send\'s trace as well as its message',
         ->not->toContain(substr(base64_encode($password), 0, 12))
         ->not->toContain(substr($password, 0, 12));
 });
+
+// Accepted at the end of the data, the message is the server's to deliver.
+// A QUIT that then went wrong failed the send, and SendMail's retry sent it
+// again.
+it('does not fail a send the server accepted, whatever it answers QUIT with', function () {
+    if (!\function_exists('pcntl_fork')) {
+        test()->markTestSkipped('pcntl is not available.');
+    }
+
+    [$port, $pid, $log] = smtpServer(['QUIT' => '421 shutting down']);
+    $transport = new SmtpTransport('127.0.0.1', $port, encryption: SmtpTransport::NONE, timeout: 5);
+    try {
+        $transport->send(message());
+        $thrown = null;
+    } catch (MailTransportException $e) {
+        $thrown = $e->getMessage();
+    } finally {
+        pcntl_waitpid($pid, $status);
+        $conversation = (string) file_get_contents($log);
+        unlink($log);
+    }
+
+    expect($thrown)->toBeNull()
+        ->and($conversation)->toContain("QUIT\r\n");
+});
