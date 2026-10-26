@@ -34,6 +34,16 @@ final class RendererException extends \RuntimeException
         return new self("Cannot reach the renderer at {$path}: {$reason}", 'renderer_unreachable');
     }
 
+    /**
+     * A renderer that is there, and is not the one renders may go to: the
+     * renderer is to run as a user of its own, and this one is answered by
+     * someone else, or cannot be shown not to be (SocketTrust::assertPeer()).
+     */
+    public static function untrusted(string $path, string $reason): self
+    {
+        return new self("Refusing the renderer at {$path}: {$reason}", 'renderer_untrusted');
+    }
+
     public static function closedEarly(): self
     {
         return new self('The renderer closed the socket before sending done.', 'render_incomplete');

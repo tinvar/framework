@@ -16,11 +16,29 @@ namespace Tinvar\Render;
  * Trusted: this user, root, and the owners named at construction -- the
  * renderer's own user, where it runs as one. The directory's own ancestors
  * are the deployment's to secure.
+ *
+ * Naming owners says the renderer runs as one of them, and is held to it
+ * (ADR 0028): each socket must be closed to other users, and the process
+ * that answers on it must be one of theirs, as the kernel says
+ * (assertPeer()). Where PHP cannot ask the kernel, every render is refused.
  */
 final class SocketTrust
 {
-    /** @param list<int> $trustedOwners users besides this one and root who may own sockets and their directories */
-    public function __construct(private readonly array $trustedOwners = []) {}
+    /**
+     * @param list<int> $trustedOwners the renderer's own users, where it runs
+     *        as one: besides this user and root they may own sockets and their
+     *        directories, and every connection's peer must then be one of them
+     */
+    public function __construct(
+        private readonly array $trustedOwners = [],
+        private readonly PeerCredentials $peers = new PeerCredentials(),
+    ) {}
+
+    /** Whether the renderer is said to run as a user of its own. */
+    public function separateUser(): bool
+    {
+        return $this->trustedOwners !== [];
+    }
 
     /**
      * In a directory other users can write to, such as /tmp, any of them
@@ -42,6 +60,10 @@ final class SocketTrust
     public function assertSocket(string $socketPath): bool
     {
         if (!\function_exists('posix_geteuid')) {
+            if ($this->separateUser()) {
+                throw RendererException::untrusted($socketPath, 'the renderer is to run as a user of its own, and without POSIX functions PHP cannot check who owns what');
+            }
+
             return file_exists($socketPath);
         }
 
@@ -82,8 +104,54 @@ final class SocketTrust
                 'it belongs to another user, in a directory any user can write to',
             );
         }
+        // Shared with PHP through a group of the two (mode 0660), the socket
+        // is a renderer's of its own user; open to everyone else as well, it
+        // is not the deployment that was asked for, and any local user could
+        // send its renderer renders.
+        if ($this->separateUser() && ($socket['mode'] & 0007) !== 0) {
+            throw RendererException::untrusted(
+                $socketPath,
+                \sprintf('it is mode %o, open to every user; a renderer of its own user shares its socket with one group (0660)', $socket['mode'] & 0777),
+            );
+        }
 
         return true;
+    }
+
+    /**
+     * Holds a connection to the renderer's own user, where it runs as one:
+     * whoever answers is told the render, so the process at the other end
+     * must be that user's, as the kernel says -- not this user's, and not
+     * root's, however the socket and its directory looked. A connection
+     * that cannot be asked fails the same way. Nothing is checked where no
+     * owners were named: the renderer runs as this user.
+     *
+     * @param resource $stream connected to $socketPath, with nothing sent yet
+     * @throws RendererException
+     */
+    public function assertPeer($stream, string $socketPath): void
+    {
+        if (!$this->separateUser()) {
+            return;
+        }
+
+        $uid = $this->peers->uid($stream);
+        if (\is_string($uid)) {
+            throw RendererException::untrusted(
+                $socketPath,
+                "the renderer is to run as a user of its own, and that cannot be verified: {$uid}",
+            );
+        }
+        if (!\in_array($uid, $this->trustedOwners, true)) {
+            throw RendererException::untrusted(
+                $socketPath,
+                \sprintf(
+                    "it is answered by a process of uid %d, not the renderer's own user (uid %s)",
+                    $uid,
+                    implode(', ', $this->trustedOwners),
+                ),
+            );
+        }
     }
 
     /**
@@ -102,6 +170,10 @@ final class SocketTrust
     public function assertPool(string $directory): void
     {
         if (!\function_exists('posix_geteuid')) {
+            if ($this->separateUser()) {
+                throw RendererException::untrusted($directory, 'the renderer is to run as a user of its own, and without POSIX functions PHP cannot check who owns what');
+            }
+
             return;
         }
 

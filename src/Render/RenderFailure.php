@@ -30,6 +30,7 @@ enum RenderFailure: string
     // renderer and a PHP side of different ages still agree on it.
     case RenderError = 'render_failed';
     case RendererUnreachable = 'renderer_unreachable';
+    case RendererUntrusted = 'renderer_untrusted';
     case RenderIncomplete = 'render_incomplete';
     case Deadline = 'render_deadline';
     case QueryBudget = 'render_query_budget';
@@ -49,7 +50,7 @@ enum RenderFailure: string
      */
     public function leavesRendererUsable(): bool
     {
-        return !\in_array($this, [self::RendererUnreachable, self::RenderIncomplete, self::Deadline, self::ProtocolViolation], true);
+        return !\in_array($this, [self::RendererUnreachable, self::RendererUntrusted, self::RenderIncomplete, self::Deadline, self::ProtocolViolation], true);
     }
 
     /** A few words naming the failure, for the overlay's heading and a log line. */
@@ -64,6 +65,7 @@ enum RenderFailure: string
             self::QueryFailed => 'A query failed during the render',
             self::RenderError => 'Render error',
             self::RendererUnreachable => 'Renderer unreachable',
+            self::RendererUntrusted => 'Renderer refused: not its own user',
             self::RenderIncomplete => 'Render cut short',
             self::Deadline => 'Render deadline passed',
             self::QueryBudget => 'Render query budget spent',
@@ -95,6 +97,9 @@ enum RenderFailure: string
                 . 'error it threw.',
             self::RendererUnreachable => 'Nothing is listening on the renderer\'s socket. Start it with tinvar serve, '
                 . 'or check TINVAR_SOCKET names the socket it is listening on.',
+            self::RendererUntrusted => 'TINVAR_RENDERER_USER says the renderer runs as a user of its own, and the process '
+                . 'on its socket is not that user\'s, or PHP cannot ask the kernel whose it is (Linux only). Start the '
+                . 'pool as that user, in a group shared with PHP\'s (renderer:start --socket-group), or unset it.',
             self::RenderIncomplete => 'The renderer closed the socket before it said done: it crashed or was stopped '
                 . 'mid-render. Its own output says why.',
             self::Deadline => 'The render took longer than its deadline. A slow query, or a component waiting on '

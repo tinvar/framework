@@ -48,8 +48,10 @@ final class RenderChannel
         private readonly int $maxQueryCalls = self::MAX_QUERY_CALLS,
         private readonly float $maxQuerySeconds = self::MAX_QUERY_SECONDS,
         /**
-         * Users besides this one and root who may own the socket and its
-         * directory: the renderer's own user, where it runs as one.
+         * The renderer's own user, where it runs as one (RendererUser): it
+         * may own the socket and its directory besides this user and root,
+         * and every connection must then be answered by a process of its --
+         * a render goes nowhere else (SocketTrust::assertPeer()).
          *
          * @var list<int>
          */
@@ -73,6 +75,12 @@ final class RenderChannel
          * Production's, beside the tap, which is dev's.
          */
         private readonly ?Telemetry $telemetry = null,
+        /**
+         * Who answers on a socket, where the renderer runs as a user of its
+         * own: the kernel's word, unless given -- a test's stand-in on a
+         * platform where PHP cannot ask it.
+         */
+        private readonly ?PeerCredentials $peerCredentials = null,
     ) {}
 
     /**
@@ -401,16 +409,18 @@ final class RenderChannel
      * sent twice. Only once a render frame is on its way is a failure the
      * render's (see render()).
      *
-     * Every socket is checked before it is connected to (SocketTrust); a
-     * socket that fails the check fails the render rather than being passed
-     * over, since it means someone else's renderer is where ours should be.
+     * Every socket is checked before it is connected to (SocketTrust), and
+     * every connection before anything is sent on it, where the renderer
+     * runs as a user of its own; one that fails a check fails the render
+     * rather than being passed over, since it means someone else's renderer
+     * is where ours should be.
      *
      * @return resource
      */
     private function connect()
     {
         $this->sockets ??= new RendererSockets($this->socketPath);
-        $this->trust ??= new SocketTrust($this->trustedSocketOwners);
+        $this->trust ??= new SocketTrust($this->trustedSocketOwners, $this->peerCredentials ?? new PeerCredentials());
 
         $pool = $this->sockets->isPool();
         if ($pool) {
@@ -446,6 +456,16 @@ final class RenderChannel
                 $reason = $error ?? '';
                 $refusals[$path] = $reason !== '' ? $reason : "errno {$errno}";
                 continue;
+            }
+
+            // The render frame carries this visitor's data, so who is at the
+            // other end is settled before it is sent.
+            try {
+                $this->trust->assertPeer($socket, $path);
+            } catch (RendererException $e) {
+                fclose($socket);
+
+                throw $e;
             }
 
             // Blocking, and every wait bounded by the deadline: a read is

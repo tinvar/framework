@@ -15,7 +15,9 @@ use Tinvar\Protocol\ProtocolException;
  * A health frame alone on a connection, answered with one 'healthy' frame.
  * A connect alone would prove nothing -- the kernel accepts connections for
  * a renderer whose event loop is stuck -- and a render would need an app.
- * The socket is checked as a render's would be before anything is sent.
+ * The socket and the connection are checked as a render's would be before
+ * anything is sent: a renderer of its own user that is answered by anyone
+ * else is reported, not counted as healthy.
  */
 final class RendererHealth
 {
@@ -76,6 +78,13 @@ final class RendererHealth
         if ($socket === false) {
             $reason = $error ?? '';
             throw RendererException::cannotConnect($socketPath, $reason !== '' ? $reason : "errno {$errno}");
+        }
+        try {
+            $this->trust->assertPeer($socket, $socketPath);
+        } catch (RendererException $e) {
+            fclose($socket);
+
+            throw $e;
         }
 
         // The timeout is for the whole answer. Set once on the stream, it
