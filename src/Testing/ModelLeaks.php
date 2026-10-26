@@ -20,8 +20,15 @@ use Tinvar\Orm\Orm;
  * model crossing whole. It is a column's value copied into a Data field --
  * `new CustomerData(..., hash: $customer->passwordHash)` -- or into a string
  * a field carries. So the check is by value: every row the request read is
- * snapshotted before the reset clears the identity map, and the value of
- * each column no Data object declares is looked for in what was sent.
+ * snapshotted before the reset clears it, and the value of each column no
+ * Data object declares is looked for in what was sent.
+ *
+ * Every row read is the Orm's record of reads (Orm::recordReads()), which
+ * the client turns on around a render, beside the identity map. The map
+ * alone held too little: a row read across tenants or a subtree never
+ * enters it, and leaving acrossTenants() empties it, so a staff page's
+ * reads -- and everything a page read before one acrossTenants() call --
+ * were never looked for.
  *
  * Declared means named by a Data field. A model some Data class says it
  * #[MapsFrom] is held to those classes' fields and #[From] sources; any other
@@ -53,7 +60,12 @@ final class ModelLeaks
         $declared = [];
         $exposedBy = [];
 
-        foreach ($orm->identityMap()->all() as $model) {
+        $read = [];
+        foreach ([...$orm->identityMap()->all(), ...$orm->readsRecorded()] as $model) {
+            $read[spl_object_id($model)] = $model;
+        }
+
+        foreach ($read as $model) {
             // A ghost a relation registered and nothing loaded holds no row;
             // reading its properties would load one.
             if (!$model instanceof Model || !Orm::holdsRow($model)) {

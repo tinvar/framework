@@ -109,6 +109,14 @@ final class Orm
     private array $entered = [];
 
     /**
+     * Every model a read has filled since recordReads() turned recording
+     * on, for the testing layer's model-leak check; null while it is off.
+     *
+     * @var list<Model>|null
+     */
+    private ?array $reads = null;
+
+    /**
      * @param TenantHierarchy|null $tenants the application's tenant tree: what
      *        withinSubtree() reads across, and what lets a host's tenant bound a
      *        session's (ResolveTenant). Null for tenants with no hierarchy.
@@ -142,6 +150,31 @@ final class Orm
     public function identityMap(): IdentityMap
     {
         return $this->identityMap;
+    }
+
+    /**
+     * Turns on or off the record of every model a read fills, which
+     * readsRecorded() answers with: for the testing layer's model-leak
+     * check (Tinvar\Testing\ModelLeaks), which looks for what a request
+     * read in what it sent. The identity map is not that record: reads
+     * across tenants or a subtree never enter it, and leaving
+     * acrossTenants() empties it, so a page reading there was not checked
+     * at all. Off unless a test turns it on; flush() empties it.
+     */
+    public function recordReads(bool $on): void
+    {
+        $this->reads = $on ? ($this->reads ?? []) : null;
+    }
+
+    /**
+     * The models reads have filled since recording was turned on, or since
+     * the last flush(); none while it is off.
+     *
+     * @return list<Model>
+     */
+    public function readsRecorded(): array
+    {
+        return $this->reads ?? [];
     }
 
     /** The application's tenant tree, or null when its tenants have none. */
@@ -194,6 +227,9 @@ final class Orm
         $this->subtreeGrantMain = null;
         $this->subtreeGrantByFiber = new \WeakMap();
         $this->entered = [];
+        if ($this->reads !== null) {
+            $this->reads = [];
+        }
 
         // A transaction still open here was left in a fiber nobody resumes.
         // Its frames would hold the next request's afterCommit() callbacks
@@ -911,6 +947,10 @@ final class Orm
         $model->attach($this, $resultSet);
         $this->installRelations($model, $meta, $row);
         $model->markClean($meta->writeValues($model));
+
+        if ($this->reads !== null) {
+            $this->reads[] = $model;
+        }
     }
 
     /**

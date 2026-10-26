@@ -248,16 +248,23 @@ final readonly class Client
         $rendered = static function (RenderResult $measured, string $bytes) use ($kernel, &$result, &$body, &$snapshot, &$statements): void {
             $result = $measured;
             $body = $bytes;
-            // What the request read, while it is still in the identity map:
-            // the reset clears it the moment handle() returns.
+            // What the request read, while the Orm still holds it: the
+            // reset clears it the moment handle() returns.
             $snapshot = ModelLeaks::snapshot($kernel->orm);
             $statements = $kernel->orm->connection()->statementCount();
         };
 
-        $response = $this->app->handleWith(
-            $request,
-            fn (LoadedRoute $loaded, Request $passed): Response => $this->app->respond($loaded, $passed, $rendered),
-        );
+        // Every read recorded, for the leak check: the identity map misses
+        // those across tenants or a subtree (ModelLeaks).
+        $kernel->orm->recordReads(true);
+        try {
+            $response = $this->app->handleWith(
+                $request,
+                fn (LoadedRoute $loaded, Request $passed): Response => $this->app->respond($loaded, $passed, $rendered),
+            );
+        } finally {
+            $kernel->orm->recordReads(false);
+        }
 
         // "Renderer errors fail the test instead of falling back to an
         // error page": the cause itself, where the application kept it.
