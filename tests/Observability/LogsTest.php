@@ -277,6 +277,50 @@ describe('a log file', function () {
         }
     });
 
+    // In a process of its own, with nothing denied by the umask: StreamSink's
+    // fopen() is watched (a function of its namespace, which an unqualified
+    // call finds first), and asked what mode a file it created there would
+    // have. Created 0666 and narrowed by chmod() after, it was readable by
+    // every user on the machine for the moment in between -- long enough to
+    // open it and keep reading every line written after.
+    it('is never readable by others, not even for the moment it is created', function () {
+        $path = sys_get_temp_dir() . '/tinvar-log-' . bin2hex(random_bytes(4)) . '.log';
+        $script = sprintf(<<<'PHP'
+            namespace Tinvar\Observability;
+
+            function fopen(string $filename, string $mode, bool $use_include_path = false, $context = null)
+            {
+                if ($filename === %2$s) {
+                    clearstatcache(true, $filename);
+                    $GLOBALS['created'][] = file_exists($filename) ? fileperms($filename) & 0777 : 0666 & ~umask();
+                }
+
+                return \fopen($filename, $mode, $use_include_path, $context);
+            }
+
+            require %1$s;
+            umask(0);
+            StreamSink::file(%2$s)->write('one');
+            echo json_encode(['created' => $GLOBALS['created'] ?? [], 'umask' => umask(), 'mode' => fileperms(%2$s) & 0777]);
+            PHP, var_export(\dirname(__DIR__, 4) . '/vendor/autoload.php', true), var_export($path, true));
+
+        try {
+            $process = proc_open([PHP_BINARY, '-r', $script], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+            $output = stream_get_contents($pipes[1]);
+            $errors = stream_get_contents($pipes[2]);
+            proc_close($process);
+            $seen = json_decode((string) $output, true);
+
+            expect($seen)->toBeArray("No result: {$errors}")
+                ->and($seen['created'])->not->toBe([])
+                ->and(array_filter($seen['created'], static fn (int $mode): bool => ($mode & 0o007) !== 0))->toBe([])
+                ->and($seen['umask'])->toBe(0, 'the umask is put back')
+                ->and($seen['mode'])->toBe(0640);
+        } finally {
+            @unlink($path);
+        }
+    });
+
     it('is a path, not a stream wrapper', function () {
         StreamSink::file('http://example.com/log');
     })->throws(\InvalidArgumentException::class);

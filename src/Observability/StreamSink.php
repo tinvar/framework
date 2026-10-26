@@ -15,8 +15,8 @@ namespace Tinvar\Observability;
  * a writer keeps the file it opened.
  *
  * Opened on the first line, not when built: a worker that never logs never
- * touches the file. Created readable by its owner and group alone, since
- * even redacted, a log says who did what when.
+ * touches the file. Created readable by its owner and group alone, from
+ * its first byte, since even redacted, a log says who did what when.
  */
 final class StreamSink implements LogSink
 {
@@ -70,11 +70,34 @@ final class StreamSink implements LogSink
             return $this->stream;
         }
 
-        $created = $this->isFile && !file_exists($this->target);
-        $stream = @fopen($this->target, $this->isFile ? 'ab' : 'wb');
+        if (!$this->isFile) {
+            $stream = @fopen($this->target, 'wb');
+            if ($stream === false) {
+                throw new \RuntimeException("Could not open the log at {$this->target}.");
+            }
+
+            return $this->stream = $stream;
+        }
+
+        // Created under a umask that denies everyone else, not narrowed by
+        // chmod() after: fopen() made it 0666 less the umask, and for the
+        // moment before the chmod() another user could open it and keep
+        // reading every line written after. The umask is the process's, so
+        // it is only ever narrowed here -- a thread creating a file at the
+        // same moment gets one no wider than it would have.
+        $created = !file_exists($this->target);
+        $previous = umask();
+        umask($previous | 0o027);
+        try {
+            $stream = @fopen($this->target, 'ab');
+        } finally {
+            umask($previous);
+        }
         if ($stream === false) {
             throw new \RuntimeException("Could not open the log at {$this->target}.");
         }
+        // And then exactly 0640, whatever the umask: a stricter one would
+        // keep the group out of a log it is meant to read.
         if ($created) {
             @chmod($this->target, 0640);
         }
