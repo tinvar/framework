@@ -43,10 +43,14 @@ final readonly class LiveToken
     public const int MAX_LIFETIME = 86400;
 
     /**
-     * Topics one token may name. The hub's access token carries every topic
-     * a client listens to, in a cookie, and a cookie stops at about 4 KB.
+     * Topics one token may name, and one grant may carry. The hub's access
+     * token carries every topic a client listens to, in a cookie, and a
+     * browser keeps none whose name and value pass 4,096 bytes: each topic
+     * costs 56 of them, and 64 came to 4,122 -- the cookie dropped, the
+     * stream refused, and the client trading again for good. 56 leave room
+     * for an audience of Mercure::MAX_AUDIENCE_BYTES.
      */
-    public const int MAX_TOPICS = 64;
+    public const int MAX_TOPICS = 56;
 
     /** A segment: a layout's key, `page`, or WHOLE. */
     private const string SEGMENT = '/^[A-Za-z0-9_.*-]{1,64}\z/';

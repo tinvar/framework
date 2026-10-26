@@ -200,6 +200,15 @@ final class SubscribeEndpoint
         $topics = array_keys($granted);
         sort($topics);
 
+        // More than one grant can carry: each token within its cap, a page's
+        // and its boundaries' together past it. Granted, the browser would
+        // drop the cookie and the stream be refused, and the client trade
+        // again for good; granted nothing, it stops listening. Not a subset
+        // either -- which page's updates to miss is no choice to make here.
+        if (\count($topics) > LiveToken::MAX_TOPICS) {
+            $topics = [];
+        }
+
         if ($topics === []) {
             // Nothing to listen to: whatever an earlier grant allowed goes.
             return $this->live->hub->revoke(self::json([

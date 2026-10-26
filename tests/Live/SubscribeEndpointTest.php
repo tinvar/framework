@@ -240,6 +240,25 @@ describe('a token that cannot be used', function () {
             ->and($body['topics'])->toBe([$live->topics->of("\0orders")]);
     });
 
+    // Each token within its cap, together past what one grant's cookie can
+    // carry: granted, the browser dropped the cookie, the stream was refused,
+    // and the client traded again and again. Granted nothing, it stops.
+    it('grants nothing when the tokens together name more topics than one grant may carry', function () {
+        [$endpoint, $hub, $live, $auth] = endpoint();
+        $auth->login(new Member('u-1'), 'e1');
+        $half = intdiv(LiveToken::MAX_TOPICS, 2) + 1;
+        $page = token($live, array_map(static fn (int $i): string => "\0page:{$i}", range(1, $half)));
+        $fragment = token($live, array_map(static fn (int $i): string => "\0fragment:{$i}", range(1, $half)));
+
+        $body = body(trade($endpoint, [$page, $fragment]));
+
+        expect($body['topics'])->toBe([])
+            ->and($body['url'])->toBeNull()
+            ->and($body['tokens'])->toHaveCount(2)
+            ->and($hub->grants)->toBe([])
+            ->and($hub->revoked)->toBe(1);
+    });
+
     it('takes away whatever an earlier grant allowed when nothing is left to grant', function () {
         [$endpoint, $hub, $live, $auth] = endpoint();
         $auth->login(new Member('u-1'), 'e1');

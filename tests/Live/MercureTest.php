@@ -76,6 +76,18 @@ describe('a grant', function () {
             ->and($claims['authorization_details'][0]['topics'])->toBe([['match' => 'tinvar:a']]);
     });
 
+    // A browser keeps no cookie whose name and value pass 4,096 bytes: the
+    // stream then opened with no grant, was refused, and the client traded
+    // and opened again for good. 64 topics came to 4,122.
+    it('fits every topic a trade may grant in the cookie a browser keeps, under a long audience', function () {
+        $hub = Mercure::remote('http://hub.internal/', PUBLISHER, SUBSCRIBER, str_repeat('a', 256), post: static fn (): int => 200);
+        $topics = array_map(static fn (int $i): string => 'tinvar:' . substr(str_repeat((string) $i, 22), 0, 22), range(1, \Tinvar\Live\LiveToken::MAX_TOPICS));
+
+        $cookie = $hub->grant(Response::make(200), $topics, time() + 300, str_repeat('f', 32))->cookies()[Mercure::COOKIE];
+
+        expect(\strlen(explode(';', $cookie)[0]))->toBeLessThanOrEqual(4096);
+    });
+
     it('is taken away by an emptied cookie', function () {
         $hub = Mercure::remote('http://hub.internal/', PUBLISHER, SUBSCRIBER, AUDIENCE, post: static fn (): int => 200);
 

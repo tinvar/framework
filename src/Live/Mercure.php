@@ -35,6 +35,12 @@ final readonly class Mercure implements Hub
     /** The `iss` the hub trusts, named by its `issuer` block. */
     public const string ISSUER = 'tinvar';
 
+    /**
+     * The longest audience a grant may name: with LiveToken::MAX_TOPICS
+     * topics beside it, what still fits the cookie a browser keeps.
+     */
+    public const int MAX_AUDIENCE_BYTES = 256;
+
     /** The `type` of a Mercure authorization detail. */
     public const string DETAIL = 'https://mercure.rocks/authorization-detail';
 
@@ -49,6 +55,11 @@ final readonly class Mercure implements Hub
     ) {
         if (\strlen($subscriberKey) < 32) {
             throw new \InvalidArgumentException('A hub key must be at least 32 bytes.');
+        }
+        if (\strlen($audience) > self::MAX_AUDIENCE_BYTES) {
+            throw new \InvalidArgumentException(
+                'A hub audience must be at most ' . self::MAX_AUDIENCE_BYTES . ' bytes: every grant carries it in a cookie of 4 KB at most.',
+            );
         }
     }
 
