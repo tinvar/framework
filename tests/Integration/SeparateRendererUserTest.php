@@ -162,6 +162,7 @@ function peersOfThisUser(string $dir): PeerCredentials
     $uid = posix_geteuid();
     mkdir("{$dir}/proc/4242", 0700, true);
     file_put_contents("{$dir}/proc/4242/status", "Uid:\t{$uid}\t{$uid}\t{$uid}\t{$uid}\n");
+    file_put_contents("{$dir}/proc/4242/stat", '4242 (node) S ' . implode(' ', array_fill(0, 18, '0')) . " 81234 0 0\n");
 
     return new PeerCredentials('Linux', 'x86_64', "{$dir}/proc", static fn ($stream): int => 4242);
 }
@@ -289,6 +290,12 @@ describe('a pool run as another user', function () use ($root) {
         // As systemd's RuntimeDirectory= makes it: the renderers' user's, 0700.
         mkdir($pool, 0700);
         chown($pool, $renderer['uid']);
+        // Made here, in a directory only root may write, for the pool to append to.
+        touch("{$dir}/pool.log");
+        chown("{$dir}/pool.log", $renderer['uid']);
+        // PHP's user's own, for a renderer of PHP's user to listen in.
+        mkdir("{$dir}/php", 0700);
+        chown("{$dir}/php", $php['uid']);
 
         // The checkout must be readable by the renderers' user for this to run
         // at all -- a deployment's permissions, which a checkout under /root
@@ -336,7 +343,29 @@ describe('a pool run as another user', function () use ($root) {
             };
             $inGroup = asUser('daemon', [$group], $render);
             $outsideGroup = asUser('daemon', [], $render);
+            // Held to another user, the pool's directory is that user's no longer.
             $heldToAnother = asUser('daemon', [$group], static fn (): string => renderOnce(channel($pool, [$php['uid'] + 100_000])));
+            // A renderer of PHP's own user, where the files pass every check:
+            // the kernel says who answers, and it is not the renderers' user.
+            $wrongPeer = asUser('daemon', [$group], static function () use ($dir, $renderer): string {
+                $server = stream_socket_server("unix://{$dir}/php/r.sock");
+                \assert($server !== false);
+                chmod("{$dir}/php/r.sock", 0600);
+
+                return renderOnce(channel("{$dir}/php/r.sock", [$renderer['uid']]));
+            });
+            // The kernel's own answer, read the way a render reads it.
+            $peer = asUser('daemon', [$group], static function () use ($pool): string {
+                $socket = stream_socket_client('unix://' . socketsIn($pool)[0]);
+                \assert($socket !== false);
+
+                return (string) new PeerCredentials()->uid($socket);
+            });
+            // Open to every user, a socket is refused however it is answered.
+            foreach (socketsIn($pool) as $socket) {
+                chmod($socket, 0666);
+            }
+            $openToAll = asUser('daemon', [$group], $render);
         } finally {
             posix_kill($supervisor, SIGTERM);
             pcntl_waitpid($supervisor, $status);
@@ -350,8 +379,11 @@ describe('a pool run as another user', function () use ($root) {
             // Not in the group, the directory is closed to it: there are no
             // renderers to be found.
             ->and($outsideGroup)->toStartWith('threw: Cannot reach the renderer at')
-            ->and($heldToAnother)->toContain('threw: Refusing the renderer at')
-            ->and($heldToAnother)->toContain("it is answered by a process of uid {$renderer['uid']}");
+            ->and($heldToAnother)->toContain('the pool directory belongs to another user')
+            ->and($wrongPeer)->toStartWith("threw: Refusing the renderer at {$dir}/php/r.sock")
+            ->and($wrongPeer)->toContain("it is answered by a process of uid {$php['uid']}, not the renderer's own user (uid {$renderer['uid']})")
+            ->and($peer)->toBe((string) $renderer['uid'])
+            ->and($openToAll)->toContain('it is mode 666, open to every user');
     });
 })->skip(
     fn () => PHP_OS_FAMILY !== 'Linux' || !\function_exists('posix_geteuid') || posix_geteuid() !== 0 || posix_getpwnam('nobody') === false || posix_getpwnam('daemon') === false,
