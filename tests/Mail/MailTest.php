@@ -457,3 +457,36 @@ it('refuses credentials over a plain connection to anywhere but this machine', f
         ->toThrow(\InvalidArgumentException::class, 'only over TLS')
         ->and(new SmtpTransport('smtp.example.test', 587, 'mailer', 's3cret'))->toBeInstanceOf(SmtpTransport::class);
 });
+
+// A failed AUTH's message names no credentials, and its trace -- written to
+// the failed job and the log -- named them as the arguments of the calls
+// that sent them, the first fifteen bytes of each, base64'd.
+it('keeps the credentials out of a failed send\'s trace as well as its message', function () {
+    if (!\function_exists('pcntl_fork')) {
+        test()->markTestSkipped('pcntl is not available.');
+    }
+
+    $password = 's3cret-password-of-the-relay';
+    [$port, $pid, $log] = smtpServer([
+        'EHLO' => "250-smtp.test\r\n250 AUTH LOGIN",
+        'AUTH' => '334 VXNlcm5hbWU6',
+        strtoupper(base64_encode('mailer')) => '334 UGFzc3dvcmQ6',
+        strtoupper(base64_encode($password)) => '535 authentication failed',
+    ]);
+    $ignored = ini_set('zend.exception_ignore_args', '0');
+    $transport = new SmtpTransport('127.0.0.1', $port, 'mailer', $password, SmtpTransport::NONE, timeout: 5);
+    try {
+        $transport->send(message());
+        $trace = null;
+    } catch (MailTransportException $e) {
+        $trace = $e->getMessage() . "\n" . $e->getTraceAsString();
+    } finally {
+        ini_set('zend.exception_ignore_args', (string) $ignored);
+        pcntl_waitpid($pid, $status);
+        unlink($log);
+    }
+
+    expect($trace)->toContain('535 authentication failed')
+        ->not->toContain(substr(base64_encode($password), 0, 12))
+        ->not->toContain(substr($password, 0, 12));
+});

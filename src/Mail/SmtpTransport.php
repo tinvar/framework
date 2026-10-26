@@ -124,11 +124,17 @@ final readonly class SmtpTransport implements Transport
     }
 
     /**
+     * Sends one command and reads its reply.
+     *
+     * The line is sensitive, as the bytes written are: an AUTH line is a
+     * credential, base64'd, and a failure's trace -- kept with the failed
+     * job and logged -- would show the start of it as the call's argument.
+     *
      * @param resource  $socket
      * @param list<int> $accepted
      * @return list<string> the reply's lines
      */
-    private function command($socket, string $line, array $accepted, bool $secret = false): array
+    private function command($socket, #[\SensitiveParameter] string $line, array $accepted, bool $secret = false): array
     {
         $this->write($socket, $line . "\r\n");
 
@@ -136,7 +142,7 @@ final readonly class SmtpTransport implements Transport
     }
 
     /** @param resource $socket */
-    private function write($socket, string $bytes): void
+    private function write($socket, #[\SensitiveParameter] string $bytes): void
     {
         for ($written = 0; $written < \strlen($bytes);) {
             $n = @fwrite($socket, substr($bytes, $written));
