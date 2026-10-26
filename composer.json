@@ -5,8 +5,10 @@
   "license": "MIT",
   "require": {
     "php": ">=8.5",
+    "ext-json": "*",
     "ext-sockets": "*",
-    "ext-json": "*"
+    "tinvar/database": "0.4.*",
+    "tinvar/support": "0.4.*"
   },
   "suggest": {
     "ext-msgpack": "Native MessagePack codec; the pure-PHP fallback is used when absent.",

@@ -18,13 +18,13 @@ use Tinvar\Orm\PdoConnection;
 function checkout(): string
 {
     $root = sys_get_temp_dir() . '/tinvar-seed-template-' . bin2hex(random_bytes(6));
-    foreach (['examples/shop/database/migrations', 'examples/shop/app/Models', 'packages/framework/src/Orm'] as $directory) {
+    foreach (['examples/shop/database/migrations', 'examples/shop/app/Models', 'packages/database/src/Orm'] as $directory) {
         mkdir("{$root}/{$directory}", 0o700, true);
     }
     file_put_contents("{$root}/examples/shop/database/migrations/2026_10_24_000001_create_notes.php", "<?php // notes\n");
     file_put_contents("{$root}/examples/shop/database/Seeder.php", "<?php // seeds 1 note per customer\n");
     file_put_contents("{$root}/examples/shop/app/Models/Note.php", "<?php // a note\n");
-    file_put_contents("{$root}/packages/framework/src/Orm/Connection.php", "<?php // the ORM\n");
+    file_put_contents("{$root}/packages/database/src/Orm/Connection.php", "<?php // the ORM\n");
 
     return $root;
 }
@@ -107,7 +107,7 @@ it('seeds again when a seeder, a model or the ORM changes', function (string $fi
 })->with([
     'the seeder' => 'examples/shop/database/Seeder.php',
     'a model' => 'examples/shop/app/Models/Note.php',
-    'the ORM' => 'packages/framework/src/Orm/Connection.php',
+    'the ORM' => 'packages/database/src/Orm/Connection.php',
 ]);
 
 it('does not seed again for the shop\'s own database beside the migrations', function () {

@@ -111,7 +111,13 @@ final readonly class Layers
                 'testing' => ['support', 'database', 'framework'],
                 'codegen' => ['support', 'database', 'framework'],
             ],
-            ['packages/framework/src' => 'Tinvar\\', 'packages/codegen/src' => 'Tinvar\\Codegen\\'],
+            [
+                'packages/support/src' => 'Tinvar\\',
+                'packages/database/src' => 'Tinvar\\',
+                'packages/framework/src' => 'Tinvar\\',
+                'packages/testing/src' => 'Tinvar\\',
+                'packages/codegen/src' => 'Tinvar\\Codegen\\',
+            ],
         );
     }
 
