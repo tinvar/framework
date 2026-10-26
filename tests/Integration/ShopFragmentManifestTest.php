@@ -153,6 +153,9 @@ describe('the produced manifest', function () {
         expect($status)->toBe(0, $output)
             ->and($output)->toContain('defers  orders.show (ShippingUpdates)')
             ->and($output)->toContain('defers  shop.catalog (Availability)')
+            // And each route's query allowlist (ShopQueryAllowlistTest).
+            ->and($output)->toContain('queries orders.show (orders.shipments)')
+            ->and($output)->toContain('queries shop.signIn (none)')
             ->and($manifest->routes())->toEqualCanonicalizing(['orders.show', 'shop.catalog'])
             ->and($manifest->componentsFor('orders.show'))->toBe(['ShippingUpdates'])
             ->and($manifest->componentsFor('shop.catalog'))->toBe(['Availability'])
