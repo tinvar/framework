@@ -24,10 +24,10 @@ namespace Tinvar\Http;
  * fixed windows: a caller can spend the end of one window and the start of
  * the next back to back.
  *
- * **APCu forgets everything at once.** With `apc.ttl` at 0, its default,
- * APCu clears the whole cache once it is full rather than make room, and
- * every count goes with it; anyone can fill it, since each new address --
- * an IPv6 /64 -- is new entries. So a limit that guards something an
+ * **APCu forgets everything at once.** Full of entries still live, APCu
+ * clears the whole cache rather than make room -- whatever `apc.ttl` says,
+ * measured on 5.1.28 -- and every count goes with it; anyone can fill it,
+ * since each new address -- an IPv6 /64 -- is new entries. So a limit that guards something an
  * attacker would guess at, such as passwords, does not count here at all,
  * but in a store nothing else fills. What stays here is a budget against
  * load, and for it this store says when a wipe happened: an entry set with

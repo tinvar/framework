@@ -164,10 +164,9 @@ final class Visitor
 
 /**
  * APCu's add, increment, fetch and compare-and-swap over an array -- with
- * wipe(), what APCu does once it fills: every entry goes at once. With
- * `apc.ttl` at 0, its default, it clears the whole cache rather than make
- * room, and anyone can fill it: each new address, an IPv6 /64, is new
- * throttle entries.
+ * wipe(), what APCu does once it fills with entries still live: every entry
+ * goes at once, whatever `apc.ttl` says. Anyone can fill it: each new
+ * address, an IPv6 /64, is new throttle entries.
  */
 final class WipeableApcu
 {

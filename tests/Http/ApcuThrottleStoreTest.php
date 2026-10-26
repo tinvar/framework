@@ -90,7 +90,7 @@ final class FakeApcu
         );
     }
 
-    /** What APCu does once it is full, with `apc.ttl` at 0: every entry goes at once. */
+    /** What APCu does once it is full of entries still live: every entry goes at once. */
     public function wipe(): void
     {
         $this->entries = [];

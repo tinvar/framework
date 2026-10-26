@@ -125,9 +125,9 @@ it('counts every hit once across all worker threads', function () use ($root) {
         ->and(\count(array_unique(array_column($answers, 'worker'))))->toBeGreaterThan(1, 'more than one worker thread served');
 });
 
-// What ApcuThrottleStore cannot stop: APCu, full, clears every entry, a
-// count among them. With apc.ttl at 0, its default, a flood of new keys --
-// what each new address is -- fills it. Shown on real APCu, kept small: the
+// What ApcuThrottleStore cannot stop: APCu, full of entries still live,
+// clears every entry, a count among them, and a flood of new keys -- what
+// each new address is -- fills it. Shown on real APCu, kept small: the
 // store finds the wipe by the entry it set with no TTL, says so, and, built
 // to fail closed, counts the window the wipe reached into as spent.
 it('finds APCu cleared by a flood of keys, and counts the window it reached into as spent', function () use ($root) {
