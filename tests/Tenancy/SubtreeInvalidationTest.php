@@ -92,6 +92,18 @@ final readonly class ScriptActions
 
         return ActionResult::revalidateTags('scripts');
     }
+
+    /** Adds a script as the tenant named, from the tenant in force: as ADR 0047 says a child's row is written. */
+    #[Action, NoAuthorization(reason: 'fixture: exercises invalidation, not access control')]
+    public function addAs(string $tenant, string $name): ActionResult
+    {
+        $this->orm->actAs($tenant, fn (): int => $this->orm->connection()->execute(
+            'INSERT INTO scripts VALUES (?, ?, ?)',
+            [Uuid::v7(), $name, $this->orm->tenant()],
+        ));
+
+        return ActionResult::revalidateTags('scripts');
+    }
 }
 
 /** The reseller's page, its loaders and queries, and the actions any tenant runs. */
@@ -175,6 +187,27 @@ final class World
 
         return array_column($this->hub->published, 'topic');
     }
+
+    /** Runs the action as $runAs, writing as $tenant, and answers the topics the hub was told of. */
+    public function addAs(string $runAs, string $tenant, string $name): array
+    {
+        $this->hub->published = [];
+        $this->orm->actAs($runAs, fn (): ActionResult => $this->actions->run('ScriptActions.addAs', ['tenant' => $tenant, 'name' => $name]));
+
+        return array_column($this->hub->published, 'topic');
+    }
+
+    /** The topics a page reading `scripts` as $tenant alone listens on. */
+    public function listeningAs(string $tenant): array
+    {
+        $this->loaders->forget();
+
+        return $this->orm->actAs($tenant, function (): array {
+            $this->loaders->read('scripts');
+
+            return array_map($this->topics->of(...), array_keys($this->loaders->all()));
+        });
+    }
 }
 
 describe('a page reading across a subtree', function () {
@@ -232,6 +265,33 @@ it('leaves a parent\'s page reading only its own tenant alone when a child write
         ->and(array_intersect($listening, $told))->toBe([])
         ->and($world->add('reseller', 'reseller-new'))->toContain($listening[0])
         ->and($exact->get('scripts.own', $declaration, [], 'reseller')['hit'])->toBeFalse();
+});
+
+// The way ADR 0047 has a parent write a child's row is actAs() the child,
+// and the write is the child's: its own pages, and their cached queries,
+// are told of it. They were not -- the action's tags were announced as the
+// tenant it ran as, the parent, and the child's pages stayed stale until
+// their entries expired or they were reloaded.
+it('tells a child\'s own pages of a write its parent made as the child', function () {
+    $world = new World();
+    $exact = new QueryCache($world->store, new AuthContext());
+    $declaration = new Query(cache: '5m', tags: static function (): array {
+        return ['scripts'];
+    });
+    $exact->put('scripts.own', $declaration, [], 'acme', ['acme-script']);
+    $exact->put('scripts.own', $declaration, [], 'reseller', ['reseller-script']);
+    $exact->put('scripts.own', $declaration, [], 'globex', ['globex-script']);
+    $child = $world->listeningAs('acme');
+    $parent = $world->listeningAs('reseller');
+    $beside = $world->listeningAs('globex');
+
+    $told = $world->addAs('reseller', 'acme', 'acme-new');
+
+    expect(array_intersect($child, $told))->not->toBe([])
+        ->and($exact->get('scripts.own', $declaration, [], 'acme')['hit'])->toBeFalse()
+        ->and(array_intersect($parent, $told))->not->toBe([], 'the tenant the action ran as is still told')
+        ->and(array_intersect($beside, $told))->toBe([])
+        ->and($exact->get('scripts.own', $declaration, [], 'globex')['hit'])->toBeTrue();
 });
 
 describe('the tenants above a tenant', function () {

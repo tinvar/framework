@@ -466,3 +466,37 @@ it('names a dangling relation instead of leaving a hollow object', function () {
     expect(static fn (): string => $dangling->site->code)
         ->toThrow(DanglingRelation::class, 'which no scoped read returns');
 });
+
+// What an action wrote as another tenant it wrote there, and that tenant's
+// pages are the ones its tags must reach (ActionRunner).
+it('names every tenant a piece of work ran as, the one in force first', function () {
+    $orm = tenantOrm(new TenantFixture());
+
+    [$result, $tenants] = $orm->actAs('acme', fn (): array => $orm->tenantsEnteredBy(function () use ($orm): string {
+        $orm->actAs('42', fn (): null => null);
+        $orm->actAs('globex', fn (): string => $orm->actAs('42', fn (): string => 'done'));
+
+        return 'returned';
+    }));
+    [, $none] = $orm->actAs('acme', fn (): array => $orm->tenantsEnteredBy(fn (): null => null));
+
+    expect($result)->toBe('returned')
+        ->and($tenants)->toBe(['acme', '42', 'globex'], 'a tenant id of digits stays a string')
+        ->and($none)->toBe(['acme']);
+});
+
+it('keeps an outer piece of work\'s tenants through an inner one, and forgets them at the boundary', function () {
+    $orm = tenantOrm(new TenantFixture());
+
+    [[, $inner], $outer] = $orm->actAs('acme', fn (): array => $orm->tenantsEnteredBy(
+        fn (): array => $orm->tenantsEnteredBy(fn (): null => $orm->actAs('globex', fn (): null => null)),
+    ));
+    [, $flushed] = $orm->actAs('acme', fn (): array => $orm->tenantsEnteredBy(function () use ($orm): void {
+        $orm->actAs('globex', fn (): null => null);
+        $orm->flush();
+    }));
+
+    expect($inner)->toBe(['acme', 'globex'])
+        ->and($outer)->toBe(['acme', 'globex'])
+        ->and($flushed)->toBe([''], 'the request ended under it, and no tenant is in force');
+});

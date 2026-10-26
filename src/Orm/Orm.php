@@ -95,6 +95,15 @@ final class Orm
     private \WeakMap $subtreeGrantByFiber;
 
     /**
+     * The tenants switched into while tenantsEnteredBy() runs: one frame per
+     * call open. What an action wrote as another tenant it wrote there, and
+     * that tenant's pages are the ones to tell.
+     *
+     * @var list<non-empty-list<string>>
+     */
+    private array $entered = [];
+
+    /**
      * @param TenantHierarchy|null $tenants the application's tenant tree: what
      *        withinSubtree() reads across, and what lets a host's tenant bound a
      *        session's (ResolveTenant). Null for tenants with no hierarchy.
@@ -179,6 +188,7 @@ final class Orm
         $this->subtreeByFiber = new \WeakMap();
         $this->subtreeGrantMain = null;
         $this->subtreeGrantByFiber = new \WeakMap();
+        $this->entered = [];
 
         // A transaction still open here was left in a fiber nobody resumes.
         // Its frames would hold the next request's afterCommit() callbacks
@@ -208,6 +218,12 @@ final class Orm
             return;
         }
 
+        foreach ($this->entered as $frame => $tenants) {
+            if (!\in_array($tenant, $tenants, true)) {
+                $this->entered[$frame][] = $tenant;
+            }
+        }
+
         // The relation-row cache is namespaced by tenant (relationCacheKey),
         // so a switch cannot read across one -- and the scheduler is left
         // alone. Nulling it here meant any actAs() inside a render silently
@@ -229,6 +245,44 @@ final class Orm
     public function tenant(): string
     {
         return $this->identityMap->tenant();
+    }
+
+    /**
+     * Runs $work, and answers what it returned with every tenant it ran as:
+     * the tenant in force, first, and each one it switched into -- actAs(),
+     * a job's or a webhook's tenant -- in the order it first did.
+     *
+     * For the tags an action invalidates (ActionRunner). ADR 0047 has code
+     * write a child's row by actAs()ing the child, and the write is the
+     * child's: announced as the tenant the action ran as alone, the child's
+     * own pages and cached queries were never told. A tenant entered only to
+     * read is told too -- a refetch for nothing, which is waste, not a leak:
+     * an update reaches only the subscribers a render in that tenant allowed.
+     *
+     * A write made inside withinSubtree() or acrossTenants() is made as the
+     * tenant in force, which is all this can name; one made as the child is
+     * made by actAs()ing it.
+     *
+     * @template T
+     * @param \Closure(): T $work
+     * @return array{T, non-empty-list<string>}
+     */
+    public function tenantsEnteredBy(\Closure $work): array
+    {
+        $frame = \count($this->entered);
+        $this->entered[$frame] = [$this->tenant()];
+
+        try {
+            $result = $work();
+
+            // Emptied under it by flush() -- the request ended around it --
+            // and then the tenant in force is all there is to name.
+            return [$result, $this->entered[$frame] ?? [$this->tenant()]];
+        } finally {
+            if (\count($this->entered) > $frame) {
+                array_splice($this->entered, $frame);
+            }
+        }
     }
 
     /**

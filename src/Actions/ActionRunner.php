@@ -139,11 +139,12 @@ final class ActionRunner
 
         $arguments = $this->bind($action, $models, $requests, $scalars, $request, $uploads);
 
-        // 5. Run the body.
+        // 5. Run the body, noting every tenant it ran as: a row it wrote by
+        //    actAs()ing a child is the child's, and so are the pages to tell.
         $instance = $this->registry->instanceFor($action);
-        $result = $this->hasUploads($uploads)
+        [$result, $tenants] = $this->orm->tenantsEnteredBy(fn (): mixed => $this->hasUploads($uploads)
             ? $this->runWithUploads($uploads, static fn (): mixed => $instance->{$action->method}(...$arguments))
-            : $instance->{$action->method}(...$arguments);
+            : $instance->{$action->method}(...$arguments));
 
         if (!$result instanceof ActionResult) {
             throw ActionException::badReturn($action->where(), get_debug_type($result));
@@ -156,14 +157,17 @@ final class ActionRunner
         //    the pre-write answer for the rest of its TTL. With the tenant
         //    tree, so a write made as a child reaches its parents' reads
         //    across the subtree it is part of.
+        //    In each tenant it ran as, the one it was called in first.
         if ($this->cache !== null && $result->revalidatedTags !== []) {
-            $this->cache->forgetTags($result->revalidatedTags, $this->orm->tenant(), $this->orm->tenants());
+            foreach ($tenants as $tenant) {
+                $this->cache->forgetTags($result->revalidatedTags, $tenant, $this->orm->tenants());
+            }
         }
 
         //    And the clients holding pages that read them -- in other tabs,
         //    for other people -- told: the response's X-Invalidated-Tags
         //    reaches only the client that ran the action.
-        $this->live?->invalidate($result->revalidatedTags, $this->orm->tenant());
+        $this->live?->invalidateIn($result->revalidatedTags, $tenants);
 
         //    And the static pages showing them, out of service until they
         //    are built again -- after the commit, so no build in between
