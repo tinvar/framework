@@ -21,6 +21,7 @@ use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Models\Customer;
 use Shop\Pages\SignIn;
+use Tinvar\Http\ApcuThrottleStore;
 use Tinvar\Http\CsrfTokens;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
@@ -161,8 +162,53 @@ final class Visitor
     }
 }
 
+/**
+ * APCu's add, increment, fetch and compare-and-swap over an array -- with
+ * wipe(), what APCu does once it fills: every entry goes at once. With
+ * `apc.ttl` at 0, its default, it clears the whole cache rather than make
+ * room, and anyone can fill it: each new address, an IPv6 /64, is new
+ * throttle entries.
+ */
+final class WipeableApcu
+{
+    /** @var array<string, int> */
+    public array $entries = [];
+
+    public function store(): ApcuThrottleStore
+    {
+        return new ApcuThrottleStore(
+            'shop:throttle:',
+            add: function (string $key, int $value, int $ttl): bool {
+                if (isset($this->entries[$key])) {
+                    return false;
+                }
+                $this->entries[$key] = $value;
+
+                return true;
+            },
+            inc: function (string $key, int $step, int $ttl): int|false {
+                return isset($this->entries[$key]) ? $this->entries[$key] += $step : false;
+            },
+            fetch: fn (string $key): int|false => $this->entries[$key] ?? false,
+            cas: function (string $key, int $old, int $new): bool {
+                if (($this->entries[$key] ?? null) !== $old) {
+                    return false;
+                }
+                $this->entries[$key] = $new;
+
+                return true;
+            },
+        );
+    }
+
+    public function wipe(): void
+    {
+        $this->entries = [];
+    }
+}
+
 /** @return array{Visitor, \PDO} a visitor to a freshly seeded shop, and the database behind it */
-function shop(): array
+function shop(?WipeableApcu $apcu = null): array
 {
     $path = sys_get_temp_dir() . '/tinvar-shop-account-' . bin2hex(random_bytes(4)) . '.sqlite';
     new Seeder(PdoConnection::sqlite($path, 'shop', create: true))->run(customers: 3);
@@ -179,7 +225,7 @@ function shop(): array
         }
     });
 
-    $kernel = Kernel::fromEnvironment('/tmp/tinvar-shop-account-none.sock', key: KEY, database: $path);
+    $kernel = Kernel::fromEnvironment('/tmp/tinvar-shop-account-none.sock', key: KEY, database: $path, throttleStore: $apcu?->store());
 
     return [new Visitor($kernel, database: $path), new \PDO("sqlite:{$path}")];
 }
@@ -566,6 +612,59 @@ it('pauses an account for everyone once guesses from many addresses reach its ce
 
     expect($before)->toBe(303, 'below the ceiling')
         ->and(signIn($from(201))->status)->toBe(429, 'at it, from an address that never guessed');
+});
+
+// Under FrankenPHP the throttles count in APCu, which a flood of new
+// addresses can fill, and a full APCu clears every entry: counted there, an
+// account's pause -- and its ceiling across addresses -- went with them, and
+// the next guess was let in. Sign-in counts where nothing else can evict
+// them.
+it('keeps an account paused, from one address and across them, when APCu is wiped', function () {
+    $apcu = new WipeableApcu();
+    [$visitor] = shop($apcu);
+    $kernel = $visitor->kernel;
+    $visitor->get('/sign-in');
+
+    for ($i = 0; $i < SignInThrottle::PER_ACCOUNT; $i++) {
+        expect(signIn($visitor, 'wrong')->status)->toBe(422);
+    }
+    expect(signIn($visitor)->status)->toBe(429);
+
+    $apcu->wipe();
+    expect(signIn($visitor)->status)->toBe(429, 'one address\'s pause on the account survives the wipe');
+
+    // The ceiling across addresses: reached, wiped, still reached.
+    $from = static function (int $n) use ($kernel): Visitor {
+        $guesser = new Visitor($kernel, "198.51.100.{$n}");
+        $guesser->get('/sign-in');
+
+        return $guesser;
+    };
+    for ($n = 1; $n < intdiv(SignInThrottle::ACCOUNT_CEILING, SignInThrottle::PER_ACCOUNT); $n++) {
+        $guesser = $from($n);
+        for ($i = 0; $i < SignInThrottle::PER_ACCOUNT; $i++) {
+            signIn($guesser, 'wrong');
+        }
+    }
+    expect(signIn($from(200))->status)->toBe(429);
+
+    $apcu->wipe();
+    expect(signIn($from(201))->status)->toBe(429, 'the ceiling across addresses survives the wipe');
+});
+
+// Fail closed: a shop told to count sign-in in APCu does not start.
+it('refuses to count sign-in attempts in APCu', function () {
+    $path = sys_get_temp_dir() . '/tinvar-shop-account-' . bin2hex(random_bytes(4)) . '.sqlite';
+    new Seeder(PdoConnection::sqlite($path, 'shop', create: true))->run(customers: 1);
+
+    try {
+        expect(fn () => Kernel::fromEnvironment('/tmp/tinvar-shop-account-none.sock', key: KEY, database: $path, signInStore: new WipeableApcu()->store()))
+            ->toThrow(\InvalidArgumentException::class, 'not counted in APCu');
+    } finally {
+        foreach (glob("{$path}*") ?: [] as $file) {
+            unlink($file);
+        }
+    }
 });
 
 // A page used to be the only thing that issued the CSRF cookie, and only a
