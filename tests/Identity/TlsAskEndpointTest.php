@@ -51,24 +51,6 @@ require_once __DIR__ . '/Fixtures/domains.php';
 
 const TOKEN = 'tls-ask-token-0123456789abcdef0123456789';
 
-/** The waits an ask makes for another's check, kept rather than slept. */
-final class Waits
-{
-    /** @var list<float> */
-    public array $slept = [];
-
-    /** @var (\Closure(int): void)|null run after each wait, with how many there have been */
-    public ?\Closure $then = null;
-
-    public function sleep(float $seconds): void
-    {
-        $this->slept[] = $seconds;
-        if ($this->then !== null) {
-            ($this->then)(\count($this->slept));
-        }
-    }
-}
-
 /**
  * A store that counts every window spent, as ApcuThrottleStore does after
  * a wipe when it fails closed.
@@ -90,7 +72,7 @@ final class SpentStore implements ThrottleStore
 
 /**
  * @param array<string, string|list<string>|DnsLookupFailed> $dns
- * @return array{TlsAskEndpoint, Records, Dns, Clock, ArrayThrottleStore, Waits}
+ * @return array{TlsAskEndpoint, Records, Dns, Clock, ArrayThrottleStore}
  */
 function ask(array $dns = [], array $active = ['shop.acme.example'], array $inactive = [], ?ThrottleStore $store = null): array
 {
@@ -114,10 +96,9 @@ function ask(array $dns = [], array $active = ['shop.acme.example'], array $inac
     // Claims on the records' clock, as a store shared by every worker is
     // on the one every server keeps.
     $claims = new ArrayThrottleStore(static fn (): int => $clock->now->getTimestamp());
-    $waits = new Waits();
-    $endpoint = new TlsAskEndpoint($realms, $records, $verification, $store ?? $claims, new ProbeAccess(token: TOKEN), $waits->sleep(...));
+    $endpoint = new TlsAskEndpoint($realms, $records, $verification, $store ?? $claims, new ProbeAccess(token: TOKEN));
 
-    return [$endpoint, $records, $resolver, $clock, $claims, $waits];
+    return [$endpoint, $records, $resolver, $clock, $claims];
 }
 
 /** @param array<string, string> $headers */
@@ -252,12 +233,11 @@ describe('the TLS ask endpoint', function () {
 
     // A burst of handshakes naming a domain no check has recorded in the
     // last minute: each ask made a full check of its own, a worker apiece
-    // for as long as DNS took. One checks now; the rest look nothing up.
-    // And none is refused for the contention alone, which whoever opens
-    // handshakes could cause: a renewal would be lost to it.
-    it('allows an ask that arrives during another\'s check of a domain whose last check passed, with no lookup of its own', function () {
+    // for as long as DNS took. One checks now; the rest look nothing up and
+    // wait for nothing, answered at once from the record.
+    it('allows an ask that arrives during another\'s check of a domain whose last check passed within a day', function () {
         [$endpoint, $records, $dns, $clock] = ask(['shop.acme.example' => TARGET]);
-        $records->passed('shop.acme.example', $clock->now->modify('-2 days'));
+        $records->passed('shop.acme.example', $clock->now->modify('-20 hours'));
         $during = null;
         $dns->meanwhile = static function () use ($endpoint, &$during): void {
             $during = $endpoint->handle(asking('shop.acme.example'));
@@ -265,6 +245,21 @@ describe('the TLS ask endpoint', function () {
 
         expect($endpoint->handle(asking('shop.acme.example'))->status)->toBe(200)
             ->and($during?->status)->toBe(200)
+            ->and($dns->asked)->toBe(['shop.acme.example']);
+    });
+
+    // A pass the daily check has not renewed: the domain has dropped out of
+    // re-verification, and contention is no reason to trust it.
+    it('refuses one during another\'s check of a domain whose last pass is older than the daily check keeps', function () {
+        [$endpoint, $records, $dns, $clock] = ask(['shop.acme.example' => TARGET]);
+        $records->passed('shop.acme.example', $clock->now->modify('-' . TlsAskEndpoint::RECENT_PASS . ' seconds'));
+        $during = null;
+        $dns->meanwhile = static function () use ($endpoint, &$during): void {
+            $during = $endpoint->handle(asking('shop.acme.example'));
+        };
+
+        expect($endpoint->handle(asking('shop.acme.example'))->status)->toBe(200)
+            ->and($during?->status)->toBe(404)
             ->and($dns->asked)->toBe(['shop.acme.example']);
     });
 
@@ -281,32 +276,19 @@ describe('the TLS ask endpoint', function () {
             ->and($dns->asked)->toBe(['shop.acme.example']);
     });
 
-    it('has an ask for a domain never checked wait for the check under way, and follow what it records', function (bool $passes) {
-        [$endpoint, $records, $dns, $clock, $claims, $waits] = ask(['shop.acme.example' => TARGET]);
-        // Another worker's check, which records its outcome a few steps in.
-        $claims->increment(TlsAskEndpoint::CLAIM . 'shop.acme.example', TlsAskEndpoint::CHECK_WINDOW);
-        $waits->then = static function (int $waited) use ($records, $clock, $passes): void {
-            if ($waited === 3) {
-                $passes
-                    ? $records->passed('shop.acme.example', $clock->now)
-                    : $records->failed('shop.acme.example', $clock->now, $clock->now);
-            }
-        };
-
-        expect($endpoint->handle(asking('shop.acme.example'))->status)->toBe($passes ? 200 : 404)
-            ->and($waits->slept)->toBe([TlsAskEndpoint::WAIT_STEP, TlsAskEndpoint::WAIT_STEP, TlsAskEndpoint::WAIT_STEP])
-            ->and($dns->asked)->toBe([]);
-    })->with(['the check passes' => [true], 'the check fails' => [false]]);
-
-    it('refuses a domain never checked once its wait ends with nothing recorded, and checks it once the claim has gone', function () {
-        [$endpoint, , $dns, $clock, $claims, $waits] = ask(['shop.acme.example' => TARGET]);
+    // Waiting for the other's check would hold this worker as long as that
+    // check takes: a worker per handshake again, only asleep.
+    it('refuses a domain never checked while another worker\'s check of it is under way, at once, and checks it once the claim has gone', function () {
+        [$endpoint, , $dns, $clock, $claims] = ask(['shop.acme.example' => TARGET]);
         $claims->increment(TlsAskEndpoint::CLAIM . 'shop.acme.example', TlsAskEndpoint::CHECK_WINDOW);
 
-        expect($endpoint->handle(asking('shop.acme.example'))->status)->toBe(404)
+        $started = hrtime(true);
+        $refused = $endpoint->handle(asking('shop.acme.example'));
+        $took = (hrtime(true) - $started) / 1e9;
+
+        expect($refused->status)->toBe(404)
             ->and($dns->asked)->toBe([])
-            // No longer than a check may take: the verifier's four seconds.
-            ->and(array_sum($waits->slept))->toBeGreaterThanOrEqual(4.0 - TlsAskEndpoint::WAIT_STEP)
-            ->and(array_sum($waits->slept))->toBeLessThan(4.0 + TlsAskEndpoint::WAIT_STEP);
+            ->and($took)->toBeLessThan(0.5);
 
         // Its worker killed mid-check: the claim lasts its window, no longer.
         $clock->advance('+' . TlsAskEndpoint::CHECK_WINDOW . ' seconds');
@@ -315,21 +297,20 @@ describe('the TLS ask endpoint', function () {
     });
 
     // ApcuThrottleStore, failing closed after a wipe, counts every window
-    // spent: no ask ever got a count of one, and every one would have been
-    // answered as if another's check were under way. Nobody's is.
-    it('takes a window the store counts as spent for no claim, not for another\'s check', function () {
+    // spent: no ask gets a count of one, and no check is under way to keep
+    // a record current. Refused until the window ends, a pass on record or
+    // not, and nothing taken back that was never claimed.
+    it('refuses while the store counts the window spent, which is no one\'s claim', function () {
         $store = new SpentStore();
-        [$endpoint, $records, $dns, $clock, , $waits] = ask(
+        [$endpoint, $records, $dns, $clock] = ask(
             ['shop.acme.example' => TARGET, 'new.acme.example' => TARGET],
             ['shop.acme.example', 'new.acme.example'],
             store: $store,
         );
-        $records->passed('shop.acme.example', $clock->now->modify('-2 days'));
+        $records->passed('shop.acme.example', $clock->now->modify('-2 hours'));
 
-        expect($endpoint->handle(asking('shop.acme.example'))->status)->toBe(200)
-            // Never checked, and no check under way to wait for.
+        expect($endpoint->handle(asking('shop.acme.example'))->status)->toBe(404)
             ->and($endpoint->handle(asking('new.acme.example'))->status)->toBe(404)
-            ->and($waits->slept)->toBe([])
             ->and($dns->asked)->toBe([])
             ->and($store->released)->toBe(0);
     });

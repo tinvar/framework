@@ -69,12 +69,6 @@ final readonly class CustomDomainVerification
         return ($this->clock)();
     }
 
-    /** Seconds one domain's check may take: its verifier's bound. */
-    public function timeout(): float
-    {
-        return $this->verifier->timeout();
-    }
-
     /**
      * One domain, checked now, and the outcome recorded. A domain the
      * application holds inactive is not resolved.
