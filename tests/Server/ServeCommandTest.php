@@ -161,7 +161,34 @@ it('stops the background children first, with time for the job in hand, then the
             [['FrankenPHP'], ServeCommand::STOP_SECONDS],
             [['the dev renderer'], ServeCommand::STOP_SECONDS],
         ])
-        ->and(ServeCommand::stopOrder([]))->toBe([]);
+        ->and(ServeCommand::stopOrder([]))->toBe([])
+        // Given the stop budget the worker is told, in the same order.
+        ->and(ServeCommand::stopOrder(['FrankenPHP', 'queue:work'], 25))->toBe([
+            [['queue:work'], 25],
+            [['FrankenPHP'], ServeCommand::STOP_SECONDS],
+        ]);
+});
+
+it('gives the background the stop budget the environment names, and refuses one that is not', function () {
+    withoutEnvironmentBinary(function () {
+        $app = app();
+        $errors = [];
+        $command = new ServeCommand(project(), new PortFinder(static fn (): bool => true), static function (): void {}, static function (string $line) use (&$errors): void {
+            $errors[] = $line;
+        });
+        $before = getenv(\Tinvar\Queue\StopBudget::ENV);
+        try {
+            putenv(\Tinvar\Queue\StopBudget::ENV);
+            expect($command->plan(["--app={$app}"])['stopBudget'])->toBe(\Tinvar\Queue\StopBudget::DEFAULT);
+            putenv(\Tinvar\Queue\StopBudget::ENV . '=25');
+            expect($command->plan(["--app={$app}"])['stopBudget'])->toBe(25);
+            putenv(\Tinvar\Queue\StopBudget::ENV . '=3');
+            expect($command->run(["--app={$app}"]))->toBe(ServeCommand::USAGE)
+                ->and(implode("\n", $errors))->toContain('stop budget');
+        } finally {
+            putenv($before === false ? \Tinvar\Queue\StopBudget::ENV : \Tinvar\Queue\StopBudget::ENV . '=' . $before);
+        }
+    });
 });
 
 it('refuses --worker with no console to run it through, and a flag given a value', function () {

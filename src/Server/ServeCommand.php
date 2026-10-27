@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Server;
 
-use Tinvar\Jobs\Worker;
+use Tinvar\Jobs\StopBudget;
 use Tinvar\Protocol\ProtocolException;
 use Tinvar\Render\RendererException;
 use Tinvar\Render\RendererHealth;
@@ -174,7 +174,7 @@ final class ServeCommand
      * without a process to clean up.
      *
      * @param list<string> $arguments
-     * @return array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string, background: list<string>, renderers: int, pool: string|null}
+     * @return array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string, background: list<string>, renderers: int, pool: string|null, stopBudget: int}
      */
     public function plan(array $arguments): array
     {
@@ -301,6 +301,7 @@ final class ServeCommand
             'renderers' => $dev ? 1 : ($renderers === null ? self::defaultRenderers(self::cpus(), $workers) : (int) $renderers),
             'pool' => $pool,
             'background' => $this->background($options),
+            'stopBudget' => $this->stopBudget(),
             'port' => $port,
             'dev' => $dev,
             'vitePort' => $vitePort,
@@ -330,6 +331,21 @@ final class ServeCommand
         }
 
         return $options;
+    }
+
+    /**
+     * How long the queue worker and the scheduler are given to stop
+     * (TINVAR_STOP_BUDGET): the worker reads the same, from the environment
+     * it is started with, and hands back a job still running before this
+     * kills it.
+     */
+    private function stopBudget(): int
+    {
+        try {
+            return StopBudget::fromEnvironment();
+        } catch (\InvalidArgumentException $e) {
+            throw new ServeException($e->getMessage());
+        }
     }
 
     /**
@@ -384,9 +400,10 @@ final class ServeCommand
         return RendererBinary::script($this->projectRoot, $bin);
     }
 
-    /** @param array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string, background: list<string>, renderers: int, pool: string|null} $plan */
+    /** @param array{host: string, port: int, app: string, entry: string|null, renderer: string, frankenphp: string, workers: int, dev: bool, vitePort: int|null, caddyfile: string, background: list<string>, renderers: int, pool: string|null, stopBudget: int} $plan */
     private function serve(array $plan): int
     {
+        $this->stopBudget = $plan['stopBudget'];
         // One killed outright had no chance to remove its own.
         PrivateDirectory::removeAbandoned('tinvar-serve');
         $directory = PrivateDirectory::create('tinvar-serve', owner: getmypid() ?: null);
@@ -583,11 +600,15 @@ final class ServeCommand
     private const array BACKGROUND = ['queue:work', 'schedule:work'];
 
     /**
-     * Seconds the queue worker and the scheduler are given to stop: a job
-     * at the default timeout (#[Queue]'s 60 s), the grace the worker gives
-     * it past that, and a margin.
+     * Seconds the queue worker and the scheduler are given to stop unless
+     * TINVAR_STOP_BUDGET says otherwise: a job at the default timeout
+     * (#[Queue]'s 60 s), the grace the worker gives it past that, and a
+     * margin (StopBudget::DEFAULT).
      */
-    public const int BACKGROUND_STOP_SECONDS = 60 + Worker::GRACE_SECONDS + 5;
+    public const int BACKGROUND_STOP_SECONDS = StopBudget::DEFAULT;
+
+    /** The plan's stop budget, once serve() has it: what terminate() gives the background. */
+    private int $stopBudget = StopBudget::DEFAULT;
 
     /** Seconds FrankenPHP, and then the renderers, are given to stop. */
     public const int STOP_SECONDS = 10;
@@ -707,7 +728,7 @@ final class ServeCommand
      */
     private function terminate(array $children): void
     {
-        foreach (self::stopOrder(array_keys($children)) as [$names, $seconds]) {
+        foreach (self::stopOrder(array_keys($children), $this->stopBudget) as [$names, $seconds]) {
             $this->stopAll(array_intersect_key($children, array_flip($names)), $seconds);
         }
     }
@@ -726,18 +747,21 @@ final class ServeCommand
      *
      * Stopped all at once, with ten seconds for everything, a job that took
      * longer was killed in hand and run again once its reservation ran out.
+     * The background group is given the stop budget (StopBudget), the same
+     * the worker is told: within it, a job that cannot finish pauses at a
+     * checkpoint or is handed back to its queue before the kill.
      *
      * @param list<string> $names
      * @return list<array{list<string>, int}>
      */
-    public static function stopOrder(array $names): array
+    public static function stopOrder(array $names, int $stopBudget = self::BACKGROUND_STOP_SECONDS): array
     {
         $renderers = array_values(array_intersect($names, ['the renderers', 'the dev renderer']));
         $background = array_values(array_intersect($names, self::BACKGROUND));
         $server = array_values(array_diff($names, $renderers, $background));
 
         return array_values(array_filter(
-            [[$background, self::BACKGROUND_STOP_SECONDS], [$server, self::STOP_SECONDS], [$renderers, self::STOP_SECONDS]],
+            [[$background, $stopBudget], [$server, self::STOP_SECONDS], [$renderers, self::STOP_SECONDS]],
             static fn (array $group): bool => $group[0] !== [],
         ));
     }
