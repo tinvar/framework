@@ -569,17 +569,15 @@ final class SupplyChain
 
         $stages = [];
         foreach ($instructions as $instruction) {
-            $words = preg_split('/\s+/', $instruction) ?: [];
-            $keyword = strtoupper((string) array_shift($words));
+            [$keyword, $rest] = self::command($instruction);
+            [$flags, $rest] = self::builderFlags($rest);
             // What an ONBUILD wraps runs in a build FROM this image, as if
             // it were written there: it is held to the same rules.
-            while ($keyword === 'ONBUILD' && $words !== []) {
-                $keyword = strtoupper((string) array_shift($words));
+            while ($keyword === 'ONBUILD' && $rest !== '') {
+                [$keyword, $rest] = self::command($rest);
+                [$flags, $rest] = self::builderFlags($rest);
             }
-            $flags = [];
-            while ($words !== [] && str_starts_with($words[0], '--')) {
-                $flags[] = (string) array_shift($words);
-            }
+            $words = preg_split('/\s+/', trim($rest), -1, PREG_SPLIT_NO_EMPTY) ?: [];
 
             if ($keyword === 'FROM') {
                 $image = $words[0] ?? '';
@@ -594,18 +592,23 @@ final class SupplyChain
             }
 
             foreach ($flags as $flag) {
-                $from = null;
-                if (\in_array($keyword, ['COPY', 'ADD'], true) && preg_match('/^--from=(.+)$/i', $flag, $m) === 1) {
-                    $from = $m[1];
-                } elseif ($keyword === 'RUN' && preg_match('/^--mount=(.+)$/i', $flag, $m) === 1) {
-                    foreach (explode(',', $m[1]) as $option) {
-                        if (preg_match('/^from=(.+)$/i', $option, $o) === 1) {
-                            $from = $o[1];
+                $froms = [];
+                if (\in_array($keyword, ['COPY', 'ADD'], true) && preg_match('/^--from=(.*)$/is', $flag, $m) === 1) {
+                    $froms[] = $m[1];
+                } elseif ($keyword === 'RUN' && preg_match('/^--mount=(.*)$/is', $flag, $m) === 1) {
+                    // A mount is CSV, so a field may be quoted again; every
+                    // `from` it names is held, not only the last.
+                    foreach (str_getcsv($m[1], ',', '"', '') as $option) {
+                        $pair = explode('=', (string) $option, 2);
+                        if (strtolower(trim($pair[0])) === 'from') {
+                            $froms[] = $pair[1] ?? '';
                         }
                     }
                 }
-                if ($from !== null && !self::stageOrPinned($from, $stages)) {
-                    $violations[] = "{$name} {$keyword} takes files from {$from}, which is not pinned to a sha256 digest.";
+                foreach ($froms as $from) {
+                    if (!self::stageOrPinned($from, $stages)) {
+                        $violations[] = "{$name} {$keyword} takes files from {$from}, which is not pinned to a sha256 digest.";
+                    }
                 }
             }
 
@@ -662,6 +665,113 @@ final class SupplyChain
             || ($checksum !== null && preg_match($commit, $checksum) === 1);
 
         return $pinned ? null : "{$name} ADDs the git source {$source}, which is not pinned to a full commit.";
+    }
+
+    /**
+     * An instruction's keyword, upper-cased, and the rest of it, split where
+     * BuildKit splits them: at the first run of ASCII whitespace.
+     *
+     * @return array{string, string}
+     */
+    private static function command(string $instruction): array
+    {
+        $parts = preg_split('/[\t\v\f\r ]+/', trim($instruction), 2) ?: [''];
+
+        return [strtoupper($parts[0]), $parts[1] ?? ''];
+    }
+
+    /**
+     * The `--flag` words at the start of $line, and what follows them, as
+     * BuildKit's extractBuilderFlags() reads them: a quote groups, and is
+     * taken out, a backslash escapes the next byte, and a quoted space does
+     * not end the word. Read naively, `--mount=type=bind,"from=x"` or
+     * `fr\om=x` would name no image to the check and one to BuildKit.
+     *
+     * @return array{list<string>, string}
+     */
+    private static function builderFlags(string $line): array
+    {
+        $words = [];
+        $word = '';
+        $phase = 'spaces';
+        $quote = '';
+        $blank = false;
+        $length = \strlen($line);
+        for ($pos = 0; $pos <= $length; $pos++) {
+            $ch = $pos < $length ? $line[$pos] : '';
+            if ($phase === 'spaces') {
+                if ($pos === $length) {
+                    break;
+                }
+                if (self::isSpaceByte($ch)) {
+                    continue;
+                }
+                if ($ch !== '-' || $pos + 1 === $length || $line[$pos + 1] !== '-') {
+                    return [$words, substr($line, $pos)];
+                }
+                $phase = 'word';
+            }
+            if ($pos === $length) {
+                if ($word !== '--' && ($blank || $word !== '')) {
+                    $words[] = $word;
+                }
+
+                break;
+            }
+            if ($phase === 'word') {
+                if (self::isSpaceByte($ch)) {
+                    $phase = 'spaces';
+                    if ($word === '--') {
+                        return [$words, substr($line, $pos)];
+                    }
+                    if ($blank || $word !== '') {
+                        $words[] = $word;
+                    }
+                    $word = '';
+                    $blank = false;
+
+                    continue;
+                }
+                if ($ch === "'" || $ch === '"') {
+                    $quote = $ch;
+                    $blank = true;
+                    $phase = 'quote';
+
+                    continue;
+                }
+                if ($ch === '\\') {
+                    if ($pos + 1 === $length) {
+                        continue;
+                    }
+                    $ch = $line[++$pos];
+                }
+                $word .= $ch;
+
+                continue;
+            }
+            if ($ch === $quote) {
+                $phase = 'word';
+
+                continue;
+            }
+            if ($ch === '\\') {
+                if ($pos + 1 === $length) {
+                    $phase = 'word';
+
+                    continue;
+                }
+                $ch = $line[++$pos];
+            }
+            $word .= $ch;
+        }
+
+        return [$words, ''];
+    }
+
+    /** A byte Go's unicode.IsSpace takes for a space when read as a rune, as extractBuilderFlags() reads it. */
+    private static function isSpaceByte(string $byte): bool
+    {
+        return \in_array($byte, [' ', "\t", "\n", "\v", "\f", "\r", "\x85", "\xA0"], true);
     }
 
     /**

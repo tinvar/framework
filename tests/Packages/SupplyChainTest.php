@@ -553,6 +553,24 @@ describe('dockerfiles', function () {
         'a no-break space before the keyword' => ["FROM scratch\n\u{A0}FROM nope:latest\n"],
     ]);
 
+    // BuildKit takes quotes and backslashes out of a flag before it reads
+    // it, a quoted space does not end one, and a mount is CSV whose fields
+    // may be quoted again. Each was built with BuildKit, which pulled nope.
+    it('reads a flag as BuildKit unquotes it', function (string $contents) {
+        expect(SupplyChain::dockerfile('Dockerfile', $contents))->not->toBe([]);
+    })->with([
+        'a quoted mount option' => ["FROM scratch\nRUN --mount=type=bind,\"from=nope\",target=/x true\n"],
+        'an escaped mount option' => ["FROM scratch\nRUN --mount=type=bind,fr\\om=nope,target=/x true\n"],
+        'a CSV-quoted mount option' => ["FROM scratch\nRUN --mount='type=bind,\"from=nope\",target=/x' true\n"],
+        'a quoted space in an earlier flag' => ["FROM scratch\nRUN --mount=\"type=cache,target=/a b\" --mount=type=bind,from=nope,target=/x true\n"],
+        'a quoted space before --from' => ["FROM scratch\nCOPY --exclude=\"x y\" --from=nope /x /x\n"],
+        'an escaped --from' => ["FROM scratch\nCOPY --fr\\om=nope /x /x\n"],
+    ]);
+
+    it('reads a quoted stage name as the stage', function () use ($digest) {
+        expect(SupplyChain::dockerfile('Dockerfile', "FROM debian{$digest} AS build\nCOPY --from=\"build\" /a /b\nRUN --mount=\"type=bind,from=build,target=/m\" true\n"))->toBe([]);
+    });
+
     // A stage is named before it is used: a later stage's name is an image.
     it('takes only an earlier stage\'s name as a stage', function () use ($digest) {
         $this->workspace->file('Dockerfile', "FROM later\nFROM debian{$digest} AS later\n");
