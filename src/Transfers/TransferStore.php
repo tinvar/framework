@@ -21,6 +21,12 @@ interface TransferStore
      */
     public function find(string $id, string $tenant, string $panel, string $user): ?TransferRecord;
 
+    /**
+     * Marks a queued record running, if it is still queued. Atomic: of two
+     * workers handed one job, one is told true, and only it does the work.
+     */
+    public function claim(string $id): bool;
+
     /** Replaces the record with $record's id; nothing for none. */
     public function update(TransferRecord $record): void;
 

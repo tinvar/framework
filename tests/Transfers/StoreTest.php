@@ -63,6 +63,18 @@ it('keeps what an update writes, errors included, and lists the newest first', f
     }
 });
 
+it('lets one claim a queued record, once', function () {
+    foreach (transferStores() as $store) {
+        \assert($store instanceof TransferStore);
+        $store->add(transferRecord('t-1'));
+
+        expect($store->claim('t-1'))->toBeTrue()
+            ->and($store->claim('t-1'))->toBeFalse()
+            ->and($store->claim('nope'))->toBeFalse()
+            ->and($store->find('t-1', 'acme', 'staff', 'u-1')?->status)->toBe(TransferRecord::RUNNING);
+    }
+});
+
 it('names what has expired, or is older than records are kept', function () {
     foreach (transferStores() as $store) {
         \assert($store instanceof TransferStore);

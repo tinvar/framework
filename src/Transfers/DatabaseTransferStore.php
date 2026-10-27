@@ -80,6 +80,14 @@ final readonly class DatabaseTransferStore implements TransferStore
         return $row === null ? null : self::hydrate($row);
     }
 
+    public function claim(string $id): bool
+    {
+        return $this->connection->execute(
+            "UPDATE {$this->table} SET status = ? WHERE id = ? AND status = ?",
+            [TransferRecord::RUNNING, $id, TransferRecord::QUEUED],
+        ) === 1;
+    }
+
     public function update(TransferRecord $record): void
     {
         $values = self::values($record);

@@ -24,6 +24,17 @@ final class ArrayTransferStore implements TransferStore
             : null;
     }
 
+    public function claim(string $id): bool
+    {
+        $record = $this->records[$id] ?? null;
+        if ($record === null || $record->status !== TransferRecord::QUEUED) {
+            return false;
+        }
+        $this->records[$id] = $record->with(['status' => TransferRecord::RUNNING]);
+
+        return true;
+    }
+
     public function update(TransferRecord $record): void
     {
         if (isset($this->records[$record->id])) {

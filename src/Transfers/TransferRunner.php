@@ -165,14 +165,11 @@ final readonly class TransferRunner
     {
         $user = $this->auth->id() ?? throw new JobRefused('user_missing', 'A transfer runs as the user who started it.');
         $record = $this->transfers->store->find($id, TenantClaim::current($this->orm), $this->panels?->currentOrNull() ?? '', $user);
-        if ($record === null || $record->status !== TransferRecord::QUEUED) {
+        if ($record === null || !$this->transfers->store->claim($record->id)) {
             return null;
         }
 
-        $running = $record->with(['status' => TransferRecord::RUNNING]);
-        $this->transfers->store->update($running);
-
-        return $running;
+        return $record->with(['status' => TransferRecord::RUNNING]);
     }
 
     /**
