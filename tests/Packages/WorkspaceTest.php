@@ -156,6 +156,25 @@ it('fails a PSR-4 map other than the one the layer rule reads', function () {
     ]);
 });
 
+// The layer rule reads each package's PSR-4 directories, so anything else
+// Composer would load -- a classmap, PSR-0, a file beside the aliases --
+// is code no layer is held to.
+it('fails autoloading anything but the PSR-4 map and the aliases', function () {
+    $violations = violations(static function (array $files): array {
+        $files['packages/database/composer.json']['autoload']['classmap'] = ['lib/'];
+        $files['packages/database/composer.json']['autoload']['psr-0'] = ['Tinvar\\Http\\' => 'legacy/'];
+        $files['packages/support/composer.json']['autoload']['files'] = ['aliases.php', 'helpers.php'];
+
+        return $files;
+    });
+
+    expect($violations)->toBe([
+        'packages/database/composer.json: autoloads by classmap, which the layer rule does not read; a package autoloads its PSR-4 map and, beside src/, aliases.php alone.',
+        'packages/database/composer.json: autoloads by psr-0, which the layer rule does not read; a package autoloads its PSR-4 map and, beside src/, aliases.php alone.',
+        'packages/support/composer.json: autoloads the file helpers.php, which the layer rule does not read; a package autoloads its PSR-4 map and, beside src/, aliases.php alone.',
+    ]);
+});
+
 it('fails a package the layer rule does not read as its own layer', function () {
     $violations = violations(static function (array $files): array {
         $files['packages/extra/composer.json'] = ['name' => 'tinvar/extra', 'require' => ['tinvar/support' => '0.4.*']];

@@ -24,7 +24,8 @@ namespace Tinvar\Packages;
  *   - a package's name is its directory's, tinvar/<directory>, and the
  *     directory is the layer of that name;
  *   - its PSR-4 map is the one Layers reads its sources by, so a namespace
- *     the check reads in one place is not loaded from another;
+ *     the check reads in one place is not loaded from another, and it
+ *     autoloads nothing else but its aliases.php;
  *   - its require names exactly the siblings its layer may use: one it may
  *     not use is a dependency the layer rule forbids, and one it uses but
  *     does not require installs without it;
@@ -145,6 +146,23 @@ final readonly class Workspace
                 $violations[] = "{$where}: requires tinvar/{$other}, which the {$directory} layer may not use.";
             } elseif ($may && !$requires) {
                 $violations[] = "{$where}: does not require tinvar/{$other}, which the {$directory} layer uses; without it the package installs without what it names.";
+            }
+        }
+
+        // Nothing autoloaded but that map and the aliases (ADR 0055), which
+        // name the old namespaces on purpose and so sit beside src/: a
+        // classmap, PSR-0 or another file would load code no layer holds.
+        $autoload = \is_array($manifest['autoload'] ?? null) ? $manifest['autoload'] : [];
+        $only = 'which the layer rule does not read; a package autoloads its PSR-4 map and, beside src/, aliases.php alone.';
+        foreach ($autoload as $kind => $entries) {
+            if ($kind === 'files') {
+                foreach (\is_array($entries) ? $entries : [$entries] as $file) {
+                    if ($file !== 'aliases.php') {
+                        $violations[] = "{$where}: autoloads the file " . (\is_string($file) ? $file : json_encode($file)) . ", {$only}";
+                    }
+                }
+            } elseif ($kind !== 'psr-4') {
+                $violations[] = "{$where}: autoloads by {$kind}, {$only}";
             }
         }
 
