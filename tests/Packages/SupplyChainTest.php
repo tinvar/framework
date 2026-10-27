@@ -861,6 +861,9 @@ describe('workflows', function () {
             ->and($job)->not->toHaveKey('permissions')
             ->and($runs)->toContain('docker build -f examples/shop/Dockerfile')
             ->and($runs)->toContain('examples/shop/bin/verify-image')
+            ->and($runs)->toContain('--target pod-php')
+            ->and($runs)->toContain('--target pod-renderer')
+            ->and($runs)->toContain('examples/shop/bin/verify-pod')
             ->and(preg_match('/docker\s+(push|login)|buildx.*--push/', $runs))->toBe(0);
     });
 
