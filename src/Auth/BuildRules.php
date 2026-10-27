@@ -13,6 +13,7 @@ use Tinvar\Attributes\Query;
 use Tinvar\Orm\Attributes\TenantScoped;
 use Tinvar\Support\KnownAttributes;
 use Tinvar\Data\Data;
+use Tinvar\Data\DataFields;
 use Tinvar\Orm\Model;
 use Tinvar\Support\Str;
 use Tinvar\Validation\FormRequest;
@@ -87,6 +88,7 @@ final class BuildRules
     public const string QUERY_MUST_DECLARE_AUTHORIZATION = 'query-must-declare-authorization';
     public const string PANEL_ONLY_QUERY_MUST_BE_BOUND = 'panel-only-query-must-be-bound';
     public const string ATTRIBUTES_MUST_NAME_A_CLASS = 'attributes-must-name-a-class';
+    public const string FIELD_ENUMS_NAME_DATA_FIELDS = 'field-enums-name-data-fields';
 
     /**
      * Types a `shared: true` query may not reach by injection, directly or
@@ -236,6 +238,29 @@ final class BuildRules
         }
 
         return array_values($payloads);
+    }
+
+    /**
+     * Sort and filter field enums, each held to its #[FieldsOf]: every case
+     * a field of the Data class it names, mapped from a column of the same
+     * name (DataFields). "Sort, filter and column fields are backed enums or
+     * #[In] lists generated from Data fields" -- an enum naming a column no
+     * Data field shows would let a request sort by it, so it fails the build
+     * here, and at its first use besides.
+     *
+     * @param list<class-string> $enums
+     * @return list<Violation>
+     */
+    public static function checkFieldEnums(array $enums): array
+    {
+        $violations = [];
+        foreach ($enums as $enum) {
+            foreach (DataFields::problemsWith($enum) as $problem) {
+                $violations[] = new Violation(self::FIELD_ENUMS_NAME_DATA_FIELDS, $enum, $problem);
+            }
+        }
+
+        return $violations;
     }
 
     /**

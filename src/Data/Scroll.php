@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Data;
 
+use Tinvar\Orm\Page;
+
 /**
  * One page of a list that `<InfiniteScroll>` loads a page at a time.
  *
@@ -15,8 +17,11 @@ namespace Tinvar\Data;
  * next after the last, whatever order they come back in. `X-Reset` naming
  * the field replaces them all. ADR 0020.
  *
- * Built from the page the loader read. The ORM has no paginator yet, so
- * nothing builds one for it.
+ * Built from the page the loader read: an ORM paginator's (fromPage(), or
+ * scroll() at the end of a pipe), or one the loader counted itself
+ * (paginate()). A page number carries nothing the server trusts -- it is a
+ * position in rows the reader may see -- so it travels in the URL as it is
+ * (ADR 0057).
  *
  * @template T
  */
@@ -81,6 +86,20 @@ final readonly class Scroll
             pageName: $pageName,
             matchOn: $matchOn,
         );
+    }
+
+    /**
+     * One page of an ORM paginator (Query::paginate()), its items already
+     * Data -- Page::map() them first, since a model never crosses to the
+     * renderer and the encoder refuses one.
+     *
+     * @template U
+     * @param Page<U> $page
+     * @return self<U>
+     */
+    public static function fromPage(Page $page, ?string $matchOn = null, string $pageName = 'page'): self
+    {
+        return self::paginate($page->items, $page->page, $page->perPage, $page->total, $pageName, $matchOn);
     }
 
     /**

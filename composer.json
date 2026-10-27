@@ -24,7 +24,10 @@
   "autoload": {
     "psr-4": {
       "Tinvar\\": "src/"
-    }
+    },
+    "files": [
+      "functions.php"
+    ]
   },
   "config": { "sort-packages": true },
   "minimum-stability": "stable"
