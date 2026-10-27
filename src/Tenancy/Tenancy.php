@@ -5,15 +5,10 @@ declare(strict_types=1);
 namespace Tinvar\Tenancy;
 
 use Tinvar\Console\CommandTenants;
-use Tinvar\Console\TenantArgument;
-use Tinvar\Console\TenantDirectory;
-use Tinvar\Http\Middleware\ResolveTenant;
 use Tinvar\Http\Request;
 use Tinvar\Http\TenantResolver;
 use Tinvar\Orm\Orm;
-use Tinvar\Orm\TenantHierarchy;
 use Tinvar\Orm\TenantSubtrees;
-use Tinvar\Orm\TenantTree;
 
 /**
  * Tenancy, registered: what an application that requires tinvar/tenancy

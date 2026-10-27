@@ -17,8 +17,8 @@ namespace Tinvar\Tests\Tenancy\TenantHierarchy;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Orm\TenantBounds;
-use Tinvar\Orm\TenantHierarchy;
-use Tinvar\Orm\TenantTree;
+use Tinvar\Tenancy\TenantHierarchy;
+use Tinvar\Tenancy\TenantTree;
 use Tinvar\Tests\Tenancy\Fixtures\Tree;
 
 require_once __DIR__ . '/Fixtures/tree.php';

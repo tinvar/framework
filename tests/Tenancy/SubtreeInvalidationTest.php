@@ -44,7 +44,7 @@ use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
 use Tinvar\Support\Signer;
 use Tinvar\Support\Uuid;
-use Tinvar\Orm\TenantHierarchy;
+use Tinvar\Tenancy\TenantHierarchy;
 use Tinvar\Tests\Orm\Fixtures\Script;
 use Tinvar\Tests\Orm\Fixtures\Hierarchy\Tenants;
 use Tinvar\Tests\Tenancy\Fixtures\Tree;

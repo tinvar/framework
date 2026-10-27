@@ -2,15 +2,13 @@
 
 declare(strict_types=1);
 
-namespace Tinvar\Http\Middleware;
+namespace Tinvar\Tenancy;
 
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Orm\Orm;
-use Tinvar\Tenancy\SubtreeSource;
-use Tinvar\Tenancy\TenantSource;
 
 /**
  * Runs the rest of an entry point as the tenant its #[TenantFrom] names.

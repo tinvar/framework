@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Tinvar\Console;
+namespace Tinvar\Tenancy;
 
 use Tinvar\Orm\Orm;
 

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Tinvar\Console;
+namespace Tinvar\Tenancy;
 
 /**
  * The application's tenants, as work with no tenant of its own needs them:

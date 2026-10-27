@@ -40,7 +40,7 @@ use Tinvar\Support\Signer;
 use Tinvar\Tenancy\Host;
 use Tinvar\Tenancy\Signature;
 use Tinvar\Tenancy\SignedUrls;
-use Tinvar\Orm\TenantHierarchy;
+use Tinvar\Tenancy\TenantHierarchy;
 use Tinvar\Tenancy\TenantHosts;
 use Tinvar\Tests\Orm\Fixtures\Script;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;

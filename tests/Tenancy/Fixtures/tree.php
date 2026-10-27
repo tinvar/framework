@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Tenancy\Fixtures;
 
-use Tinvar\Orm\TenantTree;
+use Tinvar\Tenancy\TenantTree;
 
 /**
  * The application's tree, as tenancy's tests write one: a reseller with two

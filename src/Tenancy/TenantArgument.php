@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace Tinvar\Console;
+namespace Tinvar\Tenancy;
 
+use Tinvar\Console\Console;
 use Tinvar\Http\Request;
-use Tinvar\Tenancy\TenantSource;
 
 /**
  * A command's tenant, from its `--tenant=` argument:
