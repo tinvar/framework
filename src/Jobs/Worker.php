@@ -6,6 +6,7 @@ namespace Tinvar\Jobs;
 
 use Tinvar\Attributes\Queue as QueueOptions;
 use Tinvar\Http\RequestScope;
+use Tinvar\Queue\HeldJob;
 use Tinvar\Queue\Queue;
 use Tinvar\Queue\ReservedJob;
 
@@ -111,6 +112,8 @@ final class Worker
      * @param (\Closure(int): void)|null $exit ends the process; exit() unless given
      * @param int $graceSeconds how long a job may run on after JobTimedOut before the worker exits
      * @param (\Closure(): int)|null $memory bytes the process holds; memory_get_usage(true) unless given
+     * @param string|null $held where to write the job in hand for whatever stops this worker
+     *        (HeldJob), so it can hand the job back if it has to kill the worker
      */
     public function __construct(
         private readonly Queue $queue,
@@ -122,6 +125,7 @@ final class Worker
         private readonly ?\Closure $exit = null,
         private readonly int $graceSeconds = self::GRACE_SECONDS,
         private readonly ?\Closure $memory = null,
+        private readonly ?string $held = null,
     ) {
         if ($graceSeconds < 1 || $graceSeconds >= self::RESERVATION_MARGIN) {
             throw new \InvalidArgumentException(
@@ -293,6 +297,9 @@ final class Worker
 
             $control = $this->runner->control($envelope, fn (): bool => $this->stopRequested());
             $this->holding = $job;
+            if ($this->held !== null && !HeldJob::write($this->held, getmypid() ?: 0, $job)) {
+                $this->say("{$envelope->class} {$job->id}: could not write {$this->held}; a kill at a stop leaves it reserved until its reservation lapses");
+            }
             $this->arm($envelope->class, $options->timeout);
             try {
                 $this->runner->run($envelope, $control);
@@ -321,6 +328,9 @@ final class Worker
         $this->resetScope();
 
         $outcome = $this->record($job, $envelope, $options, $error, $control?->released(), $interrupted);
+        if ($this->held !== null) {
+            HeldJob::clear($this->held);
+        }
         $this->say(sprintf(
             '%s %s %s (attempt %d, %.0f ms)%s',
             $envelope->class ?? 'unreadable job',
@@ -537,6 +547,9 @@ final class Worker
             $handed = $job !== null && $this->queue->requeue($job, $this->now());
         } catch (\Throwable $e) {
             $this->reportFailure($e);
+        }
+        if ($this->held !== null) {
+            HeldJob::clear($this->held);
         }
 
         $this->say($handed

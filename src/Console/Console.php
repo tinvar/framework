@@ -16,6 +16,7 @@ use Tinvar\Jobs\WorkerOptions;
 use Tinvar\Orm\Orm;
 use Tinvar\Queue\Queue;
 use Tinvar\Jobs\StopBudget;
+use Tinvar\Queue\HeldJob;
 use Tinvar\Support\KnownAttributes;
 
 /**
@@ -25,6 +26,7 @@ use Tinvar\Support\KnownAttributes;
  *   queue:work [options]   run jobs until stopped (see WorkerOptions)
  *   queue:failed           list failed jobs
  *   queue:retry <id|all>   put failed jobs back on their queues
+ *   queue:hand-back <file> put back the job a killed worker held (HeldJob), for serve
  *   schedule:run           run the tasks due this minute, for cron
  *   schedule:work          run the schedule every minute until stopped
  *   schedule:list          every task and when it runs
@@ -104,7 +106,7 @@ final class Console
         }
     }
 
-    private const array BUILT_IN = ['queue:work', 'queue:failed', 'queue:retry', 'schedule:run', 'schedule:work', 'schedule:list'];
+    private const array BUILT_IN = ['queue:work', 'queue:failed', 'queue:retry', 'queue:hand-back', 'schedule:run', 'schedule:work', 'schedule:list'];
 
     public function has(string $name): bool
     {
@@ -133,6 +135,7 @@ final class Console
                 'queue:work' => $this->work($arguments, $output),
                 'queue:failed' => $this->failed($output),
                 'queue:retry' => $this->retry($arguments, $output),
+                'queue:hand-back' => $this->handBack($arguments, $output),
                 'schedule:run' => $this->scheduleRun($output),
                 'schedule:work' => $this->scheduleWork($output),
                 'schedule:list' => $this->scheduleList($output),
@@ -217,9 +220,57 @@ final class Console
             $this->scope,
             log: static fn (string $line) => $output->error('[' . gmdate('Y-m-d H:i:s') . '] ' . $line),
             report: $this->report,
+            held: self::heldPath(),
         );
         $output->error('Working ' . implode(', ', $options->queues) . ". Ctrl+C stops after the job in hand, or hands it back within {$options->stopBudget}s.");
         $this->worker->run($options);
+
+        return 0;
+    }
+
+    /** Where `tinvar serve` asks the worker to write the job in hand, if it does: an absolute path, or none. */
+    private static function heldPath(): ?string
+    {
+        $path = getenv(HeldJob::ENV);
+        if ($path === false || $path === '') {
+            return null;
+        }
+        if (!str_starts_with($path, '/')) {
+            throw new \InvalidArgumentException(HeldJob::ENV . ' must be an absolute path.');
+        }
+
+        return $path;
+    }
+
+    /**
+     * `queue:hand-back FILE`: the job a worker held when it was killed at a
+     * stop, back on its queue, available now and its try given back -- if
+     * the token in FILE is still the job's. Refused while the worker that
+     * wrote it is running: the job would run twice.
+     *
+     * @param list<string> $arguments
+     */
+    private function handBack(array $arguments, Output $output): int
+    {
+        if (\count($arguments) !== 1) {
+            throw new \InvalidArgumentException('Usage: tinvar queue:hand-back <file>');
+        }
+        [$queue] = $this->queueParts();
+        $held = HeldJob::read($arguments[0]);
+        if ($held === null) {
+            return 0;
+        }
+        if (HeldJob::running($held['pid'])) {
+            $output->error("The worker holding {$held['job']->id} (pid {$held['pid']}) is still running; nothing handed back.");
+
+            return 1;
+        }
+
+        $handed = $queue->requeue($held['job'], $this->now()->getTimestamp());
+        HeldJob::clear($arguments[0]);
+        $output->error($handed
+            ? "Handed back {$held['job']->id}, which a worker killed at the stop held."
+            : "{$held['job']->id} was no longer held by the worker that was killed; nothing handed back.");
 
         return 0;
     }
