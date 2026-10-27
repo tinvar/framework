@@ -46,22 +46,25 @@ use Tinvar\Validation\Validator;
  */
 final class ActionRunner
 {
+    /** What the tags an action's result names do on the server (ADR 0075). */
+    private readonly TagInvalidation $invalidation;
+
     public function __construct(
         private readonly ActionRegistry $registry,
         private readonly Orm $orm,
         private readonly Gate $gate,
         private readonly Validator $validator,
         private readonly Encoder $encoder = new Encoder(),
-        private readonly ?QueryCache $cache = null,
+        ?QueryCache $cache = null,
         // Tells every other client listening that the tags were invalidated,
         // once the action's writes are committed (Tinvar\Live).
-        private readonly ?Invalidator $live = null,
+        ?Invalidator $live = null,
         // Hands `Upload` parameters the uploads they were called with; an
         // action declaring one is refused without it.
         private readonly ?UploadBinder $uploads = null,
         // Takes the static pages showing what the tags name out of service,
         // once the action's writes are committed.
-        private readonly ?StaticPages $static = null,
+        ?StaticPages $static = null,
         // What runs in place of an action's body, by its name, or null for
         // the body -- a test's fake (StandIns::action()); none in production.
         // Asked only once the call has passed resolution, #[Authorize] and
@@ -70,8 +73,10 @@ final class ActionRunner
         // Moves the versions once-shared holds are bound to, so a hold on a
         // value the action changed is believed by no browser, not only the
         // one its response reaches (ADR 0074).
-        private readonly ?SharedTags $sharedTags = null,
-    ) {}
+        ?SharedTags $sharedTags = null,
+    ) {
+        $this->invalidation = new TagInvalidation($orm, $cache, $live, $static, $sharedTags);
+    }
 
     /**
      * One answer for every way an upload reference can fail -- expired,
@@ -168,99 +173,23 @@ final class ActionRunner
             throw ActionException::badReturn($action->where(), get_debug_type($result));
         }
 
-        // 6. Invalidate the cached queries the action said it invalidated.
-        //    revalidateTags() only ever reached the client, as an
-        //    x-invalidated-tags header for its prefetch cache; the server-side
-        //    cache was never touched, so a #[Query(cache: '5m')] kept serving
-        //    the pre-write answer for the rest of its TTL. With the tenant
-        //    tree, so a write made as a child reaches its parents' reads
-        //    across the subtree it is part of. In each tenant it ran as, the
-        //    one it was called in first. Now, and again once the writes
-        //    commit (forgetCached()).
-        if ($this->cache !== null && $result->revalidatedTags !== []) {
-            $this->forgetCached($this->cache, $result->revalidatedTags, $tenants);
-        }
-
-        //    And the clients holding pages that read them -- in other tabs,
-        //    for other people -- told: the response's X-Invalidated-Tags
-        //    reaches only the client that ran the action.
-        $this->live?->invalidateIn($result->revalidatedTags, $tenants);
-
-        //    And every hold on a once-shared value carrying one of them
-        //    believed no more, by any browser: now -- a failure fails the
-        //    action -- and again after the commit (SharedTags).
-        $this->sharedTags?->invalidateIn($result->revalidatedTags, $tenants);
-
-        //    And the static pages showing them, out of service until they
-        //    are built again -- after the commit, so no build in between
-        //    reads the old rows and serves them as fresh. Only outside a
-        //    tenant: a static page is rendered as no tenant's, and a tenant's
-        //    tags name that tenant's rows, so one tenant's action is no
-        //    reason to take everyone's pages down.
-        if ($this->static !== null && $result->revalidatedTags !== [] && $this->orm->tenant() === '') {
-            $static = $this->static;
-            $tags = $result->revalidatedTags;
-            $this->orm->afterCommit(static function () use ($static, $tags): void {
-                // The writes are committed and the answer is the action's: a
-                // page that could not be taken down is logged, as a live
-                // update that could not be published is, and serves on until
-                // its next revalidation.
-                try {
-                    $static->invalidate($tags);
-                } catch (\Throwable $e) {
-                    error_log('[tinvar] a static page could not be taken out of service: ' . $e->getMessage());
-                }
-            });
-        }
+        // 6. Invalidate what the action said it invalidated: the cached
+        //    queries, at once and again once the writes commit -- the
+        //    server-side cache was once never touched, so a
+        //    #[Query(cache: '5m')] kept serving the pre-write answer for the
+        //    rest of its TTL; every client listening, in other tabs and for
+        //    other people, once the writes commit -- the response's
+        //    X-Invalidated-Tags reaches only the client that ran it; every
+        //    hold on a once-shared value carrying one, by any browser; and
+        //    the static pages showing them. In each tenant it ran as, the
+        //    one it was called in first, so a write made as a child reaches
+        //    its parents' reads across the subtree (TagInvalidation).
+        $this->invalidation->invalidateIn($result->revalidatedTags, $tenants);
 
         // 7. The data boundary. Only Data objects, scalars, lists and maps
         //    leave, in every environment -- an action's value and flash were
         //    reaching the browser unchecked.
         return $result->encoded($this->encoder);
-    }
-
-    /**
-     * Forgets the tags in the query cache: at once, and -- when the action
-     * ran inside a transaction -- again after the outermost one commits.
-     *
-     * At once, for what reads inside the transaction and sees its writes: a
-     * re-render made there must not be handed an entry from before them.
-     * After the commit, because a store shared between workers (ApcuStore,
-     * PdoStore) is read by requests the transaction does not cover: one can
-     * miss between the forget and the commit, read the rows as they were --
-     * the writes are not visible to it yet -- and keep that answer for its
-     * whole TTL. The second forget drops it. With no transaction open the
-     * writes are in already, and the one forget is enough. A rollback
-     * forgets nothing more: nothing changed.
-     *
-     * A failure at once is the action's, as it always was. After a commit
-     * it is logged, as a static page that could not be taken down is:
-     * thrown there, it would make transaction() throw for writes that are
-     * in, and a caller that retries would write them twice.
-     *
-     * @param list<string> $tags
-     * @param list<string> $tenants every tenant the action ran as
-     */
-    private function forgetCached(QueryCache $cache, array $tags, array $tenants): void
-    {
-        $tree = $this->orm->tenants();
-        $forget = static function () use ($cache, $tags, $tenants, $tree): void {
-            foreach ($tenants as $tenant) {
-                $cache->forgetTags($tags, $tenant, $tree);
-            }
-        };
-
-        $forget();
-
-        if ($this->orm->connection()->inTransaction()) {
-            $this->orm->afterCommit(static function () use ($forget): void {
-                try {
-                    $forget();
-                } catch (\Throwable $e) {
-                    error_log('[tinvar] cached queries could not be invalidated after a commit: ' . $e->getMessage());
-                }
-            });
-        }
     }
 
     /**
