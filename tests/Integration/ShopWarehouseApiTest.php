@@ -127,6 +127,12 @@ it('is not signed in by a customer\'s session cookie', function () {
         ->and($response->cookies())->toBe([]);
 });
 
+// The scheme is case-insensitive (RFC 9110); the token is not.
+it('reads the scheme in any case, and the token exactly', function () {
+    expect(put($this->kernel, $this->product, 6, ['authorization' => 'bearer ' . TOKEN])->status)->toBe(200)
+        ->and(put($this->kernel, $this->product, 6, ['authorization' => 'Bearer ' . strtoupper(TOKEN)])->status)->toBe(401);
+});
+
 it('takes no token at all when the shop was given none', function () {
     $kernel = Kernel::fromEnvironment('/tmp/tinvar-shop-warehouse-none.sock', key: KEY, database: Shop::testDatabase(), warehouseToken: '');
 
