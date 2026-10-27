@@ -26,6 +26,14 @@ final class DataBoundaryException extends \RuntimeException
         return new self("Refused to encode {$class} at {$path}.{$hint}");
     }
 
+    public static function unplaced(ProvidesData $value, string $path): self
+    {
+        return new self(
+            'Refused to encode ' . $value::class . " at {$path}: a ProvidesData becomes its Data on a page -- a "
+            . "shared value or a loader's field -- and this value is placed on none. Return the Data object itself.",
+        );
+    }
+
     public static function cycle(string $path, string $class): self
     {
         return new self("Refused to encode a cycle at {$path}: {$class} refers back to itself.");

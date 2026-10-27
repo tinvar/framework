@@ -24,9 +24,14 @@ final class EncodeScope
      */
     private array $unnamed = [];
 
+    /**
+     * @param (\Closure(string): DataContext)|null $provide what a ProvidesData is told, by
+     *        its dot path; null where the value is placed on no page
+     */
     public function __construct(
         public readonly PayloadContext $context,
         public readonly string $segment,
+        public readonly ?\Closure $provide = null,
     ) {}
 
     /**

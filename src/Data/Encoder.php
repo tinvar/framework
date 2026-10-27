@@ -72,14 +72,17 @@ final class Encoder
      *        #[Once], #[Merge] and Scroll fields; none, for anything but a page render
      * @param string $segment the route segment the value is the data of -- a layout's key or
      *        `page` -- which roots the dot path a merged field is known to the browser by
+     * @param (\Closure(string): DataContext)|null $provide what a ProvidesData met in the value
+     *        is told, by the dot path it is met at; none, for a value that is placed on no
+     *        page -- a query's or an action's result -- where one is refused (ADR 0060)
      */
-    public function encode(mixed $value, ?PayloadContext $context = null, string $segment = '$'): mixed
+    public function encode(mixed $value, ?PayloadContext $context = null, string $segment = '$', ?\Closure $provide = null): mixed
     {
         // Threaded through the walk rather than kept on the encoder: one
         // encoder serves every query call of a render, each in its own fiber,
         // and a fiber suspends mid-walk on a relation read while the next
         // one encodes.
-        return $this->walk($value, '$', 0, [], new EncodeScope($context ?? PayloadContext::none(), $segment));
+        return $this->walk($value, '$', 0, [], new EncodeScope($context ?? PayloadContext::none(), $segment, $provide));
     }
 
     /** @param array<int, true> $seen object ids on the current path */
@@ -95,6 +98,7 @@ final class Encoder
             $value instanceof Bin => $value,
             $value instanceof Lazy => $this->walk($value->resolve(), $path, $depth, $seen, $scope),
             $value instanceof Data => $this->walkData($value, $path, $depth, $seen, $scope),
+            $value instanceof ProvidesData => $this->walk($this->provided($value, $path, $scope), $path, $depth, $seen, $scope),
             $value instanceof Scroll => $this->walkScroll($value, $path, $depth, $seen, $scope),
             \is_object($value) => throw DataBoundaryException::notData($value, $path),
             default => throw DataBoundaryException::badResource($path, get_debug_type($value)),
@@ -333,6 +337,20 @@ final class Encoder
             'matchOn' => self::matchOn($scroll->matchOn, $path),
             'items' => $items,
         ];
+    }
+
+    /**
+     * What a ProvidesData becomes where it is met, told the dot path, the
+     * request and the page. Only where there is a page to be told of: a
+     * value with none is refused, as any object that is not Data is.
+     */
+    private function provided(ProvidesData $value, string $path, EncodeScope $scope): ?Data
+    {
+        if ($scope->provide === null) {
+            throw DataBoundaryException::unplaced($value, $path);
+        }
+
+        return $value->toData(($scope->provide)($scope->dotPath($path)));
     }
 
     private static function matchOn(?string $property, string $path): ?string

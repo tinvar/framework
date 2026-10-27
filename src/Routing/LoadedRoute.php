@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Tinvar\Routing;
 
 use Tinvar\Data\Data;
+use Tinvar\Data\DataContext;
 use Tinvar\Data\Encoder;
 use Tinvar\Data\PayloadContext;
+use Tinvar\Http\Request;
 use Tinvar\Orm\Model;
 
 /** What the loaders produced for one request. */
@@ -60,17 +62,25 @@ final readonly class LoadedRoute
      * request's context and a layout without, or root a layout's paths at
      * `page`.
      *
+     * Given the request, a ProvidesData among the fields becomes its Data
+     * told its dot path, the request and this page (ADR 0060); without it,
+     * one is refused.
+     *
      * @return array{page: mixed, layouts: array<string, mixed>}
      */
-    public function encode(Encoder $encoder): array
+    public function encode(Encoder $encoder, ?Request $request = null): array
     {
+        $provide = $request === null
+            ? null
+            : fn (string $key): DataContext => new DataContext($key, $request, $this->chain->page, $this->parameters);
+
         $layouts = [];
         foreach ($this->layouts as $key => $data) {
-            $layouts[$key] = $encoder->encode($data, $this->context, $key);
+            $layouts[$key] = $encoder->encode($data, $this->context, $key, $provide);
         }
 
         return [
-            'page' => $encoder->encode($this->page, $this->context, PartialReload::PAGE),
+            'page' => $encoder->encode($this->page, $this->context, PartialReload::PAGE, $provide),
             'layouts' => $layouts,
         ];
     }
