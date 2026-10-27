@@ -24,6 +24,7 @@ use Shop\DemoAccount;
 use Shop\StaffAccount;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;
+use Tinvar\Testing\Browser\BrowserTestRun;
 use Tinvar\Support\Uuid;
 
 $root = \dirname(__DIR__, 4);
@@ -43,10 +44,12 @@ beforeAll(function () use ($root) {
  * deadline -- a browser that hangs on launch must fail the test, not hang it.
  *
  * @param list<string> $command
+ * @param array<string, string> $env more of its environment than PATH: the
+ *        test endpoint's token, for a script that calls it
  */
-function runWithTimeout(array $command, string $cwd, int $seconds): string
+function runWithTimeout(array $command, string $cwd, int $seconds, array $env = []): string
 {
-    $process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['redirect', 1]], $pipes, $cwd, ['PATH' => getenv('PATH') ?: '/usr/bin:/bin']);
+    $process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['redirect', 1]], $pipes, $cwd, ['PATH' => getenv('PATH') ?: '/usr/bin:/bin', ...$env]);
     stream_set_blocking($pipes[1], false);
 
     $output = '';
@@ -75,13 +78,34 @@ function runWithTimeout(array $command, string $cwd, int $seconds): string
  * document, its payloads, its fragments -- land on either renderer, and a
  * visit that only worked when one process saw all of it would fail here.
  *
- * @param \Closure(string, string, Renderer): void $drive given the origin, the
- *        file the shop writes its log to (SHOP_LOG), and the renderers
+ * Under the test profile, $testProfile, it serves the test build behind the
+ * browser test endpoint (ADR 0066), to a run of its own: the run's token
+ * is handed to $drive, for the script it runs, and to nothing else -- the
+ * server holds only its hash.
+ *
+ * @param \Closure(string, string, Renderer, string): void $drive given the origin, the
+ *        file the shop writes its log to (SHOP_LOG), the renderers, and the
+ *        test endpoint's token ('' unless $testProfile)
  * @param array<string, string> $env more of the server's environment
  */
-function served(string $root, \Closure $drive, array $env = []): void
+function served(string $root, \Closure $drive, array $env = [], bool $testProfile = false): void
 {
-    $renderer = Renderer::start('msgpack', 'browser-e2e', processes: 2);
+    $run = null;
+    if ($testProfile) {
+        $unbuilt = Shop::ensureTestBuilt();
+        if ($unbuilt !== null) {
+            test()->markTestSkipped($unbuilt);
+        }
+        $run = BrowserTestRun::prepare();
+        $env = [
+            ...$env,
+            'TINVAR_PROFILE' => 'test',
+            'TINVAR_ENV' => 'testing',
+            'TINVAR_TEST_RUN' => $run['directory'],
+            'TINVAR_BUILD_DIR' => Shop::testBuild(),
+        ];
+    }
+    $renderer = Renderer::start('msgpack', 'browser-e2e', $testProfile ? Shop::testBuild() . '/rsc/index.js' : null, processes: 2);
     $port = 18_000 + random_int(0, 999);
     $keyFile = sys_get_temp_dir() . '/tinvar-e2e-' . bin2hex(random_bytes(4)) . '/app.key';
     $errorLog = (string) tempnam(sys_get_temp_dir(), 'tinvar-e2e-log-');
@@ -123,11 +147,14 @@ function served(string $root, \Closure $drive, array $env = []): void
         // browser talking to whatever else holds the port.
         expect(proc_get_status($server)['running'])->toBeTrue("php -S did not start on port {$port}");
 
-        $drive("http://127.0.0.1:{$port}", $appLog, $renderer);
+        $drive("http://127.0.0.1:{$port}", $appLog, $renderer, $run['token'] ?? '');
     } finally {
         proc_terminate($server);
         proc_close($server);
         $renderer->stop();
+        if ($run !== null) {
+            BrowserTestRun::remove($run['directory']);
+        }
         @unlink($errorLog);
         @unlink($appLog);
         $generated = is_file($keyFile);
@@ -691,26 +718,62 @@ it('asks for a customer\'s orders of a product only when they press the button f
         ->and($result['sameDocument'])->toBeTrue();
 });
 
-// "Switches act now" (MER-15.1): each marketing list's switch saves the
-// customer's choice as it is flipped, through the action with the session's
-// CSRF token, and the page drawn again shows it kept.
-it('saves an email preference the moment its switch is flipped', function () use ($root) {
+// The browser test endpoint, in a browser (ADR 0066): a customer seeded and
+// signed in through the shop's own sessions, a session run out by the
+// shop's clock and back, and a page's own script, with no token, finding
+// nothing there.
+it('seeds, signs in and moves the clock through the test endpoint, and to no page', function () use ($root) {
     $output = '';
-    served($root, function (string $origin) use ($root, &$output): void {
+    served($root, function (string $origin, string $log, Renderer $renderer, string $token) use ($root, &$output): void {
         $output = runWithTimeout(
-            ['node', "{$root}/examples/shop/e2e/email-preferences.mjs", $origin, DemoAccount::EMAIL, DemoAccount::PASSWORD],
+            ['node', "{$root}/examples/shop/e2e/test-endpoint.mjs", $origin],
             $root,
             60,
+            ['TINVAR_TEST_TOKEN' => $token],
         );
-    }, ['SHOP_DATABASE' => Shop::testDatabase()]);
+    }, ['SHOP_DATABASE' => Shop::testDatabase()], testProfile: true);
 
     $result = json_decode((string) $output, true);
     expect($result)->toBeArray("the browser script failed:\n{$output}");
 
     expect($result['errors'])->toBe([])
-        ->and($result['before'])->toBeTrue()
-        ->and([$result['offStatus'], $result['onStatus']])->toBe([200, 200])
-        ->and($result['afterFlip'])->toBeFalse()
-        ->and($result['afterReload'])->toBeFalse()
-        ->and($result['restored'])->toBeTrue();
+        ->and($result['signedIn'])->toBe(['path' => '/orders', 'heading' => 'Orders'])
+        ->and($result['account'])->toBeTrue('the header names the customer signed in')
+        ->and($result['offset'])->toBe(86_400)
+        ->and($result['expired']['path'])->toBe('/sign-in', 'a day on, the twelve-hour session is over')
+        ->and($result['resetOffset'])->toBe(0)
+        ->and($result['restored'])->toBe($result['signedIn'], 'the clock moved, not the session')
+        ->and($result['fromPage']['endpoint'])->toBe($result['fromPage']['nowhere'], 'a page has no token: answered as a path with no page')
+        ->and($result['fromPage']['endpoint']['status'])->toBe(404)
+        ->and($result['fromPage']['endpoint']['users'])->toBeFalse()
+        ->and($result['wrongToken'])->toBe('404');
+});
+
+// "Switches act now" (MER-15.1): each marketing list's switch saves the
+// customer's choice as it is flipped, through the action with the session's
+// CSRF token, and the page drawn again shows it kept. For a customer of its
+// own, seeded and signed in through the test endpoint (ADR 0066), rather
+// than the demo account through the form, which other tests cover.
+it('saves an email preference the moment its switch is flipped', function () use ($root) {
+    $output = '';
+    served($root, function (string $origin, string $log, Renderer $renderer, string $token) use ($root, &$output): void {
+        $output = runWithTimeout(
+            ['node', "{$root}/examples/shop/e2e/email-preferences.mjs", $origin],
+            $root,
+            60,
+            ['TINVAR_TEST_TOKEN' => $token],
+        );
+    }, ['SHOP_DATABASE' => Shop::testDatabase()], testProfile: true);
+
+    $result = json_decode((string) $output, true);
+    expect($result)->toBeArray("the browser script failed:\n{$output}");
+
+    expect($result['errors'])->toBe([])
+        ->and($result['landed'])->toBe('/account/email', 'signed in: the page let the customer through')
+        ->and($result['email'])->toMatch('/^browser-[0-9a-f]{16}@shop\.test$/')
+        ->and($result['before'])->toBeFalse()
+        ->and([$result['firstStatus'], $result['secondStatus']])->toBe([200, 200])
+        ->and($result['afterFlip'])->toBeTrue()
+        ->and($result['afterReload'])->toBeTrue()
+        ->and($result['restored'])->toBeFalse();
 });
