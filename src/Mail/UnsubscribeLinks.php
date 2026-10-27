@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Mail;
 
+use Tinvar\Identity\CanonicalOrigins;
 use Tinvar\Render\SignedToken;
 use Tinvar\Render\TokenError;
 use Tinvar\Support\Signer;
@@ -15,8 +16,10 @@ use Tinvar\Support\Signer;
  * The URL is UnsubscribeEndpoint's, on the application's canonical origin
  * -- "Every emailed link (magic link, reset, invite, export, unsubscribe) is
  * built from the user's canonical domain, never from the request's Host
- * header" (tinvar-spec.md) -- so the origin is configuration, handed in,
- * and https: RFC 8058 has a client POST only to an https URL.
+ * header" (tinvar-spec.md) -- so the origin is configuration, handed in:
+ * one for every link, or CanonicalOrigins, which gives the link's tenant
+ * its own (ADR 0076). https either way: RFC 8058 has a client POST only to
+ * an https URL.
  *
  * Its token is signed under its own purpose and names what it may do and
  * nothing more: one list, for one recipient, in one tenant -- the binding
@@ -49,27 +52,25 @@ final readonly class UnsubscribeLinks
     private \Closure $clock;
 
     /**
-     * @param string $origin the application's canonical https origin, such as
-     *        https://shop.example -- never one read from a request
+     * @param string|CanonicalOrigins $origin where links are built: the application's one
+     *        canonical https origin, such as https://shop.example, or each tenant's own
+     *        (CanonicalOrigins, ADR 0076) -- never one read from a request
      * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
      */
-    public function __construct(private Signer $signer, private string $origin, ?\Closure $clock = null)
+    public function __construct(private Signer $signer, private string|CanonicalOrigins $origin, ?\Closure $clock = null)
     {
-        $parts = parse_url($origin);
-        if (
-            !\is_array($parts)
-            || strtolower($parts['scheme'] ?? '') !== 'https'
-            || ($parts['host'] ?? '') === ''
-            || isset($parts['user']) || isset($parts['pass']) || isset($parts['query']) || isset($parts['fragment'])
-            || !\in_array($parts['path'] ?? '', ['', '/'], true)
-        ) {
-            throw new \InvalidArgumentException('Unsubscribe links are built on an https origin alone, such as https://shop.example.');
+        if (\is_string($origin)) {
+            try {
+                CanonicalOrigins::origin($origin);
+            } catch (\InvalidArgumentException) {
+                throw new \InvalidArgumentException('Unsubscribe links are built on an https origin alone, such as https://shop.example.');
+            }
         }
         $this->clock = $clock ?? time(...);
     }
 
     /** @param (\Closure(): int)|null $clock */
-    public static function fromKey(#[\SensitiveParameter] string $appKey, string $origin, ?\Closure $clock = null): self
+    public static function fromKey(#[\SensitiveParameter] string $appKey, string|CanonicalOrigins $origin, ?\Closure $clock = null): self
     {
         return new self(new Signer($appKey, self::PURPOSE), $origin, $clock);
     }
@@ -89,7 +90,11 @@ final readonly class UnsubscribeLinks
         self::assertClaims($list, $recipient, $tenant);
         $now = ($this->clock)();
 
-        return rtrim($this->origin, '/') . self::PATH . '/' . SignedToken::encode($this->signer, self::PURPOSE, [
+        $origin = $this->origin instanceof CanonicalOrigins
+            ? $this->origin->forTenant($tenant)
+            : CanonicalOrigins::origin($this->origin);
+
+        return $origin . self::PATH . '/' . SignedToken::encode($this->signer, self::PURPOSE, [
             'l' => $list,
             'p' => $recipient,
             'y' => $tenant,

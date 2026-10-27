@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Transfers;
 
 use Tinvar\Auth\Authenticatable;
+use Tinvar\Identity\CanonicalOrigins;
 use Tinvar\Jobs\Job;
 use Tinvar\Render\TokenClaims;
 use Tinvar\Storage\Storage;
@@ -50,9 +51,10 @@ final readonly class Transfers
      *        the user binding they carry
      * @param \Closure(Job): string $dispatch queues a job sealed with the context it is
      *        dispatched in -- an application's Jobs\Dispatcher::dispatch()
-     * @param (\Closure(Authenticatable, string): ?string)|null $canonicalOrigin the https
+     * @param CanonicalOrigins|(\Closure(Authenticatable, string): ?string)|null $canonicalOrigin the https
      *        origin of a user's canonical domain, in a tenant, that an emailed link is built
-     *        on -- "never from the request's Host header". Null, or answering null, and no
+     *        on -- "never from the request's Host header": CanonicalOrigins' for the user
+     *        (ADR 0076), or the application's own answer. Null, or answering null, and no
      *        link is emailed: the user finds the file on the page that lists their exports
      * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
      */
@@ -63,7 +65,7 @@ final readonly class Transfers
         public Signer $signer,
         private \Closure $dispatch,
         public ?TransferNotifier $notifier = null,
-        private ?\Closure $canonicalOrigin = null,
+        private CanonicalOrigins|\Closure|null $canonicalOrigin = null,
         public int $linkTtl = DownloadToken::DEFAULT_TTL,
         public int $keepFiles = self::KEEP_FILES,
         private ?\Closure $clock = null,
@@ -78,7 +80,7 @@ final readonly class Transfers
 
     /**
      * @param \Closure(Job): string $dispatch
-     * @param (\Closure(Authenticatable, string): ?string)|null $canonicalOrigin
+     * @param CanonicalOrigins|(\Closure(Authenticatable, string): ?string)|null $canonicalOrigin
      * @param (\Closure(): int)|null $clock
      */
     public static function fromKey(
@@ -89,7 +91,7 @@ final readonly class Transfers
         Storage $storage,
         \Closure $dispatch,
         ?TransferNotifier $notifier = null,
-        ?\Closure $canonicalOrigin = null,
+        CanonicalOrigins|\Closure|null $canonicalOrigin = null,
         int $linkTtl = DownloadToken::DEFAULT_TTL,
         ?\Closure $clock = null,
     ): self {
@@ -154,7 +156,11 @@ final readonly class Transfers
      */
     public function emailedLink(TransferRecord $record, Authenticatable $user, string $epoch): ?string
     {
-        $origin = $this->canonicalOrigin === null ? null : ($this->canonicalOrigin)($user, $record->tenant);
+        $origin = match (true) {
+            $this->canonicalOrigin === null => null,
+            $this->canonicalOrigin instanceof CanonicalOrigins => $this->canonicalOrigin->forUser($user, $record->tenant),
+            default => ($this->canonicalOrigin)($user, $record->tenant),
+        };
         if ($origin === null) {
             return null;
         }
