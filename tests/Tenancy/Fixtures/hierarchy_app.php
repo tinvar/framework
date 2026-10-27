@@ -26,18 +26,21 @@ use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Identity\Realm;
 use Tinvar\Identity\Realms;
+use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Tenancy\Host;
+use Tinvar\Tenancy\Tenancy;
 use Tinvar\Tenancy\TenantHosts;
 use Tinvar\Tenancy\TenantSessions;
 use Tinvar\Tests\Orm\Fixtures\Hierarchy\Tenants;
-use Tinvar\Tests\Orm\Fixtures\Hierarchy\Tree;
+use Tinvar\Tests\Tenancy\Fixtures\Tree;
 use Tinvar\Tests\Orm\Fixtures\Script;
 
 require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/hierarchy.php';
+require_once __DIR__ . '/tree.php';
 
 /**
  * The hierarchy behind a request path: a reseller panel whose memberships
@@ -237,7 +240,7 @@ final class App
     public function __construct(?Tree $tree = new Tree(), ?Realms $realms = null, ?PanelRegistry $registry = null)
     {
         Trace::$events = [];
-        $this->orm = new Tenants()->orm($tree);
+        $this->orm = new Orm(new Tenants()->connection, new IdentityMap('hierarchy-test'), Tenancy::tree($tree));
         $this->auth = new AuthContext();
         $this->directory = new Directory($this->orm);
         $this->panels = new PanelContext();

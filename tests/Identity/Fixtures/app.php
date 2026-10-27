@@ -37,8 +37,7 @@ use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
 use Tinvar\Http\HostName;
-use Tinvar\Orm\TenantHierarchy;
-use Tinvar\Orm\TenantTree;
+use Tinvar\Orm\TenantSubtrees;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Webhooks\ArrayNonceStore;
 
@@ -137,17 +136,24 @@ final class SessionStore
 /**
  * A reseller over acme, when a test asks for a hierarchy: the reseller's
  * custom domain is then a realm whose subtree holds acme's members too.
+ * Registered with the Orm as tenancy would register a tree, through its
+ * port, so the framework's suite runs without tinvar/tenancy.
  */
-final class ResellerOverAcme implements TenantTree
+final class ResellerOverAcme implements TenantSubtrees
 {
-    public function parentOf(string $tenant): ?string
+    public function hierarchical(): bool
     {
-        return $tenant === 'acme' ? 'reseller' : null;
+        return true;
     }
 
-    public function descendantsOf(string $tenant): array
+    public function ancestors(string $tenant): array
     {
-        return $tenant === 'reseller' ? ['acme'] : [];
+        return $tenant === 'acme' ? ['reseller'] : [];
+    }
+
+    public function subtree(string $root): array
+    {
+        return $root === 'reseller' ? ['reseller', 'acme'] : [$root];
     }
 }
 
@@ -257,13 +263,13 @@ final class App
      *        consent screen; the framework's unless given
      * @param bool $tenancy whether tenancy is registered with the Orm; without it, no tree
      */
-    public function __construct(?TenantTree $tree = null, ?\Closure $consent = null, bool $tenancy = true)
+    public function __construct(?TenantSubtrees $tree = null, ?\Closure $consent = null, bool $tenancy = true)
     {
         $this->orm = new Orm(
             new PdoConnection(new \PDO('sqlite::memory:'), 'identity-test'),
             new IdentityMap('identity-test'),
             match (true) {
-                $tree !== null => new TenantHierarchy($tree),
+                $tree !== null => $tree,
                 $tenancy => Tenancy::flat(),
                 default => null,
             },
