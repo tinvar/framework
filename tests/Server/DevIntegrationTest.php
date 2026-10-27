@@ -168,4 +168,12 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
     // A client navigation, under the visit, with its availability's tick.
     expect($result['product']['kind'])->toBe('payload')
         ->and($result['product']['ticks'])->toContain('products.availability');
+
+    // Named by the component that asked, and the one that rendered it, from
+    // the dev renderer's owner stack (ADR 0062); and the page's props by the
+    // loader that returned them.
+    expect($result['product']['ticks'])->toContain('from OrderPanel')
+        ->and($result['product']['ticks'])->toContain('OrderPanel ← Page')
+        ->and($result['catalog']['props'])->toContain('Where each came from')
+        ->and($result['catalog']['props'])->toContain('from Catalog::__invoke');
 });
