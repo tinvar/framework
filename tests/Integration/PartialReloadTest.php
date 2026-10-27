@@ -66,8 +66,9 @@ it('renders the whole page when nothing partial is asked for', function () {
 
         expect($payload)->toContain(FOOTER)
             ->and(substr_count($payload, '"data-product-name":""'))->toBe(24)
-            // And the header's read of who is signed in (ADR 0060).
-            ->and($result->queryCalls)->toBe(25);
+            // And the header's reads of who is signed in (ADR 0060) and
+            // of their open orders (ADR 0065).
+            ->and($result->queryCalls)->toBe(26);
     });
 });
 
@@ -88,7 +89,7 @@ it('renders only the layout for X-Only: shop, and none of the page\'s queries ru
 
         expect($payload)->toContain(FOOTER)
             ->and($payload)->not->toContain('"data-product-name":""')
-            ->and($result->queryCalls)->toBe(1, 'the header\'s read of who is signed in, and nothing of the page');
+            ->and($result->queryCalls)->toBe(2, 'the header\'s reads of who is signed in and their open orders, and nothing of the page');
     });
 });
 

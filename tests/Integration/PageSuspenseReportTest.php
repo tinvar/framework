@@ -22,6 +22,7 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Integration\PageSuspenseReport;
 
 use Shop\Data\CustomerData;
+use Shop\Data\OpenOrdersData;
 use Tinvar\Attributes\Shared;
 use Tinvar\Auth\AllowAllGate;
 use Tinvar\Auth\AuthContext;
@@ -75,11 +76,17 @@ function productPage(): array
     ];
 }
 
-/** The shop's shared key, answered for nobody signed in. */
+/** The shop's shared keys, answered for nobody signed in. */
 final class NobodySignedIn implements SharedData
 {
     #[Shared]
     public function customer(): ?CustomerData
+    {
+        return null;
+    }
+
+    #[Shared(once: true)]
+    public function openOrders(): ?OpenOrdersData
     {
         return null;
     }
@@ -99,7 +106,7 @@ function render(array $extra = [], bool $debug = false): array
     // is the order panel's.
     $shared = new SharedReads(
         registry: new SharedRegistry([NobodySignedIn::class]),
-        keys: ['customer' => true],
+        keys: ['customer' => true, 'openOrders' => true],
         resolver: static fn (string $class): object => new $class(),
         request: Request::get('/products/p-1'),
         page: new CompiledRoute(RouteKind::Page, NobodySignedIn::class, '/products/{product}', 'shop/product', null, ['products', '{product}'], ['product'], [], []),

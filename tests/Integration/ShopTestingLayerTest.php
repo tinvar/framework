@@ -169,6 +169,27 @@ it('acts as a signed-in customer through the session the application makes for t
                 ->has('avatarUrl')));
 });
 
+it('shares the open orders count once, and reads it as held while the browser hands back its hold', function () {
+    $payload = ['rsc' => '1', 'accept' => 'text/x-component', 'x-version' => Kernel::build()];
+    $first = actingAs(customer())->withHeaders($payload)->get('/orders')
+        ->assertOk()
+        ->assertPage(Orders::class, fn (AssertablePage $page) => $page
+            ->etc()
+            ->shared('openOrders', fn (AssertablePage $open) => $open->where('count', fn (int $n): bool => $n >= 0)));
+    $sent = $first->recorded()->shared['openOrders']['value'] ?? null;
+    expect($sent)->toBeArray()->toHaveKey('hold')
+        ->and($sent['ttl'])->toBe(600)
+        ->and($sent['tags'])->toBe([OrderActions::ORDERS_TAG]);
+
+    $first->then()->withHeaders([...$payload, 'x-have-shared' => $sent['hold']])->get('/')
+        ->assertOk()
+        ->assertPage(Catalog::class, fn (AssertablePage $page) => $page->etc()->sharedIsHeld('openOrders'));
+
+    // A guest has none, and a hold sent to the customer is no use to them.
+    new \Tinvar\Testing\Client(testing()->app)->withHeaders([...$payload, 'x-have-shared' => $sent['hold']])->get('/')
+        ->assertPage(Catalog::class, fn (AssertablePage $page) => $page->etc()->sharedIsNull('openOrders'));
+});
+
 // Sessions belong to the host they were made on: a customer signed in for
 // one host is signed in there, and nowhere else.
 it('signs in for the host a request goes to', function () {

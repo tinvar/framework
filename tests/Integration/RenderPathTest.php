@@ -137,7 +137,7 @@ it('batches every availability query into one frame and no statement', function 
         // filled, so the batch costs no statement at all.
         ->assertQueryBudget(2);
 
-    expect($page->result->queryCalls)->toBe(25, 'one availability call per card, and who is signed in');
+    expect($page->result->queryCalls)->toBe(26, 'one availability call per card, who is signed in, and their open orders');
 });
 
 it('lets no model column reach the browser', function () {

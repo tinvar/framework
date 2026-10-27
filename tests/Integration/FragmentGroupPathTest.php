@@ -131,5 +131,9 @@ it('renders a group in one render, as a list with a subtree per boundary', funct
         // The root row is a list of two references, one per boundary.
         ->and($response->body())->toMatch('/^0:\["\$L?[0-9a-f]+","\$L?[0-9a-f]+"\]\n/')
         ->and(substr_count($response->body(), 'data-shipping-updates'))->toBe(2)
+        // Each reads who is signed in with shared(), from the one SharedReads
+        // the fragment endpoint made behind the order page's chain (ADR 0065).
+        ->and(substr_count($response->body(), 'Tracked for'))->toBe(2)
+        ->and($response->body())->toContain(DemoAccount::NAME)
         ->and(explode(',', (string) $response->header('x-fragment-token')))->toHaveCount(2);
 });
