@@ -113,12 +113,13 @@ final class EndpointRunner
         $arguments = $this->bind($endpoint, $path, $models, $requests, $request);
         $instance = ($this->resolver)($endpoint->class);
         $body = static fn (): mixed => $instance->{$endpoint->method}(...$arguments);
-        $result = $endpoint->isSafe() ? $this->orm->readOnly($body) : $body();
+        $safe = CompiledEndpoint::isSafeMethod($request->method);
+        $result = $safe ? $this->orm->readOnly($body) : $body();
 
         // 5. Answer.
         return match ($endpoint->returns) {
             CompiledEndpoint::RETURNS_RESPONSE => $result instanceof Response
-                ? $this->streamedReadOnly($endpoint, $result)
+                ? ($safe ? $this->streamedReadOnly($result) : $result)
                 : throw new \LogicException("{$endpoint->where()} returned " . get_debug_type($result) . ', not a Response.'),
             CompiledEndpoint::RETURNS_DATA => $this->json($endpoint, $result),
             default => Response::make(204),
@@ -130,9 +131,9 @@ final class EndpointRunner
      * after the body has returned, as the response is sent, and a producer
      * that wrote would be a write a page on another site could cause.
      */
-    private function streamedReadOnly(CompiledEndpoint $endpoint, Response $response): Response
+    private function streamedReadOnly(Response $response): Response
     {
-        if (!$endpoint->isSafe() || !$response->isStreaming()) {
+        if (!$response->isStreaming()) {
             return $response;
         }
 

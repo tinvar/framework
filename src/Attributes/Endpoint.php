@@ -32,9 +32,6 @@ final readonly class Endpoint
     /** What an endpoint may declare. HEAD comes with GET; OPTIONS, TRACE and CONNECT never. */
     public const array METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
 
-    /** The methods that change nothing: they carry no CSRF token, so their bodies run read-only. */
-    public const array SAFE = ['GET', 'HEAD'];
-
     /** @var non-empty-list<string> */
     public array $methods;
 
@@ -105,11 +102,5 @@ final readonly class Endpoint
         return $method->getAttributes(Get::class) !== []
             || $method->getAttributes(Post::class) !== []
             || $method->getAttributes(self::class) !== [];
-    }
-
-    /** Whether every method it answers is safe. */
-    public function isSafe(): bool
-    {
-        return array_diff($this->methods, self::SAFE) === [];
     }
 }

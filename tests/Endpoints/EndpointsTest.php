@@ -190,6 +190,32 @@ final class WritingEndpoints
     }
 }
 
+/** GET and POST at one path: each request is judged by its own method, never the declaration's. */
+final class MixedEndpoints
+{
+    public function __construct(private readonly Orm $orm) {}
+
+    #[Endpoint('/api/racks/{rack}/rename', methods: ['GET', 'POST'], name: 'racks.rename'), Authorize('update', 'rack')]
+    public function rename(Rack $rack): void
+    {
+        Seen::$bodies[] = 'rename';
+        $rack->name = 'renamed';
+        $this->orm->save($rack);
+    }
+
+    #[Endpoint('/api/racks/{rack}/sheet', methods: ['GET', 'POST'], name: 'racks.sheet'), Authorize('update', 'rack')]
+    public function sheet(Rack $rack): Response
+    {
+        $orm = $this->orm;
+
+        return Response::stream(static function (\Closure $sink) use ($orm, $rack): void {
+            $rack->name = 'renamed';
+            $orm->save($rack);
+            $sink('done');
+        });
+    }
+}
+
 final class CachedEndpoints
 {
     #[Get('/api/catalog.json', name: 'catalog'), PublicAccess, NoAuthorization(reason: 'the catalog is public')]
@@ -408,6 +434,7 @@ function kernel(array $endpoints, ?Orm $orm = null, ?string $tenant = null, ?Web
             BearerToken::class => new BearerToken($auth),
             InTenant::class => new InTenant($orm, (string) $tenant),
             WritingEndpoints::class => new WritingEndpoints($orm),
+            MixedEndpoints::class => new MixedEndpoints($orm),
             default => new $class(),
         },
         allowedQueries: static fn (Request $r): array => [],
@@ -451,7 +478,7 @@ function shop(): array
 {
     $fixture = new Fixture(racks: 2, unitsPerRack: 2);
 
-    return [$fixture, kernel([RackEndpoints::class, PublicEndpoints::class, ScannerEndpoints::class, WritingEndpoints::class, CachedEndpoints::class], new Orm($fixture->connection, new IdentityMap('test')))];
+    return [$fixture, kernel([RackEndpoints::class, PublicEndpoints::class, ScannerEndpoints::class, WritingEndpoints::class, CachedEndpoints::class, MixedEndpoints::class], new Orm($fixture->connection, new IdentityMap('test')))];
 }
 
 beforeEach(function () {
@@ -651,6 +678,32 @@ describe('an endpoint that changes something', function () {
 
         expect(call($kernel, 'POST', '/api/ping', signedIn: false, csrf: false)->status)->toBe(419)
             ->and(call($kernel, 'POST', '/api/ping', signedIn: false)->status)->toBe(204);
+    });
+});
+
+describe('an endpoint answering GET and POST', function () {
+    it('runs a GET read-only, though it declares a POST too', function () {
+        [$fixture, $kernel] = shop();
+
+        expect(call($kernel, 'GET', "/api/racks/{$fixture->ids['racks'][0]}/rename", csrf: false)->status)->toBe(500)
+            ->and(Seen::$failures)->toBe([ReadOnlyViolation::class]);
+
+        $streamed = call($kernel, 'GET', "/api/racks/{$fixture->ids['racks'][0]}/sheet", csrf: false);
+        expect(fn () => $streamed->body())->toThrow(ReadOnlyViolation::class);
+    });
+
+    it('holds a POST to the CSRF token, and lets it write', function () {
+        [$fixture, $kernel] = shop();
+        $path = "/api/racks/{$fixture->ids['racks'][0]}/rename";
+
+        expect(call($kernel, 'POST', $path, csrf: false)->status)->toBe(419)
+            ->and(Seen::$bodies)->toBe([])
+            ->and(call($kernel, 'POST', $path)->status)->toBe(204)
+            ->and(Seen::$bodies)->toBe(['rename']);
+
+        // A fresh rack, since the policy goes by name, which that renamed.
+        [$fixture, $kernel] = shop();
+        expect(call($kernel, 'POST', "/api/racks/{$fixture->ids['racks'][0]}/sheet")->body())->toBe('done');
     });
 });
 

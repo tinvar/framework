@@ -95,10 +95,17 @@ final readonly class CompiledEndpoint
         return \in_array('GET', $this->methods, true) ? [...$this->methods, 'HEAD'] : $this->methods;
     }
 
-    /** Whether nothing it answers changes anything: it runs read-only and carries no CSRF token. */
-    public function isSafe(): bool
+    /**
+     * Whether a request's method is one that may change nothing: GET and
+     * HEAD carry no CSRF token, so their body, and any stream it returns,
+     * run read-only. Decided by the request, never by what the endpoint
+     * declares -- one answering GET and POST runs a GET read-only and holds
+     * a POST to the token, as VerifyCsrfToken, which reads the request too,
+     * does.
+     */
+    public static function isSafeMethod(string $method): bool
     {
-        return array_diff($this->methods, ['GET']) === [];
+        return $method === 'GET' || $method === 'HEAD';
     }
 
     public function where(): string
