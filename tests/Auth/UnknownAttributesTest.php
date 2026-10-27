@@ -21,7 +21,6 @@ use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Page;
 use Tinvar\Attributes\Query;
 use Tinvar\Auth\BuildRules;
-use Tinvar\Data\Data;
 use Tinvar\Data\DataShape;
 use Tinvar\Orm\Attributes\Id;
 use Tinvar\Orm\Attributes\Table;
@@ -55,7 +54,13 @@ final class CountQuery
     }
 }
 
-final readonly class Shown extends Data
+/**
+ * A payload's shape, as DataShape reads one. Not a Data subclass: the
+ * testing layer's model-leak check reads every Data class a process has
+ * declared, and would meet this one in whatever shop test ran after it in
+ * the same worker.
+ */
+final readonly class Shown
 {
     public function __construct(
         #[\Tinvar\Attributes\Optionall]
