@@ -1,0 +1,560 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tinvar\Auth;
+
+/**
+ * The application methods a class's code can call, followed from its entry
+ * points: what the shared-query rule reads for "the build fails if a shared
+ * query's body or call graph reads the current user, can(), Panel::current(),
+ * acrossTenants() or withinReseller()" (tinvar-spec.md, "Query cache").
+ *
+ * It reads PHP's tokens, not a syntax tree, method by method, and follows
+ * each call whose target it can name from the code alone:
+ *
+ *   - `$this->method()`, `self::`, `static::` and `parent::method()`;
+ *   - `$this->property->method()`, by the property's declared type;
+ *   - `$parameter->method()`, by the parameter's declared type;
+ *   - `Name::method()`, by the file's namespace and `use` imports;
+ *   - `new Name(...)`, to its constructor;
+ *   - `function_name()`, an application function.
+ *
+ * Where it stops is the framework and the dependencies: a method of a class
+ * whose file is in one of the framework's packages or under `vendor/` is a
+ * leaf. The framework is where the reads the rule names are defined --
+ * Orm::acrossTenants() is a method of the ORM, and its body is the ORM's --
+ * and a call to one is caught where the application makes it, in the text
+ * of the method that calls it.
+ *
+ * What it cannot follow, it says, and the rule refuses: an application
+ * interface or abstract method, whose body is whichever implementation is
+ * bound at runtime; a receiver whose declared type is missing; a class with
+ * __call or __callStatic answering a method it does not declare; and a
+ * graph past MAX_METHODS. A call on a local variable is not followed --
+ * `$query->where(...)` on what the ORM handed back is most of a query's
+ * body -- so a read reached only through an object the method built and
+ * kept in a local is missed, unless its text names one; the ADR says so.
+ */
+final class CallGraph
+{
+    /** Methods followed from one class before the walk stops and says so. */
+    public const int MAX_METHODS = 400;
+
+    /** @var array<string, array{namespace: string, namespaces: int, classes: array<string, string>, functions: array<string, string>}> file => what its names mean */
+    private static array $contexts = [];
+
+    /** The framework's packages, whose methods the walk does not enter. */
+    private const array PACKAGES = ['tinvar/support', 'tinvar/database', 'tinvar/framework', 'tinvar/tenancy', 'tinvar/testing', 'tinvar/codegen'];
+
+    /** @var list<string>|null the framework's packages' source directories */
+    private static ?array $framework = null;
+
+    /**
+     * @param class-string $class
+     * @param list<string> $methods the entry points: what the class's caller calls
+     * @param int $limit how many methods to follow before refusing the rest
+     * @return array{
+     *     reached: list<array{where: string, source: string, file: string, start: int, end: int}>,
+     *     refused: list<array{where: string, why: string}>
+     * } every method and function reached, its source; and every call that could not be followed
+     */
+    public static function walk(string $class, array $methods, int $limit = self::MAX_METHODS): array
+    {
+        /** @var list<array{0: string, 1: string}> $queue class (or '' for a function) and method */
+        $queue = [];
+        foreach ($methods as $method) {
+            if (method_exists($class, $method)) {
+                $queue[] = [$class, $method];
+            }
+        }
+
+        $seen = [];
+        $reached = [];
+        $refused = [];
+        while ($queue !== []) {
+            [$owner, $name] = array_shift($queue);
+            $key = strtolower("{$owner}::{$name}");
+            if (isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+            if (\count($seen) > $limit) {
+                $refused[] = [
+                    'where' => $owner === '' ? "{$name}()" : "{$owner}::{$name}()",
+                    'why' => "the call graph reaches more than {$limit} methods, more than the rule follows",
+                ];
+                break;
+            }
+
+            $function = $owner === '' ? new \ReflectionFunction($name) : new \ReflectionMethod($owner, $name);
+            $where = $function instanceof \ReflectionMethod
+                ? "{$function->getDeclaringClass()->getName()}::{$name}()"
+                : "{$name}()";
+            if ($function instanceof \ReflectionMethod && $function->isAbstract()) {
+                $refused[] = ['where' => $where, 'why' => 'it is abstract, so its body is whichever implementation is bound at runtime'];
+                continue;
+            }
+
+            $file = $function->getFileName();
+            $start = $function->getStartLine();
+            $end = $function->getEndLine();
+            if ($file === false || $start === false || $end === false) {
+                continue;
+            }
+            $lines = @file($file);
+            if ($lines === false) {
+                $refused[] = ['where' => $where, 'why' => "its file {$file} cannot be read"];
+                continue;
+            }
+            $source = implode('', \array_slice($lines, $start - 1, $end - $start + 1));
+            $reached[] = ['where' => $where, 'source' => $source, 'file' => $file, 'start' => $start, 'end' => $end];
+
+            $self = $owner !== '' && class_exists($owner) ? $owner : null;
+            foreach (self::callsIn($source, $file, $self, $function) as $call) {
+                if (isset($call['why'])) {
+                    $refused[] = ['where' => "{$where}, calling {$call['call']}", 'why' => $call['why']];
+                    continue;
+                }
+                $queue[] = [$call['class'], $call['method']];
+            }
+        }
+
+        return ['reached' => $reached, 'refused' => $refused];
+    }
+
+    /**
+     * The calls one method's source makes that the walk follows -- each a
+     * class and method, '' for a function -- and those it cannot.
+     *
+     * @param class-string|null $self the class the method runs as
+     * @return list<array{class: string, method: string}|array{call: string, why: string}>
+     */
+    private static function callsIn(string $source, string $file, ?string $self, \ReflectionFunctionAbstract $function): array
+    {
+        $tokens = [];
+        foreach (token_get_all("<?php\n" . $source) as $token) {
+            if (\is_array($token) && \in_array($token[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT, T_OPEN_TAG], true)) {
+                continue;
+            }
+            $tokens[] = $token;
+        }
+
+        // Names mean what the namespace and imports in force say, and a file
+        // of several namespaces is read as one: refused, not misread.
+        if (self::context($file)['namespaces'] > 1) {
+            return [['call' => 'any of its calls', 'why' => "{$file} declares more than one namespace, so the names it calls cannot be resolved"]];
+        }
+
+        $parameters = [];
+        foreach ($function->getParameters() as $parameter) {
+            $parameters['$' . $parameter->getName()] = $parameter;
+        }
+
+        $calls = [];
+        $count = \count($tokens);
+        for ($i = 0; $i < $count; $i++) {
+            $token = $tokens[$i];
+
+            // $this->method(), $this->property->method(), $parameter->method()
+            if (self::is($token, T_VARIABLE) && self::isArrow($tokens[$i + 1] ?? null) && self::is($tokens[$i + 2] ?? null, T_STRING)) {
+                $variable = self::text($token);
+                $first = self::text($tokens[$i + 2]);
+                if ($variable === '$this' && $self !== null) {
+                    if (($tokens[$i + 3] ?? null) === '(') {
+                        $calls[] = self::target($self, $first, "\$this->{$first}()");
+                    } elseif (self::isArrow($tokens[$i + 3] ?? null) && self::is($tokens[$i + 4] ?? null, T_STRING) && ($tokens[$i + 5] ?? null) === '(') {
+                        $method = self::text($tokens[$i + 4]);
+                        array_push($calls, ...self::onProperty($self, $first, $method));
+                    }
+                } elseif (isset($parameters[$variable]) && ($tokens[$i + 3] ?? null) === '(') {
+                    array_push($calls, ...self::onTyped($parameters[$variable]->getType(), "{$variable}->{$first}()", $first, $self));
+                }
+
+                continue;
+            }
+
+            // Name::method(), self::, static::, parent::
+            if (self::isName($token) && self::is($tokens[$i + 1] ?? null, T_DOUBLE_COLON)
+                && self::is($tokens[$i + 2] ?? null, T_STRING) && ($tokens[$i + 3] ?? null) === '(') {
+                $previous = $tokens[$i - 1] ?? null;
+                if (self::isArrow($previous) || self::is($previous, T_DOUBLE_COLON)) {
+                    continue;
+                }
+                $class = self::className(self::text($token), $file, $self);
+                $method = self::text($tokens[$i + 2]);
+                if ($class !== null) {
+                    $calls[] = self::target($class, $method, self::text($token) . "::{$method}()");
+                }
+
+                continue;
+            }
+
+            // new Name(...)
+            if (self::is($token, T_NEW) && self::isName($tokens[$i + 1] ?? null)) {
+                $written = self::text($tokens[$i + 1]);
+                $class = self::className($written, $file, $self);
+                if ($class === null || !class_exists($class)) {
+                    continue;
+                }
+                if (method_exists($class, '__construct')) {
+                    $calls[] = self::target($class, '__construct', "new {$written}()");
+                }
+
+                // `new Name(...)->method()`, and the same in parentheses.
+                $after = self::closing($tokens, $i + 2);
+                if ($after !== null && ($tokens[$after + 1] ?? null) === ')' && ($tokens[$i - 1] ?? null) === '(') {
+                    $after++;
+                }
+                if ($after !== null && self::isArrow($tokens[$after + 1] ?? null)
+                    && self::is($tokens[$after + 2] ?? null, T_STRING) && ($tokens[$after + 3] ?? null) === '(') {
+                    $method = self::text($tokens[$after + 2]);
+                    $calls[] = self::target($class, $method, "new {$written}()->{$method}()");
+                }
+
+                continue;
+            }
+
+            // function_name()
+            if ((self::is($token, T_STRING) || self::is($token, T_NAME_QUALIFIED) || self::is($token, T_NAME_FULLY_QUALIFIED))
+                && ($tokens[$i + 1] ?? null) === '(') {
+                $previous = $tokens[$i - 1] ?? null;
+                if (self::isArrow($previous) || self::is($previous, T_DOUBLE_COLON) || self::is($previous, T_FUNCTION)
+                    || self::is($previous, T_NEW) || self::is($previous, T_FN) || self::is($previous, T_CONST)) {
+                    continue;
+                }
+                $name = self::functionName(self::text($token), $file);
+                if ($name !== null && !self::isFramework((string) new \ReflectionFunction($name)->getFileName())) {
+                    $calls[] = ['class' => '', 'method' => $name];
+                }
+            }
+        }
+
+        // A leaf answers for itself; only what is followed is returned.
+        return array_values(array_filter($calls, static fn (?array $call): bool => $call !== null));
+    }
+
+    /**
+     * A call of $method on $class: followed, a leaf (null), or refused.
+     *
+     * @return array{class: class-string, method: string}|array{call: string, why: string}|null
+     */
+    private static function target(string $class, string $method, string $call): ?array
+    {
+        if (!class_exists($class) && !interface_exists($class) && !trait_exists($class)) {
+            return null;
+        }
+        $reflection = new \ReflectionClass($class);
+        $file = $reflection->getFileName();
+        if ($file === false || self::isFramework($file)) {
+            return null;
+        }
+        if (!$reflection->hasMethod($method)) {
+            return $reflection->hasMethod('__call') || $reflection->hasMethod('__callStatic')
+                ? ['call' => $call, 'why' => "{$class} answers it with __call(), whose body cannot be read as this method's"]
+                : null;
+        }
+        if ($reflection->isInterface() || $reflection->getMethod($method)->isAbstract()) {
+            return ['call' => $call, 'why' => "{$class}::{$method}() is abstract, so its body is whichever implementation is bound at runtime"];
+        }
+
+        return ['class' => $reflection->getName(), 'method' => $method];
+    }
+
+    /**
+     * `$this->property->method()`, by the property's declared type.
+     *
+     * @param class-string $self
+     * @return list<array{class: string, method: string}|array{call: string, why: string}|null>
+     */
+    private static function onProperty(string $self, string $property, string $method): array
+    {
+        $call = "\$this->{$property}->{$method}()";
+        $reflection = new \ReflectionClass($self);
+        if (!$reflection->hasProperty($property)) {
+            return [['call' => $call, 'why' => "{$self} declares no property \${$property}, so what it holds cannot be read"]];
+        }
+
+        return self::onTyped($reflection->getProperty($property)->getType(), $call, $method, $self);
+    }
+
+    /**
+     * A method called on a value of a declared type: each class it may be.
+     *
+     * @return list<array{class: string, method: string}|array{call: string, why: string}|null>
+     */
+    private static function onTyped(?\ReflectionType $type, string $call, string $method, ?string $self): array
+    {
+        if ($type === null) {
+            return [['call' => $call, 'why' => 'its receiver has no declared type, so what it calls cannot be read']];
+        }
+        $members = $type instanceof \ReflectionUnionType || $type instanceof \ReflectionIntersectionType
+            ? $type->getTypes()
+            : [$type];
+
+        $calls = [];
+        foreach ($members as $member) {
+            if (!$member instanceof \ReflectionNamedType || $member->isBuiltin()) {
+                continue;
+            }
+            $name = $member->getName();
+            $class = match (strtolower($name)) {
+                'self', 'static' => $self,
+                default => $name,
+            };
+            if ($class !== null) {
+                $calls[] = self::target($class, $method, $call);
+            }
+        }
+
+        return $calls;
+    }
+
+    /** A class name as written, in a file: resolved by its namespace and imports, or null for one that is no class. */
+    private static function className(string $written, string $file, ?string $self): ?string
+    {
+        $lower = strtolower($written);
+        if ($lower === 'self' || $lower === 'static') {
+            return $self;
+        }
+        if ($lower === 'parent') {
+            $parent = $self === null ? false : get_parent_class($self);
+
+            return $parent === false ? null : $parent;
+        }
+        if (str_starts_with($written, '\\')) {
+            return substr($written, 1);
+        }
+
+        $context = self::context($file);
+        $first = strtolower(explode('\\', $written, 2)[0]);
+        if (isset($context['classes'][$first])) {
+            $slash = strpos($written, '\\');
+            $rest = $slash === false ? '' : substr($written, $slash);
+
+            return $context['classes'][$first] . $rest;
+        }
+
+        return ltrim("{$context['namespace']}\\{$written}", '\\');
+    }
+
+    /** A function name as written, in a file: the application function it calls, or null for a built-in or none. */
+    private static function functionName(string $written, string $file): ?string
+    {
+        $context = self::context($file);
+        $candidates = match (true) {
+            str_starts_with($written, '\\') => [substr($written, 1)],
+            isset($context['functions'][strtolower($written)]) => [$context['functions'][strtolower($written)]],
+            default => [ltrim("{$context['namespace']}\\{$written}", '\\'), $written],
+        };
+        foreach ($candidates as $candidate) {
+            if (\function_exists($candidate) && new \ReflectionFunction($candidate)->isUserDefined()) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * A file's namespace and `use` imports, read once.
+     *
+     * @return array{namespace: string, namespaces: int, classes: array<string, string>, functions: array<string, string>}
+     */
+    private static function context(string $file): array
+    {
+        if (isset(self::$contexts[$file])) {
+            return self::$contexts[$file];
+        }
+
+        $context = ['namespace' => '', 'namespaces' => 0, 'classes' => [], 'functions' => []];
+        $source = @file_get_contents($file);
+        $tokens = array_values(array_filter(
+            token_get_all($source === false ? '' : $source),
+            static fn (array|string $token): bool => !\is_array($token) || !\in_array($token[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true),
+        ));
+        $depth = 0;
+        $count = \count($tokens);
+        for ($i = 0; $i < $count; $i++) {
+            $token = $tokens[$i];
+            if ($token === '{' || self::is($token, T_CURLY_OPEN) || self::is($token, T_DOLLAR_OPEN_CURLY_BRACES)) {
+                $depth++;
+            } elseif ($token === '}') {
+                $depth--;
+            } elseif (self::is($token, T_NAMESPACE) && $depth === 0 && self::isName($tokens[$i + 1] ?? null)) {
+                $context['namespace'] = self::text($tokens[$i + 1]);
+                $context['namespaces']++;
+            } elseif (self::is($token, T_USE) && $depth === 0) {
+                $i = self::readUse($tokens, $i + 1, $context);
+            }
+        }
+
+        return self::$contexts[$file] = $context;
+    }
+
+    /**
+     * One top-level `use` statement, into $context; returns where it ends.
+     *
+     * @param list<array{0: int, 1: string, 2: int}|string> $tokens
+     * @param array{namespace: string, namespaces: int, classes: array<string, string>, functions: array<string, string>} $context
+     */
+    private static function readUse(array $tokens, int $i, array &$context): int
+    {
+        $kind = 'classes';
+        if (self::is($tokens[$i] ?? null, T_FUNCTION)) {
+            $kind = 'functions';
+            $i++;
+        } elseif (self::is($tokens[$i] ?? null, T_CONST)) {
+            $kind = null;
+            $i++;
+        }
+
+        $prefix = '';
+        $name = null;
+        $alias = null;
+        $count = \count($tokens);
+        for (; $i < $count; $i++) {
+            $token = $tokens[$i];
+            if ($token === ';' || $token === ',' || $token === '}') {
+                if ($name !== null && $kind !== null) {
+                    $full = ltrim($prefix . $name, '\\');
+                    $short = $alias ?? substr($full, (int) strrpos('\\' . $full, '\\'));
+                    $context[$kind][strtolower($short)] = $full;
+                }
+                $name = null;
+                $alias = null;
+                if ($token === ';') {
+                    return $i;
+                }
+                if ($token === '}') {
+                    $prefix = '';
+                }
+            } elseif ($token === '{') {
+                $prefix = rtrim((string) $name, '\\') . '\\';
+                $name = null;
+            } elseif (self::is($token, T_AS)) {
+                $alias = self::text($tokens[$i + 1] ?? '');
+                $i++;
+            } elseif (self::isName($token) || self::is($token, T_NS_SEPARATOR)) {
+                $name = ($name ?? '') . self::text($token);
+            } elseif (self::is($token, T_FUNCTION) && $name === null) {
+                $kind = 'functions';
+            }
+        }
+
+        return $i;
+    }
+
+    /**
+     * Where the parenthesis opening at $open closes, or null when there is
+     * none there.
+     *
+     * @param list<array{0: int, 1: string, 2: int}|string> $tokens
+     */
+    private static function closing(array $tokens, int $open): ?int
+    {
+        if (($tokens[$open] ?? null) !== '(') {
+            return null;
+        }
+        $depth = 0;
+        $count = \count($tokens);
+        for ($i = $open; $i < $count; $i++) {
+            if ($tokens[$i] === '(') {
+                $depth++;
+            } elseif ($tokens[$i] === ')' && --$depth === 0) {
+                return $i;
+            }
+        }
+
+        return null;
+    }
+
+    /** Whether a file is the framework's own, or a dependency's: where the walk stops. */
+    private static function isFramework(string $file): bool
+    {
+        $real = realpath($file);
+        $file = $real === false ? $file : $real;
+        if (str_contains($file, \DIRECTORY_SEPARATOR . 'vendor' . \DIRECTORY_SEPARATOR)) {
+            return true;
+        }
+        foreach (self::frameworkRoots() as $root) {
+            if (str_starts_with($file, $root)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The `src` directories of the framework's packages, found from a class
+     * of each, wherever Composer installed them.
+     *
+     * @return list<string>
+     */
+    private static function frameworkRoots(): array
+    {
+        if (self::$framework !== null) {
+            return self::$framework;
+        }
+
+        // Each package's directory as Composer installed it, by package
+        // name -- the framework names no class of a layer above it -- and
+        // this package's and the two below it by a class of each, wherever
+        // the application put them.
+        $directories = [];
+        foreach (self::PACKAGES as $package) {
+            if (class_exists(\Composer\InstalledVersions::class) && \Composer\InstalledVersions::isInstalled($package)) {
+                $path = \Composer\InstalledVersions::getInstallPath($package);
+                if ($path !== null) {
+                    $directories[] = "{$path}/src";
+                }
+            }
+        }
+        foreach ([self::class, \Tinvar\Orm\Orm::class, \Tinvar\Support\Str::class] as $anchor) {
+            $file = new \ReflectionClass($anchor)->getFileName();
+            $directory = $file === false ? false : \dirname($file);
+            while (\is_string($directory) && basename($directory) !== 'src' && \dirname($directory) !== $directory) {
+                $directory = \dirname($directory);
+            }
+            if (\is_string($directory) && basename($directory) === 'src') {
+                $directories[] = $directory;
+            }
+        }
+
+        $roots = [];
+        foreach ($directories as $directory) {
+            $real = realpath($directory);
+            if ($real !== false) {
+                $roots[] = $real . \DIRECTORY_SEPARATOR;
+            }
+        }
+
+        return self::$framework = array_values(array_unique($roots));
+    }
+
+    /** @param array{0: int, 1: string, 2: int}|string|null $token */
+    private static function is(array|string|null $token, int $id): bool
+    {
+        return \is_array($token) && $token[0] === $id;
+    }
+
+    /** @param array{0: int, 1: string, 2: int}|string|null $token */
+    private static function isArrow(array|string|null $token): bool
+    {
+        return self::is($token, T_OBJECT_OPERATOR) || self::is($token, T_NULLSAFE_OBJECT_OPERATOR);
+    }
+
+    /** @param array{0: int, 1: string, 2: int}|string|null $token */
+    private static function isName(array|string|null $token): bool
+    {
+        return self::is($token, T_STRING) || self::is($token, T_NAME_QUALIFIED)
+            || self::is($token, T_NAME_FULLY_QUALIFIED) || self::is($token, T_STATIC);
+    }
+
+    /** @param array{0: int, 1: string, 2: int}|string $token */
+    private static function text(array|string $token): string
+    {
+        return \is_array($token) ? $token[1] : $token;
+    }
+}

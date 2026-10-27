@@ -656,10 +656,15 @@ final class BuildRules
      *    query legitimately depends on, so a type walk cannot distinguish
      *    them; only the direct case is caught.
      *
-     * What is NOT checked: a method call into the call graph that reaches one
-     * of those from a class whose type closure looks innocent. The spec asks
-     * for "body or call graph", and the call graph needs a static analyser.
-     * Saying so is better than a check that quietly passes the case it misses.
+     *  - The same TEXTUAL check over its CALL GRAPH: every application
+     *    method and function its entry point and constructor reach, followed
+     *    through the calls CallGraph can name, with a call it cannot follow
+     *    refused (checkSharedCallGraph()).
+     *
+     * What is NOT checked: a call on a local variable, which the walk does
+     * not follow, reaching a read whose text the calling method does not
+     * itself contain; and the framework's own methods, where the walk stops
+     * and the call into them is what the text check reads.
      *
      * @param class-string $class
      * @return list<Violation>
@@ -712,6 +717,56 @@ final class BuildRules
                     "is #[Query(shared: true)] but calls '{$needle}', which reads {$what}. "
                     . 'A shared query drops the user from its cache key, so two users read one entry.',
                 );
+            }
+        }
+
+        return [...$violations, ...self::checkSharedCallGraph($reflection)];
+    }
+
+    /**
+     * The same reads, in what the query's code calls: "the build fails if a
+     * shared query's body or call graph reads ..." (tinvar-spec.md, "Query
+     * cache"). The application methods and functions reachable from its
+     * entry point and constructor (CallGraph) are each held to the textual
+     * check its own source is; a call the walk cannot follow is refused, as
+     * an unanalysable dependency is.
+     *
+     * @param \ReflectionClass<object> $reflection
+     * @return list<Violation>
+     */
+    private static function checkSharedCallGraph(\ReflectionClass $reflection): array
+    {
+        $class = $reflection->getName();
+        $graph = CallGraph::walk($class, [Query::entryMethodOf($class), '__construct']);
+        $file = $reflection->getFileName();
+        $start = $reflection->getStartLine();
+        $end = $reflection->getEndLine();
+
+        $violations = [];
+        foreach ($graph['refused'] as $refused) {
+            $violations[] = new Violation(
+                self::SHARED_QUERY_MUST_NOT_READ_THE_USER,
+                $class,
+                "is #[Query(shared: true)] and its call graph cannot be followed at {$refused['where']}: {$refused['why']}. "
+                . 'A shared query drops the user from its cache key, so a call that cannot be read is refused '
+                . 'rather than assumed not to read the user.',
+            );
+        }
+
+        foreach ($graph['reached'] as $method) {
+            // The query's own source is read whole above.
+            if ($method['file'] === $file && $method['start'] >= $start && $method['end'] <= $end) {
+                continue;
+            }
+            foreach (self::USER_DEPENDENT_CALLS as $needle => $what) {
+                if (str_contains($method['source'], $needle)) {
+                    $violations[] = new Violation(
+                        self::SHARED_QUERY_MUST_NOT_READ_THE_USER,
+                        $class,
+                        "is #[Query(shared: true)] but calls {$method['where']}, which calls '{$needle}' and reads {$what}. "
+                        . 'A shared query drops the user from its cache key, so two users read one entry.',
+                    );
+                }
             }
         }
 
