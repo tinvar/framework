@@ -6,6 +6,7 @@ namespace Tinvar\Auth;
 
 use Tinvar\Attributes\Action;
 use Tinvar\Attributes\Authorize;
+use Tinvar\Attributes\Endpoint;
 use Tinvar\Attributes\Layout;
 use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Page;
@@ -25,7 +26,8 @@ use Tinvar\Validation\FormRequest;
  * forgetting an #[Authorize] is silent, and the failure is open.
  *
  * Routability is decided by the ENTRY-POINT marker -- #[Page], #[Layout],
- * #[Query], #[Action] -- never by whether the method already declares a
+ * #[Query], #[Action], and #[Get], #[Post] or #[Endpoint] on a method --
+ * never by whether the method already declares a
  * check. An earlier version only looked at methods that carried #[Authorize]
  * or #[NoAuthorization], which made the rule blind to exactly the mistake it
  * exists to catch.
@@ -589,8 +591,10 @@ final class BuildRules
 
         // An #[Action] marks its own method, wherever it sits, including on a
         // class that is also a page.
+        // So does a #[Get], #[Post] or #[Endpoint] (ADR 0067), and as an
+        // action's, a class-level declaration covers none of them.
         foreach ($reflection->getMethods() as $method) {
-            if ($method->getAttributes(Action::class) === []) {
+            if ($method->getAttributes(Action::class) === [] && !Endpoint::marks($method)) {
                 continue;
             }
             $methods[$method->getName()] ??= [$method, false];

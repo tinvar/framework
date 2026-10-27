@@ -23,6 +23,31 @@ namespace Tinvar\Attributes;
 #[\Attribute(\Attribute::TARGET_CLASS | \Attribute::TARGET_METHOD)]
 final readonly class PublicAccess
 {
+    /**
+     * @param string|null $reason why anyone at all may call it. Optional on
+     *        a page, an action or a query; required on an endpoint that
+     *        answers anything but GET, whose public, state-changing route a
+     *        reviewer has to be told about (ADR 0067).
+     */
+    public function __construct(public ?string $reason = null) {}
+
+    /**
+     * The reason an entry point -- its method, else its class -- gives for
+     * opting out; null for none given, or no opt-out.
+     */
+    public static function reasonOn(string $class, string $method): ?string
+    {
+        if (!class_exists($class)) {
+            return null;
+        }
+        $reflection = new \ReflectionClass($class);
+        $attribute = ($reflection->hasMethod($method) ? $reflection->getMethod($method)->getAttributes(self::class)[0] ?? null : null)
+            ?? $reflection->getAttributes(self::class)[0] ?? null;
+        $reason = $attribute?->newInstance()->reason;
+
+        return $reason === null || trim($reason) === '' ? null : $reason;
+    }
+
     /** Whether an entry point -- a class, or one method of one -- opts out. */
     public static function declaredOn(string $class, ?string $method = null): bool
     {

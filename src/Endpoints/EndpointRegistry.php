@@ -1,0 +1,560 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tinvar\Endpoints;
+
+use Tinvar\Attributes\Authorize;
+use Tinvar\Attributes\Endpoint;
+use Tinvar\Attributes\Middleware;
+use Tinvar\Attributes\NoAuthorization;
+use Tinvar\Attributes\Panel;
+use Tinvar\Attributes\PublicAccess;
+use Tinvar\Attributes\TenantFrom;
+use Tinvar\Attributes\WithoutSession;
+use Tinvar\Auth\PanelBinding;
+use Tinvar\Auth\Violation;
+use Tinvar\Data\Data;
+use Tinvar\Http\Request;
+use Tinvar\Http\Response;
+use Tinvar\Orm\Model;
+use Tinvar\Routing\CompiledRoute;
+use Tinvar\Routing\RouteRegistry;
+use Tinvar\Support\KnownAttributes;
+use Tinvar\Support\Str;
+use Tinvar\Validation\FormRequest;
+
+/**
+ * The #[Get], #[Post] and #[Endpoint] methods of the classes an application
+ * lists, by name and by path.
+ *
+ * Compilation is where an endpoint is held to the build rules, as an
+ * action is: a model input no #[Authorize] names, a path parameter nothing
+ * takes, a return the encoder could not send, a path under the framework's
+ * own `/_` -- each refused here, when the application starts, rather than on
+ * the first request. What only the whole application can show -- an
+ * endpoint and a page that both match one path -- is refused where both
+ * registries meet: the Kernel, and `tinvar check` (conflicts()).
+ */
+final class EndpointRegistry
+{
+    /** The rule a path two routes both match breaks, in `tinvar check`. */
+    public const string PATHS_MUST_NOT_OVERLAP_PAGES = 'endpoint-paths-must-not-overlap-pages';
+
+    /** The rule an endpoint the registry refuses breaks, in `tinvar check`. */
+    public const string ENDPOINTS_MUST_COMPILE = 'endpoints-must-compile';
+
+    /** @var array<string, CompiledEndpoint> */
+    private array $byName = [];
+
+    /** @var list<CompiledEndpoint> */
+    private array $ordered = [];
+
+    private bool $sorted = true;
+
+    /**
+     * @param class-string $class
+     * @return list<CompiledEndpoint>
+     */
+    public function register(string $class): array
+    {
+        $reflection = new \ReflectionClass($class);
+        KnownAttributes::check($reflection);
+
+        // As an action holder's: a check or an exemption on the class covers
+        // no method. A class-level #[Authorize] still runs ahead of each
+        // method's own; a class-level #[NoAuthorization] is refused, since it
+        // would exempt every endpoint added to the class later.
+        $classDeclares = Authorize::classLevelCount($class) > 0
+            || $reflection->getAttributes(NoAuthorization::class) !== [];
+
+        $compiled = [];
+        foreach ($reflection->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
+            try {
+                $declaration = Endpoint::declaredOn($method);
+            } catch (\InvalidArgumentException $e) {
+                throw new EndpointException($e->getMessage(), 0, $e);
+            }
+            if ($declaration === null) {
+                continue;
+            }
+
+            $where = "{$class}::{$method->getName()}()";
+            if ($method->isStatic()) {
+                throw new EndpointException("{$where} is static; an endpoint is an instance method.");
+            }
+            if ($classDeclares
+                && $method->getAttributes(Authorize::class) === []
+                && $method->getAttributes(NoAuthorization::class) === []) {
+                throw new EndpointException(
+                    "{$class} carries a class-level #[Authorize] or #[NoAuthorization], and {$method->getName()}() "
+                    . 'declares neither. A class-level declaration covers no endpoint: declare the check on the method.',
+                );
+            }
+
+            $compiled[] = $this->add($this->compile($reflection, $method, $declaration, $where));
+        }
+
+        if ($compiled === []) {
+            throw new EndpointException("{$class} is listed as holding endpoints and declares no #[Get], #[Post] or #[Endpoint] method.");
+        }
+
+        return $compiled;
+    }
+
+    /**
+     * @param list<class-string> $classes
+     * @return list<CompiledEndpoint>
+     */
+    public function registerAll(array $classes): array
+    {
+        $out = [];
+        foreach ($classes as $class) {
+            $out = [...$out, ...$this->register($class)];
+        }
+
+        return $out;
+    }
+
+    /**
+     * @param \ReflectionClass<object> $reflection
+     */
+    private function compile(\ReflectionClass $reflection, \ReflectionMethod $method, Endpoint $declaration, string $where): CompiledEndpoint
+    {
+        $class = $reflection->getName();
+
+        $name = $declaration->name ?? Str::shortName($class) . '.' . $method->getName();
+        if (!Str::isDottedIdentifier($name)) {
+            throw new EndpointException("{$where}: '{$name}' is not an endpoint name: dot-separated identifiers, as in orders.receipt.");
+        }
+
+        [$template, $segments, $parameters] = self::compilePath($where, $declaration->path);
+
+        $checks = Authorize::declaredOn($class, $method->getName());
+        $inherited = Authorize::classLevelCount($class);
+        $exempt = $method->getAttributes(NoAuthorization::class) !== [];
+
+        $covered = [];
+        foreach ($checks as $index => $check) {
+            if ($check->argument === null) {
+                throw new EndpointException(
+                    "{$where} declares #[Authorize('{$check->ability}')] with no subject. Name the model-typed input "
+                    . "it covers, or the class, as in Authorize('viewAny', Rack::class).",
+                );
+            }
+            if ($index >= $inherited) {
+                $covered[] = $check->argument;
+            }
+        }
+
+        $models = [];
+        $scalars = [];
+        $formRequests = [];
+        $nestedModels = [];
+        $optional = [];
+        $required = [];
+        $taken = [];
+
+        foreach ($method->getParameters() as $parameter) {
+            $parameterName = $parameter->getName();
+            $type = $parameter->getType();
+            if ($parameter->isVariadic() || !$type instanceof \ReflectionNamedType) {
+                throw new EndpointException("{$where}: \${$parameterName} cannot be bound; give it one type.");
+            }
+            $typeName = $type->getName();
+            $fromPath = \in_array($parameterName, $parameters, true);
+
+            if ($fromPath) {
+                $taken[] = $parameterName;
+                if (!$type->isBuiltin() && is_subclass_of($typeName, Model::class)) {
+                    // Checked here, not left to a build step that might not
+                    // run: a model with no check naming it must not reach a body.
+                    if (!$exempt && !\in_array($parameterName, $covered, true)) {
+                        throw new EndpointException(
+                            "{$where}: \${$parameterName} takes {$typeName} but no #[Authorize] names it. Add "
+                            . "#[Authorize('<ability>', '{$parameterName}')], or #[NoAuthorization(reason: '...')] "
+                            . 'if it genuinely needs none.',
+                        );
+                    }
+                    $models[$parameterName] = $typeName;
+                    continue;
+                }
+                if ($type->isBuiltin() ? \in_array($typeName, ['string', 'int', 'float', 'bool'], true) : is_subclass_of($typeName, \BackedEnum::class)) {
+                    $scalars[$parameterName] = $typeName;
+                    continue;
+                }
+
+                throw new EndpointException(
+                    "{$where}: \${$parameterName} is in the path and typed {$typeName}. A path parameter is a model, "
+                    . 'a string, int, float or bool, or a backed enum.',
+                );
+            }
+
+            if (!$type->isBuiltin() && is_subclass_of($typeName, FormRequest::class)) {
+                $formRequests[$parameterName] = $typeName;
+                continue;
+            }
+            if ($typeName === Request::class) {
+                continue;
+            }
+            if (!$type->isBuiltin() && is_subclass_of($typeName, Model::class)) {
+                throw new EndpointException(
+                    "{$where}: \${$parameterName} takes {$typeName} and the path has no {{$parameterName}}. An endpoint "
+                    . 'takes a model from its path, or from a form request field.',
+                );
+            }
+
+            throw new EndpointException(
+                "{$where}: \${$parameterName} ({$typeName}) is neither in the path, a form request, nor the Request. "
+                . 'Read input through a form request, which validates it.',
+            );
+        }
+
+        foreach ($parameters as $parameterName) {
+            if (!\in_array($parameterName, $taken, true)) {
+                throw new EndpointException(
+                    "{$where}: its path has {{$parameterName}}, and the method takes no \${$parameterName}. Every "
+                    . 'part of the path is an input, checked and bound, or not in the path at all.',
+                );
+            }
+        }
+
+        foreach ($formRequests as $requestClass) {
+            foreach (self::modelFieldsOf($requestClass) as $field => [$fieldModel, $fieldOptional]) {
+                $existing = $nestedModels[$field] ?? $models[$field] ?? null;
+                if ($existing !== null) {
+                    throw new EndpointException(
+                        "{$where}: '{$field}' is taken twice -- as {$existing} and in {$requestClass} as {$fieldModel}. "
+                        . 'One name is one input.',
+                    );
+                }
+                if (!$exempt && !\in_array($field, $covered, true)) {
+                    throw new EndpointException(
+                        "{$where}: {$requestClass}::\${$field} takes {$fieldModel} but no #[Authorize] names it. Add "
+                        . "#[Authorize('<ability>', '{$field}')], or #[NoAuthorization(reason: '...')].",
+                    );
+                }
+                $nestedModels[$field] = $fieldModel;
+                if ($fieldOptional) {
+                    $optional[$field] = true;
+                } else {
+                    $required[$field] = true;
+                }
+            }
+        }
+
+        // Every check names an input this method takes, or a class.
+        foreach ($checks as $index => $check) {
+            $argument = (string) $check->argument;
+            if (isset($models[$argument]) || isset($nestedModels[$argument])
+                || class_exists($argument) || interface_exists($argument)) {
+                continue;
+            }
+
+            throw new EndpointException(\sprintf(
+                "%s %s #[Authorize('%s', '%s')], but '%s' is neither a model-typed input of this endpoint nor a class. "
+                . 'It would throw on the first request.',
+                $where,
+                $index < $inherited ? 'inherits from its class' : 'declares',
+                $check->ability,
+                $argument,
+                $argument,
+            ));
+        }
+
+        [$returns, $data] = self::returnOf($where, $method);
+
+        $sessionless = WithoutSession::declaredOn($class, $method->getName());
+        $public = PublicAccess::declaredOn($class, $method->getName());
+        $safe = array_diff($declaration->methods, ['GET']) === [];
+
+        // "No unauthenticated state-changing route without an explicit
+        // opt-out with a reason." A public GET changes nothing; a public
+        // POST is someone's decision, and it says why.
+        if ($public && !$safe && PublicAccess::reasonOn($class, $method->getName()) === null) {
+            throw new EndpointException(
+                "{$where} answers " . implode(', ', $declaration->methods) . ' with #[PublicAccess] and gives no reason. '
+                . "Anyone may change something through it: say why, as in #[PublicAccess(reason: '...')].",
+            );
+        }
+
+        try {
+            $tenantFrom = TenantFrom::declaredOn($class, $method->getName());
+            $panels = Panel::declaredOn($class, $method->getName());
+            PanelBinding::of($panels);
+        } catch (\LogicException|\InvalidArgumentException $e) {
+            throw new EndpointException("{$where}: {$e->getMessage()}", 0, $e);
+        }
+
+        return new CompiledEndpoint(
+            name: $name,
+            class: $class,
+            method: $method->getName(),
+            methods: $declaration->methods,
+            template: $template,
+            segments: $segments,
+            parameters: $parameters,
+            checks: $checks,
+            classLevelChecks: $inherited,
+            models: $models,
+            scalars: $scalars,
+            formRequests: $formRequests,
+            nestedModels: $nestedModels,
+            optionalModels: array_diff_key($optional, $required),
+            middleware: Middleware::declaredOn($class, $method->getName()),
+            exempt: $exempt,
+            tenantFrom: $tenantFrom,
+            panels: $panels,
+            sessionless: $sessionless,
+            returns: $returns,
+            data: $data,
+            publicAccess: $public,
+        );
+    }
+
+    /**
+     * What an endpoint answers with, by its declared return type: a
+     * Response, one Data class, or void. Anything else -- an array, a
+     * model, mixed, no type at all -- would reach the client unchecked or
+     * not at all, so it is refused here.
+     *
+     * @return array{string, class-string<Data>|null}
+     */
+    private static function returnOf(string $where, \ReflectionMethod $method): array
+    {
+        $type = $method->getReturnType();
+        if ($type instanceof \ReflectionNamedType && !$type->allowsNull()) {
+            $name = $type->getName();
+            if ($name === 'void') {
+                return [CompiledEndpoint::RETURNS_NOTHING, null];
+            }
+            if ($name === Response::class) {
+                return [CompiledEndpoint::RETURNS_RESPONSE, null];
+            }
+            if (!$type->isBuiltin() && is_subclass_of($name, Data::class)) {
+                return [CompiledEndpoint::RETURNS_DATA, $name];
+            }
+        }
+
+        throw new EndpointException(
+            "{$where} returns " . ($type === null ? 'no declared type' : (string) $type) . '. An endpoint returns a '
+            . 'Response, one Data class -- sent as JSON through the encoder -- or void.',
+        );
+    }
+
+    /**
+     * A template's normal form, its segments and its parameters, or a
+     * refusal: a literal that is not a plain path segment, a parameter that
+     * is not an identifier or appears twice, or a first segment starting
+     * with `_` -- the framework's own (`/_action`, `/_query`, `/_fragment`,
+     * `/_health` and the rest), which an application never answers under.
+     *
+     * @return array{string, list<string>, list<string>}
+     */
+    private static function compilePath(string $where, string $path): array
+    {
+        $template = '/' . trim($path, '/');
+        $template = (string) preg_replace('#/+#', '/', $template);
+        $template = $template === '/' ? '/' : rtrim($template, '/');
+        $segments = CompiledRoute::split($template);
+
+        if (($segments[0] ?? '') !== '' && str_starts_with($segments[0], '_')) {
+            throw new EndpointException("{$where}: '{$path}' is under /_, which is the framework's own. Choose another path.");
+        }
+
+        $parameters = [];
+        foreach ($segments as $segment) {
+            if (!CompiledRoute::isParameter($segment)) {
+                if (preg_match('/^[A-Za-z0-9._~\-]+$/D', $segment) !== 1 || $segment === '.' || $segment === '..') {
+                    throw new EndpointException("{$where}: '{$path}' has '{$segment}', which is not a literal path segment.");
+                }
+                continue;
+            }
+
+            $parameter = substr($segment, 1, -1);
+            if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/D', $parameter) !== 1) {
+                throw new EndpointException("{$where}: '{$path}' has '{$parameter}', which is not a parameter name.");
+            }
+            if (\in_array($parameter, $parameters, true)) {
+                throw new EndpointException("{$where}: '{$path}' names {{$parameter}} twice.");
+            }
+            $parameters[] = $parameter;
+        }
+
+        return [$template, $segments, $parameters];
+    }
+
+    /**
+     * Model-typed constructor fields of a form request, each with whether
+     * it may be left out.
+     *
+     * @param class-string<FormRequest> $class
+     * @return array<string, array{class-string<Model>, bool}>
+     */
+    private static function modelFieldsOf(string $class): array
+    {
+        $fields = [];
+        foreach ((new \ReflectionClass($class))->getConstructor()?->getParameters() ?? [] as $parameter) {
+            $type = $parameter->getType();
+            if ($type instanceof \ReflectionNamedType && !$type->isBuiltin() && is_subclass_of($type->getName(), Model::class)) {
+                $fields[$parameter->getName()] = [$type->getName(), $type->allowsNull() || $parameter->isDefaultValueAvailable()];
+            }
+        }
+
+        return $fields;
+    }
+
+    /**
+     * Refuses a second endpoint under a name already taken, and two that
+     * answer one method at the same shape of path: whichever answered would
+     * depend on the order the classes were listed in, and its checks and
+     * middleware with it.
+     */
+    private function add(CompiledEndpoint $endpoint): CompiledEndpoint
+    {
+        $existing = $this->byName[$endpoint->name] ?? null;
+        if ($existing !== null) {
+            throw new EndpointException("Both {$existing->where()} and {$endpoint->where()} are the endpoint '{$endpoint->name}'.");
+        }
+
+        foreach ($this->ordered as $other) {
+            $shared = array_intersect($other->methods, $endpoint->methods);
+            if ($other->shape() === $endpoint->shape() && $shared !== []) {
+                throw new EndpointException(\sprintf(
+                    'Both %s and %s answer %s at %s.',
+                    $other->where(),
+                    $endpoint->where(),
+                    implode(', ', $shared),
+                    $endpoint->template,
+                ));
+            }
+        }
+
+        $this->byName[$endpoint->name] = $endpoint;
+        $this->ordered[] = $endpoint;
+        $this->sorted = false;
+
+        return $endpoint;
+    }
+
+    /**
+     * The endpoint a request is for, with its path's parameters; or, when
+     * endpoints match the path and none answers the method, the methods
+     * that would do; null when none matches the path.
+     *
+     * Candidates are asked most specific first, as pages are, and the first
+     * that answers the method is the one. A path under `/_` matches nothing
+     * here, whatever an endpoint's parameters would take: it is the
+     * framework's.
+     *
+     * @return array{endpoint: CompiledEndpoint, parameters: array<string, string>}|array{allow: list<string>}|null
+     */
+    public function match(Request $request): ?array
+    {
+        $first = CompiledRoute::split($request->path)[0] ?? '';
+        if (str_starts_with($first, '_')) {
+            return null;
+        }
+
+        $this->sort();
+
+        $allow = [];
+        foreach ($this->ordered as $endpoint) {
+            $parameters = $endpoint->match($request->path);
+            if ($parameters === null) {
+                continue;
+            }
+            if ($endpoint->answers($request->method)) {
+                return ['endpoint' => $endpoint, 'parameters' => $parameters];
+            }
+            $allow = [...$allow, ...$endpoint->allowed()];
+        }
+
+        return $allow === [] ? null : ['allow' => array_values(array_unique($allow))];
+    }
+
+    /**
+     * Refuses an endpoint whose path a page's also matches. A page answers
+     * GET and HEAD and refuses the rest with a 405; an endpoint at a path
+     * it shares would take some of those requests, depending on the method
+     * or on which literal came first -- neither of which a reader of either
+     * class would guess. The Kernel asks when it is built.
+     */
+    public function assertNoConflicts(RouteRegistry $routes): void
+    {
+        $conflicts = $this->conflicts($routes);
+        if ($conflicts !== []) {
+            throw new EndpointException($conflicts[0]->where . ': ' . $conflicts[0]->message);
+        }
+    }
+
+    /** @return list<Violation> */
+    public function conflicts(RouteRegistry $routes): array
+    {
+        $violations = [];
+        foreach ($this->all() as $endpoint) {
+            foreach ($routes->pages() as $page) {
+                if ($endpoint->overlaps($page->segments)) {
+                    $violations[] = new Violation(
+                        self::PATHS_MUST_NOT_OVERLAP_PAGES,
+                        $endpoint->where(),
+                        "answers at {$endpoint->template}, and the page {$page->class} at {$page->template}; some path "
+                        . 'matches both. Give the endpoint a path no page matches.',
+                    );
+                }
+            }
+        }
+
+        return $violations;
+    }
+
+    /**
+     * What `tinvar check` reports for an application's endpoints: each
+     * class the registry refuses, and each endpoint whose path a page's
+     * also matches.
+     *
+     * @param list<class-string> $classes the classes holding endpoints
+     * @return list<Violation>
+     */
+    public static function check(array $classes, RouteRegistry $routes): array
+    {
+        $registry = new self();
+        $violations = [];
+        foreach ($classes as $class) {
+            try {
+                $registry->register($class);
+            } catch (\RuntimeException|\LogicException $e) {
+                $violations[] = new Violation(self::ENDPOINTS_MUST_COMPILE, $class, $e->getMessage());
+            }
+        }
+
+        return [...$violations, ...$registry->conflicts($routes)];
+    }
+
+    public function has(string $name): bool
+    {
+        return isset($this->byName[$name]);
+    }
+
+    public function get(string $name): CompiledEndpoint
+    {
+        return $this->byName[$name] ?? throw new EndpointException("No endpoint is named '{$name}'.");
+    }
+
+    /** @return list<CompiledEndpoint> most specific first */
+    public function all(): array
+    {
+        $this->sort();
+
+        return $this->ordered;
+    }
+
+    private function sort(): void
+    {
+        if ($this->sorted) {
+            return;
+        }
+        usort($this->ordered, static fn (CompiledEndpoint $a, CompiledEndpoint $b): int => $a->beats($b));
+        $this->sorted = true;
+    }
+}
