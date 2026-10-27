@@ -859,12 +859,47 @@ describe('workflows', function () {
         expect($text)->not->toContain('secrets.')
             ->and($text)->not->toContain('github.token')
             ->and($job)->not->toHaveKey('permissions')
-            ->and($runs)->toContain('docker build -f examples/shop/Dockerfile')
+            ->and($runs)->toContain('docker build --provenance=false --sbom=false -f examples/shop/Dockerfile')
             ->and($runs)->toContain('examples/shop/bin/verify-image')
             ->and($runs)->toContain('--target pod-php')
             ->and($runs)->toContain('--target pod-renderer')
             ->and($runs)->toContain('examples/shop/bin/verify-pod')
+            ->and($runs)->toContain('bin/sbom image pellwick-shop:ci')
+            ->and($runs)->toContain('bin/sbom image pellwick-shop-php:ci')
+            ->and($runs)->toContain('bin/sbom image pellwick-shop-renderer:ci')
+            ->and($runs)->toContain('bin/sbom workspace')
+            ->and(substr_count($runs, '--dockerfile examples/shop/Dockerfile'))->toBe(3)
             ->and(preg_match('/docker\s+(push|login)|buildx.*--push/', $runs))->toBe(0);
+    });
+
+    // Attestations sign with the run's OIDC identity, so the one job that
+    // may mint a token runs for what has landed -- main and version tags --
+    // and no other job, nor the workflow, is given one (ADR 0080).
+    it('attests only from a push to main or a tag, in the one job with id-token', function () {
+        $workflow = Yaml::parse((string) file_get_contents(\dirname(__DIR__, 4) . '/.github/workflows/ci.yml'));
+        $attest = $workflow['jobs']['attest'];
+        $uses = array_column($attest['steps'], 'uses');
+
+        expect($workflow['permissions'])->toBe(['contents' => 'read'])
+            ->and($workflow['on']['push'])->toBe(['branches' => ['main'], 'tags' => ['v*']])
+            ->and($attest['permissions'])->toBe(['contents' => 'read', 'id-token' => 'write', 'attestations' => 'write'])
+            ->and($attest['needs'])->toBe('image')
+            ->and($attest['if'])->toStartWith("github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))")
+            ->and(array_filter($uses, static fn (?string $use): bool => $use !== null && str_starts_with($use, 'actions/attest@')))->toHaveCount(5)
+            ->and((string) json_encode($attest))->not->toContain('secrets.');
+
+        foreach ($workflow['jobs'] as $name => $job) {
+            if ($name !== 'attest') {
+                expect($job['permissions'] ?? [])->not->toHaveKey('id-token', "{$name} is given id-token");
+            }
+        }
+
+        // The digests reach a shell only through the environment, and are
+        // held to a sha256 and to the SBOMs' before anything is signed.
+        $subjects = $attest['steps'][2];
+        expect($subjects['name'])->toBe('Subjects')
+            ->and($subjects['run'])->not->toContain('${{')
+            ->and($subjects['run'])->toContain('^sha256:[0-9a-f]{64}$');
     });
 
     // Each package's suite with only what it requires installed: every one,
