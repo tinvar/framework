@@ -82,3 +82,10 @@ it('answers a product\'s stock as JSON, to anyone', function () {
     expect($response->header('content-type'))->toBe('application/json')
         ->and(json_decode($response->response->body(), true))->toMatchArray(['product' => $id]);
 });
+
+// ADR 0074: a bucket of its own, inside the one every endpoint spends.
+it('spends the stock reading\'s own bucket, which a caller paces itself by', function () {
+    $id = (string) orm()->connection()->select('SELECT id FROM products WHERE stock > 0 LIMIT 1')[0]['id'];
+
+    expect(get("/products/{$id}/stock")->assertOk()->header('x-ratelimit-limit'))->toBe('60');
+});

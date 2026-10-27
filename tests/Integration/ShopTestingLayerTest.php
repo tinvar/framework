@@ -188,6 +188,14 @@ it('shares the open orders count once, and reads it as held while the browser ha
     // A guest has none, and a hold sent to the customer is no use to them.
     new \Tinvar\Testing\Client(testing()->app)->withHeaders([...$payload, 'x-have-shared' => $sent['hold']])->get('/')
         ->assertPage(Catalog::class, fn (AssertablePage $page) => $page->etc()->sharedIsNull('openOrders'));
+
+    // ADR 0074: an order moving on by itself -- no response announces it --
+    // stops the hold being believed, and the count is drawn again.
+    new \Shop\OrderChanges(holds: testing()->app->kernel()->sharedTags)->moved([['id' => 'any', 'customer' => customer()->id]]);
+    $first->then()->withHeaders([...$payload, 'x-have-shared' => $sent['hold']])->get('/')
+        ->assertOk()
+        ->assertPage(Catalog::class, fn (AssertablePage $page) => $page->etc()
+            ->shared('openOrders', fn (AssertablePage $open) => $open->where('count', fn (int $n): bool => $n >= 0)));
 });
 
 // Sessions belong to the host they were made on: a customer signed in for
