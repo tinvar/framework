@@ -10,6 +10,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Server\ServeCommand;
 
+use Tinvar\Attributes\Queue;
+use Tinvar\Queue\Worker;
 use Tinvar\Server\FrankenPhp;
 use Tinvar\Server\PortFinder;
 use Tinvar\Server\ServeCommand;
@@ -138,6 +140,28 @@ it('plans a queue worker and a scheduler for --worker and --schedule, from its c
             ->and($command->plan(["--app={$app}", '--worker'])['background'])->toBe(['queue:work'])
             ->and($command->plan(["--app={$app}", '--worker', '--schedule'])['background'])->toBe(['queue:work', 'schedule:work']);
     });
+});
+
+// Stopping: the queue worker and the scheduler first, given long enough to
+// finish a job at the default timeout and the grace past it -- they may
+// still publish to the server's hub or build links on it -- then
+// FrankenPHP, then the renderers everything before them rendered through.
+// All at once, with ten seconds each, a job in hand that took longer was
+// killed and run again.
+it('stops the background children first, with time for the job in hand, then the server, then the renderers', function () {
+    $order = ServeCommand::stopOrder(['the renderers', 'FrankenPHP', 'queue:work', 'schedule:work']);
+
+    expect($order)->toBe([
+        [['queue:work', 'schedule:work'], ServeCommand::BACKGROUND_STOP_SECONDS],
+        [['FrankenPHP'], ServeCommand::STOP_SECONDS],
+        [['the renderers'], ServeCommand::STOP_SECONDS],
+    ])
+        ->and(ServeCommand::BACKGROUND_STOP_SECONDS)->toBeGreaterThan((new Queue())->timeout + Worker::GRACE_SECONDS)
+        ->and(ServeCommand::stopOrder(['the dev renderer', 'FrankenPHP']))->toBe([
+            [['FrankenPHP'], ServeCommand::STOP_SECONDS],
+            [['the dev renderer'], ServeCommand::STOP_SECONDS],
+        ])
+        ->and(ServeCommand::stopOrder([]))->toBe([]);
 });
 
 it('refuses --worker with no console to run it through, and a flag given a value', function () {

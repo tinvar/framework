@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Server;
 
 use Tinvar\Protocol\ProtocolException;
+use Tinvar\Queue\Worker;
 use Tinvar\Render\RendererException;
 use Tinvar\Render\RendererHealth;
 use Tinvar\Render\RendererSockets;
@@ -65,9 +66,10 @@ use Tinvar\Support\PrivateDirectory;
  *
  * It prints the URL once FrankenPHP is answering on it, forwards SIGINT and
  * SIGTERM to the children, and if the renderer or FrankenPHP exits on its
- * own stops the rest and exits non-zero. Stopping, it stops the renderers
- * last, so the requests and jobs the others finish still have a renderer to
- * render through. SIGUSR2 is passed to the pool: a rolling restart, after a
+ * own stops the rest and exits non-zero. Stopping, it stops the queue
+ * worker and the scheduler first, given time to finish the job in hand,
+ * then FrankenPHP, and the renderers last, so the jobs and requests the
+ * others finish still have a server and a renderer (stopOrder()). SIGUSR2 is passed to the pool: a rolling restart, after a
  * deploy. Killed outright, it can do none of that, so each child
  * also stops when this process's end of its standard input closes; and the
  * next start removes the directory a killed one left.
@@ -557,6 +559,16 @@ final class ServeCommand
     private const array BACKGROUND = ['queue:work', 'schedule:work'];
 
     /**
+     * Seconds the queue worker and the scheduler are given to stop: a job
+     * at the default timeout (#[Queue]'s 60 s), the grace the worker gives
+     * it past that, and a margin.
+     */
+    public const int BACKGROUND_STOP_SECONDS = 60 + Worker::GRACE_SECONDS + 5;
+
+    /** Seconds FrankenPHP, and then the renderers, are given to stop. */
+    public const int STOP_SECONDS = 10;
+
+    /**
      * A console command beside the server, tethered as FrankenPHP is: killed
      * outright, serve closes its end of the pipe and the command is stopped.
      * SIGTERM reaches it through the tether, so a worker finishes the job in
@@ -665,28 +677,54 @@ final class ServeCommand
     }
 
     /**
-     * Stops every child, the renderers last.
-     *
-     * FrankenPHP finishes the requests it has, and a queue worker the job in
-     * hand, and those still need a renderer to render through -- a page, or
-     * an email. Stopped together, the renderers drained the renders they had
-     * and refused the ones the others were still about to ask for.
+     * Stops every child, in stopOrder()'s order.
      *
      * @param array<string, resource> $children
      */
     private function terminate(array $children): void
     {
-        $renderers = array_intersect_key($children, ['the renderers' => true, 'the dev renderer' => true]);
-        $this->stopAll(array_diff_key($children, $renderers));
-        $this->stopAll($renderers);
+        foreach (self::stopOrder(array_keys($children)) as [$names, $seconds]) {
+            $this->stopAll(array_intersect_key($children, array_flip($names)), $seconds);
+        }
     }
 
     /**
-     * SIGTERM to each child still running, then SIGKILL to any that will not go.
+     * The order children are stopped in, a group at a time, and how long
+     * each group is given before what is left of it is killed.
+     *
+     * The queue worker and the scheduler first: a job in hand is finished
+     * before the worker goes, and while it runs it may still publish to the
+     * server's hub, or build links on the address it serves. Then
+     * FrankenPHP, which finishes the requests it has. The renderers last:
+     * the requests and jobs before them render through them -- a page, an
+     * email -- and stopped together, the renderers drained the renders they
+     * had and refused the ones the others were still about to ask for.
+     *
+     * Stopped all at once, with ten seconds for everything, a job that took
+     * longer was killed in hand and run again once its reservation ran out.
+     *
+     * @param list<string> $names
+     * @return list<array{list<string>, int}>
+     */
+    public static function stopOrder(array $names): array
+    {
+        $renderers = array_values(array_intersect($names, ['the renderers', 'the dev renderer']));
+        $background = array_values(array_intersect($names, self::BACKGROUND));
+        $server = array_values(array_diff($names, $renderers, $background));
+
+        return array_values(array_filter(
+            [[$background, self::BACKGROUND_STOP_SECONDS], [$server, self::STOP_SECONDS], [$renderers, self::STOP_SECONDS]],
+            static fn (array $group): bool => $group[0] !== [],
+        ));
+    }
+
+    /**
+     * SIGTERM to each child still running, then SIGKILL to any that will
+     * not go within $seconds.
      *
      * @param array<string, resource> $children
      */
-    private function stopAll(array $children): void
+    private function stopAll(array $children, int $seconds): void
     {
         foreach ($children as $process) {
             if (proc_get_status($process)['running']) {
@@ -694,7 +732,7 @@ final class ServeCommand
             }
         }
 
-        $deadline = microtime(true) + 10;
+        $deadline = microtime(true) + $seconds;
         foreach ($children as $process) {
             while (proc_get_status($process)['running'] && microtime(true) < $deadline) {
                 usleep(50_000);
