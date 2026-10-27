@@ -28,9 +28,9 @@ use Tinvar\Queue\WorkerOptions;
  *   schedule:list          every task and when it runs
  *
  * An application command runs in the context it declares and no other: the
- * tenant its `--tenant=` names when it declares
- * #[TenantFrom(TenantArgument::class)], checked against the application's
- * TenantDirectory -- and no tenant otherwise, with `--tenant` refused, so
+ * tenant its `--tenant=` names when it declares a tenant source, as the
+ * registered tenancy reads and checks it (CommandTenants; tinvar/tenancy's
+ * TenantArgument) -- and no tenant otherwise, with `--tenant` refused, so
  * nobody passes one believing a command is scoped when it is not -- the
  * panel its #[Panel] or namespace puts it in, and nobody signed in. The
  * reset contract runs before and after it.
@@ -39,6 +39,9 @@ final class Console
 {
     /** Exit status for a bad invocation, as sysexits(3) has it. */
     public const int USAGE = 64;
+
+    /** The option a command's tenant is named by: `--tenant=ID`. */
+    public const string TENANT_OPTION = 'tenant';
 
     /** @var array<string, class-string<Command>> */
     private array $commands = [];
@@ -55,6 +58,9 @@ final class Console
      * @param list<string> $queues what queue:work works without --queue, in priority order:
      *        every queue the application's jobs are on, or a worker started plainly
      *        leaves some of them unworked
+     * @param CommandTenants|null $tenants the tenancy registered (tinvar/tenancy): how a
+     *        command declaring #[TenantFrom] is placed in a tenant. Without it, one is
+     *        refused here
      */
     public function __construct(
         array $commands,
@@ -63,7 +69,7 @@ final class Console
         private readonly RequestScope $scope,
         private readonly ?PanelContext $panels = null,
         private readonly ?PanelRegistry $registry = null,
-        private readonly ?TenantDirectory $tenants = null,
+        private readonly ?CommandTenants $tenants = null,
         private readonly ?Queue $queue = null,
         private readonly ?JobRunner $runner = null,
         private readonly ?Scheduler $scheduler = null,
@@ -71,6 +77,12 @@ final class Console
         private readonly ?\Closure $clock = null,
         private readonly array $queues = [\Tinvar\Attributes\Queue::DEFAULT],
     ) {
+        if ($tenants !== null && !$orm->hasTenancy()) {
+            throw new \InvalidArgumentException(
+                'The console was given tenancy, and its Orm none: register the tree with the Orm (Tenancy::tree()) too.',
+            );
+        }
+
         foreach ($commands as $class) {
             $attribute = new \ReflectionClass($class)->getAttributes(CommandName::class)[0] ?? null;
             if ($attribute === null || !is_subclass_of($class, Command::class)) {
@@ -80,7 +92,7 @@ final class Console
             if (isset($this->commands[$name]) || \in_array($name, self::BUILT_IN, true)) {
                 throw new \InvalidArgumentException("Two commands are named '{$name}'.");
             }
-            self::checkTenantSource($class);
+            $this->checkTenantSource($class);
             DeclaredPanel::of($class, $registry);
             $this->commands[$name] = $class;
         }
@@ -139,21 +151,20 @@ final class Console
         $class = $this->commands[$name] ?? throw new \InvalidArgumentException("No command '{$name}'.");
 
         $tenant = '';
-        if (TenantFrom::declaredOn($class) === TenantArgument::class) {
-            $tenant = $input->option(TenantArgument::OPTION) ?? throw new \InvalidArgumentException(
-                "{$name} runs as a tenant: name it with --" . TenantArgument::OPTION . '=ID.',
-            );
-            if ($this->tenants === null) {
-                throw new \LogicException("{$name} runs as the tenant its argument names, and the console was given no TenantDirectory to check it against.");
+        $source = TenantFrom::declaredOn($class);
+        if ($source !== null) {
+            $tenants = $this->tenants ?? throw new \LogicException("{$name} declares #[TenantFrom({$source})], and there is no tenancy to place it.");
+            $tenant = $tenants->commandTenant($name, $source, $input->option(self::TENANT_OPTION));
+            // Held here whatever the tenancy answered: a command declaring a
+            // tenant runs as one, never as none.
+            if ($tenant === '') {
+                throw new \InvalidArgumentException("{$name} runs as a tenant: name it with --" . self::TENANT_OPTION . '=ID.');
             }
-            if ($tenant === '' || !$this->tenants->has($tenant)) {
-                throw new \InvalidArgumentException("There is no tenant '{$tenant}'.");
-            }
-            $input = $input->without(TenantArgument::OPTION);
-        } elseif ($input->option(TenantArgument::OPTION) !== null || $input->flag(TenantArgument::OPTION)) {
+            $input = $input->without(self::TENANT_OPTION);
+        } elseif ($input->option(self::TENANT_OPTION) !== null || $input->flag(self::TENANT_OPTION)) {
             // `--tenant acme`, as most command lines take a value, reads as
             // a flag and an argument: refused like `--tenant=acme`.
-            throw new \InvalidArgumentException("{$name} does not run as a tenant, so --" . TenantArgument::OPTION . ' would scope nothing.');
+            throw new \InvalidArgumentException("{$name} does not run as a tenant, so --" . self::TENANT_OPTION . ' would scope nothing.');
         }
 
         $panel = DeclaredPanel::of($class, $this->registry);
@@ -312,20 +323,24 @@ final class Console
     }
 
     /**
-     * Only a command argument places a command: Host and Signature read a
-     * request, and a command has none, so one declaring either would run
-     * with no tenant while its author believed otherwise.
+     * A command declaring a tenant source needs a tenancy to place it, and
+     * one it can run under -- a source that reads a request would leave it
+     * with no tenant while its author believed otherwise -- which the
+     * tenancy checks.
      *
      * @param class-string $class
      */
-    private static function checkTenantSource(string $class): void
+    private function checkTenantSource(string $class): void
     {
         $source = TenantFrom::declaredOn($class);
-        if ($source !== null && $source !== TenantArgument::class) {
-            throw new \InvalidArgumentException(
-                "{$class} declares its tenant from {$source}, which reads a request; a command's comes from its argument: #[TenantFrom(TenantArgument::class)].",
-            );
+        if ($source === null) {
+            return;
         }
+
+        ($this->tenants ?? throw new \InvalidArgumentException(
+            "{$class} declares #[TenantFrom({$source})], and the console was given no tenancy to place it: require "
+            . 'tinvar/tenancy and give the console its Tenancy.',
+        ))->checkCommand($class, $source);
     }
 
     private function trapSignals(): void

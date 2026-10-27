@@ -36,6 +36,7 @@ use Tinvar\Http\Request;
 use Tinvar\Orm\NoTenantContext;
 use Tinvar\Orm\Orm;
 use Tinvar\Tenancy\Host;
+use Tinvar\Tenancy\Tenancy;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\Journal;
 use Tinvar\Tests\Orm\Fixtures\Script;
@@ -183,7 +184,7 @@ function console(?Harness $h = null): array
         $h->scope,
         $h->panels,
         $h->registry,
-        new TwoTenants(),
+        new Tenancy($h->container->resolver(), new TwoTenants()),
         $h->queue,
         $h->runner,
     );
@@ -245,8 +246,20 @@ it('runs a command in the panel it declares', function () {
 it('refuses a command whose tenant would come from a request', function () {
     $h = new Harness();
 
-    expect(fn () => new Console([HostCommand::class], $h->orm, $h->container->resolver(), $h->scope))
+    expect(fn () => new Console([HostCommand::class], $h->orm, $h->container->resolver(), $h->scope, tenants: new Tenancy($h->container->resolver(), new TwoTenants())))
         ->toThrow(\InvalidArgumentException::class, 'reads a request');
+});
+
+// ADR 0056: what a tenant source is, and which tenants there are, is the
+// registered tenancy's; with none, a command declaring one is refused when
+// the console is built, rather than run as no tenant.
+it('refuses a command declaring a tenant source with no tenancy to place it, or no directory to check it against', function () {
+    $h = new Harness();
+
+    expect(fn () => new Console([ListScripts::class], $h->orm, $h->container->resolver(), $h->scope))
+        ->toThrow(\InvalidArgumentException::class, 'no tenancy to place it')
+        ->and(fn () => new Console([ListScripts::class], $h->orm, $h->container->resolver(), $h->scope, tenants: new Tenancy($h->container->resolver())))
+        ->toThrow(\InvalidArgumentException::class, 'no TenantDirectory');
 });
 
 it('places no request with a command argument, so on a page it fails closed', function () {

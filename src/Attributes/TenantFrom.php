@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Tinvar\Attributes;
 
-use Tinvar\Tenancy\TenantSource;
-
 /**
  * Where an entry point's tenant comes from.
  *
@@ -22,20 +20,24 @@ use Tinvar\Tenancy\TenantSource;
  * or with whichever one the request happened to arrive with.
  *
  * The source is a class rather than a closure or a string so that it is
- * built by the application's resolver -- Host needs the application's
- * TenantHosts, Signature its SignedUrls -- and so a typo fails when the
- * attribute is read, at registration, not on the first request.
+ * built by the application's resolver -- tinvar/tenancy's Host needs the
+ * application's TenantHosts, Signature its SignedUrls -- and so a typo fails
+ * when the attribute is read, at registration, not on the first request.
+ *
+ * What a source is, and how a request's tenant is read from one, is the
+ * registered tenancy's (TenantResolver): the framework checks the class
+ * exists, and refuses the declaration when the Kernel, the webhook endpoint
+ * or the console is built with no tenancy to read it, or one that cannot
+ * (ADR 0056).
  */
 #[\Attribute(\Attribute::TARGET_CLASS | \Attribute::TARGET_METHOD)]
 final readonly class TenantFrom
 {
-    /** @param class-string<TenantSource> $source */
+    /** @param class-string $source */
     public function __construct(public string $source)
     {
-        if (!class_exists($source) || !is_subclass_of($source, TenantSource::class)) {
-            throw new \InvalidArgumentException(
-                "#[TenantFrom({$source})] names no tenant source: the class must implement " . TenantSource::class . '.',
-            );
+        if (!class_exists($source)) {
+            throw new \InvalidArgumentException("#[TenantFrom({$source})] names no class: is tinvar/tenancy installed?");
         }
     }
 
@@ -48,7 +50,7 @@ final readonly class TenantFrom
      * the other believed their work ran as a tenant it does not.
      *
      * @param class-string $class
-     * @return class-string<TenantSource>|null
+     * @return class-string|null
      */
     public static function declaredOn(string $class, ?string $method = null): ?string
     {

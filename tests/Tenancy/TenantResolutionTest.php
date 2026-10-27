@@ -28,6 +28,7 @@ use Tinvar\Render\RouteToken;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Routing\RoutingException;
 use Tinvar\Tenancy\Host;
+use Tinvar\Tenancy\Tenancy;
 use Tinvar\Tenancy\Signature;
 use Tinvar\Orm\TenantHierarchy;
 use Tinvar\Orm\TenantTree;
@@ -343,8 +344,13 @@ describe('declaring one', function () {
             ->toThrow(RoutingException::class, 'one tenant source');
     });
 
-    it('refuses a source that is not one when the attribute is read', function () {
-        expect(fn () => new TenantFrom(NotASource::class))->toThrow(\InvalidArgumentException::class, 'names no tenant source');
+    // The attribute is the framework's and knows no tenant source: the class
+    // is checked to exist when it is read, and to be a source by the tenancy
+    // registered, when the entry point is (EntryContext::check()).
+    it('refuses a source that is not one when it is registered, and one that is not there when it is read', function () {
+        expect(fn () => new Tenancy(static fn (string $c): object => new $c())->check(NotASource::class))
+            ->toThrow(\InvalidArgumentException::class, 'names no tenant source')
+            ->and(fn () => new TenantFrom('Tinvar\\Tenancy\\Nowhere'))->toThrow(\InvalidArgumentException::class, 'names no class');
     });
 
     it('keeps the session binding in every token it mints', function () {

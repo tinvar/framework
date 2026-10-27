@@ -31,6 +31,7 @@ use Tinvar\Queue\WorkerOptions;
 use Tinvar\Support\Signer;
 use Tinvar\Tenancy\Signature;
 use Tinvar\Tenancy\SignedUrls;
+use Tinvar\Tenancy\Tenancy;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\Journal;
 use Tinvar\Tests\Orm\Fixtures\Script;
@@ -195,7 +196,7 @@ it('POSTs every event in one shape, signed as the inbound side verifies it', fun
         ->and(signed($request)['nonce'])->toBe($id);
 
     // The receiver: a WebhookEndpoint, as another Tinvar application runs it.
-    $endpoint = new WebhookEndpoint([ReceivesScripts::class], $s->h->orm, $s->h->container->resolver(), new ReceiverSecret(), new ArrayNonceStore());
+    $endpoint = new WebhookEndpoint([ReceivesScripts::class], $s->h->orm, $s->h->container->resolver(), new ReceiverSecret(), new ArrayNonceStore(), tenants: new Tenancy($s->h->container->resolver()));
     /** @var array<string, string> $query */
     $answer = $endpoint->handle(new Request('POST', $url['path'], $request->headers, $query, [], [], $url['query'] ?? null), $request->body);
 

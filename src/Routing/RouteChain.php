@@ -62,7 +62,7 @@ final readonly class RouteChain
      * reach here -- RouteRegistry refuses the pair when the second of them
      * registers -- so the innermost is the chain's.
      *
-     * @return class-string<\Tinvar\Tenancy\TenantSource>|null
+     * @return class-string|null
      */
     public function tenantSource(): ?string
     {

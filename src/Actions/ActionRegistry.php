@@ -373,7 +373,7 @@ final class ActionRegistry
      * An action's #[TenantFrom]: its method's, or its holder's.
      *
      * @param class-string $class
-     * @return class-string<\Tinvar\Tenancy\TenantSource>|null
+     * @return class-string|null
      */
     private static function tenantFromOf(string $where, string $class, string $method): ?string
     {

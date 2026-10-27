@@ -316,6 +316,7 @@ final class App
             auth: $this->auth,
             policies: new PolicyRegistry(),
             resolver: $container->resolver(),
+            tenants: new \Tinvar\Tenancy\Tenancy($container->resolver()),
             allowedQueries: static fn (Request $r): array => ['scripts.names'],
             globalMiddleware: $global,
             gate: new AllowAllGate(),

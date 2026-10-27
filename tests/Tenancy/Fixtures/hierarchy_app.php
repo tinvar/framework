@@ -257,6 +257,7 @@ final class App
             auth: $this->auth,
             policies: new PolicyRegistry(),
             resolver: $container->resolver(),
+            tenants: new \Tinvar\Tenancy\Tenancy($container->resolver()),
             allowedQueries: static fn (Request $r): array => [],
             globalMiddleware: [SignIn::class, SessionTenant::class],
             gate: new AllowAllGate(),

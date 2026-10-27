@@ -156,6 +156,7 @@ function kernel(): array
         auth: $auth,
         policies: new PolicyRegistry(),
         resolver: $container->resolver(),
+        tenants: new \Tinvar\Tenancy\Tenancy($container->resolver()),
         allowedQueries: static fn (Request $r): array => [],
         globalMiddleware: [SignIn::class],
         gate: new AllowAllGate(),

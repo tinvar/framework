@@ -409,7 +409,7 @@ final class RouteRegistry
      * declares two sources is a declaration bug, reported as one.
      *
      * @param class-string $class
-     * @return class-string<\Tinvar\Tenancy\TenantSource>|null
+     * @return class-string|null
      */
     private static function tenantFromOf(string $class): ?string
     {

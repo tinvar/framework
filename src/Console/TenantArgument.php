@@ -21,7 +21,7 @@ use Tinvar\Tenancy\TenantSource;
 final readonly class TenantArgument implements TenantSource
 {
     /** The option a command's tenant is named by. */
-    public const string OPTION = 'tenant';
+    public const string OPTION = Console::TENANT_OPTION;
 
     public function tenantFor(Request $request): ?string
     {

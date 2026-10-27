@@ -24,7 +24,7 @@ final readonly class CompiledAction
      * @param int $classLevelChecks how many of $checks, at the front, the holder
      *        class declared. They run like the method's own but do not decide
      *        for it -- see Checks::undecided().
-     * @param class-string<\Tinvar\Tenancy\TenantSource>|null $tenantFrom what its
+     * @param class-string|null $tenantFrom what its
      *        #[TenantFrom] names, on the method or the holder class
      * @param list<\Tinvar\Attributes\Panel> $panels every #[Panel] it declares, the
      *        holder's first

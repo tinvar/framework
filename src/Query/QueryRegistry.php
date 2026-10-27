@@ -37,7 +37,7 @@ final class QueryRegistry
     /** @var array<string, list<class-string<\Tinvar\Http\Middleware>>> */
     private array $middleware = [];
 
-    /** @var array<string, class-string<\Tinvar\Tenancy\TenantSource>|null> */
+    /** @var array<string, class-string|null> */
     private array $tenantFrom = [];
 
     /** @var array<string, list<Panel>> */
@@ -229,7 +229,7 @@ final class QueryRegistry
      * #[TenantFrom]; null for none. A call from a render runs in its page's
      * tenant, as it runs in its page's middleware.
      *
-     * @return class-string<\Tinvar\Tenancy\TenantSource>|null
+     * @return class-string|null
      */
     public function tenantSourceFor(string $name): ?string
     {

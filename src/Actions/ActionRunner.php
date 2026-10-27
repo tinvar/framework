@@ -91,7 +91,7 @@ final class ActionRunner
      * Where an action's tenant comes from, by its #[TenantFrom]; null for
      * none, or for a name that is not registered.
      *
-     * @return class-string<\Tinvar\Tenancy\TenantSource>|null
+     * @return class-string|null
      */
     public function tenantSourceFor(string $name): ?string
     {

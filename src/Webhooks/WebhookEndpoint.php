@@ -9,12 +9,12 @@ use Tinvar\Attributes\Webhook;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\PanelRegistry;
 use Tinvar\Http\HttpException;
-use Tinvar\Http\Middleware\ResolveTenant;
+use Tinvar\Http\Middleware\EnterTenant;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
+use Tinvar\Http\TenantResolver;
 use Tinvar\Jobs\DeclaredPanel;
 use Tinvar\Orm\Orm;
-use Tinvar\Tenancy\TenantSource;
 
 /**
  * Inbound webhooks: `#[Webhook('/path')]` classes, each POSTed signed
@@ -57,8 +57,10 @@ final class WebhookEndpoint
 
     /**
      * @param list<class-string> $webhooks
-     * @param \Closure(class-string): object $resolver builds handlers and tenant sources
+     * @param \Closure(class-string): object $resolver builds handlers
      * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
+     * @param TenantResolver|null $tenants the tenancy registered (tinvar/tenancy); without it,
+     *        a webhook declaring #[TenantFrom] is refused here
      */
     public function __construct(
         array $webhooks,
@@ -69,7 +71,14 @@ final class WebhookEndpoint
         private readonly ?PanelContext $panels = null,
         private readonly ?PanelRegistry $registry = null,
         private readonly ?\Closure $clock = null,
+        private readonly ?TenantResolver $tenants = null,
     ) {
+        if ($tenants !== null && !$orm->hasTenancy()) {
+            throw new \InvalidArgumentException(
+                'The webhook endpoint was given tenancy, and its Orm none: register the tree with the Orm (Tenancy::tree()) too.',
+            );
+        }
+
         foreach ($webhooks as $class) {
             $attribute = new \ReflectionClass($class)->getAttributes(Webhook::class)[0] ?? null;
             if ($attribute === null || !method_exists($class, '__invoke')) {
@@ -79,7 +88,12 @@ final class WebhookEndpoint
             if (isset($this->paths[$path])) {
                 throw new \InvalidArgumentException("Two webhooks answer {$path}.");
             }
-            TenantFrom::declaredOn($class);
+            $source = TenantFrom::declaredOn($class);
+            if ($source !== null) {
+                ($tenants ?? throw new \InvalidArgumentException(
+                    "{$class} declares #[TenantFrom({$source})], and the webhook endpoint was given no tenancy to read it.",
+                ))->check($source);
+            }
             DeclaredPanel::of($class, $registry);
             $this->paths[$path] = $class;
         }
@@ -189,12 +203,9 @@ final class WebhookEndpoint
             return '';
         }
 
-        $resolved = ($this->resolver)($source);
-        if (!$resolved instanceof TenantSource) {
-            throw new \LogicException("The resolver built {$source} as " . get_debug_type($resolved) . ', not a tenant source.');
-        }
+        $tenants = $this->tenants ?? throw new \LogicException("{$class} declares #[TenantFrom({$source})], and there is no tenancy to read it.");
 
-        return ResolveTenant::resolve($this->orm, $resolved, $request);
+        return EnterTenant::resolve($this->orm, $tenants, $source, $request);
     }
 
     /**

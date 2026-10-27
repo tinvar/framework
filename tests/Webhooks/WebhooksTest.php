@@ -30,6 +30,7 @@ use Tinvar\Support\Signer;
 use Tinvar\Tenancy\Host;
 use Tinvar\Tenancy\Signature;
 use Tinvar\Tenancy\SignedUrls;
+use Tinvar\Tenancy\Tenancy;
 use Tinvar\Tenancy\TenantHosts;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\Journal;
@@ -149,6 +150,7 @@ final class Setup
             $this->h->panels,
             $this->h->registry,
             fn (): int => $this->now,
+            new Tenancy($this->h->container->resolver()),
         );
     }
 
@@ -293,7 +295,7 @@ it('refuses a delivery replayed to another tenant that shares its secret', funct
     $h = new Harness();
     $nonces = $store($h);
     $h->container->instance(Host::class, new Host(new ProviderHosts()));
-    $endpoint = new WebhookEndpoint([ProviderHook::class], $h->orm, $h->container->resolver(), new OneSecret(), $nonces, clock: static fn (): int => NOW);
+    $endpoint = new WebhookEndpoint([ProviderHook::class], $h->orm, $h->container->resolver(), new OneSecret(), $nonces, clock: static fn (): int => NOW, tenants: new Tenancy($h->container->resolver()));
     $deliver = static function (string $host, string $body, string $nonce) use ($endpoint): Response {
         $request = new Request('POST', '/webhooks/provider', [
             'host' => $host,
@@ -336,6 +338,7 @@ it('answers a webhook ahead of the global stack, and resets the request after it
         auth: $s->h->auth,
         policies: new PolicyRegistry(),
         resolver: $s->h->container->resolver(),
+        tenants: new \Tinvar\Tenancy\Tenancy($s->h->container->resolver()),
         allowedQueries: static fn (Request $r): array => [],
         globalMiddleware: [GlobalStack::class],
         panels: $s->h->panels,

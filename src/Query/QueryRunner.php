@@ -108,7 +108,7 @@ final class QueryRunner
         return $this->registry->middlewareFor($name);
     }
 
-    /** @return class-string<\Tinvar\Tenancy\TenantSource>|null see QueryRegistry::tenantSourceFor() */
+    /** @return class-string|null see QueryRegistry::tenantSourceFor() */
     public function tenantSourceFor(string $name): ?string
     {
         return $this->registry->tenantSourceFor($name);

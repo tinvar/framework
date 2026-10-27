@@ -434,6 +434,10 @@ final class Kernel
      * @param string|null $clientAssets the directory the build's client assets are served
      *        from at /assets/: a reported error's source file is kept only when it is one
      *        of them, and without one, none is
+     * @param TenantResolver|null $tenants the tenancy the application registered (tinvar/tenancy,
+     *        ADR 0056): how the tenant a #[TenantFrom] names is read from a request. Without
+     *        it, an entry point declaring one is refused here. Given, the Orm must have been
+     *        given the tenancy's tree too, or the Kernel refuses to be built
      */
     public function __construct(
         public readonly Orm $orm,
@@ -485,7 +489,16 @@ final class Kernel
         ?StandIns $standIns = null,
         bool $clientTelemetry = false,
         ?string $clientAssets = null,
+        ?TenantResolver $tenants = null,
     ) {
+        // Half registered is neither: entry points would run as tenants the
+        // Orm reads no rows of, under tokens that name none of them.
+        if ($tenants !== null && !$orm->hasTenancy()) {
+            throw new \InvalidArgumentException(
+                'The Kernel was given tenancy, and its Orm none: register the tree with the Orm (Tenancy::tree()) too.',
+            );
+        }
+
         if ($toolbar !== null && !$dev) {
             throw new \InvalidArgumentException(
                 'The dev toolbar was given to a Kernel not built for dev. It shows every request\'s props and frames, '
@@ -616,7 +629,7 @@ final class Kernel
         // resolve them the same way. Checked now: a panel nobody defined, or
         // a requirement nothing can hold, is refused here rather than found
         // by whoever first reaches it.
-        $entry = new EntryContext($this->orm, $resolver, $panels, $panelRegistry, $memberships, $this->auth, $realms ?? $handoff?->realms);
+        $entry = new EntryContext($this->orm, $resolver, $panels, $panelRegistry, $memberships, $this->auth, $realms ?? $handoff?->realms, $tenants);
         $entry->check($this->routes, $this->actions, $this->queries);
         // And every route's query allowlist the Kernel is shown -- the one
         // fragment support carries, by route name -- against the panels of

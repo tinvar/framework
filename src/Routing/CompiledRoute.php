@@ -24,7 +24,7 @@ final readonly class CompiledRoute
      * @param list<Authorize>              $checks
      * @param bool|null                    $encryptHistory a page's #[EncryptHistory], or null
      *                                                    for the default (ADR 0019)
-     * @param class-string<\Tinvar\Tenancy\TenantSource>|null $tenantFrom the source its
+     * @param class-string|null $tenantFrom the source its
      *                                                    #[TenantFrom] names, or null for none
      * @param list<\Tinvar\Attributes\Panel> $panels  every #[Panel] it declares
      */

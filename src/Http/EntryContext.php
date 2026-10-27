@@ -14,21 +14,21 @@ use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\PanelRegistry;
 use Tinvar\Auth\Violation;
 use Tinvar\Http\Middleware\EnterPanel;
+use Tinvar\Http\Middleware\EnterTenant;
 use Tinvar\Http\Middleware\RequirePanelMembership;
 use Tinvar\Http\Middleware\RequirePlatformHost;
-use Tinvar\Http\Middleware\ResolveTenant;
 use Tinvar\Identity\Realms;
 use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Render\TenantClaim;
 use Tinvar\Routing\RouteChain;
 use Tinvar\Routing\RouteRegistry;
-use Tinvar\Tenancy\TenantSource;
 
 /**
  * What an entry point's declarations put around it before its own
- * middleware runs: the tenant its #[TenantFrom] names, then the panel its
- * #[Panel] or its namespace puts it in, with that panel's stack.
+ * middleware runs: the tenant its #[TenantFrom] names, as the registered
+ * tenancy reads it (TenantResolver), then the panel its #[Panel] or its
+ * namespace puts it in, with that panel's stack.
  *
  * One object, handed to every path that runs an entry point -- a page, its
  * fragments, a re-render after an action, an action, a query over HTTP,
@@ -53,6 +53,8 @@ final readonly class EntryContext
      *        every request into a panel needs a membership of it
      * @param Realms|null $realms the application's hosts; given, an entry point in a panel
      *        only the platform's hosts may carry is refused on any other
+     * @param TenantResolver|null $tenants the tenancy registered (tinvar/tenancy); without it,
+     *        an entry point declaring #[TenantFrom] is refused
      */
     public function __construct(
         private Orm $orm,
@@ -62,12 +64,13 @@ final readonly class EntryContext
         private ?Memberships $memberships = null,
         private ?AuthContext $auth = null,
         private ?Realms $realms = null,
+        private ?TenantResolver $tenants = null,
     ) {}
 
     /**
      * The middleware that goes outermost in an entry point's own stack.
      *
-     * @param class-string<TenantSource>|null $tenantSource what its #[TenantFrom] names
+     * @param string|null $tenantSource what its #[TenantFrom] names
      * @param PanelBinding|null $panel the panel it resolved to; see panelFor()
      * @return list<Middleware>
      */
@@ -79,7 +82,7 @@ final readonly class EntryContext
             ? [new RequirePlatformHost($this->realms, $panel->name)]
             : [];
         if ($tenantSource !== null) {
-            $stack[] = new ResolveTenant($this->orm, $this->source($tenantSource));
+            $stack[] = new EnterTenant($this->orm, $this->tenants($tenantSource), $tenantSource);
         }
         if ($panel === null) {
             return $stack;
@@ -152,22 +155,20 @@ final readonly class EntryContext
      * The tenant an entry point would run as for $request, without running
      * it: for minting tokens a later request will be held to.
      *
-     * @param class-string<TenantSource>|null $tenantSource
-     * @throws HttpException as ResolveTenant refuses
+     * @throws HttpException as EnterTenant refuses
      */
     public function tenantFor(?string $tenantSource, Request $request): string
     {
         return $tenantSource === null
             ? $this->orm->tenant()
-            : ResolveTenant::resolve($this->orm, $this->source($tenantSource), $request);
+            : EnterTenant::resolve($this->orm, $this->tenants($tenantSource), $tenantSource, $request);
     }
 
     /**
      * The tenant claim a token minted for that entry point carries: the
      * tenant of tenantFor(), as TenantClaim binds a token to it.
      *
-     * @param class-string<TenantSource>|null $tenantSource
-     * @throws HttpException as ResolveTenant refuses
+     * @throws HttpException as EnterTenant refuses
      */
     public function tenantClaimFor(?string $tenantSource, Request $request): string
     {
@@ -181,19 +182,37 @@ final readonly class EntryContext
      * that looked guarded and was not, found by whoever first reached it.
      * So is a panel reaching its tenant's subtree with no tenant tree to
      * reach across, and a platform-only panel the application does not
-     * define -- a typo there would leave the real one on every host.
+     * define -- a typo there would leave the real one on every host. And a
+     * #[TenantFrom] with no tenancy registered to read it, or naming a
+     * source the tenancy cannot read: the entry point would run as no tenant
+     * while its author believed it ran as one.
      */
     public function check(RouteRegistry $routes, ActionRegistry $actions, QueryRegistry $queries): void
     {
         $declared = [];
+        $sources = [];
         foreach ([...$routes->layouts(), ...$routes->pages()] as $route) {
             $declared[$route->class] = $route->panels;
+            $sources[$route->class] = $route->tenantFrom;
         }
         foreach ($actions->all() as $action) {
             $declared[$action->where()] = $action->panels;
+            $sources[$action->where()] = $action->tenantFrom;
         }
         foreach ($queries->names() as $name) {
             $declared[$queries->classFor($name) ?? $name] = $queries->panelsFor($name);
+            $sources[$queries->classFor($name) ?? $name] = $queries->tenantSourceFor($name);
+        }
+
+        foreach ($sources as $where => $source) {
+            if ($source === null) {
+                continue;
+            }
+            try {
+                $this->tenants($source)->check($source);
+            } catch (\LogicException|\InvalidArgumentException $e) {
+                throw new \InvalidArgumentException("{$where}: {$e->getMessage()}", 0, $e);
+            }
         }
 
         foreach ($declared as $where => $panels) {
@@ -380,15 +399,13 @@ final readonly class EntryContext
         return $needs === [] ? '' : ' needing ' . implode(', ', $needs);
     }
 
-    /** @param class-string<TenantSource> $class */
-    private function source(string $class): TenantSource
+    /** The tenancy that reads $source, or the refusal of an entry point declaring one with none registered. */
+    private function tenants(string $source): TenantResolver
     {
-        $source = ($this->resolver)($class);
-        if (!$source instanceof TenantSource) {
-            throw new \LogicException("The resolver built {$class} as " . get_debug_type($source) . ', not a tenant source.');
-        }
-
-        return $source;
+        return $this->tenants ?? throw new \LogicException(
+            "An entry point declares #[TenantFrom({$source})], and no tenancy is registered to read it: require "
+            . 'tinvar/tenancy and give the Kernel its Tenancy, or the entry point would run as no tenant.',
+        );
     }
 
     /** @param class-string<Middleware> $class */

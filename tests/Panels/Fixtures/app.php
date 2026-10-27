@@ -44,6 +44,7 @@ use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
 use Tinvar\Tenancy\Host;
 use Tinvar\Tenancy\TenantHosts;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 use Tinvar\Tests\Panels\Fixtures\Admin\Reports;
 
@@ -294,7 +295,7 @@ final class App
     ) {
         Trace::reset();
         $fixture = new TenantFixture();
-        $orm = $this->orm = new Orm($fixture->connection, new IdentityMap('panels-test'));
+        $orm = $this->orm = new Orm($fixture->connection, new IdentityMap('panels-test'), tenants: Tenancy::flat());
         $this->auth = new AuthContext();
         $this->panels = new PanelContext();
         $this->directory = new Directory();
@@ -344,6 +345,7 @@ final class App
             auth: $this->auth,
             policies: new PolicyRegistry(),
             resolver: $container->resolver(),
+            tenants: new \Tinvar\Tenancy\Tenancy($container->resolver()),
             allowedQueries: static fn (Request $r): array => ['admin.stats'],
             globalMiddleware: $global,
             gate: new AllowAllGate(),
@@ -429,3 +431,4 @@ final class App
 
 // Its class extends ReportsPanel, so it is read once that is declared.
 require_once __DIR__ . '/Admin/reports.php';
+require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenancy.php';

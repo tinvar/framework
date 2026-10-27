@@ -40,6 +40,7 @@ use Tinvar\Render\FragmentToken;
 use Tinvar\Render\RouteToken;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Routing\RoutingException;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 use Tinvar\Tests\Panels\Fixtures\App;
 use Tinvar\Tests\Panels\Fixtures\Directory;
@@ -48,6 +49,7 @@ use Tinvar\Tests\Panels\Fixtures\SignIn;
 use Tinvar\Tests\Panels\Fixtures\Trace;
 
 require_once __DIR__ . '/Fixtures/app.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
 
 /** @return array<string, mixed> */
 function page(App $app, string $path, ?string $user, array $headers = [], string $host = 'shop.test'): array
@@ -259,13 +261,14 @@ function boot(array $routes, ?Directory $memberships = null, ?PanelRegistry $pan
     $registry->registerAll($routes);
 
     return new Kernel(
-        orm: new Orm((new TenantFixture())->connection, new IdentityMap('test')),
+        orm: new Orm((new TenantFixture())->connection, new IdentityMap('test'), tenants: Tenancy::flat()),
         routes: $registry,
         queries: new QueryRegistry(),
         actions: new ActionRegistry(),
         auth: new AuthContext(),
         policies: new PolicyRegistry(),
         resolver: static fn (string $class): object => new $class(),
+        tenants: new \Tinvar\Tenancy\Tenancy(static fn (string $class): object => new $class()),
         allowedQueries: static fn (Request $r): array => [],
         panelRegistry: $panels ?? App::panels(),
         memberships: $memberships,
