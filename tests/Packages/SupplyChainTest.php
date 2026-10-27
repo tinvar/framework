@@ -708,6 +708,22 @@ describe('workflows', function () {
             ->and(preg_match('/^  downstream:\n(?:    .*\n|\n)*?    if: github\.event_name == \'push\'/m', $workflow))->toBe(1);
     });
 
+    // The image is built on pull requests too, which is safe only while the
+    // job is handed no secret and sends the image nowhere (ADR 0059).
+    it('builds and checks the image with no secret, and pushes it nowhere', function () {
+        $workflow = Yaml::parse((string) file_get_contents(\dirname(__DIR__, 4) . '/.github/workflows/ci.yml'));
+        $job = $workflow['jobs']['image'];
+        $text = (string) json_encode($job);
+        $runs = implode("\n", array_column($job['steps'], 'run'));
+
+        expect($text)->not->toContain('secrets.')
+            ->and($text)->not->toContain('github.token')
+            ->and($job)->not->toHaveKey('permissions')
+            ->and($runs)->toContain('docker build -f examples/shop/Dockerfile')
+            ->and($runs)->toContain('examples/shop/bin/verify-image')
+            ->and(preg_match('/docker\s+(push|login)|buildx.*--push/', $runs))->toBe(0);
+    });
+
     // Each package's suite with only what it requires installed: every one,
     // tenancy's included, and the framework's and the database's without
     // it (ADR 0055, 0056).
