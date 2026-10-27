@@ -61,6 +61,31 @@ describe('the pinned files', function () {
         expect(fn () => $disagreeing->agreed(null, '/^x=([0-9])$/m', 1, null))->toThrow(DepsException::class, 'more than one way: 1 / 2');
     });
 
+    // The skeleton's image and build stage copy the shop's pins (ADR 0082):
+    // a pin is read from the original, held to agree with the copy where the
+    // copy has it, and moved in both. One the copy lacks -- APCu -- is the
+    // original's alone.
+    it('holds the skeleton\'s copies to the originals, and moves both', function () {
+        $files = new PinnedFiles([
+            PinnedFiles::SETUP => "COMPOSER_VERSION=2.10.3\nAPCU_VERSION=5.1.28\n",
+            PinnedFiles::SKELETON_SETUP => "COMPOSER_VERSION=2.10.3\n",
+        ]);
+        $files->replace(PinnedFiles::SETUP, '/^COMPOSER_VERSION=([0-9.]+)$/m', ['2.10.4']);
+        $files->replace(PinnedFiles::SETUP, '/^APCU_VERSION=([0-9.]+)$/m', ['5.1.29']);
+
+        expect($files->changed())->toBe([
+            PinnedFiles::SETUP => "COMPOSER_VERSION=2.10.4\nAPCU_VERSION=5.1.29\n",
+            PinnedFiles::SKELETON_SETUP => "COMPOSER_VERSION=2.10.4\n",
+        ]);
+
+        $drifted = new PinnedFiles([
+            PinnedFiles::SETUP => "COMPOSER_VERSION=2.10.3\n",
+            PinnedFiles::SKELETON_SETUP => "COMPOSER_VERSION=2.10.1\n",
+        ]);
+        expect(fn () => $drifted->agreed(PinnedFiles::SETUP, '/^COMPOSER_VERSION=([0-9.]+)$/m'))
+            ->toThrow(DepsException::class, 'more than one way: 2.10.3 / 2.10.1');
+    });
+
     it('writes only a short run of plain characters into a pin', function () {
         $files = new PinnedFiles(['setup' => "COMPOSER_VERSION=2.10.3\n"]);
         foreach (['2.10.4; curl evil | sh', "2.10.4\nEVIL=1", '$(id)', '`id`', '', str_repeat('1', 129)] as $value) {
@@ -100,7 +125,8 @@ describe('an image', function () {
         expect(substr_count($files->contents(PinnedFiles::DOCKERFILE), "php:8.5-cli@sha256:{$hex} AS"))->toBe(2)
             ->and(substr_count($files->contents('.github/workflows/ci.yml'), "php:8.5-cli@sha256:{$hex} # 8.5.13-cli-trixie\n"))->toBe(2)
             ->and($files->contents('.github/workflows/ci.yml'))->not->toContain(PHP_DIGEST)
-            ->and(array_keys($files->changed()))->toBe(['.github/workflows/ci.yml', 'examples/shop/Dockerfile'])
+            ->and(substr_count($files->contents(PinnedFiles::SKELETON_DOCKERFILE), "php:8.5-cli@sha256:{$hex} AS"))->toBe(2)
+            ->and(array_keys($files->changed()))->toBe(['.github/workflows/ci.yml', 'examples/shop/Dockerfile', 'packages/skeleton/Dockerfile'])
             ->and(implode(' ', $outcome->notes))->toContain('PHP_VERSION=8.5.13');
 
         // The registry is read with its token, Hub's API with none.
@@ -188,6 +214,12 @@ describe('FrankenPHP', function () {
             ->and($dockerfile)->toContain('frankenphp_sha256=' . hash('sha256', $assets['frankenphp-linux-x86_64-gnu']) . ';')
             // tini is not FrankenPHP's to move.
             ->and($dockerfile)->toContain('/tini/releases/download/v0.19.0/');
+
+        // The skeleton's image moves with the shop's (ADR 0082).
+        $skeleton = $files->contents(PinnedFiles::SKELETON_DOCKERFILE);
+        expect($skeleton)->toContain('"https://github.com/php/frankenphp/releases/download/v1.13.4/$frankenphp"')
+            ->and($skeleton)->toContain("FrankenPHP's official static binary, v1.13.4 with PHP 8.5.13,")
+            ->and($skeleton)->toContain('frankenphp_sha256=' . hash('sha256', $assets['frankenphp-linux-x86_64-gnu']) . ';');
     });
 
     it('holds a release built on another PHP minor, and writes nothing', function () {
