@@ -22,11 +22,13 @@ use Tinvar\Routing\CompiledRoute;
 use Tinvar\Routing\RouteKind;
 use Tinvar\Tests\Data\Fixtures\Shared\BadTagOnceShared;
 use Tinvar\Tests\Data\Fixtures\Shared\BadUntilOnceShared;
+use Tinvar\Tests\Data\Fixtures\Shared\BuiltWithRequestOnceShared;
 use Tinvar\Tests\Data\Fixtures\Shared\OnceShared;
 use Tinvar\Tests\Data\Fixtures\Shared\PageOnceShared;
 use Tinvar\Tests\Data\Fixtures\Shared\PageWithGreetingData;
 use Tinvar\Tests\Data\Fixtures\Shared\ProvidedOnceShared;
 use Tinvar\Tests\Data\Fixtures\Shared\Reads;
+use Tinvar\Tests\Data\Fixtures\Shared\RequestOnceShared;
 use Tinvar\Tests\Data\Fixtures\Shared\TagsWithoutOnceShared;
 use Tinvar\Tests\Data\Fixtures\Shared\TooLongOnceShared;
 use Tinvar\Tests\Data\Fixtures\Shared\UntilWithoutOnceShared;
@@ -48,6 +50,7 @@ function readOnce(array $held = [], ?\Closure $hold = null, ?Request $request = 
     $fixture = new Fixture(racks: 1, unitsPerRack: 1);
     $orm = new Orm($fixture->connection, new IdentityMap('test'));
     $reads = new Reads();
+    $reads->rack = ($request ?? new Request('GET', '/', ['x-who' => 'Ada']))->header('x-who') ?? '';
     $registry = new SharedRegistry([OnceShared::class]);
     $keys = ['motd', 'pinned', 'broken', 'plain'];
 
@@ -98,6 +101,8 @@ describe('the registry', function () {
         'no duration' => [BadUntilOnceShared::class, 'is not a duration'],
         'two tags in one' => [BadTagOnceShared::class, 'not one tag'],
         'told the page' => [PageOnceShared::class, 'takes a DataContext'],
+        'handed the request, and its URL' => [RequestOnceShared::class, 'takes the Request'],
+        'built with the request' => [BuiltWithRequestOnceShared::class, 'built with the Request'],
         'a ProvidesData' => [ProvidedOnceShared::class, 'a ProvidesData'],
     ]);
 });

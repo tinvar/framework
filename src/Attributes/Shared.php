@@ -26,8 +26,9 @@ namespace Tinvar\Attributes;
  * proves so with the signed hold the value came with, bound to this
  * session, user and auth epoch, tenant, panel and build -- a render reads
  * the key as held, and the method is not called. A once value names the
- * visitor, never the page, so its method may not take a DataContext nor
- * return a ProvidesData, both of which are told the page.
+ * visitor, never the page, so its method may not take a DataContext or the
+ * Request nor return a ProvidesData, each of which names the page; nor may
+ * its class be built with the Request (ADR 0074).
  */
 #[\Attribute(\Attribute::TARGET_METHOD)]
 final readonly class Shared

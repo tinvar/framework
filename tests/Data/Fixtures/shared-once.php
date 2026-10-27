@@ -26,12 +26,13 @@ final readonly class OnceShared implements SharedData
         return new GreetingData('hello');
     }
 
+    /** Null for nobody: the visitor, as the test names them in $reads->rack. */
     #[Shared(once: true)]
-    public function pinned(Request $request): ?GreetingData
+    public function pinned(): ?GreetingData
     {
         $this->reads->note('pinned');
 
-        return $request->header('x-who') === null ? null : new GreetingData('pinned');
+        return $this->reads->rack === '' ? null : new GreetingData('pinned');
     }
 
     #[Shared(once: true)]
@@ -103,6 +104,28 @@ final class PageOnceShared implements SharedData
     public function where(DataContext $context): GreetingData
     {
         return new GreetingData($context->key);
+    }
+}
+
+/** Built with the Request, so its once method could read the URL through it: refused (ADR 0074). */
+final readonly class BuiltWithRequestOnceShared implements SharedData
+{
+    public function __construct(private Request $request) {}
+
+    #[Shared(once: true)]
+    public function here(): GreetingData
+    {
+        return new GreetingData($this->request->path);
+    }
+}
+
+/** Could read the URL from its Request, and be kept across pages: refused (ADR 0074). */
+final class RequestOnceShared implements SharedData
+{
+    #[Shared(once: true)]
+    public function here(Request $request): GreetingData
+    {
+        return new GreetingData($request->path);
     }
 }
 

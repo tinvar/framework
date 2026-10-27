@@ -110,6 +110,24 @@ final class SharedRegistry
         if ($declared === 0) {
             throw new \InvalidArgumentException("{$class} is registered as shared data, and has no #[Shared] method.");
         }
+
+        // Nor through its class (ADR 0074): a provider of a once key built
+        // with the Request would hand its methods the URL the method itself
+        // may not take.
+        foreach ($this->keys as $key => $entry) {
+            if ($entry['class'] !== $reflection->getName() || $entry['once'] === null) {
+                continue;
+            }
+            foreach ($reflection->getConstructor()?->getParameters() ?? [] as $parameter) {
+                $type = $parameter->getType();
+                if ($type instanceof \ReflectionNamedType && $type->getName() === Request::class) {
+                    throw new \InvalidArgumentException(
+                        "{$class} shares '{$key}' once and is built with the Request, whose URL names the page. A once value "
+                        . 'is kept across pages: read who is asking from an AuthContext instead.',
+                    );
+                }
+            }
+        }
     }
 
     public function has(string $key): bool
@@ -360,10 +378,10 @@ final class SharedRegistry
      *
      * A once value is kept by the browser and claimed on every page of the
      * session, so it must be the same on every page: a method told the page
-     * -- through a DataContext, or a ProvidesData's toData() -- could draw
-     * one page's value and have it put back on the next. The Request is
-     * allowed, since the session and the user are read from it; what of it
-     * names the page is the application's to leave alone.
+     * -- through a DataContext, a ProvidesData's toData(), or the Request
+     * and its URL -- could draw one page's value and have it put back on
+     * the next. All three are refused (the Request since ADR 0074); who is
+     * asking is read from the AuthContext its class takes.
      *
      * @param list<class-string> $classes
      * @param list<class-string> $parameters
@@ -383,6 +401,16 @@ final class SharedRegistry
             throw new \InvalidArgumentException(
                 "{$where} is #[Shared(once: true)] and takes a DataContext, which names the page. A once value is kept "
                 . 'across pages, so it may not depend on one.',
+            );
+        }
+        // The Request names the page too: its path, its query, its headers.
+        // Nothing can tell a method reading the session through it from one
+        // reading the URL, so neither is handed it (ADR 0074). Who is asking
+        // is the AuthContext's to say, taken in the constructor.
+        if (\in_array(Request::class, $parameters, true)) {
+            throw new \InvalidArgumentException(
+                "{$where} is #[Shared(once: true)] and takes the Request, whose URL names the page. A once value is kept "
+                . 'across pages: read who is asking from an AuthContext in the constructor instead.',
             );
         }
         foreach ($classes as $class) {
