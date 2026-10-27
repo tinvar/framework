@@ -347,3 +347,158 @@ describe('the toolbar', () => {
     expect(document.getElementById('tinvar-dev-toolbar')).not.toBeNull();
   });
 });
+
+// ADR 0062: the component behind each query, lazy loads with their sites,
+// acrossTenants() calls, where each slot of the props came from, and a
+// message an extension can listen for.
+describe('what the render did, and where', () => {
+  const traced = {
+    ...detail,
+    frames: [
+      detail.frames[0],
+      {
+        dir: 'in',
+        t: 'query',
+        atMs: 2,
+        body: {
+          t: 'query',
+          q: [
+            {
+              id: 1,
+              name: 'products.availability',
+              args: { product: 'p-1' },
+              by: [
+                ['Availability', 'ProductCard', 'Page'],
+                ['Stock', 'Page'],
+              ],
+            },
+            { id: 2, name: '$shared.customer', args: {}, by: [['ShopLayout']] },
+            { id: 3, name: 'products.related', args: {}, by: [['<img src=x onerror="window.pwned=1">']] },
+          ],
+        },
+      },
+      { dir: 'out', t: 'result', atMs: 3.25, body: { t: 'result', r: [] } },
+    ],
+    origins: [
+      {
+        slot: 'layouts.shop',
+        kind: 'layout',
+        loader: 'Shop\\Layouts\\ShopLayout::__invoke',
+        data: 'Shop\\Data\\ShopLayoutData',
+        site: '/app/Layouts/ShopLayout.php:31',
+      },
+      {
+        slot: 'page',
+        kind: 'page',
+        loader: 'Shop\\Pages\\Catalog::__invoke',
+        data: 'Shop\\Data\\CatalogData',
+        site: '/app/Pages/Catalog.php:48',
+      },
+    ],
+    lazyLoads: [
+      {
+        relation: 'Shop\\Models\\Order::lines',
+        parents: 1,
+        batch: 'alone',
+        site: '/app/Pages/Orders.php:77',
+      },
+      { relation: 'Shop\\Models\\Order::customer', parents: 20, batch: 'result set', site: '' },
+    ],
+    lazyLoadsDropped: 0,
+    acrossTenants: [{ site: '/app/Queries/Stats.php:19' }],
+    acrossTenantsDropped: 2,
+  };
+  const flagged = requests.map((r) => (r.id === PAGE ? { ...r, lazyLoads: 2, acrossTenants: 3 } : r));
+
+  beforeEach(() => {
+    fetchMock.mockImplementation((url: string) =>
+      respond(
+        200,
+        url.endsWith(PAGE) ? { protocol: 1, request: traced } : { protocol: 1, requests: flagged },
+      ),
+    );
+  });
+
+  it('names the components behind each tick, and each call’s owners', async () => {
+    const root = mount();
+    await open(root);
+    const tick = tab(root, 'Ticks').querySelector('details.tick')!;
+
+    expect(tick.querySelector('summary')!.textContent).toBe(
+      'tick 1: 3 queries (products.availability, $shared.customer, products.related), ' +
+        'from Availability, Stock, ShopLayout, <img src=x onerror="window.pwned=1"> · 1.3 ms in PHP',
+    );
+    expect([...tick.querySelectorAll('.calls li')].map((li) => li.textContent)).toEqual([
+      'products.availability from Availability ← ProductCard ← Page from Stock ← Page',
+      '$shared.customer from ShopLayout',
+      'products.related from <img src=x onerror="window.pwned=1">',
+    ]);
+    // A name is the renderer's to choose: drawn as text, never run.
+    expect(root.querySelector('img')).toBeNull();
+    expect((window as { pwned?: number }).pwned).toBeUndefined();
+  });
+
+  it('badges each slot of the props with its loader and file:line, and each shared read', async () => {
+    const root = mount();
+    await open(root);
+    const view = tab(root, 'Props');
+    const rows = [...view.querySelectorAll('.origins li')].map((li) => li.textContent);
+
+    expect(rows).toEqual([
+      'layoutdata.layouts.shopShopLayoutData from ShopLayout::__invokeShopLayout.php:31',
+      'pagedata.pageCatalogData from Catalog::__invokeCatalog.php:48',
+      "sharedshared('customer')from ShopLayout",
+    ]);
+    expect(view.querySelector('.origins .site')!.getAttribute('title')).toBe(
+      '/app/Layouts/ShopLayout.php:31',
+    );
+  });
+
+  it('lists each lazy load with the line that touched it, flagging one read alone', async () => {
+    const root = mount();
+    await open(root);
+    const view = tab(root, 'Lazy loads');
+
+    expect([...view.querySelectorAll('.load')].map((row) => row.textContent)).toEqual([
+      'aloneOrder::lines1 parentOrders.php:77',
+      'result setOrder::customer20 parentsunknown site',
+    ]);
+    expect(view.querySelector('.load .flag')!.textContent).toBe('alone');
+    expect(root.querySelector(`button[data-id="${PAGE}"] .note`)!.textContent).toBe('lazy ×2');
+  });
+
+  it('flags each acrossTenants() call, in the list and with its site', async () => {
+    const root = mount();
+    await open(root);
+    const view = tab(root, 'Across tenants');
+
+    expect([...view.querySelectorAll('.load')].map((row) => row.textContent)).toEqual([
+      'acrossTenants()Stats.php:19',
+    ]);
+    expect(view.textContent).toContain('2 more were not kept.');
+    expect(root.querySelector(`button[data-id="${PAGE}"] .flag`)!.textContent).toBe('acrossTenants ×3');
+  });
+
+  it('says so when there were none', async () => {
+    fetchMock.mockImplementation((url: string) =>
+      respond(200, url.endsWith(PAGE) ? { request: detail } : { requests }),
+    );
+    const root = mount();
+    await open(root);
+
+    expect(tab(root, 'Lazy loads').textContent).toBe('No lazy relation loads.');
+    expect(tab(root, 'Across tenants').textContent).toBe('No acrossTenants() calls.');
+  });
+
+  it('tells an extension on this window which request is newest, without the token', async () => {
+    const posted = vi.spyOn(window, 'postMessage');
+    const root = mount();
+    await open(root);
+
+    expect(posted).toHaveBeenCalledWith(
+      { source: 'tinvar-dev-toolbar', protocol: 1, type: 'request', id: VISIT },
+      window.location.origin,
+    );
+    expect(JSON.stringify(posted.mock.calls)).not.toContain('v1.token.mac');
+  });
+});

@@ -6,12 +6,23 @@
 // application bundle imports it, so no build contains it.
 //
 // What it shows came from the renderer -- third-party npm code -- as much as
-// from PHP: frames, chunk previews, error messages. So nothing it draws is
-// ever parsed as markup; every value goes in as text.
+// from PHP: frames, chunk previews, error messages, the names of the
+// components behind each query. So nothing it draws is ever parsed as
+// markup; every value goes in as text.
+//
+// A browser extension can read what it reads (ADR 0062): the endpoint's
+// answers carry `protocol`, and the toolbar posts a message to its own
+// window -- `{ source: 'tinvar-dev-toolbar', protocol, type: 'request', id }`
+// -- each time it reads the page's requests, naming the newest. The token
+// is not in it: an extension's content script reads the data block, as the
+// toolbar does.
 (() => {
   'use strict';
 
   const ID = 'tinvar-dev-toolbar';
+
+  /** The version of the endpoint's answers this script reads (DevToolbar::PROTOCOL). */
+  const PROTOCOL = 1;
 
   /**
    * @param {Document} doc
@@ -52,7 +63,7 @@
     );
     root.append(toggle, panel);
 
-    const TABS = ['Props', 'Timings', 'Ticks', 'Raw SQL', 'Frames'];
+    const TABS = ['Props', 'Timings', 'Ticks', 'Lazy loads', 'Across tenants', 'Raw SQL', 'Frames'];
     /** @type {Record<string, HTMLButtonElement>} */
     const tabButtons = {};
     for (const name of TABS) {
@@ -95,6 +106,7 @@
         const { requests } = await read('');
         if (ticket !== loading) return;
         status.textContent = `${requests.length} recorded`;
+        announce(requests[0]?.id ?? null);
         drawList(requests);
         if (selected !== null && requests.some((r) => r.id === selected)) {
           await select(selected);
@@ -110,6 +122,18 @@
           el('p', { class: 'error' }, `The toolbar could not read requests: ${error.message}`),
         );
       }
+    }
+
+    /**
+     * Tells an extension listening on this window which request is newest.
+     * Same origin only, and nothing in it is a secret: an id, which reads
+     * nothing without the token.
+     */
+    function announce(id) {
+      doc.defaultView?.postMessage(
+        { source: ID, protocol: PROTOCOL, type: 'request', id },
+        doc.defaultView.location.origin,
+      );
     }
 
     /** Newest first, as the endpoint sends them; a follow-up shown under the document it followed. */
@@ -142,6 +166,16 @@
                   { class: 'flag', title: 'Raw SQL on a tenant table' },
                   `raw SQL ×${request.rawSql}`,
                 )
+              : '',
+            request.acrossTenants > 0
+              ? el(
+                  'span',
+                  { class: 'flag', title: 'acrossTenants(): tenant scoping lifted' },
+                  `acrossTenants ×${request.acrossTenants}`,
+                )
+              : '',
+            request.lazyLoads > 0
+              ? el('span', { class: 'note', title: 'Lazy relation loads' }, `lazy ×${request.lazyLoads}`)
               : '',
           );
           list.append(el('li', { class: index === 0 ? 'visit' : 'follow' }, button));
@@ -183,7 +217,15 @@
         );
       }
       parts.push(
-        ...{ Props: props, Timings: timings, Ticks: ticks, 'Raw SQL': rawSql, Frames: frames }[tab](detail),
+        ...{
+          Props: props,
+          Timings: timings,
+          Ticks: ticks,
+          'Lazy loads': lazyLoads,
+          'Across tenants': acrossTenants,
+          'Raw SQL': rawSql,
+          Frames: frames,
+        }[tab](detail),
       );
       view.replaceChildren(...parts);
     }
@@ -286,8 +328,61 @@
         : frame.t === 'mail'
           ? { template: body.template, props: body.props }
           : { [body.tokens ? 'tokens' : 'token']: body.tokens ?? body.token };
+    const origins = detail.origins ?? [];
+    if (origins.length > 0) {
+      parts.push(
+        el('h3', {}, 'Where each came from'),
+        el(
+          'ul',
+          { class: 'origins' },
+          ...origins.map((origin) =>
+            el(
+              'li',
+              {},
+              el('span', { class: `badge ${origin.kind}` }, origin.kind),
+              el('code', {}, `data.${origin.slot}`),
+              el('span', { class: 'muted' }, `${short(origin.data)} from ${short(origin.loader)}`),
+              el('span', { class: 'site', title: origin.site }, site(origin.site)),
+            ),
+          ),
+        ),
+      );
+    }
+    const reads = sharedReads(detail);
+    if (reads.length > 0) {
+      parts.push(
+        el('h3', {}, 'Shared data read'),
+        el(
+          'ul',
+          { class: 'origins' },
+          ...reads.map(([key, by]) =>
+            el(
+              'li',
+              {},
+              el('span', { class: 'badge shared' }, 'shared'),
+              el('code', {}, `shared('${key}')`),
+              by ? el('span', { class: 'muted' }, `from ${by}`) : '',
+            ),
+          ),
+        ),
+      );
+    }
     parts.push(el('h3', {}, `Sent to the renderer · ${frame.t}`), json(sent));
     return parts;
+  }
+
+  /** Each shared key a render read, with the components that read it. */
+  function sharedReads(detail) {
+    const keys = new Map();
+    for (const frame of detail.frames) {
+      if (frame.dir !== 'in' || frame.t !== 'query' || !Array.isArray(frame.body.q)) continue;
+      for (const call of frame.body.q) {
+        if (typeof call.name !== 'string' || !call.name.startsWith('$shared.')) continue;
+        const key = call.name.slice('$shared.'.length);
+        keys.set(key, [...new Set([...(keys.get(key) ?? []), ...components(call)])]);
+      }
+    }
+    return [...keys].map(([key, by]) => [key, by.join(', ')]);
   }
 
   function timings(detail) {
@@ -331,6 +426,7 @@
       const result = detail.frames.slice(index + 1).find((f) => f.dir === 'out' && f.t === 'result');
       const calls = frame.body.q;
       const names = [...new Set(calls.map((c) => c.name))].join(', ');
+      const from = [...new Set(calls.flatMap(components))];
       parts.push(
         el(
           'details',
@@ -339,7 +435,20 @@
             'summary',
             {},
             `tick ${tick}: ${calls.length} ${calls.length === 1 ? 'query' : 'queries'} (${names})` +
+              (from.length > 0 ? `, from ${from.join(', ')}` : '') +
               (result ? ` · ${ms(result.atMs - frame.atMs)} in PHP` : ''),
+          ),
+          el(
+            'ul',
+            { class: 'calls' },
+            ...calls.map((call) =>
+              el(
+                'li',
+                {},
+                el('code', {}, String(call.name)),
+                ...chains(call).map((chain) => el('span', { class: 'muted' }, ` from ${chain.join(' ← ')}`)),
+              ),
+            ),
           ),
           json(calls.map((c) => ({ name: c.name, args: c.args }))),
         ),
@@ -348,6 +457,82 @@
     return parts.length > 0
       ? parts
       : [el('p', { class: 'muted' }, 'No query ticks: the render asked PHP for nothing.')];
+  }
+
+  /**
+   * The chains of components behind a call, each the component first and
+   * its owners after: what the renderer sent in development, and nothing
+   * from a renderer built for production, which sends none.
+   */
+  function chains(call) {
+    return Array.isArray(call.by)
+      ? call.by.filter(
+          (chain) => Array.isArray(chain) && chain.length > 0 && chain.every((n) => typeof n === 'string'),
+        )
+      : [];
+  }
+
+  /** The components that made a call: the first of each chain. */
+  function components(call) {
+    return chains(call).map((chain) => chain[0]);
+  }
+
+  /**
+   * Every lazy relation load, with the line that touched the relation. One
+   * that ran for one parent alone, read on each of N parents, is N
+   * statements: the 1+N the batching exists to prevent.
+   */
+  function lazyLoads(detail) {
+    const loads = detail.lazyLoads ?? [];
+    const parts = loads.map((load) =>
+      el(
+        'div',
+        { class: 'load' },
+        el('span', { class: load.batch === 'alone' ? 'flag' : 'note' }, load.batch),
+        el('code', {}, short(load.relation)),
+        el('span', { class: 'muted' }, `${load.parents} ${load.parents === 1 ? 'parent' : 'parents'}`),
+        el('span', { class: 'site', title: load.site }, site(load.site)),
+      ),
+    );
+    if ((detail.lazyLoadsDropped ?? 0) > 0) {
+      parts.push(el('p', { class: 'muted' }, `${detail.lazyLoadsDropped} more were not kept.`));
+    }
+    return parts.length > 0
+      ? [
+          el(
+            'p',
+            { class: 'muted' },
+            'Relations read lazily, one statement each. "alone" ran for one parent by itself: read in a loop, that is a statement per parent.',
+          ),
+          ...parts,
+        ]
+      : [el('p', { class: 'muted' }, 'No lazy relation loads.')];
+  }
+
+  /** Every acrossTenants() call: tenant scoping lifted, for its closure. */
+  function acrossTenants(detail) {
+    const calls = detail.acrossTenants ?? [];
+    const parts = calls.map((call) =>
+      el(
+        'div',
+        { class: 'load' },
+        el('span', { class: 'flag' }, 'acrossTenants()'),
+        el('span', { class: 'site', title: call.site }, site(call.site)),
+      ),
+    );
+    if ((detail.acrossTenantsDropped ?? 0) > 0) {
+      parts.push(el('p', { class: 'muted' }, `${detail.acrossTenantsDropped} more were not kept.`));
+    }
+    return parts.length > 0
+      ? [
+          el(
+            'p',
+            { class: 'muted' },
+            'Reads inside these see every tenant’s rows. Each is an escape hatch to justify.',
+          ),
+          ...parts,
+        ]
+      : [el('p', { class: 'muted' }, 'No acrossTenants() calls.')];
   }
 
   /**
@@ -419,6 +604,18 @@
   }
 
   // --------------------------------------------------------------- helpers
+
+  /** A class or Class::method by its last part, the whole kept for its title. */
+  function short(name) {
+    const text = String(name ?? '');
+    return text.slice(text.lastIndexOf('\\') + 1);
+  }
+
+  /** A file:line as the file's name and line; the whole path is the title. */
+  function site(where) {
+    const text = String(where ?? '');
+    return text === '' ? 'unknown site' : text.slice(text.lastIndexOf('/') + 1);
+  }
 
   function ms(value) {
     return `${Number(value).toFixed(1)} ms`;
