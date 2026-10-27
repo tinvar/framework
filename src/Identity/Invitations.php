@@ -45,7 +45,8 @@ final readonly class Invitations
      * Invites $email to $panel in $tenant as $role, on $origin -- the
      * tenant's canonical origin -- and returns the invitation and the URL
      * to email. Any invite still open for the same address, panel and
-     * tenant is revoked: one invite per address is the one that counts.
+     * tenant, to a role the inviter may give, is revoked: one invite per
+     * address is the one that counts.
      *
      * @return array{url: string, invitation: Invitation}
      * @throws HttpException 403 when the inviter may not invite to that role
@@ -60,8 +61,10 @@ final readonly class Invitations
             throw new HttpException(403, 'You may not invite anyone to that role.', 'forbidden');
         }
 
+        // Only those the inviter could have sent: re-inviting someone at a
+        // narrower role never takes away an invite a wider member made.
         foreach ($this->pending($tenant, $panel) as $earlier) {
-            if ($earlier->email === $address) {
+            if ($earlier->email === $address && $this->policy->mayInvite($inviter, $tenant, $panel, $earlier->role)) {
                 $this->links->revoke($earlier->id, EmailLinks::INVITE, $tenant);
             }
         }
@@ -144,10 +147,15 @@ final readonly class Invitations
         return $link === null ? null : Invitation::of($link);
     }
 
-    /** An address as invites keep it: trimmed, lowercased, and an address; null otherwise. */
+    /**
+     * An address as invites keep it: trimmed, lowercased, and an address;
+     * null otherwise. ASCII only, lowered as ASCII: Unicode case folding
+     * would turn a Kelvin sign into a `k`, and an invite typed for one
+     * address would be kept for another.
+     */
     public static function address(string $email): ?string
     {
-        $address = mb_strtolower(trim($email));
+        $address = strtolower(trim($email));
 
         return \strlen($address) <= 254 && filter_var($address, FILTER_VALIDATE_EMAIL) !== false ? $address : null;
     }

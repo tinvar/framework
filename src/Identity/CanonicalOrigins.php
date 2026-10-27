@@ -84,7 +84,21 @@ final readonly class CanonicalOrigins
     public static function origin(string $origin): string
     {
         $origin = rtrim($origin, '/');
-        if (!str_starts_with($origin, 'https://') || Realm::hostOf($origin) === null) {
+        // One spelling per origin, as a browser serializes it: a normalized
+        // host name or an address literal, a port only when it is not 443,
+        // and nothing after.
+        $valid = preg_match('#^https://([^/:?\#@\[\]\s]+|\[[0-9a-f:.]+\])(?::([1-9][0-9]{0,4}))?\z#', $origin, $m) === 1;
+        $host = $m[1] ?? '';
+        $port = $m[2] ?? '';
+        $literal = trim($host, '[]');
+        if ($valid && ($port === '443' || ($port !== '' && (int) $port > 65535))) {
+            $valid = false;
+        }
+        if ($valid && HostName::normalize($host) !== $host
+            && !(str_starts_with($host, '[') ? filter_var($literal, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false : filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false)) {
+            $valid = false;
+        }
+        if (!$valid) {
             throw new \InvalidArgumentException(
                 "'{$origin}' is not an origin an emailed link is built on: https, a host and perhaps a port, such as https://shop.example.",
             );
