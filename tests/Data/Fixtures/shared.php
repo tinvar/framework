@@ -153,6 +153,38 @@ final class StaticShared implements SharedData
     }
 }
 
+/** Memoizes in a method's static variable, which outlives the request as a static property does. */
+final class MemoizingShared implements SharedData
+{
+    #[Shared]
+    public function viewer(Request $request): GreetingData
+    {
+        static $memo = null;
+
+        return $memo ??= new GreetingData($request->header('x-who') ?? 'nobody');
+    }
+}
+
+abstract class CachingSharedBase
+{
+    private static ?GreetingData $cache = null;
+
+    protected function remember(GreetingData $value): GreetingData
+    {
+        return self::$cache ??= $value;
+    }
+}
+
+/** Keeps its value in a parent's private static, which the child's own reflection does not list. */
+final class InheritedStaticShared extends CachingSharedBase implements SharedData
+{
+    #[Shared]
+    public function viewer(Request $request): GreetingData
+    {
+        return $this->remember(new GreetingData($request->header('x-who') ?? 'nobody'));
+    }
+}
+
 final class UntypedShared implements SharedData
 {
     #[Shared]

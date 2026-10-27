@@ -229,11 +229,29 @@ final class SharedRegistry
             }
         }
 
-        foreach ($class->getProperties(\ReflectionProperty::IS_STATIC) as $property) {
-            throw new \InvalidArgumentException(
-                "{$class->getName()}::\${$property->getName()} is static, and {$class->getName()} is shared data: a static "
-                . "property outlives the request, and would carry one visitor's values into the next. Keep it on the instance.",
-            );
+        // Every level, each for what it declares: a class's reflection does
+        // not list a parent's private static, which outlives the request as
+        // surely as its own. A method's `static $memo` is the same store
+        // under another spelling.
+        for ($level = $class; $level !== false; $level = $level->getParentClass()) {
+            foreach ($level->getProperties(\ReflectionProperty::IS_STATIC) as $property) {
+                if ($property->getDeclaringClass()->getName() !== $level->getName()) {
+                    continue;
+                }
+                throw new \InvalidArgumentException(
+                    "{$level->getName()}::\${$property->getName()} is static, and {$class->getName()} is shared data: a static "
+                    . "property outlives the request, and would carry one visitor's values into the next. Keep it on the instance.",
+                );
+            }
+            foreach ($level->getMethods() as $method) {
+                if ($method->getDeclaringClass()->getName() !== $level->getName() || $method->getStaticVariables() === []) {
+                    continue;
+                }
+                throw new \InvalidArgumentException(
+                    "{$level->getName()}::{$method->getName()}() keeps a static variable, which is static, and {$class->getName()} "
+                    . "is shared data: it outlives the request, and would carry one visitor's values into the next. Keep it on the instance.",
+                );
+            }
         }
     }
 

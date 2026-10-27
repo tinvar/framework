@@ -33,6 +33,8 @@ use Tinvar\Tests\Data\Fixtures\Shared\BadKeyShared;
 use Tinvar\Tests\Data\Fixtures\Shared\DuplicateShared;
 use Tinvar\Tests\Data\Fixtures\Shared\Greeting;
 use Tinvar\Tests\Data\Fixtures\Shared\GreetingData;
+use Tinvar\Tests\Data\Fixtures\Shared\InheritedStaticShared;
+use Tinvar\Tests\Data\Fixtures\Shared\MemoizingShared;
 use Tinvar\Tests\Data\Fixtures\Shared\NarrowingShared;
 use Tinvar\Tests\Data\Fixtures\Shared\NothingShared;
 use Tinvar\Tests\Data\Fixtures\Shared\NotProvider;
@@ -139,6 +141,8 @@ describe('the registry', function () {
     })->with([
         'a worker-lived provider' => [WorkerLivedShared::class, 'Lifetime::Worker'],
         'a static property' => [StaticShared::class, 'is static'],
+        'a static variable' => [MemoizingShared::class, 'is static'],
+        "a parent's private static property" => [InheritedStaticShared::class, 'is static'],
         'no return type' => [UntypedShared::class, 'no return type'],
         'an array' => [ArrayShared::class, 'may return array'],
         'a service as a parameter' => [ServiceParameterShared::class, 'may take only the Request and a DataContext'],
