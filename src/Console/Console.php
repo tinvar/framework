@@ -15,6 +15,7 @@ use Tinvar\Orm\Orm;
 use Tinvar\Queue\Queue;
 use Tinvar\Queue\Worker;
 use Tinvar\Queue\WorkerOptions;
+use Tinvar\Support\KnownAttributes;
 
 /**
  * An application's console: its own #[Command] classes, and the framework's
@@ -84,7 +85,11 @@ final class Console
         }
 
         foreach ($commands as $class) {
-            $attribute = new \ReflectionClass($class)->getAttributes(CommandName::class)[0] ?? null;
+            // A Tinvar attribute naming no class would be matched by
+            // nothing, and what it declares would not hold (KnownAttributes).
+            $reflection = new \ReflectionClass($class);
+            KnownAttributes::check($reflection);
+            $attribute = $reflection->getAttributes(CommandName::class)[0] ?? null;
             if ($attribute === null || !is_subclass_of($class, Command::class)) {
                 throw new \InvalidArgumentException("{$class} is registered as a command, and is not a Command with a #[Command] name.");
             }

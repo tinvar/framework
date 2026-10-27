@@ -8,6 +8,7 @@ use Tinvar\Http\NotFoundException;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 use Tinvar\Support\Str;
+use Tinvar\Support\KnownAttributes;
 
 /**
  * Builds a FormRequest from raw input, or throws with every error at once.
@@ -426,6 +427,9 @@ final class Validator
         }
 
         $reflection = new \ReflectionClass($class);
+        // A Tinvar attribute naming no class would be matched by nothing, and
+        // what it declares would not hold (KnownAttributes).
+        KnownAttributes::check($reflection);
 
         $plan = [];
         $planned = [];

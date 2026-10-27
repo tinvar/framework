@@ -11,6 +11,7 @@ use Tinvar\Attributes\Optional;
 use Tinvar\Attributes\Rescue;
 use Tinvar\Cache\Duration;
 use Tinvar\Support\Lazy;
+use Tinvar\Support\KnownAttributes;
 
 /**
  * The fields of a Data class that cross the boundary.
@@ -55,8 +56,13 @@ final class DataShape
             return self::$cache[$class];
         }
 
+        // A Tinvar attribute naming no class would be matched by nothing, and
+        // what it declares would not hold (KnownAttributes).
+        $reflection = new \ReflectionClass($class);
+        KnownAttributes::check($reflection);
+
         $fields = [];
-        foreach ((new \ReflectionClass($class))->getProperties(\ReflectionProperty::IS_PUBLIC) as $property) {
+        foreach ($reflection->getProperties(\ReflectionProperty::IS_PUBLIC) as $property) {
             if (!$property->isStatic()) {
                 $fields[] = $property;
             }

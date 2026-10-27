@@ -11,6 +11,7 @@ use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Page;
 use Tinvar\Attributes\Query;
 use Tinvar\Orm\Attributes\TenantScoped;
+use Tinvar\Support\KnownAttributes;
 use Tinvar\Data\Data;
 use Tinvar\Orm\Model;
 use Tinvar\Support\Str;
@@ -57,6 +58,13 @@ use Tinvar\Validation\FormRequest;
  *     model input used to need no check at all, so one meant only for an
  *     admin page answered any signed-in caller.
  *
+ *   attributes-must-name-a-class
+ *     An attribute under Tinvar\ whose class does not exist -- a misspelling,
+ *     or a name from before the split once no alias is made for it -- is
+ *     matched by nothing, so what it declares silently does not hold: a
+ *     model's #[TenantScoped] among them (KnownAttributes, ADR 0055).
+ *     Checked on every entry point, payload and model.
+ *
  *   panel-only-query-must-be-bound
  *     "an action or query reachable only from admin-panel pages with no panel
  *      binding fails the build." Checked where the Kernel is built, by
@@ -78,6 +86,7 @@ final class BuildRules
     public const string SHARED_QUERY_MUST_NOT_READ_THE_USER = 'shared-query-must-not-read-the-user';
     public const string QUERY_MUST_DECLARE_AUTHORIZATION = 'query-must-declare-authorization';
     public const string PANEL_ONLY_QUERY_MUST_BE_BOUND = 'panel-only-query-must-be-bound';
+    public const string ATTRIBUTES_MUST_NAME_A_CLASS = 'attributes-must-name-a-class';
 
     /**
      * Types a `shared: true` query may not reach by injection, directly or
@@ -122,9 +131,13 @@ final class BuildRules
     /** @var array<string, class-string> lowercased model name => class */
     private array $tenantScoped = [];
 
+    /** @var list<class-string<Model>> the application's models, held to attributes-must-name-a-class */
+    private array $models = [];
+
     /** @param list<class-string<Model>> $models every model the application declares */
     public function __construct(array $models = [])
     {
+        $this->models = array_values($models);
         foreach ($models as $model) {
             if ((new \ReflectionClass($model))->getAttributes(TenantScoped::class, \ReflectionAttribute::IS_INSTANCEOF) !== []) {
                 $this->tenantScoped[strtolower(Str::shortName($model))] = $model;
@@ -141,7 +154,12 @@ final class BuildRules
     {
         $violations = [];
 
+        foreach ($this->models as $model) {
+            $violations = [...$violations, ...self::checkKnownAttributes($model)];
+        }
+
         foreach ($entryPoints as $class) {
+            $violations = [...$violations, ...self::checkKnownAttributes($class)];
             $violations = [...$violations, ...$this->checkEntryPoint($class)];
             $violations = [...$violations, ...self::checkQueryDeclaresAuthorization($class)];
             $violations = [...$violations, ...self::checkSharedQuery($class)];
@@ -158,10 +176,28 @@ final class BuildRules
         }
 
         foreach ($payloads as $class) {
+            $violations = [...$violations, ...self::checkKnownAttributes($class)];
             $violations = [...$violations, ...$this->checkPayload($class, $class, [])];
         }
 
         return $violations;
+    }
+
+    /**
+     * attributes-must-name-a-class, on one class and its members.
+     *
+     * @param class-string $class
+     * @return list<Violation>
+     */
+    private static function checkKnownAttributes(string $class): array
+    {
+        try {
+            KnownAttributes::check(new \ReflectionClass($class));
+        } catch (\LogicException $e) {
+            return [new Violation(self::ATTRIBUTES_MUST_NAME_A_CLASS, $class, $e->getMessage())];
+        }
+
+        return [];
     }
 
     /**

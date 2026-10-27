@@ -8,6 +8,7 @@ use Tinvar\Attributes\ClassAttributes;
 use Tinvar\Attributes\Listener;
 use Tinvar\Attributes\Queue;
 use Tinvar\Jobs\Queueable;
+use Tinvar\Support\KnownAttributes;
 
 /**
  * Which methods listen for which events, read off #[Listener] attributes on
@@ -38,6 +39,10 @@ final class EventRegistry
     public function register(string $class): void
     {
         $reflection = new \ReflectionClass($class);
+        // A Tinvar attribute naming no class would be matched by nothing, and
+        // what it declares would not hold (KnownAttributes).
+        KnownAttributes::check($reflection);
+
         $queued = ClassAttributes::of($reflection, Queue::class) !== [];
 
         $found = false;

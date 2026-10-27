@@ -20,6 +20,7 @@ use Tinvar\Support\Str;
 use Tinvar\Uploads\FileTypes;
 use Tinvar\Uploads\Upload;
 use Tinvar\Validation\FormRequest;
+use Tinvar\Support\KnownAttributes;
 
 /**
  * Wire name to #[Action] method.
@@ -43,6 +44,10 @@ final class ActionRegistry
     public function register(string $class): array
     {
         $reflection = new \ReflectionClass($class);
+        // A Tinvar attribute naming no class would be matched by nothing, and
+        // what it declares would not hold (KnownAttributes).
+        KnownAttributes::check($reflection);
+
 
         // Class-level #[Authorize] and #[NoAuthorization] do not COVER action
         // methods. Letting them blanket every method meant one read-only

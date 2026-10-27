@@ -15,6 +15,7 @@ use Tinvar\Http\Response;
 use Tinvar\Http\TenantResolver;
 use Tinvar\Jobs\DeclaredPanel;
 use Tinvar\Orm\Orm;
+use Tinvar\Support\KnownAttributes;
 
 /**
  * Inbound webhooks: `#[Webhook('/path')]` classes, each POSTed signed
@@ -80,7 +81,11 @@ final class WebhookEndpoint
         }
 
         foreach ($webhooks as $class) {
-            $attribute = new \ReflectionClass($class)->getAttributes(Webhook::class)[0] ?? null;
+            // A Tinvar attribute naming no class would be matched by
+            // nothing, and what it declares would not hold (KnownAttributes).
+            $reflection = new \ReflectionClass($class);
+            KnownAttributes::check($reflection);
+            $attribute = $reflection->getAttributes(Webhook::class)[0] ?? null;
             if ($attribute === null || !method_exists($class, '__invoke')) {
                 throw new \InvalidArgumentException("{$class} is registered as a webhook, and is not a #[Webhook] class with an __invoke().");
             }

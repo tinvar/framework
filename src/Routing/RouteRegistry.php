@@ -18,6 +18,7 @@ use Tinvar\Data\Data;
 use Tinvar\Http\HttpError;
 use Tinvar\Http\Request;
 use Tinvar\Support\Str;
+use Tinvar\Support\KnownAttributes;
 
 /**
  * Routes come from attributes on classes. There are no route files.
@@ -58,6 +59,10 @@ final class RouteRegistry
     public function register(string $class): CompiledRoute
     {
         $reflection = new \ReflectionClass($class);
+        // A Tinvar attribute naming no class would be matched by nothing, and
+        // what it declares would not hold (KnownAttributes).
+        KnownAttributes::check($reflection);
+
 
         $pageAttribute = $reflection->getAttributes(Page::class)[0] ?? null;
         $layoutAttribute = $reflection->getAttributes(Layout::class)[0] ?? null;

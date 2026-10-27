@@ -13,6 +13,7 @@ use Tinvar\Auth\BuildRules;
 use Tinvar\Auth\PanelBinding;
 use Tinvar\Orm\Model;
 use Tinvar\Support\Str;
+use Tinvar\Support\KnownAttributes;
 
 /**
  * Wire name to #[Query] class, with the declarations each one carries.
@@ -68,6 +69,10 @@ final class QueryRegistry
     public function register(string $class): string
     {
         $reflection = new \ReflectionClass($class);
+        // A Tinvar attribute naming no class would be matched by nothing, and
+        // what it declares would not hold (KnownAttributes).
+        KnownAttributes::check($reflection);
+
         $attribute = $reflection->getAttributes(Query::class)[0] ?? null;
         if ($attribute === null) {
             throw new \InvalidArgumentException("{$class} has no #[Query] attribute.");
