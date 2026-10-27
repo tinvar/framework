@@ -49,6 +49,8 @@ final class SharedReads
      * @param \Closure(class-string): object $resolver builds a provider, as it
      *        builds pages and queries
      * @param array<string, string> $parameters the page's route parameters
+     * @param SharedProviders|null $served the Kernel's record of which request each
+     *        provider instance served, so a worker-lived one is refused
      */
     public function __construct(
         private readonly SharedRegistry $registry,
@@ -61,6 +63,7 @@ final class SharedReads
         private readonly AuthContext $auth,
         private readonly ?PanelContext $panels = null,
         private readonly ?string $panel = null,
+        private readonly ?SharedProviders $served = null,
     ) {
         $this->tenant = $orm->tenant();
         $this->user = $auth->id();
@@ -175,6 +178,7 @@ final class SharedReads
         if (!$provider instanceof SharedData) {
             throw new \LogicException("The resolver built " . get_debug_type($provider) . " for {$class}, which is not shared data.");
         }
+        $this->served?->admit($provider);
 
         return $provider;
     }

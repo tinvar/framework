@@ -165,6 +165,18 @@ final class MemoizingShared implements SharedData
     }
 }
 
+/** Remembers its first value on the instance: sound for one request, a leak if the instance outlives it. */
+final class InstanceMemoShared implements SharedData
+{
+    private ?GreetingData $memo = null;
+
+    #[Shared]
+    public function who(Request $request): GreetingData
+    {
+        return $this->memo ??= new GreetingData($request->header('x-who') ?? 'nobody');
+    }
+}
+
 abstract class CachingSharedBase
 {
     private static ?GreetingData $cache = null;

@@ -57,6 +57,7 @@ use Tinvar\Render\RouteToken;
 use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenError;
 use Tinvar\Data\PayloadContext;
+use Tinvar\Data\SharedProviders;
 use Tinvar\Data\SharedReads;
 use Tinvar\Data\SharedRegistry;
 use Tinvar\Routing\LoaderRunner;
@@ -246,6 +247,9 @@ final class Kernel
      * @var array<string, string|null>
      */
     private readonly array $sharedPanels;
+
+    /** Which request each provider instance served: one handed to a later request is refused. */
+    private readonly SharedProviders $sharedProviders;
 
     /** Builds a shared data provider, as it builds pages and queries. */
     private readonly \Closure $resolver;
@@ -1043,6 +1047,11 @@ final class Kernel
         // What one page's loaders read is not the next request's.
         $this->scope->add('live', $this->tagsRead->forget(...));
 
+        // Nor is a shared data provider: one the resolver hands out again
+        // after this is refused, however it was bound.
+        $this->sharedProviders = new SharedProviders();
+        $this->scope->add('shared', $this->sharedProviders->endRequest(...));
+
         // Nor is a request's id, should one escape without being ended.
         if ($telemetry !== null) {
             $this->scope->add('telemetry', $telemetry->forget(...));
@@ -1670,6 +1679,7 @@ final class Kernel
             auth: $this->auth,
             panels: $this->panels,
             panel: $panel,
+            served: $this->sharedProviders,
         );
     }
 

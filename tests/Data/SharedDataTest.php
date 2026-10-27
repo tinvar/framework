@@ -16,6 +16,9 @@ use Tinvar\Auth\PanelContext;
 use Tinvar\Data\DataBoundaryException;
 use Tinvar\Data\DataContext;
 use Tinvar\Data\Encoder;
+use Tinvar\Container\Container;
+use Tinvar\Container\Lifetime;
+use Tinvar\Data\SharedProviders;
 use Tinvar\Data\SharedReads;
 use Tinvar\Data\SharedRegistry;
 use Tinvar\Http\Request;
@@ -34,6 +37,7 @@ use Tinvar\Tests\Data\Fixtures\Shared\DuplicateShared;
 use Tinvar\Tests\Data\Fixtures\Shared\Greeting;
 use Tinvar\Tests\Data\Fixtures\Shared\GreetingData;
 use Tinvar\Tests\Data\Fixtures\Shared\InheritedStaticShared;
+use Tinvar\Tests\Data\Fixtures\Shared\InstanceMemoShared;
 use Tinvar\Tests\Data\Fixtures\Shared\MemoizingShared;
 use Tinvar\Tests\Data\Fixtures\Shared\NarrowingShared;
 use Tinvar\Tests\Data\Fixtures\Shared\NothingShared;
@@ -269,6 +273,44 @@ describe('reading a key', function () {
 
         expect($results[0]['error']['code'])->toBe(QueryError::FORBIDDEN)
             ->and($render['reads']->calls)->toBe([]);
+    });
+
+    it('refuses a provider instance the resolver hands to a second request', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $container = new Container();
+        // Bound worker-lived, which the registry cannot see on the class.
+        $container->bind(InstanceMemoShared::class, InstanceMemoShared::class, Lifetime::Worker);
+        $served = new SharedProviders();
+        $runner = new QueryRunner(new QueryRegistry(), $orm, new AllowAllGate());
+        $read = static function (string $who) use ($orm, $container, $served, $runner): array {
+            $render = static fn (): SharedReads => new SharedReads(
+                registry: new SharedRegistry([InstanceMemoShared::class]),
+                keys: ['who' => true],
+                resolver: $container->resolver(),
+                request: new Request('GET', '/', ['x-who' => $who]),
+                page: sharedPage(),
+                parameters: [],
+                orm: $orm,
+                auth: new AuthContext(),
+                served: $served,
+            );
+            // Two renders of one request may share a request's instance.
+            $first = $runner->run(sharedCalls(['who']), [], $render())[0];
+            $second = $runner->run(sharedCalls(['who']), [], $render())[0];
+            $container->endRequest();
+            $served->endRequest();
+
+            return [$first, $second];
+        };
+
+        [$ada, $again] = $read('Ada');
+        [$grace] = $read('Grace');
+
+        expect($ada['value'])->toBe(['text' => 'Ada'])
+            ->and($again['value'])->toBe(['text' => 'Ada'])
+            ->and($grace)->not->toHaveKey('value')
+            ->and($grace['error']['code'])->toBe(QueryError::FAILED);
     });
 
     it('refuses a read once the render has left its panel', function () {
