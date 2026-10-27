@@ -10,8 +10,8 @@ namespace Tinvar\Packages;
  *
  * Layers are listed lowest first, and each names the layers below it that
  * it may use: it uses those and itself, never one above, and never one
- * beside it that it does not name -- testing and codegen both stand on the
- * framework, and neither on the other. A layer's members are namespaces,
+ * beside it that it does not name -- tenancy, testing and codegen all stand
+ * on the framework, and none on another. A layer's members are namespaces,
  * written with a trailing `\` and taking everything under them, and single
  * classes: a class sits in the layer of its most specific member. The
  * framework's map is namespaces alone, since the classes it once shared out
@@ -78,8 +78,10 @@ final readonly class Layers
     /**
      * The framework's layers, each a package: support, which uses nothing of
      * Tinvar's; the database, which uses only support; the framework, which
-     * uses either; and on the framework, the testing layer and codegen, each
-     * over all three and neither over the other.
+     * uses either; and on the framework, tenancy, the testing layer and
+     * codegen, each over all three and none over another (ADR 0056): the
+     * framework names no tenancy, and tenancy's tests, not the testing
+     * layer, are where tenants are tested.
      *
      * The sources are each package's PSR-4 directories, as its composer.json
      * maps them -- tinvar check holds the two to each other (Workspace) --
@@ -93,12 +95,14 @@ final readonly class Layers
                 'support' => ['Tinvar\\Support\\', 'Tinvar\\Codec\\', 'Tinvar\\Container\\'],
                 'database' => ['Tinvar\\Orm\\'],
                 'framework' => ['Tinvar\\'],
+                'tenancy' => ['Tinvar\\Tenancy\\'],
                 'testing' => ['Tinvar\\Testing\\'],
                 'codegen' => ['Tinvar\\Codegen\\'],
             ],
             [
                 'database' => ['support'],
                 'framework' => ['support', 'database'],
+                'tenancy' => ['support', 'database', 'framework'],
                 'testing' => ['support', 'database', 'framework'],
                 'codegen' => ['support', 'database', 'framework'],
             ],
@@ -108,6 +112,7 @@ final readonly class Layers
                 'packages/support/src/Support' => 'Tinvar\\Support\\',
                 'packages/database/src/Orm' => 'Tinvar\\Orm\\',
                 'packages/framework/src' => 'Tinvar\\',
+                'packages/tenancy/src/Tenancy' => 'Tinvar\\Tenancy\\',
                 'packages/testing/src/Testing' => 'Tinvar\\Testing\\',
                 'packages/codegen/src' => 'Tinvar\\Codegen\\',
             ],
@@ -115,6 +120,7 @@ final readonly class Layers
                 'packages/support/src' => 'support',
                 'packages/database/src' => 'database',
                 'packages/framework/src' => 'framework',
+                'packages/tenancy/src' => 'tenancy',
                 'packages/testing/src' => 'testing',
                 'packages/codegen/src' => 'codegen',
             ],

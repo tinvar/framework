@@ -100,8 +100,10 @@ describe('the layers', function () {
         'its attribute' => ['Tinvar\Container\Dependency', 'support'],
         'a lazy value' => ['Tinvar\Support\Lazy', 'support'],
         'Data' => ['Tinvar\Data\Mapper', 'framework'],
-        'the tenant walk' => ['Tinvar\Orm\TenantHierarchy', 'database'],
-        'tenancy' => ['Tinvar\Tenancy\TenantHosts', 'framework'],
+        'the tenant walk' => ['Tinvar\Tenancy\TenantHierarchy', 'tenancy'],
+        'the tree port the ORM bounds' => ['Tinvar\Orm\TenantBounds', 'database'],
+        'tenancy' => ['Tinvar\Tenancy\TenantHosts', 'tenancy'],
+        'the port tenancy implements' => ['Tinvar\Http\TenantResolver', 'framework'],
         'codegen' => ['Tinvar\Codegen\TypeScriptGenerator', 'codegen'],
         'the testing layer' => ['Tinvar\Testing\ModelLeaks', 'testing'],
         'a namespace by its name' => ['Tinvar\Orm', 'database'],
@@ -116,7 +118,7 @@ describe('the layers', function () {
     it('lets a layer use itself and the layers below it it names, never one above or beside it', function () {
         $layers = Layers::framework();
 
-        expect($layers->names())->toBe(['support', 'database', 'framework', 'testing', 'codegen'])
+        expect($layers->names())->toBe(['support', 'database', 'framework', 'tenancy', 'testing', 'codegen'])
             ->and($layers->mayUse('database', 'support'))->toBeTrue()
             ->and($layers->mayUse('database', 'database'))->toBeTrue()
             ->and($layers->mayUse('framework', 'database'))->toBeTrue()
@@ -128,6 +130,13 @@ describe('the layers', function () {
             ->and($layers->mayUse('framework', 'codegen'))->toBeFalse()
             ->and($layers->mayUse('codegen', 'testing'))->toBeFalse()
             ->and($layers->mayUse('testing', 'codegen'))->toBeFalse()
+            ->and($layers->mayUse('tenancy', 'framework'))->toBeTrue()
+            ->and($layers->mayUse('tenancy', 'database'))->toBeTrue()
+            ->and($layers->mayUse('framework', 'tenancy'))->toBeFalse()
+            ->and($layers->mayUse('database', 'tenancy'))->toBeFalse()
+            ->and($layers->mayUse('testing', 'tenancy'))->toBeFalse()
+            ->and($layers->mayUse('codegen', 'tenancy'))->toBeFalse()
+            ->and($layers->mayUse('tenancy', 'testing'))->toBeFalse()
             ->and($layers->mayUse('database', 'nowhere'))->toBeFalse()
             ->and($layers->mayUse('nowhere', 'nowhere'))->toBeFalse();
     });
@@ -154,8 +163,13 @@ describe('a database class', function () {
     });
 
     it('fails importing a framework class', function () {
+        expect(crossed(orm('use Tinvar\Http\Request;')))
+            ->toBe(['Example.php:7: database uses framework, Tinvar\Http\Request (use)']);
+    });
+
+    it('fails importing a tenancy class, the tenant walk among them', function () {
         expect(crossed(orm('use Tinvar\Tenancy\TenantHierarchy;')))
-            ->toBe(['Example.php:7: database uses framework, Tinvar\Tenancy\TenantHierarchy (use)']);
+            ->toBe(['Example.php:7: database uses tenancy, Tinvar\Tenancy\TenantHierarchy (use)']);
     });
 
     it('fails naming one fully qualified, in a type, a new or a ::class', function (string $body) {
