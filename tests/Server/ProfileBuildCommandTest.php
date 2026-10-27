@@ -61,14 +61,14 @@ it('refuses a test build where the environment says production', function (strin
         ->and($errors[0] ?? '')->toContain("{$marker}=production");
 })->with(['TINVAR_ENV', 'APP_ENV', 'NODE_ENV']);
 
-it('refuses what it does not know', function (array $arguments) use ($shop) {
-    $status = new ProfileBuildCommand($shop, run: static fn (): int => 0, err: static function (): void {}, env: [])->run($arguments);
+it('refuses what it does not know', function (string $argument) use ($shop) {
+    $status = new ProfileBuildCommand($shop, run: static fn (): int => 0, err: static function (): void {}, env: [])->run([$argument]);
 
     expect($status)->toBe(ProfileBuildCommand::USAGE);
 })->with([
-    'a profile' => [['--profile=staging']],
-    'an option' => [['--minify=false']],
-    'a bare flag' => [['--profile']],
+    'a profile' => ['--profile=staging'],
+    'an option' => ['--minify=false'],
+    'a bare flag' => ['--profile'],
 ]);
 
 it('refuses a directory that is not an app', function () {

@@ -48,17 +48,24 @@ final class ProfileBuildCommand
         ?\Closure $err = null,
         private readonly ?array $env = null,
     ) {
-        $this->run = $run ?? static function (array $command, string $cwd, array $env): int {
-            $process = proc_open($command, [0 => ['file', '/dev/null', 'r'], 1 => STDERR, 2 => STDERR], $pipes, $cwd, $env);
-            if (!\is_resource($process)) {
-                throw new \RuntimeException('Could not start ' . $command[0] . '.');
-            }
-
-            return proc_close($process);
-        };
+        $this->run = $run ?? self::execute(...);
         $this->err = $err ?? static function (string $line): void {
             fwrite(STDERR, $line . "\n");
         };
+    }
+
+    /**
+     * @param list<string> $command
+     * @param array<string, string> $env
+     */
+    private static function execute(array $command, string $cwd, array $env): int
+    {
+        $process = proc_open($command, [0 => ['file', '/dev/null', 'r'], 1 => STDERR, 2 => STDERR], $pipes, $cwd, $env);
+        if (!\is_resource($process)) {
+            throw new \RuntimeException('Could not start ' . $command[0] . '.');
+        }
+
+        return proc_close($process);
     }
 
     /** @param list<string> $arguments */
