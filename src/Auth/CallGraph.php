@@ -87,7 +87,10 @@ final class CallGraph
                 break;
             }
 
-            $function = $owner === '' ? new \ReflectionFunction($name) : new \ReflectionMethod($owner, $name);
+            $function = self::reflect($owner, $name);
+            if ($function === null) {
+                continue;
+            }
             $where = $function instanceof \ReflectionMethod
                 ? "{$function->getDeclaringClass()->getName()}::{$name}()"
                 : "{$name}()";
@@ -127,6 +130,24 @@ final class CallGraph
         }
 
         return ['reached' => $reached, 'refused' => $refused];
+    }
+
+    /**
+     * A method, a function, or a property's hook -- `$name::get` -- by the
+     * name the queue holds it under.
+     */
+    private static function reflect(string $owner, string $name): ?\ReflectionFunctionAbstract
+    {
+        if ($owner === '') {
+            return new \ReflectionFunction($name);
+        }
+        if (!str_starts_with($name, '$')) {
+            return new \ReflectionMethod($owner, $name);
+        }
+        [$property, $kind] = explode('::', substr($name, 1), 2) + [1 => ''];
+        $type = \PropertyHookType::tryFrom($kind);
+
+        return $type === null || !class_exists($owner) ? null : new \ReflectionProperty($owner, $property)->getHook($type);
     }
 
     /**
@@ -205,13 +226,29 @@ final class CallGraph
                 if ($variable === '$this' && $self !== null) {
                     if (($tokens[$i + 3] ?? null) === '(') {
                         $calls[] = self::target(self::onThis($scope, $first), $first, "\$this->{$first}()");
-                    } elseif (self::isArrow($tokens[$i + 3] ?? null) && self::is($tokens[$i + 4] ?? null, T_STRING) && ($tokens[$i + 5] ?? null) === '(') {
-                        $method = self::text($tokens[$i + 4]);
-                        array_push($calls, ...self::onProperty($scope, $first, $method));
+                    } else {
+                        // Reading or writing a property runs its hooks, or
+                        // __get() and __set() for one not declared.
+                        array_push($calls, ...self::onAccess($scope, $first));
+                        if (self::isArrow($tokens[$i + 3] ?? null) && self::is($tokens[$i + 4] ?? null, T_STRING) && ($tokens[$i + 5] ?? null) === '(') {
+                            $method = self::text($tokens[$i + 4]);
+                            array_push($calls, ...self::onProperty($scope, $first, $method));
+                        } elseif (($tokens[$i - 1] ?? null) === '(' && ($tokens[$i + 3] ?? null) === ')' && ($tokens[$i + 4] ?? null) === '(') {
+                            // ($this->property)(...): the object's __invoke().
+                            array_push($calls, ...self::onProperty($scope, $first, '__invoke'));
+                        }
                     }
                 } elseif (isset($parameters[$variable]) && ($tokens[$i + 3] ?? null) === '(') {
                     array_push($calls, ...self::onTyped($parameters[$variable]->getType(), "{$variable}->{$first}()", $first, $scope));
                 }
+
+                continue;
+            }
+
+            // $parameter(...): the object's __invoke(), by its declared type.
+            if (self::is($token, T_VARIABLE) && isset($parameters[self::text($token)]) && ($tokens[$i + 1] ?? null) === '(') {
+                $variable = self::text($token);
+                array_push($calls, ...self::onTyped($parameters[$variable]->getType(), "{$variable}()", '__invoke', $scope));
 
                 continue;
             }
@@ -389,7 +426,7 @@ final class CallGraph
             return self::onTyped($reflection->getProperty($name)->getType(), $call, $method, ['static' => $class, 'self' => $class]);
         }
 
-        if ($reflection->isEnum() && new \ReflectionEnum($class)->hasCase($member)) {
+        if (enum_exists($class) && new \ReflectionEnum($class)->hasCase($member)) {
             return [self::target($class, $method, $call)];
         }
         $value = $reflection->hasConstant($member) ? $reflection->getConstant($member) : null;
@@ -398,6 +435,46 @@ final class CallGraph
         }
 
         return [['call' => $call, 'why' => "{$class}::{$member} holds no object whose class can be read"]];
+    }
+
+    /**
+     * `$this->property`, read or written: the property's hooks, which run
+     * either way; or, where no class of the object declares it, __get()
+     * and __set().
+     *
+     * @param array{static: string|null, self: string|null} $scope
+     * @return list<array{class: string, method: string}|array{call: string, why: string}|null>
+     */
+    private static function onAccess(array $scope, string $property): array
+    {
+        foreach ([$scope['self'], $scope['static']] as $class) {
+            if ($class === null || !class_exists($class) || !new \ReflectionClass($class)->hasProperty($property)) {
+                continue;
+            }
+            $declared = new \ReflectionProperty($class, $property);
+            $owner = $declared->getDeclaringClass();
+            $file = $owner->getFileName();
+            if ($file === false || self::isFramework($file)) {
+                return [];
+            }
+
+            return array_map(
+                static fn (string $kind): array => ['class' => $owner->getName(), 'method' => "\${$property}::{$kind}"],
+                array_keys($declared->getHooks()),
+            );
+        }
+
+        $calls = [];
+        $class = $scope['static'];
+        if ($class !== null) {
+            foreach (['__get', '__set'] as $magic) {
+                if (method_exists($class, $magic)) {
+                    $calls[] = self::target($class, $magic, "\$this->{$property}");
+                }
+            }
+        }
+
+        return $calls;
     }
 
     /**
@@ -531,6 +608,9 @@ final class CallGraph
     private static function arrayCallable(array $tokens, int $i, string $file, array $scope): ?array
     {
         $first = $tokens[$i + 1] ?? null;
+        if ($first === null) {
+            return null;
+        }
         if (self::is($first, T_VARIABLE) && self::text($first) === '$this' && $scope['static'] !== null) {
             $comma = $i + 2;
             $written = '$this';
@@ -544,7 +624,7 @@ final class CallGraph
             return null;
         }
         $method = $tokens[$comma + 1] ?? null;
-        if (!self::is($method, T_CONSTANT_ENCAPSED_STRING) || !\in_array($tokens[$comma + 2] ?? null, [']', ','], true)) {
+        if ($method === null || !self::is($method, T_CONSTANT_ENCAPSED_STRING) || !\in_array($tokens[$comma + 2] ?? null, [']', ','], true)) {
             return ['call' => "[{$written}, ...]", 'why' => 'the method the callable names is chosen at runtime, so which one cannot be read'];
         }
         $name = substr(self::text($method), 1, -1);

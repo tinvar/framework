@@ -82,6 +82,20 @@ it('follows a method called on a parameter typed as an intersection inside a uni
     expect($reached)->toContain(G\Shown::class . '::who()', G\Secret::class . '::who()');
 });
 
+it('follows what reading a property runs: its hook, or __get(), or the object invoked', function (string $class) {
+    expect(sharedGapViolations($class))->toContain(G\Secret::class . "::who(), which calls '->user('");
+})->with([
+    'a get hook' => [G\ThroughPropertyHook::class],
+    '__get()' => [G\ThroughMagicGet::class],
+    '($this->property)()' => [G\ThroughInvokedProperty::class],
+]);
+
+it('follows a parameter invoked as a function to its __invoke()', function () {
+    $reached = array_column(CallGraph::walk(G\TakesInvokable::class, ['read'])['reached'], 'where');
+
+    expect($reached)->toContain(G\Invokable::class . '::__invoke()', G\Secret::class . '::who()');
+});
+
 it('reads the imports inside a braced namespace', function () {
     require_once __DIR__ . '/Fixtures/callgraph-braced.php';
 

@@ -189,6 +189,60 @@ final class TakesIntersection
     }
 }
 
+#[Query(name: 'gaps.hook', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
+final class ThroughPropertyHook
+{
+    public int $viewer {
+        get => Secret::who();
+    }
+
+    public function __invoke(): int
+    {
+        return $this->viewer;
+    }
+}
+
+#[Query(name: 'gaps.magic', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
+final class ThroughMagicGet
+{
+    public function __invoke(): int
+    {
+        return $this->viewer;
+    }
+
+    public function __get(string $name): int
+    {
+        return Secret::who();
+    }
+}
+
+final class Invokable
+{
+    public function __invoke(): int
+    {
+        return Secret::who();
+    }
+}
+
+#[Query(name: 'gaps.invoke', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
+final class ThroughInvokedProperty
+{
+    public function __construct(private readonly Invokable $who = new Invokable()) {}
+
+    public function __invoke(): int
+    {
+        return ($this->who)();
+    }
+}
+
+final class TakesInvokable
+{
+    public function read(Invokable $who): int
+    {
+        return $who();
+    }
+}
+
 #[Query(name: 'gaps.relative', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
 final class ThroughRelativeName
 {
