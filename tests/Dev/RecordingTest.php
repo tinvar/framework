@@ -234,3 +234,19 @@ it('cuts a credential out of free text wherever it is', function () {
         // A URL with a port and no credentials is left alone.
         ->and($json)->toContain('http:\/\/localhost:8000\/catalog');
 });
+
+it('cuts a credential the preview\'s end would split, a password holding an @ or a /, and Basic', function () {
+    $recording = recording();
+    $recording->frame(FrameTap::FROM_RENDERER, ['t' => 'chunk', 'b' => str_repeat('a ', (Recording::PREVIEW_BYTES - 20) / 2) . 'mysql://u:hunter2-split-password@db/x']);
+    $recording->frame(FrameTap::FROM_RENDERER, ['t' => 'error', 'message' => 'mysql://u:p@ss-word-1@h pg://u:ab/cd-word-2@h Authorization: Basic dXNlcjpwYXNzd29yZA==']);
+    $detail = detail($recording);
+    $json = (string) json_encode($detail);
+
+    expect(\strlen($detail['frames'][0]['body']['b']['preview']))->toBeLessThanOrEqual(Recording::PREVIEW_BYTES)
+        ->and($json)->not->toContain('hunter2')
+        ->and($json)->not->toContain('ss-word-1')
+        ->and($json)->not->toContain('cd-word-2')
+        ->and($json)->not->toContain('dXNlcjpwYXNzd29yZA')
+        ->and(Recording::redact(['pwd' => 'x', 'pass' => 'y', 'jwt' => 'z', 'auth' => 'w', 'author' => 'Ada']))
+        ->toBe(['pwd' => Recording::REDACTED, 'pass' => Recording::REDACTED, 'jwt' => Recording::REDACTED, 'auth' => Recording::REDACTED, 'author' => 'Ada']);
+});

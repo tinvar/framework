@@ -67,13 +67,13 @@ final class Recording
      * extension reads what the toolbar does (docs/devtools-protocol.md).
      */
     private const string SECRET_KEYS = '/token|nonce|csrf|xsrf|password|passwd|passphrase|secret|historykey|signature|cookie|authorization|bearer'
-        . '|credential|dsn|(?:api|app|private|access)[_-]?key|session[_-]?id|sessid|^otp|otp\z/i';
+        . '|credential|dsn|(?:api|app|private|access)[_-]?key|session[_-]?id|sessid|^otp|otp\z|jwt|pwd|^pass\z|^auth\z/i';
 
     /**
      * Shapes cut out of every string kept, whatever its key: a renderer's
      * error message, a chunk of what it drew, raw SQL -- free text, which
      * quotes what it was given. The credentials of a URL (a DSN in a
-     * connection error), an Authorization header's, a JWT and the
+     * connection error), a Bearer or Basic credential, a JWT and the
      * framework's own signed tokens. Not addresses or long identifiers, as
      * the log's Redactor takes: props are the page's own, and an email the
      * page shows is no secret from the developer reading it.
@@ -81,8 +81,11 @@ final class Recording
      * @var array<string, string> pattern => replacement
      */
     private const array SECRET_VALUES = [
-        '~\b([a-z][a-z0-9+.\-]*://[^\s/:@]*):[^\s@/]+@~i' => '$1:' . self::REDACTED . '@',
+        // The password is everything up to the last @, as the Redactor reads
+        // it: a password may hold an @ or a / of its own.
+        '~\b([a-z][a-z0-9+.\-]*://[^\s/:@]*):\S*@~i' => '$1:' . self::REDACTED . '@',
         '/\b(Bearer)\s+[A-Za-z0-9._~+\/=\-]{8,}/i' => '$1 ' . self::REDACTED,
+        '/\b((?i:basic))\s+(?=[A-Za-z0-9+\/]*[0-9+\/=]|[A-Za-z0-9+\/]+[A-Z])[A-Za-z0-9+\/]{8,}={0,2}/' => '$1 ' . self::REDACTED,
         '/\beyJ[A-Za-z0-9_\-]*\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*/' => '[jwt]',
         '/\bv1\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}/' => '[token]',
     ];
@@ -249,7 +252,7 @@ final class Recording
             // UTF-8 -- as their size and the start of them as text.
             $bytes = $frame['b'];
             $entry['bytes'] = \strlen($bytes);
-            $body = ['t' => 'chunk', 'b' => ['bytes' => \strlen($bytes), 'preview' => self::values(self::text(substr($bytes, 0, self::PREVIEW_BYTES)))]];
+            $body = ['t' => 'chunk', 'b' => ['bytes' => \strlen($bytes), 'preview' => self::preview($bytes)]];
         } else {
             $found = [];
             $body = self::walk($frame, null, 0, $found);
@@ -518,6 +521,23 @@ final class Recording
         $redacted = preg_replace(array_keys(self::SECRET_VALUES), array_values(self::SECRET_VALUES), $text);
 
         return \is_string($redacted) ? $redacted : self::REDACTED;
+    }
+
+    /**
+     * The start of an output chunk as text, its secrets cut out. Redacted
+     * over more than is kept, so a secret the cut would split is whole when
+     * the patterns read it; and when the chunk goes on past the cut, the
+     * run of characters the cut ends in is dropped, since a secret cut there
+     * would be too short for its pattern.
+     */
+    private static function preview(string $bytes): string
+    {
+        $redacted = self::values(self::text(substr($bytes, 0, self::PREVIEW_BYTES + 512)));
+        if (\strlen($redacted) <= self::PREVIEW_BYTES) {
+            return $redacted;
+        }
+
+        return (string) preg_replace('/[^\s"\'<>()\[\]{},;]*\z/', '', self::text(substr($redacted, 0, self::PREVIEW_BYTES)));
     }
 
     /** Valid UTF-8, whatever the bytes were: the renderer chose them. */
