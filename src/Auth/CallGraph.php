@@ -369,9 +369,12 @@ final class CallGraph
             return null;
         }
         if (!$reflection->hasMethod($method)) {
+            // With neither, the call is to something other than the class
+            // the walk took it for: a closure bound to another object, whose
+            // $this is that object's.
             return $reflection->hasMethod('__call') || $reflection->hasMethod('__callStatic')
                 ? ['call' => $call, 'why' => "{$class} answers it with __call(), whose body cannot be read as this method's"]
-                : null;
+                : ['call' => $call, 'why' => "{$class} declares no method {$method}(), so what the call runs cannot be read"];
         }
         if ($reflection->isInterface() || $reflection->getMethod($method)->isAbstract()) {
             return ['call' => $call, 'why' => "{$class}::{$method}() is abstract, so its body is whichever implementation is bound at runtime"];

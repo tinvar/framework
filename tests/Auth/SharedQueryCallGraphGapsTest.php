@@ -96,6 +96,11 @@ it('follows a parameter invoked as a function to its __invoke()', function () {
     expect($reached)->toContain(G\Invokable::class . '::__invoke()', G\Secret::class . '::who()');
 });
 
+it('refuses a call of a method the class does not declare, as a closure bound elsewhere makes', function () {
+    expect(sharedGapViolations(G\ThroughBoundClosure::class))
+        ->toContain('calling $this->who(): ' . G\ThroughBoundClosure::class . ' declares no method who()');
+});
+
 it('reads the imports inside a braced namespace', function () {
     require_once __DIR__ . '/Fixtures/callgraph-braced.php';
 

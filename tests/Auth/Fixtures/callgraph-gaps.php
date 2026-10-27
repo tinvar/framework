@@ -243,6 +243,18 @@ final class TakesInvokable
     }
 }
 
+#[Query(name: 'gaps.bound', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
+final class ThroughBoundClosure
+{
+    public function __invoke(): int
+    {
+        // $this in the closure is the Shown it is bound to, not this query.
+        $read = fn (): int => $this->who();
+
+        return \Closure::bind($read, new Shown(), Shown::class)();
+    }
+}
+
 #[Query(name: 'gaps.relative', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
 final class ThroughRelativeName
 {
