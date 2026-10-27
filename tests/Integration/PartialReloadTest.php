@@ -66,7 +66,8 @@ it('renders the whole page when nothing partial is asked for', function () {
 
         expect($payload)->toContain(FOOTER)
             ->and(substr_count($payload, '"data-product-name":""'))->toBe(24)
-            ->and($result->queryCalls)->toBe(24);
+            // And the header's read of who is signed in (ADR 0060).
+            ->and($result->queryCalls)->toBe(25);
     });
 });
 
@@ -77,17 +78,17 @@ it('renders only the page for X-Only: page, and the layout\'s queries and markup
         expect($payload)->not->toContain(FOOTER)
             ->and($payload)->not->toContain('<html')
             ->and(substr_count($payload, '"data-product-name":""'))->toBe(24)
-            ->and($result->queryCalls)->toBe(24, 'the cards\' availability is part of the page');
+            ->and($result->queryCalls)->toBe(24, 'the cards\' availability is part of the page, and the header\'s shared read is not');
     });
 });
 
 it('renders only the layout for X-Only: shop, and none of the page\'s queries run', function () {
     withShop(function (Kernel $kernel): void {
-        [$payload, $result] = catalog($kernel, ['X-Page' => 'shop/catalog', 'X-Only' => 'shop.customer']);
+        [$payload, $result] = catalog($kernel, ['X-Page' => 'shop/catalog', 'X-Only' => 'shop']);
 
         expect($payload)->toContain(FOOTER)
             ->and($payload)->not->toContain('"data-product-name":""')
-            ->and($result->queryCalls)->toBe(0);
+            ->and($result->queryCalls)->toBe(1, 'the header\'s read of who is signed in, and nothing of the page');
     });
 });
 

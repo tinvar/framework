@@ -21,10 +21,17 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\PageSuspenseReport;
 
+use Shop\Data\CustomerData;
+use Tinvar\Attributes\Shared;
 use Tinvar\Auth\AllowAllGate;
+use Tinvar\Auth\AuthContext;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;
 use Tinvar\Codec\MessagePackCodec;
+use Tinvar\Data\SharedData;
+use Tinvar\Data\SharedReads;
+use Tinvar\Data\SharedRegistry;
+use Tinvar\Http\Request;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Protocol\Frame;
@@ -32,6 +39,8 @@ use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
 use Tinvar\Render\RenderChannel;
 use Tinvar\Render\RendererException;
+use Tinvar\Routing\CompiledRoute;
+use Tinvar\Routing\RouteKind;
 use Tinvar\Render\RenderFailure;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
 
@@ -49,7 +58,7 @@ beforeAll(function () {
 function productPage(): array
 {
     return [
-        'layouts' => ['shop' => ['customer' => null]],
+        'layouts' => ['shop' => null],
         'page' => [
             'product' => [
                 'id' => '0192f3a1-0000-7000-8000-000000000001',
@@ -66,6 +75,16 @@ function productPage(): array
     ];
 }
 
+/** The shop's shared key, answered for nobody signed in. */
+final class NobodySignedIn implements SharedData
+{
+    #[Shared]
+    public function customer(): ?CustomerData
+    {
+        return null;
+    }
+}
+
 /**
  * Renders the product page through the shop's renderer, and returns what
  * PHP's reporter was handed and what reached the browser.
@@ -75,6 +94,20 @@ function productPage(): array
  */
 function render(array $extra = [], bool $debug = false): array
 {
+    $orm = new Orm(new Fixture(racks: 1, unitsPerRack: 1)->connection, new IdentityMap('test'));
+    // The header reads who is signed in: nobody, here, so the one failure
+    // is the order panel's.
+    $shared = new SharedReads(
+        registry: new SharedRegistry([NobodySignedIn::class]),
+        keys: ['customer' => true],
+        resolver: static fn (string $class): object => new $class(),
+        request: Request::get('/products/p-1'),
+        page: new CompiledRoute(RouteKind::Page, NobodySignedIn::class, '/products/{product}', 'shop/product', null, ['products', '{product}'], ['product'], [], []),
+        parameters: [],
+        orm: $orm,
+        auth: new AuthContext(),
+    );
+
     $renderer = Renderer::start('msgpack', 'page-suspense-report');
     $reported = [];
     $body = '';
@@ -82,7 +115,7 @@ function render(array $extra = [], bool $debug = false): array
     try {
         $channel = new RenderChannel(
             $renderer->socketPath,
-            new QueryRunner(new QueryRegistry(), new Orm(new Fixture(racks: 1, unitsPerRack: 1)->connection, new IdentityMap('test')), new AllowAllGate()),
+            new QueryRunner(new QueryRegistry(), $orm, new AllowAllGate()),
             new MessagePackCodec(),
             deadlineSeconds: 10.0,
             debug: $debug,
@@ -96,7 +129,7 @@ function render(array $extra = [], bool $debug = false): array
         $frame = [...Frame::render('shop/product', [], productPage(), str_repeat('a', 32), 'nonce-1', ['products.availability']), ...$extra];
         $channel->render($frame, ['products.availability'], static function (string $bytes) use (&$body): void {
             $body .= $bytes;
-        });
+        }, shared: $shared);
     } finally {
         $renderer->stop();
     }

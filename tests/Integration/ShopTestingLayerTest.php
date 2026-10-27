@@ -127,7 +127,7 @@ function orderOf(Customer $customer): Order
 
 // ------------------------------------------------- pages, no renderer
 
-it('asserts what a page sent to React, its layout\'s too, through the whole request path', function () {
+it('asserts what a page sent to React, and what it shares, through the whole request path', function () {
     get('/')
         ->assertOk()
         ->assertPage(Catalog::class, fn (AssertablePage $page) => $page
@@ -136,7 +136,7 @@ it('asserts what a page sent to React, its layout\'s too, through the whole requ
                 ->has('name')
                 ->etc())
             ->missing('stock')
-            ->layout('shop', fn (AssertablePage $layout) => $layout->where('customer', null)));
+            ->sharedIsNull('customer'));
 });
 
 it('fails a path naming a field the page\'s Data class does not have, as that', function () {
@@ -162,12 +162,11 @@ it('acts as a signed-in customer through the session the application makes for t
             ->loadDeferred('summary', fn (AssertablePage $summary) => $summary
                 ->has('value', fn (AssertablePage $value) => $value->where('orders', fn (int $n): bool => $n > 0)->etc())
                 ->etc())
-            ->layout('shop', fn (AssertablePage $layout) => $layout
-                ->has('customer', fn (AssertablePage $customer) => $customer
-                    ->where('email', DemoAccount::EMAIL)
-                    ->where('name', DemoAccount::NAME)
-                    ->has('id')
-                    ->has('avatarUrl'))));
+            ->shared('customer', fn (AssertablePage $customer) => $customer
+                ->where('email', DemoAccount::EMAIL)
+                ->where('name', DemoAccount::NAME)
+                ->has('id')
+                ->has('avatarUrl')));
 });
 
 // Sessions belong to the host they were made on: a customer signed in for

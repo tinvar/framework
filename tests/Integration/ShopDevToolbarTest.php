@@ -152,7 +152,7 @@ it('draws the toolbar into a dev page, and hands back what the renderer was give
         $detail = $developer->toolbar(DevToolbar::PATH . '/' . $requests[1]['id'], $token)['request'];
         $ticks = array_values(array_filter($detail['frames'], static fn (array $f): bool => $f['t'] === 'query'));
         expect($ticks)->not->toBe([])
-            ->and($ticks[0]['body']['q'][0]['name'])->toBe('products.availability')
+            ->and(array_column($ticks[0]['body']['q'], 'name'))->toContain('products.availability')
             ->and(array_map(static fn (array $f): string => "{$f['dir']}:{$f['t']}", $detail['frames']))->toContain('out:result')
             ->and($detail['timings'][0]['queryBatches'])->toBeGreaterThanOrEqual(1);
 

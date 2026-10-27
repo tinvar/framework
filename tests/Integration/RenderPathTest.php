@@ -130,14 +130,14 @@ it('batches every availability query into one frame and no statement', function 
     testedShop();
 
     $page = render('/')
-        // 24 calls, one frame.
+        // 24 calls and the header's shared read, one frame.
         ->assertQueryTicks(1)
         // Two: the visitor's session, and the products. The 24 availability
         // calls resolve their products from the identity map the loader
         // filled, so the batch costs no statement at all.
         ->assertQueryBudget(2);
 
-    expect($page->result->queryCalls)->toBe(24, 'one availability call per card');
+    expect($page->result->queryCalls)->toBe(25, 'one availability call per card, and who is signed in');
 });
 
 it('lets no model column reach the browser', function () {
