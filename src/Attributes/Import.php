@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Attributes;
 
+use Tinvar\Actions\TagInvalidation;
+
 /**
  * A CSV file a user may load, one row at a time, through a form request.
  *
@@ -34,6 +36,13 @@ namespace Tinvar\Attributes;
  * the user is shown the failing rows' errors instead. No cell is ever
  * evaluated: a value is text the form request coerces, and one beginning
  * `=` is the text `=...`.
+ *
+ * What it writes, it says it invalidates with `revalidates:` -- the tags an
+ * action's result would name -- and they are invalidated as an action's
+ * are, inside the import's transaction and again once it commits: the
+ * cached queries, every client listening, every once-shared hold, the
+ * static pages showing them (ADR 0075). A file refused changed nothing,
+ * and invalidates nothing.
  */
 #[\Attribute(\Attribute::TARGET_CLASS)]
 final readonly class Import
@@ -48,12 +57,15 @@ final readonly class Import
      * @param string|null $name its wire name; a dotted form of the class name unless given
      * @param int $maxBytes the largest file it takes
      * @param int $maxRows how many rows, the header apart, it takes
+     * @param list<string> $revalidates the tags its rows change, invalidated when they are applied
      */
     public function __construct(
         public ?string $name = null,
         public int $maxBytes = 5_242_880,
         public int $maxRows = 10_000,
+        public array $revalidates = [],
     ) {
+        TagInvalidation::declared('#[Import]', $revalidates);
         if ($maxBytes < 1 || $maxBytes > self::MAX_BYTES_CEILING) {
             throw new \InvalidArgumentException('#[Import] maxBytes is between one byte and ' . self::MAX_BYTES_CEILING . '.');
         }

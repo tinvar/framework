@@ -34,6 +34,7 @@ final readonly class CompiledTransfer
      * @param list<class-string<\Tinvar\Http\Middleware>> $middleware
      * @param list<Panel> $panels
      * @param bool $mapsRows an export declares row(), which maps each model to its row
+     * @param list<string> $revalidates an import's tags, invalidated when its rows are applied (ADR 0075)
      */
     public function __construct(
         public string $kind,
@@ -55,6 +56,7 @@ final readonly class CompiledTransfer
         public ?string $tenantFrom,
         public array $panels,
         public bool $mapsRows = false,
+        public array $revalidates = [],
     ) {}
 
     public function isExport(): bool

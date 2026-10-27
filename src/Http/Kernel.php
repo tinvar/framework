@@ -1146,6 +1146,7 @@ final class Kernel
                 report: function (\Throwable $e): void {
                     $this->report($e);
                 },
+                invalidation: $invalidation,
             );
             $this->transfers_ = new TransferEndpoint(
                 transfers: $transfers,

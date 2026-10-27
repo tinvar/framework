@@ -22,6 +22,7 @@ use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\PanelDefinition;
 use Tinvar\Auth\PanelRegistry;
 use Tinvar\Auth\PolicyRegistry;
+use Tinvar\Cache\ArrayTagVersions;
 use Tinvar\Actions\ActionRegistry;
 use Tinvar\Container\Container;
 use Tinvar\Data\Data;
@@ -144,7 +145,7 @@ final readonly class StockRow extends FormRequest
     ) {}
 }
 
-#[Import(name: 'stock', maxBytes: 4096, maxRows: 5), Panel('staff'),
+#[Import(name: 'stock', maxBytes: 4096, maxRows: 5, revalidates: ['widgets']), Panel('staff'),
     Authorize('restock', Widget::class), Authorize('update', 'widget'),]
 final readonly class StockImport
 {
@@ -222,6 +223,9 @@ final class App
     public readonly Notes $notes;
     public readonly PdoConnection $connection;
 
+    /** The versions once-shared holds are bound to, which an import's tags move. */
+    public readonly ArrayTagVersions $versions;
+
     public function __construct(?string $origin = 'https://shop.example')
     {
         $this->connection = PdoConnection::sqlite(':memory:', 'test');
@@ -270,6 +274,7 @@ final class App
             clock: fn (): int => $this->now,
         );
 
+        $this->versions = new ArrayTagVersions();
         $this->kernel = new Kernel(
             orm: $this->orm,
             routes: new RouteRegistry(),
@@ -284,6 +289,7 @@ final class App
             container: $container,
             panelRegistry: $registry,
             transfers: $this->transfers,
+            tagVersions: $this->versions,
         );
     }
 

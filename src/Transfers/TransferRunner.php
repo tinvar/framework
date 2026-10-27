@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Transfers;
 
+use Tinvar\Actions\TagInvalidation;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Export;
 use Tinvar\Auth\AuthContext;
@@ -55,6 +56,9 @@ final readonly class TransferRunner
         private \Closure $resolver,
         private ?PanelContext $panels = null,
         private ?\Closure $report = null,
+        // What the tags an import declares do once its rows are applied (ADR
+        // 0075); none, and they do nothing.
+        private ?TagInvalidation $invalidation = null,
     ) {}
 
     /**
@@ -293,10 +297,20 @@ final readonly class TransferRunner
         $failures = new RowFailures();
         try {
             $rows = $this->orm->transaction(function () use ($transfer, $arguments, $stream, $failures): int {
-                $rows = $this->applyRows($transfer, $arguments, $stream, $failures);
+                // Noting every tenant a row ran as, as an action's body is.
+                [$rows, $tenants] = $this->orm->tenantsEnteredBy(
+                    fn (): int => $this->applyRows($transfer, $arguments, $stream, $failures),
+                );
                 if ($failures->count > 0) {
                     throw new RowsRefused();
                 }
+
+                // What it said it invalidates, as an action's result does:
+                // inside the transaction -- the cached queries forgotten and
+                // the once-shared holds dropped at once, a failure rolling
+                // every row back -- and again, with the live clients told and
+                // the static pages taken down, once it commits.
+                $this->invalidation?->invalidateIn($transfer->revalidates, $tenants);
 
                 return $rows;
             });

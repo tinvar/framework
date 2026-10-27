@@ -66,6 +66,32 @@ describe('an import that applies', function () {
     });
 });
 
+// ADR 0075: an import writes as an action does, and invalidates what it
+// declares as an action's result does -- once its transaction commits.
+describe('an import\'s declared tags', function () {
+    it('are invalidated in its tenant when its rows are applied', function () {
+        $app = new App();
+        $before = $app->kernel->sharedTags?->stamp(['widgets'], 'acme');
+
+        imported($app, "widget,stock\n" . W1 . ",10\n");
+
+        expect($app->kernel->sharedTags?->stamp(['widgets'], 'acme'))->not->toBe($before);
+    });
+
+    it('are not, when the file is refused and nothing changed', function () {
+        $app = new App();
+        $before = $app->kernel->sharedTags?->stamp(['widgets'], 'acme');
+
+        expect(imported($app, "widget,stock\n" . W1 . ",-1\n")->status)->toBe(TransferRecord::FAILED)
+            ->and($app->kernel->sharedTags?->stamp(['widgets'], 'acme'))->toBe($before);
+    });
+
+    it('refuses a tag that is not one', function () {
+        expect(fn () => new \Tinvar\Attributes\Import(revalidates: ['']))
+            ->toThrow(\InvalidArgumentException::class, 'revalidates a tag that is not one');
+    });
+});
+
 describe('an import that is refused row by row', function () {
     it('changes nothing when any row fails, and names each failing row and field', function () {
         $app = new App();

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Transfers;
 
+use Tinvar\Actions\TagInvalidation;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Export;
 use Tinvar\Attributes\Import;
@@ -252,6 +253,7 @@ final class TransferRegistry
             tenantFrom: TenantFrom::declaredOn($class, '__invoke'),
             panels: $panels,
             mapsRows: $mapsRows,
+            revalidates: $declaration instanceof Import ? TagInvalidation::declared($class, $declaration->revalidates) : [],
         );
     }
 
