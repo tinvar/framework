@@ -1,11 +1,12 @@
 #!/bin/sh
 # The image's HEALTHCHECK: /_ready, asked from inside the container, over
 # loopback -- the database answers, and at least one renderer, held to the
-# renderers' user, answers PHP (ADR 0041). ProbeAccess lets a loopback peer
-# in without the token unless TINVAR_PROBE_TRUST_LOOPBACK is 0; it runs as
-# nobody, with nothing of the container's environment, and the probe token,
-# when the container was given one, on its standard input -- printf is the
-# shell's own, so the token is on no command line.
+# renderers' user, answers PHP (ADR 0041). The renderers share that
+# loopback, so the image has ProbeAccess let it in only with the probe token
+# (TINVAR_PROBE_TRUST_LOOPBACK=0), and the entrypoint serves only with one.
+# This runs as nobody, with nothing of the container's environment, and the
+# token on its standard input -- printf is the shell's own, so the token is
+# on no command line the renderers could read.
 #
 # Only 200 is healthy. The probe is answered before any session or
 # throttle, and anything that is not let in gets a 404.

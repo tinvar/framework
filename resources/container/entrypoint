@@ -30,7 +30,8 @@
 #
 # Before either starts it checks what would otherwise fail late or quietly,
 # and refuses to start: the users and their group, the capabilities, an app
-# key given, the pool's directory a tmpfs of the renderers' user, and that
+# key given, loopback held to a probe token given (the renderers share it),
+# the pool's directory a tmpfs of the renderers' user, and that
 # the renderers' user can read none of the paths TINVAR_CONTAINER_PRIVATE
 # names, nor the key file.
 set -euo pipefail
@@ -110,6 +111,20 @@ fi
 # No key baked in, and none generated where a restart would lose it.
 if [ -z "${TINVAR_APP_KEY:-}" ] && [ -z "${TINVAR_APP_KEY_FILE:-}" ]; then
     refuse "No app key: set TINVAR_APP_KEY, or TINVAR_APP_KEY_FILE to a mounted secret PHP's user can read. The image holds none."
+fi
+
+# Loopback is not PHP's alone here: the renderers share it, so ProbeAccess
+# lets it in only with the probe token (TINVAR_PROBE_TRUST_LOOPBACK=0, as
+# the image has it), or a compromised renderer reads /_ready and /_metrics.
+# Exactly 0: the shop reads an empty value as 1. And a token PHP takes --
+# 32 characters or more -- which the healthcheck sends, or no probe passes.
+if [ "${TINVAR_PROBE_TRUST_LOOPBACK-}" != 0 ]; then
+    refuse "TINVAR_PROBE_TRUST_LOOPBACK is '${TINVAR_PROBE_TRUST_LOOPBACK-}': it must be 0 here. The renderers share this container's loopback, so it is not trusted without the probe token."
+fi
+# Its length is told, never the token.
+probe_token=${TINVAR_PROBE_TOKEN:-}
+if ((${#probe_token} < 32)); then
+    refuse "The probe token is ${#probe_token} characters: set TINVAR_PROBE_TOKEN, 32 characters or more, which the healthcheck sends. The renderers share this container's loopback, so it is not trusted without one (TINVAR_PROBE_TRUST_LOOPBACK=0)."
 fi
 
 # What PHP keeps from the renderers: each path, and the key file. Checked
