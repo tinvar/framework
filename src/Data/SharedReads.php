@@ -27,6 +27,12 @@ use Tinvar\Routing\CompiledRoute;
  * tenant, and the user with their auth epoch. A read when any of them has
  * changed is refused rather than answered from what was produced for the
  * other.
+ *
+ * A once key (#[Shared(once: true)], ADR 0065) is answered as a once
+ * field: its value with the signed hold the browser hands back to claim
+ * it, or -- when the Kernel found a hold for it that this request's
+ * binding verifies -- the key alone, marked held, and its method is not
+ * called.
  */
 final class SharedReads
 {
@@ -51,6 +57,11 @@ final class SharedReads
      * @param array<string, string> $parameters the page's route parameters
      * @param SharedProviders|null $served the Kernel's record of which request each
      *        provider instance served, so a worker-lived one is refused
+     * @param list<string> $held the once keys the browser was found to hold, by holds
+     *        the Kernel verified against this request's binding; any other key is produced
+     * @param (\Closure(string, int): string)|null $hold mints the hold a once value is sent
+     *        with, for its key and the seconds it may be claimed; null where none may be --
+     *        no session, no signer -- and the value is sent to be shown and not kept
      */
     public function __construct(
         private readonly SharedRegistry $registry,
@@ -64,6 +75,8 @@ final class SharedReads
         private readonly ?PanelContext $panels = null,
         private readonly ?string $panel = null,
         private readonly ?SharedProviders $served = null,
+        private readonly array $held = [],
+        private readonly ?\Closure $hold = null,
     ) {
         $this->tenant = $orm->tenant();
         $this->user = $auth->id();
@@ -114,13 +127,34 @@ final class SharedReads
     }
 
     /**
+     * The once keys this render may read (ADR 0065): those the Kernel looks
+     * for holds of.
+     *
+     * @param array<string, true> $keys
+     * @return list<string>
+     */
+    public static function onceAmong(SharedRegistry $registry, array $keys): array
+    {
+        return array_values(array_filter(
+            array_keys($keys),
+            static fn (string $key): bool => $registry->onceOf($key) !== null,
+        ));
+    }
+
+    /**
      * What an earlier read of $key in this render produced -- its encoded
-     * value or its error -- or null when it has not been read.
+     * value or its error -- or null when it has not been read. A once key
+     * the browser holds is answered here, before anything is run: its key,
+     * marked held, which <Once> fills from what the browser kept.
      *
      * @return array{value: mixed}|array{error: array{code: string, digest: string, message?: string}}|null
      */
     public function outcome(string $key): ?array
     {
+        if (!isset($this->outcomes[$key]) && \in_array($key, $this->held, true) && $this->registry->onceOf($key) !== null) {
+            $this->outcomes[$key] = ['value' => [Encoder::ONCE_KEY => self::PREFIX . $key, 'held' => true]];
+        }
+
         return $this->outcomes[$key] ?? null;
     }
 
@@ -130,11 +164,30 @@ final class SharedReads
      * it is this render's answer, and running a failing method again for
      * every component that reads it is the cost the memo is there to save.
      *
+     * A once key's value is kept as the once field it crosses as, with the
+     * hold the browser claims it by -- or, where none can be minted, marked
+     * to be shown and not kept, so nothing claims it.
+     *
      * @param array{value: mixed}|array{error: array{code: string, digest: string, message?: string}} $outcome
+     * @return array{value: mixed}|array{error: array{code: string, digest: string, message?: string}} what is kept,
+     *         and what every read of the key in this render is answered with
      */
-    public function remember(string $key, array $outcome): void
+    public function remember(string $key, array $outcome): array
     {
-        $this->outcomes[$key] = $outcome;
+        $once = $this->registry->onceOf($key);
+        if ($once !== null && \array_key_exists('value', $outcome)) {
+            $field = [
+                Encoder::ONCE_KEY => self::PREFIX . $key,
+                'ttl' => $once['ttl'],
+                'tags' => $once['tags'],
+                'value' => $outcome['value'],
+            ];
+            $outcome = ['value' => $this->hold === null
+                ? [...$field, 'keep' => false]
+                : [...$field, 'hold' => ($this->hold)($key, $once['ttl'])]];
+        }
+
+        return $this->outcomes[$key] = $outcome;
     }
 
     /**

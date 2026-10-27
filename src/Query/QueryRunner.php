@@ -141,7 +141,7 @@ final class QueryRunner
      * @param list<string> $allowed per-route query allowlist from the render frame
      * @param SharedReads|null $shared the render's shared data, read by calls named
      *        `$shared.key` beside the queries of the tick; none -- an HTTP call, a
-     *        fragment -- and every such call is refused (ADR 0060)
+     *        render handed none -- and every such call is refused (ADR 0060)
      * @return list<array{id: int, value?: mixed, error?: array{code: string, digest: string, message?: string}}>
      */
     public function run(array $calls, array $allowed, ?SharedReads $shared = null): array
@@ -642,7 +642,9 @@ final class QueryRunner
         // the queries': one fiber each, in the same run, so a relation it
         // reaches is loaded in the same batch as theirs. One read before is
         // answered from what it produced, never run again. None goes near
-        // the query cache, in or out: a key is the visitor's own.
+        // the query cache, in or out: a key is the visitor's own. A once
+        // key the browser holds is answered as one read before, never run:
+        // its outcome is the held marker (ADR 0065).
         $sharedOutcomes = [];
         $sharedRun = [];
         if ($shared !== null) {
@@ -664,9 +666,11 @@ final class QueryRunner
 
         if ($shared !== null) {
             foreach ($sharedRun as $key) {
-                $outcome = $this->settleShared($key, $raw[self::SHARED_TASK . $key] ?? null, $shared);
-                $shared->remember($key, $outcome);
-                $sharedOutcomes[self::SHARED_TASK . $key] = $outcome;
+                // As it is kept: a once key's value as its once field.
+                $sharedOutcomes[self::SHARED_TASK . $key] = $shared->remember(
+                    $key,
+                    $this->settleShared($key, $raw[self::SHARED_TASK . $key] ?? null, $shared),
+                );
             }
         }
 
@@ -827,7 +831,7 @@ final class QueryRunner
     private function admitShared(string $key, array $args, ?SharedReads $shared): ?array
     {
         if ($shared === null) {
-            return QueryError::of(QueryError::NOT_ALLOWED, "shared data is read only in a page render, and '{$key}' was asked for outside one", $this->debug);
+            return QueryError::of(QueryError::NOT_ALLOWED, "shared data is read only in a page or fragment render, and '{$key}' was asked for outside one", $this->debug);
         }
         if (!$shared->has($key)) {
             return QueryError::of(QueryError::UNKNOWN, "no shared value named '{$key}' reaches this page", $this->debug);
