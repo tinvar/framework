@@ -187,7 +187,7 @@ describe('the toolbar', () => {
     await open(root);
 
     expect(fetchMock).toHaveBeenCalledWith('/_dev/toolbar', expect.objectContaining({ cache: 'no-store' }));
-    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
     expect((init.headers as Record<string, string>)['x-tinvar-toolbar']).toBe('v1.token.mac');
     expect(fetchMock).toHaveBeenLastCalledWith(`/_dev/toolbar/${PAGE}`, expect.anything());
 
@@ -208,9 +208,9 @@ describe('the toolbar', () => {
     const view = tab(root, 'Props');
 
     expect(view.textContent).toContain('Sent to the renderer · render');
-    const shown = JSON.parse(view.querySelectorAll('pre')[1].textContent!);
+    const shown = JSON.parse(view.querySelectorAll('pre')[1]!.textContent!);
     expect(shown).toEqual({ route: 'shop/catalog', params: {}, data: { page: { title: 'Lanterns' } } });
-    expect(JSON.parse(view.querySelectorAll('pre')[0].textContent!)).toEqual({ page: '2' });
+    expect(JSON.parse(view.querySelectorAll('pre')[0]!.textContent!)).toEqual({ page: '2' });
   });
 
   it('shows the timings: in PHP, in the renderer, streaming', async () => {
@@ -240,7 +240,7 @@ describe('the toolbar', () => {
     const ticks = [...tab(root, 'Ticks').querySelectorAll('details.tick')];
 
     expect(ticks).toHaveLength(1);
-    expect(ticks[0].querySelector('summary')!.textContent).toBe(
+    expect(ticks[0]!.querySelector('summary')!.textContent).toBe(
       'tick 1: 2 queries (products.availability) · 1.3 ms in PHP',
     );
   });
@@ -330,7 +330,7 @@ describe('the toolbar', () => {
     document.dispatchEvent(new CustomEvent('tinvar:finish'));
     await settle();
     expect(fetchMock.mock.calls.length).toBeGreaterThan(before);
-    expect(fetchMock.mock.calls[before][0]).toBe('/_dev/toolbar');
+    expect(fetchMock.mock.calls[before]![0]).toBe('/_dev/toolbar');
 
     root.querySelector<HTMLButtonElement>('[data-action="close"]')!.click();
     const closed = fetchMock.mock.calls.length;
