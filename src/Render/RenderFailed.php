@@ -18,7 +18,7 @@ use Tinvar\Http\Request;
  * someone when the renderer is unreachable, to fail a test.
  *
  * The Kernel hands it to the closures it was given, in order, and then to the
- * application's event bus (Tinvar\Events), where a #[Listener] method taking
+ * application's event bus, where a #[Listener] method taking
  * a RenderFailed hears it -- all before the error page is chosen. Never
  * queued: it carries the exception and the request, which do not travel.
  */

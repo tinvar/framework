@@ -26,7 +26,7 @@ namespace Tinvar\Attributes;
  * #[Authorize] at all fails the build, as a query with none does. It runs
  * as a queued job, as the user who asked, in their tenant and panel; the
  * file it writes is fetched through a signed link bound to that user and
- * their auth epoch (Transfers\DownloadToken).
+ * their auth epoch (a download token, ADR 0070).
  *
  * `row` is the Data class each row is written as. Its constructor's
  * parameters are the file's columns, in order, by name, and each is a

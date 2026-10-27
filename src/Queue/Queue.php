@@ -9,7 +9,7 @@ use Tinvar\Orm\Connection;
 /**
  * Where dispatched jobs wait for a worker.
  *
- * A queue stores sealed payloads (Jobs\Envelope) and the bookkeeping a
+ * A queue stores sealed payloads (a job's envelope) and the bookkeeping a
  * worker writes around them: when a job is next available, how many times
  * it has been taken, and whether a worker holds it now. It never reads a
  * payload -- what a job is, and as whom it runs, is the runner's to verify.
