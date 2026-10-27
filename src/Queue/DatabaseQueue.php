@@ -148,6 +148,18 @@ final class DatabaseQueue implements Queue
         ) === 1;
     }
 
+    public function requeue(ReservedJob $job, int $availableAt, ?string $payload = null): bool
+    {
+        // The attempt reserve() counted is taken back: what ended this run
+        // was a pause or a stop, not the job failing.
+        return $this->connection->execute(
+            "UPDATE {$this->table} SET available_at = ?, reserved_until = NULL, token = NULL,
+                    attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END, payload = COALESCE(?, payload)
+              WHERE id = ? AND token = ?",
+            [$availableAt, $payload, $job->id, $job->token],
+        ) === 1;
+    }
+
     public function fail(ReservedJob $job, string $error, int $failedAt): bool
     {
         return $this->connection->transaction(function () use ($job, $error, $failedAt): bool {

@@ -88,6 +88,36 @@ final class ArrayQueue implements Queue
         return true;
     }
 
+    public function requeue(ReservedJob $job, int $availableAt, ?string $payload = null): bool
+    {
+        if (!$this->holds($job)) {
+            return false;
+        }
+        $held = $this->jobs[$job->id];
+        $this->jobs[$job->id] = [
+            ...$held,
+            'payload' => $payload ?? $held['payload'],
+            'availableAt' => $availableAt,
+            'attempts' => max(0, $held['attempts'] - 1),
+            'reservedUntil' => null,
+            'token' => null,
+        ];
+
+        return true;
+    }
+
+    /** How many times job $id has been taken and not given back, or null when it is not on the queue. */
+    public function attempts(string $id): ?int
+    {
+        return $this->jobs[$id]['attempts'] ?? null;
+    }
+
+    /** Job $id's payload as it is stored now, or null when it is not on the queue. */
+    public function payload(string $id): ?string
+    {
+        return $this->jobs[$id]['payload'] ?? null;
+    }
+
     public function fail(ReservedJob $job, string $error, int $failedAt): bool
     {
         if (!$this->holds($job)) {

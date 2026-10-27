@@ -16,7 +16,9 @@ namespace Tinvar\Attributes;
  * the classes. A job with none is on `default` with these defaults.
  *
  * `backoff` is seconds before each retry, in order; the last one repeats.
- * `timeout` bounds one try, after which it counts as failed. `asUser` runs
+ * `timeout` bounds one try, after which it counts as failed. `releases` is
+ * how many times the job may pause itself (Jobs\JobControl::release()),
+ * which are not tries; past that it fails, as a loop would. `asUser` runs
  * the job as the user who dispatched it, verified when it runs (see
  * Jobs\JobRunner) -- off by default, so a job that never asked for a user
  * cannot come to rely on one.
@@ -39,6 +41,7 @@ final readonly class Queue
         array $backoff = [10, 60, 300],
         public int $timeout = 60,
         public bool $asUser = false,
+        public int $releases = 100,
     ) {
         if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z/', $name) !== 1) {
             throw new \InvalidArgumentException("'{$name}' is not a queue name: letters, digits, '.', '_' and '-', up to 64.");
@@ -48,6 +51,9 @@ final readonly class Queue
         }
         if ($timeout < 1) {
             throw new \InvalidArgumentException('A job needs at least a second to run; timeout must be 1 or more.');
+        }
+        if ($releases < 0) {
+            throw new \InvalidArgumentException('releases is how many times a job may pause itself: 0 or more.');
         }
         // Checked, not trusted to its declared type: an attribute's
         // arguments are whatever its author wrote.

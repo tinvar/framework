@@ -17,7 +17,7 @@ use Tinvar\Queue\ReservedJob;
  * its tenant, panel and user entered, and each put back after it -- so a
  * job that passes here passes the checks a worker makes. What it does not
  * do is retry: a failure is thrown to whoever dispatched it, after the
- * commit it waited for.
+ * commit it waited for. A job that pauses itself runs again at once.
  *
  * Nor does it run the reset contract, as a worker does after each job: the
  * job runs inside the request that dispatched it, and that request goes on
@@ -29,9 +29,27 @@ final readonly class SyncQueue implements Queue
 {
     public function __construct(private JobRunner $runner) {}
 
+    /**
+     * A job that pauses itself (JobControl::release()) is run again here and
+     * now, from its checkpoint, as a worker would run it later: nothing
+     * stops a sync job, so it pauses only when it chooses to. Past its
+     * #[Queue(releases:)] it is refused, as a worker would fail it.
+     */
     public function push(PendingJob $job): void
     {
-        $this->runner->run($this->runner->open($job->payload));
+        $envelope = $this->runner->open($job->payload);
+        for (;;) {
+            $control = $this->runner->control($envelope);
+            $this->runner->run($envelope, $control);
+            $release = $control->released();
+            if ($release === null) {
+                return;
+            }
+            if ($envelope->releases >= $this->runner->options($envelope)->releases) {
+                throw new JobRefused('releases', "{$envelope->class} paused more times than its #[Queue(releases:)] allows.");
+            }
+            $envelope = $this->runner->open($this->runner->pause($envelope, $release['checkpoint']));
+        }
     }
 
     public function reserve(array $queues, int $now, int $reserveFor): ?ReservedJob
@@ -50,6 +68,11 @@ final readonly class SyncQueue implements Queue
     }
 
     public function release(ReservedJob $job, int $availableAt): bool
+    {
+        return true;
+    }
+
+    public function requeue(ReservedJob $job, int $availableAt, ?string $payload = null): bool
     {
         return true;
     }

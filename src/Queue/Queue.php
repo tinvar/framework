@@ -49,6 +49,15 @@ interface Queue
     /** Back on its queue, available from $availableAt. False when the reservation is no longer this holder's. */
     public function release(ReservedJob $job, int $availableAt): bool;
 
+    /**
+     * Back on its queue, available from $availableAt, with the try it was
+     * taken for given back: a job that paused itself, or one a stopping
+     * worker handed back. $payload, when given, replaces the one stored --
+     * the job sealed again with its checkpoint. False when the reservation
+     * is no longer this holder's.
+     */
+    public function requeue(ReservedJob $job, int $availableAt, ?string $payload = null): bool;
+
     /** Off its queue, kept with why it failed. False when the reservation is no longer this holder's. */
     public function fail(ReservedJob $job, string $error, int $failedAt): bool;
 

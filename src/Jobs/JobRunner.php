@@ -78,15 +78,38 @@ final readonly class JobRunner
     }
 
     /**
+     * A run's JobControl: what handle() is given when it asks for one.
+     *
+     * @param (\Closure(): bool)|null $stopping whether the worker running it is stopping;
+     *        never, when it is run where nothing stops it
+     */
+    public function control(Envelope $envelope, ?\Closure $stopping = null): JobControl
+    {
+        return new JobControl($envelope, $stopping ?? static fn (): bool => false, $this->signer);
+    }
+
+    /**
+     * The payload a job that paused goes back on its queue with: its own,
+     * sealed again with the checkpoint it gave and one more pause counted.
+     *
+     * @param array<array-key, mixed>|null $checkpoint
+     */
+    public function pause(Envelope $envelope, ?array $checkpoint): string
+    {
+        return $envelope->paused($checkpoint)->seal($this->signer);
+    }
+
+    /**
      * Runs the job's handle().
      *
      * @throws JobRefused when its context no longer holds
      */
-    public function run(Envelope $envelope): void
+    public function run(Envelope $envelope, ?JobControl $control = null): void
     {
-        $this->within($envelope, function () use ($envelope): void {
+        $control ??= $this->control($envelope);
+        $this->within($envelope, function () use ($envelope, $control): void {
             $job = $this->job($envelope);
-            $this->call($job, 'handle');
+            $this->call($job, 'handle', $control);
         });
     }
 
@@ -228,7 +251,7 @@ final readonly class JobRunner
     }
 
     /** Calls a job's method with what its parameters ask for, built by the resolver. */
-    private function call(Job $job, string $method): void
+    private function call(Job $job, string $method, ?JobControl $control = null): void
     {
         if (!method_exists($job, $method)) {
             throw new JobRefused('handle_missing', $job::class . " has no {$method}() to run.");
@@ -245,6 +268,12 @@ final readonly class JobRunner
             }
             /** @var class-string $class */
             $class = $type->getName();
+            // This run's own, never the container's: a JobControl from
+            // anywhere else would answer for another job.
+            if ($class === JobControl::class) {
+                $arguments[] = $control ?? throw new JobRefused('handle_unresolvable', $job::class . "::{$method}() takes a JobControl, which only handle() is given.");
+                continue;
+            }
             $arguments[] = ($this->resolver)($class);
         }
 

@@ -23,6 +23,12 @@ use Tinvar\Support\Signer;
  * What is not sealed is the queue's own bookkeeping -- attempts, when it is
  * next available -- which a worker writes as it goes and which grants
  * nothing.
+ *
+ * A job that pauses itself (JobControl::release()) is sealed again with its
+ * checkpoint and the count of its pauses, under the same MAC and beside the
+ * same tenant, panel, user and epoch: a checkpoint is the job's to read
+ * back, and no one's to write -- an edited one does not verify, and one
+ * moved into another job's payload takes that payload's MAC with it.
  */
 final readonly class Envelope
 {
@@ -40,6 +46,9 @@ final readonly class Envelope
      * @param string               $epoch  that user's auth epoch at dispatch
      * @param class-string|null    $declaredBy whose #[Queue] and #[Panel] apply; the job's own
      *                                         class unless it is DeclaredBy another
+     * @param array<array-key, mixed>|null $checkpoint where the job paused itself, as it said;
+     *                                         null for a job that never has
+     * @param int                  $releases how many times it has paused itself
      */
     public function __construct(
         public string $id,
@@ -51,7 +60,32 @@ final readonly class Envelope
         public string $epoch = '',
         public int $dispatchedAt = 0,
         public ?string $declaredBy = null,
+        public ?array $checkpoint = null,
+        public int $releases = 0,
     ) {}
+
+    /**
+     * The same job, paused once more, with where it paused: the tenant,
+     * panel, user, epoch and arguments it was dispatched with, unchanged.
+     *
+     * @param array<array-key, mixed>|null $checkpoint
+     */
+    public function paused(?array $checkpoint): self
+    {
+        return new self(
+            id: $this->id,
+            class: $this->class,
+            arguments: $this->arguments,
+            tenant: $this->tenant,
+            panel: $this->panel,
+            user: $this->user,
+            epoch: $this->epoch,
+            dispatchedAt: $this->dispatchedAt,
+            declaredBy: $this->declaredBy,
+            checkpoint: $checkpoint,
+            releases: $this->releases + 1,
+        );
+    }
 
     /** @return class-string the class whose #[Queue] and #[Panel] the job runs under */
     public function declarations(): string
@@ -62,7 +96,7 @@ final readonly class Envelope
     /** The payload a queue stores: the MAC, a dot, and the JSON it covers. */
     public function seal(Signer $signer): string
     {
-        $json = json_encode([
+        $fields = [
             'v' => self::VERSION,
             'id' => $this->id,
             'job' => $this->class,
@@ -73,7 +107,14 @@ final readonly class Envelope
             'epoch' => $this->epoch,
             'at' => $this->dispatchedAt,
             'by' => $this->declaredBy,
-        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION);
+        ];
+        // Only once a job has paused, so a payload sealed before pausing
+        // existed reads -- and verifies -- as it always did.
+        if ($this->releases > 0) {
+            $fields['cp'] = $this->checkpoint;
+            $fields['rel'] = $this->releases;
+        }
+        $json = json_encode($fields, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION);
 
         return Signer::encode($signer->sign($json)) . '.' . $json;
     }
@@ -106,7 +147,9 @@ final readonly class Envelope
             || !(\is_string($data['panel'] ?? null) || ($data['panel'] ?? null) === null)
             || !(\is_string($data['user'] ?? null) || ($data['user'] ?? null) === null)
             || !\is_int($data['at'] ?? null)
-            || !(\is_string($data['by'] ?? null) || ($data['by'] ?? null) === null)) {
+            || !(\is_string($data['by'] ?? null) || ($data['by'] ?? null) === null)
+            || !(\is_array($data['cp'] ?? null) || ($data['cp'] ?? null) === null)
+            || !(!\array_key_exists('rel', $data) || (\is_int($data['rel']) && $data['rel'] > 0))) {
             throw new JobRefused('payload_unsigned', 'The job\'s payload is not an envelope this version wrote.');
         }
 
@@ -121,6 +164,9 @@ final readonly class Envelope
 
         /** @var array<string, mixed> $arguments */
         $arguments = $data['args'];
+        /** @var array<array-key, mixed>|null $checkpoint */
+        $checkpoint = $data['cp'] ?? null;
+        $releases = $data['rel'] ?? 0;
 
         return new self(
             id: $data['id'],
@@ -132,6 +178,8 @@ final readonly class Envelope
             epoch: $data['epoch'],
             dispatchedAt: $data['at'],
             declaredBy: $declaredBy,
+            checkpoint: $checkpoint,
+            releases: $releases,
         );
     }
 }
