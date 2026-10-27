@@ -15,7 +15,12 @@ namespace Tinvar\Tests\Render\StaticBuilder {
     use Tinvar\Render\StaticBuilder;
     use Tinvar\Render\StaticMinter;
     use Tinvar\Routing\RouteRegistry;
+    use Tinvar\Attributes\StaticPage;
+    use Tinvar\Tests\Render\StaticBuilder\Pages\ClimbingListedPage;
     use Tinvar\Tests\Render\StaticBuilder\Pages\DocPage;
+    use Tinvar\Tests\Render\StaticBuilder\Pages\Listed;
+    use Tinvar\Tests\Render\StaticBuilder\Pages\ListedPage;
+    use Tinvar\Tests\Render\StaticBuilder\Pages\MislistedPage;
     use Tinvar\Tests\Render\StaticBuilder\Pages\EncryptedPage;
     use Tinvar\Tests\Render\StaticBuilder\Pages\HomePage;
     use Tinvar\Tests\Render\StaticBuilder\Pages\PathlessPage;
@@ -88,6 +93,30 @@ namespace Tinvar\Tests\Render\StaticBuilder {
                 ['route' => 'static.doc', 'params' => ['doc' => 'intro'], 'path' => '/docs/intro', 'revalidate' => 600, 'tags' => ['docs']],
                 ['route' => 'static.doc', 'params' => ['doc' => 'guide-2'], 'path' => '/docs/guide-2', 'revalidate' => 600, 'tags' => ['docs']],
             ]);
+        });
+
+        // A directory of content: the pages are whatever its files are, listed
+        // by a class the builder asks, and held to the same shape.
+        it('lists the pages a StaticParams class names', function () {
+            expect(new StaticBuilder(routes([ListedPage::class]), static fn (): string => '')->pages())->toEqual([
+                ['route' => 'static.listed', 'params' => ['page' => 'routing'], 'path' => '/listed/routing', 'revalidate' => null, 'tags' => []],
+                ['route' => 'static.listed', 'params' => ['page' => 'queries'], 'path' => '/listed/queries', 'revalidate' => null, 'tags' => []],
+            ]);
+        });
+
+        it('holds params a class lists to the shape of a file name', function () {
+            expect(fn () => new StaticBuilder(routes([ClimbingListedPage::class]), static fn (): string => '')->pages())
+                ->toThrow(\RuntimeException::class, 'cannot name a built page');
+        });
+
+        it('refuses params from a class that is no StaticParams', function () {
+            expect(fn () => new StaticBuilder(routes([MislistedPage::class]), static fn (): string => '')->pages())
+                ->toThrow(\RuntimeException::class, 'which is no Tinvar\\Render\\StaticParams');
+        });
+
+        it('refuses a static page that lists params and names a class too', function () {
+            expect(fn () => new StaticPage(params: [['page' => 'a']], from: Listed::class))
+                ->toThrow(\InvalidArgumentException::class, 'not both');
         });
 
         // /_bootstrap is asked by route name.
@@ -249,6 +278,7 @@ namespace Tinvar\Tests\Render\StaticBuilder\Pages {
     use Tinvar\Attributes\EncryptHistory;
     use Tinvar\Attributes\Page;
     use Tinvar\Attributes\StaticPage;
+    use Tinvar\Render\StaticParams;
 
     #[Page('/home', view: 'home', name: 'static.home'), StaticPage]
     final class HomePage {}
@@ -267,4 +297,29 @@ namespace Tinvar\Tests\Render\StaticBuilder\Pages {
 
     #[Page('/files/{file}', view: 'file', name: 'static.file'), StaticPage(params: [['file' => '../etc']])]
     final class PathlessPage {}
+
+    final class Listed implements StaticParams
+    {
+        public function params(): array
+        {
+            return [['page' => 'routing'], ['page' => 'queries']];
+        }
+    }
+
+    final class Climbing implements StaticParams
+    {
+        public function params(): array
+        {
+            return [['page' => '..']];
+        }
+    }
+
+    #[Page('/listed/{page}', view: 'listed', name: 'static.listed'), StaticPage(from: Listed::class)]
+    final class ListedPage {}
+
+    #[Page('/climbing/{page}', view: 'climbing', name: 'static.climbing'), StaticPage(from: Climbing::class)]
+    final class ClimbingListedPage {}
+
+    #[Page('/mislisted/{page}', view: 'mislisted', name: 'static.mislisted'), StaticPage(from: PathlessPage::class)]
+    final class MislistedPage {}
 }

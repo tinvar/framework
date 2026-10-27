@@ -22,6 +22,12 @@ use Tinvar\Cache\Duration;
  * Read off the page class itself, as EncryptHistory is. A page that asks for
  * its history encrypted cannot be built: its key is the session's.
  *
+ * The pages a route builds are listed by `params`, or -- where they are not
+ * known when the attribute is written, as a directory of content's are not
+ * -- named by `from`, a Tinvar\Render\StaticParams class the builder asks
+ * for them. One or the other: a route given both would build the union of
+ * two lists nobody wrote together.
+ *
  * Revalidated in place, page by page (StaticPages): `revalidate` rebuilds a
  * page once its file is older than that -- `tinvar static:revalidate`, or
  * the RevalidateStaticPages task each minute -- and `tags` takes it out of
@@ -41,13 +47,20 @@ final readonly class StaticPage
      * @param string|null $revalidate how long a built page stands before it is
      *        built again: '30s', '10m', '1h'
      * @param list<string> $tags what it shows, by the tags actions invalidate
+     * @param class-string|null $from a Tinvar\Render\StaticParams class whose
+     *        params() lists the pages to build, in place of `params`
      */
     public function __construct(
         public array $params = [[]],
         ?string $revalidate = null,
         public array $tags = [],
+        public ?string $from = null,
     ) {
         $this->revalidateAfter = $revalidate === null ? null : Duration::seconds($revalidate);
+
+        if ($from !== null && $params !== [[]]) {
+            throw new \InvalidArgumentException('A static page lists its params or names a class that lists them (`from`), not both.');
+        }
 
         foreach ($tags as $tag) {
             if ($tag === '') {

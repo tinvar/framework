@@ -88,7 +88,7 @@ final class StaticBuilder
             }
 
             $static = $attributes[0]->newInstance();
-            foreach ($static->params as $given) {
+            foreach ($static->from === null ? $static->params : self::paramsFrom($page->class, $static->from) as $given) {
                 $params = [];
                 foreach ($given as $name => $value) {
                     $value = (string) $value;
@@ -111,6 +111,22 @@ final class StaticBuilder
         }
 
         return $pages;
+    }
+
+    /**
+     * The params a #[StaticPage(from: ...)] class lists; refused when the
+     * class is no StaticParams, rather than built as some other class's.
+     *
+     * @return list<array<string, string|int>>
+     */
+    private static function paramsFrom(string $page, string $from): array
+    {
+        if (!class_exists($from) || !is_subclass_of($from, StaticParams::class)) {
+            throw new \RuntimeException("{$page} builds the params {$from} lists, which is no " . StaticParams::class . '.');
+        }
+
+        // Each value is held to PARAM_SHAPE by pages(), as a listed one is.
+        return new $from()->params();
     }
 
     /**
