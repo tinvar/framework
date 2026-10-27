@@ -571,6 +571,26 @@ describe('dockerfiles', function () {
         expect(SupplyChain::dockerfile('Dockerfile', "FROM debian{$digest} AS build\nCOPY --from=\"build\" /a /b\nRUN --mount=\"type=bind,from=build,target=/m\" true\n"))->toBe([]);
     });
 
+    // BuildKit fetched each of these: a quoted URL, one in the JSON form,
+    // and one an ARG names.
+    it('holds an ADD source however it is written', function () {
+        $sum = str_repeat('cd', 32);
+
+        expect(SupplyChain::dockerfile('Dockerfile', <<<DOCKERFILE
+            FROM scratch
+            ADD "https://example.com/a" /a
+            ADD ["https://example.com/b", "/b"]
+            ARG U=https://example.com/c
+            ADD \$U /c
+            ADD --checksum=sha256:{$sum} \${U} /d
+            ADD ["local/e", "/e"]
+            DOCKERFILE))->toBe([
+            'Dockerfile ADDs https://example.com/a with no --checksum=sha256: to hold it to.',
+            'Dockerfile ADDs https://example.com/b with no --checksum=sha256: to hold it to.',
+            'Dockerfile ADDs $U, a variable the check cannot read: name the source, or hold it with --checksum.',
+        ]);
+    });
+
     // A stage is named before it is used: a later stage's name is an image.
     it('takes only an earlier stage\'s name as a stage', function () use ($digest) {
         $this->workspace->file('Dockerfile', "FROM later\nFROM debian{$digest} AS later\n");

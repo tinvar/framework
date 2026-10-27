@@ -619,7 +619,14 @@ final class SupplyChain
                         $checksum = $m[1];
                     }
                 }
-                foreach ($words as $source) {
+                // The JSON form names its sources as strings, and the shell
+                // form's words lose their quotes before BuildKit fetches
+                // them: `ADD "https://..."` fetches as surely as unquoted.
+                $listed = str_starts_with(trim($rest), '[') ? json_decode(trim($rest), true) : null;
+                $sources = \is_array($listed) && array_is_list($listed) && array_all($listed, static fn (mixed $source): bool => \is_string($source))
+                    ? $listed
+                    : array_map(static fn (string $word): string => str_replace(['"', "'", '\\'], '', $word), $words);
+                foreach ($sources as $source) {
                     $violation = self::unpinnedAdd($name, $source, $checksum);
                     if ($violation !== null) {
                         $violations[] = $violation;
@@ -641,6 +648,14 @@ final class SupplyChain
      */
     private static function unpinnedAdd(string $name, string $source, ?string $checksum): ?string
     {
+        // A variable can name a URL as well as a path, and the check reads
+        // no ARG: held, unless a checksum holds whatever it names.
+        if (str_contains($source, '$')) {
+            return $checksum !== null && preg_match('/^(sha256:[0-9a-f]{64}|[0-9a-f]{40})$/i', $checksum) === 1
+                ? null
+                : "{$name} ADDs {$source}, a variable the check cannot read: name the source, or hold it with --checksum.";
+        }
+
         $url = preg_match('#^[a-z][a-z0-9+.-]*://#i', $source) === 1;
         $scp = preg_match('#^[^\s/@]+@[^\s/:]+:#', $source) === 1;
         if (!$url && !$scp) {
