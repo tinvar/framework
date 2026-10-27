@@ -555,6 +555,11 @@ final class SupplyChain
         foreach ($instructions as $instruction) {
             $words = preg_split('/\s+/', $instruction) ?: [];
             $keyword = strtoupper((string) array_shift($words));
+            // What an ONBUILD wraps runs in a build FROM this image, as if
+            // it were written there: it is held to the same rules.
+            while ($keyword === 'ONBUILD' && $words !== []) {
+                $keyword = strtoupper((string) array_shift($words));
+            }
             $flags = [];
             while ($words !== [] && str_starts_with($words[0], '--')) {
                 $flags[] = (string) array_shift($words);

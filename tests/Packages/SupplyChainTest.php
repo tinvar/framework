@@ -462,6 +462,23 @@ describe('dockerfiles', function () {
         ]);
     });
 
+    // What an ONBUILD wraps runs in whatever builds FROM this image, as
+    // though it were written there.
+    it('checks the instruction an ONBUILD wraps', function () use ($digest) {
+        $this->workspace->file('Dockerfile', <<<DOCKERFILE
+            FROM debian{$digest}
+            ONBUILD ADD https://example.com/tool.tar.gz /tmp/
+            onbuild COPY --from=busybox:1 /bin/busybox /bin/
+            ONBUILD RUN --mount=type=bind,from=alpine:3,target=/mnt true
+            DOCKERFILE);
+
+        expect(violations($this->workspace))->toBe([
+            'Dockerfile ADDs https://example.com/tool.tar.gz with no --checksum=sha256: to hold it to.',
+            'Dockerfile COPY takes files from busybox:1, which is not pinned to a sha256 digest.',
+            'Dockerfile RUN takes files from alpine:3, which is not pinned to a sha256 digest.',
+        ]);
+    });
+
     // A stage is named before it is used: a later stage's name is an image.
     it('takes only an earlier stage\'s name as a stage', function () use ($digest) {
         $this->workspace->file('Dockerfile', "FROM later\nFROM debian{$digest} AS later\n");
