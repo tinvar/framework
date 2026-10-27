@@ -11,10 +11,12 @@ namespace Tinvar\Attributes;
  *     #[TenantFrom(TenantArgument::class)]
  *     final class OrdersReport extends Command { ... }
  *
- * `#[TenantFrom(TenantArgument::class)]` runs it as the tenant named by its
- * `--tenant=` argument -- "or a command argument", in the spec's list of
- * where a tenant may come from -- and #[Panel] or its namespace puts it in
- * a panel, as for every other context that is not a request.
+ * `#[TenantFrom(TenantArgument::class)]` -- tinvar/tenancy's source, read
+ * through the tenancy the console is given (CommandTenants) -- runs it as
+ * the tenant named by its `--tenant=` argument, "or a command argument" in
+ * the spec's list of where a tenant may come from; and #[Panel] or its
+ * namespace puts it in a panel, as for every other context that is not a
+ * request.
  */
 #[\Attribute(\Attribute::TARGET_CLASS)]
 final readonly class Command

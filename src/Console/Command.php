@@ -18,9 +18,9 @@ namespace Tinvar\Console;
  *     }
  *
  * Run by Console, which first puts it in its context: the tenant its
- * `--tenant=` argument names when it declares #[TenantFrom(TenantArgument)]
- * -- and none otherwise -- and the panel it declares, or none. Nobody is
- * signed in. The reset contract runs before and after it, as around a
+ * `--tenant=` argument names when it declares #[TenantFrom(TenantArgument)],
+ * as the registered tenancy places it (CommandTenants) -- and none
+ * otherwise -- and the panel it declares, or none. Nobody is signed in. The reset contract runs before and after it, as around a
  * request.
  */
 abstract class Command

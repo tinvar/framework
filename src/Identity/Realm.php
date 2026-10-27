@@ -25,10 +25,12 @@ use Tinvar\Http\HostName;
  * reseller, say) controls: it always names its tenant, and the panel its
  * sessions are for, so a handoff to it can be held to a membership there.
  *
- * The tenant a realm names is the root of its subtree, by the application's
- * TenantTree: a session made there may run as that tenant or any below it
- * where its user holds a membership, and a tenant switch there stays below
- * it (TenantSwitcher). With no tree, the subtree is the tenant alone.
+ * The tenant a realm names is the root of its subtree, by the tenant tree
+ * registered with the Orm (tinvar/tenancy): a session made there may run as
+ * that tenant or any below it where its user holds a membership, and a
+ * tenant switch there stays below it. With no tree, the subtree is the
+ * tenant alone; with no tenancy, a realm's tenant is no tenant's, and a
+ * handoff's code names none (TenantClaim).
  */
 final readonly class Realm
 {
