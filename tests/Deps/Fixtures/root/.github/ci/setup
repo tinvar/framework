@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+#
+# Everything CI needs on top of the php:8.5-cli image the workflow pins by
+# digest: the PHP extensions the suites load, Composer and Node.
+#
+# Nothing here is fetched by a name that can move. Debian's packages come
+# through apt, which checks the archive's signature; APCu, Composer and Node
+# are each one exact version, and each download is held to the sha256
+# written below before it is used -- a mirror or a CDN that serves anything
+# else stops the job. To move one, change its version and its sum together,
+# taking the sum from the project's own published list (pecl.php.net's
+# release, getcomposer.org's composer.phar.sha256sum, nodejs.org's
+# SHASUMS256.txt).
+#
+# Run as root inside the image, as the workflow's container is. It is also
+# how to reproduce CI locally:
+#
+#   docker run --rm -v "$PWD:/src" -w /src php:8.5-cli@sha256:<the workflow's> \
+#     bash -c '.github/ci/setup && composer install && npm ci'
+
+set -euo pipefail
+
+APCU_VERSION=5.1.28
+APCU_SHA256=ca9c1820810a168786f8048a4c3f8c9e3fd941407ad1553259fb2e30b5f057bf
+
+COMPOSER_VERSION=2.10.3
+COMPOSER_SHA256=7a2d379d5b8ffdaa028580ef26494c36d2feef4b178d3dd1473a4dbc5e17c8d6
+
+# The 22 line, which package.json's engines field asks for (>=22.13).
+NODE_VERSION=22.23.4
+case "$(uname -m)" in
+    x86_64)
+        NODE_ARCH=x64
+        NODE_SHA256=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce
+        ;;
+    aarch64)
+        NODE_ARCH=arm64
+        NODE_SHA256=6287aa46b6c375d816e63ae66d024fbbfd70404825aabdfdf898a970871d2f4b
+        ;;
+    *)
+        echo "No Node build is pinned for $(uname -m)." >&2
+        exit 1
+        ;;
+esac
+
+# Download $1 to $2, and refuse it unless its sha256 is $3.
+fetch() {
+    curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$2" "$1"
+    echo "$3  $2" | sha256sum --check --strict --quiet -
+}
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+# libpq for pdo_pgsql; git and unzip for Composer; xz for Node's tarball.
+apt-get install -y -qq --no-install-recommends \
+    ca-certificates curl git unzip xz-utils libpq-dev >/dev/null
+
+# pdo_sqlite and posix are built into the image; these are not. pdo_mysql
+# talks to the server through mysqlnd, built in, so needs no library.
+docker-php-ext-install -j"$(nproc)" pcntl sockets pdo_pgsql pdo_mysql >/dev/null
+
+fetch "https://pecl.php.net/get/apcu-${APCU_VERSION}.tgz" "$work/apcu.tgz" "$APCU_SHA256"
+pecl install "$work/apcu.tgz" >/dev/null
+docker-php-ext-enable apcu
+echo 'apc.enable_cli=1' > "$PHP_INI_DIR/conf.d/zz-ci.ini"
+
+fetch "https://getcomposer.org/download/${COMPOSER_VERSION}/composer.phar" "$work/composer.phar" "$COMPOSER_SHA256"
+install -m 0755 "$work/composer.phar" /usr/local/bin/composer
+
+node="node-v${NODE_VERSION}-linux-${NODE_ARCH}"
+fetch "https://nodejs.org/dist/v${NODE_VERSION}/${node}.tar.xz" "$work/node.tar.xz" "$NODE_SHA256"
+tar -xJf "$work/node.tar.xz" -C /usr/local --strip-components=1 --no-same-owner \
+    "${node}/bin" "${node}/include" "${node}/lib" "${node}/share"
+
+# A build that quietly left an extension out fails here, not in a test that
+# skips without it.
+for extension in apcu pcntl pdo_mysql pdo_pgsql pdo_sqlite posix sockets; do
+    # shellcheck disable=SC2016 # $argv is PHP's, not the shell's
+    if ! php -r 'exit(extension_loaded($argv[1]) ? 0 : 1);' "$extension"; then
+        echo "PHP has no $extension extension." >&2
+        exit 1
+    fi
+done
+php -v
+composer --version
+node --version
+npm --version

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+#
+# Splits packages/$PACKAGE out of this checkout and pushes it to its
+# read-only mirror, $MIRROR_OWNER/$PACKAGE on GitHub, with $DEPLOY_KEY
+# (ADR 0055). Run by .github/workflows/split.yml, for a push to main or a
+# tag, inside the php:8.5-cli image.
+#
+# splitsh-lite rewrites the history of one directory into a history of its
+# own, the same commits to the same commits every time, so main on a mirror
+# only ever moves forward and a push that would rewrite it is refused rather
+# than forced. It is one release, 1.0.1, the last the project built for
+# Linux (a Go binary needing glibc alone), held to the sha256 below before
+# it runs; to move it, change the version and the sum together.
+#
+# The deploy key reaches the disk only in a directory of this run's own,
+# removed when it ends, and ssh trusts GitHub's published ed25519 host key
+# alone -- never one it is shown for the first time, nor one the image's
+# own known_hosts holds.
+
+set -euo pipefail
+
+SPLITSH_VERSION=1.0.1
+SPLITSH_SHA256=2539301ce5e21d0ca44b689d0dd2c1b20d9f9e996c1fe6c462afb8af4e7141cc
+
+# https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints
+GITHUB_HOST_KEY='github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl'
+
+fail() {
+    echo "$1" >&2
+    exit 1
+}
+
+[[ ${PACKAGE:-} =~ ^[a-z][a-z0-9-]*$ ]] || fail "PACKAGE names no package: '${PACKAGE:-}'."
+[[ -f "packages/$PACKAGE/composer.json" ]] || fail "packages/$PACKAGE has no composer.json."
+[[ ${MIRROR_OWNER:-} =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || fail "MIRROR_OWNER is not a GitHub account name: '${MIRROR_OWNER:-}'."
+[[ -n ${DEPLOY_KEY:-} ]] || fail "No deploy key for $PACKAGE's mirror."
+
+# Where the split goes: main from main, and a tag to the same tag.
+case "${GITHUB_REF:-}" in
+    refs/heads/main) target=refs/heads/main ;;
+    refs/tags/v*) target=$GITHUB_REF ;;
+    *) fail "Splits are pushed for main and for tags, not for '${GITHUB_REF:-}'." ;;
+esac
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+umask 077
+
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$work/splitsh.tar.gz" "https://github.com/splitsh/lite/releases/download/v${SPLITSH_VERSION}/lite_linux_amd64.tar.gz"
+echo "${SPLITSH_SHA256}  $work/splitsh.tar.gz" | sha256sum -c --quiet -
+tar -xzf "$work/splitsh.tar.gz" -C "$work" ./splitsh-lite
+
+# The checkout belongs to the runner's user, and the container runs as root.
+git config --global --add safe.directory "$PWD"
+
+sha=$("$work/splitsh-lite" --prefix="packages/$PACKAGE")
+[[ $sha =~ ^[0-9a-f]{40}$ ]] || fail "splitsh-lite gave no commit for packages/$PACKAGE: '$sha'."
+
+printf '%s\n' "$DEPLOY_KEY" > "$work/key"
+printf '%s\n' "$GITHUB_HOST_KEY" > "$work/known_hosts"
+export GIT_SSH_COMMAND="ssh -i $work/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$work/known_hosts -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes"
+
+echo "packages/$PACKAGE at $sha -> $MIRROR_OWNER/$PACKAGE $target"
+git push "git@github.com:$MIRROR_OWNER/$PACKAGE.git" "$sha:$target"
