@@ -917,16 +917,19 @@ describe('workflows', function () {
 
     // Each package's suite with only what it requires installed: every one,
     // tenancy's included, and the framework's and the database's without
-    // it (ADR 0055, 0056).
-    it('runs every package\'s suite alone in CI', function () {
+    // it (ADR 0055, 0056). The skeleton is an application, which no suite
+    // installs as a package: its own job makes an app of it (ADR 0082).
+    it('runs every package\'s suite alone in CI, and makes an app of the skeleton', function () {
         $workflow = Yaml::parse((string) file_get_contents(\dirname(__DIR__, 4) . '/.github/workflows/ci.yml'));
         $packages = array_map(static fn (string $file): string => basename(\dirname($file)), glob(\dirname(__DIR__, 4) . '/packages/*/composer.json') ?: []);
+        $packages = array_values(array_diff($packages, ['skeleton']));
         $matrix = $workflow['jobs']['packages']['strategy']['matrix']['package'];
         sort($packages);
         sort($matrix);
 
         expect($matrix)->toBe($packages)
-            ->and($packages)->toContain('tenancy');
+            ->and($packages)->toContain('tenancy')
+            ->and(array_column($workflow['jobs']['skeleton']['steps'], 'run'))->toContain('php bin/skeleton-proof');
     });
 
     // The split holds the mirrors' deploy keys, so it runs for what has
@@ -937,10 +940,11 @@ describe('workflows', function () {
 
         expect($workflow['on'])->toBe(['push' => ['branches' => ['main'], 'tags' => ['v*']]])
             ->and($workflow['permissions'])->toBe(['contents' => 'read'])
-            ->and(array_column($workflow['jobs']['split']['strategy']['matrix']['include'], 'package'))->toBe(['support', 'database', 'framework', 'tenancy', 'testing', 'codegen'])
+            ->and(array_column($workflow['jobs']['split']['strategy']['matrix']['include'], 'package'))->toBe(['support', 'database', 'framework', 'tenancy', 'testing', 'codegen', 'skeleton'])
             ->and(array_column($workflow['jobs']['split']['strategy']['matrix']['include'], 'key'))->toBe([
                 'TINVAR_SPLIT_KEY_SUPPORT', 'TINVAR_SPLIT_KEY_DATABASE', 'TINVAR_SPLIT_KEY_FRAMEWORK',
                 'TINVAR_SPLIT_KEY_TENANCY', 'TINVAR_SPLIT_KEY_TESTING', 'TINVAR_SPLIT_KEY_CODEGEN',
+                'TINVAR_SPLIT_KEY_SKELETON',
             ])
             ->and($script)->toContain('refs/heads/main) target=refs/heads/main')
             ->and($script)->toContain('StrictHostKeyChecking=yes')
