@@ -100,7 +100,7 @@ final readonly class Dispatcher
         );
         $pending = new PendingJob($envelope->id, $options->name, $envelope->seal($this->signer), $now + $delay);
 
-        if ($this->queue->enlistsIn($this->orm->connection())) {
+        if ($this->queue->enlistsIn($this->orm->statements())) {
             $this->queue->push($pending);
         } else {
             $this->orm->afterCommit(fn () => $this->queue->push($pending));
