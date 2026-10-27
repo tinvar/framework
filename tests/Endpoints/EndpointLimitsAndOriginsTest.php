@@ -409,6 +409,17 @@ describe('CORS on an endpoint', function () {
         'an endpoint that opted into nothing' => ['/api/racks/{rack}/plain', ['origin' => 'https://scanner.example', 'access-control-request-method' => 'GET']],
     ]);
 
+    it('answers a preflight for HEAD where the endpoint answers GET', function () {
+        [, $kernel] = racks();
+        $response = send($kernel, 'OPTIONS', '/api/partner/status', [
+            'origin' => 'https://partner.example',
+            'access-control-request-method' => 'HEAD',
+        ], session: null, csrf: false);
+
+        expect($response->status)->toBe(204)
+            ->and($response->header('access-control-allow-methods'))->toBe('GET, HEAD');
+    });
+
     it('echoes an origin it names on the answer, and only that one, varying on Origin', function () {
         [, $kernel] = racks();
 

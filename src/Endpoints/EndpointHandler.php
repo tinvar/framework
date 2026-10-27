@@ -252,7 +252,9 @@ final class EndpointHandler
     {
         $origin = $request->header('origin');
         $method = $request->header('access-control-request-method');
-        if ($origin === null || $method === null || !\in_array($method, Endpoint::METHODS, true)) {
+        // HEAD with GET, as everywhere: a HEAD sending a header of its own
+        // is preflighted too.
+        if ($origin === null || $method === null || !\in_array($method, [...Endpoint::METHODS, 'HEAD'], true)) {
             return null;
         }
 
@@ -266,7 +268,7 @@ final class EndpointHandler
 
         $headers = [
             'access-control-allow-origin' => $origin,
-            'access-control-allow-methods' => implode(', ', $endpoint->methods),
+            'access-control-allow-methods' => implode(', ', $endpoint->allowed()),
             'access-control-allow-headers' => implode(', ', $cors->headers),
             'access-control-max-age' => (string) $cors->maxAge,
             'vary' => 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers',
