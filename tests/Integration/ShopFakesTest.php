@@ -29,6 +29,7 @@ use Tinvar\Actions\ActionResult;
 use Tinvar\Bench\Shop;
 use Tinvar\Data\DataBoundaryException;
 use Tinvar\Data\Encoder;
+use Tinvar\Http\TestableApplication;
 use Tinvar\Jobs\Envelope;
 use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryError;
@@ -39,7 +40,6 @@ use Tinvar\Testing\Fakes\BodyFakes;
 use Tinvar\Testing\Fakes\QueueFake;
 use Tinvar\Testing\Query;
 use Tinvar\Testing\RendererPool;
-use Tinvar\Testing\TestableApplication;
 use Tinvar\Testing\Testing;
 
 use function Tinvar\Testing\action;
