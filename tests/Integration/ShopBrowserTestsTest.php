@@ -201,6 +201,11 @@ it('dates what it writes on the moved clock', function () {
 
 // ------------------------------------------------------------ refusals
 
+it('seeds no scenario where the environment says production', function () {
+    environment(['APP_ENV' => 'production']);
+    Served::$kernel->seed('customer', []);
+})->throws(\LogicException::class, 'APP_ENV=production');
+
 it('moves the clock under the test profile alone', function () {
     environment(['TINVAR_PROFILE' => null, 'TINVAR_TEST_RUN' => null]);
     Clock::move(3600);
@@ -365,3 +370,14 @@ it('has the container\'s entrypoint refuse the test profile and a test run', fun
     'a test run' => ['TINVAR_TEST_RUN', '/tmp/tinvar-test-run'],
     'a build elsewhere' => ['TINVAR_BUILD_DIR', '/tmp/dist-test'],
 ]);
+
+// The shop's Caddyfile binds SHOP_BIND_ALSO beside --host.
+it('has tinvar serve refuse the test profile on any address SHOP_BIND_ALSO adds but loopback', function () {
+    [$status, $output] = run(
+        [PHP_BINARY, \dirname(Shop::root(), 2) . '/bin/tinvar', 'serve', '--app=' . Shop::root()],
+        ['TINVAR_PROFILE' => 'test', 'TINVAR_ENV' => 'testing', 'SHOP_BIND_ALSO' => '::1 0.0.0.0'],
+    );
+
+    expect($status)->toBe(64)
+        ->and($output)->toContain('SHOP_BIND_ALSO names 0.0.0.0');
+});

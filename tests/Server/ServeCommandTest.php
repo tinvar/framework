@@ -443,6 +443,20 @@ describe('the test profile', function () {
         });
     })->with(['production', '']);
 
+    it('is refused for a test run under the production profile', function () {
+        withoutEnvironmentBinary(function () {
+            [$command, $errors] = command(project());
+
+            $status = withEnvironment(
+                ['TINVAR_PROFILE' => 'production', 'TINVAR_TEST_RUN' => '/tmp/tinvar-test-run'],
+                fn () => $command->run(['--app=' . app()]),
+            );
+
+            expect($status)->toBe(ServeCommand::USAGE)
+                ->and(implode("\n", $errors->getArrayCopy()))->toContain('TINVAR_TEST_RUN is set');
+        });
+    });
+
     it('loads the renderers from the build TINVAR_BUILD_DIR names', function () {
         withoutEnvironmentBinary(function () {
             $app = app();
