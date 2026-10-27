@@ -8,6 +8,7 @@ use Tinvar\Auth\AuthContext;
 use Tinvar\Http\DevOverlay;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
+use Tinvar\Orm\RawStatement;
 use Tinvar\Render\FrameTap;
 use Tinvar\Render\RenderFailed;
 use Tinvar\Render\RenderResult;
@@ -173,6 +174,15 @@ final class DevToolbar implements FrameTap
     public function failed(RenderFailed $event): void
     {
         $this->current?->failed($event->failure, $event->digest);
+    }
+
+    /**
+     * Raw SQL on a tenant table, sent while the request was recorded: what
+     * the Kernel hands Orm::flagRawStatements() when it has a toolbar.
+     */
+    public function rawStatement(RawStatement $statement): void
+    {
+        $this->current?->rawStatement($statement);
     }
 
     /**

@@ -6,6 +6,7 @@ namespace Tinvar\Dev;
 
 use Tinvar\Codec\Bin;
 use Tinvar\Http\Request;
+use Tinvar\Orm\RawStatement;
 use Tinvar\Render\FrameTap;
 use Tinvar\Render\RenderFailure;
 use Tinvar\Render\RenderResult;
@@ -98,6 +99,19 @@ final class Recording
 
     /** @var array<string, string>|null */
     private ?array $failure = null;
+
+    /**
+     * Raw SQL the request sent on tenant tables (RawStatement), flagged.
+     *
+     * @var list<array{sql: string, tables: list<string>, site: string, tenant: string, acrossTenants: bool}>
+     */
+    private array $rawSql = [];
+
+    /** Raw statements flagged past MAX_RAW_SQL: counted, not kept. */
+    private int $rawSqlDropped = 0;
+
+    /** Raw statements kept of one request. */
+    public const int MAX_RAW_SQL = 50;
 
     /**
      * The secret values PHP sent the renderer, to take out of what it sends
@@ -224,6 +238,30 @@ final class Recording
         ];
     }
 
+    /**
+     * Raw SQL sent on a tenant table: tinvar-spec.md, "Tenancy" -- "Raw SQL
+     * ... on tenant tables are flagged ... in the dev toolbar". Kept as the
+     * ORM handed it over, its literals already taken out (RawSql), and the
+     * secrets this request's frames carried taken out too.
+     */
+    public function rawStatement(RawStatement $statement): void
+    {
+        if (\count($this->rawSql) >= self::MAX_RAW_SQL) {
+            $this->rawSqlDropped++;
+
+            return;
+        }
+
+        $sql = $this->scrubbed(self::text($statement->sql));
+        $this->rawSql[] = [
+            'sql' => \is_string($sql) ? $sql : '',
+            'tables' => array_map(self::text(...), $statement->tables),
+            'site' => self::text($statement->site),
+            'tenant' => self::text($statement->tenant),
+            'acrossTenants' => $statement->acrossTenants,
+        ];
+    }
+
     /** The render failed: its classification, the framework's hint for it, and the reference the visitor was shown. */
     public function failed(RenderFailure $failure, string $digest): void
     {
@@ -255,6 +293,7 @@ final class Recording
             'ms' => $ms,
             'renders' => \count($this->renders),
             'failure' => $this->failure['code'] ?? null,
+            'rawSql' => \count($this->rawSql) + $this->rawSqlDropped,
         ];
 
         return [
@@ -266,6 +305,8 @@ final class Recording
                 'frames' => $this->frames,
                 'framesDropped' => $this->dropped,
                 'failure' => $this->failure,
+                'rawSql' => $this->rawSql,
+                'rawSqlDropped' => $this->rawSqlDropped,
             ],
         ];
     }

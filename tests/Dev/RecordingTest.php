@@ -12,6 +12,7 @@ namespace Tinvar\Tests\Dev\Recording;
 use Tinvar\Codec\Bin;
 use Tinvar\Dev\Recording;
 use Tinvar\Http\Request;
+use Tinvar\Orm\RawStatement;
 use Tinvar\Render\FrameTap;
 
 function recording(?Request $request = null): Recording
@@ -154,4 +155,25 @@ it('keeps no signed token a path carries', function () {
 
     expect($finished['summary']['path'])->toBe('/_fragment/[token]')
         ->and((string) json_encode($finished))->not->toContain($token);
+});
+
+it('keeps raw SQL on tenant tables as the ORM flagged it, so many of them, with this request\'s secrets taken out', function () {
+    $recording = recording();
+    $recording->frame(FrameTap::TO_RENDERER, ['t' => 'render', 'csrf' => 'csrf-token-1234567890']);
+    $recording->rawStatement(new RawStatement("SELECT * FROM racks WHERE note = '?' -- csrf-token-1234567890", ['racks'], '/app/Racks.php:9', 'acme', false));
+    for ($i = 0; $i < Recording::MAX_RAW_SQL + 2; $i++) {
+        $recording->rawStatement(new RawStatement('DELETE FROM units', ['units'], '', '', true));
+    }
+    $finished = $recording->finish(200, 's', 'u');
+
+    expect($finished['detail']['rawSql'])->toHaveCount(Recording::MAX_RAW_SQL)
+        ->and($finished['detail']['rawSql'][0])->toBe([
+            'sql' => "SELECT * FROM racks WHERE note = '?' -- " . Recording::REDACTED,
+            'tables' => ['racks'],
+            'site' => '/app/Racks.php:9',
+            'tenant' => 'acme',
+            'acrossTenants' => false,
+        ])
+        ->and($finished['detail']['rawSqlDropped'])->toBe(3)
+        ->and($finished['summary']['rawSql'])->toBe(Recording::MAX_RAW_SQL + 3);
 });

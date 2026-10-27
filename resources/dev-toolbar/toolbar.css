@@ -184,6 +184,16 @@ summary {
 .failure p {
   margin: 4px 0 0;
 }
+.flag {
+  color: #ffd27a;
+  white-space: nowrap;
+}
+.raw summary span {
+  margin-right: 10px;
+}
+.raw .site {
+  overflow-wrap: anywhere;
+}
 @media (max-width: 720px) {
   .body {
     flex-direction: column;

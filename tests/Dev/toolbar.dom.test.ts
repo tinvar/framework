@@ -108,6 +108,17 @@ const detail = {
   ],
   framesDropped: 2,
   failure: null,
+  rawSql: [
+    {
+      sql: "SELECT * FROM racks WHERE name = '?' AND x = '<b>bold</b>'",
+      tables: ['racks'],
+      site: '/app/src/Pages/Racks.php:42',
+      tenant: 'acme',
+      acrossTenants: false,
+    },
+    { sql: 'DELETE FROM units', tables: ['units'], site: '', tenant: '', acrossTenants: true },
+  ],
+  rawSqlDropped: 1,
 };
 
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -232,6 +243,41 @@ describe('the toolbar', () => {
     expect(ticks[0].querySelector('summary')!.textContent).toBe(
       'tick 1: 2 queries (products.availability) · 1.3 ms in PHP',
     );
+  });
+
+  it('flags raw SQL on a tenant table: in the list, and each statement with where it was sent from', async () => {
+    requests[1] = { ...requests[1], rawSql: 3 } as (typeof requests)[number];
+    try {
+      const root = mount();
+      await open(root);
+      const view = tab(root, 'Raw SQL');
+      const summaries = [...view.querySelectorAll('details.raw summary')].map((s) => s.textContent);
+
+      expect(root.querySelector(`button[data-id="${PAGE}"] .flag`)!.textContent).toBe('raw SQL ×3');
+      expect(root.querySelector(`button[data-id="${VISIT}"] .flag`)).toBeNull();
+      expect(summaries).toEqual([
+        'racks/app/src/Pages/Racks.php:42as acme',
+        'unitsunknown siteinside acrossTenants()',
+      ]);
+      expect(view.textContent).toContain('1 more were not kept.');
+      expect(view.textContent).toContain("x = '<b>bold</b>'");
+      expect(view.querySelector('b')).toBeNull();
+    } finally {
+      requests[1] = { ...requests[1], rawSql: undefined } as (typeof requests)[number];
+    }
+  });
+
+  it('says so when a request sent no raw SQL on a tenant table', async () => {
+    fetchMock.mockImplementation((url: string) =>
+      respond(
+        200,
+        url.endsWith(PAGE) ? { request: { ...detail, rawSql: [], rawSqlDropped: 0 } } : { requests },
+      ),
+    );
+    const root = mount();
+    await open(root);
+
+    expect(tab(root, 'Raw SQL').textContent).toBe('No raw SQL on a tenant table.');
   });
 
   it('shows every frame decoded, and draws none of it as markup', async () => {

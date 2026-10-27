@@ -26,6 +26,7 @@ use Tinvar\Http\Middleware;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Orm\IdentityMap;
+use Tinvar\Orm\Metadata;
 use Tinvar\Orm\Orm;
 use Tinvar\Protocol\Frame;
 use Tinvar\Query\QueryRegistry;
@@ -39,9 +40,11 @@ use Tinvar\Support\PrivateDirectory;
 use Tinvar\Support\Signer;
 use Tinvar\Tests\Auth\Fixtures\User;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
+use Tinvar\Tests\Orm\Fixtures\Script;
 
 require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
 require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
+require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenant.php';
 require_once __DIR__ . '/../Auth/Fixtures/policies.php';
 
 const NONCE = 'R4nd0m+N/once==';
@@ -472,4 +475,30 @@ it('keeps the newest requests of a run and lets the oldest go', function () {
 
 it('notes the nonce the overlay and the toolbar share', function () {
     expect(DevOverlay::nonceOf("script-src 'nonce-" . NONCE . "'"))->toBe(NONCE);
+});
+
+it('flags raw SQL a request sent on a tenant table, and nothing of the ORM\'s own', function () {
+    $toolbar = toolbar(run());
+    $kernel = kernel($toolbar);
+    Metadata::for(Script::class);   // a model compiled is one whose table is known
+
+    $line = __LINE__ + 2;
+    $token = tokenIn($kernel->handle(local('/catalog'), static function (LoadedRoute $loaded) use ($kernel, $toolbar): Response {
+        $kernel->orm->connection()->select("SELECT 1 AS scripts WHERE 'secret' = 'secret'");
+        $kernel->orm->connection()->select('SELECT 1 AS other');
+
+        return respond($toolbar)($loaded);
+    }));
+
+    [, $list] = read($kernel, DevToolbar::PATH, $token);
+    [, $one] = read($kernel, DevToolbar::PATH . '/' . $list['requests'][0]['id'], $token);
+
+    expect($list['requests'][0]['rawSql'])->toBe(1)
+        ->and($one['request']['rawSql'])->toBe([[
+            'sql' => "SELECT 1 AS scripts WHERE '?' = '?'",
+            'tables' => ['scripts'],
+            'site' => __FILE__ . ":{$line}",
+            'tenant' => '',
+            'acrossTenants' => false,
+        ]]);
 });

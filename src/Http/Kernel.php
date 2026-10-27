@@ -506,6 +506,10 @@ final class Kernel
             );
         }
         $this->toolbar = $toolbar;
+        // Raw SQL on a tenant table, flagged on the request it ran in.
+        if ($toolbar !== null) {
+            $this->orm->flagRawStatements($toolbar->rawStatement(...));
+        }
         $this->events = $events;
 
         // A fake answers for a query or an action without its body, so it

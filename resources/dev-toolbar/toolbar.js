@@ -52,7 +52,7 @@
     );
     root.append(toggle, panel);
 
-    const TABS = ['Props', 'Timings', 'Ticks', 'Frames'];
+    const TABS = ['Props', 'Timings', 'Ticks', 'Raw SQL', 'Frames'];
     /** @type {Record<string, HTMLButtonElement>} */
     const tabButtons = {};
     for (const name of TABS) {
@@ -136,6 +136,13 @@
             el('span', { class: 'path' }, request.path),
             el('span', { class: request.status >= 400 ? 'code bad' : 'code' }, String(request.status)),
             el('span', { class: 'ms' }, `${ms(request.ms)}`),
+            request.rawSql > 0
+              ? el(
+                  'span',
+                  { class: 'flag', title: 'Raw SQL on a tenant table' },
+                  `raw SQL ×${request.rawSql}`,
+                )
+              : '',
           );
           list.append(el('li', { class: index === 0 ? 'visit' : 'follow' }, button));
         });
@@ -175,7 +182,9 @@
           ),
         );
       }
-      parts.push(...{ Props: props, Timings: timings, Ticks: ticks, Frames: frames }[tab](detail));
+      parts.push(
+        ...{ Props: props, Timings: timings, Ticks: ticks, 'Raw SQL': rawSql, Frames: frames }[tab](detail),
+      );
       view.replaceChildren(...parts);
     }
 
@@ -339,6 +348,50 @@
     return parts.length > 0
       ? parts
       : [el('p', { class: 'muted' }, 'No query ticks: the render asked PHP for nothing.')];
+  }
+
+  /**
+   * Raw SQL the request sent on tenant tables: no tenant predicate of the
+   * ORM's is on it, so each is one to read. Literals are taken out before
+   * it is kept.
+   */
+  function rawSql(detail) {
+    const statements = detail.rawSql ?? [];
+    const parts = statements.map((statement) =>
+      el(
+        'details',
+        { class: 'raw' },
+        el(
+          'summary',
+          {},
+          el('span', { class: 'flag' }, statement.tables.join(', ')),
+          el('span', { class: 'site' }, statement.site || 'unknown site'),
+          el(
+            'span',
+            { class: 'muted' },
+            statement.acrossTenants
+              ? 'inside acrossTenants()'
+              : statement.tenant
+                ? `as ${statement.tenant}`
+                : 'no tenant in force',
+          ),
+        ),
+        el('pre', {}, statement.sql),
+      ),
+    );
+    if ((detail.rawSqlDropped ?? 0) > 0) {
+      parts.push(el('p', { class: 'muted' }, `${detail.rawSqlDropped} more were not kept.`));
+    }
+    return parts.length > 0
+      ? [
+          el(
+            'p',
+            { class: 'muted' },
+            'Raw SQL on tenant tables: the ORM adds no tenant predicate to it. Use the query builder, or say why it has to be raw.',
+          ),
+          ...parts,
+        ]
+      : [el('p', { class: 'muted' }, 'No raw SQL on a tenant table.')];
   }
 
   function frames(detail) {
