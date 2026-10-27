@@ -199,7 +199,21 @@ final class PdoBuildStore implements BuildStore
         }
 
         try {
-            return $this->change($pdo, $change);
+            // MySQL may still pick this transaction as a deadlock's victim
+            // when two servers make the row at once (each insert's duplicate
+            // check holds a shared lock the other's FOR UPDATE waits on);
+            // nothing was written, so it is run again from the read.
+            for ($attempt = 1; ; $attempt++) {
+                try {
+                    return $this->change($pdo, $change);
+                } catch (\RuntimeException $e) {
+                    $cause = $e->getPrevious();
+                    if ($attempt >= 5 || !$cause instanceof \PDOException || !self::deadlocked($cause)) {
+                        throw $e;
+                    }
+                    usleep(random_int(1_000, 20_000));
+                }
+            }
         } finally {
             if ($synchronous !== null && $synchronous < 2) {
                 $pdo->exec("PRAGMA synchronous = {$synchronous}");
@@ -225,17 +239,21 @@ final class PdoBuildStore implements BuildStore
         }
 
         try {
-            $empty = json_encode(new BuildHistory()->toArray(), JSON_THROW_ON_ERROR);
-            $insert = $this->driver === 'mysql'
-                ? "INSERT IGNORE INTO {$this->table} (id, revision, history) VALUES (?, ?, ?)"
-                : "INSERT INTO {$this->table} (id, revision, history) VALUES (?, ?, ?) ON CONFLICT (id) DO NOTHING";
-            $pdo->prepare($insert)->execute([self::ROW, bin2hex(random_bytes(16)), $empty]);
-
-            $select = "SELECT history FROM {$this->table} WHERE id = ?" . ($this->driver === 'sqlite' ? '' : ' FOR UPDATE');
-            $statement = $pdo->prepare($select);
-            $statement->execute([self::ROW]);
-            $stored = $statement->fetchColumn();
-            $statement->closeCursor();
+            // The row is locked before anything is inserted. MySQL's INSERT
+            // IGNORE takes a shared lock on a row it finds already there, and
+            // two servers each holding one and then asking FOR UPDATE
+            // deadlock -- the loser's revocation lost. Locked first, the row
+            // that is there (every change but the first) is waited for, never
+            // shared.
+            $stored = $this->locked($pdo);
+            if ($stored === false) {
+                $empty = json_encode(new BuildHistory()->toArray(), JSON_THROW_ON_ERROR);
+                $insert = $this->driver === 'mysql'
+                    ? "INSERT IGNORE INTO {$this->table} (id, revision, history) VALUES (?, ?, ?)"
+                    : "INSERT INTO {$this->table} (id, revision, history) VALUES (?, ?, ?) ON CONFLICT (id) DO NOTHING";
+                $pdo->prepare($insert)->execute([self::ROW, bin2hex(random_bytes(16)), $empty]);
+                $stored = $this->locked($pdo);
+            }
 
             // Fresh from the row, never the cached copy: another server may
             // have written since this process last looked.
@@ -262,6 +280,24 @@ final class PdoBuildStore implements BuildStore
 
             throw $e;
         }
+    }
+
+    /** The stored history, locked for this transaction; false when there is no row. */
+    private function locked(\PDO $pdo): mixed
+    {
+        $select = "SELECT history FROM {$this->table} WHERE id = ?" . ($this->driver === 'sqlite' ? '' : ' FOR UPDATE');
+        $statement = $pdo->prepare($select);
+        $statement->execute([self::ROW]);
+        $stored = $statement->fetchColumn();
+        $statement->closeCursor();
+
+        return $stored;
+    }
+
+    /** A deadlock or serialization failure: the transaction was rolled back whole and may run again. */
+    private static function deadlocked(\PDOException $e): bool
+    {
+        return $e->getCode() === '40001' || ($e->errorInfo[1] ?? null) === 1213;
     }
 
     /**

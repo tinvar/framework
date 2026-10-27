@@ -372,10 +372,12 @@ describe('PdoBuildStore', function () {
                     ) ?: throw new \RuntimeException('Could not start a revoking process.'), $pipes];
                 }
                 foreach ($running as [$process, $pipes]) {
+                    // The CLI prints an uncaught exception on stdout: a
+                    // revocation that failed says so on one or the other.
                     $err = stream_get_contents($pipes[2]);
-                    stream_get_contents($pipes[1]);
+                    $out = stream_get_contents($pipes[1]);
                     proc_close($process);
-                    expect($err)->toBe('');
+                    expect($err)->toBe('')->and($out)->toBe('');
                 }
 
                 $revoked = new PdoBuildStore(connect($driver, $dsn), $table)->read()->revoked;
