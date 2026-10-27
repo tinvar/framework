@@ -411,7 +411,11 @@ final class CallGraph
             token_get_all($source === false ? '' : $source),
             static fn (array|string $token): bool => !\is_array($token) || !\in_array($token[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true),
         ));
+        // The imports are at the top level, or inside the braces of a
+        // namespace declared with them: `namespace App { use ...; }`. A
+        // `use` deeper than that is a trait's, or a closure's.
         $depth = 0;
+        $top = 0;
         $count = \count($tokens);
         for ($i = 0; $i < $count; $i++) {
             $token = $tokens[$i];
@@ -419,10 +423,13 @@ final class CallGraph
                 $depth++;
             } elseif ($token === '}') {
                 $depth--;
-            } elseif (self::is($token, T_NAMESPACE) && $depth === 0 && self::isName($tokens[$i + 1] ?? null)) {
-                $context['namespace'] = self::text($tokens[$i + 1]);
+            } elseif (self::is($token, T_NAMESPACE) && $depth === 0) {
+                // `namespace App;`, `namespace App {` and the global `namespace {`.
+                $named = self::isName($tokens[$i + 1] ?? null);
+                $context['namespace'] = $named ? self::text($tokens[$i + 1]) : '';
                 $context['namespaces']++;
-            } elseif (self::is($token, T_USE) && $depth === 0) {
+                $top = ($tokens[$i + ($named ? 2 : 1)] ?? null) === '{' ? 1 : 0;
+            } elseif (self::is($token, T_USE) && $depth === $top) {
                 $i = self::readUse($tokens, $i + 1, $context);
             }
         }

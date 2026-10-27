@@ -40,3 +40,10 @@ it('follows parent:: to the parent of the class it is written in', function () {
     expect(sharedGapViolations(G\ThroughParentInParent::class))
         ->toContain(G\Reads::class . "::read(), which calls '->user('");
 });
+
+it('reads the imports inside a braced namespace', function () {
+    require_once __DIR__ . '/Fixtures/callgraph-braced.php';
+
+    expect(sharedGapViolations(Tinvar\Tests\Auth\Fixtures\CallGraphBraced\ThroughBracedImport::class))
+        ->toContain(G\Secret::class . "::who(), which calls '->user('");
+});
