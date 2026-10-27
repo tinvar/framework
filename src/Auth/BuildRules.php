@@ -6,6 +6,7 @@ namespace Tinvar\Auth;
 
 use Tinvar\Attributes\Action;
 use Tinvar\Attributes\Authorize;
+use Tinvar\Attributes\Channel;
 use Tinvar\Attributes\Endpoint;
 use Tinvar\Attributes\Layout;
 use Tinvar\Attributes\NoAuthorization;
@@ -88,6 +89,7 @@ final class BuildRules
     public const string ENTRY_POINT_MUST_NOT_BE_STATIC = 'entry-point-must-not-be-static';
     public const string SHARED_QUERY_MUST_NOT_READ_THE_USER = 'shared-query-must-not-read-the-user';
     public const string QUERY_MUST_DECLARE_AUTHORIZATION = 'query-must-declare-authorization';
+    public const string CHANNEL_MUST_DECLARE_AUTHORIZATION = 'channel-must-declare-authorization';
     public const string PANEL_ONLY_QUERY_MUST_BE_BOUND = 'panel-only-query-must-be-bound';
     public const string ATTRIBUTES_MUST_NAME_A_CLASS = 'attributes-must-name-a-class';
     public const string FIELD_ENUMS_NAME_DATA_FIELDS = 'field-enums-name-data-fields';
@@ -171,6 +173,7 @@ final class BuildRules
             $violations = [...$violations, ...self::checkKnownAttributes($class)];
             $violations = [...$violations, ...$this->checkEntryPoint($class)];
             $violations = [...$violations, ...self::checkQueryDeclaresAuthorization($class)];
+            $violations = [...$violations, ...self::checkChannelDeclaresAuthorization($class)];
             $violations = [...$violations, ...self::checkSharedQuery($class)];
         }
 
@@ -589,6 +592,13 @@ final class BuildRules
             }
         }
 
+        // A #[Channel]'s parameters are its constructor's: what a client
+        // subscribes with, resolved and checked, as a page's loader's are
+        // (ADR 0069). The class's declarations cover it, as a page's do.
+        if ($reflection->getAttributes(Channel::class) !== [] && $reflection->hasMethod('__construct')) {
+            $methods['__construct'] = [$reflection->getMethod('__construct'), true];
+        }
+
         // An #[Action] marks its own method, wherever it sits, including on a
         // class that is also a page.
         // So does a #[Get], #[Post] or #[Endpoint] (ADR 0067), and as an
@@ -642,6 +652,32 @@ final class BuildRules
             . "caller whose route lists it, and no page's checks run there. Declare who may call it, as in "
             . "Authorize('viewAny', Rack::class), or #[NoAuthorization(reason: '...')] if every signed-in "
             . 'user may.',
+        )];
+    }
+
+    /**
+     * A channel says who may subscribe, whether or not it takes a model --
+     * as a query must, and for the same reason: with no model input the
+     * model-input rule has nothing to demand a check on, and a channel that
+     * declared nothing would let in anyone signed in (ADR 0069).
+     *
+     * @param class-string $class
+     * @return list<Violation>
+     */
+    private static function checkChannelDeclaresAuthorization(string $class): array
+    {
+        $reflection = new \ReflectionClass($class);
+        if ($reflection->getAttributes(Channel::class) === []
+            || Authorize::declaredOn($class, '__construct') !== []
+            || $reflection->getAttributes(NoAuthorization::class) !== []) {
+            return [];
+        }
+
+        return [new Violation(
+            self::CHANNEL_MUST_DECLARE_AUTHORIZATION,
+            $class,
+            'is a #[Channel] with no #[Authorize] and no #[NoAuthorization]. Declare who may subscribe, as in '
+            . "Authorize('view', 'order'), or #[NoAuthorization(reason: '...')] if everyone it lets in may.",
         )];
     }
 
