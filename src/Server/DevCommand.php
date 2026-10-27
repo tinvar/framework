@@ -105,8 +105,9 @@ final class DevCommand
                 $this->generate($command, []);
             }
 
+            $php = PhpCommand::prefix();
             $serve = $this->spawn(
-                [PHP_BINARY, __DIR__ . '/../../bin/tethered.php', PHP_BINARY, $this->console, ...$plan['serve']],
+                [...$php, __DIR__ . '/../../bin/tethered.php', ...$php, $this->console, ...$plan['serve']],
                 [...array_filter(getenv(), \is_string(...)), DevToolbar::ENV => $run],
             );
 

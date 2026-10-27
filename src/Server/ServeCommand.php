@@ -442,7 +442,7 @@ final class ServeCommand
             // PHP process that watches standard input for it.
             $children['FrankenPHP'] = $server = $this->spawn(
                 [
-                    PHP_BINARY,
+                    ...PhpCommand::prefix(),
                     __DIR__ . '/../../bin/tethered.php',
                     $plan['frankenphp'],
                     'run',
@@ -569,7 +569,9 @@ final class ServeCommand
     {
         \assert($this->console !== null);
 
-        return $this->spawn([PHP_BINARY, __DIR__ . '/../../bin/tethered.php', PHP_BINARY, $this->console, $command], $app, $environment);
+        $php = PhpCommand::prefix();
+
+        return $this->spawn([...$php, __DIR__ . '/../../bin/tethered.php', ...$php, $this->console, $command], $app, $environment);
     }
 
     /** @param resource $process */
