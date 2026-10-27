@@ -184,6 +184,19 @@ describe('pins', function () {
             ->toBe([]);
     });
 
+    it('accepts a tarball inside the project, held to its sha512, and refuses one anywhere else', function () {
+        $this->workspace->npm('@acme/packed', ['resolved' => 'file:.packages/acme-packed-0.4.0.tgz']);
+        $this->workspace->npm('outside', ['resolved' => 'file:../elsewhere/outside-1.0.0.tgz']);
+        $this->workspace->npm('absolute', ['resolved' => 'file:/tmp/absolute-1.0.0.tgz']);
+        $this->workspace->npm('unpinned', ['resolved' => 'file:.packages/unpinned-1.0.0.tgz', 'integrity' => null]);
+
+        expect(violations($this->workspace))->toBe([
+            'package-lock.json node_modules/outside installs file:../elsewhere/outside-1.0.0.tgz, which is no tarball inside the project.',
+            'package-lock.json node_modules/absolute installs file:/tmp/absolute-1.0.0.tgz, which is no tarball inside the project.',
+            'package-lock.json node_modules/unpinned has no sha512 integrity.',
+        ]);
+    });
+
     it('refuses a Composer package pinned to a tag rather than a commit', function () {
         $this->workspace->composer('acme/tagged', [
             'source' => ['type' => 'git', 'url' => 'https://github.com/acme/tagged.git', 'reference' => 'v1.0.0'],

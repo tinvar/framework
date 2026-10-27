@@ -248,7 +248,16 @@ final class SupplyChain
             if ($package->pin === null || !str_starts_with($package->pin, 'sha512-')) {
                 $violations[] = "{$package->where} has no sha512 integrity.";
             }
-            if ($package->source === null || !$this->policy->registryAllows($package->source)) {
+            // A tarball the project holds -- `npm pack`'s, vendored, or a
+            // package not yet published (ADR 0082) -- is its own file, as a
+            // workspace is its own directory: inside it, and still held to
+            // its sha512, which npm checks it against on every install.
+            $tarball = $package->source !== null && str_starts_with($package->source, 'file:') ? substr($package->source, \strlen('file:')) : null;
+            if ($tarball !== null) {
+                if (!self::insideProject($tarball) || !str_ends_with($tarball, '.tgz')) {
+                    $violations[] = "{$package->where} installs {$package->source}, which is no tarball inside the project.";
+                }
+            } elseif ($package->source === null || !$this->policy->registryAllows($package->source)) {
                 $violations[] = "{$package->where} resolves from " . ($package->source ?? 'nowhere it names')
                     . ', which PackagePolicy::$registries does not allow.';
             }
