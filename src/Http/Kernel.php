@@ -373,12 +373,13 @@ final class Kernel
     public const string LIVE_MINTER = 'tinvar.live_minter';
 
     /**
-     * The request attribute marking a page navigation whose client may
-     * hand back the holds of once-shared values it keeps (ADR 0065): a
-     * payload request for a page handed a route token. shared() believes
-     * holds on such a request alone, each verified against the binding the
-     * render is made for. An action's re-render, a fragment, a document or
-     * a page drawn any other way produces every key it reads.
+     * The request attribute marking a render whose client may hand back
+     * the holds of once-shared values it keeps (ADR 0065): a payload
+     * request for a page handed a route token, and a fragment request
+     * behind its verified token (ADR 0074). shared() believes holds on such
+     * a request alone, each verified against the binding the render is made
+     * for. An action's re-render, a document or a page drawn any other way
+     * produces every key it reads.
      */
     public const string HELD_SHARED = 'tinvar.held_shared';
 
@@ -1943,12 +1944,18 @@ final class Kernel
      * been held to the panel, tenant, user and auth epoch the request is in
      * -- where a page render's responder asks. So the keys are those of no
      * panel and of the panel the fragment renders in, and the reads are
-     * bound to that panel, tenant and user as a page's are. Every once key
-     * is produced: a fragment's request carries no holds.
+     * bound to that panel, tenant and user as a page's are.
+     *
+     * A once key the client proves it holds is read as held, as on a
+     * navigation (ADR 0074): the fragment request carries the page's holds
+     * in X-Have-Shared, and each is verified here against the same session,
+     * user and auth epoch, tenant, panel and build the fragment's own token
+     * was just held to. A hold minted for any other is passed over, and its
+     * key produced.
      */
     public function sharedForFragment(RouteChain $chain, Request $request): ?SharedReads
     {
-        return $this->sharedFor($chain->page, $chain->parameters, $request->withAttribute(self::HELD_SHARED, false));
+        return $this->sharedFor($chain->page, $chain->parameters, $request->withAttribute(self::HELD_SHARED, true));
     }
 
     /** @param array<string, string> $parameters */

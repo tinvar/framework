@@ -5,10 +5,10 @@ declare(strict_types=1);
 /**
  * Once-shared values and shared data in fragments, through the Kernel
  * (ADR 0065): a once key is sent with a signed hold, read as held on a
- * navigation that hands the hold back under the same session, user, panel
- * and build -- and produced again on anything else -- and a <Deferred>
- * component's render is handed the shared data of its route's panel, made
- * behind the route's chain.
+ * navigation -- or, since ADR 0074, a fragment request -- that hands the
+ * hold back under the same session, user, panel and build, and produced
+ * again on anything else; and a <Deferred> component's render is handed
+ * the shared data of its route's panel, made behind the route's chain.
  */
 
 namespace Tinvar\Tests\Panels\SharedOnce;
@@ -201,18 +201,43 @@ describe('a fragment render', function () {
             ->and($app->fragmentReads['banner']['panel'])->toBe('admin');
     });
 
-    it('produces a once key whatever holds the request carries', function () {
+    // ADR 0074: a deferred component's once keys are claimed as a
+    // navigation's are, by holds verified against the fragment's binding.
+    it('reads a once key as held when the request hands back a hold for its binding', function () {
         $app = onceApp();
         $hold = holdFrom($app, '/home', 'anyone');
         $app->fragmentKeys = KEYS;
         $token = $app->fragmentToken('home', 'anyone', '');
+        Trace::reset();
 
         $response = $app->get(FragmentEndpoint::PREFIX . $token, 'anyone', payload($hold));
 
         expect($response->status)->toBe(200)
+            ->and($app->fragmentReads['welcome'])->toBe(['$once' => '$shared.welcome', 'held' => true])
+            ->and(Trace::$events)->not->toContain('welcome')
+            ->and($response->header('vary'))->toContain('X-Have-Shared');
+    });
+
+    it('produces a once key for a hold another user, another panel or a forger made', function (string $route, string $user, string $panel, \Closure $holdOf) {
+        $app = onceApp();
+        $hold = $holdOf($app);
+        $app->fragmentKeys = KEYS;
+        $token = $app->fragmentToken($route, $user, $panel);
+
+        $response = $app->get(FragmentEndpoint::PREFIX . $token, $user, payload($hold));
+
+        expect($response->status)->toBe(200)
             ->and($app->fragmentReads['welcome'])->toHaveKey('value')
             ->and($app->fragmentReads['welcome'])->toHaveKey('hold');
-    });
+    })->with([
+        'another user\'s' => ['home', 'someone-else', '', static fn (App $app): string => holdFrom($app, '/home', 'anyone')],
+        'another panel\'s' => ['admin.orders', 'staff', 'admin', static fn (App $app): string => holdFrom($app, '/home', 'staff')],
+        'a tampered one' => ['home', 'anyone', '', static function (App $app): string {
+            [$version, $body, $mac] = explode('.', holdFrom($app, '/home', 'anyone'));
+
+            return "{$version}.{$body}x.{$mac}";
+        }],
+    ]);
 
     it('binds its reads to the panel it was made in', function () {
         $app = onceApp();

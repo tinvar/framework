@@ -375,7 +375,10 @@ final class FragmentEndpoint
             ->withHeader('content-type', self::CONTENT_TYPE)
             ->withHeader('cache-control', 'private, no-store')
             ->withAddedHeader('vary', 'RSC')
-            ->withAddedHeader('vary', 'Cookie');
+            ->withAddedHeader('vary', 'Cookie')
+            // A once-shared key the request proves it holds is left out
+            // (ADR 0074): what is sent depends on the holds handed back.
+            ->withAddedHeader('vary', 'X-Have-Shared');
 
         // A refresh never extends past the absolute lifetime: near the end
         // its expiry is the deadline itself, after which the token is
