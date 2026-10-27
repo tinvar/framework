@@ -74,6 +74,16 @@ final class SharedReads
     }
 
     /**
+     * Every key this render may read.
+     *
+     * @return list<string>
+     */
+    public function keys(): array
+    {
+        return array_keys($this->keys);
+    }
+
+    /**
      * Whether this render may read $key: one the registry has, in no panel
      * or in this render's. A key of another panel's reads as one that does
      * not exist, as an out-of-scope row does.
