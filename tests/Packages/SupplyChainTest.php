@@ -537,6 +537,22 @@ describe('dockerfiles', function () {
         ]);
     });
 
+    // BuildKit joins a continued line to the next with nothing between, and
+    // with its leading whitespace taken off: `FR\` and `OM x` are `FROM x`,
+    // and `--from=build\` and `er` take from the image builder. Only a
+    // space or a tab may follow the backslash; after a form feed or a
+    // vertical tab the instruction has ended, and the next line is one of
+    // its own. Each was built with BuildKit, which pulled the image.
+    it('reads continued lines as BuildKit joins them', function (string $contents) {
+        expect(SupplyChain::dockerfile('Dockerfile', $contents))->not->toBe([]);
+    })->with([
+        'a keyword cut in two' => ["FROM scratch\nFR\\\nOM nope:latest\n"],
+        'a stage name cut in two' => ["FROM scratch AS build\nFROM scratch\nCOPY --from=build\\\n   er /x /x\n"],
+        'a form feed after the backslash' => ["FROM scratch\nCOPY a /a \\\f\nFROM nope:latest\n"],
+        'a vertical tab after the backslash' => ["FROM scratch\nCOPY a /a \\\v\nFROM nope:latest\n"],
+        'a no-break space before the keyword' => ["FROM scratch\n\u{A0}FROM nope:latest\n"],
+    ]);
+
     // A stage is named before it is used: a later stage's name is an image.
     it('takes only an earlier stage\'s name as a stage', function () use ($digest) {
         $this->workspace->file('Dockerfile', "FROM later\nFROM debian{$digest} AS later\n");

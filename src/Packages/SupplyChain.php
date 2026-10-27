@@ -542,13 +542,21 @@ final class SupplyChain
         $instructions = [];
         $current = '';
         foreach ($lines as $line) {
+            // BuildKit takes the leading whitespace off every line, a
+            // continued one's too -- Unicode's, so a no-break space before
+            // FROM hides nothing.
+            $line = self::trimLeadingSpace($line);
             // Blank lines and comments, between instructions or inside a
             // continued one, as BuildKit drops them.
-            if (preg_match('/^\s*(#|$)/', $line) === 1) {
+            if ($line === '' || $line[0] === '#') {
                 continue;
             }
-            if (preg_match('/^(.*)\\\\\s*$/', $line, $m) === 1) {
-                $current .= $m[1] . ' ';
+            // Only spaces and tabs may follow the backslash: after a form
+            // feed the instruction has ended. The pieces are joined with
+            // nothing between, so `FR\` and `OM x` are `FROM x`, and a
+            // stage name cut in two is read whole.
+            if (preg_match('/^(.*)\\\\[ \t]*$/s', $line, $m) === 1) {
+                $current .= $m[1];
 
                 continue;
             }
@@ -654,6 +662,20 @@ final class SupplyChain
             || ($checksum !== null && preg_match($commit, $checksum) === 1);
 
         return $pinned ? null : "{$name} ADDs the git source {$source}, which is not pinned to a full commit.";
+    }
+
+    /**
+     * $line without its leading whitespace, as Go's unicode.IsSpace reads
+     * it: matched as UTF-8 bytes, so a line that is not valid UTF-8 further
+     * on is trimmed as Go trims it, up to the first byte that is no space.
+     */
+    private static function trimLeadingSpace(string $line): string
+    {
+        return (string) preg_replace(
+            '/^(?:[\t\n\v\f\r ]|\xC2[\x85\xA0]|\xE1\x9A\x80|\xE2\x80[\x80-\x8A\xA8\xA9\xAF]|\xE2\x81\x9F|\xE3\x80\x80)+/',
+            '',
+            $line,
+        );
     }
 
     /** @param list<string> $stages the names this Dockerfile's earlier stages declared */
