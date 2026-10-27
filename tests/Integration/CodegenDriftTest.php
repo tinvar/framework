@@ -43,21 +43,28 @@ it('names the file that drifted, the one missing and the one left behind, and wr
     $actions = glob("{$types}/actions/*.ts") ?: [];
     file_put_contents("{$copy}/generated.ts", "\n// edited by hand\n", FILE_APPEND);
     file_put_contents("{$copy}/actions/Removed.ts", 'export {};');
+    // A mock whose query module has gone goes with it.
+    mkdir("{$copy}/testing/queries", 0o700, true);
+    file_put_contents("{$copy}/testing/queries/gone.ts", 'export {};');
 
     try {
         [$status, $output] = codegen("--out={$copy}", '--check');
         $untouched = file_get_contents("{$copy}/generated.ts");
     } finally {
-        foreach (glob("{$copy}/actions/*") ?: [] as $file) {
+        foreach ([...glob("{$copy}/actions/*") ?: [], "{$copy}/testing/queries/gone.ts"] as $file) {
             unlink($file);
         }
         rmdir("{$copy}/actions");
+        rmdir("{$copy}/testing/queries");
+        rmdir("{$copy}/testing");
         PrivateDirectory::remove($copy);
     }
 
     expect($status)->toBe(1)
         ->and($output)->toContain('generated.ts is out of date')
         ->and($output)->toContain('actions/Removed.ts is generated from nothing now')
+        ->and($output)->toContain('testing/queries/gone.ts is generated from nothing now')
+        ->and($output)->toContain('testing/fakes.ts is missing')
         ->and($output)->toContain('actions/' . basename($actions[0]) . ' is missing')
         ->and($untouched)->toEndWith("// edited by hand\n");
 });
