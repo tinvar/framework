@@ -1,0 +1,238 @@
+#!/bin/bash
+# The container's one supervisor: the application's PHP side and its
+# renderers, each as a user of its own, started, watched and stopped
+# together (ADR 0059).
+#
+#   entrypoint                 serve: the renderers, then the PHP side
+#   entrypoint tinvar ARGS...  bin/tinvar ARGS as the app's user, and exit
+#   entrypoint CMD ARGS...     CMD as the app's user, and exit
+#
+# It runs as root under tini, with no capability but CAP_SETUID and
+# CAP_SETGID, to start each process as its user, and CAP_KILL, to signal
+# processes that are not root's. It runs no application code itself, and
+# nothing it starts keeps a capability or can gain one (no_new_privs).
+#
+#   - The renderers run as TINVAR_RENDERER_USER, in the socket group, with
+#     an environment of PATH, NODE_ENV, TZ, LANG and LC_ALL and nothing
+#     else: no secret this container was given reaches them.
+#   - The PHP side runs as TINVAR_CONTAINER_APP_USER, in its own group and
+#     the socket group, with the container's environment. TINVAR_RENDERER_USER
+#     and TINVAR_SOCKET tell it which pool to render through and whose
+#     processes must answer there.
+#
+# Before either starts it checks what would otherwise fail late or quietly,
+# and refuses to start: the users and their group, the capabilities, an app
+# key given, the pool's directory a tmpfs of the renderers' user, and that
+# the renderers' user can read none of the paths TINVAR_CONTAINER_PRIVATE
+# names, nor the key file.
+#
+# SIGTERM (docker stop) stops the PHP side first -- FrankenPHP finishes the
+# requests it has, which may still render; every process of PHP's user is
+# waited for -- and the renderers last, which finish the renders in flight.
+# SIGUSR2
+# restarts the renderers one at a time. Either process exiting on its own
+# stops the other, and the container exits non-zero for its restart policy.
+set -euo pipefail
+
+app_user=${TINVAR_CONTAINER_APP_USER:-tinvar-app}
+renderer_user=${TINVAR_RENDERER_USER:-}
+socket_group=${TINVAR_CONTAINER_SOCKET_GROUP:-tinvar-render}
+pool=${TINVAR_SOCKET:-}
+port=${TINVAR_CONTAINER_PORT:-8080}
+
+say() { echo "[tinvar:container] $(date -u +%H:%M:%S.%3N) $*" >&2; }
+refuse() {
+    say "$*"
+    exit 78 # EX_CONFIG
+}
+
+# Each as its user. No inheritable capability, no_new_privs: what runs
+# under these keeps nothing of root's and can gain nothing back. Commands,
+# not functions, so a process started with one is that process, and the pid
+# signalled is the one that runs.
+as_app=(setpriv --reuid="$app_user" --regid="$app_user" --init-groups --inh-caps=-all --no-new-privs --)
+as_renderer=(setpriv --reuid="$renderer_user" --regid="$socket_group" --clear-groups --inh-caps=-all --no-new-privs --)
+
+[ "$(id -u)" = 0 ] || refuse "Started as uid $(id -u). This entrypoint starts the renderers and PHP as two users, and only root can: run the image as root with --cap-drop ALL --cap-add SETUID --cap-add SETGID --cap-add KILL (examples/shop/compose.yaml). Each process it starts runs as its own user."
+
+# CAP_KILL (5), CAP_SETGID (6) and CAP_SETUID (7), in the effective set.
+capabilities=$(awk '/^CapEff:/ { print $2 }' /proc/self/status)
+for bit in 5 6 7; do
+    if (((16#$capabilities >> bit & 1) == 0)); then
+        refuse "Missing a capability: this entrypoint needs CAP_SETUID and CAP_SETGID to start each process as its user, and CAP_KILL to signal them (CapEff is $capabilities)."
+    fi
+done
+
+# One-off commands, as the app's user: a migration, a seed, a check.
+if [ $# -gt 0 ]; then
+    cd "${TINVAR_CONTAINER_CWD:-/}"
+    if [ "$1" = tinvar ]; then
+        shift
+        exec "${as_app[@]}" php "${TINVAR_CONTAINER_TINVAR:?names bin/tinvar}" "$@"
+    fi
+    exec "${as_app[@]}" "$@"
+fi
+
+[ -n "$renderer_user" ] || refuse "TINVAR_RENDERER_USER is not set: the renderers run as a user of their own here."
+[ -n "$pool" ] || refuse "TINVAR_SOCKET is not set: it names the renderers' pool directory."
+app_uid=$(id -u "$app_user") || refuse "No user $app_user for PHP."
+renderer_uid=$(id -u "$renderer_user") || refuse "No user $renderer_user for the renderers."
+socket_gid=$(getent group "$socket_group" | cut -d: -f3) || refuse "No group $socket_group for the renderers' sockets."
+if [ "$app_uid" = 0 ] || [ "$renderer_uid" = 0 ] || [ "$app_uid" = "$renderer_uid" ]; then
+    refuse "PHP ($app_user, $app_uid) and the renderers ($renderer_user, $renderer_uid) must be two users, neither root."
+fi
+# The group of two, as ADR 0028 has it: the renderers' user, whose primary
+# group it is, and PHP's, listed.
+members=$(getent group "$socket_group" | cut -d: -f4)
+if [ "$members" != "$app_user" ]; then
+    refuse "The group $socket_group must list $app_user and no one else (it is $renderer_user's primary group); it lists '$members'."
+fi
+
+# No key baked in, and none generated where a restart would lose it.
+if [ -z "${TINVAR_APP_KEY:-}" ] && [ -z "${TINVAR_APP_KEY_FILE:-}" ]; then
+    refuse "No app key: set TINVAR_APP_KEY, or TINVAR_APP_KEY_FILE to a mounted secret PHP's user can read. The image holds none."
+fi
+
+# What PHP keeps from the renderers: each path, and the key file. Checked
+# as the renderers' user, so whatever the mounts and their modes, it is
+# what the kernel would let a renderer do.
+IFS=: read -r -a private <<<"${TINVAR_CONTAINER_PRIVATE:-}"
+[ -z "${TINVAR_APP_KEY_FILE:-}" ] || private+=("$TINVAR_APP_KEY_FILE")
+for path in "${private[@]}"; do
+    [ -n "$path" ] || continue
+    # Read, or for a directory passed through: a file in one it may enter
+    # is opened by name.
+    if "${as_renderer[@]}" test -r "$path" || { [ -d "$path" ] && "${as_renderer[@]}" test -x "$path"; }; then
+        refuse "$renderer_user can read $path, which is PHP's alone: make it $app_user's, mode 0700 for a directory, 0600 or 0400 for a file."
+    fi
+done
+if [ -n "${TINVAR_APP_KEY_FILE:-}" ] && ! "${as_app[@]}" test -r "$TINVAR_APP_KEY_FILE"; then
+    refuse "$app_user cannot read TINVAR_APP_KEY_FILE ($TINVAR_APP_KEY_FILE)."
+fi
+
+# The pool's directory: the renderers' user's own, writable by no one else,
+# and a tmpfs, so nothing of an earlier run -- a pid file naming a pid this
+# run has given to something else -- is still there.
+if ! awk -v at="$pool" '$5 == at { for (i = 7; $i != "-"; i++); if ($(i + 1) == "tmpfs") found = 1 } END { exit !found }' /proc/self/mountinfo; then
+    refuse "$pool is not a tmpfs. Mount one there, the renderers' user's: --tmpfs $pool:uid=$renderer_uid,gid=$socket_gid,mode=0750"
+fi
+read -r owner mode < <(stat -c '%u %a' "$pool")
+if [ "$owner" != "$renderer_uid" ] || (((8#$mode & 8#022) != 0)); then
+    refuse "$pool is uid $owner, mode $mode: it must be $renderer_user's ($renderer_uid), writable by no one else."
+fi
+"${as_app[@]}" test -w /tmp || refuse "/tmp is not writable by $app_user: mount a tmpfs there (--tmpfs /tmp)."
+
+cpus=$(nproc)
+workers=${TINVAR_CONTAINER_WORKERS:-$cpus}
+renderers=${TINVAR_CONTAINER_RENDERERS:-$((cpus / 2 > workers ? workers : cpus / 2))}
+((renderers >= 1)) || renderers=1
+
+renderer_pid=
+php_pid=
+stopping=
+
+# SIGTERM to one child, SIGKILL once $2 seconds have gone by, and its exit
+# reaped.
+stop_one() {
+    local pid=$1
+    [ -n "$pid" ] || return 0
+    kill -TERM "$pid" 2>/dev/null || return 0
+    (sleep "$2" && kill -KILL "$pid" 2>/dev/null) &
+    local watchdog=$!
+    wait "$pid" 2>/dev/null || true
+    kill "$watchdog" 2>/dev/null || true
+    wait "$watchdog" 2>/dev/null || true
+}
+
+# The pids of every process PHP's user runs: serve, the tethers, FrankenPHP,
+# the queue worker and the scheduler, and any of them orphaned.
+app_processes() {
+    local status uid rest
+    for status in /proc/[0-9]*/status; do
+        # shellcheck disable=SC2034 # rest: the other three uids
+        read -r _ uid rest < <(grep '^Uid:' "$status" 2>/dev/null) || continue
+        if [ "$uid" = "$app_uid" ]; then
+            status=${status%/status}
+            echo "${status#/proc/}"
+        fi
+    done
+}
+
+# PHP's side is stopped through `tinvar serve`'s tethers, not its signal
+# handlers: under FrankenPHP's static binary, PHP's CLI cannot take a
+# signal -- a pcntl handler for SIGTERM, SIGINT or SIGHUP crashes the
+# process, and SIGUSR2 ends it (measured; ADR 0059). So serve is killed
+# outright, which its children are built to outlive by a moment: each tether
+# sees its standard input close and sends its command SIGTERM, FrankenPHP
+# finishes the requests it has, and the tethers give up after 10 s. Then
+# every process of PHP's user, orphans too, is waited for.
+stop_php() {
+    [ -n "$php_pid" ] || return 0
+    kill -KILL "$php_pid" 2>/dev/null || true
+    wait "$php_pid" 2>/dev/null || true
+    local deadline=$((SECONDS + 30)) left
+    while left=$(app_processes) && [ -n "$left" ] && ((SECONDS < deadline)); do
+        sleep 0.2
+    done
+    if [ -n "$left" ]; then
+        say "PHP's processes $(echo "$left" | tr '\n' ' ')did not stop in 30 s; killing them."
+        # shellcheck disable=SC2086 # one pid a word
+        kill -KILL $left 2>/dev/null || true
+    fi
+}
+
+stop() {
+    stopping=1
+    say "Stopping: PHP first, then the renderers."
+    # PHP first: it finishes its requests, which may still render. The
+    # renderers then drain for up to 60 s.
+    stop_php
+    say "PHP has stopped."
+    stop_one "$renderer_pid" 75
+    say "The renderers have stopped."
+}
+
+trap 'stop; exit 0' TERM INT
+trap '[ -z "$renderer_pid" ] || kill -USR2 "$renderer_pid"; say "Restarting the renderers one at a time."' USR2
+trap '' HUP
+
+say "Starting $renderers renderers as $renderer_user in $pool, then PHP with $workers workers as $app_user on port $port."
+
+# The renderers: Node itself, as the systemd unit in docs/deployment.md
+# runs it, so their user reads no PHP.
+renderer_env=(PATH=/usr/local/bin:/usr/bin:/bin NODE_ENV=production)
+for name in TZ LANG LC_ALL; do
+    [ -z "${!name:-}" ] || renderer_env+=("$name=${!name}")
+done
+env -i "${renderer_env[@]}" \
+    "${as_renderer[@]}" node "${TINVAR_CONTAINER_RENDERER:?names renderer.js}" "$pool" \
+    "${TINVAR_CONTAINER_RENDER_ENTRY:?names the app rsc entry}" \
+    --processes="$renderers" --socket-group="$socket_group" &
+renderer_pid=$!
+
+# The PHP side. `tinvar serve` waits for the pool and holds it to the
+# renderers' user before FrankenPHP starts.
+cd "${TINVAR_CONTAINER_CWD:-/}"
+# shellcheck disable=SC2086 # the command and its arguments, split as written
+"${as_app[@]}" ${TINVAR_CONTAINER_SERVE:?names the command that serves} \
+    --host=0.0.0.0 --port="$port" --workers="$workers" &
+php_pid=$!
+
+while :; do
+    status=0
+    wait -n "$renderer_pid" "$php_pid" || status=$?
+    [ -z "$stopping" ] || exit 0
+    # A trapped signal ends the wait too: only an exit is an exit.
+    if [ ! -e "/proc/$php_pid" ]; then
+        say "PHP exited (status $status); stopping the renderers."
+        php_pid=
+        stop_one "$renderer_pid" 75
+        exit "$((status == 0 ? 1 : status))"
+    fi
+    if [ ! -e "/proc/$renderer_pid" ]; then
+        say "The renderers exited (status $status); stopping PHP."
+        renderer_pid=
+        stop_php
+        exit "$((status == 0 ? 1 : status))"
+    fi
+done
