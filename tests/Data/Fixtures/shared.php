@@ -252,3 +252,15 @@ final class VagueShared implements SharedData
         return new VagueProvider();
     }
 }
+
+/** Cached for everyone, and built on one visitor's shared data: refused by the build. */
+#[\Tinvar\Attributes\Query(name: 'staff.note', cache: '5m', shared: true), \Tinvar\Attributes\NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
+final class SharedQueryReadingSharedData
+{
+    public function __construct(private readonly StaffShared $shared) {}
+
+    public function __invoke(): GreetingData
+    {
+        return $this->shared->staffNote();
+    }
+}

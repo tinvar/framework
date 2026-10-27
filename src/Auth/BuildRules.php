@@ -103,6 +103,11 @@ final class BuildRules
         // type has to be listed, or choosing the object form would have
         // retired a rule the spec requires.
         PanelContext::class => 'the current panel',
+        // A page's shared data is its visitor's (ADR 0060): a provider
+        // reads the session it was built in, and a render's reads hold
+        // what was produced for it.
+        \Tinvar\Data\SharedData::class => "a page's shared data, which is its visitor's",
+        \Tinvar\Data\SharedReads::class => "a page's shared data, which is its visitor's",
     ];
 
     /**

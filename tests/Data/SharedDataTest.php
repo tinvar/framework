@@ -340,3 +340,11 @@ describe('ProvidesData in a loader\'s fields', function () {
         expect((new Greeting('Ada'))->toData($context)->text)->toBe('Ada at k on sites/show');
     });
 });
+
+it('fails the build for a query cached across users that reads shared data', function () {
+    $violations = (new Tinvar\Auth\BuildRules())->check([Tinvar\Tests\Data\Fixtures\Shared\SharedQueryReadingSharedData::class]);
+
+    expect($violations)->not->toBe([])
+        ->and($violations[0]->rule)->toBe(Tinvar\Auth\BuildRules::SHARED_QUERY_MUST_NOT_READ_THE_USER)
+        ->and($violations[0]->message)->toContain("shared data, which is its visitor's");
+});
