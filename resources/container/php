@@ -1,6 +1,0 @@
-#!/bin/sh
-# `php`, in an image whose only PHP is FrankenPHP's static binary: its CLI is
-# `frankenphp php-cli`, and FrankenPHP takes no other name for it. Scripts
-# that run `php` -- bin/tinvar, an app's bin/serve -- run it through here;
-# children a PHP script starts run it through Tinvar\Server\PhpCommand.
-exec /usr/local/bin/frankenphp php-cli "$@"

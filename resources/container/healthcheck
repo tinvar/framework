@@ -10,7 +10,7 @@
 # shellcheck disable=SC2016 # PHP's variables, in PHP's code
 exec setpriv --reuid=nobody --regid=nogroup --clear-groups --inh-caps=-all --no-new-privs -- \
     env -i PATH=/usr/local/bin:/usr/bin:/bin XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
-    /usr/local/bin/frankenphp php-cli -n -r '
+    /usr/local/bin/php -n -r '
         $context = stream_context_create(["http" => ["timeout" => 4, "ignore_errors" => true]]);
         $body = @file_get_contents($argv[1], false, $context);
         $status = http_get_last_response_headers()[0] ?? "no answer";
