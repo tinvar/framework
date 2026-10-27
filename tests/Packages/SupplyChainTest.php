@@ -565,6 +565,20 @@ describe('workflows', function () {
             ->and(preg_match('/^  downstream:\n(?:    .*\n|\n)*?    if: github\.event_name == \'push\'/m', $workflow))->toBe(1);
     });
 
+    // Each package's suite with only what it requires installed: every one,
+    // tenancy's included, and the framework's and the database's without
+    // it (ADR 0055, 0056).
+    it('runs every package\'s suite alone in CI', function () {
+        $workflow = Yaml::parse((string) file_get_contents(\dirname(__DIR__, 4) . '/.github/workflows/ci.yml'));
+        $packages = array_map(static fn (string $file): string => basename(\dirname($file)), glob(\dirname(__DIR__, 4) . '/packages/*/composer.json') ?: []);
+        $matrix = $workflow['jobs']['packages']['strategy']['matrix']['package'];
+        sort($packages);
+        sort($matrix);
+
+        expect($matrix)->toBe($packages)
+            ->and($packages)->toContain('tenancy');
+    });
+
     // The split holds the mirrors' deploy keys, so it runs for what has
     // landed -- main and tags -- and nothing a pull request brings (ADR 0055).
     it('splits the packages to their mirrors only for a push to main or a tag', function () {
@@ -573,7 +587,11 @@ describe('workflows', function () {
 
         expect($workflow['on'])->toBe(['push' => ['branches' => ['main'], 'tags' => ['v*']]])
             ->and($workflow['permissions'])->toBe(['contents' => 'read'])
-            ->and(array_column($workflow['jobs']['split']['strategy']['matrix']['include'], 'package'))->toBe(['support', 'database', 'framework', 'testing', 'codegen'])
+            ->and(array_column($workflow['jobs']['split']['strategy']['matrix']['include'], 'package'))->toBe(['support', 'database', 'framework', 'tenancy', 'testing', 'codegen'])
+            ->and(array_column($workflow['jobs']['split']['strategy']['matrix']['include'], 'key'))->toBe([
+                'TINVAR_SPLIT_KEY_SUPPORT', 'TINVAR_SPLIT_KEY_DATABASE', 'TINVAR_SPLIT_KEY_FRAMEWORK',
+                'TINVAR_SPLIT_KEY_TENANCY', 'TINVAR_SPLIT_KEY_TESTING', 'TINVAR_SPLIT_KEY_CODEGEN',
+            ])
             ->and($script)->toContain('refs/heads/main) target=refs/heads/main')
             ->and($script)->toContain('StrictHostKeyChecking=yes')
             ->and($script)->toContain('sha256sum -c')
