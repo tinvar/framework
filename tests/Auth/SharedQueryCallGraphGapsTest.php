@@ -51,6 +51,22 @@ it('refuses a call of a function that is neither built in nor loaded', function 
         ->toContain('calling missing_function(): no function missing_function() can be found');
 });
 
+it('refuses a method named at runtime, on $this or a class', function () {
+    expect(sharedGapViolations(G\ThroughDynamicName::class))
+        ->toContain('calling $this->{...}(): the method it calls is named at runtime')
+        ->and(sharedGapViolations(G\ThroughComputedCallable::class))
+        ->toContain('calling Secret::{...}(): the method it calls is named at runtime')
+        ->toContain('calling [Secret::class, ...]: the method the callable names is chosen at runtime');
+});
+
+it('follows a callable written as an array or a string', function (string $class) {
+    expect(sharedGapViolations($class))->toContain(G\Secret::class . "::who(), which calls '->user('");
+})->with([
+    '[$this, name]' => [G\ThroughArrayCallable::class],
+    '[Name::class, name]' => [G\ThroughStaticCallable::class],
+    "'Name::name'" => [G\ThroughStringCallable::class],
+]);
+
 it('reads the imports inside a braced namespace', function () {
     require_once __DIR__ . '/Fixtures/callgraph-braced.php';
 

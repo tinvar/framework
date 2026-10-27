@@ -163,6 +163,41 @@ final class CallGraph
         for ($i = 0; $i < $count; $i++) {
             $token = $tokens[$i];
 
+            // $this->$name(), $this->{...}(), $parameter->$name(), Name::$name():
+            // a method chosen at runtime, which could be any of them.
+            $receiver = self::is($token, T_VARIABLE) && ((self::text($token) === '$this' && $self !== null) || isset($parameters[self::text($token)]))
+                && self::isArrow($tokens[$i + 1] ?? null);
+            $static = self::isName($token) && self::is($tokens[$i + 1] ?? null, T_DOUBLE_COLON);
+            if ($receiver || $static) {
+                $after = self::computedName($tokens, $i + 2);
+                if ($after !== null && ($tokens[$after + 1] ?? null) === '(') {
+                    $call = self::text($token) . ($receiver ? '->' : '::') . '{...}()';
+                    // `Name::$property(...)` is a static method named by $property.
+                    $calls[] = ['call' => $call, 'why' => 'the method it calls is named at runtime, so which one cannot be read'];
+
+                    continue;
+                }
+            }
+
+            // [$this, 'method'], [Name::class, 'method'] and 'Name::method':
+            // a callable handed on, called wherever it goes.
+            if ($token === '[') {
+                $callable = self::arrayCallable($tokens, $i, $file, $scope);
+                if ($callable !== null) {
+                    $calls[] = $callable;
+
+                    continue;
+                }
+            }
+            if (self::is($token, T_CONSTANT_ENCAPSED_STRING)) {
+                $callable = self::stringCallable(self::text($token));
+                if ($callable !== null) {
+                    $calls[] = $callable;
+                }
+
+                continue;
+            }
+
             // $this->method(), $this->property->method(), $parameter->method()
             if (self::is($token, T_VARIABLE) && self::isArrow($tokens[$i + 1] ?? null) && self::is($tokens[$i + 2] ?? null, T_STRING)) {
                 $variable = self::text($token);
@@ -399,6 +434,91 @@ final class CallGraph
         }
 
         return ltrim("{$context['namespace']}\\{$written}", '\\');
+    }
+
+    /**
+     * Where a method name chosen at runtime ends -- `$name`, or `{...}` --
+     * starting at $i; null when what is there is a name written out.
+     *
+     * @param list<array{0: int, 1: string, 2: int}|string> $tokens
+     */
+    private static function computedName(array $tokens, int $i): ?int
+    {
+        if (self::is($tokens[$i] ?? null, T_VARIABLE)) {
+            return $i;
+        }
+        if (($tokens[$i] ?? null) !== '{') {
+            return null;
+        }
+        $depth = 0;
+        $count = \count($tokens);
+        for ($j = $i; $j < $count; $j++) {
+            if ($tokens[$j] === '{' || self::is($tokens[$j], T_CURLY_OPEN) || self::is($tokens[$j], T_DOLLAR_OPEN_CURLY_BRACES)) {
+                $depth++;
+            } elseif ($tokens[$j] === '}' && --$depth === 0) {
+                return $j;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * `[$this, 'method']` or `[Name::class, 'method']` opening at $i: the
+     * method it names, followed; refused when the method is not written
+     * out; null when the array is not one of those.
+     *
+     * @param list<array{0: int, 1: string, 2: int}|string> $tokens
+     * @param array{static: string|null, self: string|null} $scope
+     * @return array{class: string, method: string}|array{call: string, why: string}|null
+     */
+    private static function arrayCallable(array $tokens, int $i, string $file, array $scope): ?array
+    {
+        $first = $tokens[$i + 1] ?? null;
+        if (self::is($first, T_VARIABLE) && self::text($first) === '$this' && $scope['static'] !== null) {
+            $comma = $i + 2;
+            $written = '$this';
+        } elseif (self::isName($first) && self::is($tokens[$i + 2] ?? null, T_DOUBLE_COLON) && self::is($tokens[$i + 3] ?? null, T_CLASS)) {
+            $comma = $i + 4;
+            $written = self::text($first) . '::class';
+        } else {
+            return null;
+        }
+        if (($tokens[$comma] ?? null) !== ',') {
+            return null;
+        }
+        $method = $tokens[$comma + 1] ?? null;
+        if (!self::is($method, T_CONSTANT_ENCAPSED_STRING) || !\in_array($tokens[$comma + 2] ?? null, [']', ','], true)) {
+            return ['call' => "[{$written}, ...]", 'why' => 'the method the callable names is chosen at runtime, so which one cannot be read'];
+        }
+        $name = substr(self::text($method), 1, -1);
+        if ($written === '$this') {
+            return self::target(self::onThis($scope, $name), $name, "[\$this, '{$name}']");
+        }
+        $class = self::className(self::text($first), $file, $scope);
+
+        return $class === null ? null : self::target($class, $name, "[{$written}, '{$name}']");
+    }
+
+    /**
+     * A string literal written `'Name::method'`, naming an existing class:
+     * a callable, followed. A string is a callable only where it is called,
+     * so one naming no class is some other string, and passes. Its class is
+     * read as written, from the root namespace, as PHP reads a callable's.
+     *
+     * @return array{class: string, method: string}|array{call: string, why: string}|null
+     */
+    private static function stringCallable(string $literal): ?array
+    {
+        $value = str_replace('\\\\', '\\', substr($literal, 1, -1));
+        if (preg_match('/^\\\\?([A-Za-z_][A-Za-z0-9_]*(?:\\\\[A-Za-z_][A-Za-z0-9_]*)*)::([A-Za-z_][A-Za-z0-9_]*)$/D', $value, $m) !== 1) {
+            return null;
+        }
+        if (!class_exists($m[1]) && !interface_exists($m[1])) {
+            return null;
+        }
+
+        return self::target($m[1], $m[2], "'{$m[1]}::{$m[2]}'");
     }
 
     /**

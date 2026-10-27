@@ -120,6 +120,24 @@ final class ThroughStaticCallable
     }
 }
 
+#[Query(name: 'gaps.string-callable', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
+final class ThroughStringCallable
+{
+    public function __invoke(): int
+    {
+        return \call_user_func('Tinvar\Tests\Auth\Fixtures\CallGraphGaps\Secret::who');
+    }
+}
+
+#[Query(name: 'gaps.computed-callable', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
+final class ThroughComputedCallable
+{
+    public function __invoke(string $method = 'who'): int
+    {
+        return \call_user_func([Secret::class, $method]) + Secret::$method();
+    }
+}
+
 enum Tier: string
 {
     case Gold = 'gold';
