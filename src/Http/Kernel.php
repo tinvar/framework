@@ -72,6 +72,11 @@ use Tinvar\Routing\Router;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\DevMode;
 use Tinvar\Support\StandIns;
+use Tinvar\Transfers\DownloadEndpoint;
+use Tinvar\Transfers\TransferEndpoint;
+use Tinvar\Transfers\TransferRunner;
+use Tinvar\Transfers\Transfers;
+use Tinvar\Transfers\TransferStatus;
 use Tinvar\Uploads\FileEndpoint;
 use Tinvar\Uploads\FileUrls;
 use Tinvar\Uploads\UploadBinder;
@@ -134,6 +139,15 @@ final class Kernel
     /** /_upload and /_file, mounted only when an application supplies Uploads. */
     public readonly ?UploadEndpoint $uploads_;
     public readonly ?FileEndpoint $files_;
+
+    /**
+     * /_export, /_import and /_download (ADR 0070), and what a loader reads
+     * a user's transfers through: mounted only when an application supplies
+     * Transfers.
+     */
+    public readonly ?TransferEndpoint $transfers_;
+    public readonly ?DownloadEndpoint $downloads_;
+    public readonly ?TransferStatus $transferStatus;
 
     /** /_vitals and /_errors, mounted only when an application asks for client telemetry. */
     public readonly ?TelemetryEndpoint $clientTelemetry_;
@@ -225,8 +239,11 @@ final class Kernel
         'handoff' => 60,
         // Each one a file written to disk: fewer than actions.
         'uploads' => 30,
-        // Images on a page, each its own request.
+        // Images on a page, each its own request; and an export's download.
         'files' => 600,
+        // Starting an export or an import: each a job, and an import a file
+        // written to disk -- fewer than uploads.
+        'transfers' => 10,
         // /_vitals and /_errors: a vitals report when a page is left, and
         // the errors it saw, gathered -- a handful a minute from anyone
         // reading the site, and the first budget a flood of fabricated
@@ -316,6 +333,7 @@ final class Kernel
     private readonly Pipeline $handoffStack;
     private readonly Pipeline $uploadStack;
     private readonly Pipeline $fileStack;
+    private readonly Pipeline $transferStack;
     private readonly Pipeline $telemetryStack;
 
     /**
@@ -532,6 +550,11 @@ final class Kernel
      *        tags are as they were when it was minted; an action's invalidated tags bump
      *        them, and so does a job through $sharedTags. Without it, a hold is believed until
      *        its `until` whatever no response announced
+     * @param Transfers|null $transfers the application's exports and imports (ADR 0070): given,
+     *        POST /_export/{name} and POST /_import/{name} are mounted behind an action's stack
+     *        and the `transfers` throttle, GET /_download/{token} behind the global stack and
+     *        the `files` throttle, and Transfers, TransferRunner -- which the jobs run with --
+     *        and TransferStatus are in the container
      */
     public function __construct(
         public readonly Orm $orm,
@@ -588,6 +611,7 @@ final class Kernel
         ?EndpointRegistry $endpoints = null,
         ?ChannelRegistry $channels = null,
         ?TagVersions $tagVersions = null,
+        ?Transfers $transfers = null,
     ) {
         $this->resolver = $resolver;
         $this->shared = $shared;
@@ -738,7 +762,7 @@ final class Kernel
         // a requirement nothing can hold, is refused here rather than found
         // by whoever first reaches it.
         $entry = new EntryContext($this->orm, $resolver, $panels, $panelRegistry, $memberships, $this->auth, $realms ?? $handoff?->realms, $tenants);
-        $entry->check($this->routes, $this->actions, $this->queries, $endpoints, $channels);
+        $entry->check($this->routes, $this->actions, $this->queries, $endpoints, $channels, $transfers?->registry);
         // And every endpoint's path against the pages': a path both match
         // would be answered by whichever the dispatch happened to ask first.
         $endpoints?->assertNoConflicts($this->routes);
@@ -1080,6 +1104,62 @@ final class Kernel
         if ($this->uploadTickets !== null && $this->fileUrls !== null) {
             $container?->instance(UploadTickets::class, $this->uploadTickets)
                 ->instance(FileUrls::class, $this->fileUrls);
+        }
+
+        // An export or import is started as an action is called: it writes,
+        // so CSRF and its own budget; and authentication, with no opt-out --
+        // it runs as a user, and its link is bound to them. Its own tenant
+        // and panel stack run inside, once the path says which it is.
+        $this->transferStack = new Pipeline([
+            ...$this->floodGuardFor($throttle, 'transfers', $limits),
+            ...$global,
+            new VerifyCsrfToken(tokens: $csrf),
+            ...$this->throttleFor($throttle, 'transfers', $limits, byAddress: true),
+            ...$this->throttleFor($throttle, 'transfers', $limits, byAddress: false),
+            new RequireAuthentication($this->auth),
+        ]);
+        if ($transfers === null) {
+            $this->transfers_ = null;
+            $this->downloads_ = null;
+            $this->transferStatus = null;
+        } else {
+            $transferRunner = new TransferRunner(
+                transfers: $transfers,
+                orm: $this->orm,
+                gate: $gate,
+                validator: new Validator($this->orm),
+                auth: $this->auth,
+                resolver: $resolver,
+                panels: $panels,
+                report: function (\Throwable $e): void {
+                    $this->report($e);
+                },
+            );
+            $this->transfers_ = new TransferEndpoint(
+                transfers: $transfers,
+                runner: $transferRunner,
+                entry: $entry,
+                auth: $this->auth,
+                orm: $this->orm,
+                middlewareResolver: self::middlewareFrom($resolver),
+                panels: $panels,
+                globalMiddleware: $globalMiddleware,
+                maxBodyBytes: $maxBodyBytes,
+                maxJsonDepth: $maxJsonDepth,
+            );
+            $this->downloads_ = new DownloadEndpoint(
+                transfers: $transfers,
+                entry: $entry,
+                auth: $this->auth,
+                orm: $this->orm,
+                middlewareResolver: self::middlewareFrom($resolver),
+                panels: $panels,
+                globalMiddleware: $globalMiddleware,
+            );
+            $this->transferStatus = new TransferStatus($transfers, $this->auth, $this->orm, $panels);
+            $container?->instance(Transfers::class, $transfers)
+                ->instance(TransferRunner::class, $transferRunner)
+                ->instance(TransferStatus::class, $this->transferStatus);
         }
 
         // Fragments run their own stack: GET with no body, so CSRF does not
@@ -1525,6 +1605,29 @@ final class Kernel
                 return $this->fileStack->run(
                     $request,
                     fn (Request $passed): Response => $this->files_->handle($passed),
+                );
+            }
+
+            // Counted by endpoint, never by the name in the path, as an
+            // action's are; a download's token is in its path, which the
+            // access line and the span write redacted.
+            if ($this->transfers_ !== null && $this->transfers_->matches($request)) {
+                $this->telemetry?->route('_transfer');
+                TransferEndpoint::assertMethod($request);
+
+                return $this->transferStack->run(
+                    $request,
+                    fn (Request $passed): Response => $this->transfers_->handle($passed, $rawBody),
+                );
+            }
+
+            if ($this->downloads_ !== null && $this->downloads_->matches($request)) {
+                $this->telemetry?->route('_download');
+                DownloadEndpoint::assertMethod($request);
+
+                return $this->fileStack->run(
+                    $request,
+                    fn (Request $passed): Response => $this->downloads_->handle($passed),
                 );
             }
 

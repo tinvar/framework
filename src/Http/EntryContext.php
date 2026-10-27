@@ -25,6 +25,7 @@ use Tinvar\Query\QueryRegistry;
 use Tinvar\Render\TenantClaim;
 use Tinvar\Routing\RouteChain;
 use Tinvar\Routing\RouteRegistry;
+use Tinvar\Transfers\TransferRegistry;
 
 /**
  * What an entry point's declarations put around it before its own
@@ -195,6 +196,7 @@ final readonly class EntryContext
         QueryRegistry $queries,
         ?EndpointRegistry $endpoints = null,
         ?ChannelRegistry $channels = null,
+        ?TransferRegistry $transfers = null,
     ): void {
         $declared = [];
         $sources = [];
@@ -209,6 +211,10 @@ final readonly class EntryContext
         foreach ($channels?->all() ?? [] as $channel) {
             $declared[$channel->where()] = $channel->panels;
             $sources[$channel->where()] = $channel->tenantFrom;
+        }
+        foreach ($transfers?->all() ?? [] as $transfer) {
+            $declared[$transfer->where()] = $transfer->panels;
+            $sources[$transfer->where()] = $transfer->tenantFrom;
         }
         foreach ($actions->all() as $action) {
             $declared[$action->where()] = $action->panels;
