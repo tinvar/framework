@@ -154,13 +154,15 @@ it('grants staff the admin orders\' topic, renewal after renewal', function () {
 it('refuses a staff member taken out of the panel with the 401 that purges the client: the epoch moved', function () {
     $staff = new Staff(database());
     [, $body] = $staff->trade([$staff->adminToken()]);
+    // Signing in took away whatever the browser was granted before (ADR 0069).
+    $revoked = $staff->hub->revoked;
 
     new StaffMemberships($staff->orm)->revoke($staff->id);
     [$refused, $error] = $staff->trade([$body['tokens'][0]]);
 
     expect($refused->status)->toBe(401)
         ->and($error)->toBe(['error' => ['code' => 'session_changed']])
-        ->and($staff->hub->revoked)->toBe(1);
+        ->and($staff->hub->revoked)->toBe($revoked + 1);
 });
 
 it('refuses the panel\'s topics to a former member even where nothing moved the epoch', function () {
