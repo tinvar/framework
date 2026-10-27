@@ -14,8 +14,10 @@
 # volume outlives this container in a pod, so a pid file a pool of an
 # earlier run left names a pid of the shared namespace that may since be
 # another process's -- one of PHP's, which the supervisor could not tell
-# from a pool still running. A pid file naming no process of this user is
-# removed first: a pool in this directory runs as this user.
+# from a pool still running. So the pid file is removed first unless it
+# names a pool's supervisor for this directory still running as this user:
+# Node running renderer.js on this pool, not merely a process of ours --
+# tini here, or a probe -- that was given the same pid.
 #
 # SIGTERM, passed on by tini, drains the pool (60 s for the renders in
 # flight); SIGUSR2 restarts it one renderer at a time.
@@ -24,6 +26,8 @@ set -eu
 user=${TINVAR_RENDERER_USER:-tinvar-renderer}
 socket_group=${TINVAR_CONTAINER_SOCKET_GROUP:-tinvar-render}
 pool=${TINVAR_SOCKET:-}
+renderer=${TINVAR_CONTAINER_RENDERER:-}
+entry=${TINVAR_CONTAINER_RENDER_ENTRY:-}
 
 say() { echo "[tinvar:container] $(date -u +%H:%M:%S.%3N) $*" >&2; }
 refuse() {
@@ -55,18 +59,27 @@ case $pool in
     /*/*) ;;
     *) refuse "TINVAR_SOCKET is '$pool': name the pool's directory, inside the volume shared with PHP's container (/run/tinvar-renderer/pool)." ;;
 esac
+[ -n "$renderer" ] && [ -n "$entry" ] \
+    || refuse "TINVAR_CONTAINER_RENDERER and TINVAR_CONTAINER_RENDER_ENTRY name renderer.js and the app's rsc entry; the image sets both."
 parent=$(dirname "$pool")
 [ -d "$parent" ] && [ -w "$parent" ] || refuse "$parent is not a directory this user can write: mount the socket volume there."
 
 if [ -f "$pool/renderer.pid" ]; then
     stale=$(cat "$pool/renderer.pid" 2>/dev/null || true)
+    running=
     case $stale in
-        '' | *[!0-9]*) rm -f "$pool/renderer.pid" ;;
-        *) if [ "$stale" = $$ ] || ! kill -0 "$stale" 2>/dev/null; then
-            say "Removing the pid file of a pool no longer running ($stale)."
-            rm -f "$pool/renderer.pid"
+        '' | *[!0-9]*) ;;
+        *) if [ "$stale" != $$ ] && kill -0 "$stale" 2>/dev/null; then
+            # Ours to signal, so ours to read: its arguments, NUL-separated.
+            case " $(tr '\0' ' ' <"/proc/$stale/cmdline" 2>/dev/null) " in
+                *" $renderer $pool "*) running=1 ;;
+            esac
         fi ;;
     esac
+    if [ -z "$running" ]; then
+        say "Removing the pid file of a pool no longer running ($stale)."
+        rm -f "$pool/renderer.pid"
+    fi
 fi
 
 cpus=$(nproc)
@@ -82,6 +95,5 @@ set -- PATH=/usr/local/bin:/usr/bin:/bin NODE_ENV=production
 [ -z "${LANG:-}" ] || set -- "$@" "LANG=$LANG"
 [ -z "${LC_ALL:-}" ] || set -- "$@" "LC_ALL=$LC_ALL"
 cd /
-exec env -i "$@" node "${TINVAR_CONTAINER_RENDERER:?names renderer.js}" "$pool" \
-    "${TINVAR_CONTAINER_RENDER_ENTRY:?names the app rsc entry}" \
+exec env -i "$@" node "$renderer" "$pool" "$entry" \
     --processes="$renderers" --socket-group="$socket_group"
