@@ -184,7 +184,7 @@ it('sends the order confirmation from the worker, and tells the open order page 
         ->and((string) $sent[0]['html'])->toContain("src=\"{$origin}/brand/mark-64.png\"")
         ->and((string) $sent[0]['html'])->toContain('style="')
         // Both background children ran, and stopped with serve.
-        ->and($served)->toContain('Working mail, webhooks, default.')
+        ->and($served)->toContain('Working mail, webhooks, default, transfers.')
         ->and($served)->toContain('Running the schedule every minute.')
         ->and($exit)->toBe(0);
 });
