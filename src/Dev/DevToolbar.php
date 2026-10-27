@@ -8,11 +8,14 @@ use Tinvar\Auth\AuthContext;
 use Tinvar\Http\DevOverlay;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
+use Tinvar\Orm\LazyLoad;
 use Tinvar\Orm\RawStatement;
 use Tinvar\Render\FrameTap;
 use Tinvar\Render\RenderFailed;
 use Tinvar\Render\RenderResult;
 use Tinvar\Render\TokenError;
+use Tinvar\Routing\CompiledRoute;
+use Tinvar\Routing\LoadedRoute;
 use Tinvar\Support\DevMode;
 use Tinvar\Support\Signer;
 
@@ -63,6 +66,13 @@ final class DevToolbar implements FrameTap
 
     /** The header the toolbar's fetches carry their token in. */
     public const string HEADER = 'x-tinvar-toolbar';
+
+    /**
+     * The version of what the endpoint answers, for a browser extension
+     * reading it as the toolbar does (ADR 0062): bumped when a field it
+     * names changes meaning or goes.
+     */
+    public const int PROTOCOL = 1;
 
     /** The element the toolbar draws itself into, and the prefix of its data block's id. */
     public const string ID = 'tinvar-dev-toolbar';
@@ -185,6 +195,56 @@ final class DevToolbar implements FrameTap
         $this->current?->rawStatement($statement);
     }
 
+    /** A lazy relation load: what the Kernel hands Orm::flagLazyLoads() when it has a toolbar. */
+    public function lazyLoad(LazyLoad $load): void
+    {
+        $this->current?->lazyLoad($load);
+    }
+
+    /** An acrossTenants() call: what the Kernel hands Orm::flagAcrossTenants() when it has a toolbar. */
+    public function acrossTenants(string $site): void
+    {
+        $this->current?->acrossTenants($site);
+    }
+
+    /**
+     * The route about to render: where each slot of its props comes from --
+     * each layout's loader and the page's, the Data it returned, and the
+     * loader's file:line -- for the Props panel's badges.
+     */
+    public function loaded(LoadedRoute $loaded): void
+    {
+        if ($this->current === null) {
+            return;
+        }
+
+        $origins = [];
+        foreach ($loaded->chain->layouts as $layout) {
+            if (isset($loaded->layouts[$layout->layoutKey])) {
+                $origins[] = self::origin("layouts.{$layout->layoutKey}", 'layout', $layout, $loaded->layouts[$layout->layoutKey]::class);
+            }
+        }
+        if ($loaded->page !== null) {
+            $origins[] = self::origin('page', 'page', $loaded->chain->page, $loaded->page::class);
+        }
+        $this->current->origins($origins);
+    }
+
+    /** @return array{slot: string, kind: string, loader: string, data: string, site: string} */
+    private static function origin(string $slot, string $kind, CompiledRoute $route, string $data): array
+    {
+        $loader = "{$route->class}::__invoke";
+        $site = '';
+        if (class_exists($route->class)) {
+            $reflection = new \ReflectionClass($route->class);
+            $where = $reflection->hasMethod('__invoke') ? $reflection->getMethod('__invoke') : $reflection;
+            $file = $where->getFileName();
+            $site = $file === false ? '' : "{$file}:{$where->getStartLine()}";
+        }
+
+        return ['slot' => $slot, 'kind' => $kind, 'loader' => $loader, 'data' => $data, 'site' => $site];
+    }
+
     /**
      * Keeps the request's recording under the session and user it ran for,
      * and draws the toolbar into a document response. Called before the
@@ -258,14 +318,16 @@ final class DevToolbar implements FrameTap
 
         $rest = substr($request->path, \strlen(self::PATH));
         if ($rest === '') {
-            return self::json(200, ['requests' => $this->store->list($current->sessionHash, $current->authHash)]);
+            return self::json(200, ['protocol' => self::PROTOCOL, 'requests' => $this->store->list($current->sessionHash, $current->authHash)]);
         }
 
         $found = preg_match('#^/([0-9a-f]{16})\z#', $rest, $m) === 1
             ? $this->store->find($m[1], $current->sessionHash, $current->authHash)
             : null;
 
-        return $found === null ? self::json(404, ['error' => 'not_found']) : self::json(200, ['request' => $found]);
+        return $found === null
+            ? self::json(404, ['error' => 'not_found'])
+            : self::json(200, ['protocol' => self::PROTOCOL, 'request' => $found]);
     }
 
     // -------------------------------------------------------------- drawing

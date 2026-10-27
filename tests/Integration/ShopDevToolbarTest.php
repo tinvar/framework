@@ -156,6 +156,25 @@ it('draws the toolbar into a dev page, and hands back what the renderer was give
             ->and(array_map(static fn (array $f): string => "{$f['dir']}:{$f['t']}", $detail['frames']))->toContain('out:result')
             ->and($detail['timings'][0]['queryBatches'])->toBeGreaterThanOrEqual(1);
 
+        // Where each slot of its props came from, with its Data and
+        // file:line (ADR 0062): the page's loader -- the shop's layout loads
+        // nothing, and reads what it shows as shared data, in the ticks.
+        expect(array_map(static fn (array $o): string => "{$o['kind']} {$o['slot']} {$o['loader']} {$o['data']}", $detail['origins']))
+            ->toBe(['page page Shop\Pages\ProductPage::__invoke Shop\Data\ProductPageData'])
+            ->and($detail['origins'][0]['site'])->toMatch('#/examples/shop/app/Pages/ProductPage\.php:\d+$#')
+            ->and($detail['lazyLoads'])->toBeArray()
+            ->and($detail['acrossTenants'])->toBeArray()
+            ->and($developer->toolbar(DevToolbar::PATH, $token)['protocol'])->toBe(DevToolbar::PROTOCOL);
+
+        // A renderer built for production names no component behind a call,
+        // the toolbar's run or not: React's owner stack is development's
+        // alone, and the renderer refuses to look under NODE_ENV=production.
+        foreach ($ticks as $tick) {
+            foreach ($tick['body']['q'] as $call) {
+                expect($call)->not->toHaveKey('by');
+            }
+        }
+
         // Nothing in any of it that would let someone act as the visitor.
         $all = json_encode([$page, $detail], JSON_THROW_ON_ERROR);
         expect($all)->not->toContain((string) $nonce)

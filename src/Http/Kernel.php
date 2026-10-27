@@ -536,6 +536,8 @@ final class Kernel
         // Raw SQL on a tenant table, flagged on the request it ran in.
         if ($toolbar !== null) {
             $this->orm->flagRawStatements($toolbar->rawStatement(...));
+            $this->orm->flagLazyLoads($toolbar->lazyLoad(...));
+            $this->orm->flagAcrossTenants($toolbar->acrossTenants(...));
         }
         $this->events = $events;
 
@@ -1360,6 +1362,7 @@ final class Kernel
                     $passed = $passed->withAttribute(self::HISTORY_KEY, $historyKey);
                 }
                 $loaded = $this->withHeldOnce($loaded, $passed, $token);
+                $this->toolbar?->loaded($loaded);
                 [$passed, $flashed] = $this->withFormState($passed);
                 $response = $this->withCsrfCookie($passed, $respond($loaded, $passed));
                 $response = $this->withHistoryKey($passed, $response, $historyKey);

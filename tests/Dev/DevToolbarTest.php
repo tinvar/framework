@@ -16,6 +16,7 @@ use Tinvar\Actions\ActionRegistry;
 use Tinvar\Attributes\Page;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PolicyRegistry;
+use Tinvar\Data\Data;
 use Tinvar\Dev\DevToolbar;
 use Tinvar\Dev\Recording;
 use Tinvar\Dev\ToolbarToken;
@@ -26,6 +27,7 @@ use Tinvar\Http\Middleware;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Orm\IdentityMap;
+use Tinvar\Orm\LazyLoad;
 use Tinvar\Orm\Metadata;
 use Tinvar\Orm\Orm;
 use Tinvar\Protocol\Frame;
@@ -49,8 +51,19 @@ require_once __DIR__ . '/../Auth/Fixtures/policies.php';
 
 const NONCE = 'R4nd0m+N/once==';
 
+final readonly class CatalogData extends Data
+{
+    public function __construct(public string $title = 'Lanterns') {}
+}
+
 #[Page('/catalog', view: 'catalog', name: 'catalog')]
-final class CatalogPage {}
+final class CatalogPage
+{
+    public function __invoke(): CatalogData
+    {
+        return new CatalogData();
+    }
+}
 
 /** Signs in whoever the `user` cookie names, at the `epoch` cookie's epoch: the application's StartSession. */
 final readonly class SignIn implements Middleware
@@ -501,4 +514,56 @@ it('flags raw SQL a request sent on a tenant table, and nothing of the ORM\'s ow
             'tenant' => '',
             'acrossTenants' => false,
         ]]);
+});
+
+// ADR 0062: what the ORM did for the request, and where each slot of the
+// props came from.
+it('flags each acrossTenants() call and lazy load the request made, with its site, bounded', function () {
+    $toolbar = toolbar(run());
+    $kernel = kernel($toolbar);
+
+    $line = __LINE__ + 3;
+    $token = tokenIn($kernel->handle(local('/catalog'), static function (LoadedRoute $loaded) use ($kernel, $toolbar): Response {
+        for ($i = 0; $i < Recording::MAX_ACROSS_TENANTS + 3; $i++) {
+            $kernel->orm->acrossTenants(static fn (): int => 1);
+        }
+        $toolbar->lazyLoad(new LazyLoad('App\Order::lines', 1, LazyLoad::ALONE, '/app/Pages/Orders.php:77'));
+
+        return respond($toolbar)($loaded);
+    }));
+
+    [, $list] = read($kernel, DevToolbar::PATH, $token);
+    [, $one] = read($kernel, DevToolbar::PATH . '/' . $list['requests'][0]['id'], $token);
+
+    expect($list['protocol'])->toBe(DevToolbar::PROTOCOL)
+        ->and($one['protocol'])->toBe(DevToolbar::PROTOCOL)
+        ->and($list['requests'][0]['acrossTenants'])->toBe(Recording::MAX_ACROSS_TENANTS + 3)
+        ->and($list['requests'][0]['lazyLoads'])->toBe(1)
+        ->and($one['request']['acrossTenants'])->toHaveCount(Recording::MAX_ACROSS_TENANTS)
+        ->and($one['request']['acrossTenants'][0])->toBe(['site' => __FILE__ . ":{$line}"])
+        ->and($one['request']['acrossTenantsDropped'])->toBe(3)
+        ->and($one['request']['lazyLoads'])->toBe([[
+            'relation' => 'App\Order::lines',
+            'parents' => 1,
+            'batch' => 'alone',
+            'site' => '/app/Pages/Orders.php:77',
+        ]]);
+});
+
+it('badges the page\'s props with the loader that returned them and its file:line', function () {
+    $toolbar = toolbar(run());
+    $kernel = kernel($toolbar);
+    $token = tokenIn($kernel->handle(local('/catalog'), respond($toolbar)));
+
+    [, $list] = read($kernel, DevToolbar::PATH, $token);
+    [, $one] = read($kernel, DevToolbar::PATH . '/' . $list['requests'][0]['id'], $token);
+    $invoke = new \ReflectionMethod(CatalogPage::class, '__invoke');
+
+    expect($one['request']['origins'])->toBe([[
+        'slot' => 'page',
+        'kind' => 'page',
+        'loader' => CatalogPage::class . '::__invoke',
+        'data' => CatalogData::class,
+        'site' => __FILE__ . ':' . $invoke->getStartLine(),
+    ]]);
 });

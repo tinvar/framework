@@ -6,6 +6,7 @@ namespace Tinvar\Dev;
 
 use Tinvar\Codec\Bin;
 use Tinvar\Http\Request;
+use Tinvar\Orm\LazyLoad;
 use Tinvar\Orm\RawStatement;
 use Tinvar\Render\FrameTap;
 use Tinvar\Render\RenderFailure;
@@ -112,6 +113,39 @@ final class Recording
 
     /** Raw statements kept of one request. */
     public const int MAX_RAW_SQL = 50;
+
+    /** Lazy loads kept of one request; past it they are counted, not kept. */
+    public const int MAX_LAZY_LOADS = 100;
+
+    /** acrossTenants() calls kept of one request. */
+    public const int MAX_ACROSS_TENANTS = 50;
+
+    /**
+     * Every lazy relation load the request ran, with the line that touched
+     * the relation (Orm::flagLazyLoads()).
+     *
+     * @var list<array{relation: string, parents: int, batch: string, site: string}>
+     */
+    private array $lazyLoads = [];
+
+    private int $lazyLoadsDropped = 0;
+
+    /**
+     * Where each acrossTenants() call was made (Orm::flagAcrossTenants()).
+     *
+     * @var list<array{site: string}>
+     */
+    private array $acrossTenants = [];
+
+    private int $acrossTenantsDropped = 0;
+
+    /**
+     * Where each slot of the props came from: the loader that returned it,
+     * the Data class, and its file:line (DevToolbar::loaded()).
+     *
+     * @var list<array{slot: string, kind: string, loader: string, data: string, site: string}>
+     */
+    private array $origins = [];
 
     /**
      * The secret values PHP sent the renderer, to take out of what it sends
@@ -262,6 +296,55 @@ final class Recording
         ];
     }
 
+    /**
+     * A lazy relation load: tinvar-spec.md, "Observability (dev toolbar)" --
+     * "Every lazy relation load with its trigger site". One that ran for one
+     * parent alone is the 1+N the batching exists to prevent.
+     */
+    public function lazyLoad(LazyLoad $load): void
+    {
+        if (\count($this->lazyLoads) >= self::MAX_LAZY_LOADS) {
+            $this->lazyLoadsDropped++;
+
+            return;
+        }
+
+        $this->lazyLoads[] = [
+            'relation' => self::text($load->relation),
+            'parents' => $load->parents,
+            'batch' => self::text($load->batch),
+            'site' => self::text($load->site),
+        ];
+    }
+
+    /** An acrossTenants() call: "`acrossTenants()` calls flagged". */
+    public function acrossTenants(string $site): void
+    {
+        if (\count($this->acrossTenants) >= self::MAX_ACROSS_TENANTS) {
+            $this->acrossTenantsDropped++;
+
+            return;
+        }
+
+        $this->acrossTenants[] = ['site' => self::text($site)];
+    }
+
+    /**
+     * Where the props of a render came from, slot by slot: the badges the
+     * Props panel draws ("per-request props with origin badges and
+     * `file:line` links"). The last render's, for a request that rendered
+     * more than one.
+     *
+     * @param list<array{slot: string, kind: string, loader: string, data: string, site: string}> $origins
+     */
+    public function origins(array $origins): void
+    {
+        $this->origins = array_map(
+            static fn (array $origin): array => array_map(self::text(...), $origin),
+            $origins,
+        );
+    }
+
     /** The render failed: its classification, the framework's hint for it, and the reference the visitor was shown. */
     public function failed(RenderFailure $failure, string $digest): void
     {
@@ -294,6 +377,8 @@ final class Recording
             'renders' => \count($this->renders),
             'failure' => $this->failure['code'] ?? null,
             'rawSql' => \count($this->rawSql) + $this->rawSqlDropped,
+            'lazyLoads' => \count($this->lazyLoads) + $this->lazyLoadsDropped,
+            'acrossTenants' => \count($this->acrossTenants) + $this->acrossTenantsDropped,
         ];
 
         return [
@@ -307,6 +392,11 @@ final class Recording
                 'failure' => $this->failure,
                 'rawSql' => $this->rawSql,
                 'rawSqlDropped' => $this->rawSqlDropped,
+                'lazyLoads' => $this->lazyLoads,
+                'lazyLoadsDropped' => $this->lazyLoadsDropped,
+                'acrossTenants' => $this->acrossTenants,
+                'acrossTenantsDropped' => $this->acrossTenantsDropped,
+                'origins' => $this->origins,
             ],
         ];
     }
