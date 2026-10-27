@@ -1037,10 +1037,10 @@ final class Kernel
             // Global middleware is what opens the session and signs in whoever
             // it names; declared again on a sessionless endpoint, it would run
             // there -- over a request with no cookie, but run.
-            $global = $endpoint->sessionless ? array_intersect($endpoint->middleware, $globalMiddleware) : [];
-            if ($global !== []) {
+            $declaredGlobal = $endpoint->sessionless ? array_intersect($endpoint->middleware, $globalMiddleware) : [];
+            if ($declaredGlobal !== []) {
                 throw new \InvalidArgumentException(
-                    "{$endpoint->where()} is #[WithoutSession] and declares the global middleware " . implode(', ', $global)
+                    "{$endpoint->where()} is #[WithoutSession] and declares the global middleware " . implode(', ', $declaredGlobal)
                     . ', which opens the session it runs without. Authenticate its caller with middleware of its own.',
                 );
             }
