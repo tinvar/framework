@@ -539,13 +539,15 @@ final class SupplyChain
             }
         }
 
+        // Each instruction, and whether it is a heredoc's body line.
         $instructions = [];
         $current = '';
-        foreach ($lines as $line) {
+        $count = \count($lines);
+        for ($index = 0; $index < $count; $index++) {
             // BuildKit takes the leading whitespace off every line, a
             // continued one's too -- Unicode's, so a no-break space before
             // FROM hides nothing.
-            $line = self::trimLeadingSpace($line);
+            $line = self::trimLeadingSpace($lines[$index]);
             // Blank lines and comments, between instructions or inside a
             // continued one, as BuildKit drops them.
             if ($line === '' || $line[0] === '#') {
@@ -560,15 +562,35 @@ final class SupplyChain
 
                 continue;
             }
-            $instructions[] = trim($current . $line);
+            $instruction = trim($current . $line);
+            $instructions[] = [$instruction, false];
             $current = '';
+
+            // A heredoc's body follows its instruction, up to its
+            // terminator: a file's contents or a script, not instructions.
+            // It is still read as instructions, so what it would pull if it
+            // were is held -- but it names no stage, or `FROM scratch AS
+            // nope` written into a file would make a later `--from=nope`
+            // read as a stage, where BuildKit pulls the image. A heredoc is
+            // found wherever `<<` is, more often than BuildKit finds one,
+            // and a name the check cannot be sure of runs to the end of the
+            // file: either way, what it reads as a body names no stage.
+            foreach (self::heredocs($instruction) as [$chomp, $terminator]) {
+                for ($index++; $index < $count; $index++) {
+                    $body = $chomp ? ltrim($lines[$index], "\t") : $lines[$index];
+                    if ($terminator !== null && $body === $terminator) {
+                        break;
+                    }
+                    $instructions[] = [trim($lines[$index]), true];
+                }
+            }
         }
         if (trim($current) !== '') {
-            $instructions[] = trim($current);
+            $instructions[] = [trim($current), false];
         }
 
         $stages = [];
-        foreach ($instructions as $instruction) {
+        foreach ($instructions as [$instruction, $body]) {
             [$keyword, $rest] = self::command($instruction);
             [$flags, $rest] = self::builderFlags($rest);
             // What an ONBUILD wraps runs in a build FROM this image, as if
@@ -584,7 +606,7 @@ final class SupplyChain
                 if (!self::stageOrPinned($image, $stages)) {
                     $violations[] = "{$name} builds FROM {$image}, which is not pinned to a sha256 digest.";
                 }
-                if (isset($words[1], $words[2]) && strtoupper($words[1]) === 'AS') {
+                if (!$body && isset($words[1], $words[2]) && strtoupper($words[1]) === 'AS') {
                     $stages[] = strtolower($words[2]);
                 }
 
@@ -680,6 +702,29 @@ final class SupplyChain
             || ($checksum !== null && preg_match($commit, $checksum) === 1);
 
         return $pinned ? null : "{$name} ADDs the git source {$source}, which is not pinned to a full commit.";
+    }
+
+    /**
+     * The heredocs an instruction opens, in order: whether `<<-` strips the
+     * body's leading tabs, and the terminator, or null where the name holds
+     * anything but a plain word -- a variable, say, which BuildKit and this
+     * check could read apart -- and the body is taken to run to the end.
+     *
+     * @return list<array{bool, string|null}>
+     */
+    private static function heredocs(string $instruction): array
+    {
+        preg_match_all('/<<(-?)((?:"[^"]*"|\'[^\']*\'|\\\\.|[^\s<"\'\\\\])*)/s', $instruction, $matches, PREG_SET_ORDER);
+        $heredocs = [];
+        foreach ($matches as $match) {
+            $name = str_replace(['"', "'", '\\'], '', $match[2]);
+            if ($name === '' && $match[2] === '') {
+                continue;
+            }
+            $heredocs[] = [$match[1] === '-', preg_match('/^[A-Za-z0-9_.-]+$/', $name) === 1 ? $name : null];
+        }
+
+        return $heredocs;
     }
 
     /**

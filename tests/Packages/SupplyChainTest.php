@@ -591,6 +591,25 @@ describe('dockerfiles', function () {
         ]);
     });
 
+    // A heredoc's body is a file's contents or a script: a `FROM ... AS` in
+    // one names no stage, and BuildKit pulls the image a later --from names.
+    it('takes no stage name from a heredoc body', function (string $contents) {
+        expect(SupplyChain::dockerfile('Dockerfile', $contents))->toContain(
+            'Dockerfile COPY takes files from nope, which is not pinned to a sha256 digest.',
+        );
+    })->with([
+        'COPY <<EOF' => ["FROM scratch\nCOPY <<EOF /f\nFROM scratch AS nope\nEOF\nCOPY --from=nope /x /x\n"],
+        "RUN <<-'EOT'" => ["FROM scratch\nRUN <<-'EOT' bash\n\tFROM scratch AS nope\n\tEOT\nCOPY --from=nope /x /x\n"],
+        'a second heredoc' => ["FROM scratch\nRUN <<A cat - <<\"B\"\na\nA\nFROM scratch AS nope\nB\nCOPY --from=nope /x /x\n"],
+        'a name read as a variable' => ["FROM scratch\nRUN <<E\$X\nE\$X\nFROM scratch AS nope\nE\nCOPY --from=nope /x /x\n"],
+    ]);
+
+    it('reads the instructions after a heredoc', function () use ($digest) {
+        expect(SupplyChain::dockerfile('Dockerfile', "FROM debian{$digest} AS build\nRUN <<EOF\necho hi\nEOF\nFROM debian{$digest}\nCOPY --from=build /a /b\nFROM nope:latest\n"))->toBe([
+            'Dockerfile builds FROM nope:latest, which is not pinned to a sha256 digest.',
+        ]);
+    });
+
     // A stage is named before it is used: a later stage's name is an image.
     it('takes only an earlier stage\'s name as a stage', function () use ($digest) {
         $this->workspace->file('Dockerfile', "FROM later\nFROM debian{$digest} AS later\n");
