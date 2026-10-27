@@ -46,6 +46,18 @@ refuse() {
     exit 78 # EX_CONFIG
 }
 
+# The production profile, whatever is asked of the container: the browser
+# test endpoint is never served from an image (ADR 0066). First, so nothing
+# starts under it -- not a one-off command either.
+if [ -n "${TINVAR_PROFILE:-}" ] && [ "$(printf %s "$TINVAR_PROFILE" | tr '[:upper:]' '[:lower:]')" != production ]; then
+    refuse "TINVAR_PROFILE=$TINVAR_PROFILE: an image serves the production profile. The test profile is a browser test run's, on its own machine."
+fi
+for variable in TINVAR_TEST_RUN TINVAR_BUILD_DIR; do
+    if [ -n "${!variable:-}" ]; then
+        refuse "$variable is set: an image serves its own build to no browser test run. Unset it."
+    fi
+done
+
 # Each as its user. No inheritable capability, no_new_privs: what runs
 # under these keeps nothing of root's and can gain nothing back. Commands,
 # not functions, so a process started with one is that process, and the pid
