@@ -6,6 +6,7 @@ namespace Tinvar\Server;
 
 use Tinvar\Jobs\StopBudget;
 use Tinvar\Protocol\ProtocolException;
+use Tinvar\Queue\HeldJob;
 use Tinvar\Render\RendererException;
 use Tinvar\Render\RendererHealth;
 use Tinvar\Render\RendererSockets;
@@ -407,6 +408,7 @@ final class ServeCommand
         // One killed outright had no chance to remove its own.
         PrivateDirectory::removeAbandoned('tinvar-serve');
         $directory = PrivateDirectory::create('tinvar-serve', owner: getmypid() ?: null);
+        $this->held = "{$directory}/queue-work.held";
         $socket = "{$directory}/renderer.sock";
         $deferred = "{$directory}/deferred.json";
         $children = [];
@@ -530,7 +532,7 @@ final class ServeCommand
             ));
 
         $status = $this->supervise($children, $plan['app'], $environment);
-        $this->terminate($children);
+        $this->terminate($children, $plan['app'], $environment);
         PrivateDirectory::remove($directory);
 
         return $status;
@@ -610,6 +612,12 @@ final class ServeCommand
     /** The plan's stop budget, once serve() has it: what terminate() gives the background. */
     private int $stopBudget = StopBudget::DEFAULT;
 
+    /** Where the queue worker writes the job in hand (HeldJob), in serve's private directory. */
+    private ?string $held = null;
+
+    /** Seconds `queue:hand-back` is given, beside FrankenPHP's stop. */
+    public const int HAND_BACK_SECONDS = 5;
+
     /** Seconds FrankenPHP, and then the renderers, are given to stop. */
     public const int STOP_SECONDS = 10;
 
@@ -627,6 +635,9 @@ final class ServeCommand
         \assert($this->console !== null);
 
         $php = PhpCommand::prefix();
+        if ($command === 'queue:work' && $this->held !== null) {
+            $environment[HeldJob::ENV] = $this->held;
+        }
 
         return $this->spawn([...$php, __DIR__ . '/../../bin/tethered.php', ...$php, $this->console, $command], $app, $environment);
     }
@@ -722,15 +733,99 @@ final class ServeCommand
     }
 
     /**
-     * Stops every child, in stopOrder()'s order.
+     * Stops every child, in stopOrder()'s order, and hands back the job a
+     * queue worker killed on the way still held.
      *
      * @param array<string, resource> $children
+     * @param string|null $app where the console runs, for the hand-back; none, no hand-back
+     * @param array<string, string> $environment the background children's
      */
-    private function terminate(array $children): void
+    private function terminate(array $children, ?string $app = null, array $environment = []): void
     {
+        $handBack = null;
         foreach (self::stopOrder(array_keys($children), $this->stopBudget) as [$names, $seconds]) {
             $this->stopAll(array_intersect_key($children, array_flip($names)), $seconds);
+            if ($app !== null && \in_array('queue:work', $names, true)) {
+                $handBack = $this->startHandBack($app, $environment);
+            }
         }
+        if ($handBack !== null) {
+            $this->finishHandBack($handBack);
+        }
+    }
+
+    /**
+     * The job a worker killed at the stop still held, back on its queue
+     * (HeldJob). A job blocked in a read runs no PHP until the read returns:
+     * the worker's own stop could not reach it, and killed holding it, it
+     * would wait out its reservation. The worker is killed first -- killing
+     * its tether left it running, orphaned -- and is gone before its job is
+     * handed back, or the job would run twice. Run beside FrankenPHP's stop,
+     * which it needs nothing of.
+     *
+     * @param array<string, string> $environment
+     * @return array{resource, float}|null
+     */
+    private function startHandBack(string $app, array $environment): ?array
+    {
+        $console = $this->console;
+        $file = $this->held;
+        if ($file === null || $console === null) {
+            return null;
+        }
+        $held = HeldJob::read($file);
+        if ($held === null) {
+            return null;
+        }
+
+        $pid = $held['pid'];
+        if (HeldJob::running($pid) && self::isWorker($pid)) {
+            ($this->err)("The queue worker (pid {$pid}) would not stop holding {$held['job']->id}; killing it, and handing the job back.");
+            posix_kill($pid, \defined('SIGKILL') ? SIGKILL : 9);
+            $deadline = microtime(true) + 2;
+            while (HeldJob::running($pid) && microtime(true) < $deadline) {
+                usleep(20_000);
+            }
+        }
+        if (HeldJob::running($pid)) {
+            ($this->err)("The queue worker (pid {$pid}) is still running; {$held['job']->id} is left to its reservation.");
+
+            return null;
+        }
+
+        $process = proc_open(
+            [...PhpCommand::prefix(), $console, 'queue:hand-back', $file],
+            [0 => ['file', '/dev/null', 'r'], 1 => STDERR, 2 => STDERR],
+            $pipes,
+            $app,
+            $environment,
+        );
+
+        return \is_resource($process) ? [$process, microtime(true) + self::HAND_BACK_SECONDS] : null;
+    }
+
+    /** @param array{resource, float} $handBack */
+    private function finishHandBack(array $handBack): void
+    {
+        [$process, $deadline] = $handBack;
+        while (proc_get_status($process)['running'] && microtime(true) < $deadline) {
+            usleep(20_000);
+        }
+        if (proc_get_status($process)['running']) {
+            proc_terminate($process, \defined('SIGKILL') ? SIGKILL : 9);
+        }
+        proc_close($process);
+    }
+
+    /**
+     * Whether $pid runs `queue:work`, where /proc can say: a pid written by
+     * a worker that has since gone may be another process's now.
+     */
+    private static function isWorker(int $pid): bool
+    {
+        $cmdline = is_readable("/proc/{$pid}/cmdline") ? @file_get_contents("/proc/{$pid}/cmdline") : false;
+
+        return $cmdline === false ? is_dir('/proc') === false : \in_array('queue:work', explode("\0", $cmdline), true);
     }
 
     /**
