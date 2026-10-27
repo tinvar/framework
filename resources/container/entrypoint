@@ -26,11 +26,11 @@
 # the renderers' user can read none of the paths TINVAR_CONTAINER_PRIVATE
 # names, nor the key file.
 #
-# SIGTERM (docker stop) stops the PHP side first -- FrankenPHP finishes the
-# requests it has, which may still render; every process of PHP's user is
-# waited for -- and the renderers last, which finish the renders in flight.
-# SIGUSR2
-# restarts the renderers one at a time. Either process exiting on its own
+# SIGTERM (docker stop) stops the PHP side first -- serve stops the queue
+# worker, which finishes the job in hand, and the scheduler, then
+# FrankenPHP, which finishes the requests it has; every process of PHP's
+# user is waited for -- and the renderers last, which finish the renders in
+# flight. SIGUSR2 restarts the renderers one at a time. Either process exiting on its own
 # stops the other, and the container exits non-zero for its restart policy.
 set -euo pipefail
 
@@ -158,34 +158,41 @@ app_processes() {
     done
 }
 
-# PHP's side is stopped through `tinvar serve`'s tethers, not its signal
-# handlers: under FrankenPHP's static binary, PHP's CLI cannot take a
-# signal -- a pcntl handler for SIGTERM, SIGINT or SIGHUP crashes the
-# process, and SIGUSR2 ends it (measured; ADR 0059). So serve is killed
-# outright, which its children are built to outlive by a moment: each tether
-# sees its standard input close and sends its command SIGTERM, FrankenPHP
-# finishes the requests it has, and the tethers give up after 10 s. Then
-# every process of PHP's user, orphans too, is waited for.
+# PHP's side is stopped by `tinvar serve` itself, which runs under PHP's own
+# CLI and takes SIGTERM (ADR 0063): it stops the queue worker and the
+# scheduler first, giving a job in hand up to 70 s to finish, then
+# FrankenPHP, which drains its requests for up to 10 s. A serve still there
+# after 85 s is killed, which its children are built to outlive by a moment:
+# each tether sees its standard input close and stops its command within
+# 10 s. Then every process of PHP's user, orphans too, is waited for, and
+# any left after 15 s more is killed: none of them outlives this function,
+# so the renderers are stopped with nothing of PHP's left to render for.
 stop_php() {
     [ -n "$php_pid" ] || return 0
-    kill -KILL "$php_pid" 2>/dev/null || true
-    wait "$php_pid" 2>/dev/null || true
-    local deadline=$((SECONDS + 30)) left
+    stop_one "$php_pid" 85
+    local deadline=$((SECONDS + 15)) left
     while left=$(app_processes) && [ -n "$left" ] && ((SECONDS < deadline)); do
         sleep 0.2
     done
     if [ -n "$left" ]; then
-        say "PHP's processes $(echo "$left" | tr '\n' ' ')did not stop in 30 s; killing them."
+        say "PHP's processes $(echo "$left" | tr '\n' ' ')did not stop in time; killing them."
         # shellcheck disable=SC2086 # one pid a word
         kill -KILL $left 2>/dev/null || true
+        # Gone before the renderers go: a pid still listed after its SIGKILL
+        # is one the kernel has not finished with yet.
+        deadline=$((SECONDS + 5))
+        while left=$(app_processes) && [ -n "$left" ] && ((SECONDS < deadline)); do
+            sleep 0.1
+        done
     fi
 }
 
 stop() {
     stopping=1
     say "Stopping: PHP first, then the renderers."
-    # PHP first: it finishes its requests, which may still render. The
-    # renderers then drain for up to 60 s.
+    # PHP first: it finishes its jobs and requests, which may still render.
+    # The renderers then drain for up to 60 s. At worst some 180 s in all:
+    # compose's stop_grace_period is 190 s.
     stop_php
     say "PHP has stopped."
     stop_one "$renderer_pid" 75
