@@ -28,14 +28,11 @@ use Tinvar\Outbound\OutboundResponse;
 use Tinvar\Outbound\PinnedHttp;
 use Tinvar\Queue\ArrayQueue;
 use Tinvar\Queue\WorkerOptions;
-use Tinvar\Support\Signer;
-use Tinvar\Tenancy\Signature;
-use Tinvar\Tenancy\SignedUrls;
-use Tinvar\Tenancy\Tenancy;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\Journal;
 use Tinvar\Tests\Orm\Fixtures\Script;
 use Tinvar\Tests\Outbound\Fixtures\Server;
+use Tinvar\Tests\Support\Fixtures\Sources;
 use Tinvar\Webhooks\ArrayDeliveryLog;
 use Tinvar\Webhooks\ArrayNonceStore;
 use Tinvar\Webhooks\DatabaseDeliveryLog;
@@ -55,6 +52,7 @@ use function Tinvar\Tests\Jobs\Fixtures\schemaOf;
 
 require_once __DIR__ . '/../Jobs/Fixtures/jobs.php';
 require_once __DIR__ . '/../Outbound/Fixtures/server.php';
+require_once __DIR__ . '/../Support/Fixtures/tenants.php';
 
 const KEY = 'outbound-webhooks-test-key-32-bytes!';
 
@@ -66,8 +64,23 @@ final readonly class ScriptRanData extends Data
     public function __construct(public string $name, public int $lines) {}
 }
 
+/**
+ * The tenant a receiver's URL names, in plain sight: the receiver here is
+ * the framework's alone, and a URL signed for its tenant (tinvar/tenancy's
+ * Signature) is tested with tenancy.
+ */
+final class FromQuery
+{
+    public function tenantFor(Request $request): ?string
+    {
+        $tenant = $request->query['tenant'] ?? null;
+
+        return \is_string($tenant) ? $tenant : null;
+    }
+}
+
 /** Another Tinvar application's inbound side, receiving the deliveries. */
-#[Webhook('/hooks/scripts'), TenantFrom(Signature::class)]
+#[Webhook('/hooks/scripts'), TenantFrom(FromQuery::class)]
 final class ReceivesScripts
 {
     public function __construct(private readonly Journal $journal) {}
@@ -97,7 +110,6 @@ final class Sender
     public FakeOutboundHttp|PinnedHttp $http;
     public ArrayDeliveryLog $log;
     public OutboundWebhooks $webhooks;
-    public SignedUrls $urls;
 
     /**
      * @param (\Closure(OutboundRequest): OutboundResponse)|null $respond
@@ -106,7 +118,6 @@ final class Sender
     public function __construct(?\Closure $respond = null, ?array $subscriptions = null, ?PinnedHttp $http = null)
     {
         $this->h = new Harness();
-        $this->urls = new SignedUrls(new Signer(KEY, SignedUrls::PURPOSE));
         $this->http = $http ?? new FakeOutboundHttp($respond);
         $this->log = new ArrayDeliveryLog();
         $this->h->container
@@ -114,15 +125,14 @@ final class Sender
             ->instance(WebhookSubscriptions::class, new StaticSubscriptions($subscriptions ?? [
                 'scripts' => new WebhookSubscription('https://receiver.test' . $this->receiverPath(), SECRET),
             ]))
-            ->instance(DeliveryLog::class, $this->log)
-            ->instance(Signature::class, new Signature($this->urls));
+            ->instance(DeliveryLog::class, $this->log);
         $this->webhooks = new OutboundWebhooks($this->h->dispatcher, clock: fn (): int => $this->h->now);
     }
 
-    /** The path and signed query acme's receiver handed out. */
+    /** The path and query acme's receiver handed out. */
     public function receiverPath(): string
     {
-        return $this->urls->sign('/hooks/scripts', 'acme', ttl: 86_400 * 365);
+        return '/hooks/scripts?tenant=acme';
     }
 
     public function sendAsAcme(string $event = 'script.ran'): string
@@ -196,7 +206,7 @@ it('POSTs every event in one shape, signed as the inbound side verifies it', fun
         ->and(signed($request)['nonce'])->toBe($id);
 
     // The receiver: a WebhookEndpoint, as another Tinvar application runs it.
-    $endpoint = new WebhookEndpoint([ReceivesScripts::class], $s->h->orm, $s->h->container->resolver(), new ReceiverSecret(), new ArrayNonceStore(), tenants: new Tenancy($s->h->container->resolver()));
+    $endpoint = new WebhookEndpoint([ReceivesScripts::class], $s->h->orm, $s->h->container->resolver(), new ReceiverSecret(), new ArrayNonceStore(), tenants: new Sources($s->h->container->resolver()));
     /** @var array<string, string> $query */
     $answer = $endpoint->handle(new Request('POST', $url['path'], $request->headers, $query, [], [], $url['query'] ?? null), $request->body);
 

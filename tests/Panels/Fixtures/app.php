@@ -28,6 +28,7 @@ use Tinvar\Data\Data;
 use Tinvar\Http\BuildRegistry;
 use Tinvar\Http\FragmentSupport;
 use Tinvar\Http\HistoryKeys;
+use Tinvar\Http\HostName;
 use Tinvar\Http\Kernel;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Middleware\RequirePanelMembership;
@@ -42,13 +43,14 @@ use Tinvar\Render\RouteToken;
 use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
-use Tinvar\Tenancy\Host;
-use Tinvar\Tenancy\TenantHosts;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 use Tinvar\Tests\Panels\Fixtures\Admin\Reports;
+use Tinvar\Tests\Support\Fixtures\Sources;
 
 require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenant.php';
+require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once __DIR__ . '/../../Support/Fixtures/tenants.php';
 
 /**
  * A staff panel and a reseller panel in front of a few pages, an action and
@@ -145,11 +147,12 @@ final class Directory implements Memberships
     }
 }
 
-final class Hosts implements TenantHosts
+/** The tenant a request's host names, as tinvar/tenancy's Host would read it. */
+final class Hosts
 {
-    public function tenantForHost(string $host): ?string
+    public function tenantFor(Request $request): ?string
     {
-        return ['acme.test' => 'acme', 'globex.test' => 'globex'][$host] ?? null;
+        return ['acme.test' => 'acme', 'globex.test' => 'globex'][HostName::normalize($request->header('host') ?? '') ?? ''] ?? null;
     }
 }
 
@@ -224,7 +227,7 @@ final readonly class AdminOrders extends ReportsPanel {}
 #[Page('/home', view: 'home', name: 'home')]
 final readonly class Home extends ReportsPanel {}
 
-#[Page('/reseller', view: 'reseller', name: 'reseller'), TenantFrom(Host::class), Panel('reseller', requires: Kind::Reseller)]
+#[Page('/reseller', view: 'reseller', name: 'reseller'), TenantFrom(Hosts::class), Panel('reseller', requires: Kind::Reseller)]
 final readonly class ResellerHome extends ReportsPanel {}
 
 #[Panel('admin')]
@@ -303,8 +306,7 @@ final class App
         $this->routeSigner = new Signer(KEY, RouteToken::PURPOSE);
 
         $container = (new Container())
-            ->instance(PanelContext::class, $this->panels)
-            ->instance(TenantHosts::class, new Hosts());
+            ->instance(PanelContext::class, $this->panels);
 
         $registry = new RouteRegistry();
         $registry->registerAll([AdminGroup::class, AdminDashboard::class, AdminOrders::class, Home::class, ResellerHome::class, Reports::class, ...$routes]);
@@ -345,7 +347,7 @@ final class App
             auth: $this->auth,
             policies: new PolicyRegistry(),
             resolver: $container->resolver(),
-            tenants: new \Tinvar\Tenancy\Tenancy($container->resolver()),
+            tenants: new Sources($container->resolver()),
             allowedQueries: static fn (Request $r): array => ['admin.stats'],
             globalMiddleware: $global,
             gate: new AllowAllGate(),
@@ -431,4 +433,3 @@ final class App
 
 // Its class extends ReportsPanel, so it is read once that is declared.
 require_once __DIR__ . '/Admin/reports.php';
-require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenancy.php';

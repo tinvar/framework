@@ -47,9 +47,11 @@ use Tinvar\Tests\Panels\Fixtures\Directory;
 use Tinvar\Tests\Panels\Fixtures\HostPanel;
 use Tinvar\Tests\Panels\Fixtures\SignIn;
 use Tinvar\Tests\Panels\Fixtures\Trace;
+use Tinvar\Tests\Support\Fixtures\Sources;
 
 require_once __DIR__ . '/Fixtures/app.php';
 require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once __DIR__ . '/../Support/Fixtures/tenants.php';
 
 /** @return array<string, mixed> */
 function page(App $app, string $path, ?string $user, array $headers = [], string $host = 'shop.test'): array
@@ -268,7 +270,7 @@ function boot(array $routes, ?Directory $memberships = null, ?PanelRegistry $pan
         auth: new AuthContext(),
         policies: new PolicyRegistry(),
         resolver: static fn (string $class): object => new $class(),
-        tenants: new \Tinvar\Tenancy\Tenancy(static fn (string $class): object => new $class()),
+        tenants: new Sources(static fn (string $class): object => new $class()),
         allowedQueries: static fn (Request $r): array => [],
         panelRegistry: $panels ?? App::panels(),
         memberships: $memberships,

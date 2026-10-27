@@ -11,6 +11,11 @@ declare(strict_types=1);
  * with no tenant, so tenant-scoped work in them must use forEachTenant()
  * or acrossTenants()." "Every non-HTTP context (... consoles) has a defined
  * panel" (tinvar-spec.md).
+ *
+ * With nothing of tinvar/tenancy installed: a command declaring a tenant is
+ * placed by whatever tenancy is registered (CommandTenants), here a
+ * stand-in, and refused with none (ADR 0056). TenantArgument, the
+ * directory and forEachTenant() are tested with tenancy.
  */
 
 namespace Tinvar\Tests\Console\ConsoleAndSchedule;
@@ -23,20 +28,15 @@ use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Console\ArrayScheduleStore;
 use Tinvar\Console\Command;
+use Tinvar\Console\CommandTenants;
 use Tinvar\Console\Console;
 use Tinvar\Console\Cron;
 use Tinvar\Console\DatabaseScheduleStore;
 use Tinvar\Console\Input;
 use Tinvar\Console\Output;
 use Tinvar\Console\Scheduler;
-use Tinvar\Tenancy\TenantArgument;
-use Tinvar\Tenancy\TenantDirectory;
-use Tinvar\Tenancy\Tenants;
-use Tinvar\Http\Request;
 use Tinvar\Orm\NoTenantContext;
 use Tinvar\Orm\Orm;
-use Tinvar\Tenancy\Host;
-use Tinvar\Tenancy\Tenancy;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\Journal;
 use Tinvar\Tests\Orm\Fixtures\Script;
@@ -45,21 +45,40 @@ use function Tinvar\Tests\Jobs\Fixtures\schemaOf;
 
 require_once __DIR__ . '/../Jobs/Fixtures/jobs.php';
 
-final class TwoTenants implements TenantDirectory
+/** A source a command declares, which only the registered tenancy gives a meaning. */
+final class FromArgument {}
+
+/**
+ * The framework suite's stand-in for tinvar/tenancy's console half: places
+ * a command declaring FromArgument in the tenant `--tenant=` names, if it is
+ * acme or globex -- or, told to, in none, which the console refuses.
+ */
+final class Commands implements CommandTenants
 {
-    public function has(string $tenant): bool
+    public function __construct(private readonly ?string $answer = null) {}
+
+    public function checkCommand(string $command, string $source): void
     {
-        return \in_array($tenant, ['acme', 'globex'], true);
+        if ($source !== FromArgument::class) {
+            throw new \InvalidArgumentException("{$command} declares its tenant from {$source}, which reads a request.");
+        }
     }
 
-    public function all(): iterable
+    public function commandTenant(string $name, string $source, ?string $named): string
     {
-        return ['acme', 'globex'];
+        if ($this->answer !== null) {
+            return $this->answer;
+        }
+        if (!\in_array($named, ['acme', 'globex'], true)) {
+            throw new \InvalidArgumentException("There is no tenant '{$named}'.");
+        }
+
+        return $named;
     }
 }
 
 /** Lists the tenant's scripts: tenant-scoped work, so it needs a tenant. */
-#[CommandName('scripts:list', description: 'The tenant\'s scripts'), TenantFrom(TenantArgument::class)]
+#[CommandName('scripts:list', description: 'The tenant\'s scripts'), TenantFrom(FromArgument::class)]
 final class ListScripts extends Command
 {
     public function __construct(private readonly Orm $orm, private readonly AuthContext $auth) {}
@@ -102,25 +121,13 @@ final class CountScripts extends Command
     }
 }
 
-#[CommandName('wrong:source'), TenantFrom(Host::class)]
-final class HostCommand extends Command
-{
-    public function handle(Input $input, Output $output): int
-    {
-        return 0;
-    }
-}
-
-/** Every ten minutes: counts each tenant's scripts, one tenant at a time. */
+/** Every ten minutes: says which tenant it ran as. */
 #[Schedule('*/10 * * * *')]
-final class CountEachTenant
+final class RecordsTenant
 {
-    public function __invoke(Tenants $tenants, Orm $orm, Journal $journal): void
+    public function __invoke(Orm $orm, Journal $journal): void
     {
         $journal->entries[] = ['task tenant' => $orm->tenant()];
-        $tenants->forEachTenant(function (string $tenant) use ($orm, $journal): void {
-            $journal->entries[] = [$tenant => array_map(static fn (Script $s): string => $s->name, $orm->all(Script::class, 'name'))];
-        });
     }
 }
 
@@ -166,10 +173,9 @@ final class ForgetsTheTenant
 }
 
 /** @return array{Console, Output, Harness, \Closure(): array{list<string>, list<string>}} */
-function console(?Harness $h = null): array
+function console(?Harness $h = null, ?CommandTenants $tenants = new Commands()): array
 {
     $h ??= new Harness();
-    $h->container->instance(Tenants::class, new Tenants($h->orm, new TwoTenants()));
     $out = [];
     $err = [];
     $output = new Output(static function (string $line) use (&$out): void {
@@ -184,7 +190,7 @@ function console(?Harness $h = null): array
         $h->scope,
         $h->panels,
         $h->registry,
-        new Tenancy($h->container->resolver(), new TwoTenants()),
+        $tenants,
         $h->queue,
         $h->runner,
     );
@@ -204,17 +210,24 @@ it('runs a command as the tenant its --tenant names, and as nobody', function ()
         ->and($h->orm->tenant())->toBe('');
 });
 
-it('refuses a command run without its tenant, with an unknown one, or with one it does not use', function () {
+it('refuses a command run with a tenant the tenancy refuses, or with one it does not use', function () {
     [$console, $output, , $read] = console();
 
-    expect($console->run('scripts:list', [], $output))->toBe(Console::USAGE)
-        ->and($console->run('scripts:list', ['--tenant=initech'], $output))->toBe(Console::USAGE)
+    expect($console->run('scripts:list', ['--tenant=initech'], $output))->toBe(Console::USAGE)
         ->and($console->run('scripts:count', ['--tenant=acme'], $output))->toBe(Console::USAGE)
         ->and($read()[1])->toBe([
-            'scripts:list runs as a tenant: name it with --tenant=ID.',
             "There is no tenant 'initech'.",
             'scripts:count does not run as a tenant, so --tenant would scope nothing.',
         ]);
+});
+
+// The console's own check, so it holds with any tenancy: a command that
+// declares a tenant runs as one, never as none.
+it('refuses a tenancy\'s answer that places a command in no tenant', function () {
+    [$console, $output, , $read] = console(tenants: new Commands(answer: ''));
+
+    expect($console->run('scripts:list', ['--tenant=acme'], $output))->toBe(Console::USAGE)
+        ->and($read()[1])->toBe(['scripts:list runs as a tenant: name it with --tenant=ID.']);
 });
 
 // Written with a space, as most command lines take an option's value,
@@ -243,27 +256,22 @@ it('runs a command in the panel it declares', function () {
         ->and($h->panels->currentOrNull())->toBeNull();
 });
 
-it('refuses a command whose tenant would come from a request', function () {
-    $h = new Harness();
-
-    expect(fn () => new Console([HostCommand::class], $h->orm, $h->container->resolver(), $h->scope, tenants: new Tenancy($h->container->resolver(), new TwoTenants())))
-        ->toThrow(\InvalidArgumentException::class, 'reads a request');
-});
-
 // ADR 0056: what a tenant source is, and which tenants there are, is the
 // registered tenancy's; with none, a command declaring one is refused when
 // the console is built, rather than run as no tenant.
-it('refuses a command declaring a tenant source with no tenancy to place it, or no directory to check it against', function () {
+it('refuses a command declaring a tenant source with no tenancy to place it', function () {
     $h = new Harness();
 
-    expect(fn () => new Console([ListScripts::class], $h->orm, $h->container->resolver(), $h->scope))
-        ->toThrow(\InvalidArgumentException::class, 'no tenancy to place it')
-        ->and(fn () => new Console([ListScripts::class], $h->orm, $h->container->resolver(), $h->scope, tenants: new Tenancy($h->container->resolver())))
-        ->toThrow(\InvalidArgumentException::class, 'no TenantDirectory');
+    expect(fn () => console($h, tenants: null))->toThrow(\InvalidArgumentException::class, 'no tenancy to place it')
+        ->and(fn () => new Console([ListScripts::class], $h->orm, $h->container->resolver(), $h->scope, tenants: new Commands()))->not->toThrow(\Throwable::class);
 });
 
-it('places no request with a command argument, so on a page it fails closed', function () {
-    expect(new TenantArgument()->tenantFor(Request::get('/')))->toBeNull();
+it('refuses tenancy given to the console and not to the Orm', function () {
+    $h = new Harness();
+    $bare = new Orm($h->fixture->connection);
+
+    expect(fn () => new Console([], $bare, $h->container->resolver(), $h->scope, tenants: new Commands()))
+        ->toThrow(\InvalidArgumentException::class, 'its Orm none');
 });
 
 it('works the queue from the console until it is empty', function () {
@@ -291,12 +299,11 @@ it('matches cron expressions in UTC, steps, ranges, lists and either day field',
         ->and(fn () => Cron::parse('60 * * * *'))->toThrow(\InvalidArgumentException::class, 'outside');
 });
 
-it('runs due tasks with no tenant, forEachTenant() visiting each tenant in turn', function () {
+it('runs due tasks with no tenant, in their panel, once a minute', function () {
     $h = new Harness();
-    $h->container->instance(Tenants::class, new Tenants($h->orm, new TwoTenants()));
     $reports = [];
     $scheduler = new Scheduler(
-        [CountEachTenant::class, NightlyFails::class],
+        [RecordsTenant::class, NightlyFails::class],
         $h->orm,
         $h->container->resolver(),
         $h->scope,
@@ -310,17 +317,13 @@ it('runs due tasks with no tenant, forEachTenant() visiting each tenant in turn'
 
     // A worker left running as a tenant: the task still runs as none.
     $h->orm->switchTenant('acme');
-    expect($scheduler->due(new \DateTimeImmutable('2026-10-24T10:20:00Z')))->toBe([CountEachTenant::class])
-        ->and($scheduler->runDue(new \DateTimeImmutable('2026-10-24T10:20:30Z')))->toBe([CountEachTenant::class => 'ran'])
-        ->and($h->journal()->entries)->toBe([
-            ['task tenant' => ''],
-            ['acme' => ['acme-script-1', 'acme-script-2']],
-            ['globex' => ['globex-script-1', 'globex-script-2']],
-        ]);
+    expect($scheduler->due(new \DateTimeImmutable('2026-10-24T10:20:00Z')))->toBe([RecordsTenant::class])
+        ->and($scheduler->runDue(new \DateTimeImmutable('2026-10-24T10:20:30Z')))->toBe([RecordsTenant::class => 'ran'])
+        ->and($h->journal()->entries)->toBe([['task tenant' => '']]);
 
     // Due again the same minute -- a second scheduler, or a cron overlapping
     // schedule:work -- it does not run twice.
-    expect($scheduler->runDue(new \DateTimeImmutable('2026-10-24T10:20:50Z')))->toBe([CountEachTenant::class => 'skipped']);
+    expect($scheduler->runDue(new \DateTimeImmutable('2026-10-24T10:20:50Z')))->toBe([RecordsTenant::class => 'skipped']);
 
     // A task that throws is reported; it ran in its panel.
     expect($scheduler->runDue(new \DateTimeImmutable('2026-10-24T03:05:00Z')))->toBe([NightlyFails::class => 'failed'])
@@ -338,14 +341,6 @@ it('fails closed in a task that reads tenant data without forEachTenant()', func
 
     expect($scheduler->runDue(new \DateTimeImmutable('2026-10-24T10:21:00Z')))->toBe([ForgetsTheTenant::class => 'failed'])
         ->and($reports)->toBe([NoTenantContext::class]);
-});
-
-it('refuses forEachTenant() from work already running as a tenant', function () {
-    $h = new Harness();
-    $tenants = new Tenants($h->orm, new TwoTenants());
-
-    expect(fn () => $h->orm->actAs('acme', fn () => $tenants->forEachTenant(static fn () => null)))
-        ->toThrow(\LogicException::class, 'would reach every other tenant');
 });
 
 it('claims a task\'s minute once across schedulers sharing a database', function () {

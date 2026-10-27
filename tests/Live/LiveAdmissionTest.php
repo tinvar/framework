@@ -48,10 +48,11 @@ use Tinvar\Orm\PdoConnection;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\RouteRegistry;
-use Tinvar\Tenancy\TenantSource;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
+use Tinvar\Tests\Support\Fixtures\Sources;
 
 require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once __DIR__ . '/../Support/Fixtures/tenants.php';
 
 const KEY = 'live-admission-test-application-key-012345';
 const SESSION_COOKIE = '__Host-test_session';
@@ -93,7 +94,7 @@ final class Staff implements Memberships
 }
 
 /** The tenant a request names in a header, as a host would. */
-final class FromHeader implements TenantSource
+final class FromHeader
 {
     public function tenantFor(Request $request): ?string
     {
@@ -156,7 +157,7 @@ function kernel(): array
         auth: $auth,
         policies: new PolicyRegistry(),
         resolver: $container->resolver(),
-        tenants: new \Tinvar\Tenancy\Tenancy($container->resolver()),
+        tenants: new Sources($container->resolver()),
         allowedQueries: static fn (Request $r): array => [],
         globalMiddleware: [SignIn::class],
         gate: new AllowAllGate(),
