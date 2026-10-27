@@ -110,8 +110,14 @@ final class CallGraph
             $source = implode('', \array_slice($lines, $start - 1, $end - $start + 1));
             $reached[] = ['where' => $where, 'source' => $source, 'file' => $file, 'start' => $start, 'end' => $end];
 
-            $self = $owner !== '' && class_exists($owner) ? $owner : null;
-            foreach (self::callsIn($source, $file, $self, $function) as $call) {
+            // `$this->` and `static::` are the object's class, which the walk
+            // reached the method on; `self::` and `parent::` are the class the
+            // method is written in, which may be a parent of that one.
+            $scope = [
+                'static' => $owner !== '' && class_exists($owner) ? $owner : null,
+                'self' => $function instanceof \ReflectionMethod ? $function->getDeclaringClass()->getName() : null,
+            ];
+            foreach (self::callsIn($source, $file, $scope, $function) as $call) {
                 if (isset($call['why'])) {
                     $refused[] = ['where' => "{$where}, calling {$call['call']}", 'why' => $call['why']];
                     continue;
@@ -127,11 +133,12 @@ final class CallGraph
      * The calls one method's source makes that the walk follows -- each a
      * class and method, '' for a function -- and those it cannot.
      *
-     * @param class-string|null $self the class the method runs as
+     * @param array{static: string|null, self: string|null} $scope the class the method runs as, and the class it is written in
      * @return list<array{class: string, method: string}|array{call: string, why: string}>
      */
-    private static function callsIn(string $source, string $file, ?string $self, \ReflectionFunctionAbstract $function): array
+    private static function callsIn(string $source, string $file, array $scope, \ReflectionFunctionAbstract $function): array
     {
+        $self = $scope['static'];
         $tokens = [];
         foreach (token_get_all("<?php\n" . $source) as $token) {
             if (\is_array($token) && \in_array($token[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT, T_OPEN_TAG], true)) {
@@ -162,13 +169,13 @@ final class CallGraph
                 $first = self::text($tokens[$i + 2]);
                 if ($variable === '$this' && $self !== null) {
                     if (($tokens[$i + 3] ?? null) === '(') {
-                        $calls[] = self::target($self, $first, "\$this->{$first}()");
+                        $calls[] = self::target(self::onThis($scope, $first), $first, "\$this->{$first}()");
                     } elseif (self::isArrow($tokens[$i + 3] ?? null) && self::is($tokens[$i + 4] ?? null, T_STRING) && ($tokens[$i + 5] ?? null) === '(') {
                         $method = self::text($tokens[$i + 4]);
-                        array_push($calls, ...self::onProperty($self, $first, $method));
+                        array_push($calls, ...self::onProperty($scope, $first, $method));
                     }
                 } elseif (isset($parameters[$variable]) && ($tokens[$i + 3] ?? null) === '(') {
-                    array_push($calls, ...self::onTyped($parameters[$variable]->getType(), "{$variable}->{$first}()", $first, $self));
+                    array_push($calls, ...self::onTyped($parameters[$variable]->getType(), "{$variable}->{$first}()", $first, $scope));
                 }
 
                 continue;
@@ -181,7 +188,7 @@ final class CallGraph
                 if (self::isArrow($previous) || self::is($previous, T_DOUBLE_COLON)) {
                     continue;
                 }
-                $class = self::className(self::text($token), $file, $self);
+                $class = self::className(self::text($token), $file, $scope);
                 $method = self::text($tokens[$i + 2]);
                 if ($class !== null) {
                     $calls[] = self::target($class, $method, self::text($token) . "::{$method}()");
@@ -193,7 +200,7 @@ final class CallGraph
             // new Name(...)
             if (self::is($token, T_NEW) && self::isName($tokens[$i + 1] ?? null)) {
                 $written = self::text($tokens[$i + 1]);
-                $class = self::className($written, $file, $self);
+                $class = self::className($written, $file, $scope);
                 if ($class === null || !class_exists($class)) {
                     continue;
                 }
@@ -264,26 +271,51 @@ final class CallGraph
     /**
      * `$this->property->method()`, by the property's declared type.
      *
-     * @param class-string $self
+     * The property is looked up where the method is written first: a private
+     * property of a parent is not the object's class's to show.
+     *
+     * @param array{static: string|null, self: string|null} $scope
      * @return list<array{class: string, method: string}|array{call: string, why: string}|null>
      */
-    private static function onProperty(string $self, string $property, string $method): array
+    private static function onProperty(array $scope, string $property, string $method): array
     {
         $call = "\$this->{$property}->{$method}()";
-        $reflection = new \ReflectionClass($self);
-        if (!$reflection->hasProperty($property)) {
-            return [['call' => $call, 'why' => "{$self} declares no property \${$property}, so what it holds cannot be read"]];
+        foreach ([$scope['self'], $scope['static']] as $class) {
+            if ($class !== null && class_exists($class) && new \ReflectionClass($class)->hasProperty($property)) {
+                return self::onTyped(new \ReflectionProperty($class, $property)->getType(), $call, $method, $scope);
+            }
         }
 
-        return self::onTyped($reflection->getProperty($property)->getType(), $call, $method, $self);
+        return [['call' => $call, 'why' => ($scope['static'] ?? 'its class') . " declares no property \${$property}, so what it holds cannot be read"]];
+    }
+
+    /**
+     * The class `$this->method()` runs: the object's, unless the method is
+     * private to the class the call is written in, which no subclass can
+     * replace.
+     *
+     * @param array{static: string|null, self: string|null} $scope
+     */
+    private static function onThis(array $scope, string $method): string
+    {
+        $self = $scope['self'];
+        if ($self !== null && method_exists($self, $method)) {
+            $declared = new \ReflectionMethod($self, $method);
+            if ($declared->isPrivate() && $declared->getDeclaringClass()->getName() === $self) {
+                return $self;
+            }
+        }
+
+        return (string) $scope['static'];
     }
 
     /**
      * A method called on a value of a declared type: each class it may be.
      *
+     * @param array{static: string|null, self: string|null} $scope
      * @return list<array{class: string, method: string}|array{call: string, why: string}|null>
      */
-    private static function onTyped(?\ReflectionType $type, string $call, string $method, ?string $self): array
+    private static function onTyped(?\ReflectionType $type, string $call, string $method, array $scope): array
     {
         if ($type === null) {
             return [['call' => $call, 'why' => 'its receiver has no declared type, so what it calls cannot be read']];
@@ -299,7 +331,8 @@ final class CallGraph
             }
             $name = $member->getName();
             $class = match (strtolower($name)) {
-                'self', 'static' => $self,
+                'self' => $scope['self'],
+                'static' => $scope['static'],
                 default => $name,
             };
             if ($class !== null) {
@@ -311,14 +344,19 @@ final class CallGraph
     }
 
     /** A class name as written, in a file: resolved by its namespace and imports, or null for one that is no class. */
-    private static function className(string $written, string $file, ?string $self): ?string
+    /** @param array{static: string|null, self: string|null} $scope */
+    private static function className(string $written, string $file, array $scope): ?string
     {
         $lower = strtolower($written);
-        if ($lower === 'self' || $lower === 'static') {
-            return $self;
+        if ($lower === 'static') {
+            return $scope['static'];
+        }
+        if ($lower === 'self') {
+            return $scope['self'] ?? $scope['static'];
         }
         if ($lower === 'parent') {
-            $parent = $self === null ? false : get_parent_class($self);
+            $written = $scope['self'] ?? $scope['static'];
+            $parent = $written === null ? false : get_parent_class($written);
 
             return $parent === false ? null : $parent;
         }
