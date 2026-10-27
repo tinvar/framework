@@ -109,6 +109,17 @@ final class WebhookEndpoint
         return isset($this->paths[$request->path]);
     }
 
+    /**
+     * Every path a webhook answers at: answered ahead of everything, so the
+     * Kernel refuses an endpoint whose path would be shadowed by one.
+     *
+     * @return list<string>
+     */
+    public function paths(): array
+    {
+        return array_keys($this->paths);
+    }
+
     public function handle(Request $request, string $rawBody): Response
     {
         $class = $this->paths[$request->path] ?? throw new HttpException(404, 'No webhook answers this path.', 'not_found');

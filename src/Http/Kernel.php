@@ -74,6 +74,9 @@ use Tinvar\Uploads\FileUrls;
 use Tinvar\Uploads\UploadBinder;
 use Tinvar\Uploads\UploadEndpoint;
 use Tinvar\Uploads\Uploads;
+use Tinvar\Endpoints\EndpointHandler;
+use Tinvar\Endpoints\EndpointRegistry;
+use Tinvar\Endpoints\EndpointRunner;
 use Tinvar\Uploads\UploadTickets;
 use Tinvar\Validation\Validator;
 use Tinvar\Webhooks\WebhookEndpoint;
@@ -217,6 +220,11 @@ final class Kernel
         // reading the site, and the first budget a flood of fabricated
         // reports exhausts.
         'telemetry' => 60,
+        // The application's own #[Get], #[Post] and #[Endpoint] routes,
+        // one bucket for all of them: twice an action's, since a GET among
+        // them is a page's fetch or a download, and a write among them
+        // spends the same bucket as the reads.
+        'endpoints' => 120,
     ];
 
     private readonly ExceptionHandler $exceptions;
@@ -288,6 +296,19 @@ final class Kernel
     private readonly Pipeline $uploadStack;
     private readonly Pipeline $fileStack;
     private readonly Pipeline $telemetryStack;
+
+    /**
+     * The application's #[Get], #[Post] and #[Endpoint] routes (ADR 0067):
+     * an action's stack -- the global middleware, CSRF on a method that
+     * changes something, `throttle:endpoints`, authentication -- or, for a
+     * #[WithoutSession] endpoint, the throttle alone, its own middleware
+     * standing in for the session.
+     */
+    private readonly Pipeline $endpointStack;
+    private readonly Pipeline $sessionlessStack;
+
+    /** Null when the application declares no endpoints. */
+    public readonly ?EndpointHandler $endpoints_;
 
     /**
      * The request attribute carrying the page's route token, for the
@@ -473,6 +494,9 @@ final class Kernel
      * @param SharedRegistry|null $shared what every page render may read with `shared()`
      *        (ADR 0060). Given, shared() hands each render the keys of its panel and of
      *        none; without it, a render reads none, and each read is refused
+     * @param EndpointRegistry|null $endpoints the application's #[Get], #[Post] and
+     *        #[Endpoint] routes (ADR 0067), answered after the framework's own endpoints
+     *        and before the pages. One whose path a page's also matches is refused here
      */
     public function __construct(
         public readonly Orm $orm,
@@ -526,6 +550,7 @@ final class Kernel
         ?string $clientAssets = null,
         ?TenantResolver $tenants = null,
         ?SharedRegistry $shared = null,
+        ?EndpointRegistry $endpoints = null,
     ) {
         $this->resolver = $resolver;
         $this->shared = $shared;
@@ -675,7 +700,20 @@ final class Kernel
         // a requirement nothing can hold, is refused here rather than found
         // by whoever first reaches it.
         $entry = new EntryContext($this->orm, $resolver, $panels, $panelRegistry, $memberships, $this->auth, $realms ?? $handoff?->realms, $tenants);
-        $entry->check($this->routes, $this->actions, $this->queries);
+        $entry->check($this->routes, $this->actions, $this->queries, $endpoints);
+        // And every endpoint's path against the pages': a path both match
+        // would be answered by whichever the dispatch happened to ask first.
+        $endpoints?->assertNoConflicts($this->routes);
+        // And against the webhooks', which are answered ahead of everything:
+        // an endpoint at one of their paths would never be reached by the
+        // method a sender uses, and reached by the rest.
+        foreach ($webhooks?->paths() ?? [] as $path) {
+            foreach ($endpoints?->all() ?? [] as $endpoint) {
+                if ($endpoint->match($path) !== null) {
+                    throw new \InvalidArgumentException("{$endpoint->where()} answers at {$path}, which is a webhook's.");
+                }
+            }
+        }
         // Each shared key's panel, now: one naming a panel nobody defined
         // is refused here, as an entry point's is, rather than read as
         // shared with every page.
@@ -921,6 +959,40 @@ final class Kernel
             ...$this->throttleFor($throttle, 'telemetry', $limits, byAddress: true),
             ...$this->throttleFor($throttle, 'telemetry', $limits, byAddress: false),
         ]);
+
+        // An endpoint gets an action's stack. CSRF lets a GET and a HEAD
+        // through and holds every other method to the session's token, so a
+        // #[Post] is protected as an action is -- and authentication reads
+        // #[PublicAccess] off the endpoint the request was matched to.
+        $this->endpointStack = new Pipeline([
+            ...$this->floodGuardFor($throttle, 'endpoints', $limits),
+            ...$global,
+            new VerifyCsrfToken(tokens: $csrf),
+            ...$this->throttleFor($throttle, 'endpoints', $limits, byAddress: true),
+            ...$this->throttleFor($throttle, 'endpoints', $limits, byAddress: false),
+            new RequireAuthentication($this->auth, EndpointHandler::entryPoint(...)),
+        ]);
+
+        // A #[WithoutSession] endpoint gets the budget and nothing that reads
+        // a cookie: no global stack, so no session and no one signed in by
+        // one, and so no CSRF token to ask for. Its own middleware signs its
+        // caller in, and EndpointHandler asks for authentication after it.
+        $this->sessionlessStack = new Pipeline([
+            ...$this->floodGuardFor($throttle, 'endpoints', $limits),
+            ...$this->throttleFor($throttle, 'endpoints', $limits, byAddress: true),
+        ]);
+
+        $this->endpoints_ = $endpoints === null ? null : new EndpointHandler(
+            registry: $endpoints,
+            runner: new EndpointRunner($resolver, $this->orm, $gate, new Validator($this->orm), $encoder),
+            auth: $this->auth,
+            middlewareResolver: self::middlewareFrom($resolver),
+            globalMiddleware: $globalMiddleware,
+            entry: $entry,
+            maxBodyBytes: $maxBodyBytes,
+            maxJsonDepth: $maxJsonDepth,
+        );
+
         // Checked above to have the Telemetry and Metrics it records into.
         $this->clientTelemetry_ = $clientTelemetry
             ? new TelemetryEndpoint($telemetry->logger, $telemetry->metrics, $this->routes, $clientAssets)
@@ -1343,6 +1415,42 @@ final class Kernel
                 return $this->queryStack->run(
                     $request,
                     fn (Request $passed): Response => $this->queries_->handle($passed, $rawBody),
+                );
+            }
+
+            // The application's endpoints, after the framework's -- whose
+            // paths are all under /_, where no endpoint may be -- and before
+            // the pages, whose paths no endpoint's may overlap. The method is
+            // checked before the stack runs, as an action's is: a DELETE to
+            // a GET is a 405 naming what would do, not a 401 or a 419 first.
+            $handler = $this->endpoints_;
+            $matched = $handler?->registry->match($request);
+            if ($handler !== null && $matched !== null) {
+                if (!isset($matched['endpoint'])) {
+                    $this->telemetry?->route('_endpoint');
+
+                    throw EndpointHandler::notAllowed($matched['allow']);
+                }
+                $endpoint = $matched['endpoint'];
+                // By its name, never its path: a path carries ids.
+                $this->telemetry?->route($endpoint->name);
+
+                // A #[WithoutSession] endpoint takes no CSRF token because no
+                // cookie signs anyone in for it. Someone signed in already,
+                // before its stack, was signed in by something outside the
+                // global middleware -- by the application, from the cookie --
+                // and the token would be skipped for a request a cookie
+                // authenticated. Refused, rather than trusted to the author.
+                if ($endpoint->sessionless && $this->auth->check()) {
+                    throw new \LogicException(
+                        "{$endpoint->where()} is #[WithoutSession], and someone was signed in before its stack ran. "
+                        . 'Sign in from the session in global middleware only, so no cookie reaches it.',
+                    );
+                }
+
+                return ($endpoint->sessionless ? $this->sessionlessStack : $this->endpointStack)->run(
+                    $request->withAttribute(EndpointHandler::MATCHED, $endpoint),
+                    fn (Request $passed): Response => $handler->handle($passed, $endpoint, $matched['parameters'], $rawBody),
                 );
             }
 

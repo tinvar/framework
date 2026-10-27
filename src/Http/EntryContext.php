@@ -13,6 +13,7 @@ use Tinvar\Auth\PanelBinding;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\PanelRegistry;
 use Tinvar\Auth\Violation;
+use Tinvar\Endpoints\EndpointRegistry;
 use Tinvar\Http\Middleware\EnterPanel;
 use Tinvar\Http\Middleware\EnterTenant;
 use Tinvar\Http\Middleware\RequirePanelMembership;
@@ -187,13 +188,17 @@ final readonly class EntryContext
      * source the tenancy cannot read: the entry point would run as no tenant
      * while its author believed it ran as one.
      */
-    public function check(RouteRegistry $routes, ActionRegistry $actions, QueryRegistry $queries): void
+    public function check(RouteRegistry $routes, ActionRegistry $actions, QueryRegistry $queries, ?EndpointRegistry $endpoints = null): void
     {
         $declared = [];
         $sources = [];
         foreach ([...$routes->layouts(), ...$routes->pages()] as $route) {
             $declared[$route->class] = $route->panels;
             $sources[$route->class] = $route->tenantFrom;
+        }
+        foreach ($endpoints?->all() ?? [] as $endpoint) {
+            $declared[$endpoint->where()] = $endpoint->panels;
+            $sources[$endpoint->where()] = $endpoint->tenantFrom;
         }
         foreach ($actions->all() as $action) {
             $declared[$action->where()] = $action->panels;

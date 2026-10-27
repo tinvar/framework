@@ -320,7 +320,12 @@ final class Binder
         return $type->getName();
     }
 
-    private static function cast(string $value, ?\ReflectionType $type): string|int|float|bool|\BackedEnum
+    /**
+     * A path segment as the parameter it fills is typed: a page's loader's,
+     * or an endpoint's (Tinvar\Endpoints). A segment that is not one is a
+     * path that does not exist, a 404.
+     */
+    public static function cast(string $value, ?\ReflectionType $type): string|int|float|bool|\BackedEnum
     {
         if (!$type instanceof \ReflectionNamedType) {
             return $value;
