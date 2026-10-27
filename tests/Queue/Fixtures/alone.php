@@ -89,6 +89,14 @@ foreach ($queues as $kind => $queue) {
     $check("{$kind}: kept with why", ($queue->failed()[0] ?? null)?->error === 'it broke');
     $check("{$kind}: put back", $queue->retry('one', 102));
 
+    // A pause or a hand-back (ADR 0078): back with a new payload, its try
+    // given back.
+    $paused = $queue->reserve(['default'], 103, 60);
+    $check("{$kind}: requeued by its holder, with a new payload", $paused !== null && $queue->requeue($paused, 101, 'sealed-two-paused'));
+    $resumed = $queue->reserve(['default'], 103, 60);
+    $check("{$kind}: taken again on the same attempt, with the new payload", $resumed?->id === $paused?->id && $resumed?->attempts === $paused?->attempts && $resumed?->payload === 'sealed-two-paused');
+    $check("{$kind}: requeued with the payload it has", $resumed !== null && $queue->requeue($resumed, 103));
+
     while (($job = $queue->reserve(['default'], 200, 60)) !== null) {
         $check("{$kind}: {$job->id} done", $queue->delete($job));
     }
