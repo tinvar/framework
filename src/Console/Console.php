@@ -15,6 +15,7 @@ use Tinvar\Jobs\Worker;
 use Tinvar\Jobs\WorkerOptions;
 use Tinvar\Orm\Orm;
 use Tinvar\Queue\Queue;
+use Tinvar\Jobs\StopBudget;
 use Tinvar\Support\KnownAttributes;
 
 /**
@@ -208,7 +209,7 @@ final class Console
     private function work(array $arguments, Output $output): int
     {
         [$queue, $runner] = $this->queueParts();
-        $options = WorkerOptions::fromArguments($arguments, $this->queues);
+        $options = WorkerOptions::fromArguments($arguments, $this->queues, StopBudget::fromEnvironment());
 
         $this->worker = new Worker(
             $queue,
@@ -217,7 +218,7 @@ final class Console
             log: static fn (string $line) => $output->error('[' . gmdate('Y-m-d H:i:s') . '] ' . $line),
             report: $this->report,
         );
-        $output->error('Working ' . implode(', ', $options->queues) . '. Ctrl+C stops after the job in hand.');
+        $output->error('Working ' . implode(', ', $options->queues) . ". Ctrl+C stops after the job in hand, or hands it back within {$options->stopBudget}s.");
         $this->worker->run($options);
 
         return 0;
