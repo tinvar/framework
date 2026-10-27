@@ -214,6 +214,19 @@ final class TransferRegistry
                 throw new \InvalidArgumentException("{$class}::__invoke() applies one row, and returns void.");
             }
             [$columns, $rowModels] = self::importShape($row, $class);
+
+            // A check names its subject by name, and a start argument and a
+            // row field of one name would leave a check about one judged
+            // against the other -- or deferred to the rows and skipped at
+            // the start. Refused, so every check is about exactly one input.
+            foreach ([...array_keys($models), ...array_keys($scalars)] as $argument) {
+                if (\in_array($argument, $columns, true)) {
+                    throw new \InvalidArgumentException(
+                        "{$class}::__invoke() parameter \${$argument} shares its name with a field of its row, {$row}: "
+                        . 'an #[Authorize] naming it could not say which it is about. Rename one.',
+                    );
+                }
+            }
             $formats = [Export::CSV];
             $maxBytes = $declaration->maxBytes;
             $mapsRows = false;

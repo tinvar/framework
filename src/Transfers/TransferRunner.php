@@ -384,10 +384,14 @@ final readonly class TransferRunner
                 continue;
             }
 
+            // Row checks are asked of the row's own models alone: a check
+            // names exactly one input (TransferRegistry refuses a start
+            // argument sharing a row field's name), and a row's value is
+            // never put where a start argument's is read.
             $subjects = [...$startModels, ...$resolved];
             $allowed = true;
             foreach ($rowChecks as $check) {
-                if ($check->argument !== null && isset($subjects[$check->argument]) && !$this->gate->allows($check, $subjects)) {
+                if ($check->argument !== null && isset($resolved[$check->argument]) && !$this->gate->allows($check, $resolved)) {
                     $failures->add($row, $check->argument, "{$check->argument} is not one you may use here.");
                     $allowed = false;
                 }

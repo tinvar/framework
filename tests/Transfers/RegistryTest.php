@@ -101,7 +101,20 @@ final readonly class RowlessImport
     public function __invoke(): void {}
 }
 
+/** A start argument and a row field both named `widget`: one check could not say which it is about. */
+#[Import, Authorize('restock', Widget::class), Authorize('update', 'widget')]
+final readonly class CollidingImport
+{
+    public function __invoke(UncheckedRow $row, Widget $widget): void {}
+}
+
 describe('registration', function () {
+    it('refuses an import whose start argument shares a name with a field of its row', function () {
+        expect(fn () => (new TransferRegistry())->register(CollidingImport::class))
+            ->toThrow(\InvalidArgumentException::class, 'shares its name with a field of its row')
+            ->and(TransferRegistry::check([CollidingImport::class]))->toHaveCount(1);
+    });
+
     it('compiles an export and an import, their columns from their rows', function () {
         $registry = new TransferRegistry();
         [$export, $import] = $registry->registerAll([WidgetsExport::class, StockImport::class]);
