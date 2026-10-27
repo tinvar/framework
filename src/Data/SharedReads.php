@@ -14,7 +14,7 @@ use Tinvar\Routing\CompiledRoute;
  * One page render's shared data: which keys it may read, and what each
  * read produced.
  *
- * Made by the Kernel for a render (Kernel::shared()) and handed to the
+ * Made by the Kernel's shared() for a render and handed to the
  * render channel, never kept: it lives as long as the render does, so
  * nothing it produced can reach another request on a worker, and nothing
  * is static. The renderer reads a key by a query call named `$shared.key`

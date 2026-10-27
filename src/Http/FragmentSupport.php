@@ -41,10 +41,10 @@ final readonly class FragmentSupport
      *        from a token and this renders a whole route from its loaders:
      *        the same closure could not honestly do both. It may answer as a
      *        page render does, with a response: the payload as its body, and
-     *        in `x-live-token` what the request's Kernel::LIVE_MINTER minted
-     *        from the render's tags -- the token the client listens with
-     *        from then on, in place of the one the page was first drawn with
-     *        (ADR 0048).
+     *        in `x-live-token` what the request's
+     *        RequestAttributes::LIVE_MINTER minted from the render's tags --
+     *        the token the client listens with from then on, in place of the
+     *        one the page was first drawn with (ADR 0048).
      * @param \Closure(Request): string $sessionId must return a real session id; an empty
      *        one is refused, because every visitor without a session would otherwise share
      *        one binding and their tokens would be interchangeable

@@ -97,7 +97,7 @@ final class FragmentEndpoint
      *        around it -- its tenant, its panel and the panel's stack -- as a
      *        page render runs it
      * @param (\Closure(RouteChain, Request): ?SharedReads)|null $shared the shared data a
-     *        fragment of the route may read (Kernel::sharedForFragment()); none, and a
+     *        fragment of the route may read (the Kernel's sharedForFragment()); none, and a
      *        deferred component's `shared()` is refused, as it once always was
      */
     public function __construct(

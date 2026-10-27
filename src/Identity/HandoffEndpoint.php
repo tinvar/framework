@@ -9,8 +9,8 @@ use Tinvar\Auth\Authenticatable;
 use Tinvar\Auth\Memberships;
 use Tinvar\Auth\SubtreeMemberships;
 use Tinvar\Http\HttpException;
-use Tinvar\Http\Kernel;
 use Tinvar\Http\Request;
+use Tinvar\Http\RequestAttributes;
 use Tinvar\Http\Response;
 use Tinvar\Jobs\UserLookup;
 use Tinvar\Orm\Orm;
@@ -296,7 +296,7 @@ final class HandoffEndpoint
             throw new HttpException(400, 'A consent is asked of a session; this request carries none.', 'handoff_no_session');
         }
 
-        $csrf = $request->attribute(Kernel::CSRF_TOKEN);
+        $csrf = $request->attribute(RequestAttributes::CSRF_TOKEN);
         if (!\is_string($csrf) || $csrf === '') {
             // Forms that could never post would leave the screen a dead end,
             // and a Kernel with no CSRF tokens checks none on the post: both

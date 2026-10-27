@@ -8,10 +8,10 @@ use Tinvar\Auth\PanelContext;
 use Tinvar\Http\BuildRegistry;
 use Tinvar\Http\EntryContext;
 use Tinvar\Http\HttpException;
-use Tinvar\Http\Kernel;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Pipeline;
 use Tinvar\Http\Request;
+use Tinvar\Http\RequestAttributes;
 use Tinvar\Http\Response;
 use Tinvar\Live\LiveMinter;
 use Tinvar\Live\TagsRead;
@@ -62,8 +62,8 @@ final class Revalidator
      * @param \Closure(LoadedRoute, Request): (string|Response) $render produces
      *        the payload for one re-rendered route: the payload alone, or a
      *        response whose body is the payload and whose `x-live-token` is
-     *        the live token it minted with the request's Kernel::LIVE_MINTER,
-     *        as a page render answers
+     *        the live token it minted with the request's
+     *        RequestAttributes::LIVE_MINTER, as a page render answers
      * @param \Closure(class-string): Middleware $middlewareResolver required,
      *        not optional: null meant "run no middleware", which is silently
      *        the pre-fix behaviour for anyone constructing this directly
@@ -80,7 +80,7 @@ final class Revalidator
      *        before each re-render so no page's tags reach another's token
      * @param (\Closure(Request, string, array<string, string>, TagsRead|null): ?LiveMinter)|null $liveMinter
      *        the minter for one re-render, bound to the request as it stands
-     *        (Kernel::liveMinter); none without live updates
+     *        (the Kernel's liveMinter()); none without live updates
      */
     public function __construct(
         private readonly RouteRegistry $routes,
@@ -358,7 +358,7 @@ final class Revalidator
                         $minter = $this->liveMinter === null
                             ? null
                             : ($this->liveMinter)($inner, $chain->page->name ?? $claims->route, $chain->parameters, $this->tags);
-                        $rendered = ($this->render)($loaded, $minter === null ? $inner : $inner->withAttribute(Kernel::LIVE_MINTER, $minter));
+                        $rendered = ($this->render)($loaded, $minter === null ? $inner : $inner->withAttribute(RequestAttributes::LIVE_MINTER, $minter));
                     } finally {
                         $this->tags?->forget();
                     }

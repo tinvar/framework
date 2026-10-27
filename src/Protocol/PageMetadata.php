@@ -33,7 +33,8 @@ final readonly class PageMetadata
         public ?string $view = null,
         /**
          * The session's history key, for a page whose history is encrypted
-         * (Kernel::HISTORY_KEY, ADR 0019); null for one whose is not.
+         * (RequestAttributes::HISTORY_KEY, ADR 0019); null for one whose is
+         * not.
          */
         public ?string $historyKey = null,
     ) {}

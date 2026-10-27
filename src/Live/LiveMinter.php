@@ -18,7 +18,8 @@ use Tinvar\Support\Signer;
  *
  * After the render, not before as the route token is: what a page read is
  * known only once its queries have run. So a document carries its token at
- * its end, and a payload in a header (see Kernel::LIVE_MINTER).
+ * its end, and a payload in a header (see
+ * RequestAttributes::LIVE_MINTER).
  */
 final readonly class LiveMinter
 {

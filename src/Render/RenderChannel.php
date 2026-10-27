@@ -137,7 +137,7 @@ final class RenderChannel
      * @param (\Closure(string, array<string, mixed>): string)|null $mint
      *        signs a fragment token for one <Deferred> boundary; null means
      *        this render may not mint any
-     * @param SharedReads|null $shared the page's shared data (Kernel::shared()),
+     * @param SharedReads|null $shared the page's shared data (the Kernel's shared()),
      *        which its components read as query calls; null means this render
      *        may read none (ADR 0060)
      */

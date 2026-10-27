@@ -14,8 +14,8 @@ use Tinvar\Support\Signer;
 /**
  * What an application supplies for live updates: the hub, and the keys and
  * session seam the tokens need. Handed to the Kernel, which mints a live
- * token for every page it renders (Kernel::LIVE_MINTER), mounts
- * /_live/subscribe, and publishes what actions invalidate.
+ * token for every page it renders (RequestAttributes::LIVE_MINTER),
+ * mounts /_live/subscribe, and publishes what actions invalidate.
  *
  * tinvar-spec.md: "When an action revalidates a tag, the client re-fetches
  * any mounted fragment that read it, not the whole page." That sentence

@@ -353,64 +353,30 @@ final class Kernel
     /** Null when the application declares no endpoints. */
     public readonly ?EndpointHandler $endpoints_;
 
-    /**
-     * The request attribute carrying the page's route token, for the
-     * responder to put into the page metadata. Absent when no token is
-     * minted.
-     */
-    public const string ROUTE_TOKEN = 'tinvar.route_token';
+    // The request attributes this Kernel sets, each described where it is
+    // defined (RequestAttributes), so code it mounts reads them without
+    // naming the Kernel (ADR 0077). Kept here under their old names.
 
-    /**
-     * The request attribute carrying the page's FragmentMinter, for the
-     * responder to hand the render channel. Absent unless the route has a
-     * <Deferred> boundary to mint for -- see minterFor().
-     */
-    public const string FRAGMENT_MINTER = 'tinvar.fragment_minter';
+    /** @see RequestAttributes::ROUTE_TOKEN */
+    public const string ROUTE_TOKEN = RequestAttributes::ROUTE_TOKEN;
 
-    /**
-     * The request attribute carrying the session's CSRF token, for the
-     * responder to hand the render. "<Form> also renders a hidden _token
-     * field during dynamic server rendering, so forms work before
-     * JavaScript loads" -- and the render cannot read the cookie, which
-     * this response may be the one to set. Absent without CsrfTokens or a
-     * session.
-     */
-    public const string CSRF_TOKEN = 'tinvar.csrf_token';
+    /** @see RequestAttributes::FRAGMENT_MINTER */
+    public const string FRAGMENT_MINTER = RequestAttributes::FRAGMENT_MINTER;
 
-    /**
-     * The request attribute carrying the flash a browser's own form post
-     * left for this page (see FlashStore), for the responder to hand the
-     * render. Absent when there was none to read.
-     */
-    public const string FLASH = 'tinvar.flash';
+    /** @see RequestAttributes::CSRF_TOKEN */
+    public const string CSRF_TOKEN = RequestAttributes::CSRF_TOKEN;
 
-    /**
-     * The request attribute carrying the page's history key (HistoryKeys),
-     * for the responder to put into the page metadata: a document load
-     * cannot read the header a client navigation gets it in. Absent when the
-     * page's history is not encrypted (ADR 0019).
-     */
-    public const string HISTORY_KEY = 'tinvar.history_key';
+    /** @see RequestAttributes::FLASH */
+    public const string FLASH = RequestAttributes::FLASH;
 
-    /**
-     * The request attribute carrying the page's LiveMinter, for the responder
-     * to mint the page's live token with once the render has run -- what it
-     * read is known only then -- and hand it over: in `X-Live-Token` on a
-     * payload, at the end of a document (Tinvar\Live). Absent without live
-     * updates, a route name or a session.
-     */
-    public const string LIVE_MINTER = 'tinvar.live_minter';
+    /** @see RequestAttributes::HISTORY_KEY */
+    public const string HISTORY_KEY = RequestAttributes::HISTORY_KEY;
 
-    /**
-     * The request attribute marking a render whose client may hand back
-     * the holds of once-shared values it keeps (ADR 0065): a payload
-     * request for a page handed a route token, and a fragment request
-     * behind its verified token (ADR 0074). shared() believes holds on such
-     * a request alone, each verified against the binding the render is made
-     * for. An action's re-render, a document or a page drawn any other way
-     * produces every key it reads.
-     */
-    public const string HELD_SHARED = 'tinvar.held_shared';
+    /** @see RequestAttributes::LIVE_MINTER */
+    public const string LIVE_MINTER = RequestAttributes::LIVE_MINTER;
+
+    /** @see RequestAttributes::HELD_SHARED */
+    public const string HELD_SHARED = RequestAttributes::HELD_SHARED;
 
     /**
      * @param \Closure(class-string): object $resolver builds pages, layouts, queries, actions and middleware
