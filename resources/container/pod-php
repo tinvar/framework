@@ -17,7 +17,8 @@
 #     false. A platform that leaves either out is one this does not run on.
 #   - the renderers' user is named, and is neither root nor this user;
 #   - for serve: it is in the socket group the renderers share their sockets
-#     with, an app key is given, and TINVAR_SOCKET names their pool.
+#     with, an app key is given, TINVAR_SOCKET names their pool, and a
+#     probe token is given where loopback is not trusted.
 #
 # The stop is serve's own (ADR 0063): SIGTERM, passed on by tini, stops the
 # queue worker, which finishes the job in hand, and the scheduler, then
@@ -99,6 +100,12 @@ if [ -z "${TINVAR_APP_KEY:-}" ] && [ -z "${TINVAR_APP_KEY_FILE:-}" ]; then
 fi
 if [ -n "${TINVAR_APP_KEY_FILE:-}" ] && ! [ -r "$TINVAR_APP_KEY_FILE" ]; then
     refuse "$app_user cannot read TINVAR_APP_KEY_FILE ($TINVAR_APP_KEY_FILE)."
+fi
+# Loopback is the pod's, not this container's alone: the image has
+# ProbeAccess hold it to the token (TINVAR_PROBE_TRUST_LOOPBACK=0), so
+# without one no probe -- this image's own included -- would ever pass.
+if [ "${TINVAR_PROBE_TRUST_LOOPBACK:-1}" = 0 ] && [ -z "${TINVAR_PROBE_TOKEN:-}" ]; then
+    refuse "No probe token: set TINVAR_PROBE_TOKEN (32 characters or more), which the probes send. Loopback is shared with the rest of the pod here, so it is not trusted without one (TINVAR_PROBE_TRUST_LOOPBACK=0)."
 fi
 [ -w /tmp ] || refuse "/tmp is not writable: mount a tmpfs there (an emptyDir in a pod)."
 

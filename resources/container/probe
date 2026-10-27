@@ -1,11 +1,18 @@
 #!/bin/sh
 # A probe of PHP's container in the two-container shape (ADR 0071): PATH,
 # /_health or /_ready, asked over loopback as this container's own user,
-# which is never root there. ProbeAccess lets a loopback peer in without the
-# token (ADR 0041), so none is passed, and nothing of the container's
-# environment either. The image's HEALTHCHECK, and a pod's exec probes:
-# kubelet's own HTTP probes come from the node, not loopback, and would need
-# the token in the manifest.
+# which is never root there. The image's HEALTHCHECK, and a pod's exec
+# probes: kubelet's own HTTP probes come from the node, not loopback, and
+# could only send the token by writing it into the manifest.
+#
+# In a pod, loopback is the pod's -- the renderers' sidecar, a mesh's proxy
+# and `kubectl port-forward` reach it too -- so the image has ProbeAccess
+# trust it no more (TINVAR_PROBE_TRUST_LOOPBACK=0), and this sends the
+# probe token, TINVAR_PROBE_TOKEN from the container's environment, which a
+# docker HEALTHCHECK and a kubelet exec probe both run with. The token goes
+# to PHP on its standard input: a command line is anyone's to read in the
+# shared pid namespace, and printf is the shell's own, so it is on none.
+# Nothing else of the environment is passed on.
 #
 # Only 200 passes.
 # shellcheck disable=SC2016 # PHP's variables, in PHP's code
@@ -16,8 +23,10 @@ case ${1:-} in
         exit 64
         ;;
 esac
-exec env -i PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/php -n -r '
-    $context = stream_context_create(["http" => ["timeout" => 4, "ignore_errors" => true]]);
+printf '%s' "${TINVAR_PROBE_TOKEN:-}" | exec env -i PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/php -n -r '
+    $token = trim((string) stream_get_contents(STDIN));
+    $headers = $token === "" ? "" : "Authorization: Bearer {$token}\r\n";
+    $context = stream_context_create(["http" => ["timeout" => 4, "ignore_errors" => true, "header" => $headers]]);
     $body = @file_get_contents($argv[1], false, $context);
     $status = http_get_last_response_headers()[0] ?? "no answer";
     if (preg_match("#^HTTP/\S+ 200 #", $status) !== 1) {

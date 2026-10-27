@@ -2,16 +2,20 @@
 # The image's HEALTHCHECK: /_ready, asked from inside the container, over
 # loopback -- the database answers, and at least one renderer, held to the
 # renderers' user, answers PHP (ADR 0041). ProbeAccess lets a loopback peer
-# in without the token, so no secret is needed here, and none is passed:
-# it runs as nobody, with nothing of the container's environment.
+# in without the token unless TINVAR_PROBE_TRUST_LOOPBACK is 0; it runs as
+# nobody, with nothing of the container's environment, and the probe token,
+# when the container was given one, on its standard input -- printf is the
+# shell's own, so the token is on no command line.
 #
 # Only 200 is healthy. The probe is answered before any session or
-# throttle, and anything that is not loopback gets a 404.
+# throttle, and anything that is not let in gets a 404.
 # shellcheck disable=SC2016 # PHP's variables, in PHP's code
-exec setpriv --reuid=nobody --regid=nogroup --clear-groups --inh-caps=-all --no-new-privs -- \
+printf '%s' "${TINVAR_PROBE_TOKEN:-}" | exec setpriv --reuid=nobody --regid=nogroup --clear-groups --inh-caps=-all --no-new-privs -- \
     env -i PATH=/usr/local/bin:/usr/bin:/bin XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
     /usr/local/bin/php -n -r '
-        $context = stream_context_create(["http" => ["timeout" => 4, "ignore_errors" => true]]);
+        $token = trim((string) stream_get_contents(STDIN));
+        $headers = $token === "" ? "" : "Authorization: Bearer {$token}\r\n";
+        $context = stream_context_create(["http" => ["timeout" => 4, "ignore_errors" => true, "header" => $headers]]);
         $body = @file_get_contents($argv[1], false, $context);
         $status = http_get_last_response_headers()[0] ?? "no answer";
         if (preg_match("#^HTTP/\S+ 200 #", $status) !== 1) {
