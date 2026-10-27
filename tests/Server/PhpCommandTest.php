@@ -18,6 +18,16 @@ it('runs a PHP CLI as itself', function () {
         ->and(PhpCommand::prefixFor('/usr/bin/php8.5', null))->toBe(['/usr/bin/php8.5']);
 });
 
+// The container image's serve, started by the entrypoint as `php` on the
+// PATH: its children are PHP's CLI too, never FrankenPHP's, which beside it
+// in /usr/local/bin crashes on the SIGTERM a stop sends (ADR 0063).
+it('runs the image\'s children on the CLI serve runs on', function () {
+    expect(PhpCommand::prefixFor('/usr/local/bin/php', ['php', '/srv/shop/bin/tinvar', 'serve', '--app=/srv/shop/examples/shop', '--worker']))
+        ->toBe(['/usr/local/bin/php'])
+        ->and(PhpCommand::prefixFor('/usr/local/bin/php', ['php', '-d', 'memory_limit=256M', '/srv/shop/bin/tinvar', 'serve']))
+        ->toBe(['/usr/local/bin/php']);
+});
+
 it('runs FrankenPHP\'s static binary through its php-cli', function () {
     expect(PhpCommand::prefixFor('/usr/local/bin/frankenphp', ['/usr/local/bin/frankenphp', 'php-cli', '/srv/app/bin/tinvar']))
         ->toBe(['/usr/local/bin/frankenphp', 'php-cli']);

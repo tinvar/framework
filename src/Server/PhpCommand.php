@@ -11,8 +11,10 @@ namespace Tinvar\Server;
  * the binary is PHP's CLI only as `frankenphp php-cli`, and PHP_BINARY names
  * the binary itself, so `[PHP_BINARY, 'script.php']` asked FrankenPHP for a
  * subcommand called script.php and failed. Where the static binary is the
- * only PHP there is -- the container image -- every child `tinvar serve`
- * starts (the tether, the queue worker, the scheduler) went that way.
+ * only PHP there is, every child `tinvar serve` starts (the tether, the
+ * queue worker, the scheduler) went that way. The container image no longer
+ * is such a place: it runs serve on PHP's own CLI, whose children are PHP's
+ * own CLI too, since the static binary's cannot take a signal (ADR 0063).
  *
  * Told apart by what the process was started as, where Linux says
  * (/proc/self/cmdline: `<binary> php-cli ...`), else by the binary's name,
