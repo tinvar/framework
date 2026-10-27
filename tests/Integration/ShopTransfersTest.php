@@ -17,6 +17,7 @@ use Shop\Auth\StaffMemberships;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Models\Customer;
+use Shop\Queries\Availability;
 use Shop\Pages\Admin\Transfers as TransfersPage;
 use Shop\StaffAccount;
 use Tinvar\Bench\Shop;
@@ -256,6 +257,24 @@ it('imports stock levels, every row or none', function () {
     expect(records($this->kernel)[1]->status)->toBe(TransferRecord::DONE)
         ->and($stock($skus[0]))->toBe(77)
         ->and($stock($skus[1]))->toBe(0);
+});
+
+// ADR 0075: the import declares the tag the catalog's availability reads,
+// so a page showing stock is told once the rows commit -- and no hold on a
+// once-shared value carrying it is believed after them.
+it('invalidates the catalog\'s stock once an import applies, and not when it is refused', function () {
+    $staff = new Staff($this->kernel, account($this->kernel, StaffAccount::EMAIL));
+    $sku = (string) $this->kernel->orm->connection()->select('SELECT sku FROM products ORDER BY sku LIMIT 1')[0]['sku'];
+    $stamp = fn (): ?string => $this->kernel->kernel()->sharedTags?->stamp([Availability::TAG], '');
+    $before = $stamp();
+
+    expect($staff->import("sku,stock\n{$sku},-4\n")->status)->toBe(202);
+    work($this->kernel);
+    expect($stamp())->toBe($before);
+
+    expect($staff->import("sku,stock\n{$sku},12\n")->status)->toBe(202);
+    work($this->kernel);
+    expect($stamp())->not->toBeNull()->not->toBe($before);
 });
 
 it('refuses a file that is not the stock CSV before anything is stored', function () {

@@ -14,9 +14,13 @@ namespace Tinvar\Tests\Integration\ShopWarehouseApi;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Models\Customer;
+use Shop\Queries\Availability;
 use Tinvar\Bench\Shop;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
+use Tinvar\Live\MemoryHub;
+use Tinvar\Live\Topics;
+use Tinvar\Support\Signer;
 
 const KEY = 'shop-warehouse-api-key-of-32-bytes!!';
 const TOKEN = 'warehouse-token-of-at-least-32-characters';
@@ -72,6 +76,26 @@ it('sets a product\'s stock for the warehouse\'s token, and issues no session', 
         ->and($response->cookies())->toBe([])
         ->and($response->header('set-cookie'))->toBeNull()
         ->and(sessionRows($this->kernel))->toBe($rows);
+});
+
+// ADR 0075: a write outside an action invalidates what it declares. The
+// catalog's availability reads the tag; every page showing it is told.
+it('tells every page showing stock, and drops every hold on it, once it has set one', function () {
+    $hub = new MemoryHub();
+    $kernel = Kernel::fromEnvironment('/tmp/tinvar-shop-warehouse-none.sock', key: KEY, database: Shop::testDatabase(), hub: $hub, warehouseToken: TOKEN);
+    $before = $kernel->kernel()->sharedTags?->stamp([Availability::TAG], '');
+
+    expect(put($kernel, $this->product, 9, ['authorization' => 'Bearer ' . TOKEN])->status)->toBe(200)
+        ->and(array_column($hub->published, 'topic'))->toContain(new Topics(new Signer(KEY, Topics::PURPOSE))->for('', Availability::TAG))
+        ->and($kernel->kernel()->sharedTags?->stamp([Availability::TAG], ''))->not->toBe($before);
+});
+
+it('tells nobody when it was refused', function () {
+    $hub = new MemoryHub();
+    $kernel = Kernel::fromEnvironment('/tmp/tinvar-shop-warehouse-none.sock', key: KEY, database: Shop::testDatabase(), hub: $hub, warehouseToken: TOKEN);
+
+    expect(put($kernel, $this->product, 9)->status)->toBe(401)
+        ->and($hub->published)->toBe([]);
 });
 
 it('refuses a wrong token or none with a 401, and issues no session for that either', function (?string $authorization) {
