@@ -36,6 +36,20 @@ namespace Tinvar\Packages;
  *     require or its require-dev, so no package's own suite runs with one
  *     installed (ADR 0056).
  *
+ * Beside the packages, packages/ holds applications: the skeleton a new app
+ * is made from (`composer create-project tinvar/skeleton`, ADR 0082), split
+ * to a mirror of its own as the packages are. An application is no layer
+ * and no library, so it is held to rules of its own:
+ *
+ *   - it is named for its directory, and is a Composer `project`, which is
+ *     what create-project copies -- and nothing else in packages/ is one;
+ *   - it requires the packages at the same one constraint they require each
+ *     other at, so the skeleton of a release installs that release;
+ *   - no package, no other application and not the workspace requires it:
+ *     an application is where a dependency tree starts, never a part of
+ *     one, and installed as one it would put its code beside the
+ *     framework's in someone else's vendor/.
+ *
  * It fails closed: a manifest that cannot be read is a violation.
  */
 final readonly class Workspace
@@ -46,11 +60,14 @@ final readonly class Workspace
     /**
      * @param list<string> $optIn the packages, by directory, an application
      *        opts into rather than gets with the framework: tenancy (ADR 0056)
+     * @param list<string> $apps the applications in packages/, by directory:
+     *        the skeleton (ADR 0082)
      */
     public function __construct(
         private string $root,
         private Layers $layers,
         private array $optIn = ['tenancy'],
+        private array $apps = ['skeleton'],
     ) {}
 
     /**
@@ -82,7 +99,9 @@ final readonly class Workspace
         $constraints = [];
         foreach ($manifests as $directory => $manifest) {
             $where = "packages/{$directory}/composer.json";
-            $violations = [...$violations, ...$this->manifest($directory, $manifest, $where, array_keys($manifests))];
+            $violations = [...$violations, ...(\in_array($directory, $this->apps, true)
+                ? $this->app($directory, $manifest, $where, array_keys($manifests))
+                : $this->manifest($directory, $manifest, $where, array_keys($manifests)))];
 
             foreach (['require', 'require-dev'] as $section) {
                 foreach (self::siblingsIn($manifest[$section] ?? []) as $sibling => $constraint) {
@@ -107,7 +126,45 @@ final readonly class Workspace
             $violations[] = "packages/: siblings are required at {$lockstep}, which is not one minor version (0.4.*).";
         }
 
-        return [...$violations, ...$this->workspace($root, array_keys($manifests), $lockstep === null ? null : (string) $lockstep)];
+        $packages = array_values(array_diff(array_keys($manifests), $this->apps));
+
+        return [...$violations, ...$this->workspace($root, $packages, $lockstep === null ? null : (string) $lockstep)];
+    }
+
+    /**
+     * What an application's manifest breaks: its name and type, a sibling
+     * that is no package, and a sibling that is another application.
+     *
+     * @param array<mixed> $manifest
+     * @param list<string> $packages every directory with a manifest
+     * @return list<string>
+     */
+    private function app(string $directory, array $manifest, string $where, array $packages): array
+    {
+        $violations = [];
+        $name = "tinvar/{$directory}";
+        if (($manifest['name'] ?? null) !== $name) {
+            $violations[] = "{$where}: is named " . json_encode($manifest['name'] ?? null, \JSON_UNESCAPED_SLASHES) . "; an application in packages/{$directory} is {$name}.";
+        }
+        if (($manifest['type'] ?? null) !== 'project') {
+            $violations[] = "{$where}: is of type " . json_encode($manifest['type'] ?? null) . '; an application is a "project", which composer create-project copies.';
+        }
+        if (\array_key_exists("packages/{$directory}/src", $this->layers->packages())) {
+            $violations[] = "{$where}: packages/{$directory}/src is a layer, and {$directory} is an application, which no layer is.";
+        }
+
+        foreach (['require', 'require-dev'] as $section) {
+            foreach (array_keys(self::siblingsIn($manifest[$section] ?? [])) as $sibling) {
+                $named = substr($sibling, \strlen('tinvar/'));
+                if (!\in_array($named, $packages, true)) {
+                    $violations[] = "{$where}: {$section} names {$sibling}, which is no package in packages/.";
+                } elseif (\in_array($named, $this->apps, true)) {
+                    $violations[] = "{$where}: {$section} names {$sibling}, an application, which nothing requires.";
+                }
+            }
+        }
+
+        return $violations;
     }
 
     /**
@@ -145,6 +202,9 @@ final readonly class Workspace
         if (($manifest['name'] ?? null) !== $name) {
             $violations[] = "{$where}: is named " . json_encode($manifest['name'] ?? null, \JSON_UNESCAPED_SLASHES) . "; a package in packages/{$directory} is {$name}.";
         }
+        if (($manifest['type'] ?? 'library') !== 'library') {
+            $violations[] = "{$where}: is of type " . json_encode($manifest['type']) . '; a package is a "library", and only an application Workspace names is anything else.';
+        }
 
         if (\is_array($manifest['extra'] ?? null) && \array_key_exists('tinvar', $manifest['extra'])) {
             $violations[] = "{$where}: carries extra.tinvar, which marks an application's package for the allowlist; the framework's packages carry none.";
@@ -155,6 +215,8 @@ final readonly class Workspace
                 $named = substr($sibling, \strlen('tinvar/'));
                 if (!\in_array($named, $packages, true)) {
                     $violations[] = "{$where}: {$section} names {$sibling}, which is no package in packages/.";
+                } elseif (\in_array($named, $this->apps, true)) {
+                    $violations[] = "{$where}: {$section} names {$sibling}, an application, which nothing requires.";
                 } elseif ($named !== $directory && \in_array($named, $this->optIn, true)) {
                     // Each package's suite runs with what its manifests
                     // reach (bin/package-alone), and the framework's is how
@@ -255,6 +317,11 @@ final readonly class Workspace
         $violations = [];
         $required = [...(\is_array($workspace['require'] ?? null) ? $workspace['require'] : []), ...(\is_array($workspace['require-dev'] ?? null) ? $workspace['require-dev'] : [])];
         $serving = substr($lockstep, 0, -\strlen('*')) . 'x-dev';
+        foreach ($this->apps as $app) {
+            if (\array_key_exists("tinvar/{$app}", $required)) {
+                $violations[] = "composer.json: requires tinvar/{$app}, an application, which nothing requires.";
+            }
+        }
         foreach ($packages as $directory) {
             $name = "tinvar/{$directory}";
             if (($required[$name] ?? null) !== "{$lockstep}@dev") {

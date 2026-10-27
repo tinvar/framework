@@ -229,3 +229,83 @@ it('fails closed on a manifest it cannot read', function () {
 
     expect($violations)->toContain('packages/support/composer.json: cannot be read as a JSON object.');
 });
+
+/**
+ * The workspace above with an application beside its packages: the
+ * skeleton a new app is made from (ADR 0082).
+ *
+ * @param array<string, array<mixed>> $files
+ * @return array<string, array<mixed>>
+ */
+function withSkeleton(array $files): array
+{
+    $files['packages/skeleton/composer.json'] = [
+        'name' => 'tinvar/skeleton',
+        'type' => 'project',
+        'require' => ['php' => '>=8.5', 'tinvar/database' => '0.4.*', 'tinvar/support' => '0.4.*'],
+        'autoload' => ['psr-4' => ['App\\' => 'app/']],
+    ];
+
+    return $files;
+}
+
+it('passes an application beside the packages, which is no layer and no library', function () {
+    expect(violations(withSkeleton(...)))->toBe([]);
+});
+
+it('fails an application that is not a project, or is named for another directory', function () {
+    $violations = violations(static function (array $files): array {
+        $files = withSkeleton($files);
+        $files['packages/skeleton/composer.json']['type'] = 'library';
+        $files['packages/skeleton/composer.json']['name'] = 'tinvar/starter';
+
+        return $files;
+    });
+
+    expect($violations)->toBe([
+        'packages/skeleton/composer.json: is named "tinvar/starter"; an application in packages/skeleton is tinvar/skeleton.',
+        'packages/skeleton/composer.json: is of type "library"; an application is a "project", which composer create-project copies.',
+    ]);
+});
+
+it('fails an application requiring the packages at another constraint than theirs', function () {
+    $violations = violations(static function (array $files): array {
+        $files = withSkeleton($files);
+        $files['packages/skeleton/composer.json']['require']['tinvar/database'] = '^0.4';
+
+        return $files;
+    });
+
+    expect($violations)->toBe([
+        'packages/skeleton/composer.json require tinvar/database is ^0.4, where the packages require each other at 0.4.*: one constraint, so one tag releases them together.',
+    ]);
+});
+
+it('fails a package, an application or the workspace requiring an application', function () {
+    $violations = violations(static function (array $files): array {
+        $files = withSkeleton($files);
+        $files['packages/database/composer.json']['require-dev']['tinvar/skeleton'] = '0.4.*';
+        $files['composer.json']['require-dev']['tinvar/skeleton'] = '0.4.*@dev';
+        $files['packages/skeleton/composer.json']['require-dev']['tinvar/skeleton'] = '0.4.*';
+
+        return $files;
+    });
+
+    expect($violations)->toBe([
+        'packages/database/composer.json: require-dev names tinvar/skeleton, an application, which nothing requires.',
+        'packages/skeleton/composer.json: require-dev names tinvar/skeleton, an application, which nothing requires.',
+        'composer.json: requires tinvar/skeleton, an application, which nothing requires.',
+    ]);
+});
+
+it('fails a package that is a project without being named an application', function () {
+    $violations = violations(static function (array $files): array {
+        $files['packages/database/composer.json']['type'] = 'project';
+
+        return $files;
+    });
+
+    expect($violations)->toBe([
+        'packages/database/composer.json: is of type "project"; a package is a "library", and only an application Workspace names is anything else.',
+    ]);
+});
