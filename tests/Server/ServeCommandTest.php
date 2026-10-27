@@ -412,3 +412,52 @@ describe('renderers run as a user of their own', function () {
         'this user' => [['TINVAR_RENDERER_USER' => (string) posix_geteuid(), 'TINVAR_SOCKET' => '/run/pool'], [], 'the user this process runs as'],
     ]);
 })->skip(fn () => !\function_exists('posix_geteuid') || posix_geteuid() === 0 || posix_getpwnam('nobody') === false, 'needs a user nobody, and not root');
+
+// ADR 0066: the browser test endpoint "binds to localhost".
+describe('the test profile', function () {
+    it('serves on loopback only', function (string $host) {
+        withoutEnvironmentBinary(function () use ($host) {
+            [$command, $errors] = command(project());
+
+            $status = withEnvironment(
+                ['TINVAR_PROFILE' => 'test', 'TINVAR_ENV' => 'testing'],
+                fn () => $command->run(['--app=' . app(), "--host={$host}"]),
+            );
+
+            expect($status)->toBe(ServeCommand::USAGE)
+                ->and(implode("\n", $errors->getArrayCopy()))->toContain('on loopback only');
+        });
+    })->with(['0.0.0.0', '192.168.1.20', '::']);
+
+    it('is refused where the environment says production, or says nothing', function (string $env) {
+        withoutEnvironmentBinary(function () use ($env) {
+            [$command, $errors] = command(project());
+
+            $status = withEnvironment(
+                ['TINVAR_PROFILE' => 'test', 'TINVAR_ENV' => $env],
+                fn () => $command->run(['--app=' . app()]),
+            );
+
+            expect($status)->toBe(ServeCommand::USAGE)
+                ->and(implode("\n", $errors->getArrayCopy()))->toContain('TINVAR_PROFILE=test is refused');
+        });
+    })->with(['production', '']);
+
+    it('loads the renderers from the build TINVAR_BUILD_DIR names', function () {
+        withoutEnvironmentBinary(function () {
+            $app = app();
+            $build = scratch();
+            mkdir("{$build}/rsc", 0700, true);
+            file_put_contents("{$build}/rsc/index.js", "export {};\n");
+            [$command] = command(project());
+
+            $plan = withEnvironment(
+                ['TINVAR_PROFILE' => 'test', 'TINVAR_ENV' => 'testing', 'TINVAR_BUILD_DIR' => $build],
+                fn () => $command->plan(['--app=' . $app]),
+            );
+
+            expect($plan['entry'])->toBe("{$build}/rsc/index.js")
+                ->and($plan['host'])->toBe('127.0.0.1');
+        });
+    });
+});

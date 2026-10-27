@@ -228,6 +228,18 @@ final class ServeCommand
 
         $host = $options['host'] ?? self::DEFAULT_HOST;
         PortFinder::assertHost($host);
+        // The test profile's endpoint binds to loopback (tinvar-spec.md,
+        // "Testing"): refused here, as anywhere, beside production or where
+        // nothing says otherwise, and on any other address. Each request it
+        // answers is held to loopback again, with the run's token.
+        try {
+            $test = BuildProfile::fromEnvironment() === BuildProfile::TEST;
+        } catch (\RuntimeException $e) {
+            throw new ServeException($e->getMessage());
+        }
+        if ($test && !\in_array($host, self::LOOPBACK, true)) {
+            throw new ServeException('TINVAR_PROFILE=test serves the browser test endpoint, on loopback only (127.0.0.1 or ::1); refusing ' . $host . '.');
+        }
         if ($dev && !\in_array($host, self::LOOPBACK, true)) {
             throw new ServeException("tinvar serve --dev listens on loopback only (127.0.0.1 or ::1); refusing {$host}.");
         }
