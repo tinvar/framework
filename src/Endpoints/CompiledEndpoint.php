@@ -45,6 +45,8 @@ final readonly class CompiledEndpoint
      *        cached as it says; anything else is always `private`
      * @param Throttle|null $throttle its own bucket, spent beside `throttle:endpoints` (ADR 0074)
      * @param Cors|null $cors the other origins that may call it and read its answer (ADR 0074)
+     * @param list<string> $revalidates the tags a call on a method that may write
+     *        invalidates once its body has returned (ADR 0075)
      */
     public function __construct(
         public string $name,
@@ -71,6 +73,7 @@ final readonly class CompiledEndpoint
         public bool $publicAccess = false,
         public ?Throttle $throttle = null,
         public ?Cors $cors = null,
+        public array $revalidates = [],
     ) {}
 
     /**

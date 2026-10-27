@@ -325,6 +325,7 @@ final class EndpointRegistry
             publicAccess: $public,
             throttle: $throttle,
             cors: $cors,
+            revalidates: $declaration->revalidates,
         );
     }
 

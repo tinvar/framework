@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Endpoints;
 
+use Tinvar\Actions\TagInvalidation;
 use Tinvar\Auth\Checks;
 use Tinvar\Auth\Gate;
 use Tinvar\Data\Data;
@@ -27,7 +28,8 @@ use Tinvar\Validation\Validator;
  *      requests, scoped to the tenant; a missing or foreign id is a 404
  *   2. run #[Authorize] for every model-typed input; denied is a 403
  *   3. validate the form requests; a failure is a 422 with its errors
- *   4. run the body -- read-only for a GET, which carries no CSRF token
+ *   4. run the body -- read-only for a GET, which carries no CSRF token --
+ *      and, for a method that may write, invalidate the tags it declares
  *   5. answer: its Response, its Data through the encoder as JSON, or 204
  *
  * Steps 1 and 2 come before 3 for the reason they do for an action:
@@ -48,6 +50,9 @@ final class EndpointRunner
         private readonly Gate $gate,
         private readonly Validator $validator,
         private readonly Encoder $encoder = new Encoder(),
+        // What the tags an endpoint declares do once a call that may write
+        // has run (ADR 0075); none, and they do nothing.
+        private readonly ?TagInvalidation $invalidation = null,
     ) {}
 
     /**
@@ -69,7 +74,22 @@ final class EndpointRunner
         $instance = ($this->resolver)($endpoint->class);
         $body = static fn (): mixed => $instance->{$endpoint->method}(...$arguments);
         $safe = CompiledEndpoint::isSafeMethod($request->method);
-        $result = $safe ? $this->orm->readOnly($body) : $body();
+        if ($safe) {
+            $result = $this->orm->readOnly($body);
+        } else {
+            // Noting every tenant it ran as, as an action's body is: a row
+            // it wrote by actAs()ing a child is the child's, and so are the
+            // pages to tell.
+            [$result, $tenants] = $this->orm->tenantsEnteredBy($body);
+
+            // What it said it invalidates, as an action's result does: the
+            // cached queries and the once-shared holds at once and again
+            // after any commit, the live clients and the static pages once
+            // the writes are in (TagInvalidation). Once the body has
+            // returned -- one that threw changed nothing to announce -- and
+            // never for a GET, which wrote nothing.
+            $this->invalidation?->invalidateIn($endpoint->revalidates, $tenants);
+        }
 
         // 5. Answer.
         return match ($endpoint->returns) {

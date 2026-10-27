@@ -6,6 +6,7 @@ namespace Tinvar\Http;
 
 use Tinvar\Actions\ActionRegistry;
 use Tinvar\Actions\ActionRunner;
+use Tinvar\Actions\TagInvalidation;
 use Tinvar\Actions\Revalidator;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Channels\ChannelEndpoint;
@@ -856,6 +857,17 @@ final class Kernel
         $this->exceptions = new ExceptionHandler($log);
         $encoder = new \Tinvar\Data\Encoder($this->report(...));
 
+        // What the tags a write names do on the server, for the writes that
+        // are not actions -- an endpoint's, an import's -- as ActionRunner
+        // does for an action's (ADR 0075).
+        $invalidation = new TagInvalidation(
+            $this->orm,
+            $cache,
+            $live?->invalidator($this->orm, $this->report(...)),
+            $staticPages,
+            $this->sharedTags,
+        );
+
         $this->actions_ = new ActionEndpoint(
             new ActionRunner(
                 $this->actions,
@@ -1072,7 +1084,7 @@ final class Kernel
 
         $this->endpoints_ = $endpoints === null ? null : new EndpointHandler(
             registry: $endpoints,
-            runner: new EndpointRunner($resolver, $this->orm, $gate, new Validator($this->orm), $encoder),
+            runner: new EndpointRunner($resolver, $this->orm, $gate, new Validator($this->orm), $encoder, $invalidation),
             auth: $this->auth,
             middlewareResolver: self::middlewareFrom($resolver),
             globalMiddleware: $globalMiddleware,

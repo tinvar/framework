@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Attributes;
 
+use Tinvar\Actions\TagInvalidation;
+
 /**
  * A route that is not a page: a JSON API, a download, a callback.
  *
@@ -36,15 +38,25 @@ final readonly class Endpoint
     /** @var non-empty-list<string> */
     public array $methods;
 
+    /** @var list<string> */
+    public array $revalidates;
+
     /**
      * @param list<string> $methods
      * @param string|null $name what it is counted, logged and called from
      *        TypeScript by; the class's short name and the method's otherwise
+     * @param list<string> $revalidates the tags a call that may write invalidates once
+     *        its body has returned, as an action's result names them (ADR 0075): the
+     *        cached queries forgotten, every client listening told, every once-shared
+     *        hold dropped, every static page showing them taken out of service. Not
+     *        on a GET or a HEAD, which write nothing; an endpoint answering only GET
+     *        that declares any is refused
      */
     public function __construct(
         public string $path,
         array $methods = ['GET'],
         public ?string $name = null,
+        array $revalidates = [],
     ) {
         $normalized = [];
         foreach ($methods as $method) {
@@ -65,6 +77,14 @@ final readonly class Endpoint
             throw new \InvalidArgumentException("An endpoint at '{$path}' declares no method.");
         }
         $this->methods = $normalized;
+
+        $this->revalidates = TagInvalidation::declared("An endpoint at '{$path}'", $revalidates);
+        if ($this->revalidates !== [] && $normalized === ['GET']) {
+            throw new \InvalidArgumentException(
+                "An endpoint at '{$path}' revalidates tags and answers only GET, which writes nothing: a GET's body "
+                . 'runs read-only. Declare them on the method that writes.',
+            );
+        }
     }
 
     /**
@@ -81,7 +101,7 @@ final readonly class Endpoint
         }
         foreach ($method->getAttributes(Post::class) as $attribute) {
             $post = $attribute->newInstance();
-            $found[] = new self($post->path, ['POST'], $post->name);
+            $found[] = new self($post->path, ['POST'], $post->name, $post->revalidates);
         }
         foreach ($method->getAttributes(self::class) as $attribute) {
             $found[] = $attribute->newInstance();
