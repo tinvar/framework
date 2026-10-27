@@ -159,11 +159,14 @@ function fetch(string $url, array $headers = []): array
 function served(string $root, string $static, \Closure $drive, ?string $database = null, ?string $manifest = null): void
 {
     $renderer = Renderer::start('msgpack', 'static-served');
-    $port = 19_000 + random_int(0, 999);
     $keyDir = scratch();
+    $errorLog = scratch() . '/server.log';
     $server = proc_open(
-        [PHP_BINARY, '-S', "127.0.0.1:{$port}", "{$root}/examples/shop/public/index.php"],
-        [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']],
+        // Port 0, the one php -S binds then named in its first line: a port
+        // guessed here could be held by anything else on the machine, which
+        // the test would then have driven instead (see BrowserNavigationTest).
+        [PHP_BINARY, '-S', '127.0.0.1:0', "{$root}/examples/shop/public/index.php"],
+        [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', $errorLog, 'w']],
         $pipes,
         $root,
         [
@@ -177,16 +180,16 @@ function served(string $root, string $static, \Closure $drive, ?string $database
     );
 
     try {
-        set_error_handler(static fn (): bool => true);
-        try {
-            $deadline = microtime(true) + 10;
-            while (fsockopen('127.0.0.1', $port) === false && microtime(true) < $deadline) {
+        $port = null;
+        $deadline = microtime(true) + 10;
+        while ($port === null && proc_get_status($server)['running'] && microtime(true) < $deadline) {
+            if (preg_match('#Development Server \(http://127\.0\.0\.1:(\d+)\) started#', (string) file_get_contents($errorLog), $started) === 1) {
+                $port = (int) $started[1];
+            } else {
                 usleep(50_000);
             }
-        } finally {
-            restore_error_handler();
         }
-        expect(proc_get_status($server)['running'])->toBeTrue("php -S did not start on port {$port}");
+        expect($port)->not->toBeNull('php -S did not start: ' . file_get_contents($errorLog));
 
         $drive("http://127.0.0.1:{$port}");
     } finally {
