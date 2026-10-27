@@ -14,6 +14,8 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Panels\SharedOnce;
 
 use Tinvar\Auth\AllowAllGate;
+use Tinvar\Cache\ArrayTagVersions;
+use Tinvar\Cache\TagVersions;
 use Tinvar\Data\SharedReads;
 use Tinvar\Data\SharedRegistry;
 use Tinvar\Http\Endpoints\FragmentEndpoint;
@@ -254,5 +256,88 @@ describe('a fragment render', function () {
 
         expect($app->get(FragmentEndpoint::PREFIX . $token, 'clerk')->status)->toBe(403)
             ->and($app->fragmentShared)->toBeNull();
+    });
+});
+
+/** A tag version store that cannot be reached, once it is told to fail. */
+final class FlakyTagVersions implements TagVersions
+{
+    public bool $down = false;
+
+    private ArrayTagVersions $inner;
+
+    public function __construct()
+    {
+        $this->inner = new ArrayTagVersions();
+    }
+
+    public function versions(array $tags): array
+    {
+        return $this->down ? throw new \RuntimeException('the store is down') : $this->inner->versions($tags);
+    }
+
+    public function bump(array $tags): void
+    {
+        $this->down ? throw new \RuntimeException('the store is down') : $this->inner->bump($tags);
+    }
+}
+
+function taggedApp(?TagVersions $versions = null): App
+{
+    return new App(
+        shared: new SharedRegistry([EveryoneShared::class, StaffShared::class, ResellerShared::class, ReportsShared::class]),
+        tagVersions: $versions ?? new ArrayTagVersions(),
+    );
+}
+
+// ADR 0074: a hold is bound to its key's tags as the server keeps them, so a
+// write no response announced -- a job's -- stops it being believed.
+describe('a once-shared hold bound to its tags on the server', function () {
+    it('is believed while its tags stand, and not once a job bumps one', function () {
+        $app = taggedApp();
+        $hold = holdFrom($app, '/home', 'anyone');
+
+        expect(navigate($app, '/home', 'anyone', payload($hold))['welcome'])->toBe(['$once' => '$shared.welcome', 'held' => true]);
+
+        $app->kernel->sharedTags?->invalidate(['notes']);
+        Trace::reset();
+
+        $reads = navigate($app, '/home', 'anyone', payload($hold));
+        expect($reads['welcome'])->toHaveKey('value')
+            ->and(Trace::$events)->toContain('welcome');
+
+        // The hold sent with it is bound to the tags as they stand now.
+        expect(navigate($app, '/home', 'anyone', payload($reads['welcome']['hold']))['welcome'])->toHaveKey('held');
+    });
+
+    it('is left alone by another tag, and by the same tag in another tenant', function () {
+        $app = taggedApp();
+        $hold = holdFrom($app, '/home', 'anyone');
+
+        $app->kernel->sharedTags?->invalidate(['orders']);
+        $app->kernel->sharedTags?->invalidate(['notes'], 'acme');
+
+        expect(navigate($app, '/home', 'anyone', payload($hold))['welcome'])->toHaveKey('held');
+    });
+
+    it('fails closed: no hold is believed, nor minted, while the versions cannot be read', function () {
+        $versions = new FlakyTagVersions();
+        $app = taggedApp($versions);
+        $hold = holdFrom($app, '/home', 'anyone');
+        $versions->down = true;
+
+        $reads = navigate($app, '/home', 'anyone', payload($hold));
+
+        expect($reads['welcome'])->toHaveKey('value')
+            ->and($reads['welcome']['keep'])->toBeFalse()
+            ->and($reads['welcome'])->not->toHaveKey('hold');
+    });
+
+    it('refuses a bump it cannot make, so the write that asked for it fails', function () {
+        $versions = new FlakyTagVersions();
+        $app = taggedApp($versions);
+        $versions->down = true;
+
+        expect(fn () => $app->kernel->sharedTags?->invalidate(['notes']))->toThrow(\RuntimeException::class, 'the store is down');
     });
 });

@@ -59,9 +59,10 @@ final class SharedReads
      *        provider instance served, so a worker-lived one is refused
      * @param list<string> $held the once keys the browser was found to hold, by holds
      *        the Kernel verified against this request's binding; any other key is produced
-     * @param (\Closure(string, int): string)|null $hold mints the hold a once value is sent
+     * @param (\Closure(string, int): ?string)|null $hold mints the hold a once value is sent
      *        with, for its key and the seconds it may be claimed; null where none may be --
-     *        no session, no signer -- and the value is sent to be shown and not kept
+     *        no session, no signer -- and the value is sent to be shown and not kept, as it
+     *        is for a key whose hold it returns null for: its tags' versions unreadable
      */
     public function __construct(
         private readonly SharedRegistry $registry,
@@ -182,9 +183,13 @@ final class SharedReads
                 'tags' => $once['tags'],
                 'value' => $outcome['value'],
             ];
-            $outcome = ['value' => $this->hold === null
+            // A hold that cannot be minted -- no session, or tags whose
+            // versions cannot be read (ADR 0074) -- and the value is shown,
+            // never kept, so nothing claims it.
+            $hold = $this->hold === null ? null : ($this->hold)($key, $once['ttl']);
+            $outcome = ['value' => $hold === null
                 ? [...$field, 'keep' => false]
-                : [...$field, 'hold' => ($this->hold)($key, $once['ttl'])]];
+                : [...$field, 'hold' => $hold]];
         }
 
         return $this->outcomes[$key] = $outcome;

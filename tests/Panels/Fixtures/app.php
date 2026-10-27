@@ -308,6 +308,7 @@ final class App
         array $extraQueries = [],
         ?\Closure $allowedQueries = null,
         ?\Tinvar\Data\SharedRegistry $shared = null,
+        ?\Tinvar\Cache\TagVersions $tagVersions = null,
     ) {
         Trace::reset();
         $fixture = new TenantFixture();
@@ -384,6 +385,7 @@ final class App
             panelRegistry: self::panels(),
             memberships: $this->directory,
             shared: $shared,
+            tagVersions: $tagVersions,
         );
     }
 

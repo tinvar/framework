@@ -30,6 +30,13 @@ use Tinvar\Support\Signer;
  * when it may be believed, and a key kept "for the session" is still
  * produced again once a day (SharedRegistry::MAX_HOLD).
  *
+ * And so are the key's tags, where the application keeps their versions
+ * (ADR 0074): a hold carries a stamp of them as they were when it was
+ * minted, and is believed only while they are the same. A write that bumps
+ * one -- an action, or a job no response announces -- stops every hold
+ * minted before it, in every browser. A stamp that cannot be read mints no
+ * hold and believes none.
+ *
  * Held only ever means less: the key's value is not sent, and what the
  * browser shows is what it kept. Nothing the server keeps is read for it.
  */
@@ -57,6 +64,10 @@ final readonly class SharedHold
         private string $sessionId,
         private ?string $user,
         private string $authEpoch,
+        // The stamp of a key's tags as they stand (SharedTags::stamp()): ''
+        // for a key with none, null when it cannot be read. Without one,
+        // every key is stamped ''.
+        private ?\Closure $stamp = null,
     ) {
         if ($this->sessionId === '') {
             // A constant session hash would make every visitor's hold
@@ -67,15 +78,22 @@ final readonly class SharedHold
 
     /**
      * The hold for $key, sent now and believed for $ttl seconds -- never
-     * more than SharedRegistry::MAX_HOLD.
+     * more than SharedRegistry::MAX_HOLD -- and while its tags stay as they
+     * are. Null when their stamp cannot be read: the value is then sent to
+     * be shown, and never kept.
      */
-    public function mint(string $key, int $ttl, ?int $now = null): string
+    public function mint(string $key, int $ttl, ?int $now = null): ?string
     {
+        $stamp = $this->stampOf($key);
+        if ($stamp === null) {
+            return null;
+        }
         $at = $now ?? time();
 
         return SignedToken::encode($this->signer, self::PURPOSE, [
             ...$this->binding(),
             'k' => $key,
+            'v' => $stamp,
             'i' => $at,
             'e' => $at + max(1, min($ttl, SharedRegistry::MAX_HOLD)),
         ]);
@@ -108,8 +126,8 @@ final readonly class SharedHold
         $ours = $this->binding();
         $held = [];
         foreach ($tokens as $token) {
-            $key = $this->keyOf($token, $ours, $at);
-            if ($key !== null && \in_array($key, $once, true)) {
+            $key = $this->keyOf($token, $ours, $at, $once);
+            if ($key !== null) {
                 $held[$key] = true;
             }
         }
@@ -118,12 +136,14 @@ final readonly class SharedHold
     }
 
     /**
-     * The key a hold names, when it verifies and was sent under $ours and
-     * is still within its time; null otherwise.
+     * The key a hold names, when it verifies, was sent under $ours, is still
+     * within its time, is one of $once and its tags are as they were; null
+     * otherwise.
      *
      * @param array{n: string, y: string, b: string, s: string, u: string} $ours
+     * @param list<string> $once
      */
-    private function keyOf(string $token, array $ours, int $at): ?string
+    private function keyOf(string $token, array $ours, int $at, array $once): ?string
     {
         try {
             $claims = SignedToken::decode($token, $this->signer, self::PURPOSE);
@@ -134,7 +154,7 @@ final readonly class SharedHold
         $key = $claims['k'] ?? null;
         $issued = $claims['i'] ?? null;
         $expires = $claims['e'] ?? null;
-        if (!\is_string($key) || !\is_int($issued) || !\is_int($expires)) {
+        if (!\is_string($key) || !\in_array($key, $once, true) || !\is_int($issued) || !\is_int($expires)) {
             return null;
         }
 
@@ -153,7 +173,26 @@ final readonly class SharedHold
             }
         }
 
+        // Last, as the one check that reads a store: the key's tags as they
+        // stand now, against what they were when the hold was minted.
+        $minted = $claims['v'] ?? null;
+        $stamp = $this->stampOf($key);
+        if (!\is_string($minted) || $stamp === null || !hash_equals($stamp, $minted)) {
+            return null;
+        }
+
         return $key;
+    }
+
+    /** The key's tag stamp now: '' with nothing to stamp by, null when it cannot be read. */
+    private function stampOf(string $key): ?string
+    {
+        if ($this->stamp === null) {
+            return '';
+        }
+        $stamp = ($this->stamp)($key);
+
+        return \is_string($stamp) ? $stamp : null;
     }
 
     /**

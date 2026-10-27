@@ -77,6 +77,8 @@ use Tinvar\Uploads\FileUrls;
 use Tinvar\Uploads\UploadBinder;
 use Tinvar\Uploads\UploadEndpoint;
 use Tinvar\Uploads\Uploads;
+use Tinvar\Cache\TagVersions;
+use Tinvar\Data\SharedTags;
 use Tinvar\Endpoints\CompiledEndpoint;
 use Tinvar\Endpoints\EndpointHandler;
 use Tinvar\Endpoints\EndpointRegistry;
@@ -259,6 +261,14 @@ final class Kernel
 
     /** The application's shared data (ADR 0060); null for none. */
     private readonly ?SharedRegistry $shared;
+
+    /**
+     * The tags once-shared holds are bound to, on the server (ADR 0074): for
+     * a job to invalidate() what it changed, so no browser is believed to
+     * hold a value from before. Null when the Kernel was given no
+     * TagVersions.
+     */
+    public readonly ?SharedTags $sharedTags;
 
     /**
      * Each shared key's panel, worked out once from its declarations and
@@ -517,6 +527,11 @@ final class Kernel
      *        its tenant, panel stack, middleware, model binding and #[Authorize] -- and the
      *        live trade lets each subscription in again; without live updates, nothing is
      *        mounted and nothing is heard
+     * @param TagVersions|null $tagVersions where the versions of the tags once-shared holds
+     *        are bound to are kept (ADR 0074). Given, a hold is believed only while its key's
+     *        tags are as they were when it was minted; an action's invalidated tags bump
+     *        them, and so does a job through $sharedTags. Without it, a hold is believed until
+     *        its `until` whatever no response announced
      */
     public function __construct(
         public readonly Orm $orm,
@@ -572,9 +587,11 @@ final class Kernel
         ?SharedRegistry $shared = null,
         ?EndpointRegistry $endpoints = null,
         ?ChannelRegistry $channels = null,
+        ?TagVersions $tagVersions = null,
     ) {
         $this->resolver = $resolver;
         $this->shared = $shared;
+        $this->sharedTags = $tagVersions === null ? null : new SharedTags($tagVersions, $orm, $this->report(...));
 
         // Half registered is neither: entry points would run as tenants the
         // Orm reads no rows of, under tokens that name none of them.
@@ -827,6 +844,7 @@ final class Kernel
                 $uploads === null ? null : new UploadBinder($uploads, $this->auth, $this->orm, $panels),
                 $staticPages,
                 $standIns === null ? null : $standIns->action(...),
+                $this->sharedTags,
             ),
             maxBodyBytes: $maxBodyBytes,
             revalidator: $revalidator,
@@ -2024,7 +2042,37 @@ final class Kernel
             sessionId: $session,
             user: $this->auth->id(),
             authEpoch: $this->auth->epoch(),
+            stamp: $this->tagStamps(),
         );
+    }
+
+    /**
+     * How a hold is stamped with its key's tags for this render (ADR 0074),
+     * each key read from the store once however many times it is minted or
+     * verified; null when the Kernel keeps no tag versions. A key the
+     * registry does not share once has no stamp, and no hold verifies for it.
+     *
+     * @return (\Closure(string): ?string)|null
+     */
+    private function tagStamps(): ?\Closure
+    {
+        $tags = $this->sharedTags;
+        $shared = $this->shared;
+        if ($tags === null || $shared === null) {
+            return null;
+        }
+
+        $tenant = $this->orm->tenant();
+        $stamps = [];
+
+        return static function (string $key) use ($tags, $shared, $tenant, &$stamps): ?string {
+            if (!\array_key_exists($key, $stamps)) {
+                $once = $shared->has($key) ? $shared->onceOf($key) : null;
+                $stamps[$key] = $once === null ? null : $tags->stamp($once['tags'], $tenant);
+            }
+
+            return $stamps[$key];
+        };
     }
 
     /**

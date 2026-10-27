@@ -8,6 +8,7 @@ use Tinvar\Auth\Checks;
 use Tinvar\Auth\Gate;
 use Tinvar\Cache\QueryCache;
 use Tinvar\Data\Encoder;
+use Tinvar\Data\SharedTags;
 use Tinvar\Http\ForbiddenException;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Http\Request;
@@ -66,6 +67,10 @@ final class ActionRunner
         // Asked only once the call has passed resolution, #[Authorize] and
         // validation, and what it returns goes on as the body's result does.
         private readonly ?\Closure $standIn = null,
+        // Moves the versions once-shared holds are bound to, so a hold on a
+        // value the action changed is believed by no browser, not only the
+        // one its response reaches (ADR 0074).
+        private readonly ?SharedTags $sharedTags = null,
     ) {}
 
     /**
@@ -180,6 +185,11 @@ final class ActionRunner
         //    for other people -- told: the response's X-Invalidated-Tags
         //    reaches only the client that ran the action.
         $this->live?->invalidateIn($result->revalidatedTags, $tenants);
+
+        //    And every hold on a once-shared value carrying one of them
+        //    believed no more, by any browser: now -- a failure fails the
+        //    action -- and again after the commit (SharedTags).
+        $this->sharedTags?->invalidateIn($result->revalidatedTags, $tenants);
 
         //    And the static pages showing them, out of service until they
         //    are built again -- after the commit, so no build in between

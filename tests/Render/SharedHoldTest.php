@@ -19,8 +19,11 @@ use Tinvar\Support\Signer;
 const HOLD_KEY = 'shared-hold-test-key';
 const HOLD_NOW = 1_800_000_000;
 
-/** @param array<string, string|null> $overrides */
-function holder(array $overrides = [], string $key = HOLD_KEY): SharedHold
+/**
+ * @param array<string, string|null> $overrides
+ * @param (\Closure(string): ?string)|null $stamp
+ */
+function holder(array $overrides = [], string $key = HOLD_KEY, ?\Closure $stamp = null): SharedHold
 {
     $binding = [
         'panel' => 'admin',
@@ -40,8 +43,47 @@ function holder(array $overrides = [], string $key = HOLD_KEY): SharedHold
         sessionId: (string) $binding['session'],
         user: $binding['user'],
         authEpoch: (string) $binding['epoch'],
+        stamp: $stamp,
     );
 }
+
+// ADR 0074: bound to its key's tags as the server keeps them.
+it('proves its key only while the stamp of its tags is the one it was minted with', function () {
+    $stamps = ['motd' => 'tags-at-1'];
+    $stamp = static function (string $key) use (&$stamps): ?string {
+        return $stamps[$key] ?? null;
+    };
+    $hold = holder(stamp: $stamp)->mint('motd', 600, HOLD_NOW);
+
+    expect(holder(stamp: $stamp)->held($hold, ['motd'], HOLD_NOW))->toBe(['motd']);
+
+    $stamps['motd'] = 'tags-at-2';
+    expect(holder(stamp: $stamp)->held($hold, ['motd'], HOLD_NOW))->toBe([]);
+});
+
+it('fails closed when the stamp cannot be read: nothing minted, nothing believed', function () {
+    $hold = holder(stamp: static fn (): string => 'tags')->mint('motd', 600, HOLD_NOW);
+    $down = static fn (): ?string => null;
+
+    expect(holder(stamp: $down)->mint('motd', 600, HOLD_NOW))->toBeNull()
+        ->and(holder(stamp: $down)->held($hold, ['motd'], HOLD_NOW))->toBe([])
+        // Nor is a hold minted with a stamp believed by a server keeping none.
+        ->and(holder()->held($hold, ['motd'], HOLD_NOW))->toBe([]);
+});
+
+it('reads no stamp for a key this render does not read once', function () {
+    $asked = [];
+    $stamp = static function (string $key) use (&$asked): string {
+        $asked[] = $key;
+
+        return 'tags';
+    };
+    $hold = holder(stamp: $stamp)->mint('motd', 600, HOLD_NOW);
+    $asked = [];
+
+    expect(holder(stamp: $stamp)->held($hold, ['banner'], HOLD_NOW))->toBe([])
+        ->and($asked)->toBe([]);
+});
 
 it('proves the key it was minted for, under the same binding', function () {
     $hold = holder()->mint('motd', 600, HOLD_NOW);
@@ -89,7 +131,7 @@ it('proves nothing signed by another key, or for another purpose', function () {
         'n' => 'admin', 'y' => 'acme', 'b' => 'build-1',
         's' => TokenClaims::hashSession($signer, 'session-a'),
         'u' => TokenClaims::hashAuth($signer, 'u-1', '3'),
-        'k' => 'motd', 'i' => HOLD_NOW, 'e' => HOLD_NOW + 600,
+        'k' => 'motd', 'v' => '', 'i' => HOLD_NOW, 'e' => HOLD_NOW + 600,
     ];
     $routeToken = SignedToken::encode($signer, RouteToken::PURPOSE, $claims);
 
@@ -105,7 +147,7 @@ it('proves nothing for claims it was never minted with', function (array $claims
         'n' => 'admin', 'y' => 'acme', 'b' => 'build-1',
         's' => TokenClaims::hashSession($signer, 'session-a'),
         'u' => TokenClaims::hashAuth($signer, 'u-1', '3'),
-        'k' => 'motd', 'i' => HOLD_NOW, 'e' => HOLD_NOW + 600,
+        'k' => 'motd', 'v' => '', 'i' => HOLD_NOW, 'e' => HOLD_NOW + 600,
         ...$claims,
     ]);
 
@@ -117,6 +159,7 @@ it('proves nothing for claims it was never minted with', function (array $claims
     'a key that is not a string' => [['k' => ['motd']]],
     'an expiry that is not a number' => [['e' => (string) (HOLD_NOW + 600)]],
     'no user binding' => [['u' => null]],
+    'no tag stamp' => [['v' => null]],
 ]);
 
 it('proves nothing from a header no client of ours sends', function () {
