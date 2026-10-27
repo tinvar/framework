@@ -272,6 +272,21 @@ describe('a database class', function () {
 });
 
 describe('the other layers', function () {
+    // ADR 0056: tenancy is a package an application opts into, so nothing
+    // below it -- nor testing or codegen beside it -- may name it, in code,
+    // a string or a comment.
+    it('fails the framework, testing or codegen naming tenancy, and passes tenancy using the framework', function () {
+        $file = static fn (string $namespace, string $use): string => "<?php\nnamespace {$namespace};\n\nuse {$use};\n\nfinal class Example {}\n";
+
+        expect(crossed($file('Tinvar\\Http', 'Tinvar\\Tenancy\\Host')))->toBe(['Example.php:4: framework uses tenancy, Tinvar\Tenancy\Host (use)'])
+            ->and(crossed($file('Tinvar\\Testing', 'Tinvar\\Tenancy\\TenantHierarchy')))->toBe(['Example.php:4: testing uses tenancy, Tinvar\Tenancy\TenantHierarchy (use)'])
+            ->and(crossed($file('Tinvar\\Codegen', 'Tinvar\\Tenancy\\TenantSource')))->toBe(['Example.php:4: codegen uses tenancy, Tinvar\Tenancy\TenantSource (use)'])
+            ->and(crossed("<?php\nnamespace Tinvar\\Http;\n\n/** Read through Tinvar\\Tenancy\\ResolveTenant. */\nfinal class Example {}\n"))->toHaveCount(1)
+            ->and(crossed($file('Tinvar\\Tenancy', 'Tinvar\\Http\\TenantResolver')))->toBe([])
+            ->and(crossed($file('Tinvar\\Tenancy', 'Tinvar\\Orm\\TenantSubtrees')))->toBe([])
+            ->and(crossed($file('Tinvar\\Tenancy', 'Tinvar\\Testing\\Client')))->toBe(['Example.php:4: tenancy uses testing, Tinvar\Testing\Client (use)']);
+    });
+
     it('fails support using the database', function () {
         $source = "<?php\nnamespace Tinvar\\Support;\n\nuse Tinvar\\Orm\\Model;\n\nfinal class Example {}\n";
 
