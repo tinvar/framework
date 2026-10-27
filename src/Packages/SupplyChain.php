@@ -594,16 +594,56 @@ final class SupplyChain
             }
 
             if ($keyword === 'ADD') {
-                $checksum = array_filter($flags, static fn (string $flag): bool => preg_match('/^--checksum=sha256:[0-9a-f]{64}$/i', $flag) === 1) !== [];
+                $checksum = null;
+                foreach ($flags as $flag) {
+                    if (preg_match('/^--checksum=(.+)$/i', $flag, $m) === 1) {
+                        $checksum = $m[1];
+                    }
+                }
                 foreach ($words as $source) {
-                    if (preg_match('#^(https?|git)://|^git@#i', $source) === 1 && !$checksum) {
-                        $violations[] = "{$name} ADDs {$source} with no --checksum=sha256: to hold it to.";
+                    $violation = self::unpinnedAdd($name, $source, $checksum);
+                    if ($violation !== null) {
+                        $violations[] = $violation;
                     }
                 }
             }
         }
 
         return $violations;
+    }
+
+    /**
+     * An ADD source fetched from anywhere but the build context: any
+     * `scheme://` URL, or a `user@host:path` git address. A git source --
+     * one of those, git://, ssh://, a path ending in .git, or a URL with a
+     * #ref -- is pinned by a full commit, as its #ref or as --checksum, which
+     * BuildKit reads as the commit for git; anything else by
+     * --checksum=sha256.
+     */
+    private static function unpinnedAdd(string $name, string $source, ?string $checksum): ?string
+    {
+        $url = preg_match('#^[a-z][a-z0-9+.-]*://#i', $source) === 1;
+        $scp = preg_match('#^[^\s/@]+@[^\s/:]+:#', $source) === 1;
+        if (!$url && !$scp) {
+            return null;
+        }
+
+        [$location, $ref] = array_pad(explode('#', $source, 2), 2, null);
+        $git = $scp
+            || preg_match('#^(git|ssh|git\+[a-z]+)://#i', $source) === 1
+            || str_ends_with(strtolower($location), '.git')
+            || $ref !== null;
+        if (!$git) {
+            return $checksum !== null && preg_match('/^sha256:[0-9a-f]{64}$/i', $checksum) === 1
+                ? null
+                : "{$name} ADDs {$source} with no --checksum=sha256: to hold it to.";
+        }
+
+        $commit = '/^[0-9a-f]{40}$/i';
+        $pinned = ($ref !== null && preg_match($commit, explode(':', $ref, 2)[0]) === 1)
+            || ($checksum !== null && preg_match($commit, $checksum) === 1);
+
+        return $pinned ? null : "{$name} ADDs the git source {$source}, which is not pinned to a full commit.";
     }
 
     /** @param list<string> $stages the names this Dockerfile's earlier stages declared */

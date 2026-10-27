@@ -479,6 +479,36 @@ describe('dockerfiles', function () {
         ]);
     });
 
+    // Anything ADD fetches is remote, whatever the scheme; a git source is
+    // held to a full commit, as an action is.
+    it('holds every remote ADD source to a checksum, and a git one to a commit', function () use ($digest) {
+        $commit = str_repeat('ab', 20);
+        $sum = str_repeat('cd', 32);
+        $this->workspace->file('Dockerfile', <<<DOCKERFILE
+            FROM debian{$digest}
+            ADD ftp://example.com/a.tar.gz /a
+            ADD s3://bucket/b /b
+            ADD user@git.example.com:org/repo.git /c
+            ADD ssh://git@example.com/org/repo.git#main /d
+            ADD https://github.com/org/repo.git#v1.2.3 /e
+            ADD --checksum=sha256:{$sum} https://github.com/org/repo.git#main /f
+            ADD https://github.com/org/repo.git#{$commit} /g
+            ADD git@github.com:org/repo.git#{$commit}:sub /h
+            ADD --checksum={$commit} https://github.com/org/repo.git /i
+            ADD --checksum=sha256:{$sum} https://example.com/j.tar.gz /j
+            ADD local/file /k
+            DOCKERFILE);
+
+        expect(violations($this->workspace))->toBe([
+            'Dockerfile ADDs ftp://example.com/a.tar.gz with no --checksum=sha256: to hold it to.',
+            'Dockerfile ADDs s3://bucket/b with no --checksum=sha256: to hold it to.',
+            'Dockerfile ADDs the git source user@git.example.com:org/repo.git, which is not pinned to a full commit.',
+            'Dockerfile ADDs the git source ssh://git@example.com/org/repo.git#main, which is not pinned to a full commit.',
+            'Dockerfile ADDs the git source https://github.com/org/repo.git#v1.2.3, which is not pinned to a full commit.',
+            'Dockerfile ADDs the git source https://github.com/org/repo.git#main, which is not pinned to a full commit.',
+        ]);
+    });
+
     // A stage is named before it is used: a later stage's name is an image.
     it('takes only an earlier stage\'s name as a stage', function () use ($digest) {
         $this->workspace->file('Dockerfile', "FROM later\nFROM debian{$digest} AS later\n");
