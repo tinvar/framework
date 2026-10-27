@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Http\Endpoints;
 
+use Tinvar\Data\SharedReads;
 use Tinvar\Http\BuildRegistry;
 use Tinvar\Http\EntryContext;
 use Tinvar\Http\HttpException;
@@ -75,11 +76,14 @@ final class FragmentEndpoint
     public const string CONTENT_TYPE = 'text/x-component';
 
     /**
-     * @param \Closure(FragmentToken, Request, array<string, mixed>, list<string>): Response $render
+     * @param \Closure(FragmentToken, Request, array<string, mixed>, list<string>, ?SharedReads): Response $render
      *        opens a render channel for the subtree and returns its response.
      *        The allowlist is the FOURTH argument because the endpoint
      *        computes it from the originating route; a closure that chose its
-     *        own would make this a query endpoint without one.
+     *        own would make this a query endpoint without one. The FIFTH is
+     *        what the subtree may read with `shared()`, for the render channel
+     *        (ADR 0065): made here, behind the route's whole chain, for the
+     *        same reason.
      * @param \Closure(Request): string $sessionId
      * @param \Closure(class-string): Middleware $middlewareResolver
      * @param list<class-string> $globalMiddleware
@@ -87,11 +91,14 @@ final class FragmentEndpoint
      * @param list<Middleware> $extraInner  already-built middleware to run AFTER the
      *        application's global stack -- where a per-user throttle has to go,
      *        because the session it reads is established by that stack
-     * @param (\Closure(list<FragmentToken>, Request, array<string, mixed>, list<string>): Response)|null $renderGroup
+     * @param (\Closure(list<FragmentToken>, Request, array<string, mixed>, list<string>, ?SharedReads): Response)|null $renderGroup
      *        renders a group's subtrees in one render; see FragmentSupport
      * @param EntryContext|null $entry what the originating route's declarations put
      *        around it -- its tenant, its panel and the panel's stack -- as a
      *        page render runs it
+     * @param (\Closure(RouteChain, Request): ?SharedReads)|null $shared the shared data a
+     *        fragment of the route may read (Kernel::sharedForFragment()); none, and a
+     *        deferred component's `shared()` is refused, as it once always was
      */
     public function __construct(
         private readonly RouteRegistry $routes,
@@ -110,6 +117,7 @@ final class FragmentEndpoint
         private readonly ?\Closure $renderGroup = null,
         private readonly ?AuthContext $auth = null,
         private readonly ?EntryContext $entry = null,
+        private readonly ?\Closure $shared = null,
     ) {}
 
     /**
@@ -332,10 +340,17 @@ final class FragmentEndpoint
         // Derived here, from the route the token names.
         $allowed = $this->allowedQueries === null ? [] : ($this->allowedQueries)($token->route);
 
+        // And what it may read with shared(), made now: inside the route's
+        // panel and tenant, behind its chain, for the user the token was
+        // just held to -- which the reads are bound to in turn, as a page
+        // render's are (ADR 0065). The page's own, so a group's members
+        // read one key once between them.
+        $shared = $this->shared === null ? null : ($this->shared)($chain, $inner);
+
         if (\count($tokens) === 1) {
-            $response = ($this->render)($token, $inner, $models, $allowed);
+            $response = ($this->render)($token, $inner, $models, $allowed, $shared);
         } elseif ($this->renderGroup !== null) {
-            $response = ($this->renderGroup)($tokens, $inner, $models, $allowed);
+            $response = ($this->renderGroup)($tokens, $inner, $models, $allowed, $shared);
         } else {
             // Not a refusal: the tokens are good and the page has a group on
             // it. The application has not said how to render one.

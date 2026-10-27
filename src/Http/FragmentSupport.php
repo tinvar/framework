@@ -23,7 +23,10 @@ use Tinvar\Support\Signer;
 final readonly class FragmentSupport
 {
     /**
-     * @param \Closure(\Tinvar\Render\FragmentToken, Request, array<string, mixed>, list<string>): Response $render
+     * @param \Closure(\Tinvar\Render\FragmentToken, Request, array<string, mixed>, list<string>, ?\Tinvar\Data\SharedReads): Response $render
+     *        renders one boundary's subtree. Its fifth argument is what the subtree may read
+     *        with `shared()`, for the render channel beside the frame (ADR 0065); a closure
+     *        taking four leaves every read refused.
      * @param (\Closure(string): list<string>)|null $allowedQueries the originating
      *        route's query allowlist, by route name. The ENDPOINT asks for
      *        this and hands the answer to $render, rather than letting the
@@ -51,7 +54,7 @@ final readonly class FragmentSupport
      *        to both -- before the purpose was bound into the MAC -- made every
      *        fragment token a valid route token. Separate keys keep that from
      *        resting on a single mechanism.
-     * @param (\Closure(list<\Tinvar\Render\FragmentToken>, Request, array<string, mixed>, list<string>): Response)|null $renderGroup
+     * @param (\Closure(list<\Tinvar\Render\FragmentToken>, Request, array<string, mixed>, list<string>, ?\Tinvar\Data\SharedReads): Response)|null $renderGroup
      *        renders the boundaries of one <Deferred group> in ONE render, as
      *        an RSC payload whose root is the list of their subtrees in token
      *        order -- so their queries batch together, as one page's do.
