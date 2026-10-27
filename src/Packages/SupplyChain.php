@@ -554,55 +554,8 @@ final class SupplyChain
             }
         }
 
-        // Each instruction, and whether it is a heredoc's body line.
-        $instructions = [];
-        $current = '';
-        $count = \count($lines);
-        for ($index = 0; $index < $count; $index++) {
-            // BuildKit takes the leading whitespace off every line, a
-            // continued one's too -- Unicode's, so a no-break space before
-            // FROM hides nothing.
-            $line = self::trimLeadingSpace($lines[$index]);
-            // Blank lines and comments, between instructions or inside a
-            // continued one, as BuildKit drops them.
-            if ($line === '' || $line[0] === '#') {
-                continue;
-            }
-            // Only spaces and tabs may follow the backslash: after a form
-            // feed the instruction has ended. The pieces are joined with
-            // nothing between, so `FR\` and `OM x` are `FROM x`, and a
-            // stage name cut in two is read whole.
-            if (preg_match('/^(.*)\\\\[ \t]*$/s', $line, $m) === 1) {
-                $current .= $m[1];
-
-                continue;
-            }
-            $instruction = trim($current . $line);
-            $instructions[] = [$instruction, false];
-            $current = '';
-
-            // A heredoc's body follows its instruction, up to its
-            // terminator: a file's contents or a script, not instructions.
-            // It is still read as instructions, so what it would pull if it
-            // were is held -- but it names no stage, or `FROM scratch AS
-            // nope` written into a file would make a later `--from=nope`
-            // read as a stage, where BuildKit pulls the image. A heredoc is
-            // found wherever `<<` is, more often than BuildKit finds one,
-            // and a name the check cannot be sure of runs to the end of the
-            // file: either way, what it reads as a body names no stage.
-            foreach (self::heredocs($instruction) as [$chomp, $terminator]) {
-                for ($index++; $index < $count; $index++) {
-                    $body = $chomp ? ltrim($lines[$index], "\t") : $lines[$index];
-                    if ($terminator !== null && $body === $terminator) {
-                        break;
-                    }
-                    $instructions[] = [trim($lines[$index]), true];
-                }
-            }
-        }
-        if (trim($current) !== '') {
-            $instructions[] = [trim($current), false];
-        }
+        // Each instruction, and whether it is read from a heredoc's body.
+        $instructions = self::instructions($lines);
 
         $stages = [];
         foreach ($instructions as [$instruction, $body]) {
@@ -717,6 +670,71 @@ final class SupplyChain
             || ($checksum !== null && preg_match($commit, $checksum) === 1);
 
         return $pinned ? null : "{$name} ADDs the git source {$source}, which is not pinned to a full commit.";
+    }
+
+    /**
+     * $lines read into instructions as BuildKit reads them, each with
+     * whether it came from a heredoc's body.
+     *
+     * A heredoc's body follows its instruction, up to its terminator: a
+     * file's contents or a script, not instructions. It is still read as
+     * instructions -- through this same reading, leading space, comments,
+     * continued lines and all -- so what it would pull if it were is held,
+     * and a heredoc this check finds where BuildKit finds none only makes
+     * the check stricter. But a body names no stage, or `FROM scratch AS
+     * nope` written into a file would make a later `--from=nope` read as a
+     * stage, where BuildKit pulls the image.
+     *
+     * @param list<string> $lines
+     * @return list<array{string, bool}>
+     */
+    private static function instructions(array $lines, bool $body = false): array
+    {
+        $instructions = [];
+        $current = '';
+        $count = \count($lines);
+        for ($index = 0; $index < $count; $index++) {
+            // BuildKit takes the leading whitespace off every line, a
+            // continued one's too -- Unicode's, so a no-break space before
+            // FROM hides nothing.
+            $line = self::trimLeadingSpace($lines[$index]);
+            // Blank lines and comments, between instructions or inside a
+            // continued one, as BuildKit drops them.
+            if ($line === '' || $line[0] === '#') {
+                continue;
+            }
+            // Only spaces and tabs may follow the backslash: after a form
+            // feed the instruction has ended. The pieces are joined with
+            // nothing between, so `FR\` and `OM x` are `FROM x`, and a
+            // stage name cut in two is read whole.
+            if (preg_match('/^(.*)\\\\[ \t]*$/s', $line, $m) === 1) {
+                $current .= $m[1];
+
+                continue;
+            }
+            $instruction = trim($current . $line);
+            $instructions[] = [$instruction, $body];
+            $current = '';
+            if ($body) {
+                continue;
+            }
+
+            foreach (self::heredocs($instruction) as [$chomp, $terminator]) {
+                $contents = [];
+                for ($index++; $index < $count; $index++) {
+                    if (($chomp ? ltrim($lines[$index], "\t") : $lines[$index]) === $terminator) {
+                        break;
+                    }
+                    $contents[] = $lines[$index];
+                }
+                $instructions = [...$instructions, ...self::instructions($contents, true)];
+            }
+        }
+        if (trim($current) !== '') {
+            $instructions[] = [trim($current), $body];
+        }
+
+        return $instructions;
     }
 
     /**

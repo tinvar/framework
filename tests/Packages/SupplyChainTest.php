@@ -604,6 +604,18 @@ describe('dockerfiles', function () {
         'a name read as a variable' => ["FROM scratch\nRUN <<E\$X\nE\$X\nFROM scratch AS nope\nE\nCOPY --from=nope /x /x\n"],
     ]);
 
+    // Where this check takes `<<` for a heredoc and BuildKit does not, the
+    // lines after it are instructions to BuildKit: read as a body, they are
+    // still read as instructions are, so none hides there.
+    it('reads a body as instructions are read', function (string $contents) {
+        expect(SupplyChain::dockerfile('Dockerfile', $contents))->toContain(
+            'Dockerfile builds FROM nope:latest, which is not pinned to a sha256 digest.',
+        );
+    })->with([
+        'a continued line' => ["FROM scratch\nRUN <<EOF\nFR\\\nOM nope:latest\nEOF\n"],
+        'a no-break space' => ["FROM scratch\nRUN <<EOF\n\u{A0}FROM nope:latest\nEOF\n"],
+    ]);
+
     it('reads the instructions after a heredoc', function () use ($digest) {
         expect(SupplyChain::dockerfile('Dockerfile', "FROM debian{$digest} AS build\nRUN <<EOF\necho hi\nEOF\nFROM debian{$digest}\nCOPY --from=build /a /b\nFROM nope:latest\n"))->toBe([
             'Dockerfile builds FROM nope:latest, which is not pinned to a sha256 digest.',
