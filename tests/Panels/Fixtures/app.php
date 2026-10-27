@@ -295,6 +295,7 @@ final class App
         ?FragmentManifest $manifest = null,
         array $extraQueries = [],
         ?\Closure $allowedQueries = null,
+        ?\Tinvar\Data\SharedRegistry $shared = null,
     ) {
         Trace::reset();
         $fixture = new TenantFixture();
@@ -358,6 +359,7 @@ final class App
             historyKeys: new HistoryKeys(new Signer(KEY, HistoryKeys::PURPOSE), static fn (Request $r): string => SESSION),
             panelRegistry: self::panels(),
             memberships: $this->directory,
+            shared: $shared,
         );
     }
 

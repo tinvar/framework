@@ -6,6 +6,7 @@ namespace Tinvar\Render;
 
 use Tinvar\Codec\FrameCodec;
 use Tinvar\Codec\MessagePackCodec;
+use Tinvar\Data\SharedReads;
 use Tinvar\Observability\RenderTrace;
 use Tinvar\Observability\Telemetry;
 use Tinvar\Protocol\Frame;
@@ -136,13 +137,16 @@ final class RenderChannel
      * @param (\Closure(string, array<string, mixed>): string)|null $mint
      *        signs a fragment token for one <Deferred> boundary; null means
      *        this render may not mint any
+     * @param SharedReads|null $shared the page's shared data (Kernel::shared()),
+     *        which its components read as query calls; null means this render
+     *        may read none (ADR 0060)
      */
-    public function render(array $frame, array $allowed, \Closure $sink, ?\Closure $mint = null): RenderResult
+    public function render(array $frame, array $allowed, \Closure $sink, ?\Closure $mint = null, ?SharedReads $shared = null): RenderResult
     {
         $trace = $this->telemetry?->renderStarted($frame);
 
         try {
-            $result = $this->exchange($frame, $allowed, $sink, $mint, $trace);
+            $result = $this->exchange($frame, $allowed, $sink, $mint, $trace, $shared);
         } catch (\Throwable $e) {
             if ($trace !== null) {
                 $this->telemetry->renderFailed($trace, $e);
@@ -163,7 +167,7 @@ final class RenderChannel
      * @param \Closure(string): void $sink
      * @param (\Closure(string, array<string, mixed>): string)|null $mint
      */
-    private function exchange(array $frame, array $allowed, \Closure $sink, ?\Closure $mint, ?RenderTrace $trace): RenderResult
+    private function exchange(array $frame, array $allowed, \Closure $sink, ?\Closure $mint, ?RenderTrace $trace, ?SharedReads $shared): RenderResult
     {
         $minted = 0;
         $started = hrtime(true);
@@ -234,7 +238,9 @@ final class RenderChannel
                         $calls = Frame::readQueryBatch($message);
                         $queryBatches++;
                         // An empty batch still costs a round trip, so it is
-                        // not free: a stream of them was unbounded work.
+                        // not free: a stream of them was unbounded work. A
+                        // shared read is a call like any other, budget and
+                        // all: it runs PHP's code at the renderer's asking.
                         $queryCalls += max(1, \count($calls));
 
                         // Checked BEFORE running them: the point of a budget
@@ -247,7 +253,7 @@ final class RenderChannel
                         }
 
                         $at = hrtime(true);
-                        $results = $this->runner->run($calls, $allowed);
+                        $results = $this->runner->run($calls, $allowed, $shared);
                         $answered = hrtime(true);
                         $queryNs += $answered - $at;
                         if ($trace !== null) {

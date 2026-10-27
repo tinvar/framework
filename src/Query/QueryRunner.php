@@ -8,8 +8,10 @@ use Tinvar\Attributes\Query as QueryAttribute;
 use Tinvar\Auth\Checks;
 use Tinvar\Auth\Gate;
 use Tinvar\Cache\QueryCache;
+use Tinvar\Data\Data;
 use Tinvar\Data\DataBoundaryException;
 use Tinvar\Data\Encoder;
+use Tinvar\Data\SharedReads;
 use Tinvar\Orm\Metadata;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
@@ -33,6 +35,13 @@ use Tinvar\Support\Uuid;
  */
 final class QueryRunner
 {
+    /**
+     * What a shared read's task and outcome are filed under in a tick.
+     * `$` cannot begin a query's group key, whose name is a dotted
+     * identifier, nor a batch's, which begins `batch:`.
+     */
+    private const string SHARED_TASK = '$shared:';
+
     /**
      * @param (\Closure(\Throwable, ?string): string)|null $report logs what a
      *        query threw under the digest its error record carries -- the
@@ -130,9 +139,12 @@ final class QueryRunner
     /**
      * @param list<array{id: int, name: string, args: array<string, mixed>}> $calls
      * @param list<string> $allowed per-route query allowlist from the render frame
+     * @param SharedReads|null $shared the render's shared data, read by calls named
+     *        `$shared.key` beside the queries of the tick; none -- an HTTP call, a
+     *        fragment -- and every such call is refused (ADR 0060)
      * @return list<array{id: int, value?: mixed, error?: array{code: string, digest: string, message?: string}}>
      */
-    public function run(array $calls, array $allowed): array
+    public function run(array $calls, array $allowed, ?SharedReads $shared = null): array
     {
         /** @var array<int, array{code: string, digest: string, message?: string}> $errors */
         $errors = [];
@@ -155,10 +167,27 @@ final class QueryRunner
             $seen[$call['id']] = true;
         }
 
+        // Shared reads first, apart: a key is not a query, and is on no
+        // allowlist; what admits one is the render's own SharedReads.
+        /** @var array<string, list<int>> $sharedIds key => the calls reading it */
+        $sharedIds = [];
+
         // Step 1: the allowlist and the shape of the arguments -- and the
         // query's panel, which is the request context it needs before any
         // of its arguments is resolved.
         foreach ($calls as $call) {
+            $key = SharedReads::keyOf($call['name']);
+            if ($key !== null) {
+                $refused = $this->admitShared($key, $call['args'], $shared);
+                if ($refused !== null) {
+                    $errors[$call['id']] = $refused;
+                    continue;
+                }
+                $sharedIds[$key][] = $call['id'];
+                $groupOf[$call['id']] = self::SHARED_TASK . $key;
+                continue;
+            }
+
             $prepared = $this->admit($call, $allowed);
             if (isset($prepared['error'])) {
                 $errors[$call['id']] = $prepared['error'];
@@ -204,7 +233,9 @@ final class QueryRunner
         // finishes before the next starts, so without this every scope began
         // and ended a transaction of its own: on the 24-card catalog, the
         // batch and 24 encodes, fifty statements the page did not ask for.
-        $values = $groups === [] ? [] : $this->orm->readOnly(fn (): array => $this->execute($groups));
+        $values = $groups === [] && $sharedIds === []
+            ? []
+            : $this->orm->readOnly(fn (): array => $this->execute($groups, array_keys($sharedIds), $shared));
 
         $results = [];
         foreach ($calls as $call) {
@@ -533,9 +564,10 @@ final class QueryRunner
 
     /**
      * @param array<string, array{name: string, args: array<string, mixed>, ids: list<int>}> $groups
+     * @param list<string> $sharedKeys keys read this tick, each admitted by $shared
      * @return array<string, array{error: array{code: string, digest: string, message?: string}}|array{value: mixed}>
      */
-    private function execute(array $groups): array
+    private function execute(array $groups, array $sharedKeys = [], ?SharedReads $shared = null): array
     {
         $scheduler = $this->orm->scheduler() ?? $this->orm->beginRender();
 
@@ -606,9 +638,39 @@ final class QueryRunner
             );
         }
 
+        // A shared key read for the first time this render is a task beside
+        // the queries': one fiber each, in the same run, so a relation it
+        // reaches is loaded in the same batch as theirs. One read before is
+        // answered from what it produced, never run again. None goes near
+        // the query cache, in or out: a key is the visitor's own.
+        $sharedOutcomes = [];
+        $sharedRun = [];
+        if ($shared !== null) {
+            foreach ($sharedKeys as $key) {
+                $known = $shared->outcome($key);
+                if ($known !== null) {
+                    $sharedOutcomes[self::SHARED_TASK . $key] = $known;
+                    continue;
+                }
+                $orm = $this->orm;
+                $tasks[self::SHARED_TASK . $key] = static fn (): mixed => $orm->readOnly(
+                    static fn (): mixed => $shared->produce($key),
+                );
+                $sharedRun[] = $key;
+            }
+        }
+
         $raw = $tasks === [] ? [] : $scheduler->run($tasks);
 
-        $outcomes = $cached;
+        if ($shared !== null) {
+            foreach ($sharedRun as $key) {
+                $outcome = $this->settleShared($key, $raw[self::SHARED_TASK . $key] ?? null, $shared);
+                $shared->remember($key, $outcome);
+                $sharedOutcomes[self::SHARED_TASK . $key] = $outcome;
+            }
+        }
+
+        $outcomes = [...$cached, ...$sharedOutcomes];
         foreach ($groups as $key => $group) {
             if (isset($outcomes[$key]) || (!isset($faked[$key]) && $this->registry->isBatch($group['name']))) {
                 continue;
@@ -752,8 +814,57 @@ final class QueryRunner
         }
     }
 
-    /** @return array{error: array{code: string, digest: string, message?: string}}|array{value: mixed} */
-    private function settle(mixed $value): array
+    /**
+     * Why a read of a shared key is refused, or null when it may run.
+     *
+     * A key this render may not read -- none registered, or another
+     * panel's -- is answered as unknown either way, so a page cannot learn
+     * what another panel shares by asking.
+     *
+     * @param array<string, mixed> $args
+     * @return array{code: string, digest: string, message?: string}|null
+     */
+    private function admitShared(string $key, array $args, ?SharedReads $shared): ?array
+    {
+        if ($shared === null) {
+            return QueryError::of(QueryError::NOT_ALLOWED, "shared data is read only in a page render, and '{$key}' was asked for outside one", $this->debug);
+        }
+        if (!$shared->has($key)) {
+            return QueryError::of(QueryError::UNKNOWN, "no shared value named '{$key}' reaches this page", $this->debug);
+        }
+        if ($args !== []) {
+            return QueryError::of(QueryError::BAD_ARGUMENTS, "the shared value '{$key}' takes no arguments", $this->debug);
+        }
+
+        $why = $shared->scopeRefusal();
+
+        return $why === null ? null : QueryError::of(QueryError::FORBIDDEN, $why, $this->debug);
+    }
+
+    /**
+     * A shared key's outcome: its value encoded -- a model in it refused,
+     * a ProvidesData in it told the key it is met under -- or its error.
+     *
+     * @return array{error: array{code: string, digest: string, message?: string}}|array{value: mixed}
+     */
+    private function settleShared(string $key, mixed $value, SharedReads $shared): array
+    {
+        if (!$value instanceof \Throwable && $value !== null && !$value instanceof Data) {
+            return ['error' => $this->failed(QueryError::BAD_RESULT, new \UnexpectedValueException(
+                "The shared value '{$key}' was " . get_debug_type($value) . '; a shared value is a Data object or null.',
+            ))];
+        }
+
+        return $this->settle($value, $shared->contextFor(...), $key);
+    }
+
+    /**
+     * @param (\Closure(string): \Tinvar\Data\DataContext)|null $provide what a ProvidesData
+     *        in the value is told; none for a query's result, which is placed on no page
+     * @param string $segment what the value's dot paths are rooted at
+     * @return array{error: array{code: string, digest: string, message?: string}}|array{value: mixed}
+     */
+    private function settle(mixed $value, ?\Closure $provide = null, string $segment = '$'): array
     {
         if ($value instanceof \Throwable) {
             return ['error' => $this->failed(QueryError::FAILED, $value)];
@@ -764,7 +875,7 @@ final class QueryRunner
         // write. A Lazy made in the body carries the scope already; this
         // covers one the body returned without making.
         try {
-            return ['value' => $this->orm->readOnly(fn (): mixed => $this->encoder->encode($value))];
+            return ['value' => $this->orm->readOnly(fn (): mixed => $this->encoder->encode($value, null, $segment, $provide))];
         } catch (DataBoundaryException $e) {
             return ['error' => $this->failed(QueryError::BAD_RESULT, $e)];
         } catch (\Throwable $e) {

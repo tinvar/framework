@@ -57,6 +57,8 @@ use Tinvar\Render\RouteToken;
 use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenError;
 use Tinvar\Data\PayloadContext;
+use Tinvar\Data\SharedReads;
+use Tinvar\Data\SharedRegistry;
 use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\RouteChain;
@@ -233,6 +235,20 @@ final class Kernel
 
     /** The page PHP writes alone when the error page cannot be rendered. */
     private readonly ErrorShell $errorShell;
+
+    /** The application's shared data (ADR 0060); null for none. */
+    private readonly ?SharedRegistry $shared;
+
+    /**
+     * Each shared key's panel, worked out once from its declarations and
+     * namespace: null for a key every page may read.
+     *
+     * @var array<string, string|null>
+     */
+    private readonly array $sharedPanels;
+
+    /** Builds a shared data provider, as it builds pages and queries. */
+    private readonly \Closure $resolver;
 
     /** The application's global middleware, alone: what errorPage() runs an error page behind. */
     private readonly Pipeline $globalStack;
@@ -438,6 +454,9 @@ final class Kernel
      *        ADR 0056): how the tenant a #[TenantFrom] names is read from a request. Without
      *        it, an entry point declaring one is refused here. Given, the Orm must have been
      *        given the tenancy's tree too, or the Kernel refuses to be built
+     * @param SharedRegistry|null $shared what every page render may read with `shared()`
+     *        (ADR 0060). Given, shared() hands each render the keys of its panel and of
+     *        none; without it, a render reads none, and each read is refused
      */
     public function __construct(
         public readonly Orm $orm,
@@ -490,7 +509,11 @@ final class Kernel
         bool $clientTelemetry = false,
         ?string $clientAssets = null,
         ?TenantResolver $tenants = null,
+        ?SharedRegistry $shared = null,
     ) {
+        $this->resolver = $resolver;
+        $this->shared = $shared;
+
         // Half registered is neither: entry points would run as tenants the
         // Orm reads no rows of, under tokens that name none of them.
         if ($tenants !== null && !$orm->hasTenancy()) {
@@ -635,6 +658,16 @@ final class Kernel
         // by whoever first reaches it.
         $entry = new EntryContext($this->orm, $resolver, $panels, $panelRegistry, $memberships, $this->auth, $realms ?? $handoff?->realms, $tenants);
         $entry->check($this->routes, $this->actions, $this->queries);
+        // Each shared key's panel, now: one naming a panel nobody defined
+        // is refused here, as an entry point's is, rather than read as
+        // shared with every page.
+        $sharedPanels = [];
+        if ($shared !== null) {
+            foreach ($shared->keys() as $key) {
+                $sharedPanels[$key] = $entry->panelFor($shared->panelsOf($key), $shared->classOf($key))?->name;
+            }
+        }
+        $this->sharedPanels = $sharedPanels;
         // And every route's query allowlist the Kernel is shown -- the one
         // fragment support carries, by route name -- against the panels of
         // the queries it names: a render runs them behind its page's panel.
@@ -1597,6 +1630,47 @@ final class Kernel
     public function build(): ?string
     {
         return $this->builds?->current;
+    }
+
+    /**
+     * The shared data one page render may read, for the application's
+     * responder to hand its render channel beside the frame; null when the
+     * application shares none.
+     *
+     * Called inside the request, where the router calls the responder:
+     * behind the page's tenant and panel stack. The keys are those of no
+     * panel and those of the panel the request is inside now -- the one
+     * whose stack ran, not merely the one the page declares -- so an error
+     * page drawn after a panel's stack refused its request reads none of
+     * that panel's. Made per render and never kept: what it produces dies
+     * with it (ADR 0060).
+     */
+    public function shared(LoadedRoute $loaded, Request $request): ?SharedReads
+    {
+        if ($this->shared === null) {
+            return null;
+        }
+
+        $panel = $this->panels?->currentOrNull();
+        $keys = [];
+        foreach ($this->sharedPanels as $key => $placed) {
+            if ($placed === null || $placed === $panel) {
+                $keys[$key] = true;
+            }
+        }
+
+        return new SharedReads(
+            registry: $this->shared,
+            keys: $keys,
+            resolver: $this->resolver,
+            request: $request,
+            page: $loaded->chain->page,
+            parameters: $loaded->parameters,
+            orm: $this->orm,
+            auth: $this->auth,
+            panels: $this->panels,
+            panel: $panel,
+        );
     }
 
     /**

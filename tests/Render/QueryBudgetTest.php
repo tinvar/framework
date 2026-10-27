@@ -167,3 +167,50 @@ it('lets a render inside the budget finish', function () {
         @unlink($path);
     }
 });
+
+it('counts a shared read against the budget, as any call is (ADR 0060)', function () {
+    if (!\function_exists('pcntl_fork')) {
+        $this->markTestSkipped('pcntl is not available.');
+    }
+
+    require_once __DIR__ . '/../Data/Fixtures/shared.php';
+
+    $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+    $path = sys_get_temp_dir() . '/tinvar-budget-' . bin2hex(random_bytes(6)) . '.sock';
+    $orm = new Orm($fixture->connection, new IdentityMap('test'));
+    $reads = new Tinvar\Tests\Data\Fixtures\Shared\Reads();
+    $shared = new Tinvar\Data\SharedReads(
+        registry: new Tinvar\Data\SharedRegistry([Tinvar\Tests\Data\Fixtures\Shared\SiteShared::class]),
+        keys: ['nobody' => true],
+        resolver: static fn (string $class): object => new $class($reads, $orm),
+        request: Tinvar\Http\Request::get('/'),
+        page: new Tinvar\Routing\CompiledRoute(Tinvar\Routing\RouteKind::Page, 'Home', '/', 'home', 'home', [], [], [], []),
+        parameters: [],
+        orm: $orm,
+        auth: new Tinvar\Auth\AuthContext(),
+    );
+
+    // Five reads a round of one key: produced once, and still five calls.
+    $pid = fakeRenderer($path, static fn (int $round): array => [
+        't' => Frame::QUERY,
+        'q' => array_map(
+            static fn (int $i): array => ['id' => $round * 5 + $i, 'name' => '$shared.nobody', 'args' => []],
+            range(0, 4),
+        ),
+    ], rounds: 10);
+
+    try {
+        $channel = budgetChannel($fixture, $path, maxCalls: 10);
+
+        expect(fn () => $channel->render(
+            Frame::render('home', [], [], 'rid', 'nonce', []),
+            [],
+            static fn (string $bytes): null => null,
+            shared: $shared,
+        ))->toThrow(RendererException::class, 'more than 10 query calls');
+        expect($reads->calls)->toBe(['nobody']);
+    } finally {
+        pcntl_waitpid($pid, $status);
+        @unlink($path);
+    }
+});
