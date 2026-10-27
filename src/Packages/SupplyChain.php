@@ -555,7 +555,11 @@ final class SupplyChain
         }
 
         // Each instruction, and whether it is read from a heredoc's body.
-        $instructions = self::instructions($lines);
+        try {
+            $instructions = self::instructions($lines);
+        } catch (\UnexpectedValueException $e) {
+            return [...$violations, "{$name} has {$e->getMessage()}, which the check cannot read as BuildKit does: name it with a plain word, and end it."];
+        }
 
         $stages = [];
         foreach ($instructions as [$instruction, $body]) {
@@ -687,6 +691,8 @@ final class SupplyChain
      *
      * @param list<string> $lines
      * @return list<array{string, bool}>
+     *
+     * @throws \UnexpectedValueException for a heredoc the check cannot read
      */
     private static function instructions(array $lines, bool $body = false): array
     {
@@ -721,11 +727,19 @@ final class SupplyChain
 
             foreach (self::heredocs($instruction) as [$chomp, $terminator]) {
                 $contents = [];
+                $ended = false;
                 for ($index++; $index < $count; $index++) {
                     if (($chomp ? ltrim($lines[$index], "\t") : $lines[$index]) === $terminator) {
+                        $ended = true;
+
                         break;
                     }
                     $contents[] = $lines[$index];
+                }
+                // Unterminated, BuildKit and this check could disagree on
+                // where the body ends: refused rather than guessed.
+                if (!$ended) {
+                    throw new \UnexpectedValueException("a heredoc {$terminator} that never ends");
                 }
                 $instructions = [...$instructions, ...self::instructions($contents, true)];
             }
@@ -739,25 +753,83 @@ final class SupplyChain
 
     /**
      * The heredocs an instruction opens, in order: whether `<<-` strips the
-     * body's leading tabs, and the terminator, or null where the name holds
-     * anything but a plain word -- a variable, say, which BuildKit and this
-     * check could read apart -- and the body is taken to run to the end.
+     * body's leading tabs, and the terminator.
      *
-     * @return list<array{bool, string|null}>
+     * Found as BuildKit finds them: on RUN, COPY and ADD, an ONBUILD's
+     * included, in a shell word that starts with `<<` (after a file
+     * descriptor's digits), its quotes kept -- so neither `"<<EOF"` nor
+     * `a<<EOF` opens one. A name that is not a plain word once unquoted,
+     * which BuildKit and this check could read apart, is refused.
+     *
+     * @return list<array{bool, string}>
+     *
+     * @throws \UnexpectedValueException for a name the check cannot be sure of
      */
     private static function heredocs(string $instruction): array
     {
-        preg_match_all('/<<(-?)((?:"[^"]*"|\'[^\']*\'|\\\\.|[^\s<"\'\\\\])*)/s', $instruction, $matches, PREG_SET_ORDER);
+        [$keyword, $rest] = self::command($instruction);
+        while ($keyword === 'ONBUILD' && $rest !== '') {
+            [$keyword, $rest] = self::command($rest);
+        }
+        if (!\in_array($keyword, ['RUN', 'COPY', 'ADD'], true)) {
+            return [];
+        }
+
         $heredocs = [];
-        foreach ($matches as $match) {
-            $name = str_replace(['"', "'", '\\'], '', $match[2]);
-            if ($name === '' && $match[2] === '') {
+        foreach (self::shellWords($rest) as $word) {
+            if (preg_match('/^\d*<<(-?)([^<]*)$/', $word, $match) !== 1 || $match[2] === '') {
                 continue;
             }
-            $heredocs[] = [$match[1] === '-', preg_match('/^[A-Za-z0-9_.-]+$/', $name) === 1 ? $name : null];
+            $name = str_replace(['"', "'", '\\'], '', $match[2]);
+            if (preg_match('/^[A-Za-z0-9_.-]+$/', $name) !== 1) {
+                throw new \UnexpectedValueException("a heredoc named {$match[2]}");
+            }
+            $heredocs[] = [$match[1] === '-', $name];
         }
 
         return $heredocs;
+    }
+
+    /**
+     * $line's shell words with their quotes and escapes kept, as BuildKit's
+     * lexer splits them to look for heredocs: whitespace outside quotes
+     * ends a word, and a backslash takes the byte after it into the word.
+     *
+     * @return list<string>
+     */
+    private static function shellWords(string $line): array
+    {
+        $words = [];
+        $word = '';
+        $quote = '';
+        $length = \strlen($line);
+        for ($pos = 0; $pos < $length; $pos++) {
+            $ch = $line[$pos];
+            if ($quote === '' && self::isSpaceByte($ch)) {
+                if ($word !== '') {
+                    $words[] = $word;
+                }
+                $word = '';
+
+                continue;
+            }
+            if ($ch === '\\' && $quote !== "'" && $pos + 1 < $length) {
+                $word .= $ch . $line[++$pos];
+
+                continue;
+            }
+            if ($quote === '' && ($ch === '"' || $ch === "'")) {
+                $quote = $ch;
+            } elseif ($ch === $quote) {
+                $quote = '';
+            }
+            $word .= $ch;
+        }
+        if ($word !== '') {
+            $words[] = $word;
+        }
+
+        return $words;
     }
 
     /**

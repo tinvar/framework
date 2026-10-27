@@ -601,7 +601,32 @@ describe('dockerfiles', function () {
         'COPY <<EOF' => ["FROM scratch\nCOPY <<EOF /f\nFROM scratch AS nope\nEOF\nCOPY --from=nope /x /x\n"],
         "RUN <<-'EOT'" => ["FROM scratch\nRUN <<-'EOT' bash\n\tFROM scratch AS nope\n\tEOT\nCOPY --from=nope /x /x\n"],
         'a second heredoc' => ["FROM scratch\nRUN <<A cat - <<\"B\"\na\nA\nFROM scratch AS nope\nB\nCOPY --from=nope /x /x\n"],
-        'a name read as a variable' => ["FROM scratch\nRUN <<E\$X\nE\$X\nFROM scratch AS nope\nE\nCOPY --from=nope /x /x\n"],
+        'a file descriptor' => ["FROM scratch\nRUN 3<<EOF cat\nFROM scratch AS nope\nEOF\nCOPY --from=nope /x /x\n"],
+        'an ONBUILD RUN' => ["FROM scratch\nONBUILD RUN <<EOF\nFROM scratch AS nope\nEOF\nCOPY --from=nope /x /x\n"],
+        '<<- and tabs' => ["FROM scratch\nRUN <<-EOF\n\tFROM scratch AS nope\n\t\tEOF\nCOPY --from=nope /x /x\n"],
+    ]);
+
+    // BuildKit opens a heredoc only on RUN, COPY and ADD, in a word that
+    // starts with `<<`: each of these was built, and BuildKit read the
+    // line after it as an instruction -- here a stage, the --from's.
+    it('opens a heredoc only where BuildKit does', function (string $opener) use ($digest) {
+        expect(SupplyChain::dockerfile('Dockerfile', "FROM debian{$digest}\n{$opener}\nFROM debian{$digest} AS build\nCOPY --from=build /a /b\n"))->toBe([]);
+    })->with([
+        'on another instruction' => ['LABEL note=<<EOF'],
+        'inside quotes' => ['RUN echo "<<EOF"'],
+        'in the middle of a word' => ['RUN cat a<<EOF'],
+        'after a variable' => ['RUN $X<<EOF'],
+    ]);
+
+    // Where the two could read the body's end apart, the file is refused.
+    it('refuses a heredoc it cannot be sure of', function (string $contents, string $what) {
+        expect(SupplyChain::dockerfile('Dockerfile', $contents))->toBe([
+            "Dockerfile has {$what}, which the check cannot read as BuildKit does: name it with a plain word, and end it.",
+        ]);
+    })->with([
+        'no terminator' => ["FROM scratch\nRUN <<EOF\nFROM scratch AS nope\n", 'a heredoc EOF that never ends'],
+        'a tab before the terminator without <<-' => ["FROM scratch\nRUN <<EOF\n\tEOF\nFROM scratch AS nope\n", 'a heredoc EOF that never ends'],
+        'a variable in the name' => ["FROM scratch\nRUN <<E\$X\nE\nFROM scratch AS nope\n", 'a heredoc named E$X'],
     ]);
 
     // Where this check takes `<<` for a heredoc and BuildKit does not, the
