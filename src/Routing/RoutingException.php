@@ -11,6 +11,11 @@ final class RoutingException extends \RuntimeException
         return new self("Route template '{$template}' is invalid: {$why}.");
     }
 
+    public static function frameworkPath(string $class, string $path): self
+    {
+        return new self("{$class} declares '{$path}', which is under /_, which is the framework's own. Choose another path.");
+    }
+
     public static function duplicate(string $template, string $first, string $second): self
     {
         return new self(

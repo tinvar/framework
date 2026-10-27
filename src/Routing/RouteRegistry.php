@@ -14,6 +14,7 @@ use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\TenantFrom;
 use Tinvar\Auth\BuildRules;
 use Tinvar\Auth\PanelBinding;
+use Tinvar\Auth\Violation;
 use Tinvar\Data\Data;
 use Tinvar\Http\HttpError;
 use Tinvar\Http\Request;
@@ -28,6 +29,9 @@ use Tinvar\Support\KnownAttributes;
  */
 final class RouteRegistry
 {
+    /** The rule `tinvar check` reports a page or layout that does not register under. */
+    public const string ROUTES_MUST_COMPILE = 'routes-must-compile';
+
     /** @var list<CompiledRoute> */
     private array $pages = [];
 
@@ -106,6 +110,14 @@ final class RouteRegistry
         // Compiled once; parameter names are derived from the same pass.
         $segments = self::compile($declaration->path);
 
+        // Everything under /_ is the framework's (ADR 0075), as it is for an
+        // endpoint: a page there would take a path the framework answers
+        // only when it is mounted -- /_export with transfers, /_test in a
+        // test build -- and answer it itself when it is not.
+        if (self::isFrameworkPath($segments)) {
+            throw RoutingException::frameworkPath($class, $declaration->path);
+        }
+
         $route = new CompiledRoute(
             kind: $kind,
             class: $class,
@@ -144,6 +156,30 @@ final class RouteRegistry
         $this->add($route);
 
         return $route;
+    }
+
+    /**
+     * Every page and layout registered into $routes as the Kernel registers
+     * them, for `tinvar check`: each one that is refused -- a path under
+     * /_, a template that does not compile, a loader the router cannot bind
+     * -- a violation naming it, and the rest registered, so the endpoints
+     * can still be held apart from them.
+     *
+     * @param list<class-string> $classes
+     * @return list<Violation>
+     */
+    public static function check(array $classes, self $routes): array
+    {
+        $violations = [];
+        foreach ($classes as $class) {
+            try {
+                $routes->register($class);
+            } catch (\RuntimeException|\LogicException $e) {
+                $violations[] = new Violation(self::ROUTES_MUST_COMPILE, $class, $e->getMessage());
+            }
+        }
+
+        return $violations;
     }
 
     /**
@@ -224,9 +260,21 @@ final class RouteRegistry
         $this->layoutCache = [];
     }
 
-    /** Matches a path to a page and the layouts wrapping it. */
+    /**
+     * Matches a path to a page and the layouts wrapping it.
+     *
+     * Never a path under /_, whatever a page's parameters would take: no
+     * page is registered there, and a catch-all `/{section}/{slug}` must
+     * not answer one of the framework's paths it has not mounted
+     * (`/_export/orders` without transfers, `/_test/seed` outside a test
+     * build) with a page of the application's (ADR 0075).
+     */
     public function match(string $path): ?RouteChain
     {
+        if (self::isFrameworkPath(CompiledRoute::split($path))) {
+            return null;
+        }
+
         $this->sort();
 
         foreach ($this->pages as $page) {
@@ -667,6 +715,26 @@ final class RouteRegistry
         }
 
         return $segments;
+    }
+
+    /**
+     * Whether a path's first segment starts with `_`: the framework's own
+     * (`/_action`, `/_fragment`, `/_export`, `/_test`, `/_health` and the
+     * rest), where no page is.
+     *
+     * @param list<string> $segments
+     */
+    private static function isFrameworkPath(array $segments): bool
+    {
+        foreach ($segments as $segment) {
+            // A doubled slash splits into an empty segment; the first that
+            // is not empty is the one a request is routed by.
+            if ($segment !== '') {
+                return str_starts_with($segment, '_');
+            }
+        }
+
+        return false;
     }
 
     /**
