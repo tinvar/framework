@@ -17,8 +17,9 @@
 #     false. A platform that leaves either out is one this does not run on.
 #   - the renderers' user is named, and is neither root nor this user;
 #   - for serve: it is in the socket group the renderers share their sockets
-#     with, an app key is given, TINVAR_SOCKET names their pool, and a
-#     probe token is given where loopback is not trusted.
+#     with, an app key is given, TINVAR_SOCKET names their pool, loopback
+#     is held to the probe token (TINVAR_PROBE_TRUST_LOOPBACK=0), and a
+#     probe token of 32 characters or more is given.
 #
 # The stop is serve's own (ADR 0063): SIGTERM, passed on by tini, stops the
 # queue worker, which finishes the job in hand, and the scheduler, then
@@ -101,11 +102,18 @@ fi
 if [ -n "${TINVAR_APP_KEY_FILE:-}" ] && ! [ -r "$TINVAR_APP_KEY_FILE" ]; then
     refuse "$app_user cannot read TINVAR_APP_KEY_FILE ($TINVAR_APP_KEY_FILE)."
 fi
-# Loopback is the pod's, not this container's alone: the image has
-# ProbeAccess hold it to the token (TINVAR_PROBE_TRUST_LOOPBACK=0), so
-# without one no probe -- this image's own included -- would ever pass.
-if [ "${TINVAR_PROBE_TRUST_LOOPBACK:-1}" = 0 ] && [ -z "${TINVAR_PROBE_TOKEN:-}" ]; then
-    refuse "No probe token: set TINVAR_PROBE_TOKEN (32 characters or more), which the probes send. Loopback is shared with the rest of the pod here, so it is not trusted without one (TINVAR_PROBE_TRUST_LOOPBACK=0)."
+# Loopback is the pod's, not this container's alone -- the renderers'
+# sidecar, a mesh's proxy, `kubectl port-forward` -- so ProbeAccess holds it
+# to the token (TINVAR_PROBE_TRUST_LOOPBACK=0, as the image has it): exactly
+# 0, since the shop reads an empty value as 1. And a token PHP takes, 32
+# characters or more, or no probe -- this image's own included -- passes.
+# Its length is told, never the token.
+if [ "${TINVAR_PROBE_TRUST_LOOPBACK-}" != 0 ]; then
+    refuse "TINVAR_PROBE_TRUST_LOOPBACK is '${TINVAR_PROBE_TRUST_LOOPBACK-}': it must be 0 here. Loopback is shared with the rest of the pod, so it is not trusted without the probe token."
+fi
+probe_token=${TINVAR_PROBE_TOKEN:-}
+if ((${#probe_token} < 32)); then
+    refuse "The probe token is ${#probe_token} characters: set TINVAR_PROBE_TOKEN, 32 characters or more, which the probes send. Loopback is shared with the rest of the pod here, so it is not trusted without one (TINVAR_PROBE_TRUST_LOOPBACK=0)."
 fi
 [ -w /tmp ] || refuse "/tmp is not writable: mount a tmpfs there (an emptyDir in a pod)."
 
