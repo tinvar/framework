@@ -531,6 +531,12 @@ final class SupplyChain
         if (str_starts_with($contents, "\u{FEFF}")) {
             $contents = substr($contents, 3);
         }
+        // BuildKit's frontend detection also reads a file that is one JSON
+        // object, taking the frontend from a `syntax` key in any case. No
+        // Dockerfile is one: refused, rather than read for a key.
+        if (\is_object(json_decode(trim($contents)))) {
+            return ["{$name} is a JSON object, which BuildKit may read a frontend from; the check refuses it."];
+        }
         $lines = preg_split('/\r?\n/', $contents) ?: [];
 
         // Parser directives: comments of the form `# key=value` before

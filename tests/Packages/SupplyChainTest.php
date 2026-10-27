@@ -660,6 +660,12 @@ describe('dockerfiles', function () {
         'an escape past a byte-order mark' => ["\u{FEFF}# escape=`\nFROM scratch\n", 'Dockerfile sets the escape character to `, which the check does not read; only \\ is allowed.'],
     ]);
 
+    it('refuses a Dockerfile that is a JSON object', function () {
+        expect(SupplyChain::dockerfile('Dockerfile', " {\"SYNTAX\": \"nope/frontend:latest\"}\n"))->toBe([
+            'Dockerfile is a JSON object, which BuildKit may read a frontend from; the check refuses it.',
+        ]);
+    });
+
     // A directive's spaces are read as the instructions' are, so the two
     // readings never disagree on whether a line is one.
     it('reads a directive past any space BuildKit trims', function (string $contents, string $violation) {
