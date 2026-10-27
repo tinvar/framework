@@ -111,6 +111,27 @@ final readonly class Workspace
     }
 
     /**
+     * Whether a file a package autoloads is one the layer rule reads: a
+     * plain relative path to a PHP file inside one of the package's PSR-4
+     * directories, with no `..` or `.` to step out of it.
+     */
+    private function readByLayers(string $directory, mixed $file): bool
+    {
+        if (!\is_string($file) || preg_match('#^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*\.php\z#', $file) !== 1) {
+            return false;
+        }
+
+        $path = "packages/{$directory}/{$file}";
+        foreach (array_keys($this->layers->sources()) as $source) {
+            if (str_starts_with($source, "packages/{$directory}/") && str_starts_with($path, rtrim($source, '/') . '/')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * What one package's manifest breaks, besides its versions.
      *
      * @param array<mixed> $manifest
@@ -167,12 +188,15 @@ final readonly class Workspace
         // Nothing autoloaded but that map and the aliases (ADR 0055), which
         // name the old namespaces on purpose and so sit beside src/: a
         // classmap, PSR-0 or another file would load code no layer holds.
+        // A file of functions inside a directory the layer rule reads is
+        // read with it -- the query builder's fetch() and the framework's
+        // scroll() (ADR 0057) -- so it is held to its package's layer.
         $autoload = \is_array($manifest['autoload'] ?? null) ? $manifest['autoload'] : [];
-        $only = 'which the layer rule does not read; a package autoloads its PSR-4 map and, beside src/, aliases.php alone.';
+        $only = 'which the layer rule does not read; a package autoloads its PSR-4 map, files inside it, and, beside src/, aliases.php alone.';
         foreach ($autoload as $kind => $entries) {
             if ($kind === 'files') {
                 foreach (\is_array($entries) ? $entries : [$entries] as $file) {
-                    if ($file !== 'aliases.php') {
+                    if ($file !== 'aliases.php' && !$this->readByLayers($directory, $file)) {
                         $violations[] = "{$where}: autoloads the file " . (\is_string($file) ? $file : json_encode($file)) . ", {$only}";
                     }
                 }

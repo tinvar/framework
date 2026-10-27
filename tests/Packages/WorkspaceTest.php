@@ -180,15 +180,19 @@ it('fails autoloading anything but the PSR-4 map and the aliases', function () {
     $violations = violations(static function (array $files): array {
         $files['packages/database/composer.json']['autoload']['classmap'] = ['lib/'];
         $files['packages/database/composer.json']['autoload']['psr-0'] = ['Tinvar\\Http\\' => 'legacy/'];
-        $files['packages/support/composer.json']['autoload']['files'] = ['aliases.php', 'helpers.php'];
+        $files['packages/support/composer.json']['autoload']['files'] = [
+            'aliases.php', 'helpers.php', 'src/Support/functions.php', 'src/Support/../../lib/x.php', 'src/Other/f.php',
+        ];
 
         return $files;
     });
 
     expect($violations)->toBe([
-        'packages/database/composer.json: autoloads by classmap, which the layer rule does not read; a package autoloads its PSR-4 map and, beside src/, aliases.php alone.',
-        'packages/database/composer.json: autoloads by psr-0, which the layer rule does not read; a package autoloads its PSR-4 map and, beside src/, aliases.php alone.',
-        'packages/support/composer.json: autoloads the file helpers.php, which the layer rule does not read; a package autoloads its PSR-4 map and, beside src/, aliases.php alone.',
+        'packages/database/composer.json: autoloads by classmap, which the layer rule does not read; a package autoloads its PSR-4 map, files inside it, and, beside src/, aliases.php alone.',
+        'packages/database/composer.json: autoloads by psr-0, which the layer rule does not read; a package autoloads its PSR-4 map, files inside it, and, beside src/, aliases.php alone.',
+        'packages/support/composer.json: autoloads the file helpers.php, which the layer rule does not read; a package autoloads its PSR-4 map, files inside it, and, beside src/, aliases.php alone.',
+        'packages/support/composer.json: autoloads the file src/Support/../../lib/x.php, which the layer rule does not read; a package autoloads its PSR-4 map, files inside it, and, beside src/, aliases.php alone.',
+        'packages/support/composer.json: autoloads the file src/Other/f.php, which the layer rule does not read; a package autoloads its PSR-4 map, files inside it, and, beside src/, aliases.php alone.',
     ]);
 });
 
