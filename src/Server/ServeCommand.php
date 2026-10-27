@@ -276,7 +276,9 @@ final class ServeCommand
         }
 
         $frankenphp = FrankenPhp::locate($this->projectRoot, $options['frankenphp'] ?? null);
-        $renderer = $this->rendererBin($dev ? 'dev-renderer.js' : 'renderer.js');
+        // Not looked for when the renderers' own user runs them: their image
+        // may be the only one with the renderer in it (ADR 0071).
+        $renderer = $pool === null ? $this->rendererBin($dev ? 'dev-renderer.js' : 'renderer.js') : '';
 
         // Last: choosing a port binds it for a moment, which is only worth
         // doing once everything else is known to be there.
