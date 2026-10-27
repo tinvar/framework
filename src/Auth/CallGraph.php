@@ -56,8 +56,11 @@ final class CallGraph
      * @param int $limit how many methods to follow before refusing the rest
      * @return array{
      *     reached: list<array{where: string, source: string, file: string, start: int, end: int}>,
-     *     refused: list<array{where: string, why: string}>
-     * } every method and function reached, its source; and every call that could not be followed
+     *     refused: list<array{where: string, why: string}>,
+     *     receivers: list<array{where: string, class: string}>
+     * } every method and function reached, its source; every call that could not be followed; and
+     *   the class of each typed receiver a method is called on, the framework's too, where the
+     *   walk stops but what the object is still says what the call reads
      */
     public static function walk(string $class, array $methods, int $limit = self::MAX_METHODS): array
     {
@@ -72,6 +75,7 @@ final class CallGraph
         $seen = [];
         $reached = [];
         $refused = [];
+        $receivers = [];
         while ($queue !== []) {
             [$owner, $name] = array_shift($queue);
             $key = strtolower("{$owner}::{$name}");
@@ -125,11 +129,15 @@ final class CallGraph
                     $refused[] = ['where' => "{$where}, calling {$call['call']}", 'why' => $call['why']];
                     continue;
                 }
+                if (isset($call['receiver'])) {
+                    $receivers[] = ['where' => "{$where}, calling {$call['call']}", 'class' => $call['receiver']];
+                    continue;
+                }
                 $queue[] = [$call['class'], $call['method']];
             }
         }
 
-        return ['reached' => $reached, 'refused' => $refused];
+        return ['reached' => $reached, 'refused' => $refused, 'receivers' => $receivers];
     }
 
     /**
@@ -155,7 +163,7 @@ final class CallGraph
      * class and method, '' for a function -- and those it cannot.
      *
      * @param array{static: string|null, self: string|null} $scope the class the method runs as, and the class it is written in
-     * @return list<array{class: string, method: string}|array{call: string, why: string}>
+     * @return list<array{class: string, method: string}|array{call: string, why: string}|array{receiver: string, call: string}>
      */
     private static function callsIn(string $source, string $file, array $scope, \ReflectionFunctionAbstract $function): array
     {
@@ -390,7 +398,7 @@ final class CallGraph
      * property of a parent is not the object's class's to show.
      *
      * @param array{static: string|null, self: string|null} $scope
-     * @return list<array{class: string, method: string}|array{call: string, why: string}|null>
+     * @return list<array{class: string, method: string}|array{call: string, why: string}|array{receiver: string, call: string}|null>
      */
     private static function onProperty(array $scope, string $property, string $method): array
     {
@@ -410,7 +418,7 @@ final class CallGraph
      * the static property's declared type allows. What none of those names
      * is refused.
      *
-     * @return list<array{class: string, method: string}|array{call: string, why: string}|null>
+     * @return list<array{class: string, method: string}|array{call: string, why: string}|array{receiver: string, call: string}|null>
      */
     private static function onMember(string $class, string $member, string $method, string $written): array
     {
@@ -446,7 +454,7 @@ final class CallGraph
      * and __set().
      *
      * @param array{static: string|null, self: string|null} $scope
-     * @return list<array{class: string, method: string}|array{call: string, why: string}|null>
+     * @return list<array{class: string, method: string}|array{call: string, why: string}|array{receiver: string, call: string}|null>
      */
     private static function onAccess(array $scope, string $property): array
     {
@@ -504,7 +512,7 @@ final class CallGraph
      * A method called on a value of a declared type: each class it may be.
      *
      * @param array{static: string|null, self: string|null} $scope
-     * @return list<array{class: string, method: string}|array{call: string, why: string}|null>
+     * @return list<array{class: string, method: string}|array{call: string, why: string}|array{receiver: string, call: string}|null>
      */
     private static function onTyped(?\ReflectionType $type, string $call, string $method, array $scope): array
     {
@@ -529,6 +537,7 @@ final class CallGraph
                 default => $name,
             };
             if ($class !== null) {
+                $calls[] = ['receiver' => $class, 'call' => $call];
                 $calls[] = self::target($class, $method, $call);
             }
         }
@@ -536,8 +545,12 @@ final class CallGraph
         return $calls;
     }
 
-    /** A class name as written, in a file: resolved by its namespace and imports, or null for one that is no class. */
-    /** @param array{static: string|null, self: string|null} $scope */
+    /**
+     * A class name as written, in a file: resolved by its namespace and
+     * imports, or null for one that is no class.
+     *
+     * @param array{static: string|null, self: string|null} $scope
+     */
     private static function className(string $written, string $file, array $scope): ?string
     {
         $lower = strtolower($written);

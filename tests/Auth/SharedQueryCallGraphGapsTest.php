@@ -137,6 +137,11 @@ it("reads an application whose path has a directory named vendor in it, which is
         ->toContain("{$namespace}\\Reader::who(), which calls '->user('");
 });
 
+it('refuses a method called on the user\'s context, whatever the method is named', function () {
+    expect(sharedGapViolations(G\ThroughAuthReceiver::class))
+        ->toContain('calls a method of ' . Tinvar\Auth\AuthContext::class . ' at ' . G\Viewer::class . '::id(), calling self::$auth->id()');
+});
+
 it('reads the imports inside a braced namespace', function () {
     require_once __DIR__ . '/Fixtures/callgraph-braced.php';
 

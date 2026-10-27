@@ -255,6 +255,26 @@ final class ThroughBoundClosure
     }
 }
 
+final class Viewer
+{
+    public static ?\Tinvar\Auth\AuthContext $auth = null;
+
+    public static function id(): string
+    {
+        // No needle in the text: the receiver's type is what reads the user.
+        return (string) self::$auth?->id();
+    }
+}
+
+#[Query(name: 'gaps.receiver', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
+final class ThroughAuthReceiver
+{
+    public function __invoke(): string
+    {
+        return Viewer::id();
+    }
+}
+
 #[Query(name: 'gaps.relative', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
 final class ThroughRelativeName
 {

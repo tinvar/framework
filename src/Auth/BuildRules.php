@@ -753,6 +753,21 @@ final class BuildRules
             );
         }
 
+        // A framework object the walk stops at is still the object it is: a
+        // method called on an AuthContext reads the user, whatever its name.
+        foreach ($graph['receivers'] as $receiver) {
+            foreach (self::USER_DEPENDENT_TYPES as $forbidden => $what) {
+                if (is_a($receiver['class'], $forbidden, true)) {
+                    $violations[] = new Violation(
+                        self::SHARED_QUERY_MUST_NOT_READ_THE_USER,
+                        $class,
+                        "is #[Query(shared: true)] but its call graph calls a method of {$forbidden} at {$receiver['where']}, which reads {$what}. "
+                        . 'A shared query drops the user from its cache key, so two users read one entry.',
+                    );
+                }
+            }
+        }
+
         foreach ($graph['reached'] as $method) {
             // The query's own source is read whole above.
             if ($method['file'] === $file && $method['start'] >= $start && $method['end'] <= $end) {

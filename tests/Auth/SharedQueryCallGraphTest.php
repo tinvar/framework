@@ -33,7 +33,11 @@ function sharedViolations(string $class): array
 }
 
 it('follows a static call, through an imported alias and a private method, to a read of the user', function () {
+    // Twice: by the text, and by the AuthContext the method is called on.
     expect(sharedViolations(G\ThroughStatic::class))->toBe([
+        'is #[Query(shared: true)] but its call graph calls a method of ' . Tinvar\Auth\AuthContext::class . ' at '
+        . G\Lookup::class . '::through(), calling Context::$auth->user(), which reads the current user. '
+        . 'A shared query drops the user from its cache key, so two users read one entry.',
         'is #[Query(shared: true)] but calls ' . G\Lookup::class . "::through(), which calls '->user(' and reads the current user. "
         . 'A shared query drops the user from its cache key, so two users read one entry.',
     ]);
