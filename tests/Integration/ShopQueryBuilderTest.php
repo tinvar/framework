@@ -88,7 +88,11 @@ describe('the catalog', function () {
         $kitchen = data('/?category=Kitchen');
         $unknown = data('/?category=' . rawurlencode("Kitchen' OR '1'='1"));
 
+        // The categories read with distinct(): each once, in order, the
+        // same list the unfiltered page reads from its products.
         expect(array_unique(column($kitchen, 'category')))->toBe(['Kitchen'])
+            ->and($kitchen['categories'])->toBe(data('/')['categories'])
+            ->and(\count($kitchen['categories']))->toBeGreaterThan(1)
             ->and($kitchen['category'])->toBe('Kitchen')
             ->and($unknown['category'])->toBeNull()
             ->and($unknown['products'])->toHaveCount(24);
