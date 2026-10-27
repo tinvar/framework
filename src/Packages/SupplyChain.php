@@ -30,7 +30,9 @@ use Symfony\Component\Yaml\Yaml;
  *     workflow a GitHub workflow uses -- and every one a local action it
  *     uses names in turn -- is pinned the same way, by commit: a tag can be
  *     moved. Every container image a job runs in or beside is pinned by
- *     its digest.
+ *     its digest, and so is every image a Dockerfile builds from, copies
+ *     from or mounts, and the frontend its syntax line names; a file a
+ *     Dockerfile ADDs from the network is held to its checksum.
  *
  *   trusted-ci-only
  *     "Downstream app test suites run in framework CI only on trusted
@@ -82,7 +84,7 @@ final class SupplyChain
             }
         }
 
-        return [...$violations, ...$this->frameworkPackages($installed), ...$this->workflows()];
+        return [...$violations, ...$this->frameworkPackages($installed), ...$this->workflows(), ...$this->dockerfiles()];
     }
 
     /**
@@ -448,6 +450,167 @@ final class SupplyChain
         }
 
         return $violations;
+    }
+
+    /** Directories no Dockerfile of the project's own is in: what is installed, built, or kept by tools. */
+    private const array NOT_SOURCE = ['.git', '.claude', 'node_modules', 'vendor', 'dist', 'tools', '.phpstan', '.vitest', '.coverage', '.vite'];
+
+    /**
+     * Every Dockerfile in the project -- `Dockerfile`, `Dockerfile.*` or
+     * `*.Dockerfile` -- with each image it reaches pinned to a digest: the
+     * base of each stage (FROM), what COPY --from and RUN --mount from=
+     * take files out of, and the `# syntax=` frontend that parses it. A
+     * name its own earlier stages declared, `scratch`, and a stage's number
+     * are not images. A name with a variable in it is refused, since what
+     * it names is decided by whoever runs the build. A file ADDed from a
+     * URL must carry --checksum.
+     *
+     * @return list<string>
+     */
+    private function dockerfiles(): array
+    {
+        $violations = [];
+        foreach ($this->dockerfilePaths($this->root, '') as $relative) {
+            $violations = [...$violations, ...self::dockerfile($relative, (string) file_get_contents("{$this->root}/{$relative}"))];
+        }
+
+        return $violations;
+    }
+
+    /** @return list<string> paths relative to the root, in a stable order */
+    private function dockerfilePaths(string $directory, string $prefix): array
+    {
+        $entries = scandir($directory) ?: [];
+        sort($entries);
+        $found = [];
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..' || \in_array($entry, self::NOT_SOURCE, true)) {
+                continue;
+            }
+            $path = "{$directory}/{$entry}";
+            if (is_link($path)) {
+                continue;
+            }
+            if (is_dir($path)) {
+                $found = [...$found, ...$this->dockerfilePaths($path, "{$prefix}{$entry}/")];
+            } elseif (preg_match('/^(Dockerfile(\..+)?|.+\.Dockerfile)$/', $entry) === 1 && !str_ends_with($entry, '.dockerignore')) {
+                $found[] = $prefix . $entry;
+            }
+        }
+
+        return $found;
+    }
+
+    /**
+     * One Dockerfile's violations. Instructions are read as BuildKit reads
+     * them: keywords in any case, a trailing backslash continuing the line,
+     * comments dropped -- but for the parser directives above the first
+     * instruction.
+     *
+     * @return list<string>
+     */
+    public static function dockerfile(string $name, string $contents): array
+    {
+        $violations = [];
+        $lines = preg_split('/\r?\n/', $contents) ?: [];
+
+        // Parser directives: comments of the form `# key=value` before
+        // anything else.
+        foreach ($lines as $line) {
+            if (preg_match('/^\s*#\s*([a-z]+)\s*=\s*(\S+)\s*$/i', $line, $m) !== 1) {
+                break;
+            }
+            if (strtolower($m[1]) === 'syntax' && !self::pinnedImage($m[2])) {
+                $violations[] = "{$name} names the frontend {$m[2]}, which is not pinned to a sha256 digest.";
+            }
+        }
+
+        $instructions = [];
+        $current = '';
+        foreach ($lines as $line) {
+            // Blank lines and comments, between instructions or inside a
+            // continued one, as BuildKit drops them.
+            if (preg_match('/^\s*(#|$)/', $line) === 1) {
+                continue;
+            }
+            if (preg_match('/^(.*)\\\\\s*$/', $line, $m) === 1) {
+                $current .= $m[1] . ' ';
+
+                continue;
+            }
+            $instructions[] = trim($current . $line);
+            $current = '';
+        }
+        if (trim($current) !== '') {
+            $instructions[] = trim($current);
+        }
+
+        $stages = [];
+        foreach ($instructions as $instruction) {
+            $words = preg_split('/\s+/', $instruction) ?: [];
+            $keyword = strtoupper((string) array_shift($words));
+            $flags = [];
+            while ($words !== [] && str_starts_with($words[0], '--')) {
+                $flags[] = (string) array_shift($words);
+            }
+
+            if ($keyword === 'FROM') {
+                $image = $words[0] ?? '';
+                if (!self::stageOrPinned($image, $stages)) {
+                    $violations[] = "{$name} builds FROM {$image}, which is not pinned to a sha256 digest.";
+                }
+                if (isset($words[1], $words[2]) && strtoupper($words[1]) === 'AS') {
+                    $stages[] = strtolower($words[2]);
+                }
+
+                continue;
+            }
+
+            foreach ($flags as $flag) {
+                $from = null;
+                if (\in_array($keyword, ['COPY', 'ADD'], true) && preg_match('/^--from=(.+)$/i', $flag, $m) === 1) {
+                    $from = $m[1];
+                } elseif ($keyword === 'RUN' && preg_match('/^--mount=(.+)$/i', $flag, $m) === 1) {
+                    foreach (explode(',', $m[1]) as $option) {
+                        if (preg_match('/^from=(.+)$/i', $option, $o) === 1) {
+                            $from = $o[1];
+                        }
+                    }
+                }
+                if ($from !== null && !self::stageOrPinned($from, $stages)) {
+                    $violations[] = "{$name} {$keyword} takes files from {$from}, which is not pinned to a sha256 digest.";
+                }
+            }
+
+            if ($keyword === 'ADD') {
+                $checksum = array_filter($flags, static fn (string $flag): bool => preg_match('/^--checksum=sha256:[0-9a-f]{64}$/i', $flag) === 1) !== [];
+                foreach ($words as $source) {
+                    if (preg_match('#^(https?|git)://|^git@#i', $source) === 1 && !$checksum) {
+                        $violations[] = "{$name} ADDs {$source} with no --checksum=sha256: to hold it to.";
+                    }
+                }
+            }
+        }
+
+        return $violations;
+    }
+
+    /** @param list<string> $stages the names this Dockerfile's earlier stages declared */
+    private static function stageOrPinned(string $image, array $stages): bool
+    {
+        if (str_contains($image, '$')) {
+            return false;
+        }
+
+        return \in_array(strtolower($image), $stages, true)
+            || strtolower($image) === 'scratch'
+            || preg_match('/^[0-9]+$/', $image) === 1
+            || self::pinnedImage($image);
+    }
+
+    private static function pinnedImage(string $image): bool
+    {
+        return preg_match('/^[A-Za-z0-9][A-Za-z0-9_.\/:-]*@sha256:[0-9a-f]{64}$/', $image) === 1;
     }
 
     /**

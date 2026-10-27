@@ -402,6 +402,63 @@ describe('install scripts and plugins', function () {
     })->throws(\InvalidArgumentException::class, 'not an https URL prefix ending in a slash');
 });
 
+describe('dockerfiles', function () {
+    $digest = '@sha256:' . str_repeat('ab', 32);
+
+    it('passes a Dockerfile whose every image is pinned by digest', function () use ($digest) {
+        $sum = str_repeat('cd', 32);
+        $this->workspace->file('Dockerfile', <<<DOCKERFILE
+            # syntax=docker/dockerfile:1.12{$digest}
+            # A comment.
+            FROM --platform=linux/arm64 php:8.5-cli{$digest} AS build
+            RUN echo built
+            FROM debian:trixie-slim{$digest} AS runtime
+            COPY --from=build /out /srv
+            COPY --from=0 /a /b
+            RUN --mount=type=bind,from=build,source=/out,target=/mnt \\
+                # a comment inside the instruction
+                cp -a /mnt/. /srv/
+            ADD --checksum=sha256:{$sum} https://example.com/a.tar.gz /tmp/
+            FROM scratch
+            DOCKERFILE);
+
+        expect(violations($this->workspace))->toBe([]);
+    });
+
+    it('refuses an image named by tag, or by a variable, wherever it is taken from', function () use ($digest) {
+        $this->workspace->file('examples/app/Dockerfile', <<<DOCKERFILE
+            # syntax=docker/dockerfile:1
+            ARG BASE=debian:trixie-slim{$digest}
+            from node:22 as build
+            FROM \$BASE
+            COPY --from=busybox:1 /bin/busybox /bin/
+            RUN --mount=type=cache,target=/root/.npm \\
+                --mount=type=bind,from=alpine:3,source=/etc,target=/mnt true
+            ADD https://example.com/tool.tar.gz /tmp/
+            DOCKERFILE);
+        $this->workspace->file('docker/app.Dockerfile', "FROM nginx:latest\n");
+        $this->workspace->file('Dockerfile.dockerignore', "node_modules\n");
+        $this->workspace->file('node_modules/x/Dockerfile', "FROM anything\n");
+
+        expect(violations($this->workspace))->toBe([
+            'docker/app.Dockerfile builds FROM nginx:latest, which is not pinned to a sha256 digest.',
+            'examples/app/Dockerfile names the frontend docker/dockerfile:1, which is not pinned to a sha256 digest.',
+            'examples/app/Dockerfile builds FROM node:22, which is not pinned to a sha256 digest.',
+            'examples/app/Dockerfile builds FROM $BASE, which is not pinned to a sha256 digest.',
+            'examples/app/Dockerfile COPY takes files from busybox:1, which is not pinned to a sha256 digest.',
+            'examples/app/Dockerfile RUN takes files from alpine:3, which is not pinned to a sha256 digest.',
+            'examples/app/Dockerfile ADDs https://example.com/tool.tar.gz with no --checksum=sha256: to hold it to.',
+        ]);
+    });
+
+    // A stage is named before it is used: a later stage's name is an image.
+    it('takes only an earlier stage\'s name as a stage', function () use ($digest) {
+        $this->workspace->file('Dockerfile', "FROM later\nFROM debian{$digest} AS later\n");
+
+        expect(violations($this->workspace))->toBe(['Dockerfile builds FROM later, which is not pinned to a sha256 digest.']);
+    });
+});
+
 describe('workflows', function () {
     it('refuses an action pinned by tag, and passes one pinned by commit', function () {
         $this->workspace->workflows['ci.yml'] = <<<'YAML'
