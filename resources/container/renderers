@@ -1,0 +1,64 @@
+#!/bin/bash
+# The renderers' side of the container (ADR 0068): the pool's supervisor,
+# Node, run as the renderers' own user, and the commands the container's
+# supervisor sends it, one a line on standard input.
+#
+#   renderers node renderer.js POOL ENTRY [OPTIONS...]
+#
+#   restart   SIGUSR2 to the pool: a rolling restart, one renderer at a time
+#   stop      SIGTERM: the pool drains the renders in flight and stops; it
+#             is killed if it has not after 75 s
+#
+# The supervisor runs as PHP's user and cannot signal this one's processes.
+# This is the one that can, as their own user; the entrypoint started it so,
+# and it holds nothing but the pipe's end it reads. Its standard input
+# closing -- no one left who could send a command -- is a stop too. The pool
+# exiting on its own ends this with the pool's status, which the supervisor
+# sees as the renderers gone.
+set -uo pipefail
+
+say() { echo "[tinvar:container] $(date -u +%H:%M:%S.%3N) $*" >&2; }
+
+"$@" </dev/null &
+pool=$!
+
+# Gone, or exited and waiting to be reaped.
+running() {
+    local stat
+    stat=$(cat "/proc/$pool/stat" 2>/dev/null) || return 1
+    stat=${stat##*) }
+    [ "${stat%% *}" != Z ]
+}
+
+stop() {
+    kill -TERM "$pool" 2>/dev/null || true
+    (sleep 75 && kill -KILL "$pool" 2>/dev/null) &
+    local watchdog=$! status=0
+    wait "$pool" 2>/dev/null || status=$?
+    kill "$watchdog" 2>/dev/null || true
+    wait "$watchdog" 2>/dev/null || true
+    exit "$status"
+}
+
+# The supervisor's signals are the supervisor's; this one takes commands.
+trap '' INT HUP USR2
+
+while :; do
+    status=0
+    read -r -t 1 command || status=$?
+    if ((status == 0)); then
+        case $command in
+            restart) kill -USR2 "$pool" 2>/dev/null || true ;;
+            stop) stop ;;
+            *) say "Ignored a command to the renderers: $(printf '%q' "${command:0:80}")" ;;
+        esac
+    elif ((status <= 128)); then
+        say "Nothing can command the renderers any more; stopping them."
+        stop
+    fi
+    if ! running; then
+        status=0
+        wait "$pool" || status=$?
+        exit "$status"
+    fi
+done

@@ -1,37 +1,38 @@
 #!/bin/bash
-# The container's one supervisor: the application's PHP side and its
-# renderers, each as a user of its own, started, watched and stopped
-# together (ADR 0059).
+# The container's first process, and the only one that is root (ADR 0068).
+# It checks what it is given, starts the application's PHP side and its
+# renderers, each as a user of its own, and then stops being root: it becomes
+# tini, as PHP's user, running the supervisor. From then on nothing in the
+# container is root or holds a capability.
 #
 #   entrypoint                 serve: the renderers, then the PHP side
 #   entrypoint tinvar ARGS...  bin/tinvar ARGS as the app's user, and exit
 #   entrypoint CMD ARGS...     CMD as the app's user, and exit
 #
-# It runs as root under tini, with no capability but CAP_SETUID and
-# CAP_SETGID, to start each process as its user, and CAP_KILL, to signal
-# processes that are not root's. It runs no application code itself, and
-# nothing it starts keeps a capability or can gain one (no_new_privs).
+# It runs as root with no capability but CAP_SETUID and CAP_SETGID, to start
+# each process as its user, and CAP_SETPCAP, to empty the bounding set of
+# everything it starts. It runs no application code itself, and nothing it
+# starts keeps a capability or can gain one (no_new_privs).
 #
 #   - The renderers run as TINVAR_RENDERER_USER, in the socket group, with
 #     an environment of PATH, NODE_ENV, TZ, LANG and LC_ALL and nothing
-#     else: no secret this container was given reaches them.
+#     else: no secret this container was given reaches them. They are
+#     started through `renderers`, which takes the supervisor's commands on
+#     a pipe -- restart, stop -- and signals the pool as its own user.
 #   - The PHP side runs as TINVAR_CONTAINER_APP_USER, in its own group and
 #     the socket group, with the container's environment. TINVAR_RENDERER_USER
 #     and TINVAR_SOCKET tell it which pool to render through and whose
 #     processes must answer there.
+#   - tini and `supervise` run as PHP's user, in no other group, with an
+#     environment of PATH alone. The supervisor signals PHP's processes as
+#     their own user and the renderers through that pipe: it needs nothing
+#     of root's, and holds no identity but one the container already runs.
 #
 # Before either starts it checks what would otherwise fail late or quietly,
 # and refuses to start: the users and their group, the capabilities, an app
 # key given, the pool's directory a tmpfs of the renderers' user, and that
 # the renderers' user can read none of the paths TINVAR_CONTAINER_PRIVATE
 # names, nor the key file.
-#
-# SIGTERM (docker stop) stops the PHP side first -- serve stops the queue
-# worker, which finishes the job in hand, and the scheduler, then
-# FrankenPHP, which finishes the requests it has; every process of PHP's
-# user is waited for -- and the renderers last, which finish the renders in
-# flight. SIGUSR2 restarts the renderers one at a time. Either process exiting on its own
-# stops the other, and the container exits non-zero for its restart policy.
 set -euo pipefail
 
 app_user=${TINVAR_CONTAINER_APP_USER:-tinvar-app}
@@ -58,41 +59,47 @@ for variable in TINVAR_TEST_RUN TINVAR_BUILD_DIR; do
     fi
 done
 
-# Each as its user. No inheritable capability, no_new_privs: what runs
+# Each as its user. The bounding set emptied while CAP_SETPCAP is held, then
+# the ids, which empty the permitted and effective sets as the last root id
+# goes; no inheritable or ambient capability, and no_new_privs: what runs
 # under these keeps nothing of root's and can gain nothing back. Commands,
 # not functions, so a process started with one is that process, and the pid
 # signalled is the one that runs.
-as_app=(setpriv --reuid="$app_user" --regid="$app_user" --init-groups --inh-caps=-all --no-new-privs --)
-as_renderer=(setpriv --reuid="$renderer_user" --regid="$socket_group" --clear-groups --inh-caps=-all --no-new-privs --)
+drop=(--bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs)
+as_app=(setpriv --reuid="$app_user" --regid="$app_user" --init-groups "${drop[@]}" --)
+as_renderer=(setpriv --reuid="$renderer_user" --regid="$socket_group" --clear-groups "${drop[@]}" --)
+as_supervisor=(setpriv --reuid="$app_user" --regid="$app_user" --clear-groups "${drop[@]}" --)
 
-[ "$(id -u)" = 0 ] || refuse "Started as uid $(id -u). This entrypoint starts the renderers and PHP as two users, and only root can: run the image as root with --cap-drop ALL --cap-add SETUID --cap-add SETGID --cap-add KILL (examples/shop/compose.yaml). Each process it starts runs as its own user."
+[ "$(id -u)" = 0 ] || refuse "Started as uid $(id -u). This entrypoint starts the renderers and PHP as two users, and only root can: run the image as root with --cap-drop ALL --cap-add SETUID --cap-add SETGID --cap-add SETPCAP (examples/shop/compose.yaml). It stops being root once both are started."
 
-# CAP_KILL (5), CAP_SETGID (6) and CAP_SETUID (7), in the effective set.
+# CAP_SETGID (6), CAP_SETUID (7) and CAP_SETPCAP (8), in the effective set.
 capabilities=$(awk '/^CapEff:/ { print $2 }' /proc/self/status)
-for bit in 5 6 7; do
+for bit in 6 7 8; do
     if (((16#$capabilities >> bit & 1) == 0)); then
-        refuse "Missing a capability: this entrypoint needs CAP_SETUID and CAP_SETGID to start each process as its user, and CAP_KILL to signal them (CapEff is $capabilities)."
+        refuse "Missing a capability: this entrypoint needs CAP_SETUID and CAP_SETGID to start each process as its user, and CAP_SETPCAP to drop every capability from what it starts (CapEff is $capabilities)."
     fi
 done
 
-# One-off commands, as the app's user: a migration, a seed, a check.
-if [ $# -gt 0 ]; then
-    cd "${TINVAR_CONTAINER_CWD:-/}"
-    if [ "$1" = tinvar ]; then
-        shift
-        exec "${as_app[@]}" php "${TINVAR_CONTAINER_TINVAR:?names bin/tinvar}" "$@"
-    fi
-    exec "${as_app[@]}" "$@"
-fi
-
 [ -n "$renderer_user" ] || refuse "TINVAR_RENDERER_USER is not set: the renderers run as a user of their own here."
-[ -n "$pool" ] || refuse "TINVAR_SOCKET is not set: it names the renderers' pool directory."
 app_uid=$(id -u "$app_user") || refuse "No user $app_user for PHP."
 renderer_uid=$(id -u "$renderer_user") || refuse "No user $renderer_user for the renderers."
 socket_gid=$(getent group "$socket_group" | cut -d: -f3) || refuse "No group $socket_group for the renderers' sockets."
 if [ "$app_uid" = 0 ] || [ "$renderer_uid" = 0 ] || [ "$app_uid" = "$renderer_uid" ]; then
     refuse "PHP ($app_user, $app_uid) and the renderers ($renderer_user, $renderer_uid) must be two users, neither root."
 fi
+
+# One-off commands, as the app's user, under tini: a migration, a seed, a
+# check.
+if [ $# -gt 0 ]; then
+    cd "${TINVAR_CONTAINER_CWD:-/}"
+    if [ "$1" = tinvar ]; then
+        shift
+        exec "${as_app[@]}" /usr/local/bin/tini -- php "${TINVAR_CONTAINER_TINVAR:?names bin/tinvar}" "$@"
+    fi
+    exec "${as_app[@]}" /usr/local/bin/tini -- "$@"
+fi
+
+[ -n "$pool" ] || refuse "TINVAR_SOCKET is not set: it names the renderers' pool directory."
 # The group of two, as ADR 0028 has it: the renderers' user, whose primary
 # group it is, and PHP's, listed.
 members=$(getent group "$socket_group" | cut -d: -f4)
@@ -139,119 +146,35 @@ workers=${TINVAR_CONTAINER_WORKERS:-$cpus}
 renderers=${TINVAR_CONTAINER_RENDERERS:-$((cpus / 2 > workers ? workers : cpus / 2))}
 ((renderers >= 1)) || renderers=1
 
-renderer_pid=
-php_pid=
-stopping=
-
-# SIGTERM to one child, SIGKILL once $2 seconds have gone by, and its exit
-# reaped.
-stop_one() {
-    local pid=$1
-    [ -n "$pid" ] || return 0
-    kill -TERM "$pid" 2>/dev/null || return 0
-    (sleep "$2" && kill -KILL "$pid" 2>/dev/null) &
-    local watchdog=$!
-    wait "$pid" 2>/dev/null || true
-    kill "$watchdog" 2>/dev/null || true
-    wait "$watchdog" 2>/dev/null || true
-}
-
-# The pids of every process PHP's user runs: serve, the tethers, FrankenPHP,
-# the queue worker and the scheduler, and any of them orphaned.
-app_processes() {
-    local status uid rest
-    for status in /proc/[0-9]*/status; do
-        # shellcheck disable=SC2034 # rest: the other three uids
-        read -r _ uid rest < <(grep '^Uid:' "$status" 2>/dev/null) || continue
-        if [ "$uid" = "$app_uid" ]; then
-            status=${status%/status}
-            echo "${status#/proc/}"
-        fi
-    done
-}
-
-# PHP's side is stopped by `tinvar serve` itself, which runs under PHP's own
-# CLI and takes SIGTERM (ADR 0063): it stops the queue worker and the
-# scheduler first, giving a job in hand up to 70 s to finish, then
-# FrankenPHP, which drains its requests for up to 10 s. A serve still there
-# after 85 s is killed, which its children are built to outlive by a moment:
-# each tether sees its standard input close and stops its command within
-# 10 s. Then every process of PHP's user, orphans too, is waited for, and
-# any left after 15 s more is killed: none of them outlives this function,
-# so the renderers are stopped with nothing of PHP's left to render for.
-stop_php() {
-    [ -n "$php_pid" ] || return 0
-    stop_one "$php_pid" 85
-    local deadline=$((SECONDS + 15)) left
-    while left=$(app_processes) && [ -n "$left" ] && ((SECONDS < deadline)); do
-        sleep 0.2
-    done
-    if [ -n "$left" ]; then
-        say "PHP's processes $(echo "$left" | tr '\n' ' ')did not stop in time; killing them."
-        # shellcheck disable=SC2086 # one pid a word
-        kill -KILL $left 2>/dev/null || true
-        # Gone before the renderers go: a pid still listed after its SIGKILL
-        # is one the kernel has not finished with yet.
-        deadline=$((SECONDS + 5))
-        while left=$(app_processes) && [ -n "$left" ] && ((SECONDS < deadline)); do
-            sleep 0.1
-        done
-    fi
-}
-
-stop() {
-    stopping=1
-    say "Stopping: PHP first, then the renderers."
-    # PHP first: it finishes its jobs and requests, which may still render.
-    # The renderers then drain for up to 60 s. At worst some 180 s in all:
-    # compose's stop_grace_period is 190 s.
-    stop_php
-    say "PHP has stopped."
-    stop_one "$renderer_pid" 75
-    say "The renderers have stopped."
-}
-
-trap 'stop; exit 0' TERM INT
-trap '[ -z "$renderer_pid" ] || kill -USR2 "$renderer_pid"; say "Restarting the renderers one at a time."' USR2
-trap '' HUP
-
 say "Starting $renderers renderers as $renderer_user in $pool, then PHP with $workers workers as $app_user on port $port."
 
 # The renderers: Node itself, as the systemd unit in docs/deployment.md
-# runs it, so their user reads no PHP.
+# runs it, so their user reads no PHP, under `renderers`, whose standard
+# input is a pipe whose other end only the supervisor holds. Started as
+# their user, so `renderers` signals the pool as its own.
 renderer_env=(PATH=/usr/local/bin:/usr/bin:/bin NODE_ENV=production)
 for name in TZ LANG LC_ALL; do
     [ -z "${!name:-}" ] || renderer_env+=("$name=${!name}")
 done
-env -i "${renderer_env[@]}" \
-    "${as_renderer[@]}" node "${TINVAR_CONTAINER_RENDERER:?names renderer.js}" "$pool" \
+exec {control}> >(exec env -i "${renderer_env[@]}" \
+    "${as_renderer[@]}" /usr/local/lib/tinvar/renderers node "${TINVAR_CONTAINER_RENDERER:?names renderer.js}" "$pool" \
     "${TINVAR_CONTAINER_RENDER_ENTRY:?names the app rsc entry}" \
-    --processes="$renderers" --socket-group="$socket_group" &
+    --processes="$renderers" --socket-group="$socket_group")
 renderer_pid=$!
 
-# The PHP side. `tinvar serve` waits for the pool and holds it to the
-# renderers' user before FrankenPHP starts.
+# The PHP side, with the pipe's end closed: PHP can neither restart the
+# renderers nor keep them from stopping. `tinvar serve` waits for the pool
+# and holds it to the renderers' user before FrankenPHP starts.
 cd "${TINVAR_CONTAINER_CWD:-/}"
 # shellcheck disable=SC2086 # the command and its arguments, split as written
 "${as_app[@]}" ${TINVAR_CONTAINER_SERVE:?names the command that serves} \
-    --host=0.0.0.0 --port="$port" --workers="$workers" &
+    --host=0.0.0.0 --port="$port" --workers="$workers" {control}>&- &
 php_pid=$!
 
-while :; do
-    status=0
-    wait -n "$renderer_pid" "$php_pid" || status=$?
-    [ -z "$stopping" ] || exit 0
-    # A trapped signal ends the wait too: only an exit is an exit.
-    if [ ! -e "/proc/$php_pid" ]; then
-        say "PHP exited (status $status); stopping the renderers."
-        php_pid=
-        stop_one "$renderer_pid" 75
-        exit "$((status == 0 ? 1 : status))"
-    fi
-    if [ ! -e "/proc/$renderer_pid" ]; then
-        say "The renderers exited (status $status); stopping PHP."
-        renderer_pid=
-        stop_php
-        exit "$((status == 0 ? 1 : status))"
-    fi
-done
+# Root no more. Both sides are this process's children, and stay tini's
+# when it takes this pid: tini reaps them, and every orphan, as PID 1. The
+# supervisor gets the pipe to the renderers, the two pids, and no secret.
+cd /
+exec env -i PATH=/usr/local/bin:/usr/bin:/bin \
+    "${as_supervisor[@]}" /usr/local/bin/tini -- /usr/local/lib/tinvar/supervise \
+    "$control" "$renderer_pid" "$php_pid" "$app_uid" "$renderer_uid"

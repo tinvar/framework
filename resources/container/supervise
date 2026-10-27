@@ -1,0 +1,190 @@
+#!/bin/bash
+# The container's supervisor (ADR 0068), under tini, as PHP's user, with no
+# capability, no other group and an environment of PATH alone. The
+# entrypoint started both sides as root and became tini to run this; it is
+# handed what it needs to watch and stop them:
+#
+#   supervise CONTROL-FD RENDERERS-PID PHP-PID APP-UID RENDERER-UID
+#
+# CONTROL-FD is the pipe to `renderers`, which signals the pool as the
+# renderers' own user: this one cannot, and needs not. PHP's processes are
+# its own user's, which it signals itself.
+#
+# SIGTERM (docker stop) stops the PHP side first -- serve stops the queue
+# worker, which finishes the job in hand, and the scheduler, then
+# FrankenPHP, which finishes the requests it has; every process of PHP's
+# user is waited for -- and the renderers last, which finish the renders in
+# flight. SIGUSR2 restarts the renderers one at a time. Either side exiting
+# on its own stops the other, and the container exits non-zero for its
+# restart policy.
+#
+# Neither side is this process's child: both are tini's, which reaps them.
+# So each is watched by its pid and the time it started, which no later
+# process given the same pid shares.
+set -euo pipefail
+
+control=$1
+renderer_pid=$2
+php_pid=$3
+app_uid=$4
+renderer_uid=$5
+self=$$
+stopping=
+
+say() { echo "[tinvar:container] $(date -u +%H:%M:%S.%3N) $*" >&2; }
+
+# A pipe nothing writes to, to wait on: `read -t` on it is a sleep that a
+# trapped signal ends at once, with no process started for it.
+nap_dir=$(mktemp -d)
+mkfifo -m 0600 "$nap_dir/nap"
+exec {nap}<>"$nap_dir/nap"
+rm -rf "$nap_dir"
+nap() { read -r -t "$1" -u "$nap" _ || true; }
+
+# A process's state and start time, from /proc/PID/stat, read without
+# starting a process: after the name, whose parentheses may hold anything,
+# the state is the first field and the start time the twentieth.
+state=
+started=
+stat_of() {
+    local stat
+    local -a fields
+    { read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 1
+    read -r -a fields <<<"${stat##*) }"
+    state=${fields[0]}
+    started=${fields[19]}
+}
+# The uid that runs it: the real one, as the kernel checks a signal by.
+uid_of() { awk '/^Uid:/ { print $2 }' "/proc/$1/status" 2>/dev/null; }
+
+# Each side as it was when this started: its start time, and the user it
+# runs as. Anything else at that pid later is not it. A side may still be
+# setpriv, root's, for a moment after it was started: it is given 5 s to be
+# its user.
+side() {
+    local pid=$1 uid=$2 deadline=$((SECONDS + 5))
+    while stat_of "$pid" && [ "$state" != Z ]; do
+        if [ "$(uid_of "$pid")" = "$uid" ]; then
+            echo "$started"
+            return 0
+        fi
+        ((SECONDS < deadline)) || break
+        sleep 0.05
+    done
+    echo gone
+}
+renderer_start=$(side "$renderer_pid" "$renderer_uid")
+php_start=$(side "$php_pid" "$app_uid")
+alive() { stat_of "$1" && [ "$state" != Z ] && [ "$started" = "$2" ]; }
+
+# The pids of every process PHP's user runs -- serve, the tethers,
+# FrankenPHP, the queue worker and the scheduler, and any of them orphaned
+# -- but tini, this one, and what this one runs.
+app_processes() {
+    local status pid uid parent
+    local -A parents=()
+    local -a candidates=()
+    for status in /proc/[0-9]*/status; do
+        pid=${status%/status}
+        pid=${pid#/proc/}
+        read -r uid parent < <(awk '/^Uid:/ { uid = $2 } /^PPid:/ { parent = $2 } END { print uid, parent }' "$status" 2>/dev/null) || continue
+        [ -n "$parent" ] || continue
+        parents[$pid]=$parent
+        [ "$uid" = "$app_uid" ] && candidates+=("$pid")
+    done
+    for pid in "${candidates[@]}"; do
+        local at=$pid ours=
+        while [ -n "$at" ] && [ "$at" != 0 ] && [ "$at" != 1 ]; do
+            [ "$at" = "$self" ] && { ours=1; break; }
+            at=${parents[$at]:-}
+        done
+        [ "$pid" = 1 ] || [ -n "$ours" ] || echo "$pid"
+    done
+}
+
+# PHP's side is stopped by `tinvar serve` itself, which runs under PHP's own
+# CLI and takes SIGTERM (ADR 0063): it stops the queue worker and the
+# scheduler first, giving a job in hand up to 70 s to finish, then
+# FrankenPHP, which drains its requests for up to 10 s. A serve still there
+# after 85 s is killed, which its children are built to outlive by a moment:
+# each tether sees its standard input close and stops its command within
+# 10 s. Then every process of PHP's user, orphans too, is waited for, and
+# any left after 15 s more is killed: none of them outlives this function,
+# so the renderers are stopped with nothing of PHP's left to render for.
+stop_php() {
+    local deadline left
+    if alive "$php_pid" "$php_start"; then
+        kill -TERM "$php_pid" 2>/dev/null || true
+        deadline=$((SECONDS + 85))
+        while alive "$php_pid" "$php_start" && ((SECONDS < deadline)); do nap 0.2; done
+        if alive "$php_pid" "$php_start"; then
+            say "serve did not stop in 85 s; killing it."
+            kill -KILL "$php_pid" 2>/dev/null || true
+        fi
+    fi
+    php_start=gone
+    deadline=$((SECONDS + 15))
+    while left=$(app_processes) && [ -n "$left" ] && ((SECONDS < deadline)); do
+        nap 0.2
+    done
+    if [ -n "$left" ]; then
+        say "PHP's processes $(echo "$left" | tr '\n' ' ')did not stop in time; killing them."
+        # shellcheck disable=SC2086 # one pid a word
+        kill -KILL $left 2>/dev/null || true
+        # Gone before the renderers go: a pid still listed after its SIGKILL
+        # is one the kernel has not finished with yet.
+        deadline=$((SECONDS + 5))
+        while left=$(app_processes) && [ -n "$left" ] && ((SECONDS < deadline)); do
+            nap 0.1
+        done
+    fi
+}
+
+# Through the pipe: `renderers` sends the pool SIGTERM, and kills it if it
+# has not drained in 75 s. Waited for a little longer than that; if it is
+# still there, this exits regardless, tini with it, and the kernel kills
+# what is left in the container.
+stop_renderers() {
+    alive "$renderer_pid" "$renderer_start" || return 0
+    echo stop >&"$control" || true
+    local deadline=$((SECONDS + 80))
+    while alive "$renderer_pid" "$renderer_start" && ((SECONDS < deadline)); do nap 0.2; done
+    alive "$renderer_pid" "$renderer_start" && say "The renderers did not stop in 80 s; leaving them to the container's end."
+    renderer_start=gone
+}
+
+stop() {
+    stopping=1
+    say "Stopping: PHP first, then the renderers."
+    # PHP first: it finishes its jobs and requests, which may still render.
+    # The renderers then drain for up to 75 s. At worst some 185 s in all:
+    # compose's stop_grace_period is 190 s.
+    stop_php
+    say "PHP has stopped."
+    stop_renderers
+    say "The renderers have stopped."
+}
+
+# A command to a `renderers` gone must not end this with SIGPIPE.
+trap '' PIPE HUP
+trap 'stop; exit 0' TERM INT
+trap '[ -n "$stopping" ] || echo restart >&"$control" || true; say "Restarting the renderers one at a time."' USR2
+
+while :; do
+    nap 1
+    [ -z "$stopping" ] || continue
+    if ! alive "$php_pid" "$php_start"; then
+        # What serve left -- FrankenPHP draining, a worker finishing its job
+        # -- may still render: it goes first, as at a stop.
+        say "PHP exited; stopping what is left of it, then the renderers."
+        stop_php
+        stop_renderers
+        exit 1
+    fi
+    if ! alive "$renderer_pid" "$renderer_start"; then
+        say "The renderers exited; stopping PHP."
+        renderer_start=gone
+        stop_php
+        exit 1
+    fi
+done
