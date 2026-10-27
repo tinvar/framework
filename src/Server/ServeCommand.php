@@ -12,6 +12,7 @@ use Tinvar\Render\RendererSockets;
 use Tinvar\Render\RendererUser;
 use Tinvar\Render\RenderFailure;
 use Tinvar\Render\SocketTrust;
+use Tinvar\Support\BuildProfile;
 use Tinvar\Support\DevMode;
 use Tinvar\Support\PrivateDirectory;
 
@@ -232,7 +233,9 @@ final class ServeCommand
         }
 
         $app = $this->app($options['app'] ?? null, requireCaddyfile: !$dev);
-        $entry = $dev ? null : "{$app}/dist/rsc/index.js";
+        // The build: dist/ in the app, unless TINVAR_BUILD_DIR names one of
+        // its own -- a test build beside it (BuildProfile, ADR 0066).
+        $entry = $dev ? null : BuildProfile::buildDirectory($app) . '/rsc/index.js';
         if ($entry !== null && !is_file($entry)) {
             throw new ServeException("{$app} is not built: there is no {$entry}. Build it first (npx vite build in {$app}).");
         }
@@ -382,6 +385,9 @@ final class ServeCommand
             'TINVAR_HOST' => $plan['host'],
             'TINVAR_PORT' => (string) $plan['port'],
             'TINVAR_APP_ROOT' => $plan['app'],
+            // Where the Caddyfile serves the client's assets from, and the
+            // application reads its build: the one the renderers load.
+            BuildProfile::BUILD_DIR_ENV => $plan['entry'] === null ? "{$plan['app']}/dist" : \dirname($plan['entry'], 2),
             'TINVAR_WORKERS' => (string) $plan['workers'],
             // The pool's directory -- this serve's, or the one the renderers'
             // own user runs -- and dev mode's one socket.
