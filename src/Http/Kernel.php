@@ -2313,6 +2313,18 @@ final class Kernel
     }
 
     /**
+     * The response, taking away the hub's grant: for an application that
+     * moves a browser to another session outside the pipeline, where
+     * revokeLiveIfRebound() cannot see it -- a session cookie issued in
+     * place of one that no longer verifies, before the request is
+     * dispatched with it (ADR 0075). Nothing without a live hub.
+     */
+    public function revokeLive(Response $response): Response
+    {
+        return $this->live === null ? $response : $this->live->hub->revoke($response);
+    }
+
+    /**
      * The application's resolver, narrowed to middleware. A resolver that
      * hands back something else is a misconfiguration to name, not a
      * TypeError from deep inside a request.
