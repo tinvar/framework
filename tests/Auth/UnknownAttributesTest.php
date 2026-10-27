@@ -58,7 +58,8 @@ final class CountQuery
 final readonly class Shown extends Data
 {
     public function __construct(
-        #[\Tinvar\Attributes\Optionall] public string $name = '',
+        #[\Tinvar\Attributes\Optionall]
+        public string $name = '',
     ) {}
 }
 

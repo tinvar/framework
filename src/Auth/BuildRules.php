@@ -137,7 +137,7 @@ final class BuildRules
     /** @param list<class-string<Model>> $models every model the application declares */
     public function __construct(array $models = [])
     {
-        $this->models = array_values($models);
+        $this->models = $models;
         foreach ($models as $model) {
             if ((new \ReflectionClass($model))->getAttributes(TenantScoped::class, \ReflectionAttribute::IS_INSTANCEOF) !== []) {
                 $this->tenantScoped[strtolower(Str::shortName($model))] = $model;
