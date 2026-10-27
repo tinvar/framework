@@ -24,7 +24,7 @@ use Tinvar\Identity\Invitations;
 use Tinvar\Identity\InvitePolicy;
 use Tinvar\Identity\Realm;
 use Tinvar\Identity\Realms;
-use Tinvar\Jobs\UserLookup;
+use Tinvar\Auth\UserLookup;
 use Tinvar\Mail\UnsubscribeLinks;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Orm\Schema\Dialect;

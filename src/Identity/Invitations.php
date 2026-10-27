@@ -6,7 +6,7 @@ namespace Tinvar\Identity;
 
 use Tinvar\Auth\Authenticatable;
 use Tinvar\Http\HttpException;
-use Tinvar\Jobs\UserLookup;
+use Tinvar\Auth\UserLookup;
 
 /**
  * Invites: an address asked to join one panel in one tenant with one role,

@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Identity;
 
 use Tinvar\Auth\Authenticatable;
-use Tinvar\Jobs\UserLookup;
+use Tinvar\Auth\UserLookup;
 use Tinvar\Render\SignedToken;
 use Tinvar\Render\TokenClaims;
 use Tinvar\Render\TokenError;
