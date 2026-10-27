@@ -20,11 +20,17 @@ use Shop\Models\Customer;
 use Shop\Pages\Admin\Orders;
 use Shop\StaffAccount;
 use Tinvar\Bench\Shop;
+use Tinvar\Auth\AuthContext;
+use Tinvar\Http\BuildRegistry;
+use Tinvar\Http\PageCursors;
+use Tinvar\Http\Request;
 use Tinvar\Live\TagsRead;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Migrations\Migrator;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
+use Tinvar\Orm\SignedCursors;
+use Tinvar\Support\Signer;
 use Tinvar\Testing\AssertablePage;
 use Tinvar\Testing\Testing;
 
@@ -127,16 +133,67 @@ it('lists every customer\'s newest orders, with whose each is', function () {
 
                 return $placed === $sorted;
             }))
-        // Two for the panel's membership, the session and the loader's two:
-        // a loader that started reading each order's customer alone would
-        // blow it.
-        ->assertQueryBudget(12);
+        // Two for the panel's membership, the session and the loader's
+        // three -- the page, its orders' customers in one statement, the
+        // count: a loader that started reading each order's customer alone
+        // would blow it.
+        ->assertQueryBudget(13);
 });
 
 it('reads the tag every placed order invalidates, so staff\'s list is told live', function () {
     $orm = Testing::client()->app->kernel()->orm;
     $tags = new TagsRead($orm);
-    new Orders($orm, $tags)();
+    $cursors = new PageCursors(
+        new Signer('test-key', SignedCursors::PURPOSE),
+        new BuildRegistry('b1'),
+        static fn (Request $r): string => 'a-session',
+        new AuthContext(),
+        $orm,
+    );
+    new Orders($orm, $tags, $cursors)(new Request('GET', '/admin/orders'));
 
     expect($tags->all())->toBe(["\0" . OrderActions::ORDERS_TAG => ['*']]);
+});
+
+// Through the whole request path: each page's cursors are the server's,
+// sealed for this staff member's session, and read the next fifty from
+// where the last left off -- and a cursor carried into another session,
+// or changed by a byte, reads the newest page instead.
+it('pages back through every order by cursor, for the session the cursors were sealed for', function () {
+    $orm = Testing::client()->app->kernel()->orm;
+    // Enough orders for three pages: copies of the newest, a minute apart,
+    // two placed at the same moment so the key breaks the tie.
+    $row = $orm->connection()->select('SELECT * FROM orders ORDER BY placed_at DESC LIMIT 1')[0];
+    for ($i = 0; $i < 2 * Orders::LIMIT; $i++) {
+        $copy = [...$row, 'id' => \Tinvar\Support\Uuid::v7(), 'number' => sprintf('PW-T%04d', $i),
+            'placed_at' => gmdate('Y-m-d\TH:i:s\Z', 1_600_000_000 + intdiv($i, 2) * 60)];
+        $orm->connection()->execute(
+            'INSERT INTO orders (' . implode(', ', array_keys($copy)) . ') VALUES (' . implode(', ', array_fill(0, \count($copy), '?')) . ')',
+            array_values($copy),
+        );
+    }
+    $total = (int) $orm->connection()->select('SELECT COUNT(*) AS n FROM orders')[0]['n'];
+
+    $numbers = static fn ($response): array => array_column($response->recorded()->encoded['page']['orders'], 'number');
+    $first = actingAs(shopper(StaffAccount::EMAIL))->get('/admin/orders');
+    $page = $first->recorded()->encoded['page'];
+    expect($page['newer'])->toBeNull()->and($page['older'])->toBeString();
+
+    $seen = $numbers($first);
+    $client = $first->then();
+    $older = $page['older'];
+    while ($older !== null) {
+        $next = $client->get('/admin/orders?cursor=' . rawurlencode($older));
+        $seen = [...$seen, ...$numbers($next)];
+        $older = $next->recorded()->encoded['page']['older'];
+        $client = $next->then();
+    }
+
+    expect($seen)->toHaveCount($total)->and(array_unique($seen))->toHaveCount($total);
+
+    $elsewhere = actingAs(shopper(StaffAccount::EMAIL))->get('/admin/orders?cursor=' . rawurlencode($page['older']));
+    $tampered = $first->then()->get('/admin/orders?cursor=' . rawurlencode('x' . substr($page['older'], 1)));
+
+    expect($numbers($elsewhere))->toBe($numbers($first))
+        ->and($numbers($tampered))->toBe($numbers($first));
 });
