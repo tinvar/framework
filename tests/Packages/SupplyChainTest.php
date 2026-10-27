@@ -451,6 +451,17 @@ describe('dockerfiles', function () {
         ]);
     });
 
+    // With another escape character, lines continue where this check would
+    // read them as ended, and the two would read different instructions.
+    it('refuses an escape directive other than the backslash', function () use ($digest) {
+        $this->workspace->file('Dockerfile', "# escape=`\nFROM debian{$digest} AS base\nRUN echo `\nFROM node:22\n");
+        $this->workspace->file('b/Dockerfile', "# escape=\\\nFROM debian{$digest}\n");
+
+        expect(violations($this->workspace))->toBe([
+            'Dockerfile sets the escape character to `, which the check does not read; only \\ is allowed.',
+        ]);
+    });
+
     // A stage is named before it is used: a later stage's name is an image.
     it('takes only an earlier stage\'s name as a stage', function () use ($digest) {
         $this->workspace->file('Dockerfile', "FROM later\nFROM debian{$digest} AS later\n");

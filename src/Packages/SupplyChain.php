@@ -523,6 +523,12 @@ final class SupplyChain
             if (strtolower($m[1]) === 'syntax' && !self::pinnedImage($m[2])) {
                 $violations[] = "{$name} names the frontend {$m[2]}, which is not pinned to a sha256 digest.";
             }
+            // Another escape character moves where an instruction ends, and
+            // the file would be read here as other instructions than Docker
+            // runs: refused, and read no further.
+            if (strtolower($m[1]) === 'escape' && $m[2] !== '\\') {
+                return [...$violations, "{$name} sets the escape character to {$m[2]}, which the check does not read; only \\ is allowed."];
+            }
         }
 
         $instructions = [];
