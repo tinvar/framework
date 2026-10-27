@@ -17,6 +17,7 @@ use Shop\Database\Migrations;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Models\Customer;
+use Shop\Models\Order;
 use Shop\Pages\Admin\Orders;
 use Shop\StaffAccount;
 use Tinvar\Bench\Shop;
@@ -135,9 +136,28 @@ it('lists every customer\'s newest orders, with whose each is', function () {
             }))
         // Two for the panel's membership, the session and the loader's
         // three -- the page, its orders' customers in one statement, the
-        // count: a loader that started reading each order's customer alone
-        // would blow it.
+        // orders by status: a loader that started reading each order's
+        // customer alone would blow it.
         ->assertQueryBudget(13);
+});
+
+// The report a GROUP BY reads into typed rows (ADR 0064): each status any
+// order is in, in the order an order moves through them, its count and
+// what its orders came to -- the database's own sums, and the total theirs.
+it('reports how many orders are in each status, and what they came to', function () {
+    $orm = Testing::client()->app->kernel()->orm;
+    $expected = [];
+    foreach ($orm->connection()->select('SELECT status, COUNT(*) AS n, SUM(total_cents) AS cents FROM orders GROUP BY status') as $row) {
+        $expected[(string) $row['status']] = ['status' => (string) $row['status'], 'orders' => (int) $row['n'], 'totalCents' => (int) $row['cents']];
+    }
+    $expected = array_values(array_filter(array_map(static fn (string $status): ?array => $expected[$status] ?? null, Order::STATUSES)));
+
+    actingAs(shopper(StaffAccount::EMAIL))->get('/admin/orders')
+        ->assertOk()
+        ->assertPage(Orders::class, fn (AssertablePage $page) => $page
+            ->where('statuses', $expected)
+            ->where('total', array_sum(array_column($expected, 'orders')))
+            ->etc());
 });
 
 it('reads the tag every placed order invalidates, so staff\'s list is told live', function () {
