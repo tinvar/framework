@@ -80,6 +80,16 @@ final class FakeVerifier implements Verifier
         }
     }
 
+    /** @var array<string, string> "repository tag" by the sha256 of each asset in an immutable release */
+    public array $released = [];
+
+    public function releaseAsset(string $file, string $sha256, string $repository, string $tag): void
+    {
+        if (hash_file('sha256', $file) !== $sha256 || ($this->released[$sha256] ?? null) !== "{$repository} {$tag}") {
+            throw new DepsException("{$repository} {$tag}'s release attestation does not name " . basename($file) . "'s sha256.");
+        }
+    }
+
     public function openPgp(string $data, string $signature, string $keyring): string
     {
         return $this->signed[(string) hash_file('sha256', $data)] ?? throw new DepsException('The signature on ' . basename($data) . ' does not hold.');

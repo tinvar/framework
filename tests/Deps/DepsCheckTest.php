@@ -15,6 +15,7 @@ use Tinvar\Deps\DepsCommand;
 use Tinvar\Deps\DepsException;
 use Tinvar\Deps\Outcome;
 use Tinvar\Deps\PinnedFiles;
+use Tinvar\Deps\Pins\AnchorePin;
 use Tinvar\Deps\Pins\ApcuPin;
 use Tinvar\Deps\Pins\ComposerPin;
 use Tinvar\Deps\Pins\FrankenPhpPin;
@@ -389,6 +390,37 @@ describe('gh and the watched binaries', function () {
         expect($outcome->to)->toBe('2.104.0')
             ->and($files->contents(PinnedFiles::TOOLS))->toContain("GH_VERSION=2.104.0\n")
             ->and($files->contents(PinnedFiles::TOOLS))->toContain("GH_ARCH=arm64\n        GH_SHA256=" . hash('sha256', 'gh arm64') . "\n");
+    });
+
+    it('moves Syft to an immutable release whose four archives match its checksums', function () {
+        $http = new FakeHttp();
+        $verifier = new FakeVerifier();
+        $assets = [];
+        $checksums = '';
+        foreach (AnchorePin::PLATFORMS as $platform) {
+            $name = "syft_1.55.0_{$platform}.tar.gz";
+            $assets[$name] = "syft {$platform}";
+            $checksums .= hash('sha256', $assets[$name]) . "  {$name}\n";
+            $verifier->released[hash('sha256', $assets[$name])] = 'anchore/syft v1.55.0';
+        }
+        $assets['syft_1.55.0_checksums.txt'] = $checksums;
+        $verifier->released[hash('sha256', $checksums)] = 'anchore/syft v1.55.0';
+        releases($http, 'anchore/syft', ['v2.0.0' => [], 'v1.55.0' => $assets]);
+        $files = files();
+
+        $outcome = AnchorePin::syft()->check($files, context($http, $verifier));
+
+        $sbom = $files->contents(PinnedFiles::SBOM);
+        expect($outcome->to)->toBe('1.55.0')
+            ->and($sbom)->toContain("SYFT_VERSION=1.55.0\n")
+            ->and($sbom)->toContain('syft-darwin_arm64) echo ' . hash('sha256', 'syft darwin_arm64') . " ;;\n")
+            ->and($sbom)->toContain('syft-linux_amd64) echo ' . hash('sha256', 'syft linux_amd64') . " ;;\n")
+            // Grype's are its own.
+            ->and($sbom)->toContain("GRYPE_VERSION=0.120.1\n");
+
+        // An archive the release attestation does not name is refused.
+        unset($verifier->released[hash('sha256', 'syft linux_arm64')]);
+        expect(fn () => AnchorePin::syft()->check(files(), context($http, $verifier)))->toThrow(DepsException::class, 'release attestation does not name');
     });
 
     it('holds tini and splitsh-lite for a reviewer, and moves neither', function () {

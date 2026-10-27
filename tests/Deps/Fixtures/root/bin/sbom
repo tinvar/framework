@@ -1,0 +1,443 @@
+#!/bin/bash
+# SC2016: the single-quoted programs are PHP's, Node's and jq's, which
+# expand them.
+# shellcheck disable=SC2016
+#
+# CycloneDX SBOMs for a container image and for the workspace, checked
+# before they are written, and a vulnerability scan of either (ADR 0080).
+#
+#   bin/sbom image IMAGE OUT [--oci TAR] [--expect LIST] [--dockerfile FILE]
+#   bin/sbom workspace OUT
+#   bin/sbom check SBOM [--expect LIST] [--dockerfile FILE]
+#   bin/sbom scan SBOM
+#
+# `image` describes an image already built into the local Docker:
+#
+#   docker build --provenance=false --sbom=false -f examples/shop/Dockerfile -t pellwick-shop:dev .
+#   bin/sbom image pellwick-shop:dev pellwick-shop.cdx.json \
+#       --expect frankenphp,tini,node,php,deb,composer,npm,golang --dockerfile examples/shop/Dockerfile
+#
+# It saves the image as an OCI layout (--oci keeps the tarball), reads its
+# digest from that layout -- the manifest's, which is what a registry would
+# serve it by and what CI attests -- and has Syft catalog the tarball:
+# Debian's packages, Composer's installed.json, the npm packages, the Go
+# modules in FrankenPHP and the binaries Syft recognises. Nothing is pulled
+# and the scan reads no daemon and no network. What Syft cannot see -- the
+# binaries the Dockerfile downloads, which are no package's, and what is
+# compiled into them -- it learns by running each of them in the image,
+# with no network, no capability and as nobody: FrankenPHP and the PHP,
+# extensions and libraries it carries statically, tini, Node and the
+# libraries it bundles, PHP's CLI and its extensions. Each binary is
+# recorded with its sha256, and --dockerfile holds the downloaded ones to a
+# sum written in that Dockerfile, which the build checked them against.
+#
+# `workspace` describes composer.lock and package-lock.json, development
+# dependencies included and marked optional, and fails unless every locked
+# package is in it.
+#
+# `check` is what both run before writing: a CycloneDX document, every
+# bom-ref once, and each name in --expect present -- a binary (frankenphp,
+# tini, node, php) recorded with its path and sha256, or an ecosystem (deb,
+# composer, npm, golang) with at least one package.
+#
+# `scan` runs Grype over an SBOM: it reports every match, and fails only on
+# a critical vulnerability with a fixed version published, which
+# .grype.yaml does not excuse. Grype downloads
+# its database, so it is the one subcommand that needs the network each run.
+#
+# Syft and Grype are each one exact release, fetched once into
+# ${TINVAR_TOOLS_CACHE:-~/.cache/tinvar} and held to the sha256 below on
+# every run; after the first, `image`, `workspace` and `check` run offline.
+# Needs bash, curl, tar, jq and, for `image`, Docker with the containerd
+# image store, whose image ids are manifest digests.
+set -euo pipefail
+
+# Paths given are the caller's; everything else is the project's.
+caller=$PWD
+cd "$(dirname "$0")/.."
+from_caller() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s' "$caller/$1" ;; esac; }
+
+SYFT_VERSION=1.54.1
+GRYPE_VERSION=0.120.1
+
+# Sums from each release's checksums.txt. To move one, change its version
+# and its four sums together.
+tool_sha256() {
+    case "$1-$2" in
+        syft-darwin_amd64) echo 2956322838b2f64e470eea474495f0cd96be4f222b1ac037258cdc47d965064e ;;
+        syft-darwin_arm64) echo b4319c3abaa87a0170ab76ee83ea2260ca34b53aecfa3ab0dd5428d2319d744f ;;
+        syft-linux_amd64) echo c069905b391cc4c20a5ba65ad5c10be2a7ba074f8ea6ad203e24d14e303dad47 ;;
+        syft-linux_arm64) echo dfdf0537610113edbefe1f1fc6548bc957b2d77439636ec824fcf0e10d46d054 ;;
+        grype-darwin_amd64) echo 5313004ccbc524c8757521dc3913f1edf4309f56bef06a2fb2d0c0eeade7cc62 ;;
+        grype-darwin_arm64) echo cf97957fa467d25575ec2cc3228289f391ea51cf88b9cffc5f83dc03d4cbc732 ;;
+        grype-linux_amd64) echo 0a9ee97ef5ae2ee953b0a80098105052e846cdbe319a57d808b519c33cd1343d ;;
+        grype-linux_arm64) echo 29f47391dc283aa79fcc38e65224cd61f64dec0ecfd0db7074128ebf8ff23514 ;;
+        *) return 1 ;;
+    esac
+}
+
+die() { echo "bin/sbom: $*" >&2; exit 1; }
+
+sha256_of() {
+    if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+# Unpack tool $1 at $2 into $work/bin, fetching its archive into the cache
+# first if it is not there, and refuse it unless the archive's sha256 is
+# the one above -- on every run, not only the first.
+tool() {
+    local name=$1 version=$2 os arch platform sum cache archive
+    os=$(uname -s | tr '[:upper:]' '[:lower:]')
+    case "$(uname -m)" in
+        x86_64 | amd64) arch=amd64 ;;
+        arm64 | aarch64) arch=arm64 ;;
+        *) die "no $name is pinned for $(uname -m)." ;;
+    esac
+    platform="${os}_${arch}"
+    sum=$(tool_sha256 "$name" "$platform") || die "no $name is pinned for $platform."
+    cache=${TINVAR_TOOLS_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/tinvar}
+    archive="$cache/${name}_${version}_${platform}.tar.gz"
+    if [ ! -f "$archive" ]; then
+        mkdir -p "$cache"
+        curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$archive.part" \
+            "https://github.com/anchore/$name/releases/download/v$version/${name}_${version}_${platform}.tar.gz"
+        mv "$archive.part" "$archive"
+    fi
+    [ "$(sha256_of "$archive")" = "$sum" ] \
+        || { rm -f "$archive"; die "$archive is not $name $version's release: its sha256 is not the one pinned."; }
+    mkdir -p "$work/bin"
+    tar -xzf "$archive" -C "$work/bin" "$name"
+}
+
+# Syft and Grype ask nothing of the network but what is asked of them: no
+# update check, no license lookups.
+export SYFT_CHECK_FOR_APP_UPDATE=false GRYPE_CHECK_FOR_APP_UPDATE=false \
+    SYFT_GOLANG_SEARCH_REMOTE_LICENSES=false SYFT_JAVASCRIPT_SEARCH_REMOTE_LICENSES=false \
+    SYFT_JAVA_USE_NETWORK=false SYFT_PYTHON_SEARCH_REMOTE_LICENSES=false SYFT_ENRICH=
+
+# What PHP reports of itself: its version, every extension loaded and, for
+# a static build ($libraries), the libraries compiled into it -- which, in
+# a dynamically linked PHP, are Debian's packages and already listed.
+PHP_PROBE='
+$extensions = [];
+foreach (get_loaded_extensions() as $name) {
+    $extensions[] = ["name" => $name, "version" => (string) phpversion($name)];
+}
+$libraries = [];
+if ($libraries_wanted ?? false) {
+    $found = [
+        "openssl" => defined("OPENSSL_VERSION_TEXT") ? OPENSSL_VERSION_TEXT : null,
+        "curl" => function_exists("curl_version") ? curl_version()["version"] : null,
+        "sqlite" => class_exists("SQLite3") ? SQLite3::version()["versionString"] : null,
+        "libxml2" => defined("LIBXML_DOTTED_VERSION") ? LIBXML_DOTTED_VERSION : null,
+        "libxslt" => defined("LIBXSLT_DOTTED_VERSION") ? LIBXSLT_DOTTED_VERSION : null,
+        "pcre2" => defined("PCRE_VERSION") ? PCRE_VERSION : null,
+        "zlib" => defined("ZLIB_VERSION") ? ZLIB_VERSION : null,
+        "icu" => defined("INTL_ICU_VERSION") ? INTL_ICU_VERSION : null,
+        "libsodium" => defined("SODIUM_LIBRARY_VERSION") ? SODIUM_LIBRARY_VERSION : null,
+        "libzip" => class_exists("ZipArchive") && defined("ZipArchive::LIBZIP_VERSION") ? ZipArchive::LIBZIP_VERSION : null,
+        "oniguruma" => defined("MB_ONIGURUMA_VERSION") ? MB_ONIGURUMA_VERSION : null,
+        "imagemagick" => class_exists("Imagick") ? Imagick::getVersion()["versionString"] : null,
+    ];
+    foreach ($found as $name => $text) {
+        if (is_string($text) && preg_match("/\d+(\.\d+)+(-\d+)?/", $text, $match) === 1) {
+            $libraries[] = ["name" => $name, "version" => $match[0]];
+        }
+    }
+}
+echo json_encode(["version" => PHP_VERSION, "extensions" => $extensions, "libraries" => $libraries]);
+'
+
+# Checks an SBOM, $1, against the rules above; $2 the --expect list, $3 the
+# --dockerfile. Prints each failure and returns 1 if there is any.
+check() {
+    local sbom=$1 expect=$2 dockerfile=$3 sums=null failures
+    if [ -n "$dockerfile" ]; then
+        [ -f "$dockerfile" ] || die "$dockerfile is not a file."
+        sums=$({ grep -oE '\b[0-9a-f]{64}\b' "$dockerfile" || true; } | jq -R . | jq -s .)
+    fi
+    failures=$(jq -r --arg expect "$expect" --argjson sums "$sums" '
+        def all_components: [.components[]? | recurse(.components[]?)];
+        def path_of: [.properties[]? | select(.name == "tinvar:path") | .value][0];
+        def sha256_of: [.hashes[]? | select(.alg == "SHA-256") | .content][0];
+        . as $bom
+        | all_components as $all
+        | [
+            (if .bomFormat != "CycloneDX" then "not a CycloneDX document" else empty end),
+            (if (.specVersion // "" | test("^1\\.[5-9]$")) | not then "specVersion \(.specVersion) is not CycloneDX 1.5 or later" else empty end),
+            (if (.metadata.component.name // "") == "" then "no metadata.component names what it describes" else empty end),
+            ($all | map(.["bom-ref"] // empty) | group_by(.) | map(select(length > 1) | "bom-ref \(.[0]) is used \(length) times") | .[]),
+            ($all | map(select((.name // "") == "" or (.type // "") == "")) | if length > 0 then "\(length) components have no name or type" else empty end),
+            ($expect | split(",") | map(select(. != "")) | .[] as $want
+                | if ($want | IN("deb", "composer", "npm", "golang")) then
+                    (if any($all[]; (.purl // "") | startswith("pkg:\($want)/")) then empty else "no \($want) package is listed" end)
+                  else
+                    ($all | map(select(path_of == "/usr/local/bin/\($want)")) | .[0]) as $binary
+                    | if $binary == null then "the \($want) binary, /usr/local/bin/\($want), is not listed"
+                      elif ($binary | sha256_of) == null then "the \($want) binary has no sha256"
+                      elif ($binary.version // "UNKNOWN") == "UNKNOWN" then "the \($want) binary has no version"
+                      else empty end
+                  end),
+            ($all | map(select(any(.properties[]?; .name == "tinvar:download" and .value == "true"))) | .[]
+                | select($sums != null and (sha256_of as $sum | $sums | index($sum)) == null)
+                | "\(.name)'"'"'s sha256 \(sha256_of) is not a sum the Dockerfile holds its download to")
+          ]
+        | .[]' "$sbom") || die "$sbom is not JSON."
+    if [ -n "$failures" ]; then
+        printf 'bin/sbom: %s: %s\n' "$sbom" "$failures" | sed '2,$s/^/bin\/sbom:   /' >&2
+        return 1
+    fi
+}
+
+# Runs a command in an image with nothing it could reach or change.
+in_image() {
+    docker run --rm --pull never --network none --read-only --cap-drop ALL \
+        --security-opt no-new-privileges --user 65534:65534 "$@"
+}
+
+sbom_image() {
+    local image=$1 out=$2 oci=$3 expect=$4 dockerfile=$5
+    local id tar index manifest config platform hashes probe frankenphp='' tini='' node='' php=''
+
+    id=$(docker image inspect --format '{{.Id}}' "$image") || die "Docker has no image $image."
+    tar=${oci:-$work/image.tar}
+    docker image save -o "$tar" "$image"
+
+    # The layout's one manifest is what is described and attested. Docker's
+    # classic image store names an image by its config's digest and writes
+    # a manifest for the save alone, which no registry would serve; and a
+    # build with provenance makes an index around it. Both are refused.
+    index=$(tar -xOf "$tar" index.json) || die "$image saved no OCI layout: Docker 25 or later is needed."
+    manifest=$(jq -r 'if (.manifests | length) == 1 and (.manifests[0].mediaType | test("manifest\\.v[0-9]+\\+json$")) then .manifests[0].digest else empty end' <<<"$index")
+    [ -n "$manifest" ] || die "$image is not one image manifest: build it with --provenance=false and --sbom=false."
+    [[ $manifest =~ ^sha256:[0-9a-f]{64}$ ]] || die "$image's manifest digest $manifest is not a sha256."
+    [ "$id" = "$manifest" ] \
+        || die "$image's id $id is not its manifest's digest $manifest: turn on Docker's containerd image store."
+    tar -xOf "$tar" "blobs/sha256/${manifest#sha256:}" >"$work/manifest.json"
+    [ "sha256:$(sha256_of "$work/manifest.json")" = "$manifest" ] || die "$tar's manifest is not the digest it is filed under."
+    config=$(jq -r .config.digest "$work/manifest.json")
+    [[ $config =~ ^sha256:[0-9a-f]{64}$ ]] || die "$image's config digest is not a sha256."
+    platform=$(tar -xOf "$tar" "blobs/sha256/${config#sha256:}" | jq -r '"\(.os)/\(.architecture)"')
+
+    tool syft "$SYFT_VERSION"
+    "$work/bin/syft" scan "oci-archive:$tar" -q --source-name "${image%%[:@]*}" --source-version "$manifest" \
+        -o "cyclonedx-json=$work/syft.json"
+
+    # Each binary's sum and what it says it is, from the image by its id:
+    # the binaries the container template puts in /usr/local/bin outside
+    # any package manager, the same for any application on Tinvar.
+    hashes=$(in_image --entrypoint /bin/sh "$id" -c \
+        'for f in "$@"; do if [ -f "$f" ]; then sha256sum "$f"; fi; done' sh \
+        /usr/local/bin/frankenphp /usr/local/bin/tini /usr/local/bin/node /usr/local/bin/php)
+    case "$hashes" in *" /usr/local/bin/frankenphp"*)
+        frankenphp=$(jq -n --arg version "$(in_image --entrypoint /usr/local/bin/frankenphp "$id" version)" \
+            --argjson php "$(in_image --entrypoint /usr/local/bin/frankenphp "$id" php-cli -r "\$libraries_wanted = true; $PHP_PROBE")" \
+            '{version: $version, php: $php}') || die "FrankenPHP in $image did not say what it is."
+        ;;
+    esac
+    case "$hashes" in *" /usr/local/bin/tini"*)
+        tini=$(in_image --entrypoint /usr/local/bin/tini "$id" --version) || die "tini in $image did not say what it is."
+        ;;
+    esac
+    case "$hashes" in *" /usr/local/bin/node"*)
+        node=$(in_image --entrypoint /usr/local/bin/node "$id" -p 'JSON.stringify(process.versions)') \
+            || die "Node in $image did not say what it is."
+        ;;
+    esac
+    case "$hashes" in *" /usr/local/bin/php"*)
+        php=$(in_image --entrypoint /usr/local/bin/php "$id" -r "$PHP_PROBE") || die "PHP in $image did not say what it is."
+        ;;
+    esac
+    probe=$(jq -n --arg hashes "$hashes" --arg frankenphp "$frankenphp" --arg tini "$tini" --arg node "$node" --arg php "$php" '{
+        hashes: ($hashes | split("\n") | map(select(. != "") | split("  ") | {key: .[1], value: .[0]}) | from_entries),
+        frankenphp: (if $frankenphp == "" then null else $frankenphp | fromjson end),
+        tini: (if $tini == "" then null else $tini end),
+        node: (if $node == "" then null else $node | fromjson end),
+        php: (if $php == "" then null else $php | fromjson end)
+    }')
+
+    jq --argjson probe "$probe" --arg image "${image%%[:@]*}" --arg digest "$manifest" --arg platform "$platform" \
+        -f /dev/stdin "$work/syft.json" >"$work/sbom.json" <<'JQ'
+# A CPE for the libraries a vulnerability database knows by one; the rest
+# are listed by name and version alone.
+def cpe($name; $version):
+    {
+        "openssl": "openssl:openssl", "curl": "haxx:curl", "sqlite": "sqlite:sqlite",
+        "libxml2": "xmlsoft:libxml2", "libxslt": "xmlsoft:libxslt", "pcre2": "pcre:pcre2",
+        "zlib": "zlib:zlib", "icu": "unicode:international_components_for_unicode",
+        "libsodium": "libsodium_project:libsodium", "libzip": "libzip:libzip",
+        "oniguruma": "oniguruma_project:oniguruma",
+        "imagemagick": "imagemagick:imagemagick", "php": "php:php",
+        "uv": "libuv:libuv", "v8": "google:v8", "nghttp2": "nghttp2:nghttp2",
+        "nghttp3": "nghttp2:nghttp3", "ngtcp2": "ngtcp2:ngtcp2", "ares": "c-ares:c-ares",
+        "llhttp": "llhttp:llhttp", "undici": "nodejs:undici", "brotli": "google:brotli",
+        "frankenphp": "dunglas:frankenphp", "tini": "krallin:tini", "node": "nodejs:node.js"
+    }[$name] as $vendor
+    # The release alone: "1.3.1-e00f703" is zlib 1.3.1 and "3.0.17+quic"
+    # OpenSSL 3.0.17; a numeric patch level, ImageMagick's, is kept.
+    | ($version | capture("^(?<v>[0-9]+(\\.[0-9]+)*(-[0-9]+)?)").v? // null) as $release
+    | if $vendor == null or $release == null then {} else {cpe: "cpe:2.3:a:\($vendor):\($release):*:*:*:*:*:*:*"} end;
+
+def library($parent; $name; $version):
+    {"bom-ref": "\($parent):\($name)", type: "library", name: $name, version: $version,
+     purl: "pkg:generic/\($name)@\($version | @uri)",
+     properties: [{name: "tinvar:compiled-into", value: $parent}]} + cpe($name; $version);
+
+def extensions($parent; $php):
+    [$php.extensions[] | {"bom-ref": "\($parent):ext:\(.name)", type: "library", name: .name,
+        version: (if .version == "" then $php.version else .version end),
+        purl: "pkg:generic/php-extension/\(.name | ascii_downcase | gsub("[^a-z0-9_.-]"; "-"))@\((if .version == "" then $php.version else .version end) | @uri)",
+        properties: [{name: "tinvar:php-extension-of", value: $parent}]}];
+
+def binary($path; $name; $version; $purl; $download):
+    {"bom-ref": "tinvar:binary:\($path)", type: "application", name: $name, version: $version, purl: $purl,
+     hashes: [{alg: "SHA-256", content: $probe.hashes[$path]}],
+     properties: ([{name: "tinvar:path", value: $path}]
+        + if $download then [{name: "tinvar:download", value: "true"}] else [] end)}
+    + cpe($name; $version);
+
+# Puts $component in place of what Syft found at its path -- keeping
+# Syft's ref, so its dependency graph still points at it -- or adds it.
+def attach($component):
+    ($component.properties[] | select(.name == "tinvar:path") | .value) as $path
+    | if any(.components[]; .type == "application" and any(.properties[]?; .name == "syft:location:0:path" and .value == $path)) then
+        .components |= map(if .type == "application" and any(.properties[]?; .name == "syft:location:0:path" and .value == $path)
+            then . + ($component | del(.["bom-ref"], .name, .version, .purl, .cpe))
+                 + {version: (if (.version // "UNKNOWN") == "UNKNOWN" then $component.version else .version end),
+                    properties: (.properties + $component.properties)}
+            else . end)
+      else .components += [$component] end;
+
+.metadata.component = {
+    "bom-ref": "tinvar:image", type: "container", name: $image, version: $digest,
+    purl: "pkg:oci/\($image)@\($digest | @uri)?arch=\($platform | split("/")[1])",
+    properties: [{name: "tinvar:platform", value: $platform}]
+}
+| if $probe.frankenphp then
+    ($probe.frankenphp.version | capture("FrankenPHP v(?<v>[^ ]+)").v) as $version
+    | "tinvar:binary:/usr/local/bin/frankenphp" as $ref
+    | attach(binary("/usr/local/bin/frankenphp"; "frankenphp"; $version; "pkg:github/php/frankenphp@v\($version)"; true)
+        + {components: ([library($ref; "php"; $probe.frankenphp.php.version)
+                + {type: "application", components: extensions("\($ref):php"; $probe.frankenphp.php)}]
+            + [$probe.frankenphp.php.libraries[] | library($ref; .name; .version)])})
+  else . end
+| if $probe.tini then
+    ($probe.tini | capture("tini version (?<v>[0-9.]+)").v) as $version
+    | attach(binary("/usr/local/bin/tini"; "tini"; $version; "pkg:github/krallin/tini@v\($version)"; true))
+  else . end
+| if $probe.node then
+    "tinvar:binary:/usr/local/bin/node" as $ref
+    | attach(binary("/usr/local/bin/node"; "node"; $probe.node.node; "pkg:generic/node@\($probe.node.node)"; false)
+        + {components: [$probe.node | to_entries[]
+            | select(.key | IN("node", "modules", "napi", "unicode", "cldr", "tz") | not)
+            | library($ref; .key; .value)]})
+  else . end
+| if $probe.php then
+    attach(binary("/usr/local/bin/php"; "php-cli"; $probe.php.version; "pkg:generic/php-cli@\($probe.php.version)"; false)
+        + {components: extensions("tinvar:binary:/usr/local/bin/php"; $probe.php)})
+  else . end
+JQ
+
+    check "$work/sbom.json" "$expect" "$dockerfile" || exit 1
+    mv "$work/sbom.json" "$out"
+    echo "$out: $image $manifest ($platform), $(jq '[.. | objects | select(has("bom-ref") and has("type"))] | length' "$out") components"
+}
+
+sbom_workspace() {
+    local out=$1 commit
+    commit=$(git rev-parse HEAD 2>/dev/null || echo unknown)
+    tool syft "$SYFT_VERSION"
+    # The two lockfiles alone: not what vendor/ or node_modules happens to
+    # hold. Development dependencies too -- they build what ships.
+    SYFT_JAVASCRIPT_INCLUDE_DEV_DEPENDENCIES=true "$work/bin/syft" scan dir:. -q \
+        --override-default-catalogers php-composer-lock-cataloger,javascript-lock-cataloger \
+        --exclude './vendor/**' --exclude './**/node_modules/**' --exclude './.git/**' \
+        --source-name "$(jq -r .name composer.json)" --source-version "$commit" \
+        -o "cyclonedx-json=$work/syft.json"
+
+    # Syft reads composer.lock's packages, not its packages-dev; those are
+    # added from the lock as Syft would list them, and marked optional, as
+    # are npm's development-only entries.
+    jq --arg repository "${GITHUB_REPOSITORY:-}" --slurpfile composer composer.lock --slurpfile npm package-lock.json \
+        -f /dev/stdin "$work/syft.json" \
+        >"$work/sbom.json" <<'JQ'
+($npm[0].packages | to_entries | map(select((.key | contains("node_modules/")) and (.value.link | not) and .value.version != null))) as $locked
+| ($locked | map(select(.value.dev | not) | "\(.key | sub("^.*node_modules/"; ""))@\(.value.version)") | unique) as $runtime
+| .components |= map(
+    if (.purl // "") | startswith("pkg:npm/") then
+        (if ("\(.name)@\(.version)" | IN($runtime[])) then . else . + {scope: "optional"} end)
+    else . end)
+| .components += [$composer[0]["packages-dev"][]
+    | {"bom-ref": "pkg:composer/\(.name)@\(.version)?package-id=dev", type: "library", name: .name, version: .version,
+       scope: "optional", purl: "pkg:composer/\(.name)@\(.version)",
+       licenses: [(.license // [])[] | {license: {id: .}}],
+       externalReferences: ([if .source then {type: "vcs", url: .source.url, comment: "commit \(.source.reference)"} else empty end]
+            + [if .dist then {type: "distribution", url: .dist.url} else empty end]),
+       properties: [{name: "syft:package:type", value: "php-composer"}, {name: "syft:location:0:path", value: "/composer.lock"}]}]
+| .metadata.component.type = "application"
+| if $repository == "" then . else .metadata.component.purl = "pkg:github/\($repository)@\(.metadata.component.version)" end
+JQ
+
+    # Every locked package is listed, or the SBOM is not written.
+    jq -r --slurpfile composer composer.lock --slurpfile npm package-lock.json '
+        ([.components[] | .purl // empty]) as $purls
+        | ([$composer[0].packages[], $composer[0]["packages-dev"][] | "pkg:composer/\(.name)@\(.version)"]
+           + [$npm[0].packages | to_entries[] | select((.key | contains("node_modules/")) and (.value.link | not) and .value.version != null)
+              | (.key | sub("^.*node_modules/"; "")) as $name
+              | "pkg:npm/\($name | sub("^@"; "%40"))@\(.value.version)"])
+        | unique
+        | map(select(. as $want | $purls | index($want) | not))
+        | .[] | "\(.) is locked but not listed"' "$work/sbom.json" >"$work/missing"
+    if [ -s "$work/missing" ]; then
+        sed 's/^/bin\/sbom: /' "$work/missing" >&2
+        exit 1
+    fi
+    check "$work/sbom.json" composer,npm "" || exit 1
+    mv "$work/sbom.json" "$out"
+    echo "$out: $(jq '[.components[] | select(.purl // "" | startswith("pkg:composer/"))] | length' "$out") Composer and $(jq '[.components[] | select(.purl // "" | startswith("pkg:npm/"))] | length' "$out") npm packages at $commit"
+}
+
+sbom_scan() {
+    local sbom=$1 gate
+    tool grype "$GRYPE_VERSION"
+    # Every match, the suppressed ones too, for the record; then the gate:
+    # a critical with a fixed version, which .grype.yaml has not excused.
+    "$work/bin/grype" "sbom:$sbom" -q -c .grype.yaml --show-suppressed -o table -o "json=$work/scan.json"
+    gate=$(jq -r '.matches[] | select(.vulnerability.severity == "Critical" and .vulnerability.fix.state == "fixed")
+        | "\(.vulnerability.id) in \(.artifact.name) \(.artifact.version), fixed in \(.vulnerability.fix.versions | join(", "))"' \
+        "$work/scan.json" | sort -u)
+    if [ -n "$gate" ]; then
+        sed 's/^/bin\/sbom: critical, with a fix: /' <<<"$gate" >&2
+        die "$sbom has a critical vulnerability with a fixed version: move the pin that carries it, or excuse it in .grype.yaml."
+    fi
+}
+
+command=${1:-}
+[ $# -gt 0 ] && shift
+oci='' expect='' dockerfile='' positional=''
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --oci) oci=$(from_caller "${2:?--oci needs a path}"); shift 2 ;;
+        --expect) expect=${2:?--expect needs a list}; shift 2 ;;
+        --dockerfile) dockerfile=$(from_caller "${2:?--dockerfile needs a path}"); shift 2 ;;
+        --*) die "unknown option $1." ;;
+        *) positional="$positional$1"$'\n'; shift ;;
+    esac
+done
+arg() { sed -n "${1}p" <<<"$positional"; }
+count=$(printf '%s' "$positional" | grep -c '' || true)
+
+case "$command" in
+    image) [ "$count" -eq 2 ] || die "usage: bin/sbom image IMAGE OUT [--oci TAR] [--expect LIST] [--dockerfile FILE]"
+        sbom_image "$(arg 1)" "$(from_caller "$(arg 2)")" "$oci" "$expect" "$dockerfile" ;;
+    workspace) [ "$count" -eq 1 ] || die "usage: bin/sbom workspace OUT"
+        sbom_workspace "$(from_caller "$(arg 1)")" ;;
+    check) [ "$count" -eq 1 ] || die "usage: bin/sbom check SBOM [--expect LIST] [--dockerfile FILE]"
+        check "$(from_caller "$(arg 1)")" "$expect" "$dockerfile" && echo "$(arg 1): ok" ;;
+    scan) [ "$count" -eq 1 ] || die "usage: bin/sbom scan SBOM"
+        sbom_scan "$(from_caller "$(arg 1)")" ;;
+    *) die "usage: bin/sbom image|workspace|check|scan ... (see the comment at the top of bin/sbom)" ;;
+esac
