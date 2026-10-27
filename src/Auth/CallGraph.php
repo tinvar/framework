@@ -216,6 +216,21 @@ final class CallGraph
                 continue;
             }
 
+            // Name::CASE->method(), Name::CONSTANT->method() and
+            // Name::$property->method(): an enum case's method, or a method
+            // of what the constant or the static property holds.
+            if (self::isName($token) && self::is($tokens[$i + 1] ?? null, T_DOUBLE_COLON)
+                && (self::is($tokens[$i + 2] ?? null, T_STRING) || self::is($tokens[$i + 2] ?? null, T_VARIABLE))
+                && self::isArrow($tokens[$i + 3] ?? null) && self::is($tokens[$i + 4] ?? null, T_STRING) && ($tokens[$i + 5] ?? null) === '('
+                && !self::isArrow($tokens[$i - 1] ?? null) && !self::is($tokens[$i - 1] ?? null, T_DOUBLE_COLON)) {
+                $class = self::className(self::text($token), $file, $scope);
+                if ($class !== null) {
+                    array_push($calls, ...self::onMember($class, self::text($tokens[$i + 2]), self::text($tokens[$i + 4]), self::text($token)));
+                }
+
+                continue;
+            }
+
             // Name::method(), self::, static::, parent::
             if (self::isName($token) && self::is($tokens[$i + 1] ?? null, T_DOUBLE_COLON)
                 && self::is($tokens[$i + 2] ?? null, T_STRING) && ($tokens[$i + 3] ?? null) === '(') {
@@ -277,8 +292,8 @@ final class CallGraph
             }
 
             // function_name()
-            if ((self::is($token, T_STRING) || self::is($token, T_NAME_QUALIFIED) || self::is($token, T_NAME_FULLY_QUALIFIED))
-                && ($tokens[$i + 1] ?? null) === '(') {
+            if ((self::is($token, T_STRING) || self::is($token, T_NAME_QUALIFIED) || self::is($token, T_NAME_FULLY_QUALIFIED)
+                || self::is($token, T_NAME_RELATIVE)) && ($tokens[$i + 1] ?? null) === '(') {
                 $previous = $tokens[$i - 1] ?? null;
                 if (self::isArrow($previous) || self::is($previous, T_DOUBLE_COLON) || self::is($previous, T_FUNCTION)
                     || self::is($previous, T_NEW) || self::is($previous, T_FN) || self::is($previous, T_CONST)
@@ -350,6 +365,42 @@ final class CallGraph
     }
 
     /**
+     * A method called on `Name::CASE`, `Name::CONSTANT` or `Name::$property`:
+     * the enum's own, or the class of what the constant holds, or each class
+     * the static property's declared type allows. What none of those names
+     * is refused.
+     *
+     * @return list<array{class: string, method: string}|array{call: string, why: string}|null>
+     */
+    private static function onMember(string $class, string $member, string $method, string $written): array
+    {
+        $call = "{$written}::{$member}->{$method}()";
+        if (!class_exists($class) && !interface_exists($class)) {
+            return [self::unknownClass($class, $call)];
+        }
+        $reflection = new \ReflectionClass($class);
+
+        if (str_starts_with($member, '$')) {
+            $name = substr($member, 1);
+            if (!$reflection->hasProperty($name) || !$reflection->getProperty($name)->isStatic()) {
+                return [['call' => $call, 'why' => "{$class} declares no static property {$member}, so what it holds cannot be read"]];
+            }
+
+            return self::onTyped($reflection->getProperty($name)->getType(), $call, $method, ['static' => $class, 'self' => $class]);
+        }
+
+        if ($reflection->isEnum() && new \ReflectionEnum($class)->hasCase($member)) {
+            return [self::target($class, $method, $call)];
+        }
+        $value = $reflection->hasConstant($member) ? $reflection->getConstant($member) : null;
+        if (\is_object($value)) {
+            return [self::target($value::class, $method, $call)];
+        }
+
+        return [['call' => $call, 'why' => "{$class}::{$member} holds no object whose class can be read"]];
+    }
+
+    /**
      * The class `$this->method()` runs: the object's, unless the method is
      * private to the class the call is written in, which no subclass can
      * replace.
@@ -380,9 +431,11 @@ final class CallGraph
         if ($type === null) {
             return [['call' => $call, 'why' => 'its receiver has no declared type, so what it calls cannot be read']];
         }
-        $members = $type instanceof \ReflectionUnionType || $type instanceof \ReflectionIntersectionType
-            ? $type->getTypes()
-            : [$type];
+        // `(A&B)|null` is a union of an intersection: each class in either.
+        $members = [];
+        foreach ($type instanceof \ReflectionUnionType || $type instanceof \ReflectionIntersectionType ? $type->getTypes() : [$type] as $member) {
+            array_push($members, ...($member instanceof \ReflectionIntersectionType ? $member->getTypes() : [$member]));
+        }
 
         $calls = [];
         foreach ($members as $member) {
@@ -425,6 +478,9 @@ final class CallGraph
         }
 
         $context = self::context($file);
+        if (str_starts_with($lower, 'namespace\\')) {
+            return ltrim($context['namespace'] . substr($written, \strlen('namespace')), '\\');
+        }
         $first = strtolower(explode('\\', $written, 2)[0]);
         if (isset($context['classes'][$first])) {
             $slash = strpos($written, '\\');
@@ -544,6 +600,7 @@ final class CallGraph
         $first = strtolower(explode('\\', $written, 2)[0]);
         $candidates = match (true) {
             str_starts_with($written, '\\') => [substr($written, 1)],
+            str_starts_with(strtolower($written), 'namespace\\') => [ltrim($context['namespace'] . substr($written, \strlen('namespace')), '\\')],
             // `Helpers\format()`, through `use App\Helpers;`
             str_contains($written, '\\') && isset($context['classes'][$first]) => [$context['classes'][$first] . substr($written, (int) strpos($written, '\\'))],
             str_contains($written, '\\') => [ltrim("{$context['namespace']}\\{$written}", '\\')],
@@ -759,7 +816,7 @@ final class CallGraph
     private static function isName(array|string|null $token): bool
     {
         return self::is($token, T_STRING) || self::is($token, T_NAME_QUALIFIED)
-            || self::is($token, T_NAME_FULLY_QUALIFIED) || self::is($token, T_STATIC);
+            || self::is($token, T_NAME_FULLY_QUALIFIED) || self::is($token, T_NAME_RELATIVE) || self::is($token, T_STATIC);
     }
 
     /** @param array{0: int, 1: string, 2: int}|string $token */

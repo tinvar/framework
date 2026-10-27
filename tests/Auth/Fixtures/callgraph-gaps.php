@@ -171,6 +171,24 @@ final class ThroughStaticProperty
     }
 }
 
+class Shown
+{
+    public function who(): int
+    {
+        return Secret::who();
+    }
+}
+
+interface Tagged {}
+
+final class TakesIntersection
+{
+    public function read((Shown&Tagged)|null $shown = null): int
+    {
+        return $shown?->who() ?? 0;
+    }
+}
+
 #[Query(name: 'gaps.relative', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
 final class ThroughRelativeName
 {

@@ -10,6 +10,7 @@ declare(strict_types=1);
  */
 
 use Tinvar\Auth\BuildRules;
+use Tinvar\Auth\CallGraph;
 use Tinvar\Auth\Violation;
 use Tinvar\Tests\Auth\Fixtures\CallGraphGaps as G;
 
@@ -66,6 +67,20 @@ it('follows a callable written as an array or a string', function (string $class
     '[Name::class, name]' => [G\ThroughStaticCallable::class],
     "'Name::name'" => [G\ThroughStringCallable::class],
 ]);
+
+it('follows a method of an enum case, and of what a static property holds', function (string $class) {
+    expect(sharedGapViolations($class))->toContain(G\Secret::class . "::who(), which calls '->user('");
+})->with([
+    'Name::CASE->method()' => [G\ThroughEnumCase::class],
+    'Name::$property->method()' => [G\ThroughStaticProperty::class],
+    'namespace\Name::method()' => [G\ThroughRelativeName::class],
+]);
+
+it('follows a method called on a parameter typed as an intersection inside a union', function () {
+    $reached = array_column(CallGraph::walk(G\TakesIntersection::class, ['read'])['reached'], 'where');
+
+    expect($reached)->toContain(G\Shown::class . '::who()', G\Secret::class . '::who()');
+});
 
 it('reads the imports inside a braced namespace', function () {
     require_once __DIR__ . '/Fixtures/callgraph-braced.php';
