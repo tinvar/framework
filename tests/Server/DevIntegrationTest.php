@@ -7,7 +7,8 @@ declare(strict_types=1);
  * dev toolbar over the shop's pages in Chromium -- its script and style run
  * under each response's nonce, it reads the session's requests through PHP
  * on the page's own origin, and shows the catalog's props, timings and
- * frames, and a client navigation's ticks under the visit.
+ * frames, and a client navigation's ticks under the visit. Then the same
+ * through the DevTools extension, loaded unpacked (ADR 0072).
  *
  * Against a copy of the shop's frontend, as ServeDevTest is: codegen writes
  * the copy's types, never the shop's own. Skipped without a FrankenPHP
@@ -119,6 +120,7 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
         $url = $m[1];
 
         $browsed = runWithTimeout(['node', "{$root}/examples/shop/e2e/dev-toolbar.mjs", $url], $root, 150);
+        $extension = runWithTimeout(['node', "{$root}/examples/shop/e2e/devtools-extension.mjs", $url], $root, 150);
     } finally {
         $status = proc_get_status($process);
         if ($status['running']) {
@@ -176,4 +178,34 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
         ->and($result['product']['ticks'])->toContain('OrderPanel ← Page')
         ->and($result['catalog']['props'])->toContain('Where each came from')
         ->and($result['catalog']['props'])->toContain('from Catalog::__invoke');
+
+    // The DevTools extension, loaded unpacked, reads the same through its
+    // content script: the visit and its badges, editor links once an editor
+    // is chosen, and the client navigation under the visit with its owners.
+    $panel = json_decode($extension, true);
+    expect($panel)->toBeArray("the extension's browser script failed:\n{$extension}\n{$stderr}");
+    \assert(\is_array($panel));
+
+    expect($panel['errors'])->toBe([])
+        ->and($panel['violations'])->toBe([])
+        // The panel's pages reach nothing but the extension's own files.
+        ->and($panel['offsite'])->toBe([])
+        ->and($panel['catalog']['origin'])->toBe($url)
+        ->and($panel['catalog']['document'])->toBe('/')
+        ->and($panel['catalog']['badges'])->toContain('page')
+        ->and($panel['catalog']['props'])->toContain('from Catalog::__invoke')
+        ->and($panel['catalog']['props'])->toContain('"products"')
+        ->and($panel['catalog']['props'])->not->toContain('"nonce": "')
+        ->and($panel['catalog']['linksBefore'])->toBe(0)
+        ->and($panel['catalog']['link'])->toStartWith('vscode://file/')
+        ->and($panel['catalog']['timings'])->toContain('· in the renderer');
+    expect($panel['product']['kind'])->toBe('payload')
+        ->and($panel['product']['underVisit'])->toBeGreaterThan(0)
+        ->and($panel['product']['ticks'])->toContain('products.availability')
+        ->and($panel['product']['ticks'])->toContain('from OrderPanel ← Page');
+
+    // Not `tinvar dev`: a page with no toolbar is not read, and a forged
+    // token where no endpoint answers -- as in production -- reads nothing.
+    expect($panel['elsewhere']['plain'])->toContain('not served by `tinvar dev`')
+        ->and($panel['elsewhere']['forged'])->toContain('not a Tinvar dev server');
 });
