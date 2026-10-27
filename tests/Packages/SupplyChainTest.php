@@ -610,6 +610,19 @@ describe('dockerfiles', function () {
         ]);
     });
 
+    // BuildKit found the frontend past a byte-order mark and a shebang, and
+    // in a `//` directive, and pulled it; and an escape directive after one
+    // whose value has a space is still read.
+    it('reads the directives wherever BuildKit finds them', function (string $contents, string $violation) {
+        expect(SupplyChain::dockerfile('Dockerfile', $contents))->toContain($violation);
+    })->with([
+        'past a byte-order mark' => ["\u{FEFF}# syntax=nope/frontend:latest\nFROM scratch\n", 'Dockerfile names the frontend nope/frontend:latest, which is not pinned to a sha256 digest.'],
+        'past a shebang' => ["#!/usr/bin/env docker\n# syntax=nope/frontend:latest\nFROM scratch\n", 'Dockerfile names the frontend nope/frontend:latest, which is not pinned to a sha256 digest.'],
+        'in a // comment' => ["// syntax=nope/frontend:latest\nFROM scratch\n", 'Dockerfile names the frontend nope/frontend:latest, which is not pinned to a sha256 digest.'],
+        'after a value with a space' => ["# check=skip=A, B\n# escape=`\nFROM scratch\n", 'Dockerfile sets the escape character to `, which the check does not read; only \\ is allowed.'],
+        'an escape past a byte-order mark' => ["\u{FEFF}# escape=`\nFROM scratch\n", 'Dockerfile sets the escape character to `, which the check does not read; only \\ is allowed.'],
+    ]);
+
     // A stage is named before it is used: a later stage's name is an image.
     it('takes only an earlier stage\'s name as a stage', function () use ($digest) {
         $this->workspace->file('Dockerfile', "FROM later\nFROM debian{$digest} AS later\n");

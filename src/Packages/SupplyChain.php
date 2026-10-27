@@ -520,12 +520,27 @@ final class SupplyChain
     public static function dockerfile(string $name, string $contents): array
     {
         $violations = [];
+        // BuildKit drops a byte-order mark, and reads the directives past it.
+        if (str_starts_with($contents, "\u{FEFF}")) {
+            $contents = substr($contents, 3);
+        }
         $lines = preg_split('/\r?\n/', $contents) ?: [];
 
         // Parser directives: comments of the form `# key=value` before
-        // anything else.
-        foreach ($lines as $line) {
-            if (preg_match('/^\s*#\s*([a-z]+)\s*=\s*(\S+)\s*$/i', $line, $m) !== 1) {
+        // anything else. BuildKit finds the frontend past a `#!` line too,
+        // and in a `//` comment; it stops at a blank line or a plain
+        // comment, where this reads on through every leading comment, so a
+        // directive it might honour is never one this passes unread.
+        foreach ($lines as $at => $line) {
+            $line = trim($line);
+            if (($at === 0 && str_starts_with($line, '#!')) || $line === '') {
+                continue;
+            }
+            if (preg_match('/^(?:#|\/\/)\s*([a-z][a-z0-9]*)\s*=\s*(.*?)\s*$/i', $line, $m) !== 1) {
+                if (str_starts_with($line, '#') || str_starts_with($line, '//')) {
+                    continue;
+                }
+
                 break;
             }
             if (strtolower($m[1]) === 'syntax' && !self::pinnedImage($m[2])) {
