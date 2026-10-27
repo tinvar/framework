@@ -158,6 +158,35 @@ final class Request
     }
 
     /**
+     * This request with no cookie: none in $cookies and no Cookie header,
+     * and no previous URL, which is read from the session the cookie names.
+     * Its other attributes are kept. What a #[WithoutSession] endpoint is
+     * handed (ADR 0074), so nothing it runs -- its own middleware included
+     * -- can open a session, sign anyone in from one, or read from one.
+     */
+    public function withoutCookies(): self
+    {
+        $headers = $this->headers;
+        unset($headers['cookie']);
+
+        $stripped = new self(
+            $this->method,
+            $this->path,
+            $headers,
+            $this->query,
+            $this->body,
+            [],
+            $this->rawQuery,
+            $this->remoteAddress,
+            $this->files,
+        );
+        $stripped->attributes = $this->attributes;
+        unset($stripped->attributes[PreviousUrl::ATTRIBUTE]);
+
+        return $stripped;
+    }
+
+    /**
      * Normalizes a client-supplied path, or refuses it.
      *
      * The guard decodes each segment before inspecting it. Checking the raw

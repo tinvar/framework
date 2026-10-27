@@ -20,8 +20,9 @@ namespace Tinvar\Attributes;
  *
  * #[Get] and #[Post] are this, for one method each.
  *
- * GET answers HEAD too. OPTIONS is never answered: there is no CORS surface,
- * as there is none for a page. A method nobody declared for a path is a 405
+ * GET answers HEAD too. OPTIONS cannot be declared: it is answered as a CORS
+ * preflight for an endpoint that opts in with #[Cors] (ADR 0074), and is a
+ * 405 for everything else, as for a page. A method nobody declared for a path is a 405
  * naming the ones that would do, and a `_method` field or an
  * X-HTTP-Method-Override header is read by nothing -- the method a request
  * arrives with is the method it is.

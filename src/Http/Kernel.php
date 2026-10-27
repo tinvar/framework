@@ -77,6 +77,7 @@ use Tinvar\Uploads\FileUrls;
 use Tinvar\Uploads\UploadBinder;
 use Tinvar\Uploads\UploadEndpoint;
 use Tinvar\Uploads\Uploads;
+use Tinvar\Endpoints\CompiledEndpoint;
 use Tinvar\Endpoints\EndpointHandler;
 use Tinvar\Endpoints\EndpointRegistry;
 use Tinvar\Endpoints\EndpointRunner;
@@ -316,6 +317,9 @@ final class Kernel
      */
     private readonly Pipeline $endpointStack;
     private readonly Pipeline $sessionlessStack;
+
+    /** A CORS preflight's: the flood guard alone (ADR 0074). */
+    private readonly Pipeline $preflightStack;
 
     /** Null when the application declares no endpoints. */
     public readonly ?EndpointHandler $endpoints_;
@@ -998,6 +1002,31 @@ final class Kernel
             ...$this->throttleFor($throttle, 'endpoints', $limits, byAddress: true),
         ]);
 
+        // A CORS preflight runs nothing of an endpoint's and opens no
+        // session; the flood guard keeps a stream of them from costing more
+        // than the lookup that answers them (ADR 0074).
+        $this->preflightStack = new Pipeline($this->floodGuardFor($throttle, 'endpoints', $limits));
+
+        foreach ($endpoints?->all() ?? [] as $endpoint) {
+            // A bucket nothing counts would look enforced and limit nothing.
+            if ($endpoint->throttle !== null && $throttle === null) {
+                throw new \InvalidArgumentException(
+                    "{$endpoint->where()} names the throttle bucket '{$endpoint->throttle->bucket}', and the Kernel was given "
+                    . 'no Throttle to count it in.',
+                );
+            }
+            // Global middleware is what opens the session and signs in whoever
+            // it names; declared again on a sessionless endpoint, it would run
+            // there -- over a request with no cookie, but run.
+            $global = $endpoint->sessionless ? array_intersect($endpoint->middleware, $globalMiddleware) : [];
+            if ($global !== []) {
+                throw new \InvalidArgumentException(
+                    "{$endpoint->where()} is #[WithoutSession] and declares the global middleware " . implode(', ', $global)
+                    . ', which opens the session it runs without. Authenticate its caller with middleware of its own.',
+                );
+            }
+        }
+
         $this->endpoints_ = $endpoints === null ? null : new EndpointHandler(
             registry: $endpoints,
             runner: new EndpointRunner($resolver, $this->orm, $gate, new Validator($this->orm), $encoder),
@@ -1007,6 +1036,8 @@ final class Kernel
             entry: $entry,
             maxBodyBytes: $maxBodyBytes,
             maxJsonDepth: $maxJsonDepth,
+            throttle: $throttle,
+            endpointsLimit: $limits['endpoints'] ?? 0,
         );
 
         // Checked above to have the Telemetry and Metrics it records into.
@@ -1506,29 +1537,39 @@ final class Kernel
                 if (!isset($matched['endpoint'])) {
                     $this->telemetry?->route('_endpoint');
 
+                    // A CORS preflight, answered only for an origin an
+                    // endpoint here names, asking for what it allows (ADR
+                    // 0074); every other OPTIONS is the 405 it always was.
+                    // Behind the flood guard alone: it opens no session and
+                    // runs nothing of the endpoint's.
+                    if ($request->method === 'OPTIONS') {
+                        $preflight = $this->preflightStack->run(
+                            $request,
+                            static fn (Request $passed): Response => $handler->preflight($passed)
+                                ?? throw EndpointHandler::notAllowed($matched['allow']),
+                        );
+
+                        return $preflight;
+                    }
+
                     throw EndpointHandler::notAllowed($matched['allow']);
                 }
                 $endpoint = $matched['endpoint'];
                 // By its name, never its path: a path carries ids.
                 $this->telemetry?->route($endpoint->name);
 
-                // A #[WithoutSession] endpoint takes no CSRF token because no
-                // cookie signs anyone in for it. Someone signed in already,
-                // before its stack, was signed in by something outside the
-                // global middleware -- by the application, from the cookie --
-                // and the token would be skipped for a request a cookie
-                // authenticated. Refused, rather than trusted to the author.
-                if ($endpoint->sessionless && $this->auth->check()) {
-                    throw new \LogicException(
-                        "{$endpoint->where()} is #[WithoutSession], and someone was signed in before its stack ran. "
-                        . 'Sign in from the session in global middleware only, so no cookie reaches it.',
-                    );
+                try {
+                    $response = $this->runEndpoint($handler, $endpoint, $matched['parameters'], $request, $rawBody);
+                } catch (\Throwable $e) {
+                    // Classified here rather than below, so a refusal -- a
+                    // 401, a 403, a 429 -- carries what the endpoint's #[Cors]
+                    // tells the origin, and the page that called can read why.
+                    $failure = $e;
+                    $this->renderFailed($e, $request);
+                    $response = $this->exceptions->handle($e, $request);
                 }
 
-                return ($endpoint->sessionless ? $this->sessionlessStack : $this->endpointStack)->run(
-                    $request->withAttribute(EndpointHandler::MATCHED, $endpoint),
-                    fn (Request $passed): Response => $handler->handle($passed, $endpoint, $matched['parameters'], $rawBody),
-                );
+                return EndpointHandler::crossOrigin($request, $endpoint, $response);
             }
 
             // The page response carries the token its client will send back
@@ -1841,6 +1882,39 @@ final class Kernel
     public function build(): ?string
     {
         return $this->builds?->current;
+    }
+
+    /**
+     * One matched endpoint, through its stack (ADR 0067).
+     *
+     * A #[WithoutSession] endpoint takes no CSRF token because no cookie
+     * signs anyone in for it, and that is held here rather than assumed
+     * (ADR 0074). Its request reaches its stack with every cookie taken
+     * off -- none in the request, no Cookie header, no previous URL read
+     * from the session -- so nothing it runs, its own middleware included,
+     * can sign anyone in from one. And someone signed in already, before
+     * its stack ran, was signed in by something outside every stack -- by
+     * the application, from the cookie -- so the request is refused rather
+     * than run with the token skipped for a caller a cookie authenticated.
+     *
+     * @param array<string, string> $parameters
+     */
+    private function runEndpoint(EndpointHandler $handler, CompiledEndpoint $endpoint, array $parameters, Request $request, string $rawBody): Response
+    {
+        if ($endpoint->sessionless) {
+            if ($this->auth->check()) {
+                throw new \LogicException(
+                    "{$endpoint->where()} is #[WithoutSession], and someone was signed in before its stack ran. "
+                    . 'Sign in from the session in global middleware only, so no cookie reaches it.',
+                );
+            }
+            $request = $request->withoutCookies();
+        }
+
+        return ($endpoint->sessionless ? $this->sessionlessStack : $this->endpointStack)->run(
+            $request->withAttribute(EndpointHandler::MATCHED, $endpoint),
+            fn (Request $passed): Response => $handler->handle($passed, $endpoint, $parameters, $rawBody),
+        );
     }
 
     /**

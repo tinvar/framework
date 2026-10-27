@@ -4,15 +4,18 @@ declare(strict_types=1);
 
 namespace Tinvar\Endpoints;
 
+use Tinvar\Attributes\Endpoint;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Http\EntryContext;
 use Tinvar\Http\Endpoints\Limits;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Middleware\RequireAuthentication;
+use Tinvar\Http\Middleware\ThrottleRequests;
 use Tinvar\Http\Pipeline;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
+use Tinvar\Http\Throttle;
 use Tinvar\Validation\ValidationException;
 
 /**
@@ -30,6 +33,12 @@ use Tinvar\Validation\ValidationException;
  * in, so it runs first, then the authentication the stack could not ask
  * before it, then the tenant and the panel -- whose membership check needs
  * to know who the caller is.
+ *
+ * An endpoint's own #[Throttle] bucket (ADR 0074) is spent here, inside the
+ * stack's `throttle:endpoints`, by address first and by account once there
+ * is one: for a sessionless endpoint after its own middleware signed the
+ * caller in, which is also where its share of `throttle:endpoints` by
+ * account is spent, since the stack ran before anyone was signed in.
  */
 final class EndpointHandler
 {
@@ -51,6 +60,10 @@ final class EndpointHandler
         private readonly ?EntryContext $entry = null,
         private readonly int $maxBodyBytes = Limits::MAX_BODY_BYTES,
         private readonly int $maxJsonDepth = Limits::MAX_JSON_DEPTH,
+        private readonly ?Throttle $throttle = null,
+        // `throttle:endpoints` a minute, for the account pass a sessionless
+        // endpoint's stack could not run; 0 for none.
+        private readonly int $endpointsLimit = 0,
     ) {
         Limits::assertConfigurable($maxBodyBytes, $maxJsonDepth);
     }
@@ -77,8 +90,20 @@ final class EndpointHandler
         );
 
         $stack = $endpoint->sessionless
-            ? [...$own, new RequireAuthentication($this->auth, self::entryPoint(...)), ...$entry]
-            : [...$entry, ...$own];
+            ? [
+                ...$this->bucket($endpoint, byAddress: true),
+                ...$own,
+                new RequireAuthentication($this->auth, self::entryPoint(...)),
+                ...$this->accountShareOfEndpoints(),
+                ...$this->bucket($endpoint, byAddress: false),
+                ...$entry,
+            ]
+            : [
+                ...$this->bucket($endpoint, byAddress: true),
+                ...$this->bucket($endpoint, byAddress: false),
+                ...$entry,
+                ...$own,
+            ];
 
         $response = new Pipeline($stack)->run(
             $request,
@@ -123,6 +148,10 @@ final class EndpointHandler
         }
 
         /** @var array<string, mixed> $input */
+        if ($request->header('precognition') === 'true') {
+            return $this->precognition($request, $endpoint, $parameters, $input);
+        }
+
         try {
             return $this->runner->run($endpoint, $parameters, $input, $request);
         } catch (ValidationException $e) {
@@ -132,6 +161,150 @@ final class EndpointHandler
                 ['content-type' => 'application/json'],
             );
         }
+    }
+
+    /**
+     * "Precognition / Precognition-Validate-Only", as an action answers it
+     * (ADR 0074): the models resolved, every check, the form requests -- or
+     * only the fields named -- and no body. 204 when the input would do, 422
+     * with the errors when not. Behind the same stack as the call itself,
+     * CSRF and both throttles included, so asking costs what calling does.
+     *
+     * @param array<string, string> $parameters
+     * @param array<string, mixed>  $input
+     */
+    private function precognition(Request $request, CompiledEndpoint $endpoint, array $parameters, array $input): Response
+    {
+        $only = null;
+        $named = $request->header('precognition-validate-only');
+        if ($named !== null && trim($named) !== '') {
+            $only = array_values(array_unique(array_map(trim(...), explode(',', $named))));
+            // Client-supplied, and each field re-runs its rules, which the
+            // body limit does not bound.
+            if (\count($only) > Limits::MAX_PRECOGNITION_FIELDS) {
+                throw new HttpException(400, 'Too many fields named in Precognition-Validate-Only.', 'bad_request');
+            }
+        }
+
+        try {
+            $errors = $this->runner->precognition($endpoint, $parameters, $input, $only);
+        } catch (UnknownField) {
+            // A name the client chose, not an author's typo: bad input, and
+            // not quoted back.
+            throw new HttpException(422, 'Precognition-Validate-Only names a field this endpoint does not have.', 'unprocessable');
+        }
+
+        return $errors === []
+            ? Response::make(204, '', ['precognition' => 'true'])
+            : Response::make(
+                422,
+                json_encode(['errors' => $errors], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+                ['content-type' => 'application/json', 'precognition' => 'true'],
+            );
+    }
+
+    /**
+     * The endpoint's own bucket, one pass of it; nothing for an endpoint
+     * that names none.
+     *
+     * @return list<Middleware>
+     */
+    private function bucket(CompiledEndpoint $endpoint, bool $byAddress): array
+    {
+        if ($endpoint->throttle === null) {
+            return [];
+        }
+        if ($this->throttle === null) {
+            // The Kernel refuses this when it is built; a handler built
+            // otherwise refuses it here rather than leave the bucket unspent.
+            throw new \LogicException("{$endpoint->where()} names the throttle bucket '{$endpoint->throttle->bucket}', and nothing counts throttles.");
+        }
+
+        return [new ThrottleRequests($this->throttle, $endpoint->throttle->counter(), $endpoint->throttle->perMinute, byAddress: $byAddress)];
+    }
+
+    /**
+     * `throttle:endpoints` by account, for a sessionless endpoint: the
+     * stack's pass ran before its own middleware signed anyone in, so it
+     * charged the address alone.
+     *
+     * @return list<Middleware>
+     */
+    private function accountShareOfEndpoints(): array
+    {
+        return $this->throttle === null || $this->endpointsLimit <= 0
+            ? []
+            : [new ThrottleRequests($this->throttle, 'endpoints', $this->endpointsLimit, byAddress: false)];
+    }
+
+    /**
+     * An OPTIONS preflight's answer, or null for one that is not answered --
+     * the 405 every other OPTIONS is (ADR 0074).
+     *
+     * Answered only when all of it holds: the request names an Origin and
+     * a method an endpoint may declare; the endpoint at the path answering
+     * that method declares #[Cors]; the Origin is one it names, byte for
+     * byte; and every header the preflight asks to send is one it allows.
+     * Nothing runs for it -- no session, no check, no body -- and it says
+     * only what that endpoint's #[Cors] already says to that origin.
+     */
+    public function preflight(Request $request): ?Response
+    {
+        $origin = $request->header('origin');
+        $method = $request->header('access-control-request-method');
+        if ($origin === null || $method === null || !\in_array($method, Endpoint::METHODS, true)) {
+            return null;
+        }
+
+        $matched = $this->registry->matchMethod($request->path, $method);
+        $endpoint = $matched['endpoint'] ?? null;
+        $cors = $endpoint?->cors;
+        if ($endpoint === null || $cors === null || !$cors->allows($origin)
+            || !$cors->allowsHeaders($request->header('access-control-request-headers'))) {
+            return null;
+        }
+
+        $headers = [
+            'access-control-allow-origin' => $origin,
+            'access-control-allow-methods' => implode(', ', $endpoint->methods),
+            'access-control-allow-headers' => implode(', ', $cors->headers),
+            'access-control-max-age' => (string) $cors->maxAge,
+            'vary' => 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers',
+            'cache-control' => 'private, no-store',
+        ];
+        if ($cors->credentials) {
+            $headers['access-control-allow-credentials'] = 'true';
+        }
+
+        return Response::make(204, '', $headers);
+    }
+
+    /**
+     * An endpoint's response -- its answer or its refusal -- with what its
+     * #[Cors] tells the origin that asked (ADR 0074): `Vary: Origin` always,
+     * since what it carries depends on the Origin, and the Origin echoed
+     * back only when it is one the endpoint names. Never `*`, and never an
+     * Origin nobody named. Nothing for an endpoint that declares none.
+     */
+    public static function crossOrigin(Request $request, CompiledEndpoint $endpoint, Response $response): Response
+    {
+        $cors = $endpoint->cors;
+        if ($cors === null) {
+            return $response;
+        }
+
+        $response = $response->withAddedHeader('vary', 'Origin');
+        $origin = $request->header('origin');
+        if ($origin === null || !$cors->allows($origin)) {
+            return $response;
+        }
+
+        $response = $response
+            ->withHeader('access-control-allow-origin', $origin)
+            // What a caller paces itself by, and when a 429 says to retry.
+            ->withHeader('access-control-expose-headers', 'retry-after, x-ratelimit-limit, x-ratelimit-remaining, x-ratelimit-reset');
+
+        return $cors->credentials ? $response->withHeader('access-control-allow-credentials', 'true') : $response;
     }
 
     /**

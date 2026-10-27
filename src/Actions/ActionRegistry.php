@@ -6,10 +6,12 @@ namespace Tinvar\Actions;
 
 use Tinvar\Attributes\Action;
 use Tinvar\Attributes\Authorize;
+use Tinvar\Attributes\Cors;
 use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\TenantFrom;
+use Tinvar\Attributes\Throttle;
 use Tinvar\Attributes\Uploaded;
 use Tinvar\Auth\PanelBinding;
 use Tinvar\Http\NotFoundException;
@@ -78,6 +80,16 @@ final class ActionRegistry
             }
             if ($method->isStatic()) {
                 throw new ActionException("{$class}::{$method->getName()}() is static; an action is an instance method.");
+            }
+            // An endpoint's own bucket and cross-origin policy (ADR 0074) are
+            // read by the endpoint registry alone. On an action they would
+            // limit and open nothing, which its author would not guess.
+            if ($method->getAttributes(Throttle::class) !== [] || $method->getAttributes(Cors::class) !== []
+                || $reflection->getAttributes(Throttle::class) !== [] || $reflection->getAttributes(Cors::class) !== []) {
+                throw new ActionException(
+                    "{$class}::{$method->getName()}() is an action under #[Throttle] or #[Cors], which only an endpoint reads. "
+                    . 'An action spends throttle:actions and is called from this origin alone.',
+                );
             }
 
             // Silently ignoring a class-level declaration is its own hazard:

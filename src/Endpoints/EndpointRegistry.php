@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace Tinvar\Endpoints;
 
 use Tinvar\Attributes\Authorize;
+use Tinvar\Attributes\Cors;
 use Tinvar\Attributes\Endpoint;
 use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\PublicAccess;
 use Tinvar\Attributes\TenantFrom;
+use Tinvar\Attributes\Throttle;
 use Tinvar\Attributes\WithoutSession;
 use Tinvar\Auth\PanelBinding;
 use Tinvar\Auth\Violation;
@@ -282,8 +284,20 @@ final class EndpointRegistry
             $tenantFrom = TenantFrom::declaredOn($class, $method->getName());
             $panels = Panel::declaredOn($class, $method->getName());
             PanelBinding::of($panels);
+            $throttle = Throttle::declaredOn($class, $method->getName());
+            $cors = Cors::declaredOn($class, $method->getName());
         } catch (\LogicException|\InvalidArgumentException $e) {
             throw new EndpointException("{$where}: {$e->getMessage()}", 0, $e);
+        }
+
+        // A token API reads no cookie (ADR 0067): an origin allowed to send
+        // the visitor's cookies to it would send them for nothing, and the
+        // author who asked for that expected them to sign someone in.
+        if ($cors !== null && $cors->credentials && $sessionless) {
+            throw new EndpointException(
+                "{$where} is #[WithoutSession] and allows other origins credentials. It reads no cookie: its callers "
+                . "send their token in a header, which #[Cors(headers: ['authorization'])] allows.",
+            );
         }
 
         return new CompiledEndpoint(
@@ -309,6 +323,8 @@ final class EndpointRegistry
             returns: $returns,
             data: $data,
             publicAccess: $public,
+            throttle: $throttle,
+            cors: $cors,
         );
     }
 
@@ -418,6 +434,21 @@ final class EndpointRegistry
         }
 
         foreach ($this->ordered as $other) {
+            // One bucket is one counter: two sizes for it would have the
+            // endpoint asked first decide what the other may spend.
+            if ($endpoint->throttle !== null && $other->throttle !== null
+                && $endpoint->throttle->bucket === $other->throttle->bucket
+                && $endpoint->throttle->perMinute !== $other->throttle->perMinute) {
+                throw new EndpointException(\sprintf(
+                    "Both %s and %s spend the throttle bucket '%s', at %d and %d a minute. One bucket has one size.",
+                    $other->where(),
+                    $endpoint->where(),
+                    $endpoint->throttle->bucket,
+                    $other->throttle->perMinute,
+                    $endpoint->throttle->perMinute,
+                ));
+            }
+
             $shared = array_intersect($other->methods, $endpoint->methods);
             if ($other->shape() === $endpoint->shape() && $shared !== []) {
                 throw new EndpointException(\sprintf(
@@ -451,7 +482,18 @@ final class EndpointRegistry
      */
     public function match(Request $request): ?array
     {
-        $first = CompiledRoute::split($request->path)[0] ?? '';
+        return $this->matchMethod($request->path, $request->method);
+    }
+
+    /**
+     * match(), for a method other than the request's own: the one a CORS
+     * preflight asks whether it may send (ADR 0074).
+     *
+     * @return array{endpoint: CompiledEndpoint, parameters: array<string, string>}|array{allow: list<string>}|null
+     */
+    public function matchMethod(string $path, string $method): ?array
+    {
+        $first = CompiledRoute::split($path)[0] ?? '';
         if (str_starts_with($first, '_')) {
             return null;
         }
@@ -460,11 +502,11 @@ final class EndpointRegistry
 
         $allow = [];
         foreach ($this->ordered as $endpoint) {
-            $parameters = $endpoint->match($request->path);
+            $parameters = $endpoint->match($path);
             if ($parameters === null) {
                 continue;
             }
-            if ($endpoint->answers($request->method)) {
+            if ($endpoint->answers($method)) {
                 return ['endpoint' => $endpoint, 'parameters' => $parameters];
             }
             $allow = [...$allow, ...$endpoint->allowed()];

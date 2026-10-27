@@ -32,7 +32,8 @@ use Tinvar\Validation\Validator;
  *
  * Steps 1 and 2 come before 3 for the reason they do for an action:
  * validation can query through Exists and Unique, and nothing should query
- * for a caller who is not allowed to be here.
+ * for a caller who is not allowed to be here. A Precognition call
+ * (precognition()) runs 1 to 3 and stops, read-only.
  */
 final class EndpointRunner
 {
@@ -55,7 +56,97 @@ final class EndpointRunner
      */
     public function run(CompiledEndpoint $endpoint, array $path, array $input, Request $request): Response
     {
-        // 1. Resolve.
+        // 1. Resolve, and 2. authorize.
+        [$models, $subject] = $this->resolveAndAuthorize($endpoint, $path, $input);
+
+        // 3. Validate, every form request before anything is reported.
+        $requests = $this->validate($endpoint, $input, $models, $subject);
+
+        // 4. The body. A GET's runs read-only, as a loader's does: it
+        //    carries no CSRF token, so a page on another site can have a
+        //    visitor's browser send one, and nothing it does may write.
+        $arguments = $this->bind($endpoint, $path, $models, $requests, $request);
+        $instance = ($this->resolver)($endpoint->class);
+        $body = static fn (): mixed => $instance->{$endpoint->method}(...$arguments);
+        $safe = CompiledEndpoint::isSafeMethod($request->method);
+        $result = $safe ? $this->orm->readOnly($body) : $body();
+
+        // 5. Answer.
+        return match ($endpoint->returns) {
+            CompiledEndpoint::RETURNS_RESPONSE => $result instanceof Response
+                ? ($safe ? $this->streamedReadOnly($result) : $result)
+                : throw new \LogicException("{$endpoint->where()} returned " . get_debug_type($result) . ', not a Response.'),
+            CompiledEndpoint::RETURNS_DATA => $this->json($endpoint, $result),
+            default => Response::make(204),
+        };
+    }
+
+    /**
+     * Precognition (ADR 0074): the order up to validation, and no body --
+     * the models resolved in the tenant, every check, then the form
+     * requests, all of them or only the fields named. Read-only whatever
+     * the method: nothing that answers "would this do?" may do anything.
+     *
+     * @param array<string, string> $path
+     * @param array<string, mixed>  $input
+     * @param list<string>|null     $only the fields to judge; null for every form request whole
+     * @return array<string, list<string>> each field's errors; none when the input would do
+     * @throws UnknownField when $only names a field no form request declares
+     */
+    public function precognition(CompiledEndpoint $endpoint, array $path, array $input, ?array $only): array
+    {
+        return $this->orm->readOnly(function () use ($endpoint, $path, $input, $only): array {
+            [$models, $subject] = $this->resolveAndAuthorize($endpoint, $path, $input);
+
+            if ($only === null) {
+                try {
+                    $this->validate($endpoint, $input, $models, $subject);
+                } catch (ValidationException $e) {
+                    return $e->errors;
+                }
+
+                return [];
+            }
+
+            // Each field by every form request declaring it, as a submit
+            // judges it by each; one no form request declares is refused
+            // rather than read as fine.
+            $unsupplied = array_diff_key($endpoint->allModels(), $models);
+            $errors = [];
+            foreach ($only as $field) {
+                $declared = false;
+                foreach ($endpoint->formRequests as $class) {
+                    foreach ((new \ReflectionClass($class))->getConstructor()?->getParameters() ?? [] as $parameter) {
+                        if ($parameter->getName() !== $field) {
+                            continue;
+                        }
+                        $declared = true;
+                        $found = $this->validator->errorsFor($class, $input, $field, $subject, $models, $models, $unsupplied);
+                        if ($found !== []) {
+                            $errors[$field] = array_values(array_unique([...$errors[$field] ?? [], ...$found]));
+                        }
+                    }
+                }
+                if (!$declared) {
+                    throw new UnknownField('A field no form request of this endpoint declares.');
+                }
+            }
+
+            return $errors;
+        });
+    }
+
+    /**
+     * Steps 1 and 2: the path's models and the form requests' model fields
+     * resolved in the tenant -- a missing or foreign id a 404 -- and every
+     * check asked of them.
+     *
+     * @param array<string, string> $path
+     * @param array<string, mixed>  $input
+     * @return array{array<string, Model>, Model|null} the models, and the subject a form request is judged against
+     */
+    private function resolveAndAuthorize(CompiledEndpoint $endpoint, array $path, array $input): array
+    {
         $models = [];
         foreach ($endpoint->models as $parameter => $class) {
             $id = $path[$parameter] ?? '';
@@ -80,10 +171,8 @@ final class EndpointRunner
             $models[$field] = $this->orm->find($class, (string) $id) ?? throw NotFoundException::model($class, (string) $id);
         }
 
-        // 2. Authorize.
         $this->authorize($endpoint, $models, $unsent);
 
-        // 3. Validate, every form request before anything is reported.
         $subject = null;
         foreach ($endpoint->checks as $index => $check) {
             if ($index >= $endpoint->classLevelChecks && $check->argument !== null && isset($models[$check->argument])) {
@@ -91,6 +180,20 @@ final class EndpointRunner
                 break;
             }
         }
+
+        return [$models, $subject];
+    }
+
+    /**
+     * Step 3: every form request validated before anything is reported.
+     *
+     * @param array<string, mixed> $input
+     * @param array<string, Model> $models
+     * @return array<string, FormRequest>
+     * @throws ValidationException with every form request's errors together
+     */
+    private function validate(CompiledEndpoint $endpoint, array $input, array $models, ?Model $subject): array
+    {
         $unsupplied = array_diff_key($endpoint->allModels(), $models);
         $requests = [];
         $errors = [];
@@ -107,23 +210,7 @@ final class EndpointRunner
             throw new ValidationException($errors);
         }
 
-        // 4. The body. A GET's runs read-only, as a loader's does: it
-        //    carries no CSRF token, so a page on another site can have a
-        //    visitor's browser send one, and nothing it does may write.
-        $arguments = $this->bind($endpoint, $path, $models, $requests, $request);
-        $instance = ($this->resolver)($endpoint->class);
-        $body = static fn (): mixed => $instance->{$endpoint->method}(...$arguments);
-        $safe = CompiledEndpoint::isSafeMethod($request->method);
-        $result = $safe ? $this->orm->readOnly($body) : $body();
-
-        // 5. Answer.
-        return match ($endpoint->returns) {
-            CompiledEndpoint::RETURNS_RESPONSE => $result instanceof Response
-                ? ($safe ? $this->streamedReadOnly($result) : $result)
-                : throw new \LogicException("{$endpoint->where()} returned " . get_debug_type($result) . ', not a Response.'),
-            CompiledEndpoint::RETURNS_DATA => $this->json($endpoint, $result),
-            default => Response::make(204),
-        };
+        return $requests;
     }
 
     /**

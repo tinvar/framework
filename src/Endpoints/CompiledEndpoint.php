@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Tinvar\Endpoints;
 
 use Tinvar\Attributes\Authorize;
+use Tinvar\Attributes\Cors;
+use Tinvar\Attributes\Throttle;
 use Tinvar\Routing\CompiledRoute;
 
 /** One #[Get], #[Post] or #[Endpoint] method, reflected once. */
@@ -41,6 +43,8 @@ final readonly class CompiledEndpoint
      * @param class-string<\Tinvar\Data\Data>|null $data the Data class it returns, for RETURNS_DATA
      * @param bool $publicAccess #[PublicAccess]: anyone may call it, so what it answers may be
      *        cached as it says; anything else is always `private`
+     * @param Throttle|null $throttle its own bucket, spent beside `throttle:endpoints` (ADR 0074)
+     * @param Cors|null $cors the other origins that may call it and read its answer (ADR 0074)
      */
     public function __construct(
         public string $name,
@@ -65,6 +69,8 @@ final readonly class CompiledEndpoint
         public string $returns,
         public ?string $data = null,
         public bool $publicAccess = false,
+        public ?Throttle $throttle = null,
+        public ?Cors $cors = null,
     ) {}
 
     /**
