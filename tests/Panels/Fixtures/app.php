@@ -284,6 +284,18 @@ final class App
     public array $fragments = [];
 
     /**
+     * What a fragment's render was handed to read with shared(), and what
+     * reading each of $fragmentKeys from it answered, inside the request.
+     */
+    public ?\Tinvar\Data\SharedReads $fragmentShared = null;
+
+    /** @var array<string, mixed> key => value, or the error's code */
+    public array $fragmentReads = [];
+
+    /** @var list<string> */
+    public array $fragmentKeys = [];
+
+    /**
      * @param list<class-string> $routes beside the fixture's own
      * @param list<class-string<Middleware>> $global
      * @param list<class-string> $extraQueries beside AdminStats
@@ -321,9 +333,21 @@ final class App
         $this->support = new FragmentSupport(
             signer: $this->fragmentSigner,
             builds: new BuildRegistry('build-1'),
-            render: function (): Response {
+            render: function (mixed ...$arguments): Response {
                 Trace::note('fragment');
                 $this->fragments[] = $this->panels->currentOrNull() ?? '';
+                $shared = $arguments[4] ?? null;
+                if ($shared instanceof \Tinvar\Data\SharedReads) {
+                    $this->fragmentShared = $shared;
+                    $calls = array_map(
+                        static fn (int $i, string $key): array => ['id' => $i, 'name' => \Tinvar\Data\SharedReads::PREFIX . $key, 'args' => []],
+                        array_keys($this->fragmentKeys),
+                        $this->fragmentKeys,
+                    );
+                    foreach ((new \Tinvar\Query\QueryRunner($this->queries, $this->orm, new \Tinvar\Auth\AllowAllGate()))->run($calls, [], $shared) as $result) {
+                        $this->fragmentReads[$this->fragmentKeys[$result['id']]] = $result['value'] ?? $result['error']['code'] ?? null;
+                    }
+                }
 
                 return Response::make(200, 'RSC-FRAGMENT');
             },

@@ -25,6 +25,15 @@ namespace Tinvar\Tests\Panels\Fixtures {
         {
             return new NoteData('for everyone', $this->panels->currentOrNull() ?? '', $this->orm->tenant());
         }
+
+        /** Shared once (ADR 0065): each time it is produced, the trace says so. */
+        #[Shared(once: true, until: '1h', tags: ['notes'])]
+        public function welcome(): NoteData
+        {
+            Trace::note('welcome');
+
+            return new NoteData('welcome', $this->panels->currentOrNull() ?? '', $this->orm->tenant());
+        }
     }
 
     #[Panel('admin')]

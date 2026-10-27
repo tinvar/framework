@@ -137,10 +137,12 @@ final class Router
                 // is the same whatever the client was running.
                 $response = $response->withAddedHeader('vary', 'X-Version')
                     // What the client says it holds changes the payload: a
-                    // held once field is left out, a reset field marked.
+                    // held once field is left out, a reset field marked, a
+                    // held once-shared value read as held (ADR 0065).
                     ->withAddedHeader('vary', 'X-Reset')
                     ->withAddedHeader('vary', 'X-Have-Once')
-                    ->withAddedHeader('vary', 'X-Once-Binding');
+                    ->withAddedHeader('vary', 'X-Once-Binding')
+                    ->withAddedHeader('vary', 'X-Have-Shared');
                 if (!$this->partialReloads) {
                     return $response;
                 }

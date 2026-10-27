@@ -54,12 +54,14 @@ use Tinvar\Render\RenderFailure;
 use Tinvar\Render\RendererException;
 use Tinvar\Render\RouteMinter;
 use Tinvar\Render\RouteToken;
+use Tinvar\Render\SharedHold;
 use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenError;
 use Tinvar\Data\PayloadContext;
 use Tinvar\Data\SharedProviders;
 use Tinvar\Data\SharedReads;
 use Tinvar\Data\SharedRegistry;
+use Tinvar\Routing\CompiledRoute;
 use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\RouteChain;
@@ -334,6 +336,16 @@ final class Kernel
      * updates, a route name or a session.
      */
     public const string LIVE_MINTER = 'tinvar.live_minter';
+
+    /**
+     * The request attribute marking a page navigation whose client may
+     * hand back the holds of once-shared values it keeps (ADR 0065): a
+     * payload request for a page handed a route token. shared() believes
+     * holds on such a request alone, each verified against the binding the
+     * render is made for. An action's re-render, a fragment, a document or
+     * a page drawn any other way produces every key it reads.
+     */
+    public const string HELD_SHARED = 'tinvar.held_shared';
 
     /**
      * @param \Closure(class-string): object $resolver builds pages, layouts, queries, actions and middleware
@@ -1006,6 +1018,7 @@ final class Kernel
             renderGroup: $fragments->renderGroup,
             auth: $this->auth,
             entry: $entry,
+            shared: $this->sharedForFragment(...),
         );
 
         // Both, or neither: a manifest says which boundaries exist, and
@@ -1362,6 +1375,7 @@ final class Kernel
                     $passed = $passed->withAttribute(self::HISTORY_KEY, $historyKey);
                 }
                 $loaded = $this->withHeldOnce($loaded, $passed, $token);
+                $passed = $this->withHeldShared($passed, $token);
                 $this->toolbar?->loaded($loaded);
                 [$passed, $flashed] = $this->withFormState($passed);
                 $response = $this->withCsrfCookie($passed, $respond($loaded, $passed));
@@ -1659,6 +1673,28 @@ final class Kernel
      */
     public function shared(LoadedRoute $loaded, Request $request): ?SharedReads
     {
+        return $this->sharedFor($loaded->chain->page, $loaded->parameters, $request);
+    }
+
+    /**
+     * The shared data one fragment render may read: a <Deferred>
+     * component's `shared()` (ADR 0065). The fragment endpoint asks for it
+     * once the token's route has run its tenant, its panel's stack, its own
+     * middleware and every #[Authorize] in its chain, and the token has
+     * been held to the panel, tenant, user and auth epoch the request is in
+     * -- where a page render's responder asks. So the keys are those of no
+     * panel and of the panel the fragment renders in, and the reads are
+     * bound to that panel, tenant and user as a page's are. Every once key
+     * is produced: a fragment's request carries no holds.
+     */
+    public function sharedForFragment(RouteChain $chain, Request $request): ?SharedReads
+    {
+        return $this->sharedFor($chain->page, $chain->parameters, $request->withAttribute(self::HELD_SHARED, false));
+    }
+
+    /** @param array<string, string> $parameters */
+    private function sharedFor(CompiledRoute $page, array $parameters, Request $request): ?SharedReads
+    {
         if ($this->shared === null) {
             return null;
         }
@@ -1671,19 +1707,75 @@ final class Kernel
             }
         }
 
+        // The once keys this render reads that the navigation's holds
+        // prove the browser keeps -- each verified now, against the very
+        // session, user and auth epoch, tenant, panel and build the reads
+        // below are bound to.
+        $hold = $this->sharedHold($request);
+        $held = $hold !== null && $request->attribute(self::HELD_SHARED) === true
+            ? $hold->held($request->header(SharedHold::HEADER), SharedReads::onceAmong($this->shared, $keys))
+            : [];
+
         return new SharedReads(
             registry: $this->shared,
             keys: $keys,
             resolver: $this->resolver,
             request: $request,
-            page: $loaded->chain->page,
-            parameters: $loaded->parameters,
+            page: $page,
+            parameters: $parameters,
             orm: $this->orm,
             auth: $this->auth,
             panels: $this->panels,
             panel: $panel,
             served: $this->sharedProviders,
+            held: $held,
+            hold: $hold === null ? null : $hold->mint(...),
         );
+    }
+
+    /**
+     * What once-shared values are held by for this request, as it stands:
+     * its session, user and auth epoch, tenant, panel and build. Null
+     * without a session or a route signer -- there is nothing to bind a
+     * hold to, so a once value is sent to be shown, never kept.
+     */
+    private function sharedHold(Request $request): ?SharedHold
+    {
+        $support = $this->support;
+        if ($support === null || $support->routeSigner === null) {
+            return null;
+        }
+        $session = ($support->sessionId)($request);
+        if ($session === '') {
+            return null;
+        }
+
+        return new SharedHold(
+            signer: $support->routeSigner,
+            panel: $this->panels?->currentOrNull() ?? '',
+            tenant: TenantClaim::current($this->orm),
+            build: $support->builds->current,
+            sessionId: $session,
+            user: $this->auth->id(),
+            authEpoch: $this->auth->epoch(),
+        );
+    }
+
+    /**
+     * The request, marked as one whose once-shared holds may be believed
+     * (HELD_SHARED): a payload request for a page handed a route token, as
+     * #[Once] fields are, so a session is there to bind them to. Marked
+     * here and not trusted from anywhere else, since only the navigation
+     * sets it; shared() checks every hold, and one that fails any check
+     * proves nothing (SharedHold::held()).
+     */
+    private function withHeldShared(Request $request, ?string $token): Request
+    {
+        if ($this->shared === null || $token === null || !$request->wantsRscPayload()) {
+            return $request;
+        }
+
+        return $request->withAttribute(self::HELD_SHARED, true);
     }
 
     /**

@@ -382,7 +382,7 @@ describe('a whole page instead', function () {
 
         expect($loaded?->segments)->toBeNull()
             ->and($response->header('x-page'))->toBeNull()
-            ->and($response->header('vary'))->toBe('RSC, X-Version, X-Reset, X-Have-Once, X-Once-Binding');
+            ->and($response->header('vary'))->toBe('RSC, X-Version, X-Reset, X-Have-Once, X-Once-Binding, X-Have-Shared');
     });
 });
 
@@ -394,7 +394,7 @@ describe('the response', function () {
 
         expect($response->header('x-page'))->toBe('racks/show')
             ->and($response->header('x-partial'))->toBeNull()
-            ->and($response->header('vary'))->toBe('RSC, X-Version, X-Reset, X-Have-Once, X-Once-Binding, X-Page, X-Only, X-Except');
+            ->and($response->header('vary'))->toBe('RSC, X-Version, X-Reset, X-Have-Once, X-Once-Binding, X-Have-Shared, X-Page, X-Only, X-Except');
     });
 
     // Part of one client's page as it holds it now.
