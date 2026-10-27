@@ -13,7 +13,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Queue\StopBudgetManifests;
 
-use Tinvar\Queue\StopBudget;
+use Tinvar\Jobs\StopBudget;
 
 const CONTAINER = __DIR__ . '/../../resources/container';
 const SHOP = __DIR__ . '/../../../../examples/shop';

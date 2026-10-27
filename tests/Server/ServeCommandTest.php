@@ -176,17 +176,17 @@ it('gives the background the stop budget the environment names, and refuses one 
         $command = new ServeCommand(project(), new PortFinder(static fn (): bool => true), static function (): void {}, static function (string $line) use (&$errors): void {
             $errors[] = $line;
         });
-        $before = getenv(\Tinvar\Queue\StopBudget::ENV);
+        $before = getenv(\Tinvar\Jobs\StopBudget::ENV);
         try {
-            putenv(\Tinvar\Queue\StopBudget::ENV);
-            expect($command->plan(["--app={$app}"])['stopBudget'])->toBe(\Tinvar\Queue\StopBudget::DEFAULT);
-            putenv(\Tinvar\Queue\StopBudget::ENV . '=25');
+            putenv(\Tinvar\Jobs\StopBudget::ENV);
+            expect($command->plan(["--app={$app}"])['stopBudget'])->toBe(\Tinvar\Jobs\StopBudget::DEFAULT);
+            putenv(\Tinvar\Jobs\StopBudget::ENV . '=25');
             expect($command->plan(["--app={$app}"])['stopBudget'])->toBe(25);
-            putenv(\Tinvar\Queue\StopBudget::ENV . '=3');
+            putenv(\Tinvar\Jobs\StopBudget::ENV . '=3');
             expect($command->run(["--app={$app}"]))->toBe(ServeCommand::USAGE)
                 ->and(implode("\n", $errors))->toContain('stop budget');
         } finally {
-            putenv($before === false ? \Tinvar\Queue\StopBudget::ENV : \Tinvar\Queue\StopBudget::ENV . '=' . $before);
+            putenv($before === false ? \Tinvar\Jobs\StopBudget::ENV : \Tinvar\Jobs\StopBudget::ENV . '=' . $before);
         }
     });
 });
