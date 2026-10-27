@@ -30,7 +30,7 @@ use Tinvar\Query\QueryRegistry;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
-use Tinvar\Webhooks\ArrayNonceStore;
+use Tinvar\Http\ArrayNonceStore;
 use Tinvar\Webhooks\DerivedSecrets;
 use Tinvar\Webhooks\WebhookEndpoint;
 

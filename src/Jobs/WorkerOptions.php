@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Tinvar\Queue;
+namespace Tinvar\Jobs;
 
 use Tinvar\Attributes\Queue as QueueOptions;
 

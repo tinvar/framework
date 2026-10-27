@@ -2,9 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Tinvar\Jobs;
-
-use Tinvar\Auth\Authenticatable;
+namespace Tinvar\Auth;
 
 /**
  * The application's users, as a job running as one needs them: found again

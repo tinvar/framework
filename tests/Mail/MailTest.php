@@ -257,7 +257,7 @@ it('renders a mailable through the renderer and sends it, now or from the queue 
     // commits, built and sent by the worker as that tenant.
     $h->orm->actAs('acme', fn () => $h->orm->transaction(fn () => $mailer->queue(new Receipt($script))));
     expect($sent->sent)->toHaveCount(1);
-    $h->worker->run(new \Tinvar\Queue\WorkerOptions(queues: ['mail'], stopWhenEmpty: true, signals: false));
+    $h->worker->run(new \Tinvar\Jobs\WorkerOptions(queues: ['mail'], stopWhenEmpty: true, signals: false));
 
     expect($sent->sent)->toHaveCount(2)
         ->and($sent->sent[1]->to[0]->email)->toBe('ada@example.test')

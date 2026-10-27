@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Tinvar\Webhooks;
+namespace Tinvar\Http;
 
 /**
  * The nonces deliveries have used, kept for as long as their timestamps

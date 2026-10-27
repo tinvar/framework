@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Tinvar\Webhooks;
+namespace Tinvar\Http;
 
 /** Nonces in this process's memory: for tests, and nothing a second process can share. */
 final class ArrayNonceStore implements NonceStore

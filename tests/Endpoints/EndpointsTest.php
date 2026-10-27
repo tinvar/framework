@@ -51,7 +51,7 @@ use Tinvar\Tests\Orm\Fixtures\Unit;
 use Tinvar\Attributes\Webhook;
 use Tinvar\Support\Signer;
 use Tinvar\Validation\FormRequest;
-use Tinvar\Webhooks\ArrayNonceStore;
+use Tinvar\Http\ArrayNonceStore;
 use Tinvar\Webhooks\DerivedSecrets;
 use Tinvar\Webhooks\WebhookCall;
 use Tinvar\Webhooks\WebhookEndpoint;

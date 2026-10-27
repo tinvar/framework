@@ -27,7 +27,7 @@ use Tinvar\Query\QueryError;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
 use Tinvar\Queue\ArrayQueue;
-use Tinvar\Queue\SyncQueue;
+use Tinvar\Jobs\SyncQueue;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\RecordContext;
 use Tinvar\Tests\Jobs\Fixtures\Sleeps;
@@ -271,7 +271,7 @@ it('stops a job at its timeout and counts the try as failed', function () {
 it('fails a job that swallows its timeout, and gives up the process to one that will not stop', function () {
     $fixture = new TenantFixture();
     $h = new Harness(null, $fixture);
-    $h->worker = new \Tinvar\Queue\Worker(
+    $h->worker = new \Tinvar\Jobs\Worker(
         $h->queue,
         $h->runner,
         $h->scope,
@@ -289,7 +289,7 @@ it('fails a job that swallows its timeout, and gives up the process to one that 
     // exited for a fresh one (here it is told not to), and the try that
     // returned at three is a failed one all the same.
     expect($h->journal()->entries)->toBe([['swallowed' => true], ['finished' => true]])
-        ->and($h->exits)->toBe([\Tinvar\Queue\Worker::EXIT_TIMED_OUT])
+        ->and($h->exits)->toBe([\Tinvar\Jobs\Worker::EXIT_TIMED_OUT])
         ->and(arrayQueue($h)->failed()[0]->error)->toContain('ran past its 1s timeout');
 });
 
@@ -300,12 +300,12 @@ it('stops when asked, after the job in hand', function () {
     // Asked on the line the first job is logged with. Not on any line: a
     // worker starting past its memory limit -- inside a test process that
     // has grown, say -- says so before it takes a job.
-    $worker = new \Tinvar\Queue\Worker($h->queue, $h->runner, $h->scope, log: function (string $line) use (&$worker): void {
+    $worker = new \Tinvar\Jobs\Worker($h->queue, $h->runner, $h->scope, log: function (string $line) use (&$worker): void {
         if (str_contains($line, '(attempt ')) {
             $worker?->stop();
         }
     }, clock: fn (): int => $h->now);
 
-    expect($worker->run(new \Tinvar\Queue\WorkerOptions(signals: false)))->toBe(1)
+    expect($worker->run(new \Tinvar\Jobs\WorkerOptions(signals: false)))->toBe(1)
         ->and($h->queue->size('default'))->toBe(1);
 });

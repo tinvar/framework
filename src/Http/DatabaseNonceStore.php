@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Tinvar\Webhooks;
+namespace Tinvar\Http;
 
 use Tinvar\Orm\Connection;
 use Tinvar\Orm\Schema\Dialect;

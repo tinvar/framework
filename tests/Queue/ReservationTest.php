@@ -119,6 +119,6 @@ it('lets only the holder of the current token extend, delete, release or fail a 
 it('refuses a grace that would outlast the reservation margin', function () {
     $h = new Harness();
 
-    expect(fn () => new \Tinvar\Queue\Worker($h->queue, $h->runner, $h->scope, graceSeconds: \Tinvar\Queue\Worker::RESERVATION_MARGIN))
+    expect(fn () => new \Tinvar\Jobs\Worker($h->queue, $h->runner, $h->scope, graceSeconds: \Tinvar\Jobs\Worker::RESERVATION_MARGIN))
         ->toThrow(\InvalidArgumentException::class, 'shorter than the reservation margin');
 });

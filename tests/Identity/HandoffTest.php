@@ -31,8 +31,8 @@ use Tinvar\Support\Signer;
 use Tinvar\Tests\Identity\Fixtures\App;
 use Tinvar\Tests\Identity\Fixtures\Browser;
 use Tinvar\Tests\Identity\Fixtures\ResellerOverAcme;
-use Tinvar\Webhooks\ArrayNonceStore;
-use Tinvar\Webhooks\DatabaseNonceStore;
+use Tinvar\Http\ArrayNonceStore;
+use Tinvar\Http\DatabaseNonceStore;
 
 require_once __DIR__ . '/Fixtures/app.php';
 

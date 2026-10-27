@@ -26,6 +26,7 @@
       "Tinvar\\": "src/"
     },
     "files": [
+      "aliases.php",
       "src/Data/functions.php"
     ]
   },

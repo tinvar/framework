@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Server;
 
+use Tinvar\Jobs\Worker;
 use Tinvar\Protocol\ProtocolException;
-use Tinvar\Queue\Worker;
 use Tinvar\Render\RendererException;
 use Tinvar\Render\RendererHealth;
 use Tinvar\Render\RendererSockets;

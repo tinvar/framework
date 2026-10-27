@@ -11,10 +11,10 @@ use Tinvar\Auth\PanelRegistry;
 use Tinvar\Http\RequestScope;
 use Tinvar\Jobs\DeclaredPanel;
 use Tinvar\Jobs\JobRunner;
+use Tinvar\Jobs\Worker;
+use Tinvar\Jobs\WorkerOptions;
 use Tinvar\Orm\Orm;
 use Tinvar\Queue\Queue;
-use Tinvar\Queue\Worker;
-use Tinvar\Queue\WorkerOptions;
 use Tinvar\Support\KnownAttributes;
 
 /**

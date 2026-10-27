@@ -23,7 +23,7 @@ use Tinvar\Orm\Schema\PostgresDialect;
 use Tinvar\Orm\Schema\Schema;
 use Tinvar\Orm\Schema\SqliteDialect;
 use Tinvar\Tests\Support\Fixtures\Databases;
-use Tinvar\Webhooks\DatabaseNonceStore;
+use Tinvar\Http\DatabaseNonceStore;
 
 require_once __DIR__ . '/../Support/Fixtures/databases.php';
 

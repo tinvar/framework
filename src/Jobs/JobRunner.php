@@ -11,6 +11,7 @@ use Tinvar\Auth\Memberships;
 use Tinvar\Auth\PanelBinding;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\PanelRegistry;
+use Tinvar\Auth\UserLookup;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware\RequirePanelMembership;
 use Tinvar\Orm\Orm;

@@ -170,7 +170,7 @@ it('queues a listener whose class has #[Queue], under that class\'s queue, tries
     expect($h->journal()->entries)->toBe([])
         ->and($h->queue->size('events'))->toBe(1);
 
-    $h->worker->run(new \Tinvar\Queue\WorkerOptions(queues: ['events'], stopWhenEmpty: true, signals: false));
+    $h->worker->run(new \Tinvar\Jobs\WorkerOptions(queues: ['events'], stopWhenEmpty: true, signals: false));
 
     expect($h->journal()->entries)->toBe([['queued' => 'PW-4', 'tenant' => 'acme', 'panel' => 'admin']]);
 });

@@ -36,7 +36,7 @@ use Tinvar\Jobs\Dispatcher;
 use Tinvar\Jobs\Envelope;
 use Tinvar\Jobs\JobRefused;
 use Tinvar\Jobs\JobRunner;
-use Tinvar\Jobs\UserLookup;
+use Tinvar\Auth\UserLookup;
 use Tinvar\Orm\Attributes\Column;
 use Tinvar\Orm\Attributes\Id;
 use Tinvar\Orm\Attributes\Table;

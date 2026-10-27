@@ -2,10 +2,12 @@
 
 declare(strict_types=1);
 
-namespace Tinvar\Queue;
+namespace Tinvar\Jobs;
 
-use Tinvar\Jobs\JobRunner;
 use Tinvar\Orm\Connection;
+use Tinvar\Queue\PendingJob;
+use Tinvar\Queue\Queue;
+use Tinvar\Queue\ReservedJob;
 
 /**
  * A queue that runs each job as it is pushed, once, in this process: for

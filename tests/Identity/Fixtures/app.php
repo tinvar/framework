@@ -28,7 +28,7 @@ use Tinvar\Identity\HandoffEndpoint;
 use Tinvar\Identity\HandoffSessions;
 use Tinvar\Identity\Realm;
 use Tinvar\Identity\Realms;
-use Tinvar\Jobs\UserLookup;
+use Tinvar\Auth\UserLookup;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
@@ -39,7 +39,7 @@ use Tinvar\Support\Signer;
 use Tinvar\Http\HostName;
 use Tinvar\Orm\TenantSubtrees;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
-use Tinvar\Webhooks\ArrayNonceStore;
+use Tinvar\Http\ArrayNonceStore;
 
 require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenancy.php';
 

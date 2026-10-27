@@ -169,7 +169,7 @@ final readonly class SmtpTransport implements Transport
      * timeout for each read and goes on until the line ends, so a server --
      * or whoever sits on the path before STARTTLS -- sending a byte just
      * inside it, and never the end of the line, held the send as long as it
-     * liked; and inside fgets() a job's alarm (Queue\Worker) waited too, so
+     * liked; and inside fgets() a job's alarm (Jobs\Worker) waited too, so
      * the job ran on past the reservation that keeps another worker off it.
      * Read a byte at a time instead, each read given what is left: PHP is
      * back between bytes, to see the deadline and run a pending signal. A

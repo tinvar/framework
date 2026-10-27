@@ -2,14 +2,12 @@
 
 declare(strict_types=1);
 
-namespace Tinvar\Queue;
+namespace Tinvar\Jobs;
 
 use Tinvar\Attributes\Queue as QueueOptions;
 use Tinvar\Http\RequestScope;
-use Tinvar\Jobs\Envelope;
-use Tinvar\Jobs\JobRefused;
-use Tinvar\Jobs\JobRunner;
-use Tinvar\Jobs\JobTimedOut;
+use Tinvar\Queue\Queue;
+use Tinvar\Queue\ReservedJob;
 
 /**
  * `tinvar queue:work`: takes jobs off the queue and runs them, one at a time,

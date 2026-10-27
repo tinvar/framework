@@ -9,6 +9,7 @@ use Tinvar\Attributes\Webhook;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\PanelRegistry;
 use Tinvar\Http\HttpException;
+use Tinvar\Http\NonceStore;
 use Tinvar\Http\Middleware\EnterTenant;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;

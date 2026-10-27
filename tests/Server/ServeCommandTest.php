@@ -11,7 +11,7 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Server\ServeCommand;
 
 use Tinvar\Attributes\Queue;
-use Tinvar\Queue\Worker;
+use Tinvar\Jobs\Worker;
 use Tinvar\Server\FrankenPhp;
 use Tinvar\Server\PortFinder;
 use Tinvar\Server\ServeCommand;

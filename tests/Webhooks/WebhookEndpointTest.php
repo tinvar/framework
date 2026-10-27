@@ -23,7 +23,7 @@ use Tinvar\Http\Response;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\Journal;
 use Tinvar\Tests\Support\Fixtures\Sources;
-use Tinvar\Webhooks\ArrayNonceStore;
+use Tinvar\Http\ArrayNonceStore;
 use Tinvar\Webhooks\WebhookCall;
 use Tinvar\Webhooks\WebhookEndpoint;
 use Tinvar\Webhooks\WebhookSecrets;

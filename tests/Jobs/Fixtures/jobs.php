@@ -23,12 +23,12 @@ use Tinvar\Jobs\Envelope;
 use Tinvar\Jobs\Job;
 use Tinvar\Jobs\JobRunner;
 use Tinvar\Jobs\Queueable;
-use Tinvar\Jobs\UserLookup;
+use Tinvar\Auth\UserLookup;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Queue\ArrayQueue;
 use Tinvar\Queue\Queue as JobQueue;
-use Tinvar\Queue\Worker;
+use Tinvar\Jobs\Worker;
 use Tinvar\Support\Signer;
 use Tinvar\Tests\Orm\Fixtures\Script;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
@@ -332,7 +332,7 @@ final class Harness
     /** Works every job available now, and returns how many ran. */
     public function work(): int
     {
-        return $this->worker->run(new \Tinvar\Queue\WorkerOptions(stopWhenEmpty: true, signals: false));
+        return $this->worker->run(new \Tinvar\Jobs\WorkerOptions(stopWhenEmpty: true, signals: false));
     }
 }
 

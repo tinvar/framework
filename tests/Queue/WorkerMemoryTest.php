@@ -16,8 +16,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Queue\WorkerMemory;
 
-use Tinvar\Queue\Worker;
-use Tinvar\Queue\WorkerOptions;
+use Tinvar\Jobs\Worker;
+use Tinvar\Jobs\WorkerOptions;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\RecordContext;
 
