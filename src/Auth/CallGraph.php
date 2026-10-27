@@ -201,7 +201,12 @@ final class CallGraph
             if (self::is($token, T_NEW) && self::isName($tokens[$i + 1] ?? null)) {
                 $written = self::text($tokens[$i + 1]);
                 $class = self::className($written, $file, $scope);
-                if ($class === null || !class_exists($class)) {
+                if ($class === null) {
+                    continue;
+                }
+                if (!class_exists($class)) {
+                    $calls[] = self::unknownClass($class, "new {$written}()");
+
                     continue;
                 }
                 if (method_exists($class, '__construct')) {
@@ -222,16 +227,36 @@ final class CallGraph
                 continue;
             }
 
+            // An attribute's arguments are not called: `#[Name(...)]`.
+            if (self::is($token, T_ATTRIBUTE)) {
+                for ($depth = 1; $depth > 0 && $i + 1 < $count;) {
+                    $next = $tokens[++$i];
+                    $depth += match ($next) {
+                        '[' => 1,
+                        ']' => -1,
+                        default => 0,
+                    };
+                }
+
+                continue;
+            }
+
             // function_name()
             if ((self::is($token, T_STRING) || self::is($token, T_NAME_QUALIFIED) || self::is($token, T_NAME_FULLY_QUALIFIED))
                 && ($tokens[$i + 1] ?? null) === '(') {
                 $previous = $tokens[$i - 1] ?? null;
                 if (self::isArrow($previous) || self::is($previous, T_DOUBLE_COLON) || self::is($previous, T_FUNCTION)
-                    || self::is($previous, T_NEW) || self::is($previous, T_FN) || self::is($previous, T_CONST)) {
+                    || self::is($previous, T_NEW) || self::is($previous, T_FN) || self::is($previous, T_CONST)
+                    || ($previous === '&' && self::is($tokens[$i - 2] ?? null, T_FUNCTION))) {
                     continue;
                 }
-                $name = self::functionName(self::text($token), $file);
-                if ($name !== null && !self::isFramework((string) new \ReflectionFunction($name)->getFileName())) {
+                $written = self::text($token);
+                $name = self::functionName($written, $file);
+                if ($name === false) {
+                    // Not built in, and not loaded: whatever it is at
+                    // runtime, its body cannot be read now.
+                    $calls[] = ['call' => "{$written}()", 'why' => "no function {$written}() can be found, so what it calls cannot be read"];
+                } elseif ($name !== null && !self::isFramework((string) new \ReflectionFunction($name)->getFileName())) {
                     $calls[] = ['class' => '', 'method' => $name];
                 }
             }
@@ -249,7 +274,7 @@ final class CallGraph
     private static function target(string $class, string $method, string $call): ?array
     {
         if (!class_exists($class) && !interface_exists($class) && !trait_exists($class)) {
-            return null;
+            return self::unknownClass($class, $call);
         }
         $reflection = new \ReflectionClass($class);
         $file = $reflection->getFileName();
@@ -376,22 +401,42 @@ final class CallGraph
         return ltrim("{$context['namespace']}\\{$written}", '\\');
     }
 
-    /** A function name as written, in a file: the application function it calls, or null for a built-in or none. */
-    private static function functionName(string $written, string $file): ?string
+    /**
+     * A class named in a call that no autoloader can find. PHP would fail
+     * the call; here it is a name the walk may have resolved otherwise than
+     * PHP does, so it is refused rather than taken for a leaf.
+     *
+     * @return array{call: string, why: string}
+     */
+    private static function unknownClass(string $class, string $call): array
+    {
+        return ['call' => $call, 'why' => "no class {$class} can be found, so what it calls cannot be read"];
+    }
+
+    /**
+     * A function name as written, in a file, resolved as PHP resolves it:
+     * the application function it calls; null for a built-in; false for
+     * none that can be found.
+     */
+    private static function functionName(string $written, string $file): string|false|null
     {
         $context = self::context($file);
+        $first = strtolower(explode('\\', $written, 2)[0]);
         $candidates = match (true) {
             str_starts_with($written, '\\') => [substr($written, 1)],
+            // `Helpers\format()`, through `use App\Helpers;`
+            str_contains($written, '\\') && isset($context['classes'][$first]) => [$context['classes'][$first] . substr($written, (int) strpos($written, '\\'))],
+            str_contains($written, '\\') => [ltrim("{$context['namespace']}\\{$written}", '\\')],
             isset($context['functions'][strtolower($written)]) => [$context['functions'][strtolower($written)]],
             default => [ltrim("{$context['namespace']}\\{$written}", '\\'), $written],
         };
         foreach ($candidates as $candidate) {
-            if (\function_exists($candidate) && new \ReflectionFunction($candidate)->isUserDefined()) {
-                return $candidate;
+            if (\function_exists($candidate)) {
+                return new \ReflectionFunction($candidate)->isUserDefined() ? $candidate : null;
             }
         }
 
-        return null;
+        return false;
     }
 
     /**

@@ -41,6 +41,16 @@ it('follows parent:: to the parent of the class it is written in', function () {
         ->toContain(G\Reads::class . "::read(), which calls '->user('");
 });
 
+it('refuses a call of a class no autoloader finds, rather than taking it for a leaf', function () {
+    expect(sharedGapViolations(G\ThroughUnknownClass::class))
+        ->toContain('calling Missing::who(): no class ' . G\Missing::class . ' can be found');
+});
+
+it('refuses a call of a function that is neither built in nor loaded', function () {
+    expect(sharedGapViolations(G\ThroughUnknownFunction::class))
+        ->toContain('calling missing_function(): no function missing_function() can be found');
+});
+
 it('reads the imports inside a braced namespace', function () {
     require_once __DIR__ . '/Fixtures/callgraph-braced.php';
 
