@@ -1423,6 +1423,32 @@ final class Kernel
     }
 
     /**
+     * Whether $request opens no session here: a probe (answersProbe()), or
+     * a call to a #[WithoutSession] endpoint -- for an application to issue
+     * no session cookie, write no session row and set nothing per visitor
+     * on its answer (ADR 0075).
+     *
+     * The Kernel already runs such an endpoint with no global middleware and
+     * every cookie taken off its request, so no session reaches it. What it
+     * cannot reach is the application's own work outside the pipeline: the
+     * cookie a front controller issues to every request without one, which
+     * a server calling with a token would be handed with every answer and a
+     * session table would keep for it. Matched as dispatch matches it --
+     * path and method -- so a call this says opens none is the call the
+     * endpoint answers.
+     */
+    public function opensNoSession(Request $request): bool
+    {
+        if ($this->answersProbe($request)) {
+            return true;
+        }
+
+        $matched = $this->endpoints_?->registry->match($request);
+
+        return isset($matched['endpoint']) && $matched['endpoint']->sessionless;
+    }
+
+    /**
      * Routes one request to an endpoint or a page, and classifies whatever it
      * throws into a response; $failure is set to what was thrown.
      *

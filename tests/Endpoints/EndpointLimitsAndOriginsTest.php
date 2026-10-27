@@ -534,6 +534,20 @@ describe('a #[WithoutSession] endpoint, held by the Kernel', function () {
             ->and(Ran::$bodies)->toBe([]);
     });
 
+    // ADR 0075: what an application's front controller asks before issuing
+    // a session cookie to a request that has none.
+    it('tells the application which requests open no session: its calls, and nothing else', function () {
+        [$fixture, $kernel] = racks();
+        $rack = $fixture->ids['racks'][0];
+
+        expect($kernel->opensNoSession(new Request('POST', "/api/scanner/racks/{$rack}")))->toBeTrue()
+            // The same path, a method it does not answer: a 405, which any
+            // request may be, not a call to it.
+            ->and($kernel->opensNoSession(new Request('GET', "/api/scanner/racks/{$rack}")))->toBeFalse()
+            ->and($kernel->opensNoSession(new Request('GET', "/api/racks/{$rack}/height")))->toBeFalse()
+            ->and($kernel->opensNoSession(new Request('GET', '/')))->toBeFalse();
+    });
+
     it('is refused when it declares global middleware, which opens the session', function () {
         $fixture = new Fixture(racks: 1, unitsPerRack: 1);
 
