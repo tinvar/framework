@@ -8,6 +8,8 @@ use Tinvar\Attributes\Action;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Channel;
 use Tinvar\Attributes\Endpoint;
+use Tinvar\Attributes\Export;
+use Tinvar\Attributes\Import;
 use Tinvar\Attributes\Layout;
 use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Page;
@@ -27,8 +29,8 @@ use Tinvar\Validation\FormRequest;
  * forgetting an #[Authorize] is silent, and the failure is open.
  *
  * Routability is decided by the ENTRY-POINT marker -- #[Page], #[Layout],
- * #[Query], #[Action], and #[Get], #[Post] or #[Endpoint] on a method --
- * never by whether the method already declares a
+ * #[Query], #[Export], #[Import], #[Action], and #[Get], #[Post] or
+ * #[Endpoint] on a method -- never by whether the method already declares a
  * check. An earlier version only looked at methods that carried #[Authorize]
  * or #[NoAuthorization], which made the rule blind to exactly the mistake it
  * exists to catch.
@@ -60,7 +62,10 @@ use Tinvar\Validation\FormRequest;
  *     a query is routable on its own: POST /_query runs "the query's panel
  *     stack", never the chain of a page that renders it. A query with no
  *     model input used to need no check at all, so one meant only for an
- *     admin page answered any signed-in caller.
+ *     admin page answered any signed-in caller. An #[Export] or #[Import]
+ *     is held to it under the same name: it is started by name from
+ *     /_export or /_import, and one with no model input -- every order, as
+ *     a file -- would otherwise answer anyone in its panel (ADR 0070).
  *
  *   attributes-must-name-a-class
  *     An attribute under Tinvar\ whose class does not exist -- a misspelling,
@@ -599,6 +604,13 @@ final class BuildRules
             $methods['__construct'] = [$reflection->getMethod('__construct'), true];
         }
 
+        // An export's or an import's body is its __invoke, and its class's
+        // declarations cover it, as a query's do: the class is the entry
+        // point, started by name from /_export or /_import.
+        if (self::isTransfer($reflection) && $reflection->hasMethod('__invoke')) {
+            $methods['__invoke'] ??= [$reflection->getMethod('__invoke'), true];
+        }
+
         // An #[Action] marks its own method, wherever it sits, including on a
         // class that is also a page.
         // So does a #[Get], #[Post] or #[Endpoint] (ADR 0067), and as an
@@ -629,11 +641,16 @@ final class BuildRules
     private static function checkQueryDeclaresAuthorization(string $class): array
     {
         $reflection = new \ReflectionClass($class);
-        if ($reflection->getAttributes(Query::class) === []) {
+        $isQuery = $reflection->getAttributes(Query::class) !== [];
+        // An export or an import says who may start it for the same reason:
+        // one with no model input -- every order, as a file -- would
+        // otherwise need no check at all, and answer anyone in its panel.
+        $isTransfer = self::isTransfer($reflection);
+        if (!$isQuery && !$isTransfer) {
             return [];
         }
 
-        $entry = Query::entryMethodOf($class);
+        $entry = $isQuery ? Query::entryMethodOf($class) : '__invoke';
         if (Authorize::declaredOn($class, $entry) !== []) {
             return [];
         }
@@ -645,6 +662,16 @@ final class BuildRules
             return [];
         }
 
+        if ($isTransfer) {
+            return [new Violation(
+                self::QUERY_MUST_DECLARE_AUTHORIZATION,
+                $class,
+                'is an #[Export] or #[Import] with no #[Authorize] and no #[NoAuthorization]. It is started by name, '
+                . "and nothing else decides who may. Declare who may, as in Authorize('export', Order::class), or "
+                . "#[NoAuthorization(reason: '...')] if everyone in its panel may.",
+            )];
+        }
+
         return [new Violation(
             self::QUERY_MUST_DECLARE_AUTHORIZATION,
             $class,
@@ -653,6 +680,12 @@ final class BuildRules
             . "Authorize('viewAny', Rack::class), or #[NoAuthorization(reason: '...')] if every signed-in "
             . 'user may.',
         )];
+    }
+
+    /** @param \ReflectionClass<object> $reflection */
+    private static function isTransfer(\ReflectionClass $reflection): bool
+    {
+        return $reflection->getAttributes(Export::class) !== [] || $reflection->getAttributes(Import::class) !== [];
     }
 
     /**
