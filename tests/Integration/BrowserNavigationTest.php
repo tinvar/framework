@@ -106,14 +106,19 @@ function served(string $root, \Closure $drive, array $env = [], bool $testProfil
         ];
     }
     $renderer = Renderer::start('msgpack', 'browser-e2e', $testProfile ? Shop::testBuild() . '/rsc/index.js' : null, processes: 2);
-    $port = 18_000 + random_int(0, 999);
     $keyFile = sys_get_temp_dir() . '/tinvar-e2e-' . bin2hex(random_bytes(4)) . '/app.key';
     $errorLog = (string) tempnam(sys_get_temp_dir(), 'tinvar-e2e-log-');
     // A file of its own: php -S writes its standard error without
     // appending, over whatever another writer appended.
     $appLog = (string) tempnam(sys_get_temp_dir(), 'tinvar-e2e-app-');
     $server = proc_open(
-        [PHP_BINARY, '-S', "127.0.0.1:{$port}", "{$root}/examples/shop/public/index.php"],
+        // Port 0: the system picks a free one as php -S binds it, and php -S
+        // names it in the line it starts with. A port picked here at random
+        // could already be someone else's -- any process on the machine, not
+        // only this suite -- and php -S, failing to bind it, exited only
+        // after a check that it was still running had passed, so the browser
+        // drove the stranger and the shop's own key was never generated.
+        [PHP_BINARY, '-S', '127.0.0.1:0', "{$root}/examples/shop/public/index.php"],
         [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', $errorLog, 'w']],
         $pipes,
         $root,
@@ -131,21 +136,18 @@ function served(string $root, \Closure $drive, array $env = [], bool $testProfil
     );
 
     try {
-        // php -S is up once it answers. Refused connections until then are
-        // expected, not warnings.
-        set_error_handler(static fn (): bool => true);
-        try {
-            $deadline = microtime(true) + 10;
-            while (fsockopen('127.0.0.1', $port) === false && microtime(true) < $deadline) {
+        // php -S is up once it says so, naming the port it bound: it writes
+        // that line after it is listening, and never when it could not.
+        $port = null;
+        $deadline = microtime(true) + 10;
+        while ($port === null && proc_get_status($server)['running'] && microtime(true) < $deadline) {
+            if (preg_match('#Development Server \(http://127\.0\.0\.1:(\d+)\) started#', (string) file_get_contents($errorLog), $started) === 1) {
+                $port = (int) $started[1];
+            } else {
                 usleep(50_000);
             }
-        } finally {
-            restore_error_handler();
         }
-
-        // A server that exited -- the port was taken -- would leave the
-        // browser talking to whatever else holds the port.
-        expect(proc_get_status($server)['running'])->toBeTrue("php -S did not start on port {$port}");
+        expect($port)->not->toBeNull('php -S did not start: ' . file_get_contents($errorLog));
 
         $drive("http://127.0.0.1:{$port}", $appLog, $renderer, $run['token'] ?? '');
     } finally {
