@@ -31,8 +31,8 @@ namespace Tinvar\Packages;
  * than its path names is a violation, so a database file cannot step out
  * of its layer by declaring itself in the framework's namespace. And the
  * rule fails closed: a file in no layer, a file in a package's directory
- * that none of its PSR-4 directories holds, and a source that cannot be
- * read are violations, not files skipped.
+ * that none of its PSR-4 directories holds, a link, and a source that
+ * cannot be read are violations, not files skipped.
  */
 final readonly class Layers
 {
@@ -211,10 +211,21 @@ final readonly class Layers
 
             $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator("{$root}/{$directory}", \FilesystemIterator::SKIP_DOTS));
             foreach ($iterator as $file) {
-                if (!$file instanceof \SplFileInfo || !$file->isFile() || $file->getExtension() !== 'php') {
+                if (!$file instanceof \SplFileInfo) {
                     continue;
                 }
                 $path = substr($file->getPathname(), \strlen($root) + 1);
+                // Composer autoloads through a link, and the iterator does
+                // not walk into one to a directory: what is behind it would
+                // load and never be read here. Refused, wherever it points.
+                if ($file->isLink()) {
+                    $violations[] = "{$path}: a link, so what it points at is not read as the package's own; its layer cannot be checked.";
+
+                    continue;
+                }
+                if (!$file->isFile() || $file->getExtension() !== 'php') {
+                    continue;
+                }
                 $source = self::within($path, array_keys($sources));
                 if ($source === null) {
                     $violations[] = "{$path}: in the {$package} package, and in none of its PSR-4 directories, so its layer cannot be checked.";

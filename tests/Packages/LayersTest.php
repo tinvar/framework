@@ -398,6 +398,38 @@ describe('the other layers', function () {
         ]);
     });
 
+    // Composer autoloads through a link, and a directory iterator does not
+    // walk into one: a database class behind a link to a directory would
+    // load and never be read. A link is refused, wherever it points.
+    it('fails a link in a package rather than skipping what is behind it', function () {
+        $layers = new Layers(
+            ['support' => ['Tinvar\\Support\\'], 'database' => ['Tinvar\\Orm\\'], 'framework' => ['Tinvar\\']],
+            ['database' => ['support'], 'framework' => ['support', 'database']],
+            ['packages/database/src/Orm' => 'Tinvar\\Orm\\', 'packages/framework/src' => 'Tinvar\\'],
+            ['packages/database/src' => 'database', 'packages/framework/src' => 'framework'],
+        );
+        $root = sys_get_temp_dir() . '/tinvar-layers-' . bin2hex(random_bytes(4));
+        mkdir("{$root}/packages/database/src/Orm", 0o777, true);
+        mkdir("{$root}/packages/framework/src/Http", 0o777, true);
+        mkdir("{$root}/outside", 0o777, true);
+        file_put_contents("{$root}/packages/framework/src/Http/Request.php", "<?php\nnamespace Tinvar\\Http;\n\nfinal class Request {}\n");
+        file_put_contents("{$root}/outside/Escape.php", "<?php\nnamespace Tinvar\\Orm\\Linked;\n\nuse Tinvar\\Http\\Request;\n\nfinal class Escape {}\n");
+        symlink("{$root}/outside", "{$root}/packages/database/src/Orm/Linked");
+        symlink("{$root}/outside/Escape.php", "{$root}/packages/database/src/Orm/Escape.php");
+
+        try {
+            $violations = $layers->check($root);
+            sort($violations);
+
+            expect($violations)->toBe([
+                'packages/database/src/Orm/Escape.php: a link, so what it points at is not read as the package\'s own; its layer cannot be checked.',
+                'packages/database/src/Orm/Linked: a link, so what it points at is not read as the package\'s own; its layer cannot be checked.',
+            ]);
+        } finally {
+            exec('rm -rf ' . escapeshellarg($root));
+        }
+    });
+
     it('fails a source in none of the packages, and a package that is not there', function () {
         $layers = new Layers(
             ['framework' => ['Tinvar\\']],
@@ -433,7 +465,10 @@ describe('the other layers', function () {
         try {
             $layers = new Layers(['database' => ['Tinvar\\Orm\\'], 'framework' => ['Tinvar\\']], ['framework' => ['database']], ['src' => 'Tinvar\\']);
 
-            expect($layers->check($root))->toBe(['src/Orm/Example.php:4: database uses framework, Tinvar\Live\Invalidator (comment)']);
+            $violations = $layers->check($root);
+            sort($violations);
+
+            expect($violations)->toBe(['src/Orm/Example.php:4: database uses framework, Tinvar\Live\Invalidator (comment)']);
         } finally {
             unlink($root . '/src/Orm/Example.php');
             unlink($root . '/src/Live/Invalidator.php');
