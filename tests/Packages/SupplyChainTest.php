@@ -509,6 +509,34 @@ describe('dockerfiles', function () {
         ]);
     });
 
+    // Docker and Podman take a file by any of these names, in any case; a
+    // link is not followed, so one is refused rather than left unread; and
+    // only the root's installed directories are passed over, not any
+    // directory that shares a name with one.
+    it('finds every Dockerfile and Containerfile, and refuses one that is a link', function () {
+        $this->workspace->file('dockerfile', "FROM a\n");
+        $this->workspace->file('Containerfile', "FROM b\n");
+        $this->workspace->file('deploy/api.containerfile', "FROM c\n");
+        $this->workspace->file('deploy/DOCKERFILE.prod', "FROM d\n");
+        $this->workspace->file('app/vendor/Dockerfile', "FROM e\n");
+        $this->workspace->file('app/node_modules/Dockerfile', "FROM f\n");
+        $this->workspace->file('deploy/Containerfile.containerignore', "x\n");
+        $this->workspace->file('vendor/acme/Dockerfile', "FROM g\n");
+        $this->workspace->file('outside/real', "FROM h\n");
+        $this->workspace->write();
+        symlink($this->workspace->root . '/outside/real', $this->workspace->root . '/deploy/Dockerfile');
+
+        expect((new SupplyChain($this->workspace->root, new PackagePolicy()))->check())->toBe([
+            'Containerfile builds FROM b, which is not pinned to a sha256 digest.',
+            'app/node_modules/Dockerfile builds FROM f, which is not pinned to a sha256 digest.',
+            'app/vendor/Dockerfile builds FROM e, which is not pinned to a sha256 digest.',
+            'deploy/DOCKERFILE.prod builds FROM d, which is not pinned to a sha256 digest.',
+            'deploy/Dockerfile is a link, which the check does not follow: make it the file itself.',
+            'deploy/api.containerfile builds FROM c, which is not pinned to a sha256 digest.',
+            'dockerfile builds FROM a, which is not pinned to a sha256 digest.',
+        ]);
+    });
+
     // A stage is named before it is used: a later stage's name is an image.
     it('takes only an earlier stage\'s name as a stage', function () use ($digest) {
         $this->workspace->file('Dockerfile', "FROM later\nFROM debian{$digest} AS later\n");

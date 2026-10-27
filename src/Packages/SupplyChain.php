@@ -452,12 +452,18 @@ final class SupplyChain
         return $violations;
     }
 
-    /** Directories no Dockerfile of the project's own is in: what is installed, built, or kept by tools. */
+    /**
+     * The root's directories no Dockerfile of the project's own is in: what
+     * is installed, built, or kept by tools. Only at the root: a directory
+     * deeper down that shares one of these names is the project's.
+     */
     private const array NOT_SOURCE = ['.git', '.claude', 'node_modules', 'vendor', 'dist', 'tools', '.phpstan', '.vitest', '.coverage', '.vite'];
 
     /**
-     * Every Dockerfile in the project -- `Dockerfile`, `Dockerfile.*` or
-     * `*.Dockerfile` -- with each image it reaches pinned to a digest: the
+     * Every Dockerfile in the project -- `Dockerfile`, `Containerfile`,
+     * either with a `.suffix`, or `*.Dockerfile` and `*.Containerfile`, in
+     * any case, as Docker and Podman take them -- with each image it
+     * reaches pinned to a digest: the
      * base of each stage (FROM), what COPY --from and RUN --mount from=
      * take files out of, and the `# syntax=` frontend that parses it. A
      * name its own earlier stages declared, `scratch`, and a stage's number
@@ -471,29 +477,31 @@ final class SupplyChain
     {
         $violations = [];
         foreach ($this->dockerfilePaths($this->root, '') as $relative) {
-            $violations = [...$violations, ...self::dockerfile($relative, (string) file_get_contents("{$this->root}/{$relative}"))];
+            $violations = [...$violations, ...(is_link("{$this->root}/{$relative}")
+                // What a link leads to can be anywhere, and change under the
+                // check: refused rather than followed or passed over.
+                ? ["{$relative} is a link, which the check does not follow: make it the file itself."]
+                : self::dockerfile($relative, (string) file_get_contents("{$this->root}/{$relative}")))];
         }
 
         return $violations;
     }
 
-    /** @return list<string> paths relative to the root, in a stable order */
+    /** @return list<string> paths relative to the root, in a stable order, links among them */
     private function dockerfilePaths(string $directory, string $prefix): array
     {
         $entries = scandir($directory) ?: [];
         sort($entries);
         $found = [];
         foreach ($entries as $entry) {
-            if ($entry === '.' || $entry === '..' || \in_array($entry, self::NOT_SOURCE, true)) {
+            if ($entry === '.' || $entry === '..' || ($prefix === '' && \in_array($entry, self::NOT_SOURCE, true))) {
                 continue;
             }
             $path = "{$directory}/{$entry}";
-            if (is_link($path)) {
-                continue;
-            }
-            if (is_dir($path)) {
+            if (is_dir($path) && !is_link($path)) {
                 $found = [...$found, ...$this->dockerfilePaths($path, "{$prefix}{$entry}/")];
-            } elseif (preg_match('/^(Dockerfile(\..+)?|.+\.Dockerfile)$/', $entry) === 1 && !str_ends_with($entry, '.dockerignore')) {
+            } elseif (preg_match('/^((Dockerfile|Containerfile)(\..+)?|.+\.(Dockerfile|Containerfile))$/i', $entry) === 1
+                && preg_match('/\.(dockerignore|containerignore)$/i', $entry) !== 1) {
                 $found[] = $prefix . $entry;
             }
         }
@@ -628,7 +636,9 @@ final class SupplyChain
             return null;
         }
 
-        [$location, $ref] = array_pad(explode('#', $source, 2), 2, null);
+        $parts = explode('#', $source, 2);
+        $location = $parts[0];
+        $ref = $parts[1] ?? null;
         $git = $scp
             || preg_match('#^(git|ssh|git\+[a-z]+)://#i', $source) === 1
             || str_ends_with(strtolower($location), '.git')
