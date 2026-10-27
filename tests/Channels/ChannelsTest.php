@@ -18,6 +18,8 @@ use Tinvar\Attributes\Action;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Channel;
 use Tinvar\Attributes\NoAuthorization;
+use Tinvar\Attributes\Page;
+use Tinvar\Attributes\Post;
 use Tinvar\Attributes\PublicAccess;
 use Tinvar\Attributes\TenantFrom;
 use Tinvar\Auth\AuthContext;
@@ -31,6 +33,7 @@ use Tinvar\Channels\ChannelToken;
 use Tinvar\Container\Container;
 use Tinvar\Data\Data;
 use Tinvar\Data\DataBoundaryException;
+use Tinvar\Endpoints\EndpointRegistry;
 use Tinvar\Http\BuildRegistry;
 use Tinvar\Http\Kernel;
 use Tinvar\Http\Middleware;
@@ -154,6 +157,40 @@ final class SessionActions
     }
 }
 
+final class SessionEndpoints
+{
+    #[Post('/session/sign-out', name: 'session.signOut'), NoAuthorization(reason: 'a test endpoint')]
+    public function signOut(): void
+    {
+        SignIn::$auth?->login(null);
+    }
+
+    #[Post('/session/rotate', name: 'session.rotate'), NoAuthorization(reason: 'a test endpoint')]
+    public function rotate(): Response
+    {
+        return Response::make(204)->withCookie(SESSION_COOKIE, 'session-b');
+    }
+
+    #[Post('/session/keep', name: 'session.keep'), NoAuthorization(reason: 'a test endpoint')]
+    public function keep(): void {}
+}
+
+final readonly class NothingData extends Data
+{
+    public function __construct(public bool $done) {}
+}
+
+#[Page('/goodbye', view: 'goodbye', name: 'goodbye'), NoAuthorization(reason: 'a test page')]
+final class Goodbye
+{
+    public function __invoke(): NothingData
+    {
+        SignIn::$auth?->login(null);
+
+        return new NothingData(true);
+    }
+}
+
 // --- refused at registration -------------------------------------------------
 
 #[Channel('scripts.{script}', message: OtherData::class), Authorize('viewAny', Script::class), TenantFrom(FromHeader::class)]
@@ -212,12 +249,16 @@ function kernel(): array
     $channels->registerAll([ScriptRuns::class, Status::class, Rooms::class]);
     $actions = new ActionRegistry();
     $actions->registerAll([SessionActions::class]);
+    $endpoints = new EndpointRegistry();
+    $endpoints->registerAll([SessionEndpoints::class]);
+    $routes = new RouteRegistry();
+    $routes->registerAll([Goodbye::class]);
     $hub = new MemoryHub();
     $live = LiveUpdates::fromKey(KEY, $hub, static fn (Request $r): string => $r->cookie(SESSION_COOKIE) ?? '');
 
     return [new Kernel(
         orm: $orm,
-        routes: new RouteRegistry(),
+        routes: $routes,
         queries: new QueryRegistry(),
         actions: $actions,
         auth: $auth,
@@ -229,6 +270,7 @@ function kernel(): array
         builds: new BuildRegistry('b1'),
         container: $container,
         live: $live,
+        endpoints: $endpoints,
         channels: $channels,
     ), $hub, $live, $fixture, $orm, $channels];
 }
@@ -582,6 +624,32 @@ describe('an action that changes who the browser is', function () {
         expect($nothing->status)->toBe(200)
             ->and($nothing->header('x-test-hub-revoked'))->toBeNull()
             ->and($hub->revoked)->toBe(1);
+    });
+
+    it('takes it away whatever answered: an endpoint that signs out, or hands out another session', function () {
+        [$kernel] = kernel();
+
+        [$signOut] = post($kernel, '/session/sign-out', [], ALICE);
+        [$rotate] = post($kernel, '/session/rotate', [], ALICE);
+        [$keep] = post($kernel, '/session/keep', [], ALICE);
+
+        expect($signOut->status)->toBe(204)
+            ->and($signOut->header('x-test-hub-revoked'))->toBe('1')
+            ->and($rotate->header('x-test-hub-revoked'))->toBe('1')
+            ->and($keep->status)->toBe(204)
+            ->and($keep->header('x-test-hub-revoked'))->toBeNull();
+    });
+
+    it('takes it away for a page whose loader signs out', function () {
+        [$kernel] = kernel();
+
+        $response = $kernel->handle(
+            new Request('GET', '/goodbye', ALICE, cookies: [SESSION_COOKIE => 'session-a']),
+            static fn (): Response => Response::make(200, 'page'),
+        );
+
+        expect($response->status)->toBe(200)
+            ->and($response->header('x-test-hub-revoked'))->toBe('1');
     });
 });
 

@@ -28,6 +28,14 @@ final class AuthContext
     private string $epoch = '';
 
     /**
+     * Whom the first login() of the request signed in, with their epoch:
+     * the session's user, as the stack found them. Null before any.
+     *
+     * @var array{?string, string}|null
+     */
+    private ?array $first = null;
+
+    /**
      * Per-fiber overrides.
      *
      * "Context is fiber-local, so a suspended fiber can't leak a switch to
@@ -92,6 +100,18 @@ final class AuthContext
     {
         $this->user = $user;
         $this->epoch = $user === null ? '' : $epoch;
+        $this->first ??= [$this->user?->authIdentifier(), $this->epoch];
+    }
+
+    /**
+     * Whether the request has moved who is signed in since its first
+     * login(): signed someone in or out, or handed in another epoch -- a
+     * sign-in, a sign-out, a role change. What the browser was let in to
+     * hear for the session as it was is then no longer its (ADR 0069).
+     */
+    public function rebound(): bool
+    {
+        return $this->first !== null && $this->first !== [$this->user?->authIdentifier(), $this->epoch];
     }
 
     /**
@@ -135,6 +155,7 @@ final class AuthContext
     {
         $this->user = null;
         $this->epoch = '';
+        $this->first = null;
         $this->byFiber = new \WeakMap();
     }
 }

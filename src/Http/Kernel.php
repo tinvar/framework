@@ -1223,6 +1223,9 @@ final class Kernel
         try {
             $response = $this->dispatch($request, $respond, $rawBody, $failure);
             $response = $errorPage ? $this->withErrorPage($request, $response, $respond, $failure) : $response;
+            // Whatever answered -- an action, an endpoint, a page, a
+            // handoff, an error page -- if it moved who the browser is.
+            $response = $this->revokeLiveIfRebound($request, $response);
             // The toolbar draws into the document while the session is still
             // known, before the reset; telemetry ends after it, so what it
             // counts, logs and stamps with X-Request-Id is the response that
@@ -1374,18 +1377,10 @@ final class Kernel
                 $this->telemetry?->route('_action');
                 ActionEndpoint::assertMethod($request);
 
-                // Who the action ran for, as the stack signed them in: an
-                // action that changes it -- a sign-in, a sign-out, a moved
-                // epoch -- ends what the hub was letting this browser hear.
-                $bound = null;
                 try {
                     $response = $this->actionStack->run(
                         $request,
-                        function (Request $passed) use ($rawBody, &$bound): Response {
-                            $bound = [$this->auth->id(), $this->auth->epoch()];
-
-                            return $this->actions_->handle($passed, $rawBody);
-                        },
+                        fn (Request $passed): Response => $this->actions_->handle($passed, $rawBody),
                     );
                 } catch (HttpException $e) {
                     // "A 419 becomes a same-origin redirect back with a
@@ -1404,8 +1399,6 @@ final class Kernel
                     }
                     throw $e;
                 }
-
-                $response = $this->revokeLiveIfRebound($request, $response, $bound);
 
                 // A client-router call (`RSC: 1`) fetches with redirect:
                 // 'manual', which hides a 303's Location entirely. It reads
@@ -2009,23 +2002,24 @@ final class Kernel
     }
 
     /**
-     * The response, taking away the hub's grant when the action moved who
-     * the browser is: another user or auth epoch than the stack signed in,
-     * or a session cookie naming another session. The hub cannot be told to
+     * The response, taking away the hub's grant when the request moved who
+     * the browser is, whatever answered it: another user or auth epoch than
+     * the stack first signed in (AuthContext::rebound()), or a session
+     * cookie naming another session. Asked once, around every dispatch,
+     * rather than on each path that runs application code: an endpoint, a
+     * handoff, a test sign-in signs people in and out as well as an action. The hub cannot be told to
      * forget a grant it gave -- it checks a signature and an expiry -- but
      * the browser can be told to drop it, so no stream it opens after this
      * response is let in on the session it no longer has (ADR 0069). The
      * next trade, under the new binding, is the 401 that purges the rest.
-     *
-     * @param array{?string, string}|null $bound the user and epoch the action ran for
      */
-    private function revokeLiveIfRebound(Request $request, Response $response, ?array $bound): Response
+    private function revokeLiveIfRebound(Request $request, Response $response): Response
     {
-        if ($this->live === null || $bound === null) {
+        if ($this->live === null) {
             return $response;
         }
 
-        if ($bound !== [$this->auth->id(), $this->auth->epoch()]) {
+        if ($this->auth->rebound()) {
             return $this->live->hub->revoke($response);
         }
 
