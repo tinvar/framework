@@ -61,16 +61,38 @@ final class Recording
      * Keys whose string values are never kept, wherever they appear: the
      * render frame's `nonce` and `csrf`, its page's `routeToken` and
      * `historyKey`, a minted frame's `token`s, and the same names in loader
-     * data, query arguments, flashed input and the URL's query.
+     * data, query arguments, flashed input and the URL's query; and the
+     * names the log's Redactor holds a credential under -- a DSN, a private
+     * or access key, a session id, a one-time code -- since a browser
+     * extension reads what the toolbar does (docs/devtools-protocol.md).
      */
-    private const string SECRET_KEYS = '/token|nonce|csrf|password|passwd|secret|historykey|signature|cookie|authorization|api[_-]?key/i';
+    private const string SECRET_KEYS = '/token|nonce|csrf|xsrf|password|passwd|passphrase|secret|historykey|signature|cookie|authorization|bearer'
+        . '|credential|dsn|(?:api|app|private|access)[_-]?key|session[_-]?id|sessid|^otp|otp\z/i';
+
+    /**
+     * Shapes cut out of every string kept, whatever its key: a renderer's
+     * error message, a chunk of what it drew, raw SQL -- free text, which
+     * quotes what it was given. The credentials of a URL (a DSN in a
+     * connection error), an Authorization header's, a JWT and the
+     * framework's own signed tokens. Not addresses or long identifiers, as
+     * the log's Redactor takes: props are the page's own, and an email the
+     * page shows is no secret from the developer reading it.
+     *
+     * @var array<string, string> pattern => replacement
+     */
+    private const array SECRET_VALUES = [
+        '~\b([a-z][a-z0-9+.\-]*://[^\s/:@]*):[^\s@/]+@~i' => '$1:' . self::REDACTED . '@',
+        '/\b(Bearer)\s+[A-Za-z0-9._~+\/=\-]{8,}/i' => '$1 ' . self::REDACTED,
+        '/\beyJ[A-Za-z0-9_\-]*\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*/' => '[jwt]',
+        '/\bv1\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}/' => '[token]',
+    ];
 
     /**
      * And in the URL's query, the names the Redactor takes out of a query
      * too: a handoff's one-time `code`, a `session`, a `sig`. Not in frames,
      * where `code` is an error's and `key` a list item's.
      */
-    private const string QUERY_SECRET_KEYS = '/token|nonce|csrf|passw|secret|historykey|signature|sig|cookie|auth|api[_-]?key|code|session/i';
+    private const string QUERY_SECRET_KEYS = '/token|nonce|csrf|xsrf|passw|secret|historykey|signature|sig|cookie|auth|credential|(?:api|app|private|access)[_-]?key|code|session|^otp|otp\z/i';
 
     /** A signed token (Render\SignedToken) -- a fragment's or a file's, in a path. */
     private const string SIGNED_TOKEN = '/\bv1\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}/';
@@ -227,7 +249,7 @@ final class Recording
             // UTF-8 -- as their size and the start of them as text.
             $bytes = $frame['b'];
             $entry['bytes'] = \strlen($bytes);
-            $body = ['t' => 'chunk', 'b' => ['bytes' => \strlen($bytes), 'preview' => self::text(substr($bytes, 0, self::PREVIEW_BYTES))]];
+            $body = ['t' => 'chunk', 'b' => ['bytes' => \strlen($bytes), 'preview' => self::values(self::text(substr($bytes, 0, self::PREVIEW_BYTES)))]];
         } else {
             $found = [];
             $body = self::walk($frame, null, 0, $found);
@@ -286,7 +308,7 @@ final class Recording
             return;
         }
 
-        $sql = $this->scrubbed(self::text($statement->sql));
+        $sql = $this->scrubbed(self::values(self::text($statement->sql)));
         $this->rawSql[] = [
             'sql' => \is_string($sql) ? $sql : '',
             'tables' => array_map(self::text(...), $statement->tables),
@@ -448,7 +470,7 @@ final class Recording
         }
 
         return match (true) {
-            \is_string($value) => self::text($value),
+            \is_string($value) => self::values(self::text($value)),
             $value instanceof Bin => ['bin' => \strlen($value->bytes)],
             \is_object($value) => '[' . get_debug_type($value) . ']',
             // JSON has no word for these.
@@ -484,6 +506,18 @@ final class Recording
         ]));
 
         return str_replace($forms, self::REDACTED, $value);
+    }
+
+    /**
+     * $text with every SECRET_VALUES shape cut out; a string the patterns
+     * could not finish -- PCRE's backtracking limit -- is not kept at all,
+     * rather than kept whole.
+     */
+    private static function values(string $text): string
+    {
+        $redacted = preg_replace(array_keys(self::SECRET_VALUES), array_values(self::SECRET_VALUES), $text);
+
+        return \is_string($redacted) ? $redacted : self::REDACTED;
     }
 
     /** Valid UTF-8, whatever the bytes were: the renderer chose them. */

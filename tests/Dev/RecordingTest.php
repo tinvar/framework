@@ -177,3 +177,60 @@ it('keeps raw SQL on tenant tables as the ORM flagged it, so many of them, with 
         ->and($finished['detail']['rawSqlDropped'])->toBe(3)
         ->and($finished['summary']['rawSql'])->toBe(Recording::MAX_RAW_SQL + 3);
 });
+
+// A browser extension reads what the toolbar does (docs/devtools-protocol.md):
+// the names a credential is kept under in the log's Redactor are kept out
+// here too, and the shapes of one in free text -- a renderer's error, a
+// chunk, raw SQL -- whatever key it is under.
+it('takes out the names a credential is kept under', function () {
+    expect(Recording::redact([
+        'dsn' => 'mysql://shop:pw@db/shop',
+        'privateKey' => 'k1',
+        'access_key' => 'k2',
+        'appKey' => 'k3',
+        'credential' => 'c',
+        'sessionId' => 's1',
+        'otp' => '123456',
+        'xsrf' => 'x',
+        'passphrase' => 'p',
+        // And not what only looks like one.
+        'keyboard' => 'qwerty',
+        'footprint' => 'small',
+        'session' => 'spring',
+    ]))->toBe([
+        'dsn' => Recording::REDACTED,
+        'privateKey' => Recording::REDACTED,
+        'access_key' => Recording::REDACTED,
+        'appKey' => Recording::REDACTED,
+        'credential' => Recording::REDACTED,
+        'sessionId' => Recording::REDACTED,
+        'otp' => Recording::REDACTED,
+        'xsrf' => Recording::REDACTED,
+        'passphrase' => Recording::REDACTED,
+        'keyboard' => 'qwerty',
+        'footprint' => 'small',
+        'session' => 'spring',
+    ]);
+});
+
+it('cuts a credential out of free text wherever it is', function () {
+    $jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl';
+    $signed = 'v1.eyJwYXlsb2FkIjoiZnJhZ21lbnQifQ.c2lnbmF0dXJlLW9mLXRoZS10b2tlbg';
+    $recording = recording();
+    $recording->frame(FrameTap::FROM_RENDERER, [
+        't' => 'error',
+        'message' => "connect failed: mysql://shop:hunter2-pw@db:3306/shop, Authorization: Bearer abcdef0123456789, jwt {$jwt}",
+    ]);
+    $recording->frame(FrameTap::FROM_RENDERER, ['t' => 'chunk', 'b' => "<a href=\"/_fragment/{$signed}\">x</a> http://localhost:8000/catalog"]);
+    $recording->rawStatement(new RawStatement("SELECT '?' -- postgres://app:hunter2-pw@db/app", ['racks'], '', '', false));
+    $json = (string) json_encode(detail($recording));
+
+    expect($json)->not->toContain('hunter2-pw')
+        ->and($json)->not->toContain('abcdef0123456789')
+        ->and($json)->not->toContain($jwt)
+        ->and($json)->not->toContain($signed)
+        ->and($json)->toContain('mysql:\/\/shop:[redacted]@db:3306')
+        ->and($json)->toContain('Bearer [redacted]')
+        // A URL with a port and no credentials is left alone.
+        ->and($json)->toContain('http:\/\/localhost:8000\/catalog');
+});
