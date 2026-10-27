@@ -90,41 +90,41 @@ final readonly class Layers
      */
     public static function framework(): self
     {
-        return new self(
-            [
-                'support' => ['Tinvar\\Support\\', 'Tinvar\\Codec\\', 'Tinvar\\Container\\'],
-                'database' => ['Tinvar\\Orm\\'],
-                'framework' => ['Tinvar\\'],
-                'tenancy' => ['Tinvar\\Tenancy\\'],
-                'testing' => ['Tinvar\\Testing\\'],
-                'codegen' => ['Tinvar\\Codegen\\'],
-            ],
-            [
-                'database' => ['support'],
-                'framework' => ['support', 'database'],
-                'tenancy' => ['support', 'database', 'framework'],
-                'testing' => ['support', 'database', 'framework'],
-                'codegen' => ['support', 'database', 'framework'],
-            ],
-            [
-                'packages/support/src/Codec' => 'Tinvar\\Codec\\',
-                'packages/support/src/Container' => 'Tinvar\\Container\\',
-                'packages/support/src/Support' => 'Tinvar\\Support\\',
-                'packages/database/src/Orm' => 'Tinvar\\Orm\\',
-                'packages/framework/src' => 'Tinvar\\',
-                'packages/tenancy/src/Tenancy' => 'Tinvar\\Tenancy\\',
-                'packages/testing/src/Testing' => 'Tinvar\\Testing\\',
-                'packages/codegen/src' => 'Tinvar\\Codegen\\',
-            ],
-            [
-                'packages/support/src' => 'support',
-                'packages/database/src' => 'database',
-                'packages/framework/src' => 'framework',
-                'packages/tenancy/src' => 'tenancy',
-                'packages/testing/src' => 'testing',
-                'packages/codegen/src' => 'codegen',
-            ],
-        );
+        $map = self::maps()['packages'];
+
+        return new self($map['layers'], $map['uses'], $map['sources'], $map['packages']);
+    }
+
+    /**
+     * The modules inside the framework's package (ADR 0077), read over its
+     * src/ alone, each file in the module of its class: the queue's storage,
+     * on the database alone; the core, which names no module; jobs, on the
+     * queue and the core; events, mail, webhooks and transfers, each on jobs
+     * and none on another; and the kernel -- the HTTP kernel, the console and
+     * the server -- which wires them together. The packages around the
+     * framework are layers here too, as they are in framework(), so a name
+     * of theirs is in theirs rather than the core's.
+     */
+    public static function modules(): self
+    {
+        $map = self::maps()['modules'];
+
+        return new self($map['layers'], $map['uses'], $map['sources']);
+    }
+
+    /**
+     * The two maps, which live beside src/ (layers.php): they name every
+     * layer's namespace, as a string, on purpose.
+     *
+     * @return array{
+     *     packages: array{layers: array<string, list<string>>, uses: array<string, list<string>>, sources: array<string, string>, packages: array<string, string>},
+     *     modules: array{layers: array<string, list<string>>, uses: array<string, list<string>>, sources: array<string, string>},
+     * }
+     */
+    private static function maps(): array
+    {
+        /** @var array{packages: array{layers: array<string, list<string>>, uses: array<string, list<string>>, sources: array<string, string>, packages: array<string, string>}, modules: array{layers: array<string, list<string>>, uses: array<string, list<string>>, sources: array<string, string>}} */
+        return require \dirname(__DIR__, 2) . '/layers.php';
     }
 
     /**

@@ -152,6 +152,88 @@ describe('the layers', function () {
     ]);
 });
 
+// ADR 0077: the framework's own package, held apart into modules.
+describe('the modules', function () {
+    it('passes the framework as it is', function () {
+        expect(Layers::modules()->check(\dirname(__DIR__, 4)))->toBe([]);
+    });
+
+    it('reads the framework\'s package alone', function () {
+        expect(Layers::modules()->sources())->toBe(['packages/framework/src' => 'Tinvar\\'])
+            ->and(Layers::modules()->packages())->toBe([]);
+    });
+
+    it('puts a class in its module, an attribute in the module it belongs to', function (string $name, string $module) {
+        expect(Layers::modules()->layerOf($name))->toBe($module);
+    })->with([
+        'the queue' => ['Tinvar\Queue\DatabaseQueue', 'queue'],
+        'the worker, which runs jobs' => ['Tinvar\Jobs\Worker', 'jobs'],
+        'the sync queue, which runs them too' => ['Tinvar\Jobs\SyncQueue', 'jobs'],
+        'the dispatcher' => ['Tinvar\Jobs\Dispatcher', 'jobs'],
+        '#[Queue]' => ['Tinvar\Attributes\Queue', 'jobs'],
+        'the event bus' => ['Tinvar\Events\Events', 'events'],
+        '#[Listener]' => ['Tinvar\Attributes\Listener', 'events'],
+        'the mailer' => ['Tinvar\Mail\Mailer', 'mail'],
+        'the webhook endpoint' => ['Tinvar\Webhooks\WebhookEndpoint', 'webhooks'],
+        '#[Webhook]' => ['Tinvar\Attributes\Webhook', 'webhooks'],
+        'an export\'s runner' => ['Tinvar\Transfers\TransferRunner', 'transfers'],
+        '#[Export], which the build rules read' => ['Tinvar\Attributes\Export', 'core'],
+        'the user lookup, which the handoff asks too' => ['Tinvar\Auth\UserLookup', 'core'],
+        'the nonce store, which the handoff claims in too' => ['Tinvar\Http\DatabaseNonceStore', 'core'],
+        'the request attributes' => ['Tinvar\Http\RequestAttributes', 'core'],
+        'the HTTP kernel' => ['Tinvar\Http\Kernel', 'kernel'],
+        'what an application shows the testing layer' => ['Tinvar\Http\TestableApplication', 'kernel'],
+        'the console' => ['Tinvar\Console\Console', 'kernel'],
+        'a cron expression, which #[Schedule] is written in' => ['Tinvar\Console\Cron', 'core'],
+        '#[Schedule], which tasks anywhere carry' => ['Tinvar\Attributes\Schedule', 'core'],
+        'the server' => ['Tinvar\Server\ServeCommand', 'kernel'],
+        'the ORM' => ['Tinvar\Orm\Orm', 'database'],
+        'tenancy' => ['Tinvar\Tenancy\TenantHosts', 'tenancy'],
+    ]);
+
+    it('lets a module use the core and jobs, never one beside it, and only the kernel use them all', function () {
+        $modules = Layers::modules();
+
+        expect($modules->names())->toBe(['support', 'database', 'queue', 'core', 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'kernel', 'tenancy', 'testing', 'codegen'])
+            ->and($modules->mayUse('queue', 'database'))->toBeTrue()
+            ->and($modules->mayUse('queue', 'core'))->toBeFalse()
+            ->and($modules->mayUse('queue', 'jobs'))->toBeFalse()
+            ->and($modules->mayUse('core', 'queue'))->toBeTrue()
+            ->and($modules->mayUse('core', 'jobs'))->toBeFalse()
+            ->and($modules->mayUse('core', 'kernel'))->toBeFalse()
+            ->and($modules->mayUse('jobs', 'queue'))->toBeTrue()
+            ->and($modules->mayUse('jobs', 'core'))->toBeTrue()
+            ->and($modules->mayUse('jobs', 'events'))->toBeFalse()
+            ->and($modules->mayUse('events', 'jobs'))->toBeTrue()
+            ->and($modules->mayUse('mail', 'jobs'))->toBeTrue()
+            ->and($modules->mayUse('mail', 'webhooks'))->toBeFalse()
+            ->and($modules->mayUse('webhooks', 'mail'))->toBeFalse()
+            ->and($modules->mayUse('webhooks', 'events'))->toBeFalse()
+            ->and($modules->mayUse('transfers', 'mail'))->toBeFalse()
+            ->and($modules->mayUse('kernel', 'transfers'))->toBeTrue()
+            ->and($modules->mayUse('kernel', 'webhooks'))->toBeTrue()
+            ->and($modules->mayUse('kernel', 'tenancy'))->toBeFalse();
+    });
+
+    it('fails the core naming a module, a module naming one beside it, and the queue naming jobs', function () {
+        $file = static fn (string $namespace, string $class, string $line): string => "<?php\nnamespace {$namespace};\n\n{$line}\n\nfinal class {$class} {}\n";
+        $crossed = static fn (string $source): array => Layers::modules()->checkSource($source, 'Example.php');
+
+        expect($crossed($file('Tinvar\\Identity', 'Example', 'use Tinvar\\Jobs\\JobRunner;')))->toBe(['Example.php:4: core uses jobs, Tinvar\Jobs\JobRunner (use)'])
+            ->and($crossed($file('Tinvar\\Http', 'Example', 'use Tinvar\\Webhooks\\WebhookEndpoint;')))->toBe(['Example.php:4: core uses webhooks, Tinvar\Webhooks\WebhookEndpoint (use)'])
+            ->and($crossed($file('Tinvar\\Actions', 'Example', 'use Tinvar\\Http\\Kernel;')))->toBe(['Example.php:4: core uses kernel, Tinvar\Http\Kernel (use)'])
+            ->and($crossed($file('Tinvar\\Render', 'Example', "const BUS = 'Tinvar\\\\Events\\\\';")))->toBe(['Example.php:4: core uses events, Tinvar\Events (string)'])
+            ->and($crossed($file('Tinvar\\Queue', 'Example', 'use Tinvar\\Jobs\\Envelope;')))->toBe(['Example.php:4: queue uses jobs, Tinvar\Jobs\Envelope (use)'])
+            ->and($crossed($file('Tinvar\\Queue', 'Example', 'use Tinvar\\Http\\RequestScope;')))->toBe(['Example.php:4: queue uses core, Tinvar\Http\RequestScope (use)'])
+            ->and($crossed($file('Tinvar\\Mail', 'Example', 'use Tinvar\\Webhooks\\OutboundWebhooks;')))->toBe(['Example.php:4: mail uses webhooks, Tinvar\Webhooks\OutboundWebhooks (use)'])
+            ->and($crossed($file('Tinvar\\Jobs', 'Example', 'use Tinvar\\Events\\Events;')))->toBe(['Example.php:4: jobs uses events, Tinvar\Events\Events (use)'])
+            ->and($crossed($file('Tinvar\\Attributes', 'Schedule', 'use Tinvar\\Console\\Console;')))->toBe(['Example.php:4: core uses kernel, Tinvar\Console\Console (use)'])
+            ->and($crossed($file('Tinvar\\Mail', 'Example', 'use Tinvar\\Jobs\\Dispatcher;')))->toBe([])
+            ->and($crossed($file('Tinvar\\Http', 'Kernel', 'use Tinvar\\Webhooks\\WebhookEndpoint;')))->toBe([])
+            ->and($crossed($file('Tinvar\\Observability', 'Example', 'use Tinvar\\Queue\\Queue;')))->toBe([]);
+    });
+});
+
 describe('a database class', function () {
     it('passes using only support and itself', function () {
         $source = orm(
@@ -212,18 +294,46 @@ describe('a database class', function () {
         ]);
     });
 
-    it('fails naming one in a string, but not a namespace prefix', function () {
+    // ADR 0077: a prefix loads nothing, but code that asks whether a class
+    // is under one knows of that namespace. `Tinvar\` alone is under every
+    // layer, so in none of them.
+    it('fails naming one in a string, a namespace prefix among them, but not Tinvar\ alone', function () {
         $body = <<<'PHP'
             public function a(): array
             {
-                return ['Tinvar\Http\Request', "\\Tinvar\\Live\\Invalidator", str_starts_with('x', 'Tinvar\Http\\')];
+                return ['Tinvar\Http\Request', "\\Tinvar\\Live\\Invalidator", str_starts_with('x', 'Tinvar\Http\\'), str_starts_with('x', 'Tinvar\\')];
             }
             PHP;
 
         expect(crossed(orm(body: $body)))->toBe([
             'Example.php:14: database uses framework, Tinvar\Http\Request (string)',
             'Example.php:14: database uses framework, Tinvar\Live\Invalidator (string)',
+            'Example.php:14: database uses framework, Tinvar\Http (string)',
         ]);
+    });
+
+    // ADR 0077: two unqualified forms in comments read as code.
+    it('fails a member of a class named short in a comment, by its class beside the file or the one class with that name', function () {
+        $docblock = <<<'PHP'
+            /**
+             * Read through Request::attribute(), with RequestScope::reset()
+             * after; Kernel::LIVE_MINTER names nothing it can find, and
+             * Worker::process() is two classes' name. An example passes
+             * #[TenantFrom(Host::class)], as an application writes it.
+             */
+            PHP;
+        $classes = ['Tinvar\Http\Request', 'Tinvar\Http\RequestScope', 'Tinvar\Orm\Worker', 'Tinvar\Http\Worker', 'Tinvar\Tenancy\Host', 'Tinvar\Orm\Example'];
+
+        expect(Layers::framework()->checkSource(orm(docblock: $docblock), 'Example.php', NAMESPACES, $classes))->toBe([
+            'Example.php:10: database uses framework, Tinvar\Http\Request (comment)',
+            'Example.php:10: database uses framework, Tinvar\Http\RequestScope (comment)',
+        ]);
+    });
+
+    it('passes a member named short through an import, which is counted at the import', function () {
+        $source = orm('use Tinvar\Support\Str;', '// Str::lower() and Model::find(), its own.');
+
+        expect(Layers::framework()->checkSource($source, 'Example.php', NAMESPACES, ['Tinvar\Support\Str', 'Tinvar\Orm\Model']))->toBe([]);
     });
 
     it('fails naming one in a docblock or a comment, shortened as these comments write them', function () {
@@ -340,6 +450,29 @@ describe('the other layers', function () {
             'Column.php:9: database uses framework, Tinvar\Attributes\Panel (code)',
             'Column.php:14: database uses framework, Tinvar\Attributes\ClassAttributes (code)',
             'Column.php:20: database uses framework, Tinvar\Attributes\Kind (code)',
+        ]);
+    });
+
+    // ADR 0077: PHPStan reads a bare type in a docblock as a class beside
+    // the file, so in a shared namespace the rule does too.
+    it('fails a class of a shared namespace named bare in a docblock type, and not in its prose', function () {
+        $source = <<<'PHP'
+            <?php
+            namespace Tinvar\Attributes;
+
+            /**
+             * Panel by panel, as a Panel would say.
+             *
+             * @param array<string, Panel>|null $panels the Panel each is in
+             * @return \Closure(Kind): Column what Panel says
+             */
+            final class Column {}
+            PHP;
+        $classes = ['Tinvar\Attributes\Panel', 'Tinvar\Attributes\Kind', 'Tinvar\Attributes\Column'];
+
+        expect(shared()->checkSource($source, 'Column.php', NAMESPACES, $classes))->toBe([
+            'Column.php:7: database uses framework, Tinvar\Attributes\Panel (comment)',
+            'Column.php:8: database uses framework, Tinvar\Attributes\Kind (comment)',
         ]);
     });
 

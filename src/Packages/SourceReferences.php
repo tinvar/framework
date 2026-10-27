@@ -24,9 +24,11 @@ namespace Tinvar\Packages;
  *              the framework with no import at all.
  *   string     a class name in a string literal, as class_exists() or a
  *              container key takes one: always absolute, so only those
- *              starting `Tinvar\`. A namespace written with its trailing
- *              `\`, as a prefix names are compared with, names no class
- *              and loads nothing, so it is not one.
+ *              starting `Tinvar\`. And a namespace written with its trailing
+ *              `\`, as a prefix names are compared with: it loads nothing,
+ *              but code that asks whether a class is under `Tinvar\Http\`
+ *              knows of Http as surely as code that imports it (ADR 0077).
+ *              `Tinvar\` alone is under every layer, so in none of them.
  *   comment    a qualified name in a comment or docblock. A docblock type is
  *              as much a reference as one in code -- PHPStan resolves it --
  *              and a mention in prose of a class from a layer above says the
@@ -34,10 +36,19 @@ namespace Tinvar\Packages;
  *              the convention these comments write in, the `Tinvar\` left
  *              off: `Cache\TagNamespace` is that namespace when Cache is one
  *              of $namespaces and neither an import nor below the file's own.
+ *              Two unqualified forms count too (ADR 0077): a member of a
+ *              class -- `RequestAttributes::FLASH` reads as code, not
+ *              English -- by its class beside the file, or else the one
+ *              class of $classes with that short name, when only one has
+ *              it; and a bare name in a docblock tag's type (`@param Panel
+ *              $panel`), by its class beside the file, as PHPStan reads it.
+ *              An imported name is counted at its import.
  *
  * Not resolved: a name built at runtime, as a string concatenated or read
- * from config. A layer that needed one would be hiding a dependency, which
- * is for review to catch.
+ * from config; and a short name in prose that is neither of those two ("the
+ * Kernel mounts it"), since every English word that is also a class's name
+ * would be taken for a use. A layer that needed a name built at runtime
+ * would be hiding a dependency, which is for review to catch.
  */
 final readonly class SourceReferences
 {
@@ -68,6 +79,13 @@ final readonly class SourceReferences
             $known[strtolower(trim($namespace, '\\'))] = true;
         }
         $siblings = array_fill_keys(array_map(static fn (string $class): string => ltrim($class, '\\'), $classes), true);
+        // Each short name, lowercased, with the one class that has it; null
+        // where two do, so neither is guessed at.
+        $short = [];
+        foreach (array_keys($siblings) as $class) {
+            $name = strtolower(substr($class, (int) strrpos('\\' . $class, '\\')));
+            $short[$name] = \array_key_exists($name, $short) ? null : $class;
+        }
 
         $tokens = \PhpToken::tokenize($source);
         $count = \count($tokens);
@@ -129,8 +147,9 @@ final readonly class SourceReferences
                     $references[] = ['name' => $sibling, 'line' => $token->line, 'kind' => 'code'];
                 }
             } elseif ($token->is([\T_CONSTANT_ENCAPSED_STRING, \T_ENCAPSED_AND_WHITESPACE])) {
-                foreach (self::named($token->text, '/(?<![A-Za-z0-9_\\\\])\\\\?Tinvar(?:\\\\[A-Za-z_][A-Za-z0-9_]*)+(?![A-Za-z0-9_\\\\])/') as [$name, $offset]) {
-                    $references[] = ['name' => ltrim($name, '\\'), 'line' => $token->line + $offset, 'kind' => 'string'];
+                // A class's name, or a namespace's with its trailing `\`.
+                foreach (self::named($token->text, '/(?<![A-Za-z0-9_\\\\])\\\\?Tinvar(?:\\\\[A-Za-z_][A-Za-z0-9_]*)+\\\\?(?![A-Za-z0-9_\\\\])/') as [$name, $offset]) {
+                    $references[] = ['name' => trim($name, '\\'), 'line' => $token->line + $offset, 'kind' => 'string'];
                 }
             } elseif ($token->is([\T_COMMENT, \T_DOC_COMMENT])) {
                 foreach (self::named($token->text, '/(?<![A-Za-z0-9_\\\\$])\\\\?[A-Za-z_][A-Za-z0-9_]*(?:\\\\[A-Za-z_][A-Za-z0-9_]*)+/') as [$name, $offset]) {
@@ -138,6 +157,9 @@ final readonly class SourceReferences
                     if ($resolved !== null) {
                         $references[] = ['name' => $resolved, 'line' => $token->line + $offset, 'kind' => 'comment'];
                     }
+                }
+                foreach (self::unqualified($token, $namespace, $imports, $siblings, $short) as $reference) {
+                    $references[] = $reference;
                 }
             }
         }
@@ -210,6 +232,86 @@ final readonly class SourceReferences
         }
 
         return [$count, $imported];
+    }
+
+    /**
+     * The unqualified names a comment uses as code: one before `::`, and,
+     * in a docblock, each bare name in a tag's type.
+     *
+     * @param array<string, string>      $imports lowercased alias => the name it imports
+     * @param array<string, true>        $classes every class there is
+     * @param array<string, string|null> $short   lowercased short name => the one class with it
+     * @return list<array{name: string, line: int, kind: 'comment'}>
+     */
+    private static function unqualified(\PhpToken $comment, string $namespace, array $imports, array $classes, array $short): array
+    {
+        $found = [];
+        foreach (explode("\n", $comment->text) as $offset => $line) {
+            // `RequestAttributes::FLASH`, `Worker::process()`: a member of one
+            // class, not the end of a qualified name, a variable's or a
+            // member's. Not `Host::class`, which is how an example writes
+            // what an application passes -- `#[TenantFrom(Host::class)]` --
+            // rather than what this code calls. One imported is counted at
+            // its import.
+            if (preg_match_all('/(?<![A-Za-z0-9_\\\\$>:])([A-Z][A-Za-z0-9_]*)::(?!class\b)(?=[A-Za-z_$])/', $line, $matches) > 0) {
+                foreach ($matches[1] as $name) {
+                    $class = isset($imports[strtolower($name)]) ? null : self::bare($name, $namespace, $imports, $classes) ?? $short[strtolower($name)] ?? null;
+                    if ($class !== null) {
+                        $found[] = ['name' => $class, 'line' => $comment->line + $offset, 'kind' => 'comment'];
+                    }
+                }
+            }
+
+            if (!$comment->is(\T_DOC_COMMENT) || preg_match('/@(?:phpstan-|psalm-)?(?:param|return|var|throws|see|property|property-read|property-write|extends|implements|use|mixin)\s+(.*)$/', $line, $tag) !== 1) {
+                continue;
+            }
+            // The type, up to the first space outside its brackets: a name
+            // inside `array<string, Panel>` or `\Closure(Panel): void` is the
+            // type's as much as one alone, and the prose after it is not.
+            if (preg_match_all('/(?<![A-Za-z0-9_\\\\$-])[A-Za-z_][A-Za-z0-9_]*(?![A-Za-z0-9_\\\\])/', self::typeOf($tag[1]), $names) > 0) {
+                foreach ($names[0] as $name) {
+                    $class = self::bare($name, $namespace, $imports, $classes);
+                    if ($class !== null) {
+                        $found[] = ['name' => $class, 'line' => $comment->line + $offset, 'kind' => 'comment'];
+                    }
+                }
+            }
+        }
+
+        return $found;
+    }
+
+    /** The type $text starts with: up to its first space outside brackets, past a callable's `: ` return. */
+    private static function typeOf(string $text): string
+    {
+        $depth = 0;
+        $length = \strlen($text);
+        for ($i = 0; $i < $length; $i++) {
+            $char = $text[$i];
+            if (str_contains('<({[', $char)) {
+                $depth++;
+            } elseif (str_contains('>)}]', $char)) {
+                $depth = max(0, $depth - 1);
+            } elseif ($depth === 0 && ctype_space($char) && !str_ends_with(substr($text, 0, $i), ':')) {
+                return substr($text, 0, $i);
+            }
+        }
+
+        return $text;
+    }
+
+    /**
+     * A bare name that is a class beside the file in its namespace, and is
+     * not an import -- which is counted where it is made.
+     *
+     * @param array<string, string> $imports
+     * @param array<string, true>   $classes
+     */
+    private static function bare(string $name, string $namespace, array $imports, array $classes): ?string
+    {
+        $sibling = ltrim($namespace . '\\' . $name, '\\');
+
+        return !isset($imports[strtolower($name)]) && isset($classes[$sibling]) ? $sibling : null;
     }
 
     /** @param array<string, string> $imports */
