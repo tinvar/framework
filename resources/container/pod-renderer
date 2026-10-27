@@ -1,0 +1,87 @@
+#!/bin/sh
+# The renderers' container in the two-container shape (ADR 0071): the image
+# starts as the renderers' own user, in the socket group, and this checks
+# that and becomes the pool's supervisor -- Node, as the systemd unit in
+# docs/deployment.md runs it. Nothing of PHP's is in this image, and no
+# secret is given to it.
+#
+# It refuses to start, with exit 78, unless it is TINVAR_RENDERER_USER, not
+# root, in TINVAR_CONTAINER_SOCKET_GROUP as its own group, with every
+# capability set empty and no_new_privs.
+#
+# The pool is TINVAR_SOCKET, a directory the supervisor makes in the volume
+# shared with PHP's container: its own, 0750, in the socket group. That
+# volume outlives this container in a pod, so a pid file a pool of an
+# earlier run left names a pid of the shared namespace that may since be
+# another process's -- one of PHP's, which the supervisor could not tell
+# from a pool still running. A pid file naming no process of this user is
+# removed first: a pool in this directory runs as this user.
+#
+# SIGTERM, passed on by tini, drains the pool (60 s for the renders in
+# flight); SIGUSR2 restarts it one renderer at a time.
+set -eu
+
+user=${TINVAR_RENDERER_USER:-tinvar-renderer}
+socket_group=${TINVAR_CONTAINER_SOCKET_GROUP:-tinvar-render}
+pool=${TINVAR_SOCKET:-}
+
+say() { echo "[tinvar:container] $(date -u +%H:%M:%S.%3N) $*" >&2; }
+refuse() {
+    say "$*"
+    exit 78 # EX_CONFIG
+}
+
+uid=$(id -u)
+[ "$uid" != 0 ] || refuse "Started as root. This image starts as $user and needs nothing of root's: run it as its USER, with every capability dropped."
+own=$(id -u "$user") || refuse "No user $user for the renderers."
+[ "$uid" = "$own" ] || refuse "Started as uid $uid, not $user ($own): PHP holds every renderer to that uid."
+gid=$(getent group "$socket_group" | cut -d: -f3) || refuse "No group $socket_group for the sockets."
+[ "$(id -g)" = "$gid" ] || refuse "Started in group $(id -g), not $socket_group ($gid): the sockets are made in this process's group, and shared with it."
+
+while read -r field value; do
+    case $field in
+        CapInh: | CapPrm: | CapEff: | CapBnd: | CapAmb:)
+            [ "$value" = 0000000000000000 ] \
+                || refuse "${field%:} is $value: drop every capability (compose: cap_drop: [ALL]; a pod: capabilities.drop: [ALL])."
+            ;;
+        NoNewPrivs:)
+            [ "$value" = 1 ] \
+                || refuse "no_new_privs is not set: run with no-new-privileges (compose: security_opt; a pod: allowPrivilegeEscalation: false)."
+            ;;
+    esac
+done </proc/self/status
+
+case $pool in
+    /*/*) ;;
+    *) refuse "TINVAR_SOCKET is '$pool': name the pool's directory, inside the volume shared with PHP's container (/run/tinvar-renderer/pool)." ;;
+esac
+parent=$(dirname "$pool")
+[ -d "$parent" ] && [ -w "$parent" ] || refuse "$parent is not a directory this user can write: mount the socket volume there."
+
+if [ -f "$pool/renderer.pid" ]; then
+    stale=$(cat "$pool/renderer.pid" 2>/dev/null || true)
+    case $stale in
+        '' | *[!0-9]*) rm -f "$pool/renderer.pid" ;;
+        *) if [ "$stale" = $$ ] || ! kill -0 "$stale" 2>/dev/null; then
+            say "Removing the pid file of a pool no longer running ($stale)."
+            rm -f "$pool/renderer.pid"
+        fi ;;
+    esac
+fi
+
+cpus=$(nproc)
+renderers=${TINVAR_RENDERERS:-$((cpus / 2))}
+[ "$renderers" -ge 1 ] 2>/dev/null || renderers=1
+
+say "Starting $renderers renderers as $user in $pool, shared with $socket_group."
+
+# An environment of PATH, NODE_ENV and the locale alone: the renderer
+# refuses to start holding a secret, and this container is given none.
+set -- PATH=/usr/local/bin:/usr/bin:/bin NODE_ENV=production
+[ -z "${TZ:-}" ] || set -- "$@" "TZ=$TZ"
+[ -z "${LANG:-}" ] || set -- "$@" "LANG=$LANG"
+[ -z "${LC_ALL:-}" ] || set -- "$@" "LC_ALL=$LC_ALL"
+cd /
+exec env -i "$@" node "${TINVAR_CONTAINER_RENDERER:?names renderer.js}" "$pool" \
+    "${TINVAR_CONTAINER_RENDER_ENTRY:?names the app rsc entry}" \
+    --processes="$renderers" --socket-group="$socket_group"

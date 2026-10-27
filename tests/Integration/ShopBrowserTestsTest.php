@@ -371,6 +371,18 @@ it('has the container\'s entrypoint refuse the test profile and a test run', fun
     'a build elsewhere' => ['TINVAR_BUILD_DIR', '/tmp/dist-test'],
 ]);
 
+// And the two-container shape's PHP side (ADR 0071), first of all its checks.
+it('has the pod\'s PHP container refuse the test profile and a test run', function (string $name, string $value) {
+    [$status, $output] = run(['bash', \dirname(__DIR__, 2) . '/resources/container/pod-php'], [$name => $value]);
+
+    expect($status)->toBe(78)
+        ->and($output)->toContain($name);
+})->with([
+    'the test profile' => ['TINVAR_PROFILE', 'Test'],
+    'a test run' => ['TINVAR_TEST_RUN', '/tmp/tinvar-test-run'],
+    'a build elsewhere' => ['TINVAR_BUILD_DIR', '/tmp/dist-test'],
+]);
+
 // The shop's Caddyfile binds SHOP_BIND_ALSO beside --host.
 it('has tinvar serve refuse the test profile on any address SHOP_BIND_ALSO adds but loopback', function () {
     [$status, $output] = run(
