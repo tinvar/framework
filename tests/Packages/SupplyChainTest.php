@@ -660,6 +660,17 @@ describe('dockerfiles', function () {
         'an escape past a byte-order mark' => ["\u{FEFF}# escape=`\nFROM scratch\n", 'Dockerfile sets the escape character to `, which the check does not read; only \\ is allowed.'],
     ]);
 
+    // A directive's spaces are read as the instructions' are, so the two
+    // readings never disagree on whether a line is one.
+    it('reads a directive past any space BuildKit trims', function (string $contents, string $violation) {
+        expect(SupplyChain::dockerfile('Dockerfile', $contents))->toContain($violation);
+    })->with([
+        'a form feed before it' => ["\f# escape=`\nFROM scratch\n", 'Dockerfile sets the escape character to `, which the check does not read; only \\ is allowed.'],
+        'a vertical tab after it' => ["# escape=`\v\nFROM scratch\n", 'Dockerfile sets the escape character to `, which the check does not read; only \\ is allowed.'],
+        'a no-break space inside it' => ["#\u{A0}escape\u{A0}=\u{A0}`\nFROM scratch\n", 'Dockerfile sets the escape character to `, which the check does not read; only \\ is allowed.'],
+        'an ideographic space before the frontend' => ["\u{3000}# syntax=nope/frontend:latest\nFROM scratch\n", 'Dockerfile names the frontend nope/frontend:latest, which is not pinned to a sha256 digest.'],
+    ]);
+
     // A stage is named before it is used: a later stage's name is an image.
     it('takes only an earlier stage\'s name as a stage', function () use ($digest) {
         $this->workspace->file('Dockerfile', "FROM later\nFROM debian{$digest} AS later\n");

@@ -457,6 +457,13 @@ final class SupplyChain
      * is installed, built, or kept by tools. Only at the root: a directory
      * deeper down that shares one of these names is the project's.
      */
+    /**
+     * One space as Go's unicode.IsSpace reads it, matched as UTF-8 bytes so
+     * a line that is not valid UTF-8 further on is still read: BuildKit
+     * trims every one of these from a line's start.
+     */
+    private const string SPACE = '(?:[\t\n\v\f\r ]|\xC2[\x85\xA0]|\xE1\x9A\x80|\xE2\x80[\x80-\x8A\xA8\xA9\xAF]|\xE2\x81\x9F|\xE3\x80\x80)';
+
     private const array NOT_SOURCE = ['.git', '.claude', 'node_modules', 'vendor', 'dist', 'tools', '.phpstan', '.vitest', '.coverage', '.vite'];
 
     /**
@@ -531,12 +538,16 @@ final class SupplyChain
         // and in a `//` comment; it stops at a blank line or a plain
         // comment, where this reads on through every leading comment, so a
         // directive it might honour is never one this passes unread.
+        // Every space is matched as the instructions' reading matches it,
+        // Unicode's and a form feed's included, so the two never disagree
+        // on whether a line is a directive.
+        $space = self::SPACE;
         foreach ($lines as $at => $line) {
-            $line = trim($line);
+            $line = self::trimLeadingSpace($line);
             if (($at === 0 && str_starts_with($line, '#!')) || $line === '') {
                 continue;
             }
-            if (preg_match('/^(?:#|\/\/)\s*([a-z][a-z0-9]*)\s*=\s*(.*?)\s*$/i', $line, $m) !== 1) {
+            if (preg_match("/^(?:#|\\/\\/){$space}*([a-z][a-z0-9]*){$space}*={$space}*(.*?){$space}*\$/is", $line, $m) !== 1) {
                 if (str_starts_with($line, '#') || str_starts_with($line, '//')) {
                     continue;
                 }
@@ -946,11 +957,7 @@ final class SupplyChain
      */
     private static function trimLeadingSpace(string $line): string
     {
-        return (string) preg_replace(
-            '/^(?:[\t\n\v\f\r ]|\xC2[\x85\xA0]|\xE1\x9A\x80|\xE2\x80[\x80-\x8A\xA8\xA9\xAF]|\xE2\x81\x9F|\xE3\x80\x80)+/',
-            '',
-            $line,
-        );
+        return (string) preg_replace('/^' . self::SPACE . '+/', '', $line);
     }
 
     /** @param list<string> $stages the names this Dockerfile's earlier stages declared */
