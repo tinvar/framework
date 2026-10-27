@@ -125,6 +125,9 @@ final class Kernel
     /** /_channel/{name}, mounted only when an application has #[Channel]s and live updates. */
     public readonly ?ChannelEndpoint $channels_;
 
+    /** An application with #[Channel]s and no hub: /_channel answers that there is nothing to hear. */
+    private readonly bool $channelsUnheard;
+
     /** /_upload and /_file, mounted only when an application supplies Uploads. */
     public readonly ?UploadEndpoint $uploads_;
     public readonly ?FileEndpoint $files_;
@@ -1118,6 +1121,7 @@ final class Kernel
         // A channel is heard through the hub, so with no hub there is nothing
         // to subscribe to: /_channel is not mounted, and publishing sends
         // nothing (Channels).
+        $this->channelsUnheard = $live === null && $channels !== null;
         $this->channels_ = $live === null || $channels === null ? null : new ChannelEndpoint(
             registry: $channels,
             runner: new ChannelRunner($this->orm, $gate),
@@ -1427,6 +1431,16 @@ final class Kernel
                     $request,
                     fn (Request $passed): Response => $this->live_->handle($passed, $rawBody),
                 );
+            }
+
+            // With no hub -- under php -S -- nothing is heard, and a page's
+            // subscription is told so rather than met with a 404 it would
+            // report: a 204, no token, for any name, having run nothing.
+            if ($this->channelsUnheard && str_starts_with($request->path, ChannelEndpoint::PREFIX)) {
+                $this->telemetry?->route('_channel');
+                ChannelEndpoint::assertMethod($request);
+
+                return Response::make(204, '', ['cache-control' => 'no-store']);
             }
 
             // By the channel's name in the label, never its parameters: the

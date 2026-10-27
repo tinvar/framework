@@ -478,6 +478,33 @@ describe('a subscription', function () {
     });
 });
 
+it('is told there is nothing to hear when the application has no hub, whatever it names', function () {
+    $orm = new Orm(new TenantFixture()->connection, new IdentityMap('test'), tenants: Tenancy::flat());
+    $channels = new ChannelRegistry();
+    $channels->register(ScriptRuns::class);
+    $container = new Container();
+    $kernel = new Kernel(
+        orm: $orm,
+        routes: new RouteRegistry(),
+        queries: new QueryRegistry(),
+        actions: new ActionRegistry(),
+        auth: new AuthContext(),
+        policies: new PolicyRegistry(),
+        resolver: $container->resolver(),
+        tenants: new Sources($container->resolver()),
+        allowedQueries: static fn (Request $r): array => [],
+        channels: $channels,
+    );
+
+    [$response, $body] = subscribe($kernel, 'scripts', ['script' => 'anything'], []);
+    $get = $kernel->handle(new Request('GET', '/_channel/scripts'), static fn (): Response => Response::make(500));
+
+    expect($kernel->channels_)->toBeNull()
+        ->and($response->status)->toBe(204)
+        ->and($body)->toBe([])
+        ->and($get->status)->toBe(405);
+});
+
 describe('a trade', function () {
     it('grants nothing for a token traded in another tenant than its own', function () {
         [$kernel, $hub, , $fixture] = kernel();
