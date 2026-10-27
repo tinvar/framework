@@ -18,11 +18,13 @@
 #   - the renderers' user is named, and is neither root nor this user;
 #   - for serve: it is in the socket group the renderers share their sockets
 #     with, an app key is given, TINVAR_SOCKET names their pool, loopback
-#     is held to the probe token (TINVAR_PROBE_TRUST_LOOPBACK=0), and a
-#     probe token of 32 characters or more is given.
+#     is held to the probe token (TINVAR_PROBE_TRUST_LOOPBACK=0), a
+#     probe token of 32 characters or more is given, and the stop budget
+#     (TINVAR_STOP_BUDGET) fits the platform's grace (TINVAR_STOP_GRACE).
 #
 # The stop is serve's own (ADR 0063): SIGTERM, passed on by tini, stops the
-# queue worker, which finishes the job in hand, and the scheduler, then
+# queue worker, which finishes the job in hand or, within the stop budget,
+# pauses or hands it back (ADR 0078), and the scheduler, then
 # FrankenPHP, which finishes its requests. The renderers' container is
 # stopped after this one by the platform: compose's depends_on, a pod's
 # sidecar order.
@@ -116,6 +118,31 @@ if ((${#probe_token} < 32)); then
     refuse "The probe token is ${#probe_token} characters: set TINVAR_PROBE_TOKEN, 32 characters or more, which the probes send. Loopback is shared with the rest of the pod here, so it is not trusted without one (TINVAR_PROBE_TRUST_LOOPBACK=0)."
 fi
 [ -w /tmp ] || refuse "/tmp is not writable: mount a tmpfs there (an emptyDir in a pod)."
+
+# The stop budget (ADR 0078): how long the queue worker has, from SIGTERM,
+# before it is killed. Within it a job pauses at its checkpoint or is handed
+# back to its queue. serve and the worker are told the same, and the
+# platform must give this container that and 30 s more. 10 s is the least:
+# the worker's 5 s grace after stopping a job, its 3 s margin before the
+# kill, and 2 s for the job to see it is stopping.
+stop_budget=${TINVAR_STOP_BUDGET:-70}
+if ! [[ $stop_budget =~ ^[0-9]{1,4}$ ]] || ((10#$stop_budget < 10 || 10#$stop_budget > 3600)); then
+    refuse "TINVAR_STOP_BUDGET is '$stop_budget': whole seconds from 10 to 3600, the time the queue worker has to stop."
+fi
+stop_budget=$((10#$stop_budget))
+export TINVAR_STOP_BUDGET=$stop_budget
+# TINVAR_STOP_GRACE is what the platform gives this container to stop --
+# compose's stop_grace_period; a pod's terminationGracePeriodSeconds less
+# its preStop and the renderers' drain after -- told here because nothing
+# else tells a container. A budget it cannot hold would be cut off by the
+# platform's SIGKILL, with the job in hand still held.
+if [ -n "${TINVAR_STOP_GRACE:-}" ]; then
+    [[ $TINVAR_STOP_GRACE =~ ^[0-9]{1,5}$ ]] || refuse "TINVAR_STOP_GRACE is '$TINVAR_STOP_GRACE': whole seconds, the platform's grace period."
+    needs=$((stop_budget + 30))
+    if ((10#$TINVAR_STOP_GRACE < needs)); then
+        refuse "A stop budget of ${stop_budget} s needs ${needs} s to stop PHP's container (the worker, then FrankenPHP), and the platform gives ${TINVAR_STOP_GRACE} s (TINVAR_STOP_GRACE): lower TINVAR_STOP_BUDGET to $((10#$TINVAR_STOP_GRACE - 30)) or less, or raise the grace period."
+    fi
+fi
 
 workers=${TINVAR_CONTAINER_WORKERS:-$(nproc)}
 say "Starting PHP with $workers workers as $app_user on port $port, rendering through $pool as $renderer_user."

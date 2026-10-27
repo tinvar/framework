@@ -127,6 +127,30 @@ if ((${#probe_token} < 32)); then
     refuse "The probe token is ${#probe_token} characters: set TINVAR_PROBE_TOKEN, 32 characters or more, which the healthcheck sends. The renderers share this container's loopback, so it is not trusted without one (TINVAR_PROBE_TRUST_LOOPBACK=0)."
 fi
 
+# The stop budget (ADR 0078): how long the queue worker has, from SIGTERM,
+# before it is killed. Within it a job pauses at its checkpoint or is handed
+# back to its queue. serve, the worker and this container's supervisor are
+# all told the same, and the supervisor waits that and 15 s more for serve.
+# 10 s is the least: the worker's 5 s grace after stopping a job, its 3 s
+# margin before the kill, and 2 s for the job to see it is stopping.
+stop_budget=${TINVAR_STOP_BUDGET:-70}
+if ! [[ $stop_budget =~ ^[0-9]{1,4}$ ]] || ((10#$stop_budget < 10 || 10#$stop_budget > 3600)); then
+    refuse "TINVAR_STOP_BUDGET is '$stop_budget': whole seconds from 10 to 3600, the time the queue worker has to stop."
+fi
+stop_budget=$((10#$stop_budget))
+export TINVAR_STOP_BUDGET=$stop_budget
+# TINVAR_STOP_GRACE is what the platform gives the container to stop --
+# compose's stop_grace_period, a pod's terminationGracePeriodSeconds -- told
+# here because nothing else tells a container. A budget it cannot hold would be
+# cut off by the platform's SIGKILL, with the job in hand still held.
+if [ -n "${TINVAR_STOP_GRACE:-}" ]; then
+    [[ $TINVAR_STOP_GRACE =~ ^[0-9]{1,5}$ ]] || refuse "TINVAR_STOP_GRACE is '$TINVAR_STOP_GRACE': whole seconds, the platform's grace period."
+    needs=$((stop_budget + 120))
+    if ((10#$TINVAR_STOP_GRACE < needs)); then
+        refuse "A stop budget of ${stop_budget} s needs ${needs} s to stop this container (serve, the sweep of PHP's processes, the renderers' drain), and the platform gives ${TINVAR_STOP_GRACE} s (TINVAR_STOP_GRACE): lower TINVAR_STOP_BUDGET to $((10#$TINVAR_STOP_GRACE - 120)) or less, or raise the grace period."
+    fi
+fi
+
 # What PHP keeps from the renderers: each path, and the key file. Checked
 # as the renderers' user, so whatever the mounts and their modes, it is
 # what the kernel would let a renderer do.
@@ -188,8 +212,9 @@ php_pid=$!
 
 # Root no more. Both sides are this process's children, and stay tini's
 # when it takes this pid: tini reaps them, and every orphan, as PID 1. The
-# supervisor gets the pipe to the renderers, the two pids, and no secret.
+# supervisor gets the pipe to the renderers, the two pids, the stop budget,
+# and no secret.
 cd /
 exec env -i PATH=/usr/local/bin:/usr/bin:/bin \
     "${as_supervisor[@]}" /usr/local/bin/tini -- /usr/local/lib/tinvar/supervise \
-    "$control" "$renderer_pid" "$php_pid" "$app_uid" "$renderer_uid"
+    "$control" "$renderer_pid" "$php_pid" "$app_uid" "$renderer_uid" "$stop_budget"

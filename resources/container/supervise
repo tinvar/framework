@@ -4,7 +4,7 @@
 # entrypoint started both sides as root and became tini to run this; it is
 # handed what it needs to watch and stop them:
 #
-#   supervise CONTROL-FD RENDERERS-PID PHP-PID APP-UID RENDERER-UID
+#   supervise CONTROL-FD RENDERERS-PID PHP-PID APP-UID RENDERER-UID STOP-BUDGET
 #
 # CONTROL-FD is the pipe to `renderers`, which signals the pool as the
 # renderers' own user: this one cannot, and needs not. PHP's processes are
@@ -28,6 +28,10 @@ renderer_pid=$2
 php_pid=$3
 app_uid=$4
 renderer_uid=$5
+# The queue worker's stop budget (ADR 0078), checked by the entrypoint.
+stop_budget=${6:-70}
+[[ $stop_budget =~ ^[0-9]{1,4}$ ]] || stop_budget=70
+serve_wait=$((stop_budget + 15))
 self=$$
 stopping=
 
@@ -104,9 +108,10 @@ app_processes() {
 
 # PHP's side is stopped by `tinvar serve` itself, which runs under PHP's own
 # CLI and takes SIGTERM (ADR 0063): it stops the queue worker and the
-# scheduler first, giving a job in hand up to 70 s to finish, then
-# FrankenPHP, which drains its requests for up to 10 s. A serve still there
-# after 85 s is killed, which its children are built to outlive by a moment:
+# scheduler first, giving a job in hand the stop budget to finish, pause or
+# be handed back (ADR 0078), then FrankenPHP, which drains its requests for
+# up to 10 s. A serve still there after the budget and 15 s is killed, which
+# its children are built to outlive by a moment:
 # each tether sees its standard input close and stops its command within
 # 10 s. Then every process of PHP's user, orphans too, is waited for, and
 # any left after 15 s more is killed: none of them outlives this function,
@@ -115,10 +120,10 @@ stop_php() {
     local deadline left
     if alive "$php_pid" "$php_start"; then
         kill -TERM "$php_pid" 2>/dev/null || true
-        deadline=$((SECONDS + 85))
+        deadline=$((SECONDS + serve_wait))
         while alive "$php_pid" "$php_start" && ((SECONDS < deadline)); do nap 0.2; done
         if alive "$php_pid" "$php_start"; then
-            say "serve did not stop in 85 s; killing it."
+            say "serve did not stop in $serve_wait s; killing it."
             kill -KILL "$php_pid" 2>/dev/null || true
         fi
     fi
@@ -157,8 +162,10 @@ stop() {
     stopping=1
     say "Stopping: PHP first, then the renderers."
     # PHP first: it finishes its jobs and requests, which may still render.
-    # The renderers then drain for up to 75 s. At worst some 185 s in all:
-    # compose's stop_grace_period is 190 s.
+    # The renderers then drain for up to 75 s. At worst the stop budget and
+    # some 115 s: the platform's grace is the budget and 120 s, 190 s at the
+    # default 70 (StopBudget::oneContainerGrace()), which the entrypoint
+    # holds TINVAR_STOP_GRACE to.
     stop_php
     say "PHP has stopped."
     stop_renderers
