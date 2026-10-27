@@ -7,6 +7,7 @@ namespace Tinvar\Data;
 use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\Shared;
 use Tinvar\Auth\PanelBinding;
+use Tinvar\Cache\Duration;
 use Tinvar\Container\Dependency;
 use Tinvar\Container\Lifetime;
 use Tinvar\Http\Request;
@@ -27,8 +28,17 @@ use Tinvar\Support\Str;
 final class SharedRegistry
 {
     /**
+     * How long, at most, a browser may claim a once value, and the server
+     * take its word: a day. A hold names no expiry further out, so a value
+     * kept for "the whole session" is produced again at least daily -- a
+     * stale one is a day stale at worst, whatever its tags missed.
+     */
+    public const int MAX_HOLD = 86400;
+
+    /**
      * @var array<string, array{class: class-string<SharedData>, method: string, panels: list<Panel>,
-     *     classes: list<class-string>, nullable: bool, parameters: list<class-string>}>
+     *     classes: list<class-string>, nullable: bool, parameters: list<class-string>,
+     *     once: array{ttl: int, tags: list<string>}|null}>
      */
     private array $keys = [];
 
@@ -60,7 +70,8 @@ final class SharedRegistry
             }
             $declared++;
 
-            $key = $attribute->newInstance()->key ?? $method->getName();
+            $declaration = $attribute->newInstance();
+            $key = $declaration->key ?? $method->getName();
             $where = "{$class}::{$method->getName()}()";
 
             // A name, because it is a property of the generated map and
@@ -83,13 +94,16 @@ final class SharedRegistry
             $panels = Panel::declaredOn($class, $method->getName());
             self::assertPlacedOnly($panels, $where);
 
+            $parameters = self::parameters($method, $where);
+
             $this->keys[$key] = [
                 'class' => $reflection->getName(),
                 'method' => $method->getName(),
                 'panels' => $panels,
                 'classes' => $classes,
                 'nullable' => $nullable,
-                'parameters' => self::parameters($method, $where),
+                'parameters' => $parameters,
+                'once' => self::once($declaration, $classes, $parameters, $where),
             ];
         }
 
@@ -200,7 +214,19 @@ final class SharedRegistry
         return [$classes, $type->allowsNull()];
     }
 
-    /** @return array{class: class-string<SharedData>, method: string, panels: list<Panel>, classes: list<class-string>, nullable: bool, parameters: list<class-string>} */
+    /**
+     * How a once key is kept -- the seconds the browser may claim it, and
+     * the tags that stop it -- or null for a key produced on every render
+     * that reads it (ADR 0065).
+     *
+     * @return array{ttl: int, tags: list<string>}|null
+     */
+    public function onceOf(string $key): ?array
+    {
+        return $this->entry($key)['once'];
+    }
+
+    /** @return array{class: class-string<SharedData>, method: string, panels: list<Panel>, classes: list<class-string>, nullable: bool, parameters: list<class-string>, once: array{ttl: int, tags: list<string>}|null} */
     private function entry(string $key): array
     {
         return $this->keys[$key] ?? throw new \OutOfBoundsException("No shared value is named '{$key}'.");
@@ -327,6 +353,67 @@ final class SharedRegistry
         }
 
         return $out;
+    }
+
+    /**
+     * A once key's terms, or null for a key that is not one.
+     *
+     * A once value is kept by the browser and claimed on every page of the
+     * session, so it must be the same on every page: a method told the page
+     * -- through a DataContext, or a ProvidesData's toData() -- could draw
+     * one page's value and have it put back on the next. The Request is
+     * allowed, since the session and the user are read from it; what of it
+     * names the page is the application's to leave alone.
+     *
+     * @param list<class-string> $classes
+     * @param list<class-string> $parameters
+     * @return array{ttl: int, tags: list<string>}|null
+     */
+    private static function once(Shared $declared, array $classes, array $parameters, string $where): ?array
+    {
+        if (!$declared->once) {
+            if ($declared->until !== null || $declared->tags !== []) {
+                throw new \InvalidArgumentException("{$where} gives `until:` or `tags:` without `once: true`, and only a once value is kept.");
+            }
+
+            return null;
+        }
+
+        if (\in_array(DataContext::class, $parameters, true)) {
+            throw new \InvalidArgumentException(
+                "{$where} is #[Shared(once: true)] and takes a DataContext, which names the page. A once value is kept "
+                . 'across pages, so it may not depend on one.',
+            );
+        }
+        foreach ($classes as $class) {
+            if (is_subclass_of($class, ProvidesData::class)) {
+                throw new \InvalidArgumentException(
+                    "{$where} is #[Shared(once: true)] and may return {$class}, a ProvidesData, which is told the page. "
+                    . 'A once value is kept across pages, so return its Data.',
+                );
+            }
+        }
+
+        try {
+            $ttl = $declared->until === null ? self::MAX_HOLD : Duration::seconds($declared->until);
+        } catch (\InvalidArgumentException $e) {
+            throw new \InvalidArgumentException("{$where}: {$e->getMessage()}", 0, $e);
+        }
+        if ($ttl > self::MAX_HOLD) {
+            throw new \InvalidArgumentException(
+                "{$where} is kept `until: '{$declared->until}'`, longer than the day a once value may be held. Use '1d' or less.",
+            );
+        }
+
+        $tags = [];
+        foreach ($declared->tags as $tag) {
+            if (trim($tag) === '' || str_contains($tag, ',')) {
+                throw new \InvalidArgumentException("{$where} names a once tag that is not one tag.");
+            }
+            $tags[] = trim($tag);
+        }
+
+        return ['ttl' => $ttl, 'tags' => array_values(array_unique($tags))];
     }
 
     /**
