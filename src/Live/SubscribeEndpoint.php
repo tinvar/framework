@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Tinvar\Live;
 
 use Tinvar\Auth\AuthContext;
+use Tinvar\Channels\ChannelEndpoint;
+use Tinvar\Channels\ChannelToken;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Http\BuildRegistry;
 use Tinvar\Http\Endpoints\Limits;
@@ -56,6 +58,14 @@ use Tinvar\Routing\RoutingException;
  * change (AuthContext) has the next trade refused with the 401 that purges
  * what the client holds.
  *
+ * A client's channel subscriptions (ChannelToken) are traded here too,
+ * beside its page's tokens, since the hub reads one cookie and a second
+ * grant would replace the first. Each is held to the same binding and let
+ * in again the same way -- its channel run with the parameters it carries
+ * (ChannelEndpoint::admits()) -- and a grant naming any channel is a short
+ * one (CHANNEL_GRANT_SECONDS): a channel's updates carry data, not only a
+ * topic and a tag, so a session ended elsewhere stops hearing them sooner.
+ *
  * Behind CSRF and the live throttle: a trade sets a cookie, and is a POST.
  * Not behind authentication: a page a visitor with no account may see can
  * read tags too.
@@ -84,6 +94,15 @@ final class SubscribeEndpoint
     public const int MIN_GRANT_SECONDS = 30;
 
     /**
+     * How long a grant that names a channel lets a client listen. A
+     * channel's message is data a subscriber was let in to hear; a session
+     * signed out, or a user whose epoch moved, elsewhere hears it at most
+     * this long -- the hub checks a signature and an expiry, never a
+     * session, and cannot be told to forget a grant it gave.
+     */
+    public const int CHANNEL_GRANT_SECONDS = 120;
+
+    /**
      * @param \Closure(class-string): Middleware $middlewareResolver builds a route's own middleware
      * @param list<class-string<Middleware>> $globalMiddleware already run around this endpoint,
      *        so left out of a route's when it is run again here
@@ -99,6 +118,7 @@ final class SubscribeEndpoint
         private readonly ?PanelContext $panels = null,
         private readonly ?BuildRegistry $builds = null,
         private readonly array $globalMiddleware = [],
+        private readonly ?ChannelEndpoint $channels = null,
     ) {}
 
     public function matches(Request $request): bool
@@ -135,6 +155,8 @@ final class SubscribeEndpoint
         $refreshed = [];
         /** @var array<string, list<array{int, LiveToken, LiveToken}>> $byPage tokens that survived, by the page they name */
         $byPage = [];
+        /** @var array<string, list<array{int, ChannelToken, ChannelToken}>> $byChannel subscriptions that survived, by channel */
+        $byChannel = [];
         $binding = null;
 
         foreach ($tokens as $i => $token) {
@@ -146,7 +168,16 @@ final class SubscribeEndpoint
             try {
                 $live = LiveToken::decode($token, $this->live->signer, $now);
             } catch (TokenError) {
-                continue;
+                // A channel subscription, or nothing: its own purpose is in
+                // the MAC, so neither kind is ever read as the other.
+                try {
+                    $live = $this->channels === null ? null : ChannelToken::decode($token, $this->live->signer, $now);
+                } catch (TokenError) {
+                    $live = null;
+                }
+                if ($live === null) {
+                    continue;
+                }
             }
 
             $claims = $live->claims;
@@ -176,7 +207,12 @@ final class SubscribeEndpoint
                 continue;
             }
 
-            $byPage[json_encode([$claims->route, $claims->params], JSON_THROW_ON_ERROR)][] = [$i, $live, $renewed];
+            $key = json_encode([$claims->route, $claims->params], JSON_THROW_ON_ERROR);
+            if ($live instanceof ChannelToken && $renewed instanceof ChannelToken) {
+                $byChannel[$key][] = [$i, $live, $renewed];
+            } elseif ($live instanceof LiveToken && $renewed instanceof LiveToken) {
+                $byPage[$key][] = [$i, $live, $renewed];
+            }
         }
 
         $granted = [];
@@ -194,6 +230,20 @@ final class SubscribeEndpoint
                 foreach (array_keys($live->topics) as $topic) {
                     $granted[$topic] = true;
                 }
+            }
+        }
+
+        foreach ($byChannel as $tokensOfChannel) {
+            // Once per channel and parameters: the same subscription held
+            // twice is one run of its checks.
+            if ($this->channels === null || !$this->channels->admits($tokensOfChannel[0][1], $request)) {
+                continue;
+            }
+
+            foreach ($tokensOfChannel as [$i, $channel, $renewed]) {
+                $refreshed[$i] = $renewed->encode($this->live->signer);
+                $expiresAt = min($expiresAt, $renewed->claims->expiresAt, $now + self::CHANNEL_GRANT_SECONDS);
+                $granted[$channel->topic] = true;
             }
         }
         ksort($refreshed);

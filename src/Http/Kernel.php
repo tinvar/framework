@@ -8,6 +8,9 @@ use Tinvar\Actions\ActionRegistry;
 use Tinvar\Actions\ActionRunner;
 use Tinvar\Actions\Revalidator;
 use Tinvar\Auth\AuthContext;
+use Tinvar\Channels\ChannelEndpoint;
+use Tinvar\Channels\ChannelRegistry;
+use Tinvar\Channels\ChannelRunner;
 use Tinvar\Auth\Gate;
 use Tinvar\Auth\Memberships;
 use Tinvar\Auth\PanelContext;
@@ -118,6 +121,9 @@ final class Kernel
 
     /** Mounted only when an application supplies live updates. */
     public readonly ?SubscribeEndpoint $live_;
+
+    /** /_channel/{name}, mounted only when an application has #[Channel]s and live updates. */
+    public readonly ?ChannelEndpoint $channels_;
 
     /** /_upload and /_file, mounted only when an application supplies Uploads. */
     public readonly ?UploadEndpoint $uploads_;
@@ -292,6 +298,7 @@ final class Kernel
     private readonly Pipeline $queryStack;
     private readonly Pipeline $bootstrapStack;
     private readonly Pipeline $liveStack;
+    private readonly Pipeline $channelStack;
     private readonly Pipeline $handoffStack;
     private readonly Pipeline $uploadStack;
     private readonly Pipeline $fileStack;
@@ -497,6 +504,11 @@ final class Kernel
      * @param EndpointRegistry|null $endpoints the application's #[Get], #[Post] and
      *        #[Endpoint] routes (ADR 0067), answered after the framework's own endpoints
      *        and before the pages. One whose path a page's also matches is refused here
+     * @param ChannelRegistry|null $channels the application's #[Channel]s (ADR 0069). Given
+     *        with live updates, /_channel/{name} subscribes a client to one -- let in through
+     *        its tenant, panel stack, middleware, model binding and #[Authorize] -- and the
+     *        live trade lets each subscription in again; without live updates, nothing is
+     *        mounted and nothing is heard
      */
     public function __construct(
         public readonly Orm $orm,
@@ -551,6 +563,7 @@ final class Kernel
         ?TenantResolver $tenants = null,
         ?SharedRegistry $shared = null,
         ?EndpointRegistry $endpoints = null,
+        ?ChannelRegistry $channels = null,
     ) {
         $this->resolver = $resolver;
         $this->shared = $shared;
@@ -700,7 +713,7 @@ final class Kernel
         // a requirement nothing can hold, is refused here rather than found
         // by whoever first reaches it.
         $entry = new EntryContext($this->orm, $resolver, $panels, $panelRegistry, $memberships, $this->auth, $realms ?? $handoff?->realms, $tenants);
-        $entry->check($this->routes, $this->actions, $this->queries, $endpoints);
+        $entry->check($this->routes, $this->actions, $this->queries, $endpoints, $channels);
         // And every endpoint's path against the pages': a path both match
         // would be answered by whichever the dispatch happened to ask first.
         $endpoints?->assertNoConflicts($this->routes);
@@ -1102,9 +1115,42 @@ final class Kernel
 
         $this->support = $fragments;
 
+        // A channel is heard through the hub, so with no hub there is nothing
+        // to subscribe to: /_channel is not mounted, and publishing sends
+        // nothing (Channels).
+        $this->channels_ = $live === null || $channels === null ? null : new ChannelEndpoint(
+            registry: $channels,
+            runner: new ChannelRunner($this->orm, $gate),
+            live: $live,
+            topics: $live->channelTopics ?? throw new \InvalidArgumentException(
+                'The Kernel was given #[Channel]s and live updates with no channel topics: build them with LiveUpdates::fromKey().',
+            ),
+            auth: $this->auth,
+            orm: $this->orm,
+            entry: $entry,
+            middlewareResolver: self::middlewareFrom($resolver),
+            panels: $panels,
+            builds: $this->builds,
+            globalMiddleware: $globalMiddleware,
+        );
+
+        // A subscription to a channel gets the live trade's budget -- it is
+        // one step of the same thing -- and an action's authentication, read
+        // off the channel the path names: someone signed in, unless the
+        // channel is #[PublicAccess].
+        $this->channelStack = new Pipeline([
+            ...$this->floodGuardFor($throttle, 'live', $limits),
+            ...$global,
+            new VerifyCsrfToken(tokens: $csrf),
+            ...$this->throttleFor($throttle, 'live', $limits, byAddress: true),
+            ...$this->throttleFor($throttle, 'live', $limits, byAddress: false),
+            new RequireAuthentication($this->auth, $this->channels_ === null ? null : $this->channels_->entryPoint(...)),
+        ]);
+
         // Every trade runs the route each token names through its tenant,
         // panel stack, middleware and #[Authorize] chain, as /_fragment does:
         // a session taken out of the panel stops being granted its topics.
+        // And each channel subscription's channel, the same way.
         $this->live_ = $live === null ? null : new SubscribeEndpoint(
             live: $live,
             auth: $this->auth,
@@ -1116,6 +1162,7 @@ final class Kernel
             panels: $panels,
             builds: $this->builds,
             globalMiddleware: $globalMiddleware,
+            channels: $this->channels_,
         );
 
         // Its own argument, not reached through FragmentSupport: detecting a
@@ -1327,10 +1374,18 @@ final class Kernel
                 $this->telemetry?->route('_action');
                 ActionEndpoint::assertMethod($request);
 
+                // Who the action ran for, as the stack signed them in: an
+                // action that changes it -- a sign-in, a sign-out, a moved
+                // epoch -- ends what the hub was letting this browser hear.
+                $bound = null;
                 try {
                     $response = $this->actionStack->run(
                         $request,
-                        fn (Request $passed): Response => $this->actions_->handle($passed, $rawBody),
+                        function (Request $passed) use ($rawBody, &$bound): Response {
+                            $bound = [$this->auth->id(), $this->auth->epoch()];
+
+                            return $this->actions_->handle($passed, $rawBody);
+                        },
                     );
                 } catch (HttpException $e) {
                     // "A 419 becomes a same-origin redirect back with a
@@ -1349,6 +1404,8 @@ final class Kernel
                     }
                     throw $e;
                 }
+
+                $response = $this->revokeLiveIfRebound($request, $response, $bound);
 
                 // A client-router call (`RSC: 1`) fetches with redirect:
                 // 'manual', which hides a 303's Location entirely. It reads
@@ -1376,6 +1433,19 @@ final class Kernel
                 return $this->liveStack->run(
                     $request,
                     fn (Request $passed): Response => $this->live_->handle($passed, $rawBody),
+                );
+            }
+
+            // By the channel's name in the label, never its parameters: the
+            // body carries those, and no log line does.
+            $channels = $this->channels_;
+            if ($channels !== null && $channels->matches($request)) {
+                $this->telemetry?->route('_channel');
+                ChannelEndpoint::assertMethod($request);
+
+                return $this->channelStack->run(
+                    $request,
+                    fn (Request $passed): Response => $channels->handle($passed, $rawBody),
                 );
             }
 
@@ -1936,6 +2006,44 @@ final class Kernel
             authEpoch: $this->auth->epoch(),
             loaders: $loaders,
         );
+    }
+
+    /**
+     * The response, taking away the hub's grant when the action moved who
+     * the browser is: another user or auth epoch than the stack signed in,
+     * or a session cookie naming another session. The hub cannot be told to
+     * forget a grant it gave -- it checks a signature and an expiry -- but
+     * the browser can be told to drop it, so no stream it opens after this
+     * response is let in on the session it no longer has (ADR 0069). The
+     * next trade, under the new binding, is the 401 that purges the rest.
+     *
+     * @param array{?string, string}|null $bound the user and epoch the action ran for
+     */
+    private function revokeLiveIfRebound(Request $request, Response $response, ?array $bound): Response
+    {
+        if ($this->live === null || $bound === null) {
+            return $response;
+        }
+
+        if ($bound !== [$this->auth->id(), $this->auth->epoch()]) {
+            return $this->live->hub->revoke($response);
+        }
+
+        // The cookies the response sets, over the ones the request came
+        // with: the session the browser holds once it has read this.
+        $set = [];
+        foreach ($response->cookies() as $name => $line) {
+            $pair = explode(';', $line, 2)[0];
+            $set[$name] = substr($pair, \strlen($name) + 1);
+        }
+        if ($set === []) {
+            return $response;
+        }
+        $after = new Request('GET', '/', cookies: [...$request->cookies, ...$set]);
+
+        return ($this->live->sessionId)($after) === ($this->live->sessionId)($request)
+            ? $response
+            : $this->live->hub->revoke($response);
     }
 
     /**
