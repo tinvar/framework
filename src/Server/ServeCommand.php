@@ -247,7 +247,11 @@ final class ServeCommand
         $app = $this->app($options['app'] ?? null, requireCaddyfile: !$dev);
         // The build: dist/ in the app, unless TINVAR_BUILD_DIR names one of
         // its own -- a test build beside it (BuildProfile, ADR 0066).
-        $entry = $dev ? null : BuildProfile::buildDirectory($app) . '/rsc/index.js';
+        try {
+            $entry = $dev ? null : BuildProfile::buildDirectory($app) . '/rsc/index.js';
+        } catch (\RuntimeException $e) {
+            throw new ServeException($e->getMessage());
+        }
         if ($entry !== null && !is_file($entry)) {
             throw new ServeException("{$app} is not built: there is no {$entry}. Build it first (npx vite build in {$app}).");
         }
