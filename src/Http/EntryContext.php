@@ -25,7 +25,6 @@ use Tinvar\Query\QueryRegistry;
 use Tinvar\Render\TenantClaim;
 use Tinvar\Routing\RouteChain;
 use Tinvar\Routing\RouteRegistry;
-use Tinvar\Transfers\TransferRegistry;
 
 /**
  * What an entry point's declarations put around it before its own
@@ -189,6 +188,9 @@ final readonly class EntryContext
      * #[TenantFrom] with no tenancy registered to read it, or naming a
      * source the tenancy cannot read: the entry point would run as no tenant
      * while its author believed it ran as one.
+     *
+     * @param list<DeclaredEntryPoint> $transfers the exports and imports, compiled
+     *        by their module, which the core does not name (ADR 0077)
      */
     public function check(
         RouteRegistry $routes,
@@ -196,7 +198,7 @@ final readonly class EntryContext
         QueryRegistry $queries,
         ?EndpointRegistry $endpoints = null,
         ?ChannelRegistry $channels = null,
-        ?TransferRegistry $transfers = null,
+        array $transfers = [],
     ): void {
         $declared = [];
         $sources = [];
@@ -212,7 +214,7 @@ final readonly class EntryContext
             $declared[$channel->where()] = $channel->panels;
             $sources[$channel->where()] = $channel->tenantFrom;
         }
-        foreach ($transfers?->all() ?? [] as $transfer) {
+        foreach ($transfers as $transfer) {
             $declared[$transfer->where()] = $transfer->panels;
             $sources[$transfer->where()] = $transfer->tenantFrom;
         }

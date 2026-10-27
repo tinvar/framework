@@ -729,7 +729,7 @@ final class Kernel
         // a requirement nothing can hold, is refused here rather than found
         // by whoever first reaches it.
         $entry = new EntryContext($this->orm, $resolver, $panels, $panelRegistry, $memberships, $this->auth, $realms ?? $handoff?->realms, $tenants);
-        $entry->check($this->routes, $this->actions, $this->queries, $endpoints, $channels, $transfers?->registry);
+        $entry->check($this->routes, $this->actions, $this->queries, $endpoints, $channels, $transfers?->registry->all() ?? []);
         // And every endpoint's path against the pages': a path both match
         // would be answered by whichever the dispatch happened to ask first.
         $endpoints?->assertNoConflicts($this->routes);

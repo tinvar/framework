@@ -7,11 +7,12 @@ namespace Tinvar\Transfers;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Panel;
 use Tinvar\Data\Data;
+use Tinvar\Http\DeclaredEntryPoint;
 use Tinvar\Orm\Model;
 use Tinvar\Validation\FormRequest;
 
 /** One #[Export] or #[Import] class, reflected once. */
-final readonly class CompiledTransfer
+final readonly class CompiledTransfer implements DeclaredEntryPoint
 {
     public const string EXPORT = 'export';
     public const string IMPORT = 'import';
