@@ -31,7 +31,10 @@ namespace Tinvar\Packages;
  *     does not require installs without it;
  *   - it carries no `extra.tinvar`, which marks an application's packages
  *     for the allowlist (PackagePolicy) and would take a split package for
- *     one.
+ *     one;
+ *   - it names no package an application opts into -- tenancy -- in its
+ *     require or its require-dev, so no package's own suite runs with one
+ *     installed (ADR 0056).
  *
  * It fails closed: a manifest that cannot be read is a violation.
  */
@@ -40,9 +43,14 @@ final readonly class Workspace
     /** One minor version, as every package requires its siblings at. */
     private const string LOCKSTEP = '/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.\*$/';
 
+    /**
+     * @param list<string> $optIn the packages, by directory, an application
+     *        opts into rather than gets with the framework: tenancy (ADR 0056)
+     */
     public function __construct(
         private string $root,
         private Layers $layers,
+        private array $optIn = ['tenancy'],
     ) {}
 
     /**
@@ -123,8 +131,15 @@ final readonly class Workspace
 
         foreach (['require', 'require-dev'] as $section) {
             foreach (array_keys(self::siblingsIn($manifest[$section] ?? [])) as $sibling) {
-                if (!\in_array(substr($sibling, \strlen('tinvar/')), $packages, true)) {
+                $named = substr($sibling, \strlen('tinvar/'));
+                if (!\in_array($named, $packages, true)) {
                     $violations[] = "{$where}: {$section} names {$sibling}, which is no package in packages/.";
+                } elseif ($named !== $directory && \in_array($named, $this->optIn, true)) {
+                    // Each package's suite runs with what its manifests
+                    // reach (bin/package-alone), and the framework's is how
+                    // the framework is shown to work without tenancy: a
+                    // require-dev naming it would install it there.
+                    $violations[] = "{$where}: {$section} names {$sibling}, which an application opts into; no other package may install it, so each suite runs without it.";
                 }
             }
         }

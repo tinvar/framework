@@ -29,9 +29,10 @@ function layers(): Layers
  * A workspace that passes, changed by $change.
  *
  * @param \Closure(array<string, array<mixed>>): array<string, array<mixed>> $change given and giving path => manifest
+ * @param list<string> $optIn the packages an application opts into
  * @return list<string>
  */
-function violations(?\Closure $change = null): array
+function violations(?\Closure $change = null, array $optIn = []): array
 {
     $files = [
         'packages/support/composer.json' => [
@@ -65,7 +66,7 @@ function violations(?\Closure $change = null): array
     }
 
     try {
-        return (new Workspace($root, layers()))->check();
+        return (new Workspace($root, layers(), $optIn))->check();
     } finally {
         exec('rm -rf ' . escapeshellarg($root));
     }
@@ -132,6 +133,22 @@ it('fails a require its layer may not use, and a layer it uses that it does not 
 
     expect($above)->toBe(['packages/support/composer.json: requires tinvar/database, which the support layer may not use.'])
         ->and($missing)->toBe(['packages/database/composer.json: does not require tinvar/support, which the database layer uses; without it the package installs without what it names.']);
+});
+
+// ADR 0056: tenancy is a package an application opts into, and the
+// framework's suite is run without it (bin/package-alone) to show it works
+// that way. A require-dev naming it would install it there, and the suite
+// would pass with it while saying it ran without.
+it('fails any package but itself naming a package an application opts into, in require-dev too', function () {
+    $violations = violations(static function (array $files): array {
+        $files['packages/support/composer.json']['require-dev']['tinvar/database'] = '0.4.*';
+
+        return $files;
+    }, optIn: ['database']);
+
+    expect($violations)->toBe([
+        'packages/support/composer.json: require-dev names tinvar/database, which an application opts into; no other package may install it, so each suite runs without it.',
+    ]);
 });
 
 it('fails a sibling that is no package', function () {
