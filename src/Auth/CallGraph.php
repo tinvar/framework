@@ -824,9 +824,6 @@ final class CallGraph
     {
         $real = realpath($file);
         $file = $real === false ? $file : $real;
-        if (str_contains($file, \DIRECTORY_SEPARATOR . 'vendor' . \DIRECTORY_SEPARATOR)) {
-            return true;
-        }
         foreach (self::frameworkRoots() as $root) {
             if (str_starts_with($file, $root)) {
                 return true;
@@ -838,7 +835,8 @@ final class CallGraph
 
     /**
      * The `src` directories of the framework's packages, found from a class
-     * of each, wherever Composer installed them.
+     * of each, wherever Composer installed them; and Composer's vendor
+     * directories.
      *
      * @return list<string>
      */
@@ -860,6 +858,12 @@ final class CallGraph
                     $directories[] = "{$path}/src";
                 }
             }
+        }
+        // And the dependencies: each vendor directory Composer autoloads
+        // from. By Composer's word, not by a path's having `vendor` in it,
+        // which an application's own directory may.
+        if (class_exists(\Composer\Autoload\ClassLoader::class)) {
+            array_push($directories, ...array_keys(\Composer\Autoload\ClassLoader::getRegisteredLoaders()));
         }
         foreach ([self::class, \Tinvar\Orm\Orm::class, \Tinvar\Support\Str::class] as $anchor) {
             $file = new \ReflectionClass($anchor)->getFileName();

@@ -101,6 +101,42 @@ it('refuses a call of a method the class does not declare, as a closure bound el
         ->toContain('calling $this->who(): ' . G\ThroughBoundClosure::class . ' declares no method who()');
 });
 
+it("reads an application whose path has a directory named vendor in it, which is not Composer's", function () {
+    $directory = sys_get_temp_dir() . '/tinvar-callgraph-' . bin2hex(random_bytes(4)) . '/vendor/app';
+    mkdir($directory, 0o755, true);
+    $namespace = 'VendorPath' . bin2hex(random_bytes(4));
+    file_put_contents("{$directory}/Query.php", <<<PHP
+        <?php
+
+        namespace {$namespace};
+
+        use Tinvar\\Attributes\\NoAuthorization;
+        use Tinvar\\Attributes\\Query;
+        use Tinvar\\Tests\\Auth\\Fixtures\\CallGraph\\Context;
+
+        final class Reader
+        {
+            public static function who(): int
+            {
+                return Context::\$auth?->user() === null ? 0 : 1;
+            }
+        }
+
+        #[Query(name: 'vendor.path', cache: '1m', shared: true), NoAuthorization(reason: 'fixture')]
+        final class ThroughVendorPath
+        {
+            public function __invoke(): int
+            {
+                return Reader::who();
+            }
+        }
+        PHP);
+    require "{$directory}/Query.php";
+
+    expect(sharedGapViolations("{$namespace}\\ThroughVendorPath"))
+        ->toContain("{$namespace}\\Reader::who(), which calls '->user('");
+});
+
 it('reads the imports inside a braced namespace', function () {
     require_once __DIR__ . '/Fixtures/callgraph-braced.php';
 
