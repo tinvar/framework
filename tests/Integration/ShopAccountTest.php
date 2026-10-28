@@ -708,6 +708,65 @@ it('signs out under a new, signed-out session, and the old one stops working', f
     expect($visitor->action('orders.place', ['product' => $product, 'quantity' => 1])->status)->toBe(401);
 });
 
+// "Sign out everywhere", on the account page: every session the customer
+// has, on every device and host, ended in one durable transaction with
+// their epoch moved, so every token, once hold, channel grant and email
+// link minted for them stops counting (ADR 0075).
+it('signs out everywhere: every session ended, the epoch moved, synced in full', function () {
+    [$visitor, $pdo] = shop();
+    $phone = new Visitor($visitor->kernel, '127.0.0.2', $visitor->database);
+    foreach ([$visitor, $phone] as $device) {
+        $device->get('/sign-in');
+        signIn($device);
+    }
+    $here = $visitor->sessionId();
+    $there = $phone->sessionId();
+    $demo = demoId($pdo);
+    $epoch = static fn (): int => (int) $pdo->query("SELECT epoch FROM auth_epochs WHERE customer_id = '{$demo}'")->fetchColumn();
+    $before = $epoch();
+
+    $sqlite = $visitor->kernel->orm->connection()->pdo();
+    \assert($sqlite instanceof \Pdo\Sqlite);
+    $levels = [];
+    $sqlite->setAuthorizer(static function (int $action, ?string $pragma, ?string $value) use (&$levels): int {
+        if ($action === 19 && $pragma === 'synchronous' && $value !== null) {
+            $levels[] = strtoupper($value);
+        }
+
+        return \Pdo\Sqlite::OK;
+    });
+    $response = $visitor->action('account.signOutEverywhere', []);
+    $sqlite->setAuthorizer(null);
+
+    expect($response->status)->toBe(200)
+        ->and(json_decode($response->body(), true)['value'] ?? null)->toBe(['next' => '/'])
+        ->and($levels)->toBe(['FULL', 'NORMAL'], 'one durable transaction')
+        ->and($visitor->sessionId())->not->toBe($here)
+        ->and(sessionRow($pdo, $here))->toBeNull()
+        ->and(sessionRow($pdo, $there))->toBeNull()
+        ->and(sessionRow($pdo, $visitor->sessionId()))->toBeNull('signed out, so no row')
+        ->and((int) $pdo->query("SELECT COUNT(*) FROM sessions WHERE customer_id = '{$demo}'")->fetchColumn())->toBe(0)
+        ->and($epoch())->toBe($before + 1);
+
+    // The other device is no one at its next request, and is moved to a
+    // signed-out session of its own, which takes its live grant with it.
+    $product = (string) $pdo->query('SELECT id FROM products LIMIT 1')->fetchColumn();
+    $phone->receiveCsrfCookie();
+    expect($phone->actionFromCookie('orders.place', ['product' => $product, 'quantity' => 1])->status)->toBe(401);
+
+    // A page for the signed in: sign in first, as for anyone signed out.
+    expect($phone->get('/orders')->status)->toBeIn([302, 303])
+        ->and($phone->sessionId())->not->toBe($there)
+        ->and(sessionRow($pdo, $phone->sessionId()))->toBeNull();
+});
+
+it('signs out everywhere only for someone signed in', function () {
+    [$visitor, $pdo] = shop();
+    $visitor->get('/sign-in');
+
+    expect($visitor->action('account.signOutEverywhere', [])->status)->toBe(401);
+});
+
 // The shop's database syncs NORMAL, which a power cut can take the last
 // commits back from. A sign-out taken back would be a session that signs in
 // again, so who a session belongs to is committed synced in full (ADR 0050).
