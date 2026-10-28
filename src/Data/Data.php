@@ -50,4 +50,22 @@ abstract readonly class Data
 
         return $out;
     }
+
+    /**
+     * A copy with some fields changed: `$rack->with(['name' => 'R-15'])`.
+     *
+     * The spec writes `clone($data, ['name' => $new])`. PHP 8.5 refuses that
+     * outside the class, because a readonly property is `protected(set)`:
+     * only the class and its relatives may set it, in a clone as anywhere.
+     * This is that clone, made from inside, so it is held to everything the
+     * spec's would be: each value to its property's type, no field the class
+     * does not declare, and none of a subclass's private ones.
+     *
+     * @param array<string, mixed> $changes field => its new value
+     */
+    #[\NoDiscard]
+    public function with(array $changes): static
+    {
+        return clone($this, $changes);
+    }
 }
