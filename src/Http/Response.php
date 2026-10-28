@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Http;
 
+use Uri\WhatWg\Url;
+
 /**
  * An outgoing response.
  *
@@ -12,6 +14,9 @@ namespace Tinvar\Http;
  */
 final class Response
 {
+    /** The origin a redirect target is resolved against: `.invalid`, which RFC 2606 keeps from ever resolving. */
+    private const string REDIRECT_BASE = 'https://redirect.invalid/';
+
     /** @var array<string, string> */
     private array $headers = [];
 
@@ -147,6 +152,18 @@ final class Response
         $parts = parse_url($location);
         if ($parts === false || isset($parts['scheme']) || isset($parts['host']) || isset($parts['user'])) {
             $refuse('it names a scheme or host');
+        }
+
+        // And as a browser reads it, by PHP 8.5's URI extension: the WHATWG
+        // URL standard, resolved against an origin that cannot exist. What
+        // stays on that origin stays on this one. Every rule above already
+        // refuses what this does; it is here so that a gap in them -- a
+        // spelling the browser normalises and parse_url() does not -- is
+        // refused rather than sent.
+        $resolved = Url::parse($location, Url::parse(self::REDIRECT_BASE));
+        if ($resolved === null || $resolved->getScheme() !== 'https' || $resolved->getAsciiHost() !== 'redirect.invalid'
+            || $resolved->getPort() !== null || ($resolved->getUsername() ?? '') !== '' || ($resolved->getPassword() ?? '') !== '') {
+            $refuse('a browser would read it as another origin');
         }
     }
 

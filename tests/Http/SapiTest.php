@@ -53,6 +53,17 @@ describe('a request from globals', function () {
         expect(Sapi::request(server(['REQUEST_URI' => 'http://app.example/racks?x=1']))->path)->toBe('/racks');
     });
 
+    // By the URI extension's RFC 3986 parser, its path kept raw for Request
+    // to decode and hold to its rules.
+    it('reads an absolute-form target by RFC 3986', function (string $target, string $path) {
+        expect(Sapi::request(server(['REQUEST_URI' => $target]))->path)->toBe($path);
+    })->with([
+        'with userinfo and a port' => ['http://user:pw@app.example:8080/racks/r1?x=1#f', '/racks/r1'],
+        'with no path' => ['http://app.example', '/'],
+        'with no path but a query' => ['http://app.example?x=1', '/'],
+        'with an encoded segment, kept as sent' => ['http://app.example/files/caf%C3%A9', '/files/caf%C3%A9'],
+    ]);
+
     // The guards live in Request; the adapter must not route around them.
     it('refuses a path Request refuses', function () {
         expect(fn () => Sapi::request(server(['REQUEST_URI' => '/racks/%2e%2e/admin'])))

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Http;
 
+use Uri\Rfc3986\Uri;
+
 /**
  * The edge between PHP's request globals and the framework's Request and
  * Response.
@@ -78,10 +80,14 @@ final class Sapi
             return '/';
         }
 
+        // Absolute-form, `GET http://host/path` -- what a request through a
+        // proxy names -- read by PHP 8.5's URI extension, as the spec has
+        // URLs parsed (RFC 3986, the grammar a request target is written
+        // in), and its path kept raw: Request decodes each segment itself.
         if ($uri[0] !== '/') {
-            $path = parse_url($uri, PHP_URL_PATH);
+            $path = Uri::parse($uri)?->getRawPath() ?? '';
 
-            return \is_string($path) && $path !== '' ? $path : '/';
+            return str_starts_with($path, '/') ? $path : '/';
         }
 
         return explode('?', $uri, 2)[0];

@@ -22,6 +22,23 @@ describe('redirect targets', function () {
     it('still accepts an ordinary path with dots in it', function (string $target) {
         expect(Response::isSameOriginTarget($target))->toBeTrue();
     })->with(['/racks/r1', '/files/a..b', '/x?back=/../y', '/v1.2/notes']);
+
+    // Read as a browser reads it too, by the URI extension's WHATWG parser
+    // (tinvar-spec.md: "URLs are parsed ... with PHP 8.5's URI extension").
+    it('refuses every spelling a browser reads as another origin', function (string $target) {
+        expect(Response::isSameOriginTarget($target))->toBeFalse();
+    })->with([
+        'protocol-relative' => '//evil.example/x',
+        'a backslash for a slash' => '/\\evil.example',
+        'a tab inside the slashes' => "/\t/evil.example",
+        'a scheme' => 'https://evil.example/',
+        'credentials' => '//user@evil.example',
+        'a port' => '//:8080/x',
+    ]);
+
+    it('accepts what stays on this origin, a query and a fragment included', function (string $target) {
+        expect(Response::isSameOriginTarget($target))->toBeTrue();
+    })->with(['/', '/racks?sort=name&page=2', '/racks#units', '/caf%C3%A9', '/a@b']);
 });
 
 describe('throttling by address', function () {
