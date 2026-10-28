@@ -94,11 +94,26 @@ final class EndpointRunner
         // 5. Answer.
         return match ($endpoint->returns) {
             CompiledEndpoint::RETURNS_RESPONSE => $result instanceof Response
-                ? ($safe ? $this->streamedReadOnly($result) : $result)
+                ? ($safe ? $this->streamedReadOnly($result) : self::seeOther($request->method, $result))
                 : throw new \LogicException("{$endpoint->where()} returned " . get_debug_type($result) . ', not a Response.'),
             CompiledEndpoint::RETURNS_DATA => $this->json($endpoint, $result),
             default => Response::make(204),
         };
+    }
+
+    /**
+     * "Redirects after PUT/PATCH/DELETE become 303" (tinvar-spec.md,
+     * "Protocol", kept from Inertia). A client following a 301 or 302
+     * changes the method to GET only after a POST: fetch() follows one
+     * answering a DELETE with another DELETE, at the target. 303 says GET
+     * whatever came before. 307 and 308 keep the method on purpose, and are
+     * the endpoint's to send.
+     */
+    private static function seeOther(string $method, Response $response): Response
+    {
+        return \in_array($method, ['PUT', 'PATCH', 'DELETE'], true) && \in_array($response->status, [301, 302], true)
+            ? $response->withStatus(303)
+            : $response;
     }
 
     /**

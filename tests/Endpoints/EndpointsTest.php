@@ -752,3 +752,51 @@ final class TwoParameters
     #[Get('/{a}/{b}/x'), NoAuthorization(reason: 'test')]
     public function show(string $a, string $b): void {}
 }
+
+/** Redirects from methods a 301 or 302 would repeat at the target. */
+final class RedirectingEndpoints
+{
+    #[Endpoint('/api/racks/{rack}/archive', methods: ['POST', 'PUT', 'PATCH', 'DELETE'], name: 'racks.archive'), Authorize('update', 'rack')]
+    public function archive(Rack $rack, Request $request): Response
+    {
+        return Response::redirect("/racks/{$rack->id}", $request->header('x-moved') === 'permanently' ? 301 : 302);
+    }
+
+    #[Endpoint('/api/racks/{rack}/relocate', methods: ['PUT'], name: 'racks.relocate'), Authorize('update', 'rack')]
+    public function relocate(Rack $rack): Response
+    {
+        return Response::redirect("/api/racks/{$rack->id}/elsewhere", 307);
+    }
+}
+
+describe('a redirect from an endpoint', function () {
+    it('is a 303 after PUT, PATCH and DELETE, so the client follows it with a GET', function (string $method, array $headers) {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1);
+        $kernel = kernel([RedirectingEndpoints::class], new Orm($fixture->connection, new IdentityMap('test')));
+        $rack = $fixture->ids['racks'][0];
+
+        $response = call($kernel, $method, "/api/racks/{$rack}/archive", $headers);
+
+        expect($response->status)->toBe(303)
+            ->and($response->header('location'))->toBe("/racks/{$rack}");
+    })->with([
+        'PUT, 302' => ['PUT', []],
+        'PATCH, 302' => ['PATCH', []],
+        'DELETE, 302' => ['DELETE', []],
+        'DELETE, 301' => ['DELETE', ['x-moved' => 'permanently']],
+    ]);
+
+    it('is left as sent after a POST, which a 302 already turns into a GET', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1);
+        $kernel = kernel([RedirectingEndpoints::class], new Orm($fixture->connection, new IdentityMap('test')));
+
+        expect(call($kernel, 'POST', "/api/racks/{$fixture->ids['racks'][0]}/archive")->status)->toBe(302);
+    });
+
+    it('keeps a 307, which asks for the same method on purpose', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1);
+        $kernel = kernel([RedirectingEndpoints::class], new Orm($fixture->connection, new IdentityMap('test')));
+
+        expect(call($kernel, 'PUT', "/api/racks/{$fixture->ids['racks'][0]}/relocate")->status)->toBe(307);
+    });
+});
