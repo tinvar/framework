@@ -94,3 +94,28 @@ it('runs no install script and nothing it fetched when an app is made', function
     expect($composer['scripts']['post-create-project-cmd'] ?? null)->toBe(['@php bin/tinvar setup'])
         ->and(read('packages/skeleton/bin/tinvar'))->toContain("'install', '--ignore-scripts'");
 });
+
+/** The Caddyfile's handler for PHP, comments and blank lines taken out. */
+function phpHandler(string $file): string
+{
+    preg_match('/\n\t\theader \{\n.*?\n\t\tphp \{\n.*?\n\t\t\}\n/s', read($file), $found);
+    $lines = array_filter(
+        explode("\n", $found[0] ?? ''),
+        static fn (string $line): bool => trim($line) !== '' && !str_starts_with(trim($line), '#'),
+    );
+
+    return implode("\n", $lines);
+}
+
+// ADR 0081: no worker writes to a client. The skeleton's Caddyfile holds
+// every response whole and hands stored files over exactly as the shop's
+// does, from a storage directory of its own, and its check says so.
+it('serves PHP behind the shop\'s intercept block, which its check holds it to', function () {
+    $ours = phpHandler('packages/skeleton/Caddyfile');
+
+    expect($ours)->toContain('intercept {')
+        ->and($ours)->toBe(str_replace('SHOP_STORAGE', 'APP_STORAGE', phpHandler('examples/shop/Caddyfile')))
+        ->and(read('packages/skeleton/Caddyfile'))->toContain('write_idle 8s')
+        ->and(read('packages/skeleton/bin/tinvar'))->toContain("CaddyfileRules::check(APP_ROOT . '/Caddyfile')")
+        ->and(read('packages/skeleton/.env.example'))->toContain('# APP_STORAGE=');
+});

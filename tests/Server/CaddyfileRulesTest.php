@@ -1,0 +1,145 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * `tinvar check`'s Caddyfile rule (ADR 0081): wherever an app's Caddyfile
+ * serves PHP, an `intercept` holds the response whole and hands stored files
+ * to the file server from the directory PHP is told, and nothing lets the
+ * X-Accel headers reach a client.
+ */
+
+namespace Tinvar\Tests\Server\CaddyfileRules;
+
+use Tinvar\Server\CaddyfileRules;
+
+const ROOT = __DIR__ . '/../../../..';
+
+/**
+ * $contents written to a Caddyfile of its own, and checked.
+ *
+ * @return list<string>
+ */
+function checked(string $contents, bool $holdsResponses = true): array
+{
+    $directory = sys_get_temp_dir() . '/tinvar-caddyfile-' . bin2hex(random_bytes(4));
+    mkdir($directory);
+    $path = "{$directory}/Caddyfile";
+    file_put_contents($path, $contents);
+    try {
+        return CaddyfileRules::check($path, $holdsResponses);
+    } finally {
+        unlink($path);
+        rmdir($directory);
+    }
+}
+
+/** The skeleton's Caddyfile, with $search replaced: one that passes, broken one way. */
+function skeleton(string $search = '', string $replace = ''): string
+{
+    $contents = (string) file_get_contents(ROOT . '/packages/skeleton/Caddyfile');
+    if ($search !== '') {
+        expect($contents)->toContain($search);
+    }
+
+    return $search === '' ? $contents : str_replace($search, $replace, $contents);
+}
+
+it('passes the shop\'s Caddyfile and the skeleton\'s', function () {
+    expect(CaddyfileRules::check(ROOT . '/examples/shop/Caddyfile'))->toBe([])
+        ->and(CaddyfileRules::check(ROOT . '/packages/skeleton/Caddyfile'))->toBe([]);
+});
+
+// Development runs no workers and hands over no files, but a response PHP
+// marks still never shows the client the header.
+it('holds the development Caddyfile to the headers alone', function () {
+    $dev = ROOT . '/packages/framework/resources/Caddyfile.dev';
+
+    expect(CaddyfileRules::check($dev, holdsResponses: false))->toBe([])
+        ->and(implode("\n", CaddyfileRules::check($dev)))->toContain('is not wrapped in an `intercept` block');
+});
+
+it('refuses PHP served with no intercept around it, and says why', function () {
+    $without = preg_replace('/\n\t\tintercept \{.*?\n\t\t\}\n/s', "\n", skeleton());
+    \assert(\is_string($without));
+    $violations = checked($without);
+
+    expect($violations)->toHaveCount(1)
+        ->and($violations[0])->toMatch('/^Caddyfile:\d+: `php` is not wrapped in an `intercept` block, so its workers write to clients themselves/')
+        ->and($violations[0])->toContain("FrankenPHP's output mutex")
+        ->and($violations[0])->toEndWith('(ADR 0081).');
+});
+
+it('refuses an X-Accel header left for the client', function (string $header) {
+    $violations = checked(skeleton("\t\t\t-{$header}\n", ''));
+
+    expect($violations)->toHaveCount(1)
+        ->and($violations[0])->toContain("nothing removing {$header} from its responses");
+})->with(['X-Accel-Buffering', 'X-Accel-Redirect']);
+
+it('takes a removal on one line, or around the handler, but not one under a matcher', function () {
+    $block = "\t\theader {\n\t\t\t-X-Powered-By\n\t\t\t-X-Accel-Buffering\n\t\t\t-X-Accel-Redirect\n\t\t}\n";
+
+    expect(checked(skeleton($block, "\t\theader -X-Accel-Buffering\n\t\theader -X-Accel-Redirect\n")))->toBe([])
+        ->and(checked(str_replace("\tbind {", "\theader -X-Accel-Buffering\n\theader -X-Accel-Redirect\n\tbind {", skeleton($block, ''))))->toBe([])
+        ->and(checked(skeleton($block, "\t\theader /api/* -X-Accel-Buffering\n\t\theader -X-Accel-Redirect\n")))->toHaveCount(1);
+});
+
+it('refuses an intercept that does not hold a response whole, or hand a file over', function (string $search, string $replace, string $message) {
+    expect(implode("\n", checked(skeleton($search, $replace))))->toContain($message);
+})->with([
+    'nothing held whole' => ['@whole header !X-Accel-Buffering', '@whole header X-Other', 'no `handle_response` for `header !X-Accel-Buffering`'],
+    'no file handed over' => ['@file header X-Accel-Redirect *', '@file header X-Other *', 'no `handle_response` for `header X-Accel-Redirect *`'],
+    'a file rewritten elsewhere' => ['rewrite * {http.intercept.header.X-Accel-Redirect}', 'rewrite * /index.html', 'without `rewrite * {http.intercept.header.X-Accel-Redirect}`'],
+    'no file server' => ["\t\t\t\tfile_server\n", '', 'and `file_server`'],
+    'a matcher on the intercept' => ["\t\tintercept {", "\t\tintercept /api/* {", 'does not wrap every request it serves'],
+]);
+
+// The file server sends the path PHP names below its root: a root that is
+// not the directory PHP checked the file was inside would send whatever is
+// at that path there instead -- the app's own source, say.
+it('refuses a file root that is not the directory PHP is told', function () {
+    $other = checked(skeleton('root * {$APP_STORAGE:/nonexistent/tinvar-storage}', 'root * {$TINVAR_APP_ROOT}'));
+    $missing = checked(skeleton("\t\t\tenv TINVAR_FILE_ROOT \"{\$APP_STORAGE}\"\n", ''));
+
+    expect(implode("\n", $other))->toContain('from a `root` that is not the directory PHP is told in TINVAR_FILE_ROOT')
+        ->and(implode("\n", $missing))->toContain('does not tell PHP where stored files are handed over from')
+        ->and(checked(skeleton('root * {$APP_STORAGE:/nonexistent/tinvar-storage}', 'root * {$APP_STORAGE}')))->toBe([]);
+});
+
+// A route runs its directives in the order written, so an intercept after
+// PHP wraps nothing PHP wrote.
+it('refuses an intercept after PHP in a route', function () {
+    $route = skeleton("\thandle {\n\t\troot", "\troute {\n\t\troot");
+    $after = preg_replace('/(\n\t\tintercept \{.*?\n\t\t\}\n)(\n\t\tphp \{.*?\n\t\t\}\n)/s', '$2$1', $route);
+    \assert(\is_string($after));
+
+    expect(checked($route))->toBe([])
+        ->and(implode("\n", checked($after)))->toContain('put it ahead of the PHP directive in the route');
+});
+
+it('holds php_server to the same rules, wherever it is', function () {
+    $violations = checked("{\n\tadmin off\n}\n\nhttp://:8080 {\n\troot * public\n\tphp_server\n}\n");
+
+    expect($violations)->not->toBe([])
+        ->and($violations[0])->toStartWith('Caddyfile:7: `php_server`');
+});
+
+it('reads comments and quotes as Caddy does, and serves no PHP from a comment', function () {
+    expect(checked("# php\nhttp://:8080 {\n\trespond \"php { }\" 200 # php\n}\n"))->toBe([])
+        ->and(checked("http://:8080 {\n\theader X-A `a } b`\n\tphp\n}\n"))->not->toBe([]);
+});
+
+// What it cannot read is not a pass.
+it('refuses a Caddyfile it cannot read', function (string $contents, string $message) {
+    expect(checked($contents))->toBe(["Caddyfile: {$message}"]);
+})->with([
+    'a block never closed' => ["http://:8080 {\n\tphp\n", 'a block is never closed.'],
+    'a stray close' => ["}\n", 'line 1 closes a block that was never opened.'],
+    'a quote never closed' => ["http://:8080 {\n\trespond \"x\n}\n", 'line 2 opens a quote that is never closed.'],
+    'a heredoc' => ["http://:8080 {\n\trespond <<HTML\n\tx\n\tHTML 200\n}\n", 'line 2 has a heredoc, which this check does not read.'],
+]);
+
+it('refuses a missing Caddyfile', function () {
+    expect(CaddyfileRules::check('/nonexistent/Caddyfile'))->toBe(['/nonexistent/Caddyfile: no Caddyfile to read, so nothing says how PHP is served.']);
+});
