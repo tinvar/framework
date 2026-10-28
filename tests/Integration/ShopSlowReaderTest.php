@@ -9,31 +9,38 @@ declare(strict_types=1);
  * puts one process-wide mutex around every write PHP makes to the server
  * (php_parallel_output_function). A worker writing a response that a client
  * has stopped reading waits in that write, holding the mutex, and every other
- * worker's output waits behind it: one slow reader stalls the server
- * (ADR 0051). The shop's Caddyfile bounds how long a write may stall
- * (`write_idle`), so the stalled connection is aborted and the mutex let go.
+ * worker's output waits behind it: one slow reader stalled the server
+ * (ADR 0051) for as long as `write_idle` let its write stall, and more.
+ *
+ * So no worker writes to a client (ADR 0053): the shop's Caddyfile holds a
+ * response whole while PHP writes it and sends it after, outside the mutex,
+ * and hands a stored file to the file server. `write_idle` still cuts the
+ * slow reader off.
  *
  * The slow reader asks for the catalog over and over down one connection,
  * with a receive buffer of 512 bytes, and never reads: the first responses
  * fill the kernel's buffers and the next write blocks. A visitor's request
- * beside it must still be answered, well inside the minute Caddy allows a
- * stalled write by default, and the slow reader's connection must be cut off
- * before it was sent everything it asked for.
+ * beside it must be answered at once, and the slow reader's connection must
+ * be cut off before it was sent everything it asked for. Then the same for a
+ * receipt of a few megabytes, downloaded by a client that stops reading.
  *
- * Skipped without FrankenPHP, ext-sockets or the JavaScript dependencies.
+ * Skipped without FrankenPHP, ext-sockets, ext-gd or the JavaScript
+ * dependencies.
  */
 
 namespace Tinvar\Tests\Integration\ShopSlowReader;
 
+use Shop\DemoAccount;
 use Tinvar\Bench\Shop;
+use Tinvar\Bench\SlowReader;
 use Tinvar\Server\FrankenPhp;
 use Tinvar\Server\ServeException;
 
 $root = \dirname(__DIR__, 4);
 
 beforeAll(function () use ($root) {
-    if (!\extension_loaded('sockets')) {
-        test()->markTestSkipped('ext-sockets is not loaded.');
+    if (!\extension_loaded('sockets') || !\extension_loaded('gd')) {
+        test()->markTestSkipped('ext-sockets or ext-gd is not loaded.');
     }
     try {
         FrankenPhp::locate($root);
@@ -50,8 +57,9 @@ beforeAll(function () use ($root) {
  * `tinvar serve` on the shop, for one test.
  *
  * @param \Closure(string, int): void $drive given the host and port
+ * @param array<string, string> $env
  */
-function served(string $root, \Closure $drive): void
+function served(string $root, \Closure $drive, array $env = []): void
 {
     $keyDir = sys_get_temp_dir() . '/tinvar-slow-reader-' . bin2hex(random_bytes(4));
     $log = (string) tempnam(sys_get_temp_dir(), 'tinvar-slow-reader-log-');
@@ -65,6 +73,7 @@ function served(string $root, \Closure $drive): void
             ...array_diff_key(getenv(), ['TINVAR_APP_KEY' => true]),
             'SHOP_DATABASE' => Shop::database(),
             'TINVAR_APP_KEY_FILE' => "{$keyDir}/app.key",
+            ...$env,
         ],
     );
     stream_set_blocking($pipes[1], false);
@@ -157,12 +166,12 @@ it('answers other visitors while a client that stopped reading holds a response'
         // write after them.
         usleep(2_000_000);
 
-        // Without a bound on the stalled write this waits the minute Caddy
-        // allows by default, holding the mutex the whole time.
+        // With the worker writing to the slow reader itself this waited until
+        // `write_idle` cut the write off: 7 to 12 s.
         $beside = fetch($host, $port, '/', 40);
         expect($beside)->not->toBeNull('a request beside the slow reader was not answered within 40 s')
             ->and($beside['status'] ?? null)->toBe(200)
-            ->and($beside['seconds'] ?? INF)->toBeLessThan(30.0);
+            ->and($beside['seconds'] ?? INF)->toBeLessThan(3.0);
 
         // Past the bound, from the moment the slow reader asked: its write has
         // been aborted. Reading now gets what was buffered and then the end of
@@ -193,4 +202,43 @@ it('answers other visitors while a client that stopped reading holds a response'
         expect($ended)->toBeTrue('the slow reader\'s connection was not closed by the server')
             ->and(substr_count($received, "HTTP/1.1 200"))->toBeLessThan($asked);
     });
+});
+
+it('answers other visitors while a client that stopped reading downloads a receipt, sent by the file server', function () use ($root) {
+    $storage = sys_get_temp_dir() . '/tinvar-slow-reader-storage-' . bin2hex(random_bytes(4));
+    // A database of its own: the receipt stays on the demo account, which
+    // other tests expect to have none.
+    $database = Shop::testDatabase();
+
+    try {
+        served($root, function (string $host, int $port): void {
+            $customer = new SlowReader($host, $port);
+            $receipt = $customer->receipt(DemoAccount::EMAIL, DemoAccount::PASSWORD, 'dev');
+
+            // Sent whole, as uploaded, with the headers PHP gave it -- and
+            // neither of the two the Caddyfile reads.
+            $fetched = $customer->request('GET', $receipt['path']);
+            expect($fetched['status'] ?? null)->toBe(200)
+                ->and(($fetched['body'] ?? '') === $receipt['bytes'])->toBeTrue('the receipt did not come back as uploaded')
+                ->and($fetched['headers']['content-type'] ?? null)->toBe(['image/png'])
+                ->and($fetched['headers']['x-content-type-options'] ?? null)->toBe(['nosniff'])
+                ->and($fetched['headers']['content-security-policy'] ?? null)->toBe(["default-src 'none'; sandbox"])
+                ->and($fetched['headers'])->not->toHaveKey('x-accel-redirect')
+                ->and($fetched['headers'])->not->toHaveKey('x-accel-buffering');
+
+            // Only the session its URL was minted for.
+            expect((new SlowReader($host, $port))->request('GET', $receipt['path'])['status'] ?? null)->toBe(404);
+
+            $slow = $customer->stopReading($receipt['path'], ['Cookie' => $customer->cookieHeader()], 2);
+            usleep(1_000_000);
+
+            // A worker sending the file itself held the mutex for 8 s and more.
+            $beside = (new SlowReader($host, $port))->request('GET', '/', [], '', 40);
+            socket_close($slow);
+            expect($beside['status'] ?? null)->toBe(200)
+                ->and($beside['seconds'] ?? INF)->toBeLessThan(3.0);
+        }, ['SHOP_STORAGE' => $storage, 'SHOP_DATABASE' => $database]);
+    } finally {
+        exec('rm -rf ' . escapeshellarg($storage));
+    }
 });
