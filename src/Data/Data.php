@@ -57,15 +57,24 @@ abstract readonly class Data
      * The spec writes `clone($data, ['name' => $new])`. PHP 8.5 refuses that
      * outside the class, because a readonly property is `protected(set)`:
      * only the class and its relatives may set it, in a clone as anywhere.
-     * This is that clone, made from inside, so it is held to everything the
-     * spec's would be: each value to its property's type, no field the class
-     * does not declare, and none of a subclass's private ones.
+     * This is that clone, made from inside, and held to what the spec's would
+     * be from outside: each value to its property's type, and only a public
+     * field. Made from here, PHP would let it set a subclass's protected
+     * field too, which no caller outside could; so a name that is not a
+     * public field of the class is refused before anything is copied.
      *
-     * @param array<string, mixed> $changes field => its new value
+     * @param array<array-key, mixed> $changes field => its new value
+     * @throws \InvalidArgumentException for a name that is not a public field
      */
     #[\NoDiscard]
     public function with(array $changes): static
     {
+        foreach (array_keys($changes) as $field) {
+            if (!\is_string($field) || !property_exists($this, $field) || !new \ReflectionProperty($this, $field)->isPublic()) {
+                throw new \InvalidArgumentException(static::class . " has no public field '{$field}' to copy with.");
+            }
+        }
+
         return clone($this, $changes);
     }
 }

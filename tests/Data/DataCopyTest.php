@@ -20,6 +20,7 @@ final readonly class RackData extends Data
         public string $name,
         public int $heightU,
         private string $note = 'kept',
+        protected string $origin = 'loader',
     ) {}
 
     public function note(): string
@@ -49,10 +50,12 @@ it('holds each value to its field\'s type', function () {
     expect(fn () => (new RackData('r1', 'R-14', 42))->with(['heightU' => 'tall']))->toThrow(\TypeError::class);
 });
 
-it('refuses a field the class does not declare', function () {
-    expect(fn () => (new RackData('r1', 'R-14', 42))->with(['secret' => 'x']))->toThrow(\Error::class, 'dynamic property');
-});
-
-it('cannot reach a subclass\'s private field', function () {
-    expect(fn () => (new RackData('r1', 'R-14', 42))->with(['note' => 'changed']))->toThrow(\Error::class, 'private');
-});
+it('refuses anything but a public field, before copying', function (array $changes) {
+    expect(fn () => (new RackData('r1', 'R-14', 42))->with($changes))->toThrow(\InvalidArgumentException::class, 'no public field');
+})->with([
+    'a field the class does not declare' => [['secret' => 'x']],
+    'a private field' => [['note' => 'changed']],
+    // Reachable from Data's own scope, as no caller outside the class is.
+    'a protected field' => [['origin' => 'client']],
+    'a list of values' => [['R-15']],
+]);
