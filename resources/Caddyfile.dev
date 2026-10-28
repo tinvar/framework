@@ -85,10 +85,20 @@ http://:{$TINVAR_PORT} {
 		reverse_proxy 127.0.0.1:{$TINVAR_VITE_PORT}
 	}
 
+	# The app. None of the headers below is for the client: Tinvar\Http\Sapi
+	# marks a large or unmeasured response with X-Accel-Buffering, for an
+	# app's own Caddyfile to read, and here nothing reads it. No `intercept`
+	# around `php` as an app's Caddyfile has (ADR 0081): dev runs no workers,
+	# serves one person on loopback, and hands no stored file to a file
+	# server -- PHP is told no TINVAR_FILE_ROOT, so it sends files itself.
 	handle {
 		root * {$TINVAR_APP_ROOT}/public
 		rewrite * /index.php
-		header -X-Powered-By
+		header {
+			-X-Powered-By
+			-X-Accel-Buffering
+			-X-Accel-Redirect
+		}
 		php
 	}
 }
