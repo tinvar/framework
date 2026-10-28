@@ -66,6 +66,22 @@ describe('the docs site', function () use ($root) {
             ->and($failed)->toBe(0, implode("\n", $check));
     });
 
+    it('refuses to build over a directory that holds anything but an earlier build', function () use ($root) {
+        $directory = sys_get_temp_dir() . '/tinvar-docs-out-' . bin2hex(random_bytes(4));
+        mkdir($directory, 0o700);
+        file_put_contents("{$directory}/keep.txt", 'not the docs');
+        try {
+            exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg("{$root}/examples/docs/bin/docs") . ' build --out=' . escapeshellarg($directory) . ' 2>&1', $output, $status);
+            exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg("{$root}/examples/docs/bin/docs") . ' build --out=/ 2>&1', $rootOutput, $rootStatus);
+
+            expect($status)->toBe(64, implode("\n", $output))
+                ->and(file_get_contents("{$directory}/keep.txt"))->toBe('not the docs')
+                ->and($rootStatus)->toBe(64, implode("\n", $rootOutput));
+        } finally {
+            exec('rm -rf ' . escapeshellarg($directory));
+        }
+    });
+
     it('builds every page to a file, with every script the build\'s own', function () use ($root) {
         $site = site($root);
 
