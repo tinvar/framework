@@ -520,6 +520,47 @@ describe('a staff invite', function () {
     });
 });
 
+describe('an address in another case', function () {
+    // An account's address is one address whatever its case: the column is
+    // unique case-insensitively, and every lookup by address -- signing in,
+    // asking for a link, accepting an invite -- finds the account whose
+    // stored address it is, and mails that one.
+    beforeEach(function () {
+        $this->kernel->orm->connection()->execute("UPDATE customers SET email = 'Customer1@Shop.Test' WHERE email = 'customer1@shop.test'");
+        $this->mixed = customer($this->kernel, 'Customer1@Shop.Test');
+    });
+
+    it('signs in and sends links to the account it is', function () {
+        $browser = new Browser($this->kernel, '203.0.113.90');
+        $browser->action('account.signIn', ['email' => 'CUSTOMER1@shop.test', 'password' => 'pellwick-1']);
+        expect(signedInAs($this->kernel, $browser))->toBe($this->mixed->id);
+
+        (new Browser($this->kernel, '203.0.113.91'))->action('account.requestSignInLink', ['email' => 'customer1@shop.test']);
+        work($this->kernel);
+        expect($this->mail->sent())->toHaveCount(1)
+            ->and($this->mail->sent()[0]->isTo('Customer1@Shop.Test'))->toBeTrue();
+    });
+
+    it('joins an invite to the account it is, and makes no second one', function () {
+        $staff = new Browser($this->kernel, '203.0.113.92');
+        $staff->action('account.signIn', ['email' => StaffAccount::EMAIL, 'password' => StaffAccount::PASSWORD]);
+        $staff->action('staff.invite', ['email' => 'customer1@SHOP.test', 'role' => 'orders']);
+        work($this->kernel);
+        $token = tokenOf(linkIn($this->mail, 'staff-invitation', 'customer1@shop.test'));
+
+        $invitee = new Browser($this->kernel, '198.51.100.90');
+        expect($invitee->get('/invites/accept?token=' . rawurlencode($token))->status)->toBe(200)
+            ->and((string) json_encode($invitee->props))->toContain('"hasAccount":true');
+        $accepted = $invitee->action('staff.acceptInvite', ['token' => $token, 'name' => 'Someone Else', 'password' => 'a long enough password']);
+
+        $count = $this->kernel->orm->connection()->select("SELECT COUNT(*) AS n FROM customers WHERE lower(email) = 'customer1@shop.test'")[0]['n'];
+        expect($accepted->header('location'))->toBe('/sign-in?next=%2Fadmin%2Forders')
+            ->and((int) $count)->toBe(1)
+            ->and((new StaffMemberships($this->kernel->orm))->membership($this->mixed, StaffMemberships::PANEL, ''))->not->toBeNull()
+            ->and(signedInAs($this->kernel, $invitee))->toBeNull();
+    });
+});
+
 describe('drawn by the renderer', function () {
     beforeEach(function () {
         $unbuilt = Shop::ensureBuilt();
