@@ -158,6 +158,22 @@ it('issues no session to a preflight for it', function () {
         ->and(sessionRows($this->kernel))->toBe($rows);
 });
 
+// A token set too short is a mistake to say out loud, not an API that
+// quietly answers 401 to the warehouse too.
+it('refuses to start with a token set shorter than 32 characters', function () {
+    putenv('SHOP_WAREHOUSE_TOKEN=' . str_repeat('t', 31));
+    try {
+        expect(fn () => \Shop\Auth\WarehouseToken::fromEnvironment())
+            ->toThrow(\RuntimeException::class, 'SHOP_WAREHOUSE_TOKEN must be 32 characters or more');
+        putenv('SHOP_WAREHOUSE_TOKEN=' . str_repeat('t', 32));
+        expect(\Shop\Auth\WarehouseToken::fromEnvironment())->toBe(str_repeat('t', 32));
+        putenv('SHOP_WAREHOUSE_TOKEN=');
+        expect(\Shop\Auth\WarehouseToken::fromEnvironment())->toBeNull();
+    } finally {
+        putenv('SHOP_WAREHOUSE_TOKEN');
+    }
+});
+
 // Everything else still has a session issued, as before.
 it('still issues a session to a page request', function () {
     $response = $this->kernel->handle(new Request('GET', '/products/' . $this->product . '/stock', ['host' => '127.0.0.1', 'accept' => 'application/json'], remoteAddress: '127.0.0.1'));
