@@ -505,6 +505,13 @@ final class Worker
         if ($this->timedOut) {
             // It caught JobTimedOut and carried on, and the grace is over.
             // Nothing in this process can stop it now; a fresh one can.
+            // Its try is spent, so nothing is left written down as held: a
+            // stale file would have serve, at its next stop, hand the job
+            // back with its try given back -- or kill whatever process had
+            // come to have this one's pid.
+            if ($this->held !== null) {
+                HeldJob::clear($this->held);
+            }
             $this->say("{$this->running} would not stop at its timeout; exiting for a fresh worker");
             ($this->exit ?? static fn (int $status) => exit($status))(self::EXIT_TIMED_OUT);
 

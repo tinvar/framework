@@ -293,6 +293,36 @@ it('fails a job that swallows its timeout, and gives up the process to one that 
         ->and(arrayQueue($h)->failed()[0]->error)->toContain('ran past its 1s timeout');
 });
 
+it('leaves nothing written down as held when it exits for a job that would not stop at its timeout', function () {
+    $h = new Harness();
+    $directory = sys_get_temp_dir() . '/tinvar-held-' . bin2hex(random_bytes(4));
+    mkdir($directory, 0700);
+    $held = "{$directory}/queue-work.held";
+    $heldAtExit = [];
+    $h->worker = new \Tinvar\Jobs\Worker(
+        $h->queue,
+        $h->runner,
+        $h->scope,
+        clock: fn (): int => $h->now,
+        exit: function (int $status) use ($h, $held, &$heldAtExit): void {
+            $h->exits[] = $status;
+            $heldAtExit[] = is_file($held);
+        },
+        graceSeconds: 1,
+        held: $held,
+    );
+    $h->dispatcher->dispatch(new Sleeps(swallow: true));
+
+    withAlarm($h, fn () => $h->work());
+
+    // The process would have ended there: a file left naming it would be
+    // read at serve's next stop, and the timed-out job handed back with its
+    // try given back.
+    expect($h->exits)->toBe([\Tinvar\Jobs\Worker::EXIT_TIMED_OUT])
+        ->and($heldAtExit)->toBe([false]);
+    @rmdir($directory);
+});
+
 it('stops when asked, after the job in hand', function () {
     $h = new Harness();
     $h->dispatcher->dispatch(new RecordContext(note: 'one'));
