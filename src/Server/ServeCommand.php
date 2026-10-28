@@ -818,14 +818,31 @@ final class ServeCommand
     }
 
     /**
-     * Whether $pid runs `queue:work`, where /proc can say: a pid written by
-     * a worker that has since gone may be another process's now.
+     * Whether $pid runs `queue:work`: a pid written by a worker that has
+     * since gone may be another process's now, and it is killed only once
+     * something says what it runs -- /proc, or `ps` where there is no /proc
+     * (macOS). Nothing to say so is a no: the job is left to its
+     * reservation rather than some other process killed.
      */
     private static function isWorker(int $pid): bool
     {
-        $cmdline = is_readable("/proc/{$pid}/cmdline") ? @file_get_contents("/proc/{$pid}/cmdline") : false;
+        if (is_dir('/proc')) {
+            $cmdline = is_readable("/proc/{$pid}/cmdline") ? @file_get_contents("/proc/{$pid}/cmdline") : false;
 
-        return $cmdline === false ? is_dir('/proc') === false : \in_array('queue:work', explode("\0", $cmdline), true);
+            return $cmdline !== false && \in_array('queue:work', explode("\0", $cmdline), true);
+        }
+
+        $process = @proc_open(['ps', '-o', 'args=', '-p', (string) $pid], [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
+        if (!\is_resource($process)) {
+            return false;
+        }
+        $args = stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        if (proc_close($process) !== 0 || !\is_string($args)) {
+            return false;
+        }
+
+        return \in_array('queue:work', preg_split('/\s+/', trim($args)) ?: [], true);
     }
 
     /**

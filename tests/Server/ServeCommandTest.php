@@ -169,6 +169,26 @@ it('stops the background children first, with time for the job in hand, then the
         ]);
 });
 
+it('kills a pid at the stop only once something says it runs queue:work', function () {
+    $isWorker = new \ReflectionMethod(ServeCommand::class, 'isWorker');
+    // Another process of this user's, which a held file's stale pid could
+    // have come to name: never one serve kills.
+    $other = proc_open(['sleep', '30'], [], $pipes);
+    \assert(\is_resource($other));
+    $worker = proc_open([PHP_BINARY, '-r', 'sleep(30);', 'queue:work'], [], $pipes);
+    \assert(\is_resource($worker));
+    try {
+        expect($isWorker->invoke(null, proc_get_status($other)['pid']))->toBeFalse()
+            ->and($isWorker->invoke(null, getmypid()))->toBeFalse()
+            ->and($isWorker->invoke(null, proc_get_status($worker)['pid']))->toBeTrue();
+    } finally {
+        proc_terminate($other);
+        proc_close($other);
+        proc_terminate($worker);
+        proc_close($worker);
+    }
+});
+
 it('gives the background the stop budget the environment names, and refuses one that is not', function () {
     withoutEnvironmentBinary(function () {
         $app = app();
