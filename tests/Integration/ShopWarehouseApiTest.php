@@ -139,6 +139,25 @@ it('takes no token at all when the shop was given none', function () {
     expect(put($kernel, $this->product, 3, ['authorization' => 'Bearer '])->status)->toBe(401);
 });
 
+// A browser on another origin asks first. The Kernel answers that with
+// nothing of the endpoint's run -- the stock API names no origin, so a 405 --
+// and the shop issues no session for it, as for the call itself.
+it('issues no session to a preflight for it', function () {
+    $rows = sessionRows($this->kernel);
+
+    $response = $this->kernel->handle(new Request('OPTIONS', "/api/warehouse/products/{$this->product}/stock", [
+        'host' => '127.0.0.1',
+        'origin' => 'https://warehouse.example',
+        'access-control-request-method' => 'PUT',
+        'access-control-request-headers' => 'authorization, content-type',
+    ], remoteAddress: '127.0.0.1'));
+
+    expect($response->status)->toBe(405)
+        ->and($response->cookies())->toBe([])
+        ->and($response->header('set-cookie'))->toBeNull()
+        ->and(sessionRows($this->kernel))->toBe($rows);
+});
+
 // Everything else still has a session issued, as before.
 it('still issues a session to a page request', function () {
     $response = $this->kernel->handle(new Request('GET', '/products/' . $this->product . '/stock', ['host' => '127.0.0.1', 'accept' => 'application/json'], remoteAddress: '127.0.0.1'));

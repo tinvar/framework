@@ -1415,6 +1415,14 @@ final class Kernel
      * session table would keep for it. Matched as dispatch matches it --
      * path and method -- so a call this says opens none is the call the
      * endpoint answers.
+     *
+     * And a CORS preflight for such a call: an OPTIONS at its path whose
+     * Access-Control-Request-Method it answers. The Kernel answers every
+     * OPTIONS at an endpoint's path behind the flood guard alone, with no
+     * session -- the preflight's 204, or a 405 -- and a browser sends no
+     * cookie with a preflight and keeps none it is sent. An OPTIONS asking
+     * about nothing, or about a call that does open a session, is left as
+     * any other request is.
      */
     public function opensNoSession(Request $request): bool
     {
@@ -1422,7 +1430,19 @@ final class Kernel
             return true;
         }
 
-        $matched = $this->endpoints_?->registry->match($request);
+        $registry = $this->endpoints_?->registry;
+        if ($registry === null) {
+            return false;
+        }
+
+        $asked = $request->method === 'OPTIONS' ? $request->header('access-control-request-method') : null;
+        if ($asked !== null && isset($registry->match($request)['allow'])) {
+            $matched = $registry->matchMethod($request->path, $asked);
+
+            return isset($matched['endpoint']) && $matched['endpoint']->sessionless;
+        }
+
+        $matched = $registry->match($request);
 
         return isset($matched['endpoint']) && $matched['endpoint']->sessionless;
     }

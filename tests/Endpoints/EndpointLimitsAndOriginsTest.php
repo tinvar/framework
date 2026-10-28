@@ -548,6 +548,27 @@ describe('a #[WithoutSession] endpoint, held by the Kernel', function () {
             ->and($kernel->opensNoSession(new Request('GET', '/')))->toBeFalse();
     });
 
+    // A browser preflights a cross-origin call before making it. The Kernel
+    // answers the preflight with nothing of the endpoint's run, so the
+    // application must not issue a session for it either.
+    it('counts a preflight for one of its calls as one, and no other OPTIONS', function () {
+        [$fixture, $kernel] = racks();
+        $rack = $fixture->ids['racks'][0];
+        $preflight = static fn (string $path, array $headers): Request => new Request('OPTIONS', $path, $headers);
+
+        expect($kernel->opensNoSession($preflight("/api/scanner/racks/{$rack}", ['origin' => 'https://scanner.example', 'access-control-request-method' => 'POST'])))->toBeTrue()
+            // From an origin it does not name: still the Kernel's 405, with
+            // no session opened for it.
+            ->and($kernel->opensNoSession($preflight("/api/scanner/racks/{$rack}", ['origin' => 'https://evil.example', 'access-control-request-method' => 'POST'])))->toBeTrue()
+            // Asking about a method no sessionless endpoint there answers.
+            ->and($kernel->opensNoSession($preflight("/api/scanner/racks/{$rack}", ['origin' => 'https://scanner.example', 'access-control-request-method' => 'GET'])))->toBeFalse()
+            // An OPTIONS that is no preflight, and a preflight to an
+            // endpoint that opens the session.
+            ->and($kernel->opensNoSession($preflight("/api/scanner/racks/{$rack}", [])))->toBeFalse()
+            ->and($kernel->opensNoSession($preflight("/api/racks/{$rack}/height", ['origin' => 'https://partner.example', 'access-control-request-method' => 'GET'])))->toBeFalse()
+            ->and($kernel->opensNoSession($preflight('/', ['origin' => 'https://scanner.example', 'access-control-request-method' => 'GET'])))->toBeFalse();
+    });
+
     it('is refused when it declares global middleware, which opens the session', function () {
         $fixture = new Fixture(racks: 1, unitsPerRack: 1);
 
