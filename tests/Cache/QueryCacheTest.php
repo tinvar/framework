@@ -85,6 +85,28 @@ describe('the key', function () {
             ->not->toBe($cache($auth)->key('q', $declaration, ['x' => 1], 'globex'));
     });
 
+    it('separates two locales, read from the request in hand at each lookup', function () {
+        $declaration = new QueryAttribute(cache: '1m');
+        $locale = 'en';
+        $cache = new QueryCache(new ArrayStore(), new AuthContext(), locale: static function () use (&$locale): string {
+            return $locale;
+        });
+
+        $english = $cache->key('q', $declaration, ['x' => 1], 'acme');
+        $locale = 'fr';
+        $french = $cache->key('q', $declaration, ['x' => 1], 'acme');
+
+        expect($english)->not->toBe($french)
+            ->and($english)->toBe(new QueryCache(new ArrayStore(), new AuthContext(), locale: 'en')->key('q', $declaration, ['x' => 1], 'acme'));
+    });
+
+    it('fails a lookup whose locale cannot be read, rather than keying it without one', function () {
+        $cache = new QueryCache(new ArrayStore(), new AuthContext(), locale: static fn (): string => throw new \RuntimeException('no locale'));
+
+        expect(fn () => $cache->get('q', new QueryAttribute(cache: '1m'), ['x' => 1], 'acme'))
+            ->toThrow(\RuntimeException::class, 'no locale');
+    });
+
     it('separates two panels', function () {
         $auth = new AuthContext();
         $declaration = new QueryAttribute(cache: '1m');

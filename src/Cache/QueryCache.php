@@ -55,12 +55,17 @@ final class QueryCache
      *        during one, would otherwise be read: what a query returns is its
      *        build's, and the next build may return another shape. '' is one build
      *        for every entry, which only a store as short-lived as the code is can be.
+     * @param string|(\Closure(): string) $locale the locale an answer is for. The locale is
+     *        the application's: a string where it has one, or -- as the panel is read from
+     *        its context -- a closure asked at every lookup for the locale of the request
+     *        or render in hand, so one worker serving two languages never answers one
+     *        from the other's entry. One that throws fails the call, never keys it loosely.
      */
     public function __construct(
         private readonly Store $store,
         private readonly AuthContext $auth,
         private readonly ?PanelContext $panels = null,
-        private readonly string $locale = 'en',
+        private readonly string|\Closure $locale = 'en',
         private readonly string $build = '',
     ) {}
 
@@ -253,7 +258,7 @@ final class QueryCache
             'a' => self::canonical($arguments),
             't' => $tenant,
             'p' => $this->panels?->currentOrNull() ?? '',
-            'l' => $this->locale,
+            'l' => $this->locale instanceof \Closure ? ($this->locale)() : $this->locale,
         ];
 
         // "The panel and its effective scope": a request whose membership
