@@ -45,9 +45,10 @@ function skeleton(string $search = '', string $replace = ''): string
     return $search === '' ? $contents : str_replace($search, $replace, $contents);
 }
 
-it('passes the shop\'s Caddyfile and the skeleton\'s', function () {
+it('passes the shop\'s Caddyfile, the skeleton\'s and the docs\'', function () {
     expect(CaddyfileRules::check(ROOT . '/examples/shop/Caddyfile'))->toBe([])
-        ->and(CaddyfileRules::check(ROOT . '/packages/skeleton/Caddyfile'))->toBe([]);
+        ->and(CaddyfileRules::check(ROOT . '/packages/skeleton/Caddyfile'))->toBe([])
+        ->and(CaddyfileRules::check(ROOT . '/examples/docs/Caddyfile'))->toBe([]);
 });
 
 // Development runs no workers and hands over no files, but a response PHP
