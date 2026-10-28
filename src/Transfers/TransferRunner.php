@@ -178,25 +178,55 @@ final readonly class TransferRunner
 
     /**
      * The record a paused export picks up again: in this tenant claim and
-     * panel, started by this user, still running, and holding the very file
-     * the checkpoint names. None for one finished or gone since; one that
-     * holds another file is failed, since what it wrote is not what this
-     * run would add to.
+     * panel, started by this user, still running, and holding either the
+     * file the checkpoint names or the one the checkpoint was paused from.
+     * None for one finished or gone since; one that holds anything else is
+     * failed, since what it wrote is not what this run would add to.
+     *
+     * A pause never touches the record (pause()): it stores its file and
+     * goes back on its queue, and the record takes the file here, on the
+     * run that picks it up. So a stop that cuts a run off between pausing
+     * and being put back -- handed back with the checkpoint it ran from --
+     * leaves the record and that checkpoint agreeing, and the run goes again
+     * from there, never from a file the record no longer holds. Taking the
+     * file deletes the one before it first, then names the new one: cut off
+     * in between, the record still names the one before, as the checkpoint
+     * does.
      *
      * @param array<array-key, mixed> $checkpoint
      */
-    private function resume(string $id, array $checkpoint): ?TransferRecord
+    private function resume(string $id, array $checkpoint, JobControl $control): ?TransferRecord
     {
         $user = $this->auth->id() ?? throw new JobRefused('user_missing', 'A transfer runs as the user who started it.');
         $record = $this->transfers->store->find($id, TenantClaim::current($this->orm), $this->panels?->currentOrNull() ?? '', $user);
+        $key = $checkpoint['key'] ?? null;
+        $from = $checkpoint['from'] ?? null;
+        $rows = $checkpoint['rows'] ?? null;
+        // A first pause left its record `queued` (pause()), so a run cut off
+        // before it was put back -- handed back with no checkpoint at all --
+        // claims it and starts over. Its checkpoint's run claims it here.
+        if ($record !== null && $record->status === TransferRecord::QUEUED && $from === '' && $record->key === '') {
+            if (!$this->transfers->store->claim($record->id)) {
+                return null;
+            }
+            $record = $record->with(['status' => TransferRecord::RUNNING]);
+        }
         if ($record === null || $record->status !== TransferRecord::RUNNING) {
             return null;
         }
-        $key = $checkpoint['key'] ?? null;
-        if ($record->key === '' || !\is_string($key) || !hash_equals($record->key, $key)) {
-            $this->fail($record, 'The export was stopped part of the way through, and what it had written could not be found. Start it again.');
+        $held = \is_string($key) && $key !== '' && hash_equals($record->key, $key);
+        $before = !$held && \is_string($key) && $key !== '' && \is_string($from) && hash_equals($record->key, $from);
+        if ((!$held && !$before) || !\is_string($key) || !\is_int($rows) || !$this->transfers->storage->exists($key)) {
+            $this->fail($record, 'The export was stopped part of the way through, and what it had written could not be found. Start it again.', $control);
 
             return null;
+        }
+        if ($before) {
+            if ($record->key !== '') {
+                $this->transfers->storage->delete($record->key);
+            }
+            $record = $record->with(['key' => $key, 'rows' => $rows]);
+            $this->transfers->store->update($record);
         }
 
         return $record;
@@ -207,25 +237,25 @@ final readonly class TransferRunner
      * the link to it to its user.
      *
      * Asked to stop part of the way through (JobControl::stopping()), it
-     * pauses between pages: what it has written so far is stored, the
-     * record holds it, and the job goes back on its queue with where to
-     * pick up -- the next page's cursor, the rows so far and that file --
-     * sealed in its payload. The next run reads the file back and goes on
-     * from the cursor, so each row is written once.
+     * pauses between pages: what it has written so far is stored, and the
+     * job goes back on its queue with where to pick up -- the next page's
+     * cursor, the rows so far and that file -- sealed in its payload. The
+     * next run has the record take the file (resume()), reads it back and
+     * goes on from the cursor, so each row is written once.
      *
      * @param array<string, mixed> $arguments as the job carried them, models read again
      */
     public function export(string $id, array $arguments, ?JobControl $control = null): void
     {
         $checkpoint = $control?->checkpoint();
-        $record = $checkpoint === null ? $this->claim($id) : $this->resume($id, $checkpoint);
+        $record = $control === null || $checkpoint === null ? $this->claim($id) : $this->resume($id, $checkpoint, $control);
         if ($record === null) {
             return;
         }
 
         $transfer = $this->transfers->registry->export($record->name);
         if ($transfer === null) {
-            $this->fail($record, 'This export no longer exists.');
+            $this->fail($record, 'This export no longer exists.', $control);
 
             return;
         }
@@ -233,11 +263,39 @@ final readonly class TransferRunner
         try {
             $this->authorize($transfer, $arguments);
         } catch (ForbiddenException) {
-            $this->fail($record, 'You may no longer run this export.');
+            $this->fail($record, 'You may no longer run this export.', $control);
 
             return;
         }
 
+        $done = false;
+        try {
+            $this->exportFrom($record, $transfer, $arguments, $checkpoint, $control, $done);
+        } catch (WorkerStopping $e) {
+            // Stopped by the worker's stop, wherever it came -- mid-page, or
+            // between storing a pause and being put back -- and handed back
+            // to run again: not a failure. A first run's record goes back to
+            // `queued` for the next run to claim; a resumed run's is left as
+            // resume() made it, holding the file its checkpoint names.
+            if ($checkpoint === null && !$done) {
+                $this->transfers->store->update($record->with(['status' => TransferRecord::QUEUED]));
+            }
+
+            throw $e;
+        }
+    }
+
+    /**
+     * The export's work once its record is claimed or picked up: the rows,
+     * then a pause or the finished file. $done turns true the moment the
+     * record is: a stop after that leaves it done.
+     *
+     * @param array<string, mixed> $arguments
+     * @param array<array-key, mixed>|null $checkpoint
+     * @param-out bool $done
+     */
+    private function exportFrom(TransferRecord $record, CompiledTransfer $transfer, array $arguments, ?array $checkpoint, ?JobControl $control, bool &$done): void
+    {
         $stream = fopen('php://temp/maxmemory:2097152', 'w+b');
         if ($stream === false) {
             throw new \RuntimeException('No temporary stream to write an export to.');
@@ -249,7 +307,7 @@ final readonly class TransferRunner
             if ($checkpoint !== null) {
                 $restored = $this->restore($record, $checkpoint, $stream);
                 if ($restored === null) {
-                    $this->fail($record, 'The export was stopped part of the way through, and what it had written could not be read back. Start it again.');
+                    $this->fail($record, 'The export was stopped part of the way through, and what it had written could not be read back. Start it again.', $control);
 
                     return;
                 }
@@ -259,21 +317,13 @@ final readonly class TransferRunner
             try {
                 [$rows, $pausedAt] = $this->orm->readOnly(fn (): array => $this->write($transfer, $record->format, $arguments, $stream, $from, $rows, $control));
             } catch (TooManyRows) {
-                $this->fail($record, "It has more than {$transfer->maxRows} rows. Narrow it and start it again.");
+                $this->fail($record, "It has more than {$transfer->maxRows} rows. Narrow it and start it again.", $control);
 
                 return;
             } catch (WorkerStopping $e) {
-                // Stopped mid-page by the worker's stop, and handed back to
-                // run again: not a failure. The record is left as the next
-                // run will look for it -- holding the last pause's file, or
-                // unclaimed when there was none, so that run claims it.
-                if ($checkpoint === null) {
-                    $this->transfers->store->update($record->with(['status' => TransferRecord::QUEUED]));
-                }
-
                 throw $e;
             } catch (\Throwable $e) {
-                $this->fail($record, 'The file could not be written.');
+                $this->fail($record, 'The file could not be written.', $control);
 
                 throw $e;
             }
@@ -293,13 +343,8 @@ final readonly class TransferRunner
             fclose($stream);
         }
 
-        // What an earlier run stored when it paused, now part of the whole.
-        if ($checkpoint !== null && $record->key !== '') {
-            $this->transfers->storage->delete($record->key);
-        }
-
         $now = $this->transfers->now();
-        $done = $record->with([
+        $finished = $record->with([
             'status' => TransferRecord::DONE,
             'rows' => $rows,
             'key' => $key,
@@ -308,28 +353,65 @@ final readonly class TransferRunner
             'expiresAt' => $now + $this->transfers->keepFiles,
             'fileName' => \sprintf('%s-%s.%s', str_replace('.', '-', $record->name), gmdate('Ymd-His', $now), $record->format),
         ]);
-        $this->transfers->store->update($done);
-        $this->notify($done);
+        $this->transfers->store->update($finished);
+        $done = true;
+
+        // What earlier runs stored when they paused, now part of the whole:
+        // the file the record held, and any a stop left behind.
+        if ($record->key !== '') {
+            $this->transfers->storage->delete($record->key);
+        }
+        $this->forgetPauses($record, $control);
+        $this->notify($finished);
     }
 
     /**
-     * Stores what an export has written so far, has its record hold it, and
-     * pauses the job with where to pick up. The file an earlier pause stored
-     * goes once the record no longer names it.
+     * Stores what an export has written so far, and pauses the job with
+     * where to pick up: the cursor, the rows, the file, and the file the
+     * record holds now, which the next run replaces with it (resume()).
+     * The record is not given the file here. A first run's goes back to
+     * `queued`: cut off before it is put back, the job runs again with no
+     * checkpoint, and must find its record to claim.
+     *
+     * The file is named for this pause of this job (pauseKey()), the same
+     * on every run that reaches it: a run cut off before it was put back
+     * pauses there again and stores over it, leaving nothing behind.
      *
      * @param resource $stream
      */
     private function pause(TransferRecord $record, mixed $stream, int $rows, string $cursor, JobControl $control): void
     {
         rewind($stream);
-        $key = StorageKey::generate(Transfers::EXPORT_PREFIX, $record->format);
+        $key = self::pauseKey($record, $control, $control->releases() + 1);
         $this->transfers->storage->put($key, $stream);
-        $this->transfers->store->update($record->with(['key' => $key, 'rows' => $rows]));
-        if ($record->key !== '') {
-            $this->transfers->storage->delete($record->key);
+        if ($control->checkpoint() === null) {
+            $this->transfers->store->update($record->with(['status' => TransferRecord::QUEUED]));
         }
 
-        $control->release(checkpoint: ['cursor' => $cursor, 'rows' => $rows, 'key' => $key]);
+        $control->release(checkpoint: ['cursor' => $cursor, 'rows' => $rows, 'key' => $key, 'from' => $record->key]);
+    }
+
+    /**
+     * The file the $n-th pause of this export's job stores: named from the
+     * job's idempotency key, so the same on every run that reaches that
+     * pause, and nothing anyone can work out from the record.
+     */
+    private static function pauseKey(TransferRecord $record, JobControl $control, int $n): string
+    {
+        $name = substr(hash('sha256', $control->idempotencyKey("export-pause\0{$record->id}\0{$n}")), 0, 32);
+
+        return Transfers::EXPORT_PREFIX . '/' . $name . '.' . $record->format;
+    }
+
+    /** Deletes every file a pause of this job may have stored, up to the next one it could have reached. */
+    private function forgetPauses(TransferRecord $record, ?JobControl $control): void
+    {
+        if ($control === null) {
+            return;
+        }
+        for ($n = 1; $n <= $control->releases() + 1; $n++) {
+            $this->transfers->storage->delete(self::pauseKey($record, $control, $n));
+        }
     }
 
     /**
@@ -682,12 +764,15 @@ final readonly class TransferRunner
         }
     }
 
-    private function fail(TransferRecord $record, string $why): void
+    private function fail(TransferRecord $record, string $why, ?JobControl $control = null): void
     {
         // What a paused export had written: never a file anyone fetches.
-        if ($record->kind === CompiledTransfer::EXPORT && $record->key !== '') {
-            $this->transfers->storage->delete($record->key);
-            $record = $record->with(['key' => '']);
+        if ($record->kind === CompiledTransfer::EXPORT) {
+            if ($record->key !== '') {
+                $this->transfers->storage->delete($record->key);
+                $record = $record->with(['key' => '']);
+            }
+            $this->forgetPauses($record, $control);
         }
 
         $this->finish($record->with(['status' => TransferRecord::FAILED, 'failure' => $why]));

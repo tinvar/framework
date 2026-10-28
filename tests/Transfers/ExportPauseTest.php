@@ -40,7 +40,7 @@ function manyWidgets(int $extra): App
  * @param \Closure(): bool $stopping
  * @return array<array-key, mixed>|null the checkpoint it paused with
  */
-function runOnce(App $app, \Closure $stopping): ?array
+function runOnce(App $app, \Closure $stopping, bool $cutOff = false): ?array
 {
     $job = $app->queue->reserve([Transfers::QUEUE], $app->now, 60);
     expect($job)->toBeInstanceOf(ReservedJob::class);
@@ -64,6 +64,14 @@ function runOnce(App $app, \Closure $stopping): ?array
 
         return null;
     }
+    // Cut off after it paused and before the worker put it back with its
+    // checkpoint -- the stop's interrupt landing there: handed back as it
+    // was taken, with the checkpoint it ran from.
+    if ($cutOff) {
+        $app->queue->requeue($job, $app->now);
+
+        return null;
+    }
     $app->queue->requeue($job, $app->now + $release['delay'], $app->runner->pause($envelope, $release['checkpoint']));
 
     return $release['checkpoint'];
@@ -76,10 +84,12 @@ it('pauses between pages and picks up from the next, writing every row once', fu
 
     $paused = runOnce($app, static fn (): bool => true);
     $record = $app->record();
-    expect($paused)->toMatchArray(['rows' => TransferRunner::PAGE, 'key' => $record->key])
-        ->and($record->status)->toBe(TransferRecord::RUNNING)
-        ->and($record->rows)->toBe(TransferRunner::PAGE)
-        ->and($app->storage->keys())->toBe([$record->key])
+    // The pause stores its file and leaves the record for the next run to
+    // give it to: a first pause's record waits, `queued`, to be claimed.
+    expect($paused)->toMatchArray(['rows' => TransferRunner::PAGE, 'from' => ''])
+        ->and($record->status)->toBe(TransferRecord::QUEUED)
+        ->and($record->key)->toBe('')
+        ->and($app->storage->keys())->toBe([$paused['key'] ?? null])
         // Held, not offered: a paused export has no link yet.
         ->and($record->isDownloadable($app->now))->toBeFalse();
 
@@ -171,3 +181,34 @@ it('fails an export whose checkpoint names a file its record does not hold', fun
         ->and($app->record()->failure)->toContain('could not be found')
         ->and($app->storage->keys())->toBe([]);
 });
+
+it('writes every row once when a stop cuts a run off, wherever it lands', function (array $runs) {
+    $extra = TransferRunner::PAGE + 400;
+    $app = manyWidgets($extra);
+    $app->export();
+    foreach ($runs as $run) {
+        match ($run) {
+            'pause' => expect(runOnce($app, static fn (): bool => true))->not->toBeNull(),
+            // Paused, and handed back as it was taken -- the stop's
+            // interrupt landing after the pause, before the worker put it
+            // back with its checkpoint: the job runs again from the one it
+            // had, or from the start.
+            'cut off' => expect(runOnce($app, static fn (): bool => true, cutOff: true))->toBeNull(),
+            'finish' => expect(runOnce($app, static fn (): bool => false))->toBeNull(),
+        };
+    }
+
+    $record = $app->record();
+    expect($record->status)->toBe(TransferRecord::DONE, (string) $record->failure)
+        ->and($record->rows)->toBe($extra + 3)
+        // Nothing a pause stored is left beside the whole.
+        ->and($app->storage->keys())->toBe([$record->key]);
+    $lines = array_values(array_filter(preg_split('/\r?\n/', (string) $app->storage->contents($record->key)) ?: [], static fn (string $l): bool => $l !== ''));
+    $skus = array_map(static fn (string $line): string => explode(',', $line)[0], array_slice($lines, 1));
+    expect($skus)->toHaveCount($extra + 3)
+        ->and(array_unique($skus))->toHaveCount($extra + 3);
+})->with([
+    'a first pause cut off, then paused again' => [['cut off', 'pause', 'finish']],
+    'a first pause cut off, then finished' => [['cut off', 'finish']],
+    'a pause cut off twice' => [['cut off', 'cut off', 'pause', 'finish']],
+]);
