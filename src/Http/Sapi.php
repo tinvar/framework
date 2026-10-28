@@ -18,6 +18,25 @@ namespace Tinvar\Http;
 final class Sapi
 {
     /**
+     * The largest body Caddy is let hold whole for a client, in bytes: the
+     * shop's catalog is about 100 KB as a document and 45 KB as a payload.
+     */
+    public const int BUFFERED_BYTES = 1_048_576;
+
+    /**
+     * The server variable a Caddyfile names the directory it sends stored
+     * files from with (`php { env TINVAR_FILE_ROOT ... }`): one the request
+     * cannot set, since a client's headers arrive as HTTP_*.
+     */
+    public const string FILE_ROOT = 'TINVAR_FILE_ROOT';
+
+    /** Says which stored file the server is to send in the body's place. */
+    public const string FILE_HEADER = 'x-accel-redirect';
+
+    /** Says the server is to pass the body on as it comes, not hold it whole. */
+    public const string STREAM_HEADER = 'x-accel-buffering';
+
+    /**
      * Builds a Request from SAPI values. Throws NotFoundException for a path
      * Request refuses; the caller answers that as a 404.
      *
@@ -118,6 +137,72 @@ final class Sapi
     }
 
     /**
+     * The response as the server is to take it.
+     *
+     * FrankenPHP's static binary has the `parallel` extension built in,
+     * which takes one process-wide mutex around every write PHP makes to the
+     * server. A write the client is not reading blocks, holding it, and every
+     * other worker's output waits behind it (ADR 0051). So a worker must not
+     * write to a client at all: the shop's Caddyfile holds a body whole
+     * (`intercept`) and sends it once the worker is done -- in Go, outside
+     * the mutex -- and the worker's writes only fill memory (ADR 0081).
+     *
+     * Held whole only up to BUFFERED_BYTES, known before the first byte: a
+     * body that is a string, or a stream that says its Content-Length. A
+     * larger one, or a stream of no known length -- a render streamed as it
+     * is made -- is marked to be passed on as it comes (`X-Accel-Buffering:
+     * no`, the convention nginx reads too), and its writes can still block.
+     *
+     * A file the server sends itself goes out with no body at all. When the
+     * Caddyfile names a directory it sends stored files from ($fileRoot) and
+     * the response's file is inside it, the response carries the file's path
+     * below that directory (`X-Accel-Redirect`) and Caddy's file server sends
+     * it. Neither header reaches the client: the Caddyfile removes both. An
+     * application's own value for either is dropped here first, so the only
+     * file the server is ever told to send is one a response was built from.
+     */
+    public static function forServer(Response $response, ?string $fileRoot): Response
+    {
+        $response = $response->withoutHeader(self::FILE_HEADER)->withoutHeader(self::STREAM_HEADER);
+
+        $file = $response->file();
+        $relative = $file === null || $fileRoot === null || $fileRoot === '' ? null : self::below($fileRoot, $file);
+        if ($relative !== null) {
+            return Response::make($response->status, '', $response->headers())
+                ->withCookiesOf($response)
+                ->withHeader(self::FILE_HEADER, $relative);
+        }
+
+        $length = $response->isStreaming() ? $response->header('content-length') : (string) \strlen($response->body());
+        if ($length === null || preg_match('/^\d{1,15}\z/', $length) !== 1 || (int) $length > self::BUFFERED_BYTES) {
+            return $response->withHeader(self::STREAM_HEADER, 'no');
+        }
+
+        return $response;
+    }
+
+    /**
+     * $file's path below $root, as a URL path, when it is a regular file
+     * inside it, both resolved; null otherwise. Only names Caddy's rewrite
+     * takes as they are: no `.` or `..` segment, nothing that needs escaping.
+     */
+    private static function below(string $root, string $file): ?string
+    {
+        $root = realpath($root);
+        $real = realpath($file);
+        if ($root === false || $real === false || !is_file($real) || !str_starts_with($real, $root . '/')) {
+            return null;
+        }
+
+        $relative = substr($real, \strlen($root));
+        if (preg_match('#^(?:/[A-Za-z0-9_-][A-Za-z0-9._-]*)+\z#', $relative) !== 1) {
+            return null;
+        }
+
+        return $relative;
+    }
+
+    /**
      * Writes a Response through the given output functions: a status, each
      * header, each cookie as a Set-Cookie line of its own, then the body as
      * it streams.
@@ -138,11 +223,17 @@ final class Sapi
         $response->sendBody($write);
     }
 
-    /** Writes a Response to the real SAPI output, flushing each chunk so it streams. */
+    /**
+     * Writes a Response to the real SAPI output, flushing each chunk so it
+     * streams -- as the server is to take it (forServer()), told by this
+     * request's server variables whether it sends stored files itself.
+     */
     public static function send(Response $response): void
     {
+        $root = $_SERVER[self::FILE_ROOT] ?? null;
+
         self::emit(
-            $response,
+            self::forServer($response, \is_string($root) ? $root : null),
             static function (int $code): void {
                 http_response_code($code);
             },

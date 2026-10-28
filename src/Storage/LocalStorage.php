@@ -120,6 +120,16 @@ final readonly class LocalStorage implements Storage
     }
 
     /**
+     * Where on disk the file at $key is, checked to be inside the root;
+     * null when nothing is there. For a server that sends the file itself
+     * (Response::withFile()), never for a client to see.
+     */
+    public function path(string $key): ?string
+    {
+        return $this->existing($key);
+    }
+
+    /**
      * The file a key names, checked to be inside the root; null when there
      * is none -- a root not made yet holds nothing.
      */

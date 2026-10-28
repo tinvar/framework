@@ -32,6 +32,13 @@ final class Response
     /** Set once the producer has run, so a render is never replayed. */
     private ?string $buffered = null;
 
+    /**
+     * The file on this machine's disk that the body is, whole, when it is
+     * one: a server that sends files itself is handed it rather than the
+     * producer's chunks (Sapi::forServer()).
+     */
+    private ?string $file = null;
+
     private function __construct(
         public readonly int $status,
         private string $body = '',
@@ -171,6 +178,14 @@ final class Response
 
         $clone = clone $this;
         $clone->headers[strtolower($name)] = $value;
+
+        return $clone;
+    }
+
+    public function withoutHeader(string $name): self
+    {
+        $clone = clone $this;
+        unset($clone->headers[strtolower($name)]);
 
         return $clone;
     }
@@ -327,6 +342,30 @@ final class Response
     public function isStreaming(): bool
     {
         return $this->producer !== null;
+    }
+
+    /**
+     * The same streamed response, saying its body is the file at $path from
+     * start to end. The producer still sends it wherever nothing else will
+     * -- a test, a server with no way to send a file -- so the two must be
+     * the same bytes.
+     */
+    public function withFile(string $path): self
+    {
+        if ($this->producer === null) {
+            throw new \LogicException('Only a streamed response is sent from a file.');
+        }
+        if (!str_starts_with($path, '/')) {
+            throw new \InvalidArgumentException('A response is sent from a file by its absolute path.');
+        }
+
+        return clone($this, ['file' => $path]);
+    }
+
+    /** The file the body is, if withFile() said so. */
+    public function file(): ?string
+    {
+        return $this->file;
     }
 
     /** @param \Closure(string): void $sink */

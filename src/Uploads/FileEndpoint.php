@@ -9,6 +9,7 @@ use Tinvar\Http\HttpException;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Render\TokenError;
+use Tinvar\Storage\LocalStorage;
 
 /**
  * GET /_file/{token}
@@ -108,7 +109,7 @@ final readonly class FileEndpoint
             return Response::make(200, '', $headers);
         }
 
-        return Response::stream(static function (\Closure $sink) use ($stream): void {
+        $response = Response::stream(static function (\Closure $sink) use ($stream): void {
             try {
                 while (!feof($stream)) {
                     $chunk = fread($stream, self::CHUNK);
@@ -123,6 +124,14 @@ final readonly class FileEndpoint
                 fclose($stream);
             }
         }, 200, $headers);
+
+        // A file on this machine's disk is one the server can send itself,
+        // with no worker writing it to a client that may stop reading
+        // (Sapi::forServer()). The stream above is what goes otherwise.
+        $storage = $this->uploads->storage;
+        $path = $storage instanceof LocalStorage ? $storage->path($file->key) : null;
+
+        return $path === null ? $response : $response->withFile($path);
     }
 
     /**

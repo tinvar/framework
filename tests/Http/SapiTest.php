@@ -130,3 +130,109 @@ describe('files', function () {
         expect($request->files)->toBe([]);
     });
 });
+
+// ADR 0053: no worker writes to a client. The shop's Caddyfile holds a body
+// whole and sends it after the worker is done, unless the body is marked to
+// pass on as it comes; a stored file goes out by the file server, named by a
+// header the Caddyfile removes.
+describe('a response as the server takes it', function () {
+    it('leaves a body Caddy may hold whole unmarked', function () {
+        $response = Sapi::forServer(Response::make(200, str_repeat('x', Sapi::BUFFERED_BYTES)), null);
+
+        expect($response->header(Sapi::STREAM_HEADER))->toBeNull()
+            ->and($response->header(Sapi::FILE_HEADER))->toBeNull()
+            ->and($response->body())->toBe(str_repeat('x', Sapi::BUFFERED_BYTES));
+    });
+
+    it('marks a body larger than that to be passed on as it comes', function () {
+        $response = Sapi::forServer(Response::make(200, str_repeat('x', Sapi::BUFFERED_BYTES + 1)), null);
+
+        expect($response->header(Sapi::STREAM_HEADER))->toBe('no');
+    });
+
+    it('holds a stream whole only when it says a length that fits', function () {
+        $stream = static fn (array $headers): Response => Response::stream(static function (Closure $sink): void {
+            $sink('chunk');
+        }, 200, $headers);
+
+        expect(Sapi::forServer($stream([]), null)->header(Sapi::STREAM_HEADER))->toBe('no')
+            ->and(Sapi::forServer($stream(['content-length' => '5']), null)->header(Sapi::STREAM_HEADER))->toBeNull()
+            ->and(Sapi::forServer($stream(['content-length' => (string) (Sapi::BUFFERED_BYTES + 1)]), null)->header(Sapi::STREAM_HEADER))->toBe('no')
+            ->and(Sapi::forServer($stream(['content-length' => '5, 5']), null)->header(Sapi::STREAM_HEADER))->toBe('no');
+    });
+
+    it('hands a file inside the root the server names to the server, with no body and every header and cookie', function () {
+        $root = sys_get_temp_dir() . '/tinvar-sapi-files-' . bin2hex(random_bytes(4));
+        mkdir("{$root}/receipts", 0o700, true);
+        file_put_contents("{$root}/receipts/a1.png", 'bytes');
+
+        try {
+            $sent = false;
+            $response = Response::stream(static function (Closure $sink) use (&$sent): void {
+                $sent = true;
+                $sink('bytes');
+            }, 200, ['content-type' => 'image/png', 'content-length' => '5', 'x-content-type-options' => 'nosniff'])
+                ->withCookie('__Host-a', 'b')
+                ->withFile("{$root}/receipts/a1.png");
+
+            $handed = Sapi::forServer($response, $root);
+
+            expect($handed->header(Sapi::FILE_HEADER))->toBe('/receipts/a1.png')
+                ->and($handed->isStreaming())->toBeFalse()
+                ->and($handed->body())->toBe('')
+                ->and($handed->status)->toBe(200)
+                ->and($handed->header('content-type'))->toBe('image/png')
+                ->and($handed->header('x-content-type-options'))->toBe('nosniff')
+                ->and(array_keys($handed->cookies()))->toBe(['__Host-a'])
+                ->and($sent)->toBeFalse();
+
+            // Told no root, or another one, the worker sends the file itself.
+            mkdir("{$root}-other", 0o700);
+            foreach ([null, '', "{$root}-other", "{$root}-missing"] as $elsewhere) {
+                $kept = Sapi::forServer($response, $elsewhere);
+                expect($kept->header(Sapi::FILE_HEADER))->toBeNull()
+                    ->and($kept->body())->toBe('bytes');
+            }
+        } finally {
+            exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg("{$root}-other"));
+        }
+    });
+
+    it('hands over no file outside the root, through a link, or under a name it would have to escape', function () {
+        $root = sys_get_temp_dir() . '/tinvar-sapi-files-' . bin2hex(random_bytes(4));
+        $outside = sys_get_temp_dir() . '/tinvar-sapi-outside-' . bin2hex(random_bytes(4));
+        mkdir($root, 0o700);
+        mkdir($outside, 0o700);
+        file_put_contents("{$outside}/secret", 'secret');
+        symlink("{$outside}/secret", "{$root}/link");
+        file_put_contents("{$root}/a name?x=1", 'odd');
+        file_put_contents("{$root}/.hidden", 'hidden');
+
+        try {
+            $from = static fn (string $path): Response => Response::stream(static function (Closure $sink): void {}, 200)->withFile($path);
+
+            foreach (["{$outside}/secret", "{$root}/link", "{$root}/a name?x=1", "{$root}/.hidden", "{$root}/missing", $root] as $path) {
+                expect(Sapi::forServer($from($path), $root)->header(Sapi::FILE_HEADER))->toBeNull($path);
+            }
+        } finally {
+            exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg($outside));
+        }
+    });
+
+    // Only the file a response was built from is ever named: a header an
+    // application set itself is not passed to the server.
+    it('drops either header an application set itself', function () {
+        $response = Response::make(200, 'ok', ['x-accel-redirect' => '/etc/passwd', 'x-accel-buffering' => 'no']);
+
+        $sent = Sapi::forServer($response, '/');
+
+        expect($sent->header(Sapi::FILE_HEADER))->toBeNull()
+            ->and($sent->header(Sapi::STREAM_HEADER))->toBeNull()
+            ->and($sent->body())->toBe('ok');
+    });
+
+    it('sends only a streamed response from a file, and only by its absolute path', function () {
+        expect(fn () => Response::make(200, 'x')->withFile('/tmp/x'))->toThrow(LogicException::class)
+            ->and(fn () => Response::stream(static function (Closure $sink): void {})->withFile('relative'))->toThrow(InvalidArgumentException::class);
+    });
+});

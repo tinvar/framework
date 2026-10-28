@@ -47,6 +47,34 @@ it('sends the file to the session and user its URL was minted for, as nothing mo
         ->and($response->header('cache-control'))->toBe('private, no-store');
 });
 
+// ADR 0053: a file on disk is one the server can send itself, with no worker
+// writing it to a client that may stop reading. The response still streams
+// the same bytes for anything that cannot.
+it('says which file on disk the body is, when the store keeps it on disk', function () {
+    $root = sys_get_temp_dir() . '/tinvar-file-endpoint-' . bin2hex(random_bytes(4));
+    $app = new App($storage = new Tinvar\Storage\LocalStorage($root));
+    $key = 'avatars/' . str_repeat('ab', 16) . '.png';
+    $stream = fopen('php://memory', 'w+b');
+    fwrite($stream, png());
+    rewind($stream);
+    $storage->put($key, $stream);
+
+    try {
+        $response = $app->fetch($app->fileUrl($key, 'image/png'));
+
+        expect($response->status)->toBe(200)
+            ->and($response->file())->toBe(realpath("{$root}/{$key}"))
+            ->and($response->body())->toBe(png())
+            ->and($response->header('x-content-type-options'))->toBe('nosniff');
+
+        // In memory there is no file to name.
+        [$memory, , $memoryKey] = appWithStoredPng();
+        expect($memory->fetch($memory->fileUrl($memoryKey, 'image/png'))->file())->toBeNull();
+    } finally {
+        exec('rm -rf ' . escapeshellarg($root));
+    }
+});
+
 it('offers anything but an image as a download, under a name that cannot break the header', function () {
     $app = new App($storage = new MemoryStorage());
     $key = 'documents/' . str_repeat('cd', 16) . '.pdf';
