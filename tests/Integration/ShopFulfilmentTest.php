@@ -19,6 +19,7 @@ use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Models\Customer;
 use Shop\Models\Order;
+use Shop\Pages\Admin\Orders as AdminOrders;
 use Shop\StaffAccount;
 use Tinvar\Bench\Shop;
 use Tinvar\Calls\CallResult;
@@ -26,6 +27,7 @@ use Tinvar\Console\Output;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Services\ServiceCalls;
+use Tinvar\Testing\AssertablePage;
 use Tinvar\Testing\Testing;
 use Tinvar\Webhooks\DeliverWebhook;
 
@@ -136,6 +138,16 @@ function contextFor(Kernel $kernel, string $operation = FulfilmentActions::COLLE
 }
 
 describe('the fulfilment workflow', function () {
+    it('is offered on the admin orders page to staff who may fulfil, and to no one else', function () {
+        $staff = account($this->kernel, StaffAccount::EMAIL);
+        $offered = static fn (bool $may) => static fn (AssertablePage $page) => $page->where('canFulfil', $may)->etc();
+
+        actingAs($staff, epochOf($this->kernel, $staff))->get('/admin/orders')->assertOk()->assertPage(AdminOrders::class, $offered(true));
+
+        new StaffMemberships($this->kernel->orm)->grant($staff->id, [StaffMemberships::VIEW_ALL_ORDERS]);
+        actingAs($staff, epochOf($this->kernel, $staff))->get('/admin/orders')->assertOk()->assertPage(AdminOrders::class, $offered(false));
+    });
+
     it('packs a placed order on the worker, as the staff member who started it', function () {
         $order = placedOrder($this->kernel);
 
