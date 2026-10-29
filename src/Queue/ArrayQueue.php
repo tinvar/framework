@@ -13,9 +13,11 @@ use Tinvar\Orm\Connection;
  * see retries and failures without a database.
  *
  * Not for production: nothing survives the process, and no other process
- * can see it.
+ * can see it. Its locks, windows and batches (Coordination) are as
+ * in-memory, and atomically() runs its work as it is: one process, one
+ * thing at a time.
  */
-final class ArrayQueue implements Queue
+final class ArrayQueue implements Queue, Coordination
 {
     /** @var array<string, array{queue: string, payload: string, availableAt: int, attempts: int, reservedUntil: ?int, token: ?string}> */
     private array $jobs = [];
@@ -25,6 +27,18 @@ final class ArrayQueue implements Queue
 
     /** @var list<PendingJob> every job pushed, in order, for assertions */
     private array $pushed = [];
+
+    /** @var array<string, array{job: string, until: int}> */
+    private array $locks = [];
+
+    /** @var array<string, array{window: int, used: int}> */
+    private array $rates = [];
+
+    /** @var array<string, BatchRecord> */
+    private array $batches = [];
+
+    /** @var array<string, true> batch and job, each counted once */
+    private array $ended = [];
 
     public function push(PendingJob $job): void
     {
@@ -174,6 +188,137 @@ final class ArrayQueue implements Queue
     public function availableAt(string $id): ?int
     {
         return $this->jobs[$id]['availableAt'] ?? null;
+    }
+
+    public function lock(string $key, string $job, int $until, int $now): ?string
+    {
+        $held = $this->locks[$key] ?? null;
+        if ($held !== null && $held['until'] > $now && $held['job'] !== $job) {
+            return $held['job'];
+        }
+        $this->locks[$key] = ['job' => $job, 'until' => $until];
+
+        return null;
+    }
+
+    public function unlock(string $key, string $job): bool
+    {
+        if (($this->locks[$key]['job'] ?? null) !== $job) {
+            return false;
+        }
+        unset($this->locks[$key]);
+
+        return true;
+    }
+
+    /**
+     * Who holds lock $key, and until when; null when no one has it.
+     *
+     * @return array{job: string, until: int}|null
+     */
+    public function locked(string $key): ?array
+    {
+        return $this->locks[$key] ?? null;
+    }
+
+    public function slot(string $queue, int $runs, int $per, int $now): bool
+    {
+        $window = $now - $now % $per;
+        $rate = $this->rates[$queue] ?? null;
+        if ($rate === null || $rate['window'] < $window) {
+            $rate = ['window' => $window, 'used' => 0];
+        }
+        if ($rate['used'] >= $runs) {
+            return false;
+        }
+        $this->rates[$queue] = ['window' => $window, 'used' => $rate['used'] + 1];
+
+        return true;
+    }
+
+    public function unslot(string $queue, int $per, int $now): void
+    {
+        $rate = $this->rates[$queue] ?? null;
+        if ($rate !== null && $rate['window'] === $now - $now % $per && $rate['used'] > 0) {
+            $this->rates[$queue] = ['window' => $rate['window'], 'used' => $rate['used'] - 1];
+        }
+    }
+
+    public function addBatch(BatchRecord $batch): void
+    {
+        $this->batches[$batch->id] = $batch;
+    }
+
+    public function batch(string $id): ?BatchRecord
+    {
+        return $this->batches[$id] ?? null;
+    }
+
+    public function batchJobDone(string $id, string $job, int $now): ?BatchStep
+    {
+        $batch = $this->batches[$id] ?? null;
+        if ($batch === null) {
+            return null;
+        }
+        if (!$this->firstEnd($id, $job)) {
+            return new BatchStep($batch, false, false);
+        }
+        $batch = $batch->with(['pending' => max(0, $batch->pending - 1)]);
+
+        return $this->step($batch, $now, false);
+    }
+
+    public function batchJobFailed(string $id, string $job, int $now): ?BatchStep
+    {
+        $batch = $this->batches[$id] ?? null;
+        if ($batch === null) {
+            return null;
+        }
+        if (!$this->firstEnd($id, $job) || $batch->pending === 0) {
+            return new BatchStep($batch, false, false);
+        }
+        $batch = $batch->with(['pending' => $batch->pending - 1, 'failed' => $batch->failed + 1]);
+        if (!$batch->allowFailures && $batch->cancelledAt === null) {
+            $batch = $batch->with(['cancelledAt' => $now]);
+        }
+
+        return $this->step($batch, $now, $batch->failed === 1);
+    }
+
+    private function firstEnd(string $batch, string $job): bool
+    {
+        $key = "{$batch}\0{$job}";
+        if (isset($this->ended[$key])) {
+            return false;
+        }
+        $this->ended[$key] = true;
+
+        return true;
+    }
+
+    private function step(BatchRecord $batch, int $now, bool $firstFailure): BatchStep
+    {
+        $finished = $batch->pending === 0 && $batch->finishedAt === null;
+        if ($finished) {
+            $batch = $batch->with(['finishedAt' => $now]);
+        }
+        $this->batches[$batch->id] = $batch;
+
+        return new BatchStep($batch, $finished, $firstFailure);
+    }
+
+    public function prune(int $now, int $finishedBefore): int
+    {
+        $before = \count($this->batches) + \count($this->locks);
+        $this->batches = array_filter($this->batches, static fn (BatchRecord $b): bool => $b->finishedAt === null || $b->finishedAt >= $finishedBefore);
+        $this->locks = array_filter($this->locks, static fn (array $lock): bool => $lock['until'] > $now);
+
+        return $before - \count($this->batches) - \count($this->locks);
+    }
+
+    public function atomically(\Closure $work): mixed
+    {
+        return $work();
     }
 
     private function holds(ReservedJob $job): bool

@@ -97,6 +97,97 @@ it('queues, reserves, releases and fails on SQLite', function () {
     }
 });
 
+/**
+ * Locks, windows and batches (ADR 0100) on one driver, with a second
+ * connection as another worker would hold.
+ *
+ * @param \Closure(): PdoConnection $connect
+ */
+function coordinates(PdoConnection $connection, \Closure $connect): void
+{
+    $queue = databaseQueue($connection);
+    DatabaseQueue::defineCoordination(new \Tinvar\Orm\Schema\Schema($connection, \Tinvar\Orm\Schema\Dialect::for($connection)));
+    $other = new DatabaseQueue($connect());
+
+    // A lock: one holder at a time, across connections, until it lapses.
+    expect($queue->lock('k', 'job-1', 200, 100))->toBeNull()
+        ->and($other->lock('k', 'job-2', 300, 150))->toBe('job-1')
+        ->and($other->unlock('k', 'job-2'))->toBeFalse()
+        // Held inside a transaction, refused without failing it: the
+        // statement after still runs (Postgres aborts on a violation).
+        ->and($connection->transaction(static function () use ($queue, $connection): array {
+            $held = $queue->lock('k', 'job-3', 300, 150);
+
+            return [$held, $connection->select('SELECT 1 AS one')[0]['one']];
+        }))->toBe(['job-1', 1])
+        ->and($other->lock('k', 'job-2', 400, 200))->toBeNull()
+        ->and($queue->unlock('k', 'job-1'))->toBeFalse()
+        ->and($other->unlock('k', 'job-2'))->toBeTrue()
+        ->and($queue->lock('k', 'job-4', 500, 210))->toBeNull();
+
+    // A window: its runs across both, then the next.
+    expect($queue->slot('mail', 2, 60, 120))->toBeTrue()
+        ->and($other->slot('mail', 2, 60, 130))->toBeTrue()
+        ->and($queue->slot('mail', 2, 60, 170))->toBeFalse();
+    $other->unslot('mail', 60, 170);
+    expect($queue->slot('mail', 2, 60, 175))->toBeTrue()
+        ->and($queue->slot('mail', 2, 60, 180))->toBeTrue()
+        ->and($other->slot('mail', 2, 60, 181))->toBeTrue();
+
+    // A batch: counted to its end once, cancelled at its first failure.
+    $callbacks = [['on' => \Tinvar\Queue\BatchRecord::FINALLY, 'job' => new PendingJob('cb', 'default', 'sealed', 0)]];
+    $queue->addBatch(new \Tinvar\Queue\BatchRecord('b-1', 'acme', '', '', 3, 3, 0, false, 100, callbacks: $callbacks));
+    $first = $other->batchJobFailed('b-1', 'j-1', 110);
+    // Counted once: run again, it moves nothing.
+    $again = $queue->batchJobDone('b-1', 'j-1', 115);
+    $second = $queue->batchJobDone('b-1', 'j-2', 120);
+    $third = $other->batchJobDone('b-1', 'j-3', 130);
+    expect($again?->batch->pending)->toBe(2)
+        ->and($again?->finished)->toBeFalse();
+    expect($first?->firstFailure)->toBeTrue()
+        ->and($first?->batch->cancelledAt)->toBe(110)
+        ->and($second?->finished)->toBeFalse()
+        ->and($second?->firstFailure)->toBeFalse()
+        ->and($third?->finished)->toBeTrue()
+        ->and($third?->batch->pending)->toBe(0)
+        ->and($third?->batch->failed)->toBe(1)
+        ->and($third?->batch->callbacksFor(\Tinvar\Queue\BatchRecord::FINALLY, 130)[0]->payload ?? null)->toBe('sealed')
+        // Past its end, nothing moves and nothing finishes twice.
+        ->and($queue->batchJobDone('b-1', 'j-4', 140)?->finished)->toBeFalse();
+
+    $queue->addBatch(new \Tinvar\Queue\BatchRecord('b-2', 'acme', '', '', 2, 2, 0, true, 100));
+    expect($queue->batchJobFailed('b-2', 'j-5', 110)?->batch->cancelledAt)->toBeNull();
+
+    // Pruned: the finished batch and the lapsed lock.
+    expect($queue->prune(600, 1_000))->toBe(2)
+        ->and($queue->batch('b-1'))->toBeNull()
+        ->and($queue->batch('b-2'))->not->toBeNull();
+}
+
+it('keeps locks, windows and batches on SQLite', function () {
+    $path = sys_get_temp_dir() . '/tinvar-coordination-' . bin2hex(random_bytes(4)) . '.sqlite';
+    try {
+        coordinates(PdoConnection::sqlite($path, 'first', create: true), static fn (): PdoConnection => PdoConnection::sqlite($path, 'second'));
+    } finally {
+        foreach (['', '-wal', '-shm'] as $suffix) {
+            if (is_file($path . $suffix)) {
+                unlink($path . $suffix);
+            }
+        }
+    }
+});
+
+it('keeps locks, windows and batches on Postgres', function () {
+    Databases::inScratchSchema('pgsql', static function (\PDO $pdo, string $schema): void {
+        coordinates(new PdoConnection($pdo, 'pgsql'), static function () use ($schema): PdoConnection {
+            $other = Databases::another('pgsql');
+            $other->exec("SET search_path TO {$schema}");
+
+            return new PdoConnection($other, 'pgsql-other');
+        });
+    });
+})->group('pgsql')->skip(Databases::postgresMissing() !== null, Databases::postgresMissing() ?? '');
+
 it('queues, reserves, releases and fails on Postgres', function () {
     Databases::inScratchSchema('pgsql', static function (\PDO $pdo, string $schema): void {
         behavesAsAQueue(new PdoConnection($pdo, 'pgsql'), static function () use ($schema): PdoConnection {
