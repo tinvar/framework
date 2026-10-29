@@ -250,6 +250,26 @@ it('navigates from the catalog to a product and back, through the RSC payload', 
 // A customer's whole visit: redirected to sign in, a wrong password, the
 // right one, the orders, one order with its deferred shipping updates, a
 // new order, and signing out.
+// ADR 0092: a tap on a product card, which no pointer rested on, so nothing
+// was prefetched. The visit is instant: the header stays and the shop
+// layout's loading boundary takes the catalog's place at once, under the
+// catalog's address, until the product -- held back a second -- replaces it.
+it('shows the layout and its loading boundary at once on an instant visit to a product', function () use ($root) {
+    $output = '';
+    served($root, function (string $origin) use ($root, &$output): void {
+        $output = runWithTimeout(['node', "{$root}/examples/shop/e2e/instant.mjs", $origin], $root, 60);
+    });
+
+    $result = json_decode((string) $output, true);
+    expect($result)->toBeArray("the browser script failed:\n{$output}");
+
+    expect($result['errors'])->toBe([])
+        ->and($result['violations'])->toBe([])
+        ->and($result['during'])->toBe(['path' => '/', 'heading' => null, 'header' => true])
+        ->and($result['after']['path'])->toStartWith('/products/')
+        ->and($result['after']['loading'])->toBeFalse();
+});
+
 it('signs in, reads orders and an order, places an order and signs out', function () use ($root) {
     $output = '';
     served($root, function (string $origin) use ($root, &$output): void {
