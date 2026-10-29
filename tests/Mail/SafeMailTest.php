@@ -172,6 +172,33 @@ describe('the HTML of an email', function () {
         'a plain comment' => ['<p>x</p><!-- a note -->'],
         'in a title' => ['<title><!--[if mso]>x<![endif]--></title>'],
     ]);
+
+    // Sent as UTF-8: a document that names another charset, or is not
+    // UTF-8, could be read by the client otherwise than it was checked.
+    it('refuses another charset, or bytes that are not UTF-8', function (string $html, string $message) {
+        expect(fn () => safe($html))->toThrow(MailRenderingException::class, $message);
+    })->with([
+        'a meta charset' => ['<meta charset="utf-7"><p>+ADw-script+AD4-alert(1)+ADw-/script+AD4-</p>', 'charset'],
+        'a content type' => ['<meta http-equiv="Content-Type" content="text/html; charset=ISO-2022-JP"><p>x</p>', 'charset'],
+        'not UTF-8' => ["<p>\xff\xfe<script>x</script></p>", 'UTF-8'],
+    ]);
+
+    it('reads the charset it is sent in', function () {
+        safe('<meta charset="UTF-8"><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><p>é</p>');
+        expect(true)->toBeTrue();
+    });
+
+    it('is checked by the Mailer whatever drew it, against the message\'s own origin', function () {
+        expect(send('<p><a href="https://acme.test/x">x</a> <img src="https://acme.test/logo.png"></p>')->html)->toContain('acme.test/x')
+            ->and(fn () => send('<p><a href="javascript:alert(1)">x</a></p>'))->toThrow(MailRenderingException::class)
+            // One tenant's origin is not another's: the image is on acme's,
+            // and this message is globex's.
+            ->and(fn () => send('<p><img src="https://acme.test/logo.png"></p>', 'https://globex.test'))->toThrow(MailRenderingException::class, 'cannot load the image');
+
+        $renderer = new Draws('<p>x</p>');
+        new Mailer(new ArrayTransport(), $renderer, new Address('mail@acme.test'))->send(new Note('https://globex.test'));
+        expect($renderer->links?->toFrame())->toBe(['origin' => 'https://globex.test', 'images' => []]);
+    });
 });
 
 describe('headers', function () {

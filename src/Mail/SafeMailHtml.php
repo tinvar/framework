@@ -49,7 +49,15 @@ final class SafeMailHtml
             throw new MailRenderingException('An email cannot hold a comment: a conditional one is markup to Outlook that no check here reads.');
         }
 
-        $document = \Dom\HTMLDocument::createFromString($html, \LIBXML_NOERROR | \LIBXML_COMPACT);
+        // Read as it is sent: UTF-8, named to the parser so it sniffs no
+        // other charset from the bytes or a <meta>, and a document naming
+        // another refused below -- a client honouring that one would read
+        // the same bytes as markup this check never saw.
+        if (!mb_check_encoding($html, 'UTF-8')) {
+            throw new MailRenderingException('An email\'s HTML must be UTF-8, which it is sent as.');
+        }
+
+        $document = \Dom\HTMLDocument::createFromString($html, \LIBXML_NOERROR | \LIBXML_COMPACT, 'UTF-8');
         self::assertNoComments($document);
 
         foreach ($document->getElementsByTagName('*') as $element) {
@@ -57,8 +65,8 @@ final class SafeMailHtml
             if (\in_array($tag, self::REFUSED_ELEMENTS, true)) {
                 throw new MailRenderingException("An email cannot hold a <{$tag}> element.");
             }
-            if ($tag === 'meta' && $element->hasAttribute('http-equiv') && strtolower(trim((string) $element->getAttribute('http-equiv'))) !== 'content-type') {
-                throw new MailRenderingException('An email cannot hold a <meta http-equiv> other than Content-Type.');
+            if ($tag === 'meta') {
+                self::assertMeta($element);
             }
             if ($tag === 'style') {
                 self::assertStyle((string) $element->textContent, '<style>');
@@ -93,6 +101,23 @@ final class SafeMailHtml
                     }
                 }
             }
+        }
+    }
+
+    private static function assertMeta(\Dom\Element $meta): void
+    {
+        if ($meta->hasAttribute('charset') && strtolower(trim((string) $meta->getAttribute('charset'))) !== 'utf-8') {
+            throw new MailRenderingException('An email\'s <meta charset> must say UTF-8, which it is sent as.');
+        }
+        if (!$meta->hasAttribute('http-equiv')) {
+            return;
+        }
+        if (strtolower(trim((string) $meta->getAttribute('http-equiv'))) !== 'content-type') {
+            throw new MailRenderingException('An email cannot hold a <meta http-equiv> other than Content-Type.');
+        }
+        $content = strtolower((string) $meta->getAttribute('content'));
+        if (preg_match('/charset\s*=\s*["\']?([^"\';\s]*)/', $content, $m) !== 1 || $m[1] !== 'utf-8') {
+            throw new MailRenderingException('An email\'s Content-Type <meta> must name the charset UTF-8, which it is sent as.');
         }
     }
 
