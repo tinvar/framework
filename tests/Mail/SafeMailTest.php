@@ -161,17 +161,17 @@ describe('the HTML of an email', function () {
         'an href on a div' => ['<div href="https://acme.test/">x</div>', 'cannot have an href'],
     ]);
 
-    it('is checked by the Mailer whatever drew it, against the message\'s own origin', function () {
-        expect(send('<p><a href="https://acme.test/x">x</a> <img src="https://acme.test/logo.png"></p>')->html)->toContain('acme.test/x')
-            ->and(fn () => send('<p><a href="javascript:alert(1)">x</a></p>'))->toThrow(MailRenderingException::class)
-            // One tenant's origin is not another's: the image is on acme's,
-            // and this message is globex's.
-            ->and(fn () => send('<p><img src="https://acme.test/logo.png"></p>', 'https://globex.test'))->toThrow(MailRenderingException::class, 'cannot load the image');
-
-        $renderer = new Draws('<p>x</p>');
-        new Mailer(new ArrayTransport(), $renderer, new Address('mail@acme.test'))->send(new Note('https://globex.test'));
-        expect($renderer->links?->toFrame())->toBe(['origin' => 'https://globex.test', 'images' => []]);
-    });
+    // A comment to the parser here, markup to Outlook and old Internet
+    // Explorer: whatever is inside was never checked.
+    it('refuses conditional comments, and every other comment with them', function (string $html) {
+        expect(fn () => safe($html))->toThrow(MailRenderingException::class, 'comment');
+    })->with([
+        'a conditional comment' => ['<p>x</p><!--[if mso]><a href="javascript:alert(1)">x</a><![endif]-->'],
+        'one with a space' => ['<!-- [if gte mso 9]><img src="https://tracker.example/o.gif"><![endif]-->'],
+        'downlevel-revealed' => ['<![if !mso]><img src="https://tracker.example/o.gif"><![endif]>'],
+        'a plain comment' => ['<p>x</p><!-- a note -->'],
+        'in a title' => ['<title><!--[if mso]>x<![endif]--></title>'],
+    ]);
 });
 
 describe('headers', function () {

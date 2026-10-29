@@ -38,7 +38,19 @@ final class SafeMailHtml
     /** @throws MailRenderingException naming the first thing refused */
     public static function assert(string $html, LinkPolicy $links): void
     {
+        // No comment at all. `<!--[if mso]>...<![endif]-->` and the
+        // downlevel-revealed `<![if !mso]>` are comments to this parser and
+        // markup to Outlook and old Internet Explorer, so whatever is inside
+        // one would reach those readers unchecked. The kit writes none; a
+        // comment found in the bytes -- inside a <title> or <style> too,
+        // where the parser reads it as text -- or in the parsed tree, as a
+        // bogus comment the parser made of `<?` or `</ x>`, is refused.
+        if (preg_match('/<!--|<!\[|<!\s*\[|\]-->/', $html) === 1) {
+            throw new MailRenderingException('An email cannot hold a comment: a conditional one is markup to Outlook that no check here reads.');
+        }
+
         $document = \Dom\HTMLDocument::createFromString($html, \LIBXML_NOERROR | \LIBXML_COMPACT);
+        self::assertNoComments($document);
 
         foreach ($document->getElementsByTagName('*') as $element) {
             $tag = strtolower($element->localName);
@@ -81,6 +93,16 @@ final class SafeMailHtml
                     }
                 }
             }
+        }
+    }
+
+    private static function assertNoComments(\Dom\Node $node): void
+    {
+        foreach ($node->childNodes as $child) {
+            if ($child instanceof \Dom\Comment) {
+                throw new MailRenderingException('An email cannot hold a comment: a conditional one is markup to Outlook that no check here reads.');
+            }
+            self::assertNoComments($child);
         }
     }
 
