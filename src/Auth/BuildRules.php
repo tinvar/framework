@@ -887,11 +887,13 @@ final class BuildRules
             // Union and intersection members all count: one of them reaching
             // the user is enough.
             foreach (self::namedTypesOf($parameter) as $name) {
-                // Feature flags read the user, the tenant and the panel, and
+                // The flag reader reads the user, the tenant and the panel, and
                 // every flag a body reads keys its answer by what it read
                 // (ADR 0094): a shared query's entry is shared only between
-                // callers whose flags agree, whoever they are.
-                if ($name === \Tinvar\Features\Features::class) {
+                // callers whose flags agree, whoever they are. The reader and
+                // nothing wider: Features itself can name another scope, or
+                // say who the user is, and is walked like any dependency.
+                if ($name === \Tinvar\Features\FlagReader::class) {
                     continue;
                 }
 

@@ -44,6 +44,8 @@ use Tinvar\Tests\Data\Fixtures\Shared\Reads;
 use Tinvar\Tests\Features\Fixtures\FlaggedRack;
 use Tinvar\Tests\Features\Fixtures\FlaggedStaticPage;
 use Tinvar\Tests\Features\Fixtures\FlagReadElsewhere;
+use Tinvar\Tests\Features\Fixtures\FlagReadForAnotherScope;
+use Tinvar\Tests\Features\Fixtures\SharedWithFeatures;
 use Tinvar\Tests\Features\Fixtures\Flags;
 use Tinvar\Tests\Features\Fixtures\PlainRack;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
@@ -89,7 +91,7 @@ final class MutableFlagValues implements FlagValues
  */
 function flaggedRunner(Features $features, AuthContext $auth, Orm $orm, Fixture $fixture, ArrayStore $store, bool $cacheReadsFlags = true): array
 {
-    $registry = new QueryRegistry(static fn (string $class): object => $class === PlainRack::class ? new $class() : new $class($features));
+    $registry = new QueryRegistry(static fn (string $class): object => $class === PlainRack::class ? new $class() : new $class($features->reader()));
     $registry->registerAll([FlaggedRack::class, PlainRack::class, FlagReadElsewhere::class]);
     $cache = new QueryCache($store, $auth, features: $cacheReadsFlags ? $features : null);
 
@@ -297,6 +299,42 @@ describe('the query cache', function () {
         'a flag read as it is not' => [['k' => 'answers', 'a' => [['r' => ['rack.units' => true], 'v' => 'forged']]]],
         'extra keys' => [['k' => 'answers', 'a' => [['r' => [], 'v' => 'forged', 'x' => 1]]]],
     ]);
+});
+
+describe('a flag read for a scope the body names', function () {
+    it('fails the build of a shared query handed the whole Features, which can name any scope', function () {
+        $registry = new QueryRegistry(static fn (string $class): object => new $class());
+
+        expect(fn () => $registry->register(SharedWithFeatures::class))
+            ->toThrow(\InvalidArgumentException::class, 'shared-query-must-not-read-the-user');
+    });
+
+    it('keeps no answer whose body read a flag for anyone but its caller', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $auth = new AuthContext();
+        $features = new Features([new Flag('rack.units')], FlagRules::new()->forUser('rack.units', 'u1', true)->forUser('rack.units', 'u2', true), $auth, $orm);
+        $registry = new QueryRegistry(static fn (string $class): object => new $class($features));
+        $registry->register(FlagReadForAnotherScope::class);
+        $runner = new QueryRunner($registry, $orm, new AllowAllGate(), cache: new QueryCache(new ArrayStore(), $auth, features: $features));
+        FlagReadForAnotherScope::$runs = 0;
+
+        foreach ([1, 2] as $_) {
+            $features->reset();
+            $auth->actingAs(flagUser('u2'), static fn (): array => runFlagged($runner, $fixture, ['racks.otherScope']));
+        }
+
+        expect(FlagReadForAnotherScope::$runs)->toBe(2);
+    });
+
+    it('makes the scope itself a read no answer can be kept under', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1);
+        $features = new Features([new Flag('beta')], FlagRules::new(), new AuthContext(), new Orm($fixture->connection, new IdentityMap('test')));
+        $reads = new FlagReads();
+        $reads->task(static fn (): FlagScope => $features->scope());
+
+        expect($reads->tainted())->toBeTrue();
+    });
 });
 
 describe('what outlives the request', function () {

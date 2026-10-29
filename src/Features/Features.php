@@ -58,28 +58,54 @@ final class Features
      */
     public function active(string|\BackedEnum $flag): bool
     {
-        return $this->in($flag, $this->scope());
-    }
-
-    /**
-     * Whether $flag is on for $scope. Recorded as a read, as active() is:
-     * whatever is computed from it depends on it as much.
-     */
-    public function in(string|\BackedEnum $flag, FlagScope $scope): bool
-    {
         $declared = $this->flag($flag);
-        $key = $scope->key() . "\0" . $declared->name;
-
-        $active = $this->read[$key] ??= $this->values->valueFor($declared->name, $scope) ?? $declared->default;
+        $active = $this->valueIn($declared, $this->current());
         FlagReads::record($declared->name, $active);
 
         return $active;
     }
 
-    /** The tenant, user and panel a read in hand is made for. */
+    /**
+     * Whether $flag is on for $scope -- someone's other than the caller's,
+     * for an operator's screen or a job acting for them.
+     *
+     * Not a read any answer can be kept under: what it read is not the
+     * caller's flag, so no value of the caller's can say the answer is
+     * theirs. Work recording its reads -- a cached query, a static page, a
+     * once value -- that calls this is kept by no one (ADR 0094).
+     */
+    public function in(string|\BackedEnum $flag, FlagScope $scope): bool
+    {
+        FlagReads::unattributable();
+
+        return $this->valueIn($this->flag($flag), $scope);
+    }
+
+    /**
+     * The tenant, user and panel a read in hand is made for. Saying who the
+     * user is, it is answered as in() is: nothing that asked is kept.
+     */
     public function scope(): FlagScope
     {
+        FlagReads::unattributable();
+
+        return $this->current();
+    }
+
+    /** The narrow reader a query body or page is handed: active(), and nothing else. */
+    public function reader(): FlagReader
+    {
+        return new FlagReader($this);
+    }
+
+    private function current(): FlagScope
+    {
         return new FlagScope($this->orm->tenant(), $this->auth->id(), $this->panels?->currentOrNull());
+    }
+
+    private function valueIn(Flag $flag, FlagScope $scope): bool
+    {
+        return $this->read[$scope->key() . "\0" . $flag->name] ??= $this->values->valueFor($flag->name, $scope) ?? $flag->default;
     }
 
     /** Whether the application declares $name. */

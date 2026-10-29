@@ -113,6 +113,18 @@ final class FlagReads
     }
 
     /**
+     * Tells every open recorder that something was read no value of the
+     * caller's can describe -- a flag for a scope the code named, or the
+     * scope itself -- so nothing being recorded is kept.
+     */
+    public static function unattributable(): void
+    {
+        foreach (self::$open as $recorder) {
+            $recorder->tainted = true;
+        }
+    }
+
+    /**
      * Closes every recorder still open, for the reset contract: a fiber
      * that never finished leaves none behind to hear the next request.
      */

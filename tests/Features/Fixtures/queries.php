@@ -9,6 +9,8 @@ use Tinvar\Attributes\Page;
 use Tinvar\Attributes\Query;
 use Tinvar\Attributes\StaticPage;
 use Tinvar\Features\Features;
+use Tinvar\Features\FlagReader;
+use Tinvar\Features\FlagScope;
 use Tinvar\Tests\Orm\Fixtures\Rack;
 use Tinvar\Tests\Query\Fixtures\RackSummaryData;
 
@@ -29,7 +31,7 @@ final class FlaggedRack
 {
     public static int $runs = 0;
 
-    public function __construct(private readonly Features $features) {}
+    public function __construct(private readonly FlagReader $features) {}
 
     public function __invoke(Rack $rack): RackSummaryData
     {
@@ -62,7 +64,7 @@ final class FlagReadElsewhere
 {
     public static int $runs = 0;
 
-    public function __construct(private readonly Features $features) {}
+    public function __construct(private readonly FlagReader $features) {}
 
     public function __invoke(Rack $rack): RackSummaryData
     {
@@ -71,6 +73,34 @@ final class FlagReadElsewhere
         $fiber->start();
 
         return new RackSummaryData($rack->name, $fiber->getReturn() === true ? 1 : 0);
+    }
+}
+
+/** A shared query handed the whole Features, which can read any scope. */
+#[Query(name: 'racks.anyScope', cache: '5m', shared: true), NoAuthorization(reason: 'fixture: exercises flags in the query cache')]
+final class SharedWithFeatures
+{
+    public function __construct(private readonly Features $features) {}
+
+    public function __invoke(Rack $rack): RackSummaryData
+    {
+        return new RackSummaryData($rack->name, $this->features->in(Flags::Units, new FlagScope(user: 'u1')) ? 1 : 0);
+    }
+}
+
+/** A cached query that reads its flag for a scope it names, not its caller's. */
+#[Query(name: 'racks.otherScope', cache: '5m'), NoAuthorization(reason: 'fixture: exercises flags in the query cache')]
+final class FlagReadForAnotherScope
+{
+    public static int $runs = 0;
+
+    public function __construct(private readonly Features $features) {}
+
+    public function __invoke(Rack $rack): RackSummaryData
+    {
+        self::$runs++;
+
+        return new RackSummaryData($rack->name, $this->features->in(Flags::Units, new FlagScope(user: 'u1')) ? 1 : 0);
     }
 }
 

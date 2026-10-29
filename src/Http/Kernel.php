@@ -31,6 +31,7 @@ use Tinvar\Dev\DevToolbar;
 use Tinvar\Dev\Loopback;
 use Tinvar\Events\Events;
 use Tinvar\Features\Features;
+use Tinvar\Features\FlagReader;
 use Tinvar\Http\Middleware\RequireAuthentication;
 use Tinvar\Http\Middleware\ThrottleRequests;
 use Tinvar\Http\Middleware\VerifyCsrfToken;
@@ -737,7 +738,7 @@ final class Kernel
             $container?->instance(Uploads::class, $uploads);
         }
         if ($features !== null) {
-            $container?->instance(Features::class, $features);
+            $container?->instance(Features::class, $features)->instance(FlagReader::class, $features->reader());
         }
 
         $this->panels = $panels;
