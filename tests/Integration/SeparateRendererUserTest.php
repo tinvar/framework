@@ -103,8 +103,23 @@ function startPool(string $root, string $pool, string $entry, int $group, int $p
     );
     \assert(\is_resource($process));
 
+    // Until every renderer has finished making its socket: each appears at
+    // 0600 and is given to the group only after, so a socket counted the
+    // moment it appears can still be read at 0600 under load.
+    $settled = static function () use ($pool, $processes): bool {
+        $sockets = socketsIn($pool);
+        foreach ($sockets as $socket) {
+            clearstatcache(true, $socket);
+            if ((@fileperms($socket) & 0777) !== 0660) {
+                return false;
+            }
+        }
+
+        return \count($sockets) >= $processes;
+    };
+
     $deadline = microtime(true) + 20;
-    while (\count(socketsIn($pool)) < $processes) {
+    while (!$settled()) {
         if (!proc_get_status($process)['running'] || microtime(true) > $deadline) {
             $log = (string) @file_get_contents(\dirname($pool) . '/pool.log');
             proc_terminate($process, SIGKILL);
