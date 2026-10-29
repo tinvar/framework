@@ -145,6 +145,13 @@ final readonly class StagingImport
             }
         }
 
+        // ScrubPlan refuses these already; held again here, where it counts.
+        foreach ($this->plan->ignored() as $table) {
+            if (ScrubPlan::credentialTable($table)) {
+                $problems[] = "the plan ignores {$table}, which is named like a credential table: drop it";
+            }
+        }
+
         foreach ($this->plan->dropped() as $table) {
             if (!$from->has($table) && !$to->has($table)) {
                 $problems[] = "the plan drops {$table}, which neither database has";

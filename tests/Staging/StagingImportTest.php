@@ -80,7 +80,7 @@ function plan(): ScrubPlan
         ], tenant: 'tenant_id')
         ->shared('products', ['id' => Scrub::keep(), 'name' => Scrub::keep()])
         ->drop('sessions')
-        ->ignore('migrations');
+        ->ignore('migrations', because: 'staging\'s own record of its schema');
 }
 
 /** @return list<array<string, mixed>> */
@@ -155,7 +155,7 @@ it('refuses a rule for a column production does not have, and a table staging la
         ->table('customers', ['id' => Scrub::keep()])
         ->shared('products', ['id' => Scrub::keep(), 'name' => Scrub::keep()])
         ->drop('sessions')
-        ->ignore('migrations');
+        ->ignore('migrations', because: 'staging\'s own');
     $staging = database();
     $staging->exec('DROP TABLE products');
 
@@ -180,7 +180,7 @@ it('refuses an import of one tenant through a table that says no tenant column',
         ])
         ->shared('products', ['id' => Scrub::keep(), 'name' => Scrub::keep()])
         ->drop('sessions')
-        ->ignore('migrations');
+        ->ignore('migrations', because: 'staging\'s own');
 
     new StagingImport($plan, production(), staging())->run(seeded(), database(), tenant: 't1');
 })->throws(ImportRefused::class, "would copy every tenant's rows");
@@ -214,7 +214,7 @@ it('refuses a plan that copies a credential table, or keeps a secret, without sa
     'a session table' => [static fn () => ScrubPlan::create()->table('user_sessions', ['id' => Scrub::keep()]), 'named like a credential'],
     'a secret kept' => [static fn () => ScrubPlan::create()->table('customers', ['api_token' => Scrub::keep()]), 'named like a secret'],
     'a password kept' => [static fn () => ScrubPlan::create()->table('customers', ['password_hash' => Scrub::keep()]), 'named like a secret'],
-    'a table twice' => [static fn () => ScrubPlan::create()->drop('sessions')->ignore('sessions'), 'twice'],
+    'a table twice' => [static fn () => ScrubPlan::create()->drop('migrations')->ignore('migrations', because: 'x'), 'twice'],
     'a name SQL would need quoting for' => [static fn () => ScrubPlan::create()->drop('x"; DROP TABLE y; --'), 'not a table name'],
     'a tenant column scrubbed' => [static fn () => ScrubPlan::create()->table('customers', ['tenant_id' => Scrub::null()], tenant: 'tenant_id'), 'must be one it keeps'],
 ]);
@@ -247,3 +247,22 @@ it('empties a dropped table staging has and production does not', function () {
 
     expect(rows($staging, 'remember_tokens'))->toBe([]);
 });
+
+// An ignored table is left as it is on both sides: production's sessions
+// copied by other means, or staging's stale ones, would go on working.
+it('refuses to ignore a credential, session, auth or token table: it is dropped', function (string $table) {
+    ScrubPlan::create()->ignore($table, because: 'staging\'s own');
+})->with([
+    'sessions', 'api_tokens', 'personal_access_tokens', 'remember_tokens', 'oauth_clients', 'password_resets',
+    'email_links', 'magic_links', 'handoff_nonces', 'auth_epochs', 'user_invitations', 'webauthn_credentials',
+    'signing_keys', 'email_verifications',
+])->throws(\InvalidArgumentException::class, 'is dropped');
+
+it('copies no table named like those without saying why', function (string $table) {
+    ScrubPlan::create()->table($table, ['id' => Scrub::keep()]);
+})->with(['personal_access_tokens', 'oauth_clients', 'password_resets', 'magic_links', 'user_invitations', 'signing_keys'])
+    ->throws(\InvalidArgumentException::class, 'named like a credential');
+
+it('ignores a table only with a reason it holds no secret', function () {
+    ScrubPlan::create()->ignore('migrations', because: '');
+})->throws(\InvalidArgumentException::class, 'holds no secret');

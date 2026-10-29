@@ -20,7 +20,7 @@ namespace Tinvar\Staging;
  *       ], tenant: 'tenant_id')
  *       ->shared('products', [...])
  *       ->drop('sessions', 'auth_epochs')
- *       ->ignore('migrations');
+ *       ->ignore('migrations', because: 'staging\'s own record of its schema');
  *
  * It is checked against the database, not the other way round: a table the
  * database has and the plan does not, a column with no rule, and a rule
@@ -28,14 +28,24 @@ namespace Tinvar\Staging;
  * anything (StagingImport). A migration that adds a column stops the next
  * import until someone says what it holds.
  *
- * A table named like a credential, session or auth table is refused as a
- * copy unless the plan says why; so is keep() for a column named like a
- * secret (Scrub::keep()).
+ * Every table is said to carry secrets or not: a copied one has a rule for
+ * each column, a dropped one is emptied, and an ignored one -- left as it
+ * is on both sides -- needs a reason it holds none. A table named like a
+ * credential, session or auth table is refused as a copy unless the plan
+ * says why, and is never ignored: it is dropped. So is keep() refused for
+ * a column named like a secret (Scrub::keep()).
  */
 final class ScrubPlan
 {
-    /** Table names that say they hold credentials, sessions or auth state. */
-    public const string CREDENTIAL_TABLES = '/(session|token|credential|password|auth|otp|mfa|api_?key|secret|handoff|recovery|remember)/i';
+    /**
+     * Table names that say they hold credentials, sessions, auth state or
+     * something that stands in for them -- an emailed link, an invitation,
+     * a nonce, a key. A net under the plan, not the plan: every table is
+     * still said to be copied with its columns ruled, dropped, or ignored
+     * with a reason it holds no secret.
+     */
+    public const string CREDENTIAL_TABLES = '/(session|token|credential|passw|auth|otp|mfa|2fa|api_?key|keys?$|secret|handoff'
+        . '|recovery|remember|reset|oauth|link|nonce|invit|verif|magic|webauthn|passkey|device|consent|grant)/i';
 
     private const string IDENTIFIER = '/^[A-Za-z_][A-Za-z0-9_]{0,62}\z/';
 
@@ -89,15 +99,32 @@ final class ScrubPlan
         return $this;
     }
 
-    /** Tables neither read nor written: staging's own, as the migrations' record. */
-    public function ignore(string ...$tables): self
+    /**
+     * A table neither read nor written: staging's own, as the migrations'
+     * record. $because says why it holds no secret, since it is left as it
+     * is on both sides. One named like a credential, session or auth table
+     * is never ignored: what staging holds of it from before would go on
+     * working against the users the import brings in. It is dropped.
+     */
+    public function ignore(string $table, string $because): self
     {
-        foreach ($tables as $table) {
-            $this->claim($table);
-            $this->ignored[$table] = true;
+        $this->claim($table);
+        if (trim($because) === '') {
+            throw new \InvalidArgumentException("Say why {$table} holds no secret, or drop() it.");
         }
+        if (self::credentialTable($table)) {
+            throw new \InvalidArgumentException(
+                "The table {$table} is named like a credential, session or auth table, and is never ignored: it is dropped.",
+            );
+        }
+        $this->ignored[$table] = true;
 
         return $this;
+    }
+
+    public static function credentialTable(string $table): bool
+    {
+        return preg_match(self::CREDENTIAL_TABLES, $table) === 1;
     }
 
     /** @return array<string, array{columns: array<string, Scrub>, tenant: ?string, shared: bool}> in the order declared, which is the order they are written */
@@ -132,7 +159,7 @@ final class ScrubPlan
     private function add(string $name, array $columns, ?string $tenant, bool $shared, ?string $because): self
     {
         $this->claim($name);
-        if (preg_match(self::CREDENTIAL_TABLES, $name) === 1 && ($because === null || trim($because) === '')) {
+        if (self::credentialTable($name) && ($because === null || trim($because) === '')) {
             throw new \InvalidArgumentException(
                 "The table {$name} is named like a credential, session or auth table, which staging never holds: "
                 . 'drop() it, or say why it is not one.',
