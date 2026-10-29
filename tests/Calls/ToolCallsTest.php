@@ -187,6 +187,14 @@ it('issues no grant for nobody, across tenants, or for a tool in another panel',
         ->and(fn () => $h->as('ada', fn () => $h->tools->grant(['nope'])))->toThrow(\InvalidArgumentException::class);
 });
 
+it('refuses to make a tool of an action whose own #[Middleware] a tool call would skip', function () {
+    $h = new Harness();
+    $h->actions->register(\Tinvar\Tests\Calls\Fixtures\GuardedActions::class);
+
+    expect(fn () => ToolCalls::discover($h->actions, $h->queries, $h->entry))
+        ->toThrow(\LogicException::class, 'declares #[Middleware]');
+});
+
 it('refuses to make a tool of an action that takes the Request', function () {
     $h = new Harness();
     $h->actions->register(NeedsRequest::class);

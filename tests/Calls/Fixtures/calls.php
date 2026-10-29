@@ -196,6 +196,25 @@ final class NeedsRequest
     }
 }
 
+/** A check that runs around an HTTP request: a recent password, say. */
+final class RecentPassword implements \Tinvar\Http\Middleware
+{
+    public function handle(\Tinvar\Http\Request $request, \Closure $next): \Tinvar\Http\Response
+    {
+        return $next($request);
+    }
+}
+
+/** Declares its own middleware, which a tool call could not run. */
+final class GuardedActions
+{
+    #[Action(name: 'racks.guarded'), Authorize('update', 'rack'), \Tinvar\Attributes\Middleware(RecentPassword::class), Tool('Guarded.')]
+    public function guarded(Rack $rack): ActionResult
+    {
+        return ActionResult::ok();
+    }
+}
+
 /**
  * Everything a call needs, over the racks fixture: registries, the runners
  * a browser's calls go through, the tools and the service calls.

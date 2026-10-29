@@ -19,7 +19,8 @@ use Tinvar\Validation\FieldPlan;
  * Only what a call can be made to without a browser is taken. An action
  * that asks for the Request, or for an upload, cannot be: there is no
  * request to hand it, and an upload is referenced by a ticket a browser
- * holds. Such an action marked anyway is refused here, when the
+ * holds. Nor can an action or query that declares #[Middleware], which
+ * would be skipped. Such an action marked anyway is refused here, when the
  * application is built, rather than failing the first call made to it.
  */
 final class Operations
@@ -62,6 +63,13 @@ final class Operations
     private static function action(CompiledAction $action, EntryContext $entry, string $attribute): Operation
     {
         $where = $action->where();
+        // Its own #[Middleware] runs around an HTTP request, which a call
+        // from outside a browser has none of: run without it, a check the
+        // author put there -- a recent password, a second factor -- would
+        // be skipped.
+        if ($action->middleware !== []) {
+            throw self::refuse($where, $attribute, 'declares #[Middleware], which runs around an HTTP request and a call from outside a browser would skip');
+        }
         $inputs = [];
         $add = static function (FieldPlan $field) use (&$inputs, $where, $attribute): void {
             // A form request's field and a parameter of one name would be
@@ -116,6 +124,9 @@ final class Operations
     /** @param class-string $class */
     private static function query(string $name, string $class, QueryRegistry $queries, EntryContext $entry, string $attribute): Operation
     {
+        if ($queries->middlewareFor($name) !== []) {
+            throw self::refuse($class, $attribute, 'declares #[Middleware], which runs around an HTTP request and a call from outside a browser would skip');
+        }
         $inputs = [];
         if ($queries->isBatch($name)) {
             // A batch query's per-call signature is its #[Query(args:)].
