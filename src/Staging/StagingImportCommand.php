@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Staging;
 
+use Tinvar\Config\FrameworkConfig;
 use Tinvar\Support\AppKey;
 use Tinvar\Support\BuildProfile;
 use Tinvar\Support\Encrypter;
@@ -84,7 +85,9 @@ final class StagingImportCommand
 
         try {
             $env = $this->env ?? array_filter(getenv(), \is_string(...));
-            $profile = BuildProfile::fromEnvironment($env);
+            // The process's own as the framework's config read it; a given
+            // environment, a test's, as BuildProfile reads it.
+            $profile = $this->env === null ? FrameworkConfig::load()->buildProfile() : BuildProfile::fromEnvironment($env);
             if ($profile !== BuildProfile::PRODUCTION) {
                 throw new ImportRefused(
                     "staging:import runs on production's side, with production's key, and this process's profile is {$profile}.",

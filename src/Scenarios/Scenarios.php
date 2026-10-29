@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Scenarios;
 
+use Tinvar\Config\FrameworkConfig;
 use Tinvar\Attributes\Scenario;
 use Tinvar\Support\BuildProfile;
 use Tinvar\Support\DevMode;
@@ -61,8 +62,8 @@ final readonly class Scenarios
      */
     public function seed(string $name, array $input, ?array $env = null): Seeded
     {
+        $profile = $env === null ? FrameworkConfig::load()->buildProfile() : BuildProfile::fromEnvironment($env);
         $env ??= array_filter(getenv(), \is_string(...));
-        $profile = BuildProfile::fromEnvironment($env);
         if (!BuildProfile::allowsScenarios($profile)) {
             throw new \LogicException(
                 "Seeding a scenario is refused under the {$profile} profile: scenario users are seeded into staging "

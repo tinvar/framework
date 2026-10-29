@@ -23,8 +23,8 @@ use Tinvar\Support\DevMode;
  * what it refused: `TINVAR_DEV` turns dev mode on at `1` and at nothing
  * else, as DevMode always read it, so it is text here rather than a bool
  * that would refuse `true` where `true` was off; `TINVAR_PROFILE` is
- * production or test in any case and with spaces around it; the stop
- * budget is whole seconds as the queue worker reads them, held to its
+ * production, staging or test in any case and with spaces around it; the
+ * stop budget is whole seconds as the queue worker reads them, held to its
  * range where a worker uses it. What changes is how a refusal is said --
  * a ConfigException naming the variable, never quoting the value, where a
  * stop budget's refusal quoted it -- and when: at the first load, which a
@@ -41,7 +41,7 @@ final readonly class FrameworkConfig
 {
     /**
      * @param string|null $dev `1` serves in dev mode (DevMode); anything else does not
-     * @param string|null $profile the server's build profile, production or test (BuildProfile)
+     * @param string|null $profile the server's build profile, production, staging or test (BuildProfile)
      * @param string|null $rendererUser the renderers' own OS user, a name or a uid (RendererUser)
      * @param Secret|null $liveSubscriberKey the hub's subscriber key, where it is not derived from the app key
      * @param Secret|null $livePublisherKey the hub's publisher key, likewise
@@ -64,7 +64,7 @@ final readonly class FrameworkConfig
         $problems = [];
 
         if ($profile !== null && !\in_array(strtolower(trim($profile)), [...BuildProfile::PROFILES, ''], true)) {
-            $problems[] = BuildProfile::ENV . ' is not a profile: it is production or test.';
+            $problems[] = BuildProfile::ENV . ' is not a profile: it is production, staging or test.';
         }
 
         // Whole seconds here; how many is the worker's to hold to its
@@ -111,8 +111,8 @@ final readonly class FrameworkConfig
 
     /**
      * The build profile this process serves, held as BuildProfile holds it:
-     * test only where the environment says this is not production, nor
-     * dev mode.
+     * staging only where TINVAR_ENV says staging, test only where the
+     * environment says this is not production, and neither in dev mode.
      *
      * @throws \RuntimeException
      */

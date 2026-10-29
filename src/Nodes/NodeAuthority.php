@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Nodes;
 
+use Tinvar\Config\FrameworkConfig;
 use Tinvar\Support\BuildProfile;
 
 /**
@@ -109,6 +110,7 @@ final readonly class NodeAuthority
      */
     public static function fromEnvironment(?array $env = null, ?int $now = null): ?self
     {
+        $own = $env === null;
         $env ??= array_filter(getenv(), \is_string(...));
         $file = $env[self::CA_ENV] ?? '';
         if ($file === '') {
@@ -118,7 +120,7 @@ final readonly class NodeAuthority
             throw new NodeRefused(self::CA_ENV . " names {$file}, which is not a readable file named absolutely.");
         }
 
-        return self::fromPem((string) file_get_contents($file), BuildProfile::fromEnvironment($env), $now);
+        return self::fromPem((string) file_get_contents($file), $own ? FrameworkConfig::load()->buildProfile() : BuildProfile::fromEnvironment($env), $now);
     }
 
     /**

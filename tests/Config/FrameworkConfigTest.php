@@ -81,6 +81,11 @@ it('reads the profile in any case and with spaces, and holds test to the environ
         ->and(withEnv(['TINVAR_PROFILE' => 'TEST', 'TINVAR_ENV' => 'testing'], static fn (): string => FrameworkConfig::load()->buildProfile()))->toBe(BuildProfile::TEST)
         ->and(static fn () => withEnv(['TINVAR_PROFILE' => 'test', 'TINVAR_ENV' => 'testing', 'TINVAR_DEV' => '1'], static fn (): string => FrameworkConfig::load()->buildProfile()))
         ->toThrow(\RuntimeException::class, 'dev mode');
+
+    // Staging (ADR 0090): only where TINVAR_ENV says so, as BuildProfile holds it.
+    expect(withEnv(['TINVAR_PROFILE' => 'Staging', 'TINVAR_ENV' => 'staging'], static fn (): string => FrameworkConfig::load()->buildProfile()))->toBe(BuildProfile::STAGING)
+        ->and(static fn () => withEnv(['TINVAR_PROFILE' => 'staging', 'TINVAR_ENV' => 'testing'], static fn (): string => FrameworkConfig::load()->buildProfile()))
+        ->toThrow(\RuntimeException::class, 'TINVAR_ENV does not say staging');
 });
 
 it('refuses a profile, a stop budget and a hub URL by variable, quoting none of them', function () {
