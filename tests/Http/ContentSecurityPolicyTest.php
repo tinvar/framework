@@ -29,6 +29,15 @@ it('allows eval in dev, and only there', function () {
         ->and(\Shop\Kernel::contentSecurityPolicy('abc'))->not->toContain('unsafe-eval');
 });
 
+// ADR 0093: where problem reports are taken, a document's policy names the
+// endpoint its violations go to, for the Reporting API and report-uri both;
+// a static page's meta element cannot, so its policy never does.
+it('names the problem reports endpoint when asked to, and only then', function () {
+    expect(\Shop\Kernel::contentSecurityPolicy('abc', reports: true))
+        ->toBe("script-src 'nonce-abc' 'strict-dynamic'; object-src 'none'; base-uri 'none'; report-uri /_reports; report-to default")
+        ->and(\Shop\Kernel::contentSecurityPolicy('abc'))->not->toContain('report');
+});
+
 // The framework's own HTML response runs no script, so it allows none.
 it('allows no script on the framework error page', function () {
     $response = new ExceptionHandler()->handle(

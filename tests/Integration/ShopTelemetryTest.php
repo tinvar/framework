@@ -222,3 +222,41 @@ it('takes a vitals report from a page it served, under the route its token names
         ->and($metrics->exposition())->toContain('tinvar_web_vitals_seconds_count{route="shop.catalog",metric="LCP"} 1')
         ->and($metrics->exposition())->toContain('tinvar_web_vitals_score_count{route="shop.catalog",metric="CLS"} 1');
 });
+
+// ADR 0093: every document names /_reports in its policy and in
+// Reporting-Endpoints, and a browser's report -- sent with no CSRF token --
+// is taken there without a session issued, counted, and answered with
+// nothing.
+it('names /_reports on its documents, and takes a CSP violation there with no session', function () {
+    $renderer = Renderer::start('msgpack', 'telemetry-reports');
+    $metrics = new Metrics();
+    try {
+        $kernel = Kernel::fromEnvironment(
+            $renderer->socketPath,
+            key: KEY,
+            database: Shop::database(customers: 17),
+            telemetry: new Telemetry(new Logger(new MemorySink()), $metrics),
+        );
+
+        $page = $kernel->handle(from('/'));
+        $report = $kernel->handle(new Request(
+            'POST',
+            '/_reports',
+            ['content-type' => 'application/reports+json'],
+            remoteAddress: '127.0.0.1',
+        ), json_encode([[
+            'type' => 'csp-violation',
+            'url' => 'https://pellwick.test/',
+            'body' => ['effectiveDirective' => 'script-src-elem', 'disposition' => 'enforce', 'blockedURL' => 'inline'],
+        ]], JSON_THROW_ON_ERROR));
+    } finally {
+        $renderer->stop();
+    }
+
+    expect($page->header('content-security-policy'))->toContain('report-uri /_reports; report-to default')
+        ->and($page->header('reporting-endpoints'))->toBe('default="/_reports"')
+        ->and($report->status)->toBe(204)
+        ->and($report->body())->toBe('')
+        ->and($report->cookies())->toBe([])
+        ->and($metrics->exposition())->toContain('tinvar_problem_reports_total{type="csp-violation",directive="script-src-elem",disposition="enforce"} 1');
+});
