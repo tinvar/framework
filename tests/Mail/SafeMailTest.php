@@ -198,6 +198,23 @@ describe('the HTML of an email', function () {
         'not UTF-8' => ["<p>\xff\xfe<script>x</script></p>", 'UTF-8'],
     ]);
 
+    // The bytes sent are the tree written out again, which can hold what
+    // the bytes read did not: an entity decodes to a control character, and
+    // an attribute value is written with its `<` as it is.
+    it('refuses what decoding puts back, in the text or the document written out', function (string $html, string $message) {
+        expect(fn () => safe($html))->toThrow(MailRenderingException::class, $message);
+    })->with([
+        'an escape as an entity' => ['<p>&#x1b;$B&lt;script&gt;</p>', 'control character'],
+        'a shift out as an entity, in an attribute' => ['<p title="&#14;x">x</p>', 'control character'],
+        'a delete as an entity' => ['<p>&#x7f;</p>', 'control character'],
+        'a meta in an attribute' => ['<p title="&lt;meta charset=iso-2022-jp&gt;">x</p>', '<meta>'],
+        'a conditional comment in an attribute' => ['<p title="&lt;!--[if mso]&gt;">x</p>', 'comment'],
+    ]);
+
+    it('keeps tabs and line breaks', function () {
+        expect(safe("<pre>a\tb\r\nc</pre>"))->toContain("<pre>a\tb\nc</pre>");
+    });
+
     it('sends the document it checked, saying UTF-8 itself', function () {
         $html = SafeMailHtml::clean('<!DOCTYPE html><html lang="en"><head><title>x</title></head><body><p class=a>é &amp; <b>x</p></body></html>', new LinkPolicy('https://acme.test'));
 

@@ -62,38 +62,10 @@ final class SafeMailHtml
      */
     public static function clean(string $html, LinkPolicy $links): string
     {
-        // No comment at all. `<!--[if mso]>...<![endif]-->` and the
-        // downlevel-revealed `<![if !mso]>` are comments to this parser and
-        // markup to Outlook and old Internet Explorer, so whatever is inside
-        // one would reach those readers unchecked. The kit writes none; a
-        // comment found in the bytes -- inside a <title> or <style> too,
-        // where the parser reads it as text -- or in the parsed tree, as a
-        // bogus comment the parser made of `<?` or `</ x>`, is refused.
-        if (preg_match('/<!--|<!\[|<!\s*\[|\]-->/', $html) === 1) {
-            throw new MailRenderingException('An email cannot hold a comment: a conditional one is markup to Outlook that no check here reads.');
-        }
-
-        // Sent as UTF-8, which the message's Content-Type says, and nothing in
-        // it may say otherwise: a client honouring another charset would read
-        // these bytes as markup this check never saw. So no invalid UTF-8; no
-        // escape, shift-out or shift-in byte, which switch an ISO-2022
-        // decoder's character set mid-stream; and no <meta> from the renderer
-        // at all -- looked for in the bytes, since the encoding prescan finds
-        // one inside a <title> or <style> the tree holds as text, and where a
-        // quoted `>` would end a tag for one reader and not another. The
-        // head's few <meta>s, the charset first, are written here (META).
-        if (!mb_check_encoding($html, 'UTF-8')) {
-            throw new MailRenderingException('An email\'s HTML must be UTF-8, which it is sent as.');
-        }
-        if (strpbrk($html, "\x1b\x0e\x0f") !== false) {
-            throw new MailRenderingException('An email\'s HTML cannot hold an escape or shift byte, which switches a decoder\'s charset.');
-        }
-        if (preg_match('/<meta(?=[\s\/>])/i', $html) === 1) {
-            throw new MailRenderingException('An email\'s HTML cannot hold a <meta>: one could name a charset other than the UTF-8 it is sent as. The framework writes the head\'s own.');
-        }
+        self::assertBytes($html);
 
         $document = \Dom\HTMLDocument::createFromString($html, \LIBXML_NOERROR | \LIBXML_COMPACT, 'UTF-8');
-        self::assertNoComments($document);
+        self::assertNodes($document);
 
         foreach ($document->getElementsByTagName('*') as $element) {
             $tag = strtolower($element->localName);
@@ -110,6 +82,7 @@ final class SafeMailHtml
             foreach ($element->attributes as $attribute) {
                 $name = strtolower($attribute->name);
                 $value = $attribute->value;
+                self::assertNoControl($value, "<{$tag}>'s {$name}");
                 if (str_starts_with($name, 'on')) {
                     throw new MailRenderingException("An email's <{$tag}> cannot have an {$name} attribute.");
                 }
@@ -138,6 +111,14 @@ final class SafeMailHtml
             }
         }
 
+        // What is sent is this tree written out, which can hold what the bytes
+        // read did not: the serializer writes an attribute value's `<` as it
+        // is, so `&lt;meta` in one comes back `<meta`. Held to the same rules
+        // as the bytes were, before and after the head's <meta>s go in -- and
+        // the two must differ by those alone.
+        $bare = $document->saveHtml();
+        self::assertBytes($bare);
+
         $head = $document->head;
         if ($head === null) {
             throw new MailRenderingException('An email\'s HTML parsed to a document with no <head>.');
@@ -152,16 +133,74 @@ final class SafeMailHtml
         }
         $head->prepend(...$metas);
 
-        return $document->saveHtml();
+        $written = implode('', array_map(static fn (\Dom\Element $meta): string => $document->saveHtml($meta), $metas));
+        $sent = $document->saveHtml();
+        if (substr_count($sent, $written) !== 1 || str_replace($written, '', $sent) !== $bare) {
+            throw new MailRenderingException('An email\'s HTML was written out as something other than what was checked.');
+        }
+
+        return $sent;
     }
 
-    private static function assertNoComments(\Dom\Node $node): void
+    /**
+     * The rules on the bytes themselves -- what was handed in, and what is
+     * written out.
+     */
+    private static function assertBytes(string $html): void
+    {
+        // No comment at all. `<!--[if mso]>...<![endif]-->` and the
+        // downlevel-revealed `<![if !mso]>` are comments to this parser and
+        // markup to Outlook and old Internet Explorer, so whatever is inside
+        // one would reach those readers unchecked. The kit writes none; a
+        // comment found in the bytes -- inside a <title> or <style> too,
+        // where the parser reads it as text -- or in the parsed tree, as a
+        // bogus comment the parser made of `<?` or `</ x>`, is refused.
+        if (preg_match('/<!--|<!\[|<!\s*\[|\]-->/', $html) === 1) {
+            throw new MailRenderingException('An email cannot hold a comment: a conditional one is markup to Outlook that no check here reads.');
+        }
+
+        // Sent as UTF-8, which the message's Content-Type says, and nothing in
+        // it may say otherwise: a client honouring another charset would read
+        // these bytes as markup this check never saw. So no invalid UTF-8; no
+        // escape, shift-out or shift-in byte, which switch an ISO-2022
+        // decoder's character set mid-stream, nor any other control
+        // character but a tab or a line break; and no <meta> from the
+        // renderer at all -- looked for in the bytes, since the encoding
+        // prescan finds one inside a <title> or <style> the tree holds as
+        // text, and where a quoted `>` would end a tag for one reader and not
+        // another. The head's few <meta>s, the charset first, are written
+        // here (META).
+        if (!mb_check_encoding($html, 'UTF-8')) {
+            throw new MailRenderingException('An email\'s HTML must be UTF-8, which it is sent as.');
+        }
+        if (strpbrk($html, "\x1b\x0e\x0f") !== false) {
+            throw new MailRenderingException('An email\'s HTML cannot hold an escape or shift byte, which switches a decoder\'s charset.');
+        }
+        self::assertNoControl($html, 'HTML');
+        if (preg_match('/<meta(?=[\s\/>])/i', $html) === 1) {
+            throw new MailRenderingException('An email\'s HTML cannot hold a <meta>: one could name a charset other than the UTF-8 it is sent as. The framework writes the head\'s own.');
+        }
+    }
+
+    /** No control character but a tab, a line feed or a carriage return. */
+    private static function assertNoControl(string $value, string $where): void
+    {
+        if (preg_match('/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/', $value) === 1) {
+            throw new MailRenderingException("An email's {$where} cannot hold a control character: an escape or shift switches a decoder's charset.");
+        }
+    }
+
+    /** No comment anywhere in the tree, and no control character in its text. */
+    private static function assertNodes(\Dom\Node $node): void
     {
         foreach ($node->childNodes as $child) {
             if ($child instanceof \Dom\Comment) {
                 throw new MailRenderingException('An email cannot hold a comment: a conditional one is markup to Outlook that no check here reads.');
             }
-            self::assertNoComments($child);
+            if ($child instanceof \Dom\CharacterData) {
+                self::assertNoControl($child->data, 'text');
+            }
+            self::assertNodes($child);
         }
     }
 
