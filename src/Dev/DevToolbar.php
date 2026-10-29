@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Dev;
 
+use Tinvar\Config\FrameworkConfig;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Http\DevOverlay;
 use Tinvar\Http\Request;
@@ -119,6 +120,7 @@ final class DevToolbar implements FrameTap
      */
     public static function fromEnvironment(\Closure $sessionId, ?array $env = null, ?bool $dev = null, string $build = 'dev'): ?self
     {
+        $given = $env !== null;
         $env ??= array_filter(getenv(), \is_string(...));
         $directory = $env[self::ENV] ?? '';
         if ($directory === '') {
@@ -133,7 +135,9 @@ final class DevToolbar implements FrameTap
             );
         }
 
-        if (!($dev ?? DevMode::fromEnvironment($env))) {
+        // The process's own: TINVAR_DEV as the framework's config read it.
+        $dev ??= $given ? DevMode::fromEnvironment($env) : FrameworkConfig::load()->devMode();
+        if (!$dev) {
             return null;
         }
 

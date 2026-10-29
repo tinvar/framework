@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Tinvar\Render;
 
+use Tinvar\Config\ConfigException;
+use Tinvar\Config\FrameworkConfig;
+
 /**
  * The OS user the renderers run as, where that is not PHP's own: the
  * separate user of ADR 0028, named by TINVAR_RENDERER_USER.
@@ -25,15 +28,17 @@ final readonly class RendererUser
     ) {}
 
     /**
-     * TINVAR_RENDERER_USER, a user name or a uid; null when it is not set.
+     * TINVAR_RENDERER_USER, a user name or a uid, as the framework's config
+     * read it (FrameworkConfig); null when it is not set.
      *
      * @throws \InvalidArgumentException when it names no user, or root
+     * @throws ConfigException when the framework's config is malformed
      */
     public static function fromEnvironment(): ?self
     {
-        $configured = getenv(self::ENV);
+        $configured = FrameworkConfig::load()->rendererUserName();
 
-        return \is_string($configured) && trim($configured) !== '' ? self::named(trim($configured)) : null;
+        return $configured === null ? null : self::named($configured);
     }
 
     /**

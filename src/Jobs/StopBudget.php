@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Jobs;
 
+use Tinvar\Config\FrameworkConfig;
+
 /**
  * How long a queue worker has, from SIGTERM, before it is killed: its stop
  * budget, in whole seconds. `TINVAR_STOP_BUDGET` in the environment, or
@@ -62,11 +64,10 @@ final class StopBudget
         return self::check((int) $value);
     }
 
+    /** TINVAR_STOP_BUDGET as the framework's config read it (FrameworkConfig), held to the range. */
     public static function fromEnvironment(): int
     {
-        $value = getenv(self::ENV);
-
-        return self::parse($value === false ? null : $value);
+        return self::parse(FrameworkConfig::load()->stopBudget);
     }
 
     public static function check(int $seconds): int

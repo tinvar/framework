@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Live;
 
+use Tinvar\Config\FrameworkConfig;
 use Tinvar\Support\Signer;
 
 /**
@@ -80,19 +81,21 @@ final readonly class HubSettings
     }
 
     /**
-     * From the environment where it says, derived from the application key
-     * where it does not -- the same answer the process that configured the
-     * hub came to, given either.
+     * From the environment where it says -- the framework's config, which
+     * holds the keys as Secrets (FrameworkConfig) -- derived from the
+     * application key where it does not: the same answer the process that
+     * configured the hub came to, given either.
      */
     public static function resolve(#[\SensitiveParameter] string $appKey): self
     {
-        $derived = self::derive($appKey, self::env(self::AUDIENCE_ENV) ?? self::DEFAULT_AUDIENCE);
+        $config = FrameworkConfig::load();
+        $derived = self::derive($appKey, $config->liveAudience ?? self::DEFAULT_AUDIENCE);
 
         return new self(
-            self::env(self::SUBSCRIBER_ENV) ?? $derived->subscriberKey,
-            self::env(self::PUBLISHER_ENV) ?? $derived->publisherKey,
+            $config->liveSubscriberKey?->reveal() ?? $derived->subscriberKey,
+            $config->livePublisherKey?->reveal() ?? $derived->publisherKey,
             $derived->audience,
-            self::env(self::HUB_URL_ENV),
+            $config->liveHubUrl,
         );
     }
 
@@ -183,12 +186,5 @@ final readonly class HubSettings
         }
 
         return $scheme . '://' . $host . (isset($parts['port']) ? ':' . $parts['port'] : '');
-    }
-
-    private static function env(string $name): ?string
-    {
-        $value = getenv($name);
-
-        return \is_string($value) && $value !== '' ? $value : null;
     }
 }

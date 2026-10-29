@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Server;
 
+use Tinvar\Config\ConfigException;
+use Tinvar\Config\FrameworkConfig;
 use Tinvar\Jobs\StopBudget;
 use Tinvar\Protocol\ProtocolException;
 use Tinvar\Queue\HeldJob;
@@ -209,7 +211,7 @@ final class ServeCommand
         try {
             $user = RendererUser::fromEnvironment();
             $user?->assertNotThisProcess();
-        } catch (\InvalidArgumentException $e) {
+        } catch (\InvalidArgumentException|ConfigException $e) {
             throw new ServeException($e->getMessage());
         }
         if ($user !== null) {
@@ -242,7 +244,7 @@ final class ServeCommand
         // nothing says otherwise, and on any other address. Each request it
         // answers is held to loopback again, with the run's token.
         try {
-            $test = BuildProfile::fromEnvironment() === BuildProfile::TEST;
+            $test = FrameworkConfig::load()->buildProfile() === BuildProfile::TEST;
         } catch (\RuntimeException $e) {
             throw new ServeException($e->getMessage());
         }
@@ -536,7 +538,7 @@ final class ServeCommand
                 $plan['workers'],
                 $plan['renderers'],
                 $plan['renderers'] === 1 ? 'renderer' : 'renderers',
-                $plan['pool'] === null ? $directory : "{$plan['pool']}, run as " . (string) getenv(RendererUser::ENV),
+                $plan['pool'] === null ? $directory : "{$plan['pool']}, run as " . (string) FrameworkConfig::load()->rendererUserName(),
             ));
 
         $status = $this->supervise($children, $plan['app'], $environment);
