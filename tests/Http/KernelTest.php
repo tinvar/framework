@@ -507,6 +507,8 @@ describe('the reset contract', function () {
             'PanelContext::reset' => 'panels',
             'QueryRunner::forgetTagsRead' => 'queries',
             'Orm::reset' => 'orm',
+            // Added by the Kernel when it is given Features (ADR 0094).
+            'Features::reset' => 'features',
         ];
 
         $missing = array_values(array_diff($unregistered, array_keys($covered)));
@@ -540,6 +542,26 @@ describe('the reset contract', function () {
         );
 
         expect($kernel->scope->names())->toBe(['transaction', 'orm', 'statements', 'auth', 'policies', 'panels', 'queries', 'live', 'shared']);
+    });
+
+    // A flag switched between two requests is the next one's to see.
+    it('resets what a request read of the feature flags when the application has them', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat());
+        $auth = new AuthContext();
+        $kernel = new Kernel(
+            orm: $orm,
+            routes: new RouteRegistry(),
+            queries: new QueryRegistry(),
+            actions: new ActionRegistry(),
+            auth: $auth,
+            policies: new PolicyRegistry(),
+            resolver: static fn (string $class): object => new $class(),
+            allowedQueries: static fn (Request $r): array => [],
+            features: new Tinvar\Features\Features([], Tinvar\Features\FlagRules::new(), $auth, $orm),
+        );
+
+        expect($kernel->scope->names())->toContain('features');
     });
 });
 
