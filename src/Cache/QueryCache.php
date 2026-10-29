@@ -27,14 +27,15 @@ use Tinvar\Orm\TenantBounds;
  * class is only ever consulted after the gate has answered.
  *
  * The feature flags a query read cannot be known before its body has run,
- * so they cannot be in the key the lookup makes. They are in the entry
- * instead (ADR 0094): the key holds the call's answers, each with the flags
- * its body read and what each was, and a lookup serves the answer whose
- * flags all read the same for the caller now -- the flags a body reads are
- * all it can have depended on, so an answer whose flags agree is the one
- * the body would give. An answer whose body read no flag agrees with every
- * caller. One whose reads could not be told apart from another body's is
- * never kept.
+ * so they key a second step (ADR 0094). An answer whose body read none is
+ * kept under the key itself. Once a body of the call reads one, the key
+ * holds a marker naming every flag its bodies have been seen to read, and
+ * each answer is kept under the key and those flags' values: a lookup reads
+ * the marker, reads the flags for the caller, and looks there. Every answer
+ * carries the flags its body read, and is served only to a caller for whom
+ * they all read the same -- the flags a body reads are all it can have
+ * depended on. One whose reads could not be told apart from another body's,
+ * or that read a flag for a scope it named, is never kept.
  *
  * Two departures (ADR 0049). Beside the user, the key names the user's auth
  * epoch, so nothing computed for them before the application last moved it
@@ -89,27 +90,29 @@ final class QueryCache
      */
     private const string KEY_SCHEMA = 'v4';
 
-    /** What an entry is marked with: a call's answers, each with the flags it read. */
-    private const string ANSWERS = 'answers';
+    /** An entry holding an answer: the flags its body read, and the answer. */
+    private const string ANSWER = 'answer';
+
+    /** An entry naming the flags the bodies of a call have been seen to read. */
+    private const string FLAGS = 'flags';
+
+    /** Flags a call's marker names, at most: past them, its answers are not kept. */
+    public const int MAX_FLAGS = 16;
 
     /**
-     * Answers kept for one call, at most: one for each combination of flags
-     * its bodies were seen to read, the newest kept. Two flags make four.
-     */
-    public const int MAX_VARIANTS = 16;
-
-    /**
-     * What each key's lookup found, from its miss to the put that answers it
-     * -- so a put adds to the answers the lookup saw without reading the
-     * store again, which would note a fresh miss and undo the store's
-     * refusal of an answer read before a forget (Misses). Bounded, since a
-     * body that fails puts nothing.
+     * What each key's lookup did, from its miss to the put that answers it:
+     * the flags the marker named, and the variant key it looked under, or
+     * null where there was no marker. A put writes a variant only under the
+     * key its lookup missed on -- the store's own miss, which it holds a put
+     * to (Misses), so an answer read before a forget that landed after it is
+     * refused -- and never carries an answer it did not compute. Bounded,
+     * since a body that fails puts nothing.
      *
-     * @var array<string, list<array{r: array<string, bool>, v: mixed}>>
+     * @var array<string, array{flags: list<string>, variant: string|null}>
      */
-    private array $seen = [];
+    private array $looked = [];
 
-    private const int MAX_SEEN = 1024;
+    private const int MAX_LOOKED = 1024;
 
     public function enabledFor(Query $declaration): bool
     {
@@ -133,31 +136,50 @@ final class QueryCache
             return $miss;
         }
 
+        if (\count($this->looked) >= self::MAX_LOOKED) {
+            $this->looked = [];
+        }
+        $this->looked[$key] = ['flags' => [], 'variant' => null];
+
         $found = $this->store->get($key);
-        $answers = $found['hit'] ? self::answers($found['value']) : [];
+        if (!$found['hit']) {
+            return $miss;
+        }
 
         try {
-            // The first answer whose flags all read for the caller as they
-            // did for its body.
-            foreach ($answers as $answer) {
-                if ($this->agrees($answer['r'])) {
-                    unset($this->seen[$key]);
-
-                    return ['hit' => true, 'value' => $answer['v']];
+            $entry = $found['value'];
+            $flags = self::flagsNamed($entry);
+            if ($flags !== null) {
+                $values = $this->currentValues($flags);
+                if ($values === null) {
+                    return $miss;
                 }
+                $variant = self::variantKey($key, $values);
+                $this->looked[$key] = ['flags' => $flags, 'variant' => $variant];
+                $found = $this->store->get($variant);
+                if (!$found['hit']) {
+                    return $miss;
+                }
+                $entry = $found['value'];
+            }
+
+            // However it was found, an answer is served only to a caller
+            // whose flags read as its body's did.
+            $answer = self::answer($entry);
+            if ($answer === null || $this->currentValues(array_keys($answer['read'])) !== $answer['read']) {
+                return $miss;
             }
         } catch (\Throwable $e) {
-            // A flag store that cannot answer leaves every answer unproven,
-            // and the body runs -- to fail the same way, or to answer.
+            // A flag store that cannot answer leaves the answer unproven, and
+            // the body runs -- to fail the same way, or to answer.
             $this->failures[] = $e;
+
+            return $miss;
         }
 
-        if (\count($this->seen) >= self::MAX_SEEN) {
-            $this->seen = [];
-        }
-        $this->seen[$key] = $answers;
+        unset($this->looked[$key]);
 
-        return $miss;
+        return ['hit' => true, 'value' => $answer['value']];
     }
 
     /**
@@ -177,9 +199,9 @@ final class QueryCache
             return;
         }
 
-        // A read that could not be told from another body's, or a flag that
-        // changed while the body ran: no set of values describes this
-        // answer, so it is not kept.
+        // A read that could not be told from another body's, a flag read
+        // for a scope the body named, or a flag that changed while the body
+        // ran: no set of the caller's values describes this answer.
         if ($reads?->tainted() === true) {
             return;
         }
@@ -189,16 +211,8 @@ final class QueryCache
         if ($key === null) {
             return;
         }
-        $seen = $this->seen[$key] ?? [];
-        unset($this->seen[$key]);
-
-        // An answer that read a flag this cannot read again is one no lookup
-        // could prove is its caller's.
-        foreach (array_keys($read) as $flag) {
-            if ($this->features?->declares($flag) !== true) {
-                return;
-            }
-        }
+        $looked = $this->looked[$key] ?? ['flags' => [], 'variant' => null];
+        unset($this->looked[$key]);
 
         try {
             $ttl = Duration::seconds((string) $declaration->cache);
@@ -206,31 +220,44 @@ final class QueryCache
             // the subtree is tagged under the subtree's namespace, which a
             // write made as any tenant in it reaches (TagNamespace).
             $tags = $this->tagsFor($declaration, $arguments, $tenant, $this->subtreeGranted());
+            $answer = ['k' => self::ANSWER, 'r' => $read, 'v' => $value];
 
-            // Beside the answers the lookup found, for other flags, in place
-            // of one for the same; and alone where it read none, since it is
-            // then every caller's.
-            $answers = [];
-            if ($read !== []) {
-                foreach ($seen as $other) {
-                    if ($other['r'] !== $read && $other['r'] !== []) {
-                        $answers[] = $other;
-                    }
-                }
+            // No flag read, where no body of this call has been seen to read
+            // one: kept under the key itself, one lookup as before flags.
+            if ($read === [] && $looked['variant'] === null) {
+                $this->store->put($key, $answer, $ttl, $tags);
+
+                return;
             }
-            $answers[] = ['r' => $read, 'v' => $value];
 
-            $this->store->put(
-                $key,
-                ['k' => self::ANSWERS, 'a' => \array_slice($answers, -self::MAX_VARIANTS)],
-                $ttl,
-                $tags,
-            );
+            // Otherwise under the key and the values of every flag a body of
+            // this call has been seen to read, with a marker at the key
+            // naming them. The marker is a list of names, read by no one as
+            // an answer, so it outlives the forgets its answers do not.
+            $flags = array_values(array_unique([...$looked['flags'], ...array_keys($read)]));
+            sort($flags, SORT_STRING);
+            $values = \count($flags) > self::MAX_FLAGS ? null : $this->currentValues($flags, $read);
+            if ($values === null) {
+                return;
+            }
+            if ($flags !== $looked['flags']) {
+                $this->store->put($key, ['k' => self::FLAGS, 'f' => $flags], $ttl);
+            }
+
+            // The answer only under the key its lookup missed on: one it
+            // never looked under has no miss for the store to hold the put
+            // to, so a forget between the two would go unseen. The next
+            // lookup finds the marker, misses there, and keeps it.
+            $variant = self::variantKey($key, $values);
+            if ($variant === $looked['variant']) {
+                $this->store->put($variant, $answer, $ttl, $tags);
+            }
         } catch (\Throwable $e) {
             // A mistyped tag closure or TTL is a declaration bug, and it is
             // only reachable on a miss -- after the body has run. Losing every
             // other result in the tick over it would be the wrong trade; not
-            // caching this one is the right one.
+            // caching this one is the right one. A flag store that cannot
+            // answer leaves the same choice.
             $this->failures[] = $e;
         }
     }
@@ -406,54 +433,91 @@ final class QueryCache
     }
 
     /**
-     * Whether every flag an answer's body read reads the same for the caller
-     * now. A flag this cannot read -- one no longer declared, or no Features
-     * to read it with -- cannot be shown to agree, so it does not.
+     * Each flag's value for the caller, sorted by name -- $known's where the
+     * body already read it -- or null when one is not declared, or there is
+     * no Features to read it with: an answer keyed by a flag this cannot
+     * read is one this cannot prove is the caller's.
      *
-     * @param array<string, bool> $read
+     * @param list<array-key> $flags
+     * @param array<string, bool> $known
+     * @return array<string, bool>|null
      */
-    private function agrees(array $read): bool
+    private function currentValues(array $flags, array $known = []): ?array
     {
-        foreach ($read as $flag => $active) {
-            if ($this->features === null || !$this->features->declares($flag) || $this->features->active($flag) !== $active) {
-                return false;
-            }
+        if ($flags === []) {
+            return [];
+        }
+        if ($this->features === null) {
+            return null;
         }
 
-        return true;
+        $values = [];
+        foreach ($flags as $flag) {
+            $flag = (string) $flag;
+            if (!$this->features->declares($flag)) {
+                return null;
+            }
+            $values[$flag] = $known[$flag] ?? $this->features->active($flag);
+        }
+        ksort($values, SORT_STRING);
+
+        return $values;
+    }
+
+    /** @param array<string, bool> $values */
+    private static function variantKey(string $key, array $values): string
+    {
+        return 'qf:' . substr(hash('sha256', $key . "\0" . json_encode($values, JSON_THROW_ON_ERROR)), 0, 32);
     }
 
     /**
-     * A stored entry's answers, read strictly -- a store shared between
-     * workers is one someone else could have written -- or none for
-     * anything that is not exactly an entry this writes.
+     * The flags a marker names, or null for any other entry. Read strictly,
+     * as answer() reads: a store shared between workers is a store someone
+     * else could have written.
      *
-     * @return list<array{r: array<string, bool>, v: mixed}>
+     * @return list<string>|null
      */
-    private static function answers(mixed $entry): array
+    private static function flagsNamed(mixed $entry): ?array
     {
-        if (!\is_array($entry) || \count($entry) !== 2 || ($entry['k'] ?? null) !== self::ANSWERS
-            || !\is_array($entry['a'] ?? null) || !array_is_list($entry['a']) || \count($entry['a']) > self::MAX_VARIANTS) {
-            return [];
+        if (!\is_array($entry) || \count($entry) !== 2 || ($entry['k'] ?? null) !== self::FLAGS
+            || !\is_array($entry['f'] ?? null) || !array_is_list($entry['f'])
+            || $entry['f'] === [] || \count($entry['f']) > self::MAX_FLAGS) {
+            return null;
         }
 
-        $answers = [];
-        foreach ($entry['a'] as $answer) {
-            if (!\is_array($answer) || \count($answer) !== 2 || !\is_array($answer['r'] ?? null) || !\array_key_exists('v', $answer)) {
-                return [];
+        $flags = [];
+        foreach ($entry['f'] as $flag) {
+            if (!\is_string($flag)) {
+                return null;
             }
-            $read = [];
-            foreach ($answer['r'] as $flag => $active) {
-                if (!\is_string($flag) || !\is_bool($active)) {
-                    return [];
-                }
-                $read[$flag] = $active;
-            }
-            ksort($read, SORT_STRING);
-            $answers[] = ['r' => $read, 'v' => $answer['v']];
+            $flags[] = $flag;
         }
 
-        return $answers;
+        return $flags;
+    }
+
+    /**
+     * An answer's flags read and value, or null for any other entry.
+     *
+     * @return array{read: array<string, bool>, value: mixed}|null
+     */
+    private static function answer(mixed $entry): ?array
+    {
+        if (!\is_array($entry) || \count($entry) !== 3 || ($entry['k'] ?? null) !== self::ANSWER
+            || !\is_array($entry['r'] ?? null) || !\array_key_exists('v', $entry)) {
+            return null;
+        }
+
+        $read = [];
+        foreach ($entry['r'] as $flag => $active) {
+            if (!\is_string($flag) || !\is_bool($active)) {
+                return null;
+            }
+            $read[$flag] = $active;
+        }
+        ksort($read, SORT_STRING);
+
+        return ['read' => $read, 'value' => $entry['v']];
     }
 
     /**

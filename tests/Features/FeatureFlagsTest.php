@@ -15,6 +15,7 @@ use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\Authenticatable;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Cache\ArrayStore;
+use Tinvar\Cache\PdoStore;
 use Tinvar\Cache\QueryCache;
 use Tinvar\Data\SharedReads;
 use Tinvar\Data\SharedRegistry;
@@ -236,39 +237,46 @@ describe('the query cache', function () {
     it('keeps a shared answer apart by the flags its body read, and shares it where they agree', function () use ($setup) {
         [$as] = $setup();
 
+        // The first answer for a call names its flag, and is kept from the
+        // lookup after: only a lookup that missed under the flag's value
+        // gives the store a miss to hold the put to.
         $on = $as('u1');
         $off = $as('u2');
         $alsoOn = $as('u3');
         $alsoOff = $as('u4');
+        $again = $as('u1');
 
         expect($on[0]['units'])->toBe(3)
             ->and($off[0]['units'])->toBe(0, 'not u1\'s answer, though the user is not in the key')
             ->and($alsoOn)->toBe($on)
             ->and($alsoOff)->toBe($off)
-            ->and(FlaggedRack::$runs)->toBe(2, 'one run for each value of the flag');
+            ->and($again)->toBe($on)
+            ->and(FlaggedRack::$runs)->toBe(3, 'the marker, then one run for each value of the flag');
     });
 
     it('runs the body again when a flag the answer read has changed', function () use ($setup) {
         [$as, $values] = $setup();
 
-        expect($as('u1')[0]['units'])->toBe(3);
+        expect($as('u1')[0]['units'])->toBe(3)
+            ->and($as('u1')[0]['units'])->toBe(3);
         $values->rules = $values->rules->forUser('rack.units', 'u1', false);
 
         expect($as('u1')[0]['units'])->toBe(0)
-            ->and(FlaggedRack::$runs)->toBe(2)
+            ->and(FlaggedRack::$runs)->toBe(3)
             ->and($as('u3')[0]['units'])->toBe(3, 'the answer for the flag on is still kept')
-            ->and(FlaggedRack::$runs)->toBe(2);
+            ->and(FlaggedRack::$runs)->toBe(3);
     });
 
     it('keeps nothing whose read it cannot attribute, and keeps its neighbours in the same tick', function () use ($setup) {
         [$as] = $setup();
 
-        $as('u1', ['racks.elsewhere', 'racks.plain', 'racks.flagged']);
-        $as('u1', ['racks.elsewhere', 'racks.plain', 'racks.flagged']);
+        foreach ([1, 2, 3] as $_) {
+            $as('u1', ['racks.elsewhere', 'racks.plain', 'racks.flagged']);
+        }
 
-        expect(FlagReadElsewhere::$runs)->toBe(2, 'read in a fiber no recorder holds: never cached')
+        expect(FlagReadElsewhere::$runs)->toBe(3, 'read in a fiber no recorder holds: never cached')
             ->and(PlainRack::$runs)->toBe(1)
-            ->and(FlaggedRack::$runs)->toBe(1);
+            ->and(FlaggedRack::$runs)->toBe(2);
     });
 
     it('keeps no answer that read a flag when the cache has no Features to read it again', function () use ($setup) {
@@ -279,6 +287,87 @@ describe('the query cache', function () {
 
         expect(FlaggedRack::$runs)->toBe(2)
             ->and(PlainRack::$runs)->toBe(1, 'one that read none is kept as ever');
+    });
+
+    it('never writes back an answer for other flags that was forgotten between the lookup and the put', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1);
+        $auth = new AuthContext();
+        $rules = FlagRules::new()->forUser('rack.units', 'u1', true);
+        $features = new Features([new Flag('rack.units')], $rules, $auth, new Orm($fixture->connection, new IdentityMap('test')));
+        $cache = new QueryCache(new ArrayStore(), $auth, features: $features);
+        $declaration = new QueryAttribute(cache: '5m', shared: true, tags: static fn (int $x): array => ['racks']);
+        $reading = static function (bool $active): FlagReads {
+            $reads = new FlagReads();
+            $reads->task(static fn () => FlagReads::record('rack.units', $active));
+
+            return $reads;
+        };
+        $as = static function (string $user, \Closure $work) use ($auth, $features): mixed {
+            $features->reset();
+
+            return $auth->actingAs(flagUser($user), $work);
+        };
+
+        $as('u1', static fn () => $cache->put('q', $declaration, ['x' => 1], '', 'before the write', $reading(true)));
+
+        // u2's lookup finds u1's answer, which is not theirs; a write then
+        // forgets everything tagged; u2's body answers and is put.
+        $as('u2', static function () use ($cache, $declaration, $reading): void {
+            expect($cache->get('q', $declaration, ['x' => 1], '')['hit'])->toBeFalse();
+            $cache->forgetTags(['racks'], '', null);
+            $cache->put('q', $declaration, ['x' => 1], '', 'after the write', $reading(false));
+        });
+
+        expect($as('u1', static fn () => $cache->get('q', $declaration, ['x' => 1], ''))['hit'])->toBeFalse()
+            ->and($as('u2', static fn () => $cache->get('q', $declaration, ['x' => 1], '')))->toBe(['hit' => true, 'value' => 'after the write']);
+    });
+
+    it('refuses an answer for one flag\'s value read before a forget another worker made after the lookup', function () {
+        $directory = sys_get_temp_dir() . '/tinvar-flags-cache-' . bin2hex(random_bytes(4));
+        mkdir($directory, 0700);
+        try {
+            $mine = new PdoStore(new \PDO("sqlite:{$directory}/cache.sqlite"));
+            $mine->install();
+            $theirs = new PdoStore(new \PDO("sqlite:{$directory}/cache.sqlite"));
+
+            $fixture = new Fixture(racks: 1, unitsPerRack: 1);
+            $auth = new AuthContext();
+            $features = new Features([new Flag('rack.units')], FlagRules::new()->forUser('rack.units', 'u1', true), $auth, new Orm($fixture->connection, new IdentityMap('test')));
+            $cache = new QueryCache($mine, $auth, features: $features);
+            $other = new QueryCache($theirs, $auth, features: $features);
+            $declaration = new QueryAttribute(cache: '5m', shared: true, tags: static fn (int $x): array => ['racks']);
+            $as = static function (string $user, \Closure $work) use ($auth, $features): mixed {
+                $features->reset();
+
+                return $auth->actingAs(flagUser($user), $work);
+            };
+            $answer = static function (QueryCache $cache, bool $active, string $value) use ($declaration): void {
+                $reads = new FlagReads();
+                $reads->task(static fn () => FlagReads::record('rack.units', $active));
+                $cache->put('q', $declaration, ['x' => 1], '', $value, $reads);
+            };
+
+            // The marker, then u1's answer.
+            foreach ([1, 2] as $_) {
+                $as('u1', static function () use ($cache, $declaration, $answer): void {
+                    $cache->get('q', $declaration, ['x' => 1], '');
+                    $answer($cache, true, 'on');
+                });
+            }
+
+            // u2 misses under their value; another worker's write forgets
+            // the tag; u2's body, which read before it, answers.
+            $as('u2', static function () use ($cache, $other, $declaration, $answer): void {
+                expect($cache->get('q', $declaration, ['x' => 1], '')['hit'])->toBeFalse();
+                $other->forgetTags(['racks'], '', null);
+                $answer($cache, false, 'read before the write');
+            });
+
+            expect($as('u2', static fn () => $cache->get('q', $declaration, ['x' => 1], ''))['hit'])->toBeFalse()
+                ->and($as('u1', static fn () => $cache->get('q', $declaration, ['x' => 1], ''))['hit'])->toBeFalse();
+        } finally {
+            exec('rm -rf ' . escapeshellarg($directory));
+        }
     });
 
     it('misses, never serves, an entry it did not write', function (mixed $entry) {
@@ -294,10 +383,12 @@ describe('the query cache', function () {
         expect($cache->get('q', $declaration, ['x' => 1], '')['hit'])->toBeFalse();
     })->with([
         'a bare value' => ['forged'],
-        'an answer with a flag that is not one' => [['k' => 'answers', 'a' => [['r' => ['rack.units' => 'yes'], 'v' => 'forged']]]],
-        'an undeclared flag' => [['k' => 'answers', 'a' => [['r' => ['nope' => false], 'v' => 'forged']]]],
-        'a flag read as it is not' => [['k' => 'answers', 'a' => [['r' => ['rack.units' => true], 'v' => 'forged']]]],
-        'extra keys' => [['k' => 'answers', 'a' => [['r' => [], 'v' => 'forged', 'x' => 1]]]],
+        'an answer with a flag that is not one' => [['k' => 'answer', 'r' => ['rack.units' => 'yes'], 'v' => 'forged']],
+        'an undeclared flag' => [['k' => 'answer', 'r' => ['nope' => false], 'v' => 'forged']],
+        'a flag read as it is not' => [['k' => 'answer', 'r' => ['rack.units' => true], 'v' => 'forged']],
+        'extra keys' => [['k' => 'answer', 'r' => [], 'v' => 'forged', 'x' => 1]],
+        'a marker naming no flag' => [['k' => 'flags', 'f' => []]],
+        'a marker naming something else' => [['k' => 'flags', 'f' => [1]]],
     ]);
 });
 
