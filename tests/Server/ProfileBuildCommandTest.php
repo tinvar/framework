@@ -61,12 +61,30 @@ it('refuses a test build where the environment says production', function (strin
         ->and($errors[0] ?? '')->toContain("{$marker}=production");
 })->with(['TINVAR_ENV', 'APP_ENV', 'NODE_ENV']);
 
+it('builds for staging, and refuses it where TINVAR_ENV or APP_ENV says production', function () use ($shop) {
+    [, , $env] = new ProfileBuildCommand($shop, env: ['NODE_ENV' => 'production'])->plan(['--profile=staging']);
+    expect($env['TINVAR_PROFILE'])->toBe('staging');
+
+    foreach (['TINVAR_ENV', 'APP_ENV'] as $marker) {
+        $errors = [];
+        $status = new ProfileBuildCommand(
+            $shop,
+            run: static fn (): int => 0,
+            err: static function (string $line) use (&$errors): void {
+                $errors[] = $line;
+            },
+            env: [$marker => 'production'],
+        )->run(['--profile=staging']);
+        expect($status)->toBe(1)->and($errors[0] ?? '')->toContain("{$marker}=production");
+    }
+});
+
 it('refuses what it does not know', function (string $argument) use ($shop) {
     $status = new ProfileBuildCommand($shop, run: static fn (): int => 0, err: static function (): void {}, env: [])->run([$argument]);
 
     expect($status)->toBe(ProfileBuildCommand::USAGE);
 })->with([
-    'a profile' => ['--profile=staging'],
+    'a profile' => ['--profile=qa'],
     'an option' => ['--minify=false'],
     'a bare flag' => ['--profile'],
 ]);

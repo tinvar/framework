@@ -10,7 +10,7 @@ use Tinvar\Support\DevMode;
 /**
  * `tinvar build`: an application's Vite build, made for a profile.
  *
- *   tinvar build [--profile=production|test] [--app=DIR] [--out=DIR]
+ *   tinvar build [--profile=production|staging|test] [--app=DIR] [--out=DIR]
  *
  * tinvar-spec.md, "Dev and test tooling": "Only `tinvar dev` and
  * `--profile=test` include them" -- the browser test helpers. The build is
@@ -20,10 +20,11 @@ use Tinvar\Support\DevMode;
  * directory of its own, as a test build beside a production one.
  *
  * A test build is refused where TINVAR_ENV, APP_ENV or NODE_ENV says
- * production. Building one elsewhere is harmless by itself -- serving it
- * needs the test profile, which needs an environment that says it is not
- * production -- so an unset environment is not refused here as it is when
- * serving.
+ * production, and a staging build where TINVAR_ENV or APP_ENV does (ADR
+ * 0090): staging is production's build, so NODE_ENV says nothing about it.
+ * Building either elsewhere is harmless by itself -- serving it needs its
+ * profile, which needs an environment that says so -- so an unset
+ * environment is not refused here as it is when serving.
  */
 final class ProfileBuildCommand
 {
@@ -98,7 +99,7 @@ final class ProfileBuildCommand
         foreach ($arguments as $argument) {
             if (preg_match('/^--([a-z]+)=(.+)\z/s', $argument, $m) !== 1 || !\in_array($m[1], self::OPTIONS, true)) {
                 throw new \InvalidArgumentException(
-                    "Unknown argument '{$argument}'. tinvar build [--profile=production|test] [--app=DIR] [--out=DIR]",
+                    "Unknown argument '{$argument}'. tinvar build [--profile=production|staging|test] [--app=DIR] [--out=DIR]",
                 );
             }
             $options[$m[1]] = $m[2];
@@ -107,7 +108,17 @@ final class ProfileBuildCommand
         $env = $this->env ?? array_filter(getenv(), \is_string(...));
         $profile = strtolower($options['profile'] ?? BuildProfile::PRODUCTION);
         if (!\in_array($profile, BuildProfile::PROFILES, true)) {
-            throw new \InvalidArgumentException("--profile={$profile} is not a profile: it is production or test.");
+            throw new \InvalidArgumentException("--profile={$profile} is not a profile: it is production, staging or test.");
+        }
+        if ($profile === BuildProfile::STAGING) {
+            foreach (['TINVAR_ENV', 'APP_ENV'] as $marker) {
+                if (strtolower(trim($env[$marker] ?? '')) === 'production') {
+                    throw new \RuntimeException(
+                        "tinvar build --profile=staging is refused: {$marker}=production. A staging build is served "
+                        . 'under keys bound to staging, which production never has.',
+                    );
+                }
+            }
         }
         if ($profile === BuildProfile::TEST) {
             $marker = DevMode::productionMarker($env);
