@@ -107,6 +107,14 @@ final class ServeCommand
     /** Variables the renderer may see; it refuses to start holding anything secret. */
     private const array RENDERER_ENV = ['PATH', 'TZ', 'LANG', 'LC_ALL'];
 
+    /**
+     * And what dev mode's renderer is told beside them: which environment
+     * and profile this is, none of it secret, so the dev server's workbench
+     * mounts only where TINVAR_ENV says this is a developer's machine (ADR
+     * 0089), and its email preview sees a production marker for itself.
+     */
+    private const array DEV_RENDERER_ENV = ['TINVAR_ENV', 'APP_ENV', 'TINVAR_PROFILE'];
+
     /** @var \Closure(string): void */
     private readonly \Closure $out;
 
@@ -443,7 +451,7 @@ final class ServeCommand
                 $children['the dev renderer'] = $renderer = $this->spawn(
                     ['node', $plan['renderer'], $socket, $plan['app'], "--port={$plan['vitePort']}", "--deferred={$deferred}", '--exit-with-stdin'],
                     $plan['app'],
-                    [...$rendererEnv, 'NODE_ENV' => 'development'],
+                    [...$rendererEnv, ...array_intersect_key(getenv(), array_flip(self::DEV_RENDERER_ENV)), 'NODE_ENV' => 'development'],
                 );
                 // Longer than a built renderer's start: Vite optimizes the
                 // app's dependencies the first time, and the socket appears
