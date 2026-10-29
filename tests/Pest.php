@@ -13,15 +13,19 @@ declare(strict_types=1);
 \Tinvar\Testing\Testing::functions();
 
 /*
- * A generated app key for this run, in a temporary directory, so tests that
- * build the example app never write one into the developer's home.
+ * A generated app key and probe token for this run, in a temporary
+ * directory, so tests that build the example app never write either into
+ * the developer's home.
  */
-if ((string) getenv('TINVAR_APP_KEY_FILE') === '') {
+foreach (['TINVAR_APP_KEY_FILE' => 'app.key', 'TINVAR_PROBE_TOKEN_FILE' => 'probe-token'] as $variable => $name) {
+    if ((string) getenv($variable) !== '') {
+        continue;
+    }
     $keyDir = sys_get_temp_dir() . '/tinvar-test-key-' . getmypid();
-    putenv("TINVAR_APP_KEY_FILE={$keyDir}/app.key");
-    register_shutdown_function(static function () use ($keyDir): void {
-        @unlink("{$keyDir}/app.key");
-        @unlink("{$keyDir}/.app.key.lock");
+    putenv("{$variable}={$keyDir}/{$name}");
+    register_shutdown_function(static function () use ($keyDir, $name): void {
+        @unlink("{$keyDir}/{$name}");
+        @unlink("{$keyDir}/.{$name}.lock");
         @rmdir($keyDir);
     });
 }

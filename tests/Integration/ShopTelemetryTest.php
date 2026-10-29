@@ -5,7 +5,7 @@ declare(strict_types=1);
 /**
  * The shop's telemetry (ADR 0041), against the real renderer pool: JSON log
  * lines in a file, filed under the id the response carries; /_health,
- * /_ready and /_metrics answered to loopback with no session issued; the
+ * /_ready and /_metrics answered to the probe token alone, with no session issued; the
  * pool's renderers and the queues in the metrics; and a page's own vitals
  * report, taken at /_vitals.
  *
@@ -68,6 +68,12 @@ function from(string $path, string $address = '127.0.0.1'): Request
     return new Request('GET', $path, ['accept' => 'text/html'], remoteAddress: $address);
 }
 
+/** A probe as a scraper sends it: over loopback, with the probe token. */
+function probe(string $path): Request
+{
+    return new Request('GET', $path, ['authorization' => 'Bearer ' . Kernel::probeToken()], remoteAddress: '127.0.0.1');
+}
+
 it('logs a page to its file under the id the response carries, and counts its render', function () {
     shop(function (Kernel $kernel, string $log): void {
         $response = $kernel->handle(from('/'));
@@ -80,17 +86,17 @@ it('logs a page to its file under the id the response carries, and counts its re
             ->and($access)->toHaveCount(1)
             ->and($access[0])->toMatchArray(['request_id' => $id, 'route' => 'shop.catalog', 'status' => 200, 'source' => 'php']);
 
-        $metrics = $kernel->handle(from('/_metrics'))->body();
+        $metrics = $kernel->handle(probe('/_metrics'))->body();
         expect($metrics)->toContain('tinvar_http_requests_total{method="GET",route="shop.catalog",status="200"} 1')
             ->and($metrics)->toContain('tinvar_renders_total{kind="document",outcome="ok"} 1')
             ->and($metrics)->toMatch('/tinvar_query_calls_total\{kind="document"\} [1-9]/');
     });
 });
 
-it('answers /_health and /_ready to loopback, with no session, and asks every renderer in the pool', function () {
+it('answers /_health and /_ready to the probe token, with no session, and asks every renderer in the pool', function () {
     shop(function (Kernel $kernel): void {
-        $health = $kernel->handle(from('/_health'));
-        $ready = $kernel->handle(from('/_ready'));
+        $health = $kernel->handle(probe('/_health'));
+        $ready = $kernel->handle(probe('/_ready'));
 
         expect($health->status)->toBe(200)
             ->and($health->cookies())->toBe([])
@@ -98,7 +104,7 @@ it('answers /_health and /_ready to loopback, with no session, and asks every re
             ->and(json_decode($ready->body(), true))->toBe(['status' => 'ok', 'checks' => ['database' => 'ok', 'renderer' => 'ok']])
             ->and($ready->cookies())->toBe([]);
 
-        $metrics = $kernel->handle(from('/_metrics'))->body();
+        $metrics = $kernel->handle(probe('/_metrics'))->body();
         expect($metrics)->toContain("tinvar_renderers 2\n")
             ->and($metrics)->toContain("tinvar_renderers_answering 2\n")
             ->and($metrics)->toMatch('/tinvar_renderer_up\{slot="0"\} 1/')
@@ -107,12 +113,16 @@ it('answers /_health and /_ready to loopback, with no session, and asks every re
     });
 });
 
-it('answers the probes to no one off this machine without the token', function () {
+// Loopback included: a proxy or TLS terminator on the same machine connects
+// from it, and may add no header to say so.
+it('answers the probes to no one without the token, on this machine or off it', function () {
     shop(function (Kernel $kernel): void {
         foreach (['/_health', '/_ready', '/_metrics'] as $path) {
-            $response = $kernel->handle(from($path, '203.0.113.9'));
+            foreach (['127.0.0.1', '::1', '203.0.113.9'] as $address) {
+                $response = $kernel->handle(from($path, $address));
 
-            expect($response->status)->toBe(404)->and($response->body())->toBe('Not found.');
+                expect($response->status)->toBe(404)->and($response->body())->toBe('Not found.');
+            }
         }
     });
 });
@@ -121,7 +131,7 @@ it('fails readiness when the renderers are gone, and says which check in the log
     shop(function (Kernel $kernel, string $log, Renderer $renderer): void {
         $renderer->stop();
 
-        $ready = $kernel->handle(from('/_ready'));
+        $ready = $kernel->handle(probe('/_ready'));
 
         expect($ready->status)->toBe(503)
             ->and(json_decode($ready->body(), true)['checks'])->toBe(['database' => 'ok', 'renderer' => 'failing'])

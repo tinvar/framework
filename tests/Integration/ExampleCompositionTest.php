@@ -275,10 +275,11 @@ describe('where the example keeps a generated key', function () {
     });
 });
 
-// In a pod, loopback is every container's: the renderers' sidecar, a mesh's
-// proxy and `kubectl port-forward` all reach /_ready and /_metrics from
-// 127.0.0.1 (ADR 0071). TINVAR_PROBE_TRUST_LOOPBACK=0 makes the token the
-// only way in there.
+// Loopback is no proof of being a probe: a proxy or TLS terminator on the
+// same machine connects from it, and in a pod the renderers' sidecar, a
+// mesh's proxy and `kubectl port-forward` all reach /_ready and /_metrics
+// from 127.0.0.1 (ADR 0071). The token is the only way in unless
+// TINVAR_PROBE_TRUST_LOOPBACK=1.
 describe('who the shop lets ask its probes', function () {
     $token = str_repeat('t', 40);
     $ask = static fn (array $headers = []): Request => new Request('GET', '/_ready', $headers + ['host' => '127.0.0.1:8080'], remoteAddress: '127.0.0.1');
@@ -297,28 +298,46 @@ describe('who the shop lets ask its probes', function () {
         }
     };
 
-    it('lets loopback in without the token unless told not to', function () use ($with, $ask, $token) {
-        $with(['TINVAR_PROBE_TRUST_LOOPBACK' => null, 'TINVAR_PROBE_TOKEN' => $token], function () use ($ask) {
-            expect(Kernel::probeAccess()->allows($ask()))->toBeTrue();
-        });
-        $with(['TINVAR_PROBE_TRUST_LOOPBACK' => '1', 'TINVAR_PROBE_TOKEN' => null], function () use ($ask) {
+    it('holds loopback to the token unless told to trust it', function () use ($with, $ask, $token) {
+        foreach ([null, '', '0'] as $trust) {
+            $with(['TINVAR_PROBE_TRUST_LOOPBACK' => $trust, 'TINVAR_PROBE_TOKEN' => $token], function () use ($ask, $token) {
+                $access = Kernel::probeAccess();
+
+                expect($access->allows($ask()))->toBeFalse()
+                    ->and($access->allows($ask(['authorization' => 'Bearer wrong-' . $token])))->toBeFalse()
+                    ->and($access->allows($ask(['authorization' => "Bearer {$token}"])))->toBeTrue();
+            });
+        }
+        $with(['TINVAR_PROBE_TRUST_LOOPBACK' => '1', 'TINVAR_PROBE_TOKEN' => $token], function () use ($ask) {
             expect(Kernel::probeAccess()->allows($ask()))->toBeTrue();
         });
     });
 
-    it('holds loopback to the token when TINVAR_PROBE_TRUST_LOOPBACK is 0', function () use ($with, $ask, $token) {
-        $with(['TINVAR_PROBE_TRUST_LOOPBACK' => '0', 'TINVAR_PROBE_TOKEN' => $token], function () use ($ask, $token) {
-            $access = Kernel::probeAccess();
+    // Nothing set, as in dev: the token is generated, private, beside the
+    // app key, and the same one every boot -- not no token, and not loopback.
+    it('generates a probe token beside the app key when none is given, and keeps it', function () use ($with, $ask) {
+        $state = sys_get_temp_dir() . '/tinvar-probe-' . bin2hex(random_bytes(4));
+        mkdir($state, 0o700);
+        try {
+            [$first, $again, $file, $access] = $with(
+                ['TINVAR_PROBE_TRUST_LOOPBACK' => null, 'TINVAR_PROBE_TOKEN' => null, 'TINVAR_PROBE_TOKEN_FILE' => null, 'XDG_STATE_HOME' => $state],
+                fn (): array => [Kernel::probeToken(), Kernel::probeToken(), Kernel::probeTokenFile(), Kernel::probeAccess()],
+            );
 
-            expect($access->allows($ask()))->toBeFalse()
-                ->and($access->allows($ask(['authorization' => 'Bearer wrong-' . $token])))->toBeFalse()
-                ->and($access->allows($ask(['authorization' => "Bearer {$token}"])))->toBeTrue();
-        });
+            expect(\strlen($first))->toBeGreaterThanOrEqual(32)
+                ->and($again)->toBe($first)
+                ->and($file)->toBe("{$state}/tinvar/shop.probe-token")
+                ->and(fileperms($file) & 0o077)->toBe(0)
+                ->and($access->allows($ask()))->toBeFalse()
+                ->and($access->allows($ask(['authorization' => "Bearer {$first}"])))->toBeTrue();
+        } finally {
+            exec('rm -rf ' . escapeshellarg($state));
+        }
     });
 
-    it('lets no one in, rather than loopback, with no token given', function () use ($with, $ask) {
-        $with(['TINVAR_PROBE_TRUST_LOOPBACK' => '0', 'TINVAR_PROBE_TOKEN' => null], function () use ($ask) {
-            expect(Kernel::probeAccess()->allows($ask()))->toBeFalse();
+    it('refuses a relative TINVAR_PROBE_TOKEN_FILE', function () use ($with) {
+        $with(['TINVAR_PROBE_TOKEN' => null, 'TINVAR_PROBE_TOKEN_FILE' => 'storage/probe-token'], function () {
+            expect(fn () => Kernel::probeToken())->toThrow(\RuntimeException::class, 'absolute');
         });
     });
 
