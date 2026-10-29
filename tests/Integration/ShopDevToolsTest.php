@@ -71,7 +71,24 @@ beforeEach(function () {
     if ($unbuilt !== null) {
         test()->markTestSkipped($unbuilt);
     }
+
+    // The process's own, as on a developer's machine: what renders runs as
+    // the test profile, which reads it from the process (BuildProfile).
+    Saved::$env = getenv('TINVAR_ENV');
+    putenv('TINVAR_ENV=local');
 });
+
+afterEach(function () {
+    putenv(Saved::$env === false ? 'TINVAR_ENV' : 'TINVAR_ENV=' . Saved::$env);
+    // Put back as it was found: the profile is the render's alone.
+    expect(getenv('TINVAR_PROFILE'))->not->toBe('test');
+});
+
+/** The process's TINVAR_ENV before each test. */
+final class Saved
+{
+    public static string|false $env = false;
+}
 
 it('dumps a page as nobody and as a scenario\'s customer, on a copy of the database', function () {
     $database = Shop::testDatabase();
