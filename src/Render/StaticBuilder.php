@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Render;
 
 use Tinvar\Attributes\StaticPage;
+use Tinvar\Features\FlagReads;
 use Tinvar\Http\Request;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
@@ -317,8 +318,19 @@ final class StaticBuilder
         // into the manifest as one whose renders may mint anything.
         $components = $manifest->defersOn($page['route']) ? $manifest->componentsFor($page['route']) : [];
         $minter = new StaticMinter($page['route'], $page['params'], $components);
-        // No cookies, no address: a visitor the server has never met.
-        $html = ($this->render)(new Request('GET', $page['path'], ['accept' => 'text/html']), $minter->closure());
+        // No cookies, no address: a visitor the server has never met. And
+        // every feature flag the render reads, in any fiber: a file is sent
+        // to everyone, so it cannot be one tenant's, user's or panel's
+        // variant -- nor keyed by a flag, since nothing asks for it but the
+        // path (ADR 0094).
+        $flags = new FlagReads();
+        $html = $flags->span(fn (): string => ($this->render)(new Request('GET', $page['path'], ['accept' => 'text/html']), $minter->closure()));
+        if (!$flags->clean()) {
+            throw new \RuntimeException(
+                "{$page['path']} read the feature flag(s) " . (implode(', ', array_keys($flags->flags())) ?: 'it cannot name')
+                . ', and a static page is sent to everyone whatever their flags. Render it per request, or read the flag in a fragment.',
+            );
+        }
 
         if ($minter->refused() !== []) {
             throw new \RuntimeException(

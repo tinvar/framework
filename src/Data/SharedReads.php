@@ -170,10 +170,12 @@ final class SharedReads
      * to be shown and not kept, so nothing claims it.
      *
      * @param array{value: mixed}|array{error: array{code: string, digest: string, message?: string}} $outcome
+     * @param bool $keepable whether the browser may keep a once value: not one
+     *        whose method read a feature flag, which a hold would outlive (ADR 0094)
      * @return array{value: mixed}|array{error: array{code: string, digest: string, message?: string}} what is kept,
      *         and what every read of the key in this render is answered with
      */
-    public function remember(string $key, array $outcome): array
+    public function remember(string $key, array $outcome, bool $keepable = true): array
     {
         $once = $this->registry->onceOf($key);
         if ($once !== null && \array_key_exists('value', $outcome)) {
@@ -185,8 +187,10 @@ final class SharedReads
             ];
             // A hold that cannot be minted -- no session, or tags whose
             // versions cannot be read (ADR 0074) -- and the value is shown,
-            // never kept, so nothing claims it.
-            $hold = $this->hold === null ? null : ($this->hold)($key, $once['ttl']);
+            // never kept, so nothing claims it. So too a value that read a
+            // feature flag: the browser keeps it until the hold expires,
+            // and the flag is not among what a hold is bound to.
+            $hold = $this->hold === null || !$keepable ? null : ($this->hold)($key, $once['ttl']);
             $outcome = ['value' => $hold === null
                 ? [...$field, 'keep' => false]
                 : [...$field, 'hold' => $hold]];

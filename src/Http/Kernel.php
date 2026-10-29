@@ -30,6 +30,7 @@ use Tinvar\Container\Container;
 use Tinvar\Dev\DevToolbar;
 use Tinvar\Dev\Loopback;
 use Tinvar\Events\Events;
+use Tinvar\Features\Features;
 use Tinvar\Http\Middleware\RequireAuthentication;
 use Tinvar\Http\Middleware\ThrottleRequests;
 use Tinvar\Http\Middleware\VerifyCsrfToken;
@@ -533,6 +534,11 @@ final class Kernel
      *        telemetry budget by address, and recorded in $telemetry's metrics and log. Needs
      *        $telemetry, with metrics. The application's documents name it with
      *        ProblemReports::reportingEndpoints() and ProblemReports::cspDirectives().
+     * @param Features|null $features the application's feature flags (ADR 0094): given,
+     *        Features is in the container for pages, layouts, queries and actions to read,
+     *        and what each request read of them is cleared by the reset contract. Give the
+     *        same Features to the QueryCache, which keys an answer by the flags its body
+     *        read; one without it keeps no answer that read a flag
      */
     public function __construct(
         public readonly Orm $orm,
@@ -591,6 +597,7 @@ final class Kernel
         ?TagVersions $tagVersions = null,
         ?Transfers $transfers = null,
         bool $problemReports = false,
+        ?Features $features = null,
     ) {
         $this->resolver = $resolver;
         $this->shared = $shared;
@@ -728,6 +735,9 @@ final class Kernel
         }
         if ($uploads !== null) {
             $container?->instance(Uploads::class, $uploads);
+        }
+        if ($features !== null) {
+            $container?->instance(Features::class, $features);
         }
 
         $this->panels = $panels;
@@ -1334,6 +1344,13 @@ final class Kernel
         // Nor is a request's id, should one escape without being ended.
         if ($telemetry !== null) {
             $this->scope->add('telemetry', $telemetry->forget(...));
+        }
+
+        // Nor what a request read of the flags: a flag switched between two
+        // requests is the next one's to see, and a recorder a fiber left
+        // open is not the next one's to hear.
+        if ($features !== null) {
+            $this->scope->add('features', $features->reset(...));
         }
     }
 

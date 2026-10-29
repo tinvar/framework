@@ -7,6 +7,8 @@ namespace Tinvar\Cache;
 use Tinvar\Attributes\Query;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PanelContext;
+use Tinvar\Features\FlagReads;
+use Tinvar\Features\Features;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\TenantBounds;
 
@@ -23,6 +25,16 @@ use Tinvar\Orm\TenantBounds;
  *
  * The last line is the important one, and it is a property of the caller: this
  * class is only ever consulted after the gate has answered.
+ *
+ * The feature flags a query read cannot be known before its body has run,
+ * so they cannot be in the key the lookup makes. They are in the entry
+ * instead (ADR 0094): the key holds the call's answers, each with the flags
+ * its body read and what each was, and a lookup serves the answer whose
+ * flags all read the same for the caller now -- the flags a body reads are
+ * all it can have depended on, so an answer whose flags agree is the one
+ * the body would give. An answer whose body read no flag agrees with every
+ * caller. One whose reads could not be told apart from another body's is
+ * never kept.
  *
  * Two departures (ADR 0049). Beside the user, the key names the user's auth
  * epoch, so nothing computed for them before the application last moved it
@@ -67,14 +79,37 @@ final class QueryCache
         private readonly ?PanelContext $panels = null,
         private readonly string|\Closure $locale = 'en',
         private readonly string $build = '',
+        private readonly ?Features $features = null,
     ) {}
 
     /**
      * Bumped whenever the key's composition changes, so old entries cannot be
      * read under a new scheme. v2 added the auth epoch, v3 the build (ADR
-     * 0049); adding the feature-flag component will need it again.
+     * 0049), v4 the feature flags read, with the entries' new shape (ADR 0094).
      */
-    private const string KEY_SCHEMA = 'v3';
+    private const string KEY_SCHEMA = 'v4';
+
+    /** What an entry is marked with: a call's answers, each with the flags it read. */
+    private const string ANSWERS = 'answers';
+
+    /**
+     * Answers kept for one call, at most: one for each combination of flags
+     * its bodies were seen to read, the newest kept. Two flags make four.
+     */
+    public const int MAX_VARIANTS = 16;
+
+    /**
+     * What each key's lookup found, from its miss to the put that answers it
+     * -- so a put adds to the answers the lookup saw without reading the
+     * store again, which would note a fresh miss and undo the store's
+     * refusal of an answer read before a forget (Misses). Bounded, since a
+     * body that fails puts nothing.
+     *
+     * @var array<string, list<array{r: array<string, bool>, v: mixed}>>
+     */
+    private array $seen = [];
+
+    private const int MAX_SEEN = 1024;
 
     public function enabledFor(Query $declaration): bool
     {
@@ -87,31 +122,82 @@ final class QueryCache
      */
     public function get(string $name, Query $declaration, array $arguments, string $tenant): array
     {
+        $miss = ['hit' => false, 'value' => null];
         if (!$this->enabledFor($declaration)) {
-            return ['hit' => false, 'value' => null];
+            return $miss;
         }
 
-        $key = $this->keyOrNull($name, $declaration, $arguments, $tenant);
-
         // Unkeyable means uncacheable, never loosely keyed.
-        return $key === null ? ['hit' => false, 'value' => null] : $this->store->get($key);
+        $key = $this->keyOrNull($name, $declaration, $arguments, $tenant);
+        if ($key === null) {
+            return $miss;
+        }
+
+        $found = $this->store->get($key);
+        $answers = $found['hit'] ? self::answers($found['value']) : [];
+
+        try {
+            // The first answer whose flags all read for the caller as they
+            // did for its body.
+            foreach ($answers as $answer) {
+                if ($this->agrees($answer['r'])) {
+                    unset($this->seen[$key]);
+
+                    return ['hit' => true, 'value' => $answer['v']];
+                }
+            }
+        } catch (\Throwable $e) {
+            // A flag store that cannot answer leaves every answer unproven,
+            // and the body runs -- to fail the same way, or to answer.
+            $this->failures[] = $e;
+        }
+
+        if (\count($this->seen) >= self::MAX_SEEN) {
+            $this->seen = [];
+        }
+        $this->seen[$key] = $answers;
+
+        return $miss;
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * @param array<string, mixed> $arguments
+     * @param FlagReads|null $reads what the body read, as the runner recorded
+     *        it; null says it read no flag
+     */
     public function put(
         string $name,
         Query $declaration,
         array $arguments,
         string $tenant,
         mixed $value,
+        ?FlagReads $reads = null,
     ): void {
         if (!$this->enabledFor($declaration)) {
             return;
         }
 
+        // A read that could not be told from another body's, or a flag that
+        // changed while the body ran: no set of values describes this
+        // answer, so it is not kept.
+        if ($reads?->tainted() === true) {
+            return;
+        }
+        $read = $reads?->flags() ?? [];
+
         $key = $this->keyOrNull($name, $declaration, $arguments, $tenant);
         if ($key === null) {
             return;
+        }
+        $seen = $this->seen[$key] ?? [];
+        unset($this->seen[$key]);
+
+        // An answer that read a flag this cannot read again is one no lookup
+        // could prove is its caller's.
+        foreach (array_keys($read) as $flag) {
+            if ($this->features?->declares($flag) !== true) {
+                return;
+            }
         }
 
         try {
@@ -120,17 +206,33 @@ final class QueryCache
             // the subtree is tagged under the subtree's namespace, which a
             // write made as any tenant in it reaches (TagNamespace).
             $tags = $this->tagsFor($declaration, $arguments, $tenant, $this->subtreeGranted());
+
+            // Beside the answers the lookup found, for other flags, in place
+            // of one for the same; and alone where it read none, since it is
+            // then every caller's.
+            $answers = [];
+            if ($read !== []) {
+                foreach ($seen as $other) {
+                    if ($other['r'] !== $read && $other['r'] !== []) {
+                        $answers[] = $other;
+                    }
+                }
+            }
+            $answers[] = ['r' => $read, 'v' => $value];
+
+            $this->store->put(
+                $key,
+                ['k' => self::ANSWERS, 'a' => \array_slice($answers, -self::MAX_VARIANTS)],
+                $ttl,
+                $tags,
+            );
         } catch (\Throwable $e) {
             // A mistyped tag closure or TTL is a declaration bug, and it is
             // only reachable on a miss -- after the body has run. Losing every
             // other result in the tick over it would be the wrong trade; not
             // caching this one is the right one.
             $this->failures[] = $e;
-
-            return;
         }
-
-        $this->store->put($key, $value, $ttl, $tags);
     }
 
     /**
@@ -301,6 +403,57 @@ final class QueryCache
         // to collide with; xxh128 makes no collision-resistance claim. The
         // cost is nanoseconds against a query that touches the database.
         return 'q:' . substr(hash('sha256', json_encode($parts, JSON_THROW_ON_ERROR)), 0, 32);
+    }
+
+    /**
+     * Whether every flag an answer's body read reads the same for the caller
+     * now. A flag this cannot read -- one no longer declared, or no Features
+     * to read it with -- cannot be shown to agree, so it does not.
+     *
+     * @param array<string, bool> $read
+     */
+    private function agrees(array $read): bool
+    {
+        foreach ($read as $flag => $active) {
+            if ($this->features === null || !$this->features->declares($flag) || $this->features->active($flag) !== $active) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * A stored entry's answers, read strictly -- a store shared between
+     * workers is one someone else could have written -- or none for
+     * anything that is not exactly an entry this writes.
+     *
+     * @return list<array{r: array<string, bool>, v: mixed}>
+     */
+    private static function answers(mixed $entry): array
+    {
+        if (!\is_array($entry) || \count($entry) !== 2 || ($entry['k'] ?? null) !== self::ANSWERS
+            || !\is_array($entry['a'] ?? null) || !array_is_list($entry['a']) || \count($entry['a']) > self::MAX_VARIANTS) {
+            return [];
+        }
+
+        $answers = [];
+        foreach ($entry['a'] as $answer) {
+            if (!\is_array($answer) || \count($answer) !== 2 || !\is_array($answer['r'] ?? null) || !\array_key_exists('v', $answer)) {
+                return [];
+            }
+            $read = [];
+            foreach ($answer['r'] as $flag => $active) {
+                if (!\is_string($flag) || !\is_bool($active)) {
+                    return [];
+                }
+                $read[$flag] = $active;
+            }
+            ksort($read, SORT_STRING);
+            $answers[] = ['r' => $read, 'v' => $answer['v']];
+        }
+
+        return $answers;
     }
 
     /**

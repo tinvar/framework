@@ -12,6 +12,7 @@ use Tinvar\Data\Data;
 use Tinvar\Data\DataBoundaryException;
 use Tinvar\Data\Encoder;
 use Tinvar\Data\SharedReads;
+use Tinvar\Features\FlagReads;
 use Tinvar\Orm\Metadata;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
@@ -579,6 +580,15 @@ final class QueryRunner
         $cached = [];
         /** @var array<string, true> $faked group keys a stand-in answers */
         $faked = [];
+        /**
+         * What each task read of the feature flags, by task key: what its
+         * answer is cached under, or why it is not cached (ADR 0094). Every
+         * task has one, cached or not, so a flag one body reads is never
+         * taken for its neighbour's.
+         *
+         * @var array<string, FlagReads> $reads
+         */
+        $reads = [];
 
         foreach ($groups as $key => $group) {
             // A test's fake answers in place of the body, and only the body:
@@ -592,9 +602,10 @@ final class QueryRunner
                 $this->recordTags($this->registry->declarationFor($group['name']), $group['args']);
                 $arguments = $group['args'];
                 $orm = $this->orm;
-                $tasks[$key] = static fn (): mixed => $orm->readOnly(
+                $recorder = $reads[$key] = new FlagReads();
+                $tasks[$key] = static fn (): mixed => $recorder->task(static fn (): mixed => $orm->readOnly(
                     static fn (): mixed => $standIn(...$arguments),
-                );
+                ));
                 $faked[$key] = true;
                 continue;
             }
@@ -619,9 +630,10 @@ final class QueryRunner
             $arguments = $group['args'];
             // "Loaders and queries run in a read-only transaction."
             $orm = $this->orm;
-            $tasks[$key] = static fn (): mixed => $orm->readOnly(
+            $recorder = $reads[$key] = new FlagReads();
+            $tasks[$key] = static fn (): mixed => $recorder->task(static fn (): mixed => $orm->readOnly(
                 static fn (): mixed => $query(...$arguments),
-            );
+            ));
         }
 
         // One fiber per batch query, carrying every call made to it this tick.
@@ -632,10 +644,13 @@ final class QueryRunner
             }
             $argumentSets = array_map(static fn (string $k): array => $groups[$k]['args'], $keys);
 
+            // One body answers every call, so each call's answer is held to
+            // every flag the batch read.
             $orm = $this->orm;
-            $tasks['batch:' . $name] = static fn (): array => $orm->readOnly(
+            $recorder = $reads['batch:' . $name] = new FlagReads();
+            $tasks['batch:' . $name] = static fn (): array => $recorder->task(static fn (): array => $orm->readOnly(
                 static fn (): array => $query->loadMany($argumentSets),
-            );
+            ));
         }
 
         // A shared key read for the first time this render is a task beside
@@ -655,9 +670,10 @@ final class QueryRunner
                     continue;
                 }
                 $orm = $this->orm;
-                $tasks[self::SHARED_TASK . $key] = static fn (): mixed => $orm->readOnly(
+                $recorder = $reads[self::SHARED_TASK . $key] = new FlagReads();
+                $tasks[self::SHARED_TASK . $key] = static fn (): mixed => $recorder->task(static fn (): mixed => $orm->readOnly(
                     static fn (): mixed => $shared->produce($key),
-                );
+                ));
                 $sharedRun[] = $key;
             }
         }
@@ -666,10 +682,13 @@ final class QueryRunner
 
         if ($shared !== null) {
             foreach ($sharedRun as $key) {
-                // As it is kept: a once key's value as its once field.
+                // As it is kept: a once key's value as its once field -- held
+                // by the browser only where it read no feature flag, since a
+                // hold is believed until it expires whatever a flag does.
                 $sharedOutcomes[self::SHARED_TASK . $key] = $shared->remember(
                     $key,
                     $this->settleShared($key, $raw[self::SHARED_TASK . $key] ?? null, $shared),
+                    keepable: $reads[self::SHARED_TASK . $key]->clean(),
                 );
             }
         }
@@ -683,7 +702,7 @@ final class QueryRunner
             $this->tell($group['name'], $group['args'], $raw[$key] ?? null);
             $outcomes[$key] = $this->settle($raw[$key] ?? null);
             if (!isset($faked[$key])) {
-                $this->remember($group['name'], $group['args'], $outcomes[$key]);
+                $this->remember($group['name'], $group['args'], $outcomes[$key], $reads[$key]);
             }
         }
 
@@ -720,7 +739,7 @@ final class QueryRunner
             foreach ($keys as $index => $key) {
                 $this->tell($name, $groups[$key]['args'], $batch[$index]);
                 $outcomes[$key] = $this->settle($batch[$index]);
-                $this->remember($name, $groups[$key]['args'], $outcomes[$key]);
+                $this->remember($name, $groups[$key]['args'], $outcomes[$key], $reads['batch:' . $name]);
             }
         }
 
@@ -767,7 +786,7 @@ final class QueryRunner
      * @param array<string, mixed> $arguments
      * @param array{error: array{code: string, digest: string, message?: string}}|array{value: mixed} $outcome
      */
-    private function remember(string $name, array $arguments, array $outcome): void
+    private function remember(string $name, array $arguments, array $outcome, FlagReads $reads): void
     {
         if ($this->cache === null || isset($outcome['error'])) {
             return;
@@ -779,6 +798,7 @@ final class QueryRunner
             $arguments,
             $this->orm->tenant(),
             $outcome['value'],
+            $reads,
         );
     }
 
