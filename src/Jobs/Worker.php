@@ -6,6 +6,7 @@ namespace Tinvar\Jobs;
 
 use Tinvar\Attributes\Queue as QueueOptions;
 use Tinvar\Http\RequestScope;
+use Tinvar\Queue\Coordination;
 use Tinvar\Queue\HeldJob;
 use Tinvar\Queue\Queue;
 use Tinvar\Queue\ReservedJob;
@@ -62,6 +63,15 @@ use Tinvar\Queue\ReservedJob;
  * So a job longer than the stop runs again at once on the next worker,
  * from where it paused, rather than dying with this one and waiting out
  * its reservation.
+ *
+ * On a queue that keeps them (Coordination, ADR 0100), a job's end is
+ * followed in the same transaction by what comes after it (Continuation):
+ * its unique lock given back, the next job of its chain queued, its batch
+ * counted and its callbacks queued. A job of a batch cancelled by an
+ * earlier failure is not run: it is counted as ended, 'skipped'. And a
+ * rate-limited queue (WorkerOptions::$rates) is taken from only while its
+ * window has starts left, counted across every worker on the store; one
+ * whose window is spent is passed over for the next queue in the list.
  */
 final class Worker
 {
@@ -159,6 +169,10 @@ final class Worker
             ));
         }
 
+        if ($options->rates !== [] && !$this->queue instanceof Coordination) {
+            throw new \LogicException('Rate-limited queues need a queue that counts their windows (Coordination); ' . $this->queue::class . ' does not.');
+        }
+
         $this->stopping = false;
         $this->stopAskedAt = null;
         $this->stopBudget = $options->stopBudget;
@@ -198,7 +212,7 @@ final class Worker
         }
 
         while (!$this->stopRequested()) {
-            $job = $this->queue->reserve($options->queues, $this->now(), $this->reservedFor + self::RESERVATION_MARGIN);
+            $job = $this->reserve($options);
             if ($job === null) {
                 if ($options->stopWhenEmpty) {
                     break;
@@ -230,6 +244,38 @@ final class Worker
         return $ran;
     }
 
+    /**
+     * The next job: from the first queue in the list that has one, passing
+     * over a rate-limited queue whose window has no starts left. A start
+     * taken for a queue that turns out to have nothing waiting is given
+     * back.
+     */
+    private function reserve(WorkerOptions $options): ?ReservedJob
+    {
+        $reserveFor = $this->reservedFor + self::RESERVATION_MARGIN;
+        if ($options->rates === []) {
+            return $this->queue->reserve($options->queues, $this->now(), $reserveFor);
+        }
+
+        \assert($this->queue instanceof Coordination);
+        foreach ($options->queues as $queue) {
+            $now = $this->now();
+            $rate = $options->rates[$queue] ?? null;
+            if ($rate !== null && !$this->queue->slot($queue, $rate->runs, $rate->per, $now)) {
+                continue;
+            }
+            $job = $this->queue->reserve([$queue], $now, $reserveFor);
+            if ($job !== null) {
+                return $job;
+            }
+            if ($rate !== null) {
+                $this->queue->unslot($queue, $rate->per, $now);
+            }
+        }
+
+        return null;
+    }
+
     /** Asks the worker to stop once the job in hand is done. */
     public function stop(): void
     {
@@ -257,7 +303,7 @@ final class Worker
     /**
      * Runs one reserved job and records how it went.
      *
-     * @return 'done'|'released'|'failed'|'lost'|'paused'|'handed back'
+     * @return 'done'|'released'|'failed'|'lost'|'paused'|'handed back'|'skipped'
      */
     public function process(ReservedJob $job): string
     {
@@ -267,6 +313,7 @@ final class Worker
         $control = null;
         $error = null;
         $interrupted = false;
+        $skipped = false;
 
         try {
             $envelope = $this->runner->open($job->payload);
@@ -295,22 +342,35 @@ final class Worker
                 throw WorkerStopping::in($envelope->class, $this->stopBudget);
             }
 
-            $control = $this->runner->control($envelope, fn (): bool => $this->stopRequested());
-            $this->holding = $job;
-            if ($this->held !== null && !HeldJob::write($this->held, getmypid() ?: 0, $job)) {
-                $this->say("{$envelope->class} {$job->id}: could not write {$this->held}; a kill at a stop leaves it reserved until its reservation lapses");
+            // A job of a batch an earlier failure cancelled: counted as
+            // ended, not run. One whose batch is gone -- pruned, or never
+            // this store's -- is refused: nothing says it should run.
+            if ($envelope->batch !== null) {
+                $batch = $this->queue instanceof Coordination ? $this->queue->batch($envelope->batch) : null;
+                if ($batch === null) {
+                    throw new JobRefused('batch_missing', "{$envelope->class} is in a batch this queue does not have.");
+                }
+                $skipped = $batch->cancelledAt !== null;
             }
-            $this->arm($envelope->class, $options->timeout);
-            try {
-                $this->runner->run($envelope, $control);
-            } finally {
-                $interrupted = $this->interrupted;
-                $this->disarm();
-            }
-            // Swallowed inside the job, and then it returned: still a try
-            // that ran past its timeout.
-            if ($this->timedOut) {
-                throw JobTimedOut::after($envelope->class, $options->timeout);
+
+            if (!$skipped) {
+                $control = $this->runner->control($envelope, fn (): bool => $this->stopRequested());
+                $this->holding = $job;
+                if ($this->held !== null && !HeldJob::write($this->held, getmypid() ?: 0, $job)) {
+                    $this->say("{$envelope->class} {$job->id}: could not write {$this->held}; a kill at a stop leaves it reserved until its reservation lapses");
+                }
+                $this->arm($envelope->class, $options->timeout);
+                try {
+                    $this->runner->run($envelope, $control);
+                } finally {
+                    $interrupted = $this->interrupted;
+                    $this->disarm();
+                }
+                // Swallowed inside the job, and then it returned: still a
+                // try that ran past its timeout.
+                if ($this->timedOut) {
+                    throw JobTimedOut::after($envelope->class, $options->timeout);
+                }
             }
         } catch (\Throwable $e) {
             $error = $e;
@@ -328,6 +388,9 @@ final class Worker
         $this->resetScope();
 
         $outcome = $this->record($job, $envelope, $options, $error, $control?->released(), $interrupted);
+        if ($skipped && $outcome === 'done') {
+            $outcome = 'skipped';
+        }
         if ($this->held !== null) {
             HeldJob::clear($this->held);
         }
@@ -374,7 +437,7 @@ final class Worker
         }
 
         if ($error === null) {
-            return $this->queue->delete($job) ? 'done' : 'lost';
+            return $this->settle($envelope, true, fn (): bool => $this->queue->delete($job)) ? 'done' : 'lost';
         }
 
         if (!$error instanceof JobRefused || $error->reason !== 'releases') {
@@ -385,7 +448,7 @@ final class Worker
             return $this->queue->release($job, $this->now() + $options->backoffAfter($job->attempts)) ? 'released' : 'lost';
         }
 
-        if (!$this->queue->fail($job, self::describe($error), $this->now())) {
+        if (!$this->settle($envelope, false, fn (): bool => $this->queue->fail($job, self::describe($error), $this->now()))) {
             return 'lost';
         }
 
@@ -404,6 +467,33 @@ final class Worker
         }
 
         return 'failed';
+    }
+
+    /**
+     * Records a job's end with $write -- its delete, or its failure -- and,
+     * in the same transaction of the queue's store, what follows it: its
+     * lock, its chain, its batch (Continuation). Nothing follows an end this
+     * worker could not record, its reservation another's.
+     *
+     * @param \Closure(): bool $write
+     */
+    private function settle(?Envelope $envelope, bool $done, \Closure $write): bool
+    {
+        if ($envelope === null || !Continuation::follows($envelope) || !$this->queue instanceof Coordination) {
+            return $write();
+        }
+
+        $queue = $this->queue;
+        $continuation = new Continuation($queue, $this->runner);
+
+        return $queue->atomically(function () use ($envelope, $done, $write, $continuation): bool {
+            if (!$write()) {
+                return false;
+            }
+            $done ? $continuation->done($envelope, $this->now()) : $continuation->failed($envelope, $this->now());
+
+            return true;
+        });
     }
 
     private function resetScope(): void

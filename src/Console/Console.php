@@ -14,6 +14,8 @@ use Tinvar\Jobs\JobRunner;
 use Tinvar\Jobs\Worker;
 use Tinvar\Jobs\WorkerOptions;
 use Tinvar\Orm\Orm;
+use Tinvar\Jobs\Rate;
+use Tinvar\Queue\Coordination;
 use Tinvar\Queue\Queue;
 use Tinvar\Jobs\StopBudget;
 use Tinvar\Queue\HeldJob;
@@ -27,6 +29,7 @@ use Tinvar\Support\KnownAttributes;
  *   queue:failed           list failed jobs
  *   queue:retry <id|all>   put failed jobs back on their queues
  *   queue:hand-back <file> put back the job a killed worker held (HeldJob), for serve
+ *   queue:prune [--days=N] forget batches finished N days ago (7) and lapsed unique locks
  *   schedule:run           run the tasks due this minute, for cron
  *   schedule:work          run the schedule every minute until stopped
  *   schedule:list          every task and when it runs
@@ -65,6 +68,8 @@ final class Console
      * @param CommandTenants|null $tenants the tenancy registered (tinvar/tenancy): how a
      *        command declaring #[TenantFrom] is placed in a tenant. Without it, one is
      *        refused here
+     * @param array<string, Rate> $rates the rate-limited queues, by name: every worker
+     *        queue:work starts holds to them (ADR 0100)
      */
     public function __construct(
         array $commands,
@@ -80,6 +85,7 @@ final class Console
         private readonly ?\Closure $report = null,
         private readonly ?\Closure $clock = null,
         private readonly array $queues = [\Tinvar\Attributes\Queue::DEFAULT],
+        private readonly array $rates = [],
     ) {
         if ($tenants !== null && !$orm->hasTenancy()) {
             throw new \InvalidArgumentException(
@@ -106,7 +112,7 @@ final class Console
         }
     }
 
-    private const array BUILT_IN = ['queue:work', 'queue:failed', 'queue:retry', 'queue:hand-back', 'schedule:run', 'schedule:work', 'schedule:list'];
+    private const array BUILT_IN = ['queue:work', 'queue:failed', 'queue:retry', 'queue:hand-back', 'queue:prune', 'schedule:run', 'schedule:work', 'schedule:list'];
 
     public function has(string $name): bool
     {
@@ -136,6 +142,7 @@ final class Console
                 'queue:failed' => $this->failed($output),
                 'queue:retry' => $this->retry($arguments, $output),
                 'queue:hand-back' => $this->handBack($arguments, $output),
+                'queue:prune' => $this->prune($arguments, $output),
                 'schedule:run' => $this->scheduleRun($output),
                 'schedule:work' => $this->scheduleWork($output),
                 'schedule:list' => $this->scheduleList($output),
@@ -212,7 +219,7 @@ final class Console
     private function work(array $arguments, Output $output): int
     {
         [$queue, $runner] = $this->queueParts();
-        $options = WorkerOptions::fromArguments($arguments, $this->queues, StopBudget::fromEnvironment());
+        $options = WorkerOptions::fromArguments($arguments, $this->queues, StopBudget::fromEnvironment(), $this->rates);
 
         $this->worker = new Worker(
             $queue,
@@ -313,6 +320,32 @@ final class Console
         }
 
         return $status;
+    }
+
+    /**
+     * `queue:prune [--days=N]`: batches finished more than N days ago, 7
+     * unless it says, and unique locks already lapsed, forgotten.
+     *
+     * @param list<string> $arguments
+     */
+    private function prune(array $arguments, Output $output): int
+    {
+        [$queue] = $this->queueParts();
+        $days = 7;
+        foreach ($arguments as $argument) {
+            if (preg_match('/^--days=(\d{1,4})\z/', $argument, $m) !== 1) {
+                throw new \InvalidArgumentException('Usage: tinvar queue:prune [--days=N]');
+            }
+            $days = (int) $m[1];
+        }
+        if (!$queue instanceof Coordination) {
+            throw new \LogicException('This application\'s queue keeps no batches or locks to prune.');
+        }
+
+        $now = $this->now()->getTimestamp();
+        $output->line('pruned ' . $queue->prune($now, $now - $days * 86_400));
+
+        return 0;
     }
 
     private function scheduleRun(Output $output): int

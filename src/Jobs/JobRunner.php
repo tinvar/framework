@@ -15,7 +15,9 @@ use Tinvar\Auth\UserLookup;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware\RequirePanelMembership;
 use Tinvar\Orm\Orm;
+use Tinvar\Queue\PendingJob;
 use Tinvar\Support\Signer;
+use Tinvar\Support\Uuid;
 
 /**
  * Runs one job in the context it was dispatched in, after checking that the
@@ -97,6 +99,19 @@ final readonly class JobRunner
     public function pause(Envelope $envelope, ?array $checkpoint): string
     {
         return $envelope->paused($checkpoint)->seal($this->signer);
+    }
+
+    /**
+     * The next job of the envelope's chain, sealed to queue now with the
+     * envelope's own tenant, user and epoch (Envelope::next()); null at the
+     * chain's end. For Continuation, with an envelope the worker opened and
+     * verified.
+     */
+    public function next(Envelope $envelope, int $now): ?PendingJob
+    {
+        $next = $envelope->next(Uuid::v7(), $now);
+
+        return $next === null ? null : new PendingJob($next->id, QueueOptions::of($next->declarations())->name, $next->seal($this->signer), $now);
     }
 
     /**

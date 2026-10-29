@@ -23,6 +23,15 @@ namespace Tinvar\Attributes;
  * Jobs\JobRunner) -- off by default, so a job that never asked for a user
  * cannot come to rely on one.
  *
+ * `unique` makes the job unique for that many seconds (ADR 0100): while one
+ * dispatched is queued or running, dispatching another of the same class
+ * -- in the same tenant and panel, for the same user where it runs as one,
+ * and with the same uniqueId() where it implements Jobs\UniqueJob -- queues
+ * nothing, and dispatch() answers with the id of the one already there.
+ * The lock is given back when that job is done or has failed for good, and
+ * lapses after `unique` seconds whatever became of it, so a job lost with
+ * its worker holds nothing for ever. 0, the default, is not unique.
+ *
  * On a listener class, the same attribute queues each of its #[Listener]
  * methods as a job of its own.
  */
@@ -30,6 +39,9 @@ namespace Tinvar\Attributes;
 final readonly class Queue
 {
     public const string DEFAULT = 'default';
+
+    /** The longest a unique job's lock may last: a week. */
+    public const int MAX_UNIQUE = 604_800;
 
     /** @var list<int> */
     public array $backoff;
@@ -42,7 +54,11 @@ final readonly class Queue
         public int $timeout = 60,
         public bool $asUser = false,
         public int $releases = 100,
+        public int $unique = 0,
     ) {
+        if ($unique < 0 || $unique > self::MAX_UNIQUE) {
+            throw new \InvalidArgumentException('unique is how many seconds a job\'s lock lasts at most: 0 for none, up to a week, so a lock never outlives what it is for.');
+        }
         if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z/', $name) !== 1) {
             throw new \InvalidArgumentException("'{$name}' is not a queue name: letters, digits, '.', '_' and '-', up to 64.");
         }

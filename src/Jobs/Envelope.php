@@ -29,11 +29,20 @@ use Tinvar\Support\Signer;
  * same tenant, panel, user and epoch: a checkpoint is the job's to read
  * back, and no one's to write -- an edited one does not verify, and one
  * moved into another job's payload takes that payload's MAC with it.
+ *
+ * So are the work around it (ADR 0100): the batch it counts in, the jobs
+ * of its chain still to run after it, and its unique lock's key. The next
+ * job of a chain is sealed by the worker from this envelope once it has
+ * verified -- the same tenant, user and epoch, the panel the chain sealed
+ * for that job at dispatch -- never from anything the queue's rows say.
  */
 final readonly class Envelope
 {
     /** The Signer purpose: a payload's MAC verifies as nothing else. */
     public const string PURPOSE = 'job-payload';
+
+    /** The most jobs a chain holds, the first one with them. */
+    public const int MAX_CHAIN = 50;
 
     private const int VERSION = 1;
 
@@ -49,6 +58,11 @@ final readonly class Envelope
      * @param array<array-key, mixed>|null $checkpoint where the job paused itself, as it said;
      *                                         null for a job that never has
      * @param int                  $releases how many times it has paused itself
+     * @param string|null          $batch the batch it counts in, if any
+     * @param list<array{job: class-string<Job>, args: array<string, mixed>, by: class-string|null, panel: string|null}> $chain
+     *                                         the jobs to run after it, in order, each with its arguments
+     *                                         (encoded, see Payload) and the panel it was sealed for
+     * @param string|null          $unique its unique lock's key, if it holds one
      */
     public function __construct(
         public string $id,
@@ -62,6 +76,9 @@ final readonly class Envelope
         public ?string $declaredBy = null,
         public ?array $checkpoint = null,
         public int $releases = 0,
+        public ?string $batch = null,
+        public array $chain = [],
+        public ?string $unique = null,
     ) {}
 
     /**
@@ -84,6 +101,35 @@ final readonly class Envelope
             declaredBy: $this->declaredBy,
             checkpoint: $checkpoint,
             releases: $this->releases + 1,
+            batch: $this->batch,
+            chain: $this->chain,
+            unique: $this->unique,
+        );
+    }
+
+    /**
+     * The next job of its chain, as id $id dispatched at $now, with the rest
+     * of the chain after it: this job's tenant, user and epoch, and the panel
+     * the chain sealed for it. Null at the chain's end.
+     */
+    public function next(string $id, int $now): ?self
+    {
+        $next = $this->chain[0] ?? null;
+        if ($next === null) {
+            return null;
+        }
+
+        return new self(
+            id: $id,
+            class: $next['job'],
+            arguments: $next['args'],
+            tenant: $this->tenant,
+            panel: $next['panel'],
+            user: $this->user,
+            epoch: $this->epoch,
+            dispatchedAt: $now,
+            declaredBy: $next['by'],
+            chain: \array_slice($this->chain, 1),
         );
     }
 
@@ -113,6 +159,17 @@ final readonly class Envelope
         if ($this->releases > 0) {
             $fields['cp'] = $this->checkpoint;
             $fields['rel'] = $this->releases;
+        }
+        // Likewise only where there is one, so a payload sealed before
+        // batches, chains and unique jobs reads -- and verifies -- as it did.
+        if ($this->batch !== null) {
+            $fields['batch'] = $this->batch;
+        }
+        if ($this->chain !== []) {
+            $fields['chain'] = $this->chain;
+        }
+        if ($this->unique !== null) {
+            $fields['uq'] = $this->unique;
         }
         $json = json_encode($fields, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION);
 
@@ -149,7 +206,10 @@ final readonly class Envelope
             || !\is_int($data['at'] ?? null)
             || !(\is_string($data['by'] ?? null) || ($data['by'] ?? null) === null)
             || !(\is_array($data['cp'] ?? null) || ($data['cp'] ?? null) === null)
-            || !(!\array_key_exists('rel', $data) || (\is_int($data['rel']) && $data['rel'] > 0))) {
+            || !(!\array_key_exists('rel', $data) || (\is_int($data['rel']) && $data['rel'] > 0))
+            || !(!\array_key_exists('batch', $data) || \is_string($data['batch']))
+            || !(!\array_key_exists('uq', $data) || \is_string($data['uq']))
+            || !(!\array_key_exists('chain', $data) || \is_array($data['chain']))) {
             throw new JobRefused('payload_unsigned', 'The job\'s payload is not an envelope this version wrote.');
         }
 
@@ -167,6 +227,9 @@ final readonly class Envelope
         /** @var array<array-key, mixed>|null $checkpoint */
         $checkpoint = $data['cp'] ?? null;
         $releases = $data['rel'] ?? 0;
+        $batch = $data['batch'] ?? null;
+        $unique = $data['uq'] ?? null;
+        $chain = self::chainFrom($data['chain'] ?? []);
 
         return new self(
             id: $data['id'],
@@ -180,6 +243,45 @@ final readonly class Envelope
             declaredBy: $declaredBy,
             checkpoint: $checkpoint,
             releases: $releases,
+            batch: $batch,
+            chain: $chain,
+            unique: $unique,
         );
+    }
+
+    /**
+     * A chain as seal() wrote it: each job a Job that exists, its arguments
+     * an array, its declarations a class, its panel a name or none.
+     *
+     * @param array<array-key, mixed> $chain
+     * @return list<array{job: class-string<Job>, args: array<string, mixed>, by: class-string|null, panel: string|null}>
+     * @throws JobRefused
+     */
+    private static function chainFrom(array $chain): array
+    {
+        if (\count($chain) >= self::MAX_CHAIN || !array_is_list($chain)) {
+            throw new JobRefused('payload_unsigned', 'The job\'s payload carries a chain this version did not write.');
+        }
+
+        $links = [];
+        foreach ($chain as $link) {
+            $job = \is_array($link) ? ($link['job'] ?? null) : null;
+            $by = \is_array($link) ? ($link['by'] ?? null) : null;
+            $panel = \is_array($link) ? ($link['panel'] ?? null) : null;
+            $args = \is_array($link) ? ($link['args'] ?? null) : null;
+            if (!\is_string($job) || !\is_array($args) || !(\is_string($by) || $by === null) || !(\is_string($panel) || $panel === null)) {
+                throw new JobRefused('payload_unsigned', 'The job\'s payload carries a chain this version did not write.');
+            }
+            if (!class_exists($job) || !is_subclass_of($job, Job::class)) {
+                throw new JobRefused('unknown_class', "The job's chain names {$job}, which is not a job.");
+            }
+            if ($by !== null && !class_exists($by)) {
+                throw new JobRefused('unknown_class', "The job's chain is declared by {$by}, which does not exist.");
+            }
+            /** @var array<string, mixed> $args */
+            $links[] = ['job' => $job, 'args' => $args, 'by' => $by, 'panel' => $panel];
+        }
+
+        return $links;
     }
 }

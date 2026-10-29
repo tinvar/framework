@@ -23,10 +23,17 @@ use Tinvar\Attributes\Queue as QueueOptions;
  * `stop-budget` is how long the worker has from SIGTERM until it is killed
  * (StopBudget): TINVAR_STOP_BUDGET unless the flag says, 70 unless either
  * does.
+ *
+ * `rates` are the application's rate-limited queues (Rate, ADR 0100), as
+ * its console was given them: no flag sets or lifts one, so every worker
+ * holds to the same.
  */
 final readonly class WorkerOptions
 {
-    /** @param list<string> $queues */
+    /**
+     * @param list<string> $queues
+     * @param array<string, Rate> $rates by queue
+     */
     public function __construct(
         public array $queues = [QueueOptions::DEFAULT],
         public int $sleep = 1,
@@ -37,6 +44,7 @@ final readonly class WorkerOptions
         public bool $stopWhenEmpty = false,
         public bool $signals = true,
         public int $stopBudget = StopBudget::DEFAULT,
+        public array $rates = [],
     ) {
         if ($queues === []) {
             throw new \InvalidArgumentException('A worker needs a queue to work.');
@@ -50,8 +58,9 @@ final readonly class WorkerOptions
      * @param list<string> $arguments
      * @param list<string> $queues what it works without --queue, in priority order
      * @param int $stopBudget what it has to stop in without --stop-budget: the environment's
+     * @param array<string, Rate> $rates the application's rate-limited queues
      */
-    public static function fromArguments(array $arguments, array $queues = [QueueOptions::DEFAULT], int $stopBudget = StopBudget::DEFAULT): self
+    public static function fromArguments(array $arguments, array $queues = [QueueOptions::DEFAULT], int $stopBudget = StopBudget::DEFAULT, array $rates = []): self
     {
         $values = [];
         $stopWhenEmpty = false;
@@ -82,6 +91,7 @@ final readonly class WorkerOptions
             timeout: (int) ($values['timeout'] ?? 60),
             stopWhenEmpty: $stopWhenEmpty,
             stopBudget: isset($values['stop-budget']) ? StopBudget::parse($values['stop-budget']) : $stopBudget,
+            rates: $rates,
         );
     }
 }

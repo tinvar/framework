@@ -5,6 +5,10 @@ declare(strict_types=1);
 namespace Tinvar\Jobs;
 
 use Tinvar\Orm\Connection;
+use Tinvar\Queue\ArrayQueue;
+use Tinvar\Queue\BatchRecord;
+use Tinvar\Queue\BatchStep;
+use Tinvar\Queue\Coordination;
 use Tinvar\Queue\PendingJob;
 use Tinvar\Queue\Queue;
 use Tinvar\Queue\ReservedJob;
@@ -24,10 +28,23 @@ use Tinvar\Queue\ReservedJob;
  * after it. Run through Worker::process(), as this once took, the reset
  * ended the request where it stood, and the rest of it ran as no tenant
  * and nobody.
+ *
+ * Unique jobs, chains and batches (ADR 0100) run as a worker runs them:
+ * its locks, windows and batches kept in this process (an ArrayQueue's),
+ * and what follows each job's end (Continuation) run here and now -- the
+ * next job of a chain, a batch's callbacks. A job that fails is counted,
+ * its batch's catch and finally run, and then thrown to whoever dispatched
+ * it, which ends a chain there, and a batch before the rest of its jobs
+ * are pushed.
  */
-final readonly class SyncQueue implements Queue
+final readonly class SyncQueue implements Queue, Coordination
 {
-    public function __construct(private JobRunner $runner) {}
+    private ArrayQueue $kept;
+
+    public function __construct(private JobRunner $runner)
+    {
+        $this->kept = new ArrayQueue();
+    }
 
     /**
      * A job that pauses itself (JobControl::release()) is run again here and
@@ -38,18 +55,89 @@ final readonly class SyncQueue implements Queue
     public function push(PendingJob $job): void
     {
         $envelope = $this->runner->open($job->payload);
-        for (;;) {
-            $control = $this->runner->control($envelope);
-            $this->runner->run($envelope, $control);
-            $release = $control->released();
-            if ($release === null) {
-                return;
-            }
-            if ($envelope->releases >= $this->runner->options($envelope)->releases) {
-                throw new JobRefused('releases', "{$envelope->class} paused more times than its #[Queue(releases:)] allows.");
-            }
-            $envelope = $this->runner->open($this->runner->pause($envelope, $release['checkpoint']));
+        $continuation = new Continuation($this, $this->runner);
+
+        // A job of a batch an earlier failure cancelled: counted, not run.
+        if ($envelope->batch !== null && $this->kept->batch($envelope->batch)?->cancelledAt !== null) {
+            $continuation->done($envelope, time());
+
+            return;
         }
+
+        try {
+            for (;;) {
+                $control = $this->runner->control($envelope);
+                $this->runner->run($envelope, $control);
+                $release = $control->released();
+                if ($release === null) {
+                    break;
+                }
+                if ($envelope->releases >= $this->runner->options($envelope)->releases) {
+                    throw new JobRefused('releases', "{$envelope->class} paused more times than its #[Queue(releases:)] allows.");
+                }
+                $envelope = $this->runner->open($this->runner->pause($envelope, $release['checkpoint']));
+            }
+        } catch (\Throwable $e) {
+            if (Continuation::follows($envelope)) {
+                $continuation->failed($envelope, time());
+            }
+
+            throw $e;
+        }
+
+        if (Continuation::follows($envelope)) {
+            $continuation->done($envelope, time());
+        }
+    }
+
+    public function lock(string $key, string $job, int $until, int $now): ?string
+    {
+        return $this->kept->lock($key, $job, $until, $now);
+    }
+
+    public function unlock(string $key, string $job): bool
+    {
+        return $this->kept->unlock($key, $job);
+    }
+
+    public function slot(string $queue, int $runs, int $per, int $now): bool
+    {
+        return $this->kept->slot($queue, $runs, $per, $now);
+    }
+
+    public function unslot(string $queue, int $per, int $now): void
+    {
+        $this->kept->unslot($queue, $per, $now);
+    }
+
+    public function addBatch(BatchRecord $batch): void
+    {
+        $this->kept->addBatch($batch);
+    }
+
+    public function batch(string $id): ?BatchRecord
+    {
+        return $this->kept->batch($id);
+    }
+
+    public function batchJobDone(string $id, string $job, int $now): ?BatchStep
+    {
+        return $this->kept->batchJobDone($id, $job, $now);
+    }
+
+    public function batchJobFailed(string $id, string $job, int $now): ?BatchStep
+    {
+        return $this->kept->batchJobFailed($id, $job, $now);
+    }
+
+    public function prune(int $now, int $finishedBefore): int
+    {
+        return $this->kept->prune($now, $finishedBefore);
+    }
+
+    public function atomically(\Closure $work): mixed
+    {
+        return $work();
     }
 
     public function reserve(array $queues, int $now, int $reserveFor): ?ReservedJob
