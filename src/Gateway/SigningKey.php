@@ -17,8 +17,9 @@ namespace Tinvar\Gateway;
  * can mint nothing.
  *
  * Derived, as every Signer key is, so the application key stays the one
- * secret and rotating it rotates these: the seed is an HMAC of the purpose
- * under the application key, and the pair is Ed25519's from that seed.
+ * secret and rotating it rotates these: the seed is HKDF-SHA256 of the
+ * application key with the purpose in its info, and the pair is Ed25519's
+ * from that seed.
  */
 final readonly class SigningKey
 {
@@ -41,7 +42,9 @@ final readonly class SigningKey
             throw new \LogicException('Node commands and console tickets are signed with Ed25519, which needs the sodium extension.');
         }
 
-        $pair = sodium_crypto_sign_seed_keypair(hash_hmac('sha256', "ed25519\0{$purpose}", $appKey, binary: true));
+        // HKDF rather than the HMAC a Signer's key is: no Signer, whatever
+        // purpose it were built for, holds the bytes a seed is made of.
+        $pair = sodium_crypto_sign_seed_keypair(hash_hkdf('sha256', $appKey, SODIUM_CRYPTO_SIGN_SEEDBYTES, "tinvar ed25519 seed\0{$purpose}"));
         $this->secretKey = sodium_crypto_sign_secretkey($pair);
         $this->publicKey = sodium_crypto_sign_publickey($pair);
     }
