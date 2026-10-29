@@ -27,15 +27,33 @@ use Tinvar\Render\RenderChannel;
  */
 final readonly class RendererTemplates implements MailRenderer
 {
-    public function __construct(private RenderChannel $channel) {}
+    /**
+     * The most HTML one message may have. The renderer's chunks are held
+     * here whole, to be checked and sent, so a compromised renderer could
+     * otherwise have a worker or the queue hold up to the channel's own cap
+     * per message; and mail clients clip a message long before this (Gmail
+     * at about 100 KB). Past it the message is refused, not cut short.
+     */
+    public const int MAX_HTML_BYTES = 1_048_576;
+
+    public function __construct(
+        private RenderChannel $channel,
+        private int $maxHtmlBytes = self::MAX_HTML_BYTES,
+    ) {}
 
     public function render(string $template, array $props, ?LinkPolicy $links = null): RenderedMail
     {
         $html = '';
+        $max = $this->maxHtmlBytes;
         $result = $this->channel->render(
             Frame::mail($template, $props, bin2hex(random_bytes(8)), ($links ?? new LinkPolicy())->toFrame()),
             [],
-            static function (string $bytes) use (&$html): void {
+            // Checked before the bytes are kept, and thrown out of the
+            // render, which hangs up on the renderer.
+            static function (string $bytes) use (&$html, $max, $template): void {
+                if (\strlen($html) + \strlen($bytes) > $max) {
+                    throw new MailRenderingException("The renderer drew '{$template}' larger than the {$max} bytes one message may have.");
+                }
                 $html .= $bytes;
             },
         );

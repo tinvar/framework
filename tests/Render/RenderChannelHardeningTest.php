@@ -150,6 +150,41 @@ it('counts an empty query batch against the call budget', function () {
     }
 });
 
+// A caller that buffers the response holds every chunk, so chunks without
+// end were memory the renderer could have this process hold until it died.
+// The chunk that crosses the cap never reaches the caller.
+it('refuses more output than one render may send, before the caller is handed it', function () {
+    $dir = privateDirectory();
+    $path = $dir . '/r.sock';
+    $frames = [...array_fill(0, 5, Frame::chunk(str_repeat('x', 1_000))), ['t' => Frame::DONE]];
+    $pid = hostileRenderer($path, $frames);
+    $done = cleanUp($dir, $pid);
+
+    $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+    $channel = new RenderChannel(
+        $path,
+        new QueryRunner(new QueryRegistry(), new Orm($fixture->connection, new IdentityMap('test')), new AllowAllGate()),
+        new MessagePackCodec(),
+        maxOutputBytes: 3_500,
+    );
+    $held = '';
+
+    try {
+        expect(function () use ($channel, &$held): void {
+            $channel->render(['t' => 'render'], [], static function (string $bytes) use (&$held): void {
+                $held .= $bytes;
+            });
+        })->toThrow(ProtocolException::class, 'more than the 3500 bytes of output');
+        expect(\strlen($held))->toBe(3_000);
+    } finally {
+        $done();
+    }
+});
+
+it('holds the default output cap at a size no page needs', function () {
+    expect(RenderChannel::MAX_OUTPUT_BYTES)->toBe(8 * 1024 * 1024);
+});
+
 it('refuses more meta frames than one render may send', function () {
     $dir = privateDirectory();
     $path = $dir . '/r.sock';

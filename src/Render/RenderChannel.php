@@ -97,7 +97,26 @@ final class RenderChannel
          * @var (\Closure(RendererException): void)|null
          */
         private readonly ?\Closure $boundaryFailed = null,
+        /**
+         * The most output, in chunk bytes, one render may send: see
+         * MAX_OUTPUT_BYTES. A caller rendering something known to be small
+         * -- a mail -- passes less.
+         */
+        private readonly int $maxOutputBytes = self::MAX_OUTPUT_BYTES,
     ) {}
+
+    /**
+     * Chunk bytes one render may send. A caller that buffers the response
+     * -- the shop collects each page and fragment body before it answers,
+     * and a mail its HTML -- holds every byte the renderer sends, so
+     * unbounded they were memory a compromised renderer could ask this
+     * process to hold until it died, as the meta cap below was for meta.
+     *
+     * Checked before the chunk that crosses it reaches the caller, and
+     * fatal: a page cut short at the cap would be served as if whole. A
+     * page of 8 MiB is already one no visitor should be sent.
+     */
+    public const int MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 
     /**
      * Report frames one render may send. Each is a log line this process
@@ -281,6 +300,11 @@ final class RenderChannel
                         }
                         $firstByteNs ??= hrtime(true) - $started;
                         $bytes += \strlen($payload);
+                        if ($bytes > $this->maxOutputBytes) {
+                            throw new ProtocolException(
+                                "The renderer sent more than the {$this->maxOutputBytes} bytes of output one render may.",
+                            );
+                        }
                         $chunks++;
 
                         $at = hrtime(true);

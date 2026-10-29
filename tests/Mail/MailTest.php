@@ -359,6 +359,27 @@ it('refuses a render that brings back no text part', function () {
     }
 });
 
+// The HTML is held here whole, so a renderer drawing without end was a
+// worker's memory; past the cap the message is refused, never cut short.
+it('refuses a template drawn larger than one message may be', function () {
+    if (!\function_exists('pcntl_fork')) {
+        test()->markTestSkipped('pcntl is not available.');
+    }
+
+    [$path, $pid] = fakeRenderer([
+        ...array_fill(0, 3, Frame::chunk(str_repeat('x', 600))),
+        ['t' => Frame::META, 'mail' => ['text' => 'x']],
+        ['t' => Frame::DONE],
+    ]);
+    $templates = new RendererTemplates(new RenderChannel($path, new QueryRunner(new QueryRegistry(), new Harness()->orm, new \Tinvar\Auth\AllowAllGate())), maxHtmlBytes: 1_000);
+
+    try {
+        expect(fn () => $templates->render('receipt', []))->toThrow(MailRenderingException::class, 'larger than the 1000 bytes');
+    } finally {
+        pcntl_waitpid($pid, $status);
+    }
+});
+
 /**
  * An SMTP server for one message: answers each command with the next reply
  * it is given, and records the conversation.
