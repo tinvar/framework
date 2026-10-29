@@ -121,6 +121,14 @@ final class Kernel
     public readonly QueryEndpoint $queries_;
 
     /**
+     * The runners behind /_action and /_query, for a call that is not a
+     * browser's -- a model's tool call, a service's call (ADR 0098) -- to go
+     * through the same resolution, #[Authorize], validation and encoder.
+     */
+    public readonly ActionRunner $actionRunner;
+    public readonly QueryRunner $queryRunner;
+
+    /**
      * Null unless the application supplied what a fragment needs: a signing
      * key, a build registry and a way to render a subtree. A deployment with
      * no deferred components mounts nothing, rather than mounting an endpoint
@@ -868,7 +876,7 @@ final class Kernel
         );
 
         $this->actions_ = new ActionEndpoint(
-            new ActionRunner(
+            $this->actionRunner = new ActionRunner(
                 $this->actions,
                 $this->orm,
                 $gate,
@@ -904,6 +912,7 @@ final class Kernel
             standIn: $standIns === null ? null : $standIns->query(...),
         );
 
+        $this->queryRunner = $queryRunner;
         $this->queries_ = new QueryEndpoint(
             $queryRunner,
             $allowedQueries,
