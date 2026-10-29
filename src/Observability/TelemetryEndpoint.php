@@ -46,7 +46,8 @@ use Tinvar\Support\Str;
  *   never a word of what was sent.
  *
  * Problem reports -- the CSP violation reports a browser sends of its own
- * accord, with no CSRF token -- are not answered here.
+ * accord, with no CSRF token -- are not answered here, but by ProblemReports,
+ * at /_reports and without a session (ADR 0093).
  */
 final class TelemetryEndpoint
 {

@@ -44,6 +44,7 @@ use Tinvar\Mail\UnsubscribeEndpoint;
 use Tinvar\Observability\Logger;
 use Tinvar\Observability\Metrics;
 use Tinvar\Observability\Probes;
+use Tinvar\Observability\ProblemReports;
 use Tinvar\Observability\Telemetry;
 use Tinvar\Observability\TelemetryEndpoint;
 use Tinvar\Orm\Orm;
@@ -152,6 +153,9 @@ final class Kernel
 
     /** /_vitals and /_errors, mounted only when an application asks for client telemetry. */
     public readonly ?TelemetryEndpoint $clientTelemetry_;
+
+    /** /_reports, mounted only when an application asks for problem reports (ADR 0093). */
+    public readonly ?ProblemReports $problemReports_;
 
     /**
      * What a loader issues upload tickets and file URLs with, also in the
@@ -336,6 +340,7 @@ final class Kernel
     private readonly Pipeline $fileStack;
     private readonly Pipeline $transferStack;
     private readonly Pipeline $telemetryStack;
+    private readonly Pipeline $reportsStack;
 
     /**
      * The application's #[Get], #[Post] and #[Endpoint] routes (ADR 0067):
@@ -522,6 +527,12 @@ final class Kernel
      *        and the `transfers` throttle, GET /_download/{token} behind the global stack and
      *        the `files` throttle, and Transfers, TransferRunner -- which the jobs run with --
      *        and TransferStatus are in the container
+     * @param bool $problemReports mount POST /_reports (ProblemReports, ADR 0093): the CSP
+     *        violations, deprecations and other reports a browser sends of its own accord, with
+     *        no CSRF token, answered ahead of the global stack -- no session -- behind the
+     *        telemetry budget by address, and recorded in $telemetry's metrics and log. Needs
+     *        $telemetry, with metrics. The application's documents name it with
+     *        ProblemReports::reportingEndpoints() and ProblemReports::cspDirectives().
      */
     public function __construct(
         public readonly Orm $orm,
@@ -579,6 +590,7 @@ final class Kernel
         ?ChannelRegistry $channels = null,
         ?TagVersions $tagVersions = null,
         ?Transfers $transfers = null,
+        bool $problemReports = false,
     ) {
         $this->resolver = $resolver;
         $this->shared = $shared;
@@ -623,6 +635,11 @@ final class Kernel
         if ($clientTelemetry && $telemetry?->metrics === null) {
             throw new \InvalidArgumentException(
                 'Client telemetry records vitals as metrics and errors in the log: give this Kernel a Telemetry with Metrics.',
+            );
+        }
+        if ($problemReports && $telemetry?->metrics === null) {
+            throw new \InvalidArgumentException(
+                'Problem reports are counted as metrics and written to the log: give this Kernel a Telemetry with Metrics.',
             );
         }
 
@@ -1001,6 +1018,18 @@ final class Kernel
             ...$this->throttleFor($throttle, 'telemetry', $limits, byAddress: false),
         ]);
 
+        // A browser's own reports (ADR 0093): no global stack, so no session
+        // is opened, read or written, and no CSRF -- a browser sends none.
+        // The telemetry budget, by address alone, since there is no one
+        // else to count it by, in a bucket of its own: a page that trips
+        // its policy on every load does not spend its own vitals' budget.
+        $this->reportsStack = new Pipeline([
+            ...$this->floodGuardFor($throttle, 'telemetry', $limits),
+            ...($throttle === null || ($limits['telemetry'] ?? 0) <= 0
+                ? []
+                : [new ThrottleRequests($throttle, 'reports', $limits['telemetry'], byAddress: true)]),
+        ]);
+
         // An endpoint gets an action's stack. CSRF lets a GET and a HEAD
         // through and holds every other method to the session's token, so a
         // #[Post] is protected as an action is -- and authentication reads
@@ -1064,6 +1093,9 @@ final class Kernel
         // Checked above to have the Telemetry and Metrics it records into.
         $this->clientTelemetry_ = $clientTelemetry
             ? new TelemetryEndpoint($telemetry->logger, $telemetry->metrics, $this->routes, $clientAssets)
+            : null;
+        $this->problemReports_ = $problemReports
+            ? new ProblemReports($telemetry->logger, $telemetry->metrics)
             : null;
 
         $this->uploads_ = $uploads === null ? null : new UploadEndpoint(
@@ -1402,10 +1434,10 @@ final class Kernel
     }
 
     /**
-     * Whether $request opens no session here: a probe (answersProbe()), or
-     * a call to a #[WithoutSession] endpoint -- for an application to issue
-     * no session cookie, write no session row and set nothing per visitor
-     * on its answer (ADR 0075).
+     * Whether $request opens no session here: a probe (answersProbe()), a
+     * browser's problem report (ADR 0093), or a call to a #[WithoutSession]
+     * endpoint -- for an application to issue no session cookie, write no
+     * session row and set nothing per visitor on its answer (ADR 0075).
      *
      * The Kernel already runs such an endpoint with no global middleware and
      * every cookie taken off its request, so no session reaches it. What it
@@ -1426,7 +1458,7 @@ final class Kernel
      */
     public function opensNoSession(Request $request): bool
     {
-        if ($this->answersProbe($request)) {
+        if ($this->answersProbe($request) || ($this->problemReports_?->matches($request) ?? false)) {
             return true;
         }
 
@@ -1523,6 +1555,20 @@ final class Kernel
                 return $this->telemetryStack->run(
                     $request,
                     fn (Request $passed): Response => $this->clientTelemetry_->handle($passed, $rawBody),
+                );
+            }
+
+            // What a browser reports of its own accord, sessionless: ahead
+            // of everything that would open a session.
+            if ($this->problemReports_ !== null && $this->problemReports_->matches($request)) {
+                $this->telemetry?->route(ProblemReports::ROUTE);
+                ProblemReports::assertMethod($request);
+
+                // Its cookies taken off, as a #[WithoutSession] endpoint's
+                // are: nothing that runs for it can read who sent it.
+                return $this->reportsStack->run(
+                    $request->withoutCookies(),
+                    fn (Request $passed): Response => $this->problemReports_->handle($passed, $rawBody),
                 );
             }
 
