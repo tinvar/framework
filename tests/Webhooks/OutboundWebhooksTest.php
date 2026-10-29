@@ -34,6 +34,9 @@ use Tinvar\Tests\Orm\Fixtures\Script;
 use Tinvar\Tests\Outbound\Fixtures\Server;
 use Tinvar\Tests\Support\Fixtures\Sources;
 use Tinvar\Webhooks\ArrayDeliveryLog;
+use Tinvar\Webhooks\ArraySentWebhooks;
+use Tinvar\Webhooks\DatabaseSentWebhooks;
+use Tinvar\Tests\Jobs\Fixtures\User;
 use Tinvar\Http\ArrayNonceStore;
 use Tinvar\Webhooks\DatabaseDeliveryLog;
 use Tinvar\Webhooks\DeliverWebhook;
@@ -398,4 +401,71 @@ it('delivers over the network to a receiver on this machine, which verifies the 
     expect($requests)->toHaveCount(1)
         ->and($requests[0]['target'])->toBe('/hooks/in?account=7')
         ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->status], $s->log->attempts($id)))->toBe([[DeliveryAttempt::DELIVERED, 202]]);
+});
+
+/**
+ * A sender keeping what it sends, in a table.
+ *
+ * @return array{Sender, DatabaseSentWebhooks}
+ */
+function keeping(): array
+{
+    $s = new Sender(static fn (): OutboundResponse => new OutboundResponse(204));
+    DatabaseSentWebhooks::define(schemaOf($s->h->fixture->connection));
+    $sent = new DatabaseSentWebhooks($s->h->fixture->connection);
+    $s->webhooks = new OutboundWebhooks($s->h->dispatcher, clock: fn (): int => $s->h->now, sent: $sent, orm: $s->h->orm);
+
+    return [$s, $sent];
+}
+
+describe('a resend', function () {
+    it('sends the same event and data again as a new delivery, recording who asked and which it repeats', function () {
+        [$s, $sent] = keeping();
+        $first = $s->sendAsAcme();
+        $s->h->now += 60;
+        $again = $s->h->orm->actAs('acme', fn (): ?string => $s->webhooks->resend($first, new User('ops-1')));
+        $s->work();
+
+        [$one, $two] = $s->sent();
+        $body = json_decode($two->body, true);
+
+        expect($again)->not->toBeNull()->not->toBe($first)
+            ->and($body['id'])->toBe($again)
+            ->and($body['event'])->toBe('script.ran')
+            ->and($body['data'])->toBe(json_decode($one->body, true)['data'])
+            ->and($body['created_at'])->toBe(gmdate('Y-m-d\TH:i:s\Z', $s->h->now))
+            // A new delivery, so a new nonce: a receiver that handled the first takes this one.
+            ->and(signed($two)['nonce'])->toBe($again)
+            ->and($sent->find('acme', (string) $again)?->resendOf)->toBe($first)
+            ->and($sent->find('acme', (string) $again)?->resentBy)->toBe('ops-1')
+            ->and(array_map(static fn ($r) => $r->delivery, $sent->resendsOf('acme', [$first])[$first]))->toBe([$again])
+            ->and(array_keys($sent->many('acme', [$first, (string) $again, 'nope'])))->toEqualCanonicalizing([$first, $again])
+            ->and($sent->many('globex', [$first]))->toBe([])
+            ->and($sent->find('acme', $first)?->data)->not->toContain(SECRET);
+    });
+
+    it('finds nothing of another tenant\'s, nor a delivery never kept', function () {
+        [$s] = keeping();
+        $first = $s->sendAsAcme();
+
+        expect($s->h->orm->actAs('globex', fn (): ?string => $s->webhooks->resend($first, new User('ops-1'))))->toBeNull()
+            ->and($s->h->orm->actAs('acme', fn (): ?string => $s->webhooks->resend('no-such-delivery', new User('ops-1'))))->toBeNull()
+            ->and($s->queue()->size(DeliverWebhook::QUEUE))->toBe(1);
+    });
+
+    it('keeps nothing a rollback takes back, and is refused without a store to read from', function () {
+        [$s, $sent] = keeping();
+        try {
+            $s->h->orm->transaction(function () use ($s): void {
+                $s->sendAsAcme();
+
+                throw new \RuntimeException('rolled back');
+            });
+        } catch (\RuntimeException) {
+        }
+
+        expect($sent->prune(PHP_INT_MAX, 100))->toBe(0)
+            ->and(fn () => new Sender()->webhooks->resend('d', new User('ops-1')))->toThrow(\LogicException::class)
+            ->and(fn () => new OutboundWebhooks(new Sender()->h->dispatcher, sent: new ArraySentWebhooks()))->toThrow(\InvalidArgumentException::class);
+    });
 });
