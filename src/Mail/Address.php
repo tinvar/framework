@@ -15,11 +15,14 @@ final readonly class Address
 {
     public function __construct(public string $email, public string $name = '')
     {
-        if (filter_var($email, FILTER_VALIDATE_EMAIL) === false || preg_match('/[\r\n<>]/', $email) === 1) {
+        // Nor quotes, commas or semicolons, which a quoted local part may
+        // hold and FILTER_VALIDATE_EMAIL accepts: an address list is split on
+        // them by more parsers than honour the quotes.
+        if (filter_var($email, FILTER_VALIDATE_EMAIL) === false || preg_match('/[\x00-\x20\x7f<>",;]/', $email) === 1) {
             throw new \InvalidArgumentException("'{$email}' is not an email address.");
         }
-        if (preg_match('/[\r\n]/', $name) === 1) {
-            throw new \InvalidArgumentException('A display name cannot hold a line break.');
+        if (Header::breaks($name)) {
+            throw new \InvalidArgumentException('A display name cannot hold a line break or a control character.');
         }
     }
 

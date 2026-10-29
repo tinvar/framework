@@ -20,18 +20,20 @@ use Tinvar\Render\RenderChannel;
  * The renderer writes the HTML a recipient opens, as it writes the pages a
  * visitor opens: a compromised renderer could put what it liked in either,
  * and is treated as cross-site scripting already (tinvar-spec.md, "Trust
- * boundaries"). The links in what it returns are still held to the text
- * part (RenderedMail).
+ * boundaries"). The frame carries the message's LinkPolicy, which the
+ * kit's components hold their links and images to as they draw; what comes
+ * back is still held to it by the Mailer (SafeMailHtml), and its links to
+ * the text part (RenderedMail).
  */
 final readonly class RendererTemplates implements MailRenderer
 {
     public function __construct(private RenderChannel $channel) {}
 
-    public function render(string $template, array $props): RenderedMail
+    public function render(string $template, array $props, ?LinkPolicy $links = null): RenderedMail
     {
         $html = '';
         $result = $this->channel->render(
-            Frame::mail($template, $props, bin2hex(random_bytes(8))),
+            Frame::mail($template, $props, bin2hex(random_bytes(8)), ($links ?? new LinkPolicy())->toFrame()),
             [],
             static function (string $bytes) use (&$html): void {
                 $html .= $bytes;

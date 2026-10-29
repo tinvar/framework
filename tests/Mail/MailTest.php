@@ -18,6 +18,7 @@ use Tinvar\Mail\Email;
 use Tinvar\Mail\LogTransport;
 use Tinvar\Mail\Mailable;
 use Tinvar\Mail\Mailer;
+use Tinvar\Mail\LinkPolicy;
 use Tinvar\Mail\MailRenderer;
 use Tinvar\Mail\MailRenderingException;
 use Tinvar\Mail\MailTransportException;
@@ -62,7 +63,7 @@ final class FakeRenderer implements MailRenderer
     /** @var list<array{string, array<string, mixed>}> */
     public array $asked = [];
 
-    public function render(string $template, array $props): RenderedMail
+    public function render(string $template, array $props, ?LinkPolicy $links = null): RenderedMail
     {
         $this->asked[] = [$template, $props];
         $url = (string) $props['url'];
@@ -330,7 +331,7 @@ it('renders a template over the renderer\'s socket: HTML as chunks, the text par
     ]);
     $templates = new RendererTemplates(new RenderChannel($path, new QueryRunner(new QueryRegistry(), new Harness()->orm, new \Tinvar\Auth\AllowAllGate())));
 
-    $rendered = $templates->render('receipt', ['name' => 'x']);
+    $rendered = $templates->render('receipt', ['name' => 'x'], new LinkPolicy('https://shop.test', ['https://cdn.shop.test']));
     pcntl_waitpid($pid, $status);
     $frame = json_decode((string) file_get_contents($received), true);
 
@@ -338,7 +339,9 @@ it('renders a template over the renderer\'s socket: HTML as chunks, the text par
         ->and($rendered->text)->toBe("Hello\nhttps://shop.test/o/1")
         ->and($frame['t'])->toBe(Frame::MAIL)
         ->and($frame['template'])->toBe('receipt')
-        ->and($frame['props'])->toBe(['name' => 'x']);
+        ->and($frame['props'])->toBe(['name' => 'x'])
+        // The message's policy, which the renderer's kit holds its links to.
+        ->and($frame['links'])->toBe(['origin' => 'https://shop.test', 'images' => ['https://cdn.shop.test']]);
 });
 
 it('refuses a render that brings back no text part', function () {

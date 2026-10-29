@@ -31,8 +31,11 @@ final readonly class Message
         if ($to === []) {
             throw new \InvalidArgumentException('An email needs someone to go to.');
         }
-        if (trim($subject) === '' || preg_match('/[\r\n]/', $subject) === 1) {
+        if (trim($subject) === '' || Header::breaks($subject)) {
             throw new \InvalidArgumentException('An email needs a subject on one line.');
+        }
+        if (mb_strlen($subject, 'UTF-8') > Header::MAX_SUBJECT) {
+            throw new \InvalidArgumentException('An email subject is at most ' . Header::MAX_SUBJECT . ' characters.');
         }
         if (trim($text) === '') {
             throw new \InvalidArgumentException('An email needs a plain-text part.');

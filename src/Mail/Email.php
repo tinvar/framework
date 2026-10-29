@@ -20,13 +20,24 @@ use Tinvar\Data\Data;
  *
  * Mail a reader can stop getting -- a newsletter, a digest -- says how in
  * $unsubscribe, which becomes its List-Unsubscribe headers (ADR 0048).
+ *
+ * $origin is the canonical origin the message's links are built on -- what
+ * CanonicalOrigins answers for its reader -- and $images any further https
+ * origins its images may load from. Together they are the message's
+ * LinkPolicy (ADR 0086): with no origin, its links are https or mailto:
+ * alone and it loads no image at all.
  */
 final readonly class Email
 {
     /** @var list<Address> */
     public array $to;
 
-    /** @param Address|list<Address> $to */
+    public LinkPolicy $links;
+
+    /**
+     * @param Address|list<Address> $to
+     * @param list<string> $images
+     */
     public function __construct(
         Address|array $to,
         public string $subject,
@@ -34,8 +45,11 @@ final readonly class Email
         public Data $props,
         public ?Address $replyTo = null,
         public ?Unsubscribe $unsubscribe = null,
+        ?string $origin = null,
+        array $images = [],
     ) {
         $this->to = $to instanceof Address ? [$to] : $to;
+        $this->links = new LinkPolicy($origin, $images);
         if (preg_match('/^[a-z0-9][a-z0-9-]{0,63}\z/', $template) !== 1) {
             throw new \InvalidArgumentException("'{$template}' is not a template name: lowercase words joined by '-'.");
         }

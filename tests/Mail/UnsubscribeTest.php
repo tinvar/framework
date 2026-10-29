@@ -17,6 +17,7 @@ use Tinvar\Mail\Email;
 use Tinvar\Mail\LogTransport;
 use Tinvar\Mail\Mailable;
 use Tinvar\Mail\Mailer;
+use Tinvar\Mail\LinkPolicy;
 use Tinvar\Mail\MailRenderer;
 use Tinvar\Mail\Message;
 use Tinvar\Mail\MimeMessage;
@@ -49,7 +50,7 @@ final readonly class Digest implements Mailable
 
 final class Renderer implements MailRenderer
 {
-    public function render(string $template, array $props): RenderedMail
+    public function render(string $template, array $props, ?LinkPolicy $links = null): RenderedMail
     {
         $url = (string) $props['url'];
 
