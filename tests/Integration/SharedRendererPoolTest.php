@@ -118,6 +118,35 @@ it('stops once the run has gone', function () {
     }
 });
 
+// A pid file outlives its process, and the pid may be anyone's of this user's
+// by then: nothing is signalled, nor taken for the pool, unless /proc or ps
+// says it runs the renderer on this pool's directory.
+it('signals no process its record names unless it is the pool', function () {
+    $bystander = proc_open(['sleep', '30'], [], $pipes);
+    \assert(\is_resource($bystander));
+    $pid = proc_get_status($bystander)['pid'];
+    try {
+        $script = __DIR__ . '/Fixtures/shared-pool-stop.php';
+        $env = [...getenv(), 'PARATEST' => '1', 'TEST_TOKEN' => '1'];
+        $process = proc_open([PHP_BINARY, $script, Shop::entry(), \dirname(Shop::root(), 2), (string) $pid], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, $env);
+        \assert(\is_resource($process));
+        $found = json_decode((string) stream_get_contents($pipes[1]), true);
+        $err = (string) stream_get_contents($pipes[2]);
+        proc_close($process);
+        usleep(100_000);
+
+        expect($found)->toBeArray("the worker said nothing: {$err}");
+        \assert(\is_array($found));
+        expect($found['shared'])->toBeTrue()
+            ->and($found['running'])->toBeFalse('a stranger is not the pool')
+            ->and(proc_get_status($bystander)['running'])->toBeTrue('the stranger was signalled');
+        stopPool(null, $found['path']);
+    } finally {
+        proc_terminate($bystander, SIGKILL);
+        proc_close($bystander);
+    }
+});
+
 it('keeps a pool of its own where the run directory is open to others', function () {
     mkdir(runDirectory(), 0755);
     chmod(runDirectory(), 0755);
