@@ -55,10 +55,16 @@ final readonly class OutboundWebhooks
     /**
      * Queues $event for the subscription's URL.
      *
+     * $resendable: false keeps the event out of the SentWebhooks store, so
+     * it is never sent again -- for data that carries something with a
+     * window of its own, such as a service context token: kept, it would
+     * sit at rest for as long as the store keeps it, and a resend would
+     * replay it unchanged (never re-issued, never extended) past its use.
+     *
      * @param Data|array<array-key, mixed> $data
      * @return string the delivery's id
      */
-    public function send(string $subscription, string $event, Data|array $data): string
+    public function send(string $subscription, string $event, Data|array $data, bool $resendable = true): string
     {
         if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/', $subscription) !== 1) {
             throw new \InvalidArgumentException("'{$subscription}' is not a subscription id: letters, digits, '.', '_', ':' and '-', up to 128.");
@@ -67,7 +73,7 @@ final readonly class OutboundWebhooks
             throw new \InvalidArgumentException("'{$event}' is not an event name: lowercase letters, digits, '.', '_' and '-', up to 64.");
         }
 
-        return $this->queue($subscription, $event, $this->encoder->encode($data));
+        return $this->queue($subscription, $event, $this->encoder->encode($data), keep: $resendable);
     }
 
     /**
@@ -94,11 +100,12 @@ final readonly class OutboundWebhooks
     }
 
     /**
-     * Queues a delivery of $event with $data, already encoded, and keeps it.
+     * Queues a delivery of $event with $data, already encoded, and keeps it
+     * unless told not to.
      *
      * @return string the delivery's id
      */
-    private function queue(string $subscription, string $event, mixed $data, ?string $resendOf = null, ?string $resentBy = null): string
+    private function queue(string $subscription, string $event, mixed $data, ?string $resendOf = null, ?string $resentBy = null, bool $keep = true): string
     {
         $delivery = Uuid::v7();
         $now = $this->clock === null ? time() : ($this->clock)();
@@ -113,7 +120,7 @@ final readonly class OutboundWebhooks
             throw new \InvalidArgumentException("The '{$event}' delivery is over " . WebhookEndpoint::MAX_BODY_BYTES . ' bytes, more than a receiver is sent.');
         }
 
-        if ($this->sent !== null && $this->orm !== null) {
+        if ($keep && $this->sent !== null && $this->orm !== null) {
             $this->sent->keep(new SentWebhook($delivery, $this->orm->tenant(), $subscription, $event, json_encode($data, $flags), $now, $resendOf, $resentBy));
         }
         $this->jobs->dispatch(new DeliverWebhook($subscription, $delivery, $event, $body));

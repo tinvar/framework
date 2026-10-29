@@ -444,6 +444,15 @@ describe('a resend', function () {
             ->and($sent->find('acme', $first)?->data)->not->toContain(SECRET);
     });
 
+    it('keeps nothing sent as not resendable, so it is never sent again', function () {
+        [$s, $sent] = keeping();
+        $id = $s->h->orm->actAs('acme', fn (): string => $s->webhooks->send('scripts', 'script.ran', ['token' => 'short-lived'], resendable: false));
+
+        expect($sent->find('acme', $id))->toBeNull()
+            ->and($s->h->orm->actAs('acme', fn (): ?string => $s->webhooks->resend($id, new User('ops-1'))))->toBeNull()
+            ->and($s->queue()->size(DeliverWebhook::QUEUE))->toBe(1);
+    });
+
     it('finds nothing of another tenant\'s, nor a delivery never kept', function () {
         [$s] = keeping();
         $first = $s->sendAsAcme();

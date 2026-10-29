@@ -224,6 +224,11 @@ describe('the fulfilment workflow', function () {
         expect($claims['e'] - $claims['i'])->toBe(\Shop\Workflows\FulfilOrder::COLLECT_WITHIN)
             ->and(\Shop\Workflows\FulfilOrder::COLLECT_WITHIN)->toBeLessThanOrEqual(3600);
 
+        // Never kept to be sent again (ADR 0096): the token is not left at
+        // rest in webhook_events, and no resend replays it past its hour.
+        expect($kernel->orm->connection()->select("SELECT COUNT(*) AS n FROM webhook_events WHERE event = 'order.packed'")[0]['n'])->toBe(0)
+            ->and(json_encode($kernel->orm->connection()->select('SELECT data FROM webhook_events')))->not->toContain($context);
+
         // Without its own credential the token is nothing.
         expect(callBack($kernel, 'orders.collected', $context, ['order' => $order], signedIn: false)->status)->toBe(401)
             ->and(statusOf($kernel, $order))->toBe(Order::PACKED);
