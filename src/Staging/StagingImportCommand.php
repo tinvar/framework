@@ -15,7 +15,7 @@ use Tinvar\Support\Encrypter;
  *   tinvar staging:import --from=PRODUCTION --to=STAGING --staging-key-file=PATH [--tenant=ID]
  *
  * Run on production's side, under production's profile, with production's
- * key -- Kernel::appKey(), as the server has it -- which it reads with and
+ * key -- the application's, as its server has it -- which it reads with and
  * never writes anywhere. Staging's key is TINVAR_STAGING_APP_KEY or the file
  * --staging-key-file names, which must already be there: one generated here
  * would be a key staging does not have. It is bound to the staging profile
@@ -44,7 +44,7 @@ final class StagingImportCommand
     private readonly \Closure $err;
 
     /**
-     * @param \Closure(): string $productionKey the application's own key, as Kernel::appKey() gives it
+     * @param \Closure(): string $productionKey the application's own key, as its server resolves it
      * @param \Closure(string): \PDO $open opens the database --from or --to names
      * @param array<string, string>|null $env the environment; the process's own by default
      */
