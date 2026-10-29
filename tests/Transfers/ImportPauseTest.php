@@ -226,7 +226,7 @@ it('stops at a row the write refuses, keeping the chunks before it and saying so
     $stocks = $app->connection->select('SELECT stock FROM widgets WHERE id = ?', [widgetId(TransferRunner::PAGE * 2)]);
     expect($record->status)->toBe(TransferRecord::FAILED)
         ->and($record->rows)->toBe(TransferRunner::PAGE * 2)
-        ->and($record->failure)->toContain('The first ' . (TransferRunner::PAGE * 2) . ' rows were imported')
+        ->and($record->failure)->toContain('The first ' . (TransferRunner::PAGE * 2) . ' rows were imported; it and the rows after it were not')
         ->and($record->errors[0]['field'] ?? null)->toBe('widget')
         // The third chunk rolled back whole.
         ->and((int) $stocks[0]['stock'])->toBe(10)
@@ -264,4 +264,13 @@ it('asks its #[Authorize] again on the run that picks it up', function () {
     \assert($job !== null);
     expect(static fn () => $app->runner->run($app->runner->open($job->payload)))->toThrow(\Tinvar\Jobs\JobRefused::class)
         ->and(array_count_values(stocks($app, $count)))->toBe([11 => TransferRunner::PAGE, 10 => 100]);
+
+    // Shown, once plainly never going to run, with how many rows went in:
+    // started again whole, those would be written twice.
+    $app->now += Transfers::STALE_AFTER + 1;
+    $app->auth->login(new \Tinvar\Tests\Transfers\Fixtures\User('staff-1'), 'e2');
+    $status = $app->orm->actAs('acme', fn (): array => $app->kernel->panels?->within('staff', fn (): array => $app->kernel->transferStatus?->recent() ?? []) ?? []);
+    expect($status[0]->status)->toBe('failed')
+        ->and($status[0]->rows)->toBe(TransferRunner::PAGE)
+        ->and($status[0]->failure)->toBe('It did not finish. The first ' . TransferRunner::PAGE . ' rows were imported and the rest were not; import only the rest.');
 });

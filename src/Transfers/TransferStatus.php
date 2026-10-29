@@ -72,10 +72,24 @@ final readonly class TransferStatus
                 static fn (array $error): TransferErrorData => new TransferErrorData($error['row'], $error['field'], $error['message']),
                 $record->errors,
             ),
-            failure: $stale ? 'It did not finish. Start it again.' : $record->failure,
+            failure: $stale ? self::unfinished($record) : $record->failure,
             createdAt: $record->createdAt,
             finishedAt: $record->finishedAt,
             download: $record->isDownloadable($now) ? $this->transfers->downloadPath($record, $user, $this->auth->epoch()) : null,
         );
+    }
+
+    /**
+     * What a user is told of one that never finished. An import that had
+     * written rows says how many, and that the rest were not: started again
+     * whole, it would write those rows a second time.
+     */
+    private static function unfinished(TransferRecord $record): string
+    {
+        if ($record->kind === CompiledTransfer::IMPORT && $record->rows > 0) {
+            return "It did not finish. The first {$record->rows} rows were imported and the rest were not; import only the rest.";
+        }
+
+        return 'It did not finish. Start it again.';
     }
 }

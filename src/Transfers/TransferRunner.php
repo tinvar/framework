@@ -525,7 +525,7 @@ final readonly class TransferRunner
             $this->authorize($transfer, $arguments);
         } catch (ForbiddenException) {
             $this->fail($record, $record->rows > 0
-                ? "You may no longer run this import. The first {$record->rows} rows were imported before it stopped."
+                ? "You may no longer run this import. The first {$record->rows} rows were imported before it stopped; the rest were not."
                 : 'You may no longer run this import.');
 
             return true;
@@ -560,7 +560,7 @@ final readonly class TransferRunner
 
             return $this->writeRows($transfer, $arguments, $stream, $record, $control);
         } catch (CsvRefused $e) {
-            $this->fail($record, $e->getMessage() . ($record->rows > 0 ? " The first {$record->rows} rows were imported." : ' Nothing was changed.'));
+            $this->fail($record, $e->getMessage() . ($record->rows > 0 ? " The first {$record->rows} rows were imported; the rest were not." : ' Nothing was changed.'));
 
             return true;
         } finally {
