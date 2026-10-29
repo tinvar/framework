@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Transfers;
 
+use Tinvar\Orm\Connection;
+
 /** Transfers in memory: for tests, and an application with one process. */
 final class ArrayTransferStore implements TransferStore
 {
@@ -67,6 +69,11 @@ final class ArrayTransferStore implements TransferStore
     public function forget(string $id): void
     {
         unset($this->records[$id]);
+    }
+
+    public function enlistsIn(Connection $connection): bool
+    {
+        return false;
     }
 
     /** @return list<TransferRecord> every record, for a test */

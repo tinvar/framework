@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Transfers;
 
+use Tinvar\Orm\Connection;
+
 /**
  * The exports and imports users have started, until they are pruned.
  *
@@ -47,4 +49,14 @@ interface TransferStore
     public function expired(int $now, int $createdBefore, int $limit): array;
 
     public function forget(string $id): void;
+
+    /**
+     * Whether a write here runs on $connection, inside whatever transaction
+     * it has open: so an import's progress, written in the transaction that
+     * writes its rows, commits or rolls back with them, and a run cut off
+     * anywhere picks up after the last rows that committed -- never writing
+     * one twice. A store elsewhere says no, and an import there writes all
+     * its rows in one transaction (TransferRunner::import()).
+     */
+    public function enlistsIn(Connection $connection): bool;
 }

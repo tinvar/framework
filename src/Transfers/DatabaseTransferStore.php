@@ -14,14 +14,17 @@ use Tinvar\Orm\Schema\Table;
  * record of it.
  *
  * Written on its own statements, not the Orm's: a record says what became
- * of a job, and an import's rows are applied in a transaction that a
- * failure rolls back -- the record of that failure must outlive it. The
- * worker writes it outside that transaction (TransferRunner).
+ * of a job, and an import's rows are applied in transactions that a
+ * failure rolls back -- the record of that failure must outlive them. The
+ * worker writes it outside them (TransferRunner), but for an import's
+ * progress: on the application's own connection (enlistsIn()), the count
+ * of rows written goes in the transaction that writes them, so it can
+ * never say more or less than committed.
  */
 final readonly class DatabaseTransferStore implements TransferStore
 {
     private const string COLUMNS = 'id, kind, name, format, tenant, panel, user_id, status, created_at, row_count, '
-        . 'error_count, errors, storage_key, size, finished_at, expires_at, file_name, failure';
+        . 'error_count, errors, storage_key, size, finished_at, expires_at, file_name, failure, checked_count';
 
     public function __construct(private Connection $connection, private string $table = 'transfers')
     {
@@ -55,6 +58,7 @@ final readonly class DatabaseTransferStore implements TransferStore
             $transfers->bigInteger('expires_at')->default(0);
             $transfers->string('file_name', 255);
             $transfers->string('failure', 255);
+            $transfers->bigInteger('checked_count')->default(0);
             // What a user's list asks, and what pruning asks.
             $transfers->index(['tenant', 'panel', 'user_id', 'created_at'], "{$table}_mine");
             $transfers->index(['expires_at'], "{$table}_expiry");
@@ -62,10 +66,27 @@ final readonly class DatabaseTransferStore implements TransferStore
         }, $ifNotExists);
     }
 
+    /**
+     * The column an import's check counts its rows in (ADR 0101), for a
+     * migration of a table define() made before it: added once, and
+     * nothing where it is there already -- as define() now makes it.
+     */
+    public static function defineProgress(Schema $schema, string $table = 'transfers'): void
+    {
+        new self($schema->connection(), $table);
+        if ($schema->hasColumn($table, 'checked_count')) {
+            return;
+        }
+
+        $schema->table($table, static function (Table $transfers): void {
+            $transfers->bigInteger('checked_count')->default(0);
+        });
+    }
+
     public function add(TransferRecord $record): void
     {
         $this->connection->execute(
-            "INSERT INTO {$this->table} (" . self::COLUMNS . ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            "INSERT INTO {$this->table} (" . self::COLUMNS . ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             self::values($record),
         );
     }
@@ -95,7 +116,7 @@ final readonly class DatabaseTransferStore implements TransferStore
         $this->connection->execute(
             "UPDATE {$this->table} SET kind = ?, name = ?, format = ?, tenant = ?, panel = ?, user_id = ?, status = ?, "
             . 'created_at = ?, row_count = ?, error_count = ?, errors = ?, storage_key = ?, size = ?, finished_at = ?, '
-            . 'expires_at = ?, file_name = ?, failure = ? WHERE id = ?',
+            . 'expires_at = ?, file_name = ?, failure = ?, checked_count = ? WHERE id = ?',
             [...$values, $id],
         );
     }
@@ -127,6 +148,11 @@ final readonly class DatabaseTransferStore implements TransferStore
         $this->connection->execute("DELETE FROM {$this->table} WHERE id = ?", [$id]);
     }
 
+    public function enlistsIn(Connection $connection): bool
+    {
+        return $connection === $this->connection;
+    }
+
     /** @return list<mixed> in COLUMNS' order */
     private static function values(TransferRecord $record): array
     {
@@ -149,6 +175,7 @@ final readonly class DatabaseTransferStore implements TransferStore
             $record->expiresAt,
             $record->fileName,
             $record->failure,
+            $record->checked,
         ];
     }
 
@@ -180,6 +207,7 @@ final readonly class DatabaseTransferStore implements TransferStore
             expiresAt: self::int($row['expires_at'] ?? 0),
             fileName: self::string($row['file_name'] ?? null),
             failure: self::string($row['failure'] ?? null),
+            checked: self::int($row['checked_count'] ?? 0),
         );
     }
 

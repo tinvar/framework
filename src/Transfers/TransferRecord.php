@@ -31,6 +31,8 @@ final readonly class TransferRecord
      * @param string $key where its file is: an export's once written, an import's once uploaded;
      *        '' for none
      * @param string $failure what the user is told when it failed, never an exception's message
+     * @param int $checked an import's rows checked so far, before any is written; for an import
+     *        `rows` is those written, each in the transaction that wrote it (TransferRunner::import())
      */
     public function __construct(
         public string $id,
@@ -51,6 +53,7 @@ final readonly class TransferRecord
         public int $expiresAt = 0,
         public string $fileName = '',
         public string $failure = '',
+        public int $checked = 0,
     ) {}
 
     /** @param array<string, mixed> $changes */

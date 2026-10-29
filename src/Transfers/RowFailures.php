@@ -19,6 +19,16 @@ final class RowFailures
     /** @var list<array{row: int, field: string, message: string}> */
     public array $kept = [];
 
+    /** What a record kept of an import's check, for the run that picks it up. */
+    public static function from(TransferRecord $record): self
+    {
+        $failures = new self();
+        $failures->count = $record->errorCount;
+        $failures->kept = \array_slice($record->errors, 0, TransferRecord::MAX_ERRORS);
+
+        return $failures;
+    }
+
     public function add(int $row, string $field, string $message): void
     {
         $this->count++;

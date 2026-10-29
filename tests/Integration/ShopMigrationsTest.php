@@ -100,6 +100,7 @@ it('makes every table the shop uses, and leaves nothing the models describe for 
         '2026_10_25_000012_create_marketing_preferences',
         '2026_10_27_000013_create_transfers',
         '2026_10_27_000014_create_email_links',
+        '2026_10_29_000101_count_import_progress',
     ])
         ->and(tables($connection))->toBe(TABLES)
         ->and(new MigrationGenerator($connection, new SqliteDialect())->generate([Product::class, Customer::class, Order::class, OrderLine::class, Receipt::class], '2026-10-24'))->toBeNull()
@@ -112,9 +113,9 @@ it('rolls all the way back to nothing, and up again', function () {
     $migrator = Migrations::migrator($connection);
     $migrator->migrate();
 
-    expect($migrator->rollback())->toHaveCount(14)
+    expect($migrator->rollback())->toHaveCount(15)
         ->and(tables($connection))->toBe(['tinvar_migrations'])
-        ->and($migrator->migrate())->toHaveCount(14)
+        ->and($migrator->migrate())->toHaveCount(15)
         ->and(tables($connection))->toBe(TABLES);
 });
 
@@ -141,7 +142,7 @@ it('adopts a database built before the shop had migrations, and keeps what is in
 
     $ran = Migrations::migrate($connection);
 
-    expect($ran)->toHaveCount(14)
+    expect($ran)->toHaveCount(15)
         ->and(tables($connection))->toBe(TABLES)
         ->and($connection->select('SELECT name FROM customers'))->toBe([['name' => 'Ada']])
         ->and(Migrations::migrator($connection)->pending())->toBe([]);
@@ -154,7 +155,7 @@ it('gives an uploads table made before uploads had an owner one, counting by it'
     $connection = PdoConnection::sqlite(database(), create: true);
     $migrator = Migrations::migrator($connection);
     $migrator->migrate();
-    $migrator->rollback(6);
+    $migrator->rollback(7);
 
     $columns = array_column($connection->select('SELECT name FROM pragma_table_info(?)', ['uploads']), 'name');
     $owner = array_values(array_filter(new SqliteDialect()->indexes($connection, 'uploads'), static fn (array $i): bool => $i['name'] === 'uploads_owner'));
@@ -168,6 +169,7 @@ it('gives an uploads table made before uploads had an owner one, counting by it'
         '2026_10_25_000012_create_marketing_preferences',
         '2026_10_27_000013_create_transfers',
         '2026_10_27_000014_create_email_links',
+        '2026_10_29_000101_count_import_progress',
     ]);
 
     $columns = array_column($connection->select('SELECT name FROM pragma_table_info(?)', ['uploads']), 'name');
@@ -225,8 +227,8 @@ describe('from the command line', function () {
 
         expect([$firstStatus, $status])->toBe([0, 0], "{$firstErr}\n{$err}")
             ->and([$firstOut, $out])->toContain("Nothing to migrate.\n")
-            ->and(implode('', [$firstOut, $out]))->toContain('Ran 14 migration(s).')
-            ->and($connection->select('SELECT COUNT(*) AS n, MAX(batch) AS batch FROM ' . Migrator::TABLE))->toBe([['n' => 14, 'batch' => 1]])
+            ->and(implode('', [$firstOut, $out]))->toContain('Ran 15 migration(s).')
+            ->and($connection->select('SELECT COUNT(*) AS n, MAX(batch) AS batch FROM ' . Migrator::TABLE))->toBe([['n' => 15, 'batch' => 1]])
             ->and(file_exists("{$database}-migrate.lock"))->toBeFalse();
     });
 
@@ -251,7 +253,7 @@ describe('from the command line', function () {
         $connection = PdoConnection::sqlite($database);
 
         expect($status)->toBe(0, $err)
-            ->and($out)->toContain('Dropped every table and ran 14 migration(s).')
+            ->and($out)->toContain('Dropped every table and ran 15 migration(s).')
             ->and($out)->toContain('24 products, 3 customers')
             ->and(Migrations::migrator($connection)->pending())->toBe([])
             ->and($connection->select('SELECT COUNT(*) AS n FROM staff'))->toBe([['n' => 1]]);

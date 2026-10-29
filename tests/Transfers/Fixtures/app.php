@@ -36,6 +36,7 @@ use Tinvar\Jobs\Dispatcher;
 use Tinvar\Jobs\Envelope;
 use Tinvar\Jobs\JobRefused;
 use Tinvar\Jobs\JobRunner;
+use Tinvar\Jobs\WorkerStopping;
 use Tinvar\Auth\UserLookup;
 use Tinvar\Orm\Attributes\Column;
 use Tinvar\Orm\Attributes\Id;
@@ -46,6 +47,8 @@ use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Orm\Query;
+use Tinvar\Orm\Schema\Dialect;
+use Tinvar\Orm\Schema\Schema;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Queue\ArrayQueue;
 use Tinvar\Routing\LoadedRoute;
@@ -54,10 +57,12 @@ use Tinvar\Storage\MemoryStorage;
 use Tinvar\Support\Signer;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Transfers\ArrayTransferStore;
+use Tinvar\Transfers\DatabaseTransferStore;
 use Tinvar\Transfers\TransferNotifier;
 use Tinvar\Transfers\TransferRecord;
 use Tinvar\Transfers\TransferRegistry;
 use Tinvar\Transfers\Transfers;
+use Tinvar\Transfers\TransferStore;
 use Tinvar\Validation\FormRequest;
 use Tinvar\Validation\Rules\Min;
 
@@ -158,6 +163,40 @@ final readonly class StockImport
     }
 }
 
+final readonly class AddStockRow extends FormRequest
+{
+    public function __construct(
+        public Widget $widget,
+        #[Min(0)]
+        public int $add,
+    ) {}
+}
+
+/**
+ * Adds to each widget's stock: a row written twice shows, as it would not
+ * where a row set the stock. A test may have it stopped at a sku, as the
+ * stop's interrupt lands inside a chunk.
+ */
+#[Import(name: 'restock', maxBytes: 1_048_576, maxRows: 5_000, revalidates: ['widgets']), Panel('staff'),
+    Authorize('restock', Widget::class), Authorize('update', 'widget'),]
+final class RestockImport
+{
+    public static ?string $stopAt = null;
+
+    public function __construct(private readonly Orm $orm) {}
+
+    public function __invoke(AddStockRow $row): void
+    {
+        if (self::$stopAt !== null && $row->widget->sku === self::$stopAt) {
+            self::$stopAt = null;
+
+            throw WorkerStopping::in(self::class, 70);
+        }
+        $row->widget->stock += $row->add;
+        $this->orm->save($row->widget);
+    }
+}
+
 /** The application's users, by id, at the epoch the test has them on. */
 final class Users implements UserLookup
 {
@@ -216,6 +255,9 @@ final class App
     public readonly AuthContext $auth;
     public readonly Transfers $transfers;
     public readonly ArrayTransferStore $store;
+
+    /** Where the records are: $store, or a table on the application's own connection. */
+    public readonly TransferStore $records;
     public readonly MemoryStorage $storage;
     public readonly ArrayQueue $queue;
     public readonly JobRunner $runner;
@@ -226,7 +268,8 @@ final class App
     /** The versions once-shared holds are bound to, which an import's tags move. */
     public readonly ArrayTagVersions $versions;
 
-    public function __construct(?string $origin = 'https://shop.example')
+    /** @param bool $databaseStore records in a table on the application's connection, as an application keeps them */
+    public function __construct(?string $origin = 'https://shop.example', bool $databaseStore = false)
     {
         $this->connection = PdoConnection::sqlite(':memory:', 'test');
         $this->connection->execute('CREATE TABLE widgets (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, sku TEXT NOT NULL, name TEXT NOT NULL, stock INTEGER NOT NULL, secret TEXT NOT NULL)');
@@ -260,13 +303,17 @@ final class App
         $this->runner = new JobRunner($this->orm, $jobSigner, $container->resolver(), $this->auth, $panels, $registry, users: $this->users);
 
         $transfers = new TransferRegistry();
-        $transfers->registerAll([WidgetsExport::class, StockImport::class]);
+        $transfers->registerAll([WidgetsExport::class, StockImport::class, RestockImport::class]);
         $this->store = new ArrayTransferStore();
+        if ($databaseStore) {
+            DatabaseTransferStore::define(new Schema($this->connection, Dialect::for($this->connection)));
+        }
+        $this->records = $databaseStore ? new DatabaseTransferStore($this->connection) : $this->store;
         $this->storage = new MemoryStorage();
         $this->transfers = Transfers::fromKey(
             KEY,
             $transfers,
-            $this->store,
+            $this->records,
             $this->storage,
             $dispatcher->dispatch(...),
             $this->notes,
@@ -387,7 +434,7 @@ final class App
     /** The one record there is. */
     public function record(): TransferRecord
     {
-        $all = $this->store->all();
+        $all = $this->records instanceof ArrayTransferStore ? $this->records->all() : $this->records->recent('acme', 'staff', 'staff-1', 2);
         \assert(\count($all) === 1);
 
         return $all[0];

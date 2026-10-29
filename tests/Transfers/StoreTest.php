@@ -87,3 +87,34 @@ it('names what has expired, or is older than records are kept', function () {
         expect($store->find('old', 'acme', 'staff', 'u-1'))->toBeNull();
     }
 });
+
+it('keeps an import\'s check and write counts, and enlists only on its own connection', function () {
+    $connection = PdoConnection::sqlite(':memory:', 'test');
+    DatabaseTransferStore::define(new Schema($connection, Dialect::for($connection)));
+    $store = new DatabaseTransferStore($connection);
+    $store->add(transferRecord('t-1'));
+    $store->update(transferRecord('t-1')->with(['checked' => 700, 'rows' => 500]));
+
+    $record = $store->find('t-1', 'acme', 'staff', 'u-1');
+    expect($record?->checked)->toBe(700)
+        ->and($record?->rows)->toBe(500)
+        ->and($store->enlistsIn($connection))->toBeTrue()
+        ->and($store->enlistsIn(PdoConnection::sqlite(':memory:', 'other')))->toBeFalse()
+        ->and(new ArrayTransferStore()->enlistsIn($connection))->toBeFalse();
+});
+
+it('adds the check\'s count to a table made before it, once', function () {
+    $connection = PdoConnection::sqlite(':memory:', 'test');
+    $schema = new Schema($connection, Dialect::for($connection));
+    DatabaseTransferStore::define($schema);
+    // As define() made it before ADR 0101.
+    $connection->execute('ALTER TABLE transfers DROP COLUMN checked_count');
+
+    DatabaseTransferStore::defineProgress($schema);
+    DatabaseTransferStore::defineProgress($schema);
+
+    expect($schema->hasColumn('transfers', 'checked_count'))->toBeTrue();
+    $store = new DatabaseTransferStore($connection);
+    $store->add(transferRecord('t-1'));
+    expect($store->find('t-1', 'acme', 'staff', 'u-1')?->checked)->toBe(0);
+});
