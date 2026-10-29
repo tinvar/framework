@@ -194,7 +194,7 @@ describe('the modules', function () {
     it('lets a module use the core and jobs, never one beside it, and only the kernel use them all', function () {
         $modules = Layers::modules();
 
-        expect($modules->names())->toBe(['support', 'database', 'queue', 'core', 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'calls', 'tools', 'services', 'gateway', 'kernel', 'tenancy', 'testing', 'codegen'])
+        expect($modules->names())->toBe(['support', 'database', 'queue', 'core', 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway', 'kernel', 'tenancy', 'testing', 'codegen'])
             ->and($modules->mayUse('queue', 'database'))->toBeTrue()
             ->and($modules->mayUse('queue', 'core'))->toBeFalse()
             ->and($modules->mayUse('queue', 'jobs'))->toBeFalse()
@@ -223,6 +223,9 @@ describe('the modules', function () {
             ->and($modules->mayUse('gateway', 'jobs'))->toBeFalse()
             ->and($modules->mayUse('kernel', 'transfers'))->toBeTrue()
             ->and($modules->mayUse('kernel', 'webhooks'))->toBeTrue()
+            ->and($modules->mayUse('push', 'jobs'))->toBeTrue()
+            ->and($modules->mayUse('push', 'webhooks'))->toBeFalse()
+            ->and($modules->mayUse('kernel', 'push'))->toBeTrue()
             ->and($modules->mayUse('kernel', 'tenancy'))->toBeFalse();
     });
 
