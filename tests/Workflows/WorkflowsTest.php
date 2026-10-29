@@ -98,6 +98,20 @@ it('runs every step in the tenant, panel, user and epoch it was started under', 
     }
 });
 
+// ADR 0100: a user sealed in a chain is read only by the jobs that ask.
+it('runs a job that runs as its starter as them in a chain, and the plain jobs beside it as nobody', function () {
+    $h = harness();
+    $h->users->epochs['u1'] = 'e1';
+    $h->auth->actingAs(new User('u1'), fn () => $h->dispatcher->chain([
+        new \Tinvar\Tests\Workflows\Fixtures\WhoRan('a'),
+        new \Tinvar\Tests\Workflows\Fixtures\StarterRan('b'),
+        new \Tinvar\Tests\Workflows\Fixtures\WhoRan('c'),
+    ]), 'e1');
+    $h->work();
+
+    expect(Seen::$steps)->toBe([['step' => 'a', 'user' => null], ['step' => 'b', 'user' => 'u1'], ['step' => 'c', 'user' => null]]);
+});
+
 it('runs as nobody when nobody started it', function () {
     $h = harness();
     workflows($h)->start(new ThreeSteps());

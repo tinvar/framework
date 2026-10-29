@@ -162,6 +162,27 @@ final readonly class Nested implements Workflow
     }
 }
 
+/** A job that runs as its starter, or a plain one, saying who it ran as. */
+final readonly class WhoRan implements \Tinvar\Jobs\Job
+{
+    public function __construct(public string $name) {}
+
+    public function handle(AuthContext $auth): void
+    {
+        Seen::$steps[] = ['step' => $this->name, 'user' => $auth->id()];
+    }
+}
+
+final readonly class StarterRan implements \Tinvar\Jobs\Job, \Tinvar\Jobs\RunsAsStarter
+{
+    public function __construct(public string $name) {}
+
+    public function handle(AuthContext $auth): void
+    {
+        Seen::$steps[] = ['step' => $this->name, 'user' => $auth->id()];
+    }
+}
+
 /** The jobs harness, with Workflows registered for the job to ask for. */
 function harness(): Harness
 {
