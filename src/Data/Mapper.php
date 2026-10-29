@@ -6,6 +6,8 @@ namespace Tinvar\Data;
 
 use Tinvar\Attributes\From;
 use Tinvar\Attributes\MapsFrom;
+use Tinvar\Config\Configs;
+use Tinvar\Config\Secret;
 use Tinvar\Orm\Model;
 use Tinvar\Support\Lazy;
 
@@ -160,6 +162,13 @@ final class Mapper
     private static function mapOne(string $class, object|array $source): Data
     {
         $plan = self::planFor($class);
+
+        // Config is the server's alone (ADR 0085): a Data object mapped from
+        // it would carry its values to the renderer by the one road the
+        // encoder does not watch. A value it means to send is passed by name.
+        if (\is_object($source) && ($source instanceof Secret || Configs::isConfig($source::class))) {
+            throw DataMappingException::configSource($class, $source::class);
+        }
 
         if ($plan['maps'] !== null && \is_object($source) && !$source instanceof $plan['maps']) {
             throw DataMappingException::wrongSource($class, $plan['maps'], $source::class);

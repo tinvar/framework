@@ -20,6 +20,11 @@ final class DataMappingException extends \RuntimeException
         return new self("{$class} maps from {$expected} (#[MapsFrom]), not {$given}.");
     }
 
+    public static function configSource(string $class, string $given): self
+    {
+        return new self("{$class} cannot be mapped from {$given}: config never crosses to the renderer. Pass the values it may show by name.");
+    }
+
     public static function notIterable(string $class, string $field, string $given): self
     {
         return new self("{$class}::\${$field} is a list, but its source is {$given}.");
