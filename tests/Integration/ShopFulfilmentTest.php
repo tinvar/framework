@@ -219,6 +219,11 @@ describe('the fulfilment workflow', function () {
             ->and($sent['data']['collectedPath'])->toBe('/api/warehouse/calls/orders.collected');
         $context = $sent['data']['serviceContext'];
 
+        // Short-lived, since it waits in the jobs table: an hour.
+        $claims = json_decode((string) \Tinvar\Support\Signer::decode(explode('.', $context)[1]), true);
+        expect($claims['e'] - $claims['i'])->toBe(\Shop\Workflows\FulfilOrder::COLLECT_WITHIN)
+            ->and(\Shop\Workflows\FulfilOrder::COLLECT_WITHIN)->toBeLessThanOrEqual(3600);
+
         // Without its own credential the token is nothing.
         expect(callBack($kernel, 'orders.collected', $context, ['order' => $order], signedIn: false)->status)->toBe(401)
             ->and(statusOf($kernel, $order))->toBe(Order::PACKED);
