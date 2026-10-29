@@ -61,9 +61,9 @@ function send(string $html, string $origin = 'https://acme.test'): Message
     return new Mailer(new ArrayTransport(), new Draws($html), new Address('mail@acme.test'))->send(new Note($origin));
 }
 
-function safe(string $html, ?LinkPolicy $links = null): void
+function safe(string $html, ?LinkPolicy $links = null): string
 {
-    SafeMailHtml::assert($html, $links ?? new LinkPolicy('https://acme.test'));
+    return SafeMailHtml::clean($html, $links ?? new LinkPolicy('https://acme.test'));
 }
 
 describe('a link policy', function () {
@@ -124,7 +124,7 @@ describe('a link policy', function () {
 
 describe('the HTML of an email', function () {
     it('passes what the kit draws', function () {
-        safe('<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light"><title>x</title></head>'
+        safe('<!DOCTYPE html><html lang="en"><head><title>x</title></head>'
             . '<body style="margin:0;background-color:#F7F7F5"><table role="presentation"><tr><td style="font-family:Inter, &#x27;Segoe UI&#x27;, sans-serif">'
             . '<img src="https://acme.test/brand/mark-64.png" width="22" height="22" alt="" fetchPriority="low">'
             . '<a href="https://acme.test/orders/1?a=1&amp;b=2">View</a> <a href="mailto:stop@acme.test">Stop</a>'
@@ -143,7 +143,7 @@ describe('the HTML of an email', function () {
         'a preload' => ['<link rel="preload" as="image" href="https://acme.test/a.png">', '<link>'],
         'a base' => ['<base href="https://evil.example/">', '<base>'],
         'a form' => ['<form action="https://evil.example/"><input name="p"></form>', '<form>'],
-        'a refresh' => ['<meta http-equiv="refresh" content="0;url=https://evil.example/">', 'http-equiv'],
+        'a refresh' => ['<meta http-equiv="refresh" content="0;url=https://evil.example/">', '<meta>'],
         'a handler' => ['<p onclick="alert(1)">x</p>', 'onclick'],
         'a handler on an image' => ['<img src="https://acme.test/a.png" onerror="alert(1)">', 'onerror'],
         'a javascript link' => ['<a href="javascript:alert(1)">x</a>', 'cannot link to javascript:alert(1)'],
@@ -173,23 +173,40 @@ describe('the HTML of an email', function () {
         'in a title' => ['<title><!--[if mso]>x<![endif]--></title>'],
     ]);
 
-    // Sent as UTF-8: a document that names another charset, or is not
-    // UTF-8, could be read by the client otherwise than it was checked.
-    it('refuses another charset, or bytes that are not UTF-8', function (string $html, string $message) {
+    // Sent as UTF-8, which the message's Content-Type says: nothing in the
+    // HTML may name a charset -- not a <meta> the tree holds, nor one the
+    // encoding prescan would find in bytes the tree reads as raw text --
+    // and no byte that switches a decoder's character set.
+    it('refuses anything that names a charset, or bytes that are not plain UTF-8', function (string $html, string $message) {
         expect(fn () => safe($html))->toThrow(MailRenderingException::class, $message);
     })->with([
-        'a meta charset' => ['<meta charset="utf-7"><p>+ADw-script+AD4-alert(1)+ADw-/script+AD4-</p>', 'charset'],
-        'a content type' => ['<meta http-equiv="Content-Type" content="text/html; charset=ISO-2022-JP"><p>x</p>', 'charset'],
+        'a meta charset' => ['<meta charset="utf-7"><p>+ADw-script+AD4-alert(1)+ADw-/script+AD4-</p>', '<meta>'],
+        'even a UTF-8 one' => ['<meta charset="utf-8"><p>x</p>', '<meta>'],
+        'a content type' => ['<meta http-equiv="Content-Type" content="text/html; charset=ISO-2022-JP"><p>x</p>', '<meta>'],
+        'a content type, two charsets' => ['<meta http-equiv="Content-Type" content="text/html; xcharset=utf-8; charset=iso-2022-jp"><p>x</p>', '<meta>'],
+        'one in a title' => ['<title><meta charset="iso-2022-jp"></title><p>x</p>', '<meta>'],
+        'one in a style' => ['<style><meta charset="iso-2022-jp"></style><p>x</p>', '<meta>'],
+        'one upper case, after a quoted >' => ['<title><META content=">" CHARSET=iso-2022-jp></title>', '<meta>'],
+        'an xmp' => ['<xmp><meta charset="iso-2022-jp"></xmp>', '<meta>'],
+        'a viewport' => ['<meta name="viewport" content="width=device-width"><p>x</p>', '<meta>'],
+        'an xmp alone' => ['<xmp>x</xmp>', '<xmp>'],
+        'a noembed' => ['<noembed>x</noembed>', '<noembed>'],
+        'a noframes' => ['<noframes>x</noframes>', '<noframes>'],
+        'a plaintext' => ['<plaintext>x', '<plaintext>'],
+        'an escape' => ["<p>\x1b\$B<script>\x1b(B</p>", 'shift'],
+        'a shift out' => ["<p>\x0ex\x0f</p>", 'shift'],
         'not UTF-8' => ["<p>\xff\xfe<script>x</script></p>", 'UTF-8'],
     ]);
 
-    it('reads the charset it is sent in', function () {
-        safe('<meta charset="UTF-8"><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><p>é</p>');
-        expect(true)->toBeTrue();
+    it('sends the document it checked, saying UTF-8 itself', function () {
+        $html = SafeMailHtml::clean('<!DOCTYPE html><html lang="en"><head><title>x</title></head><body><p class=a>é &amp; <b>x</p></body></html>', new LinkPolicy('https://acme.test'));
+
+        expect($html)->toBe('<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="x-apple-disable-message-reformatting" content=""><meta name="color-scheme" content="light"><meta name="supported-color-schemes" content="light"><title>x</title></head><body><p class="a">é &amp; <b>x</b></p></body></html>');
     });
 
     it('is checked by the Mailer whatever drew it, against the message\'s own origin', function () {
-        expect(send('<p><a href="https://acme.test/x">x</a> <img src="https://acme.test/logo.png"></p>')->html)->toContain('acme.test/x')
+        expect(send('<p><a href="https://acme.test/x">x</a> <img src="https://acme.test/logo.png"></p>')->html)
+            ->toBe('<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="x-apple-disable-message-reformatting" content=""><meta name="color-scheme" content="light"><meta name="supported-color-schemes" content="light"></head><body><p><a href="https://acme.test/x">x</a> <img src="https://acme.test/logo.png"></p></body></html>')
             ->and(fn () => send('<p><a href="javascript:alert(1)">x</a></p>'))->toThrow(MailRenderingException::class)
             // One tenant's origin is not another's: the image is on acme's,
             // and this message is globex's.

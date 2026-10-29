@@ -24,6 +24,9 @@ final class SafeMailHtml
         'script', 'noscript', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet', 'link', 'base',
         'form', 'input', 'button', 'select', 'textarea', 'video', 'audio', 'source', 'track', 'picture',
         'svg', 'math', 'template', 'portal', 'canvas', 'dialog',
+        // Raw text the tree builder does not parse, which a mail client's
+        // encoding prescan, or an older parser, may read as markup.
+        'xmp', 'noembed', 'noframes', 'plaintext',
     ];
 
     /** Attributes that name a resource to load, beside `src`, which only an <img> may have. */
@@ -32,11 +35,32 @@ final class SafeMailHtml
         'srcdoc', 'ping', 'longdesc', 'manifest', 'xlink:href', 'xmlns:xlink',
     ];
 
+    /**
+     * The head's <meta>s, which only this writes: the charset the message's
+     * Content-Type names, first; a phone's width; no reformatting by Apple
+     * Mail; and light only, since the kit's colours are inline and a
+     * client's dark mode inverts them unasked.
+     */
+    private const array META = [
+        ['charset' => 'utf-8'],
+        ['name' => 'viewport', 'content' => 'width=device-width, initial-scale=1'],
+        ['name' => 'x-apple-disable-message-reformatting', 'content' => ''],
+        ['name' => 'color-scheme', 'content' => 'light'],
+        ['name' => 'supported-color-schemes', 'content' => 'light'],
+    ];
+
     /** What a style may not hold: a fetch, an import, or the old ways of running script from CSS. */
     private const string UNSAFE_STYLE = '/url\s*\(|image-set\s*\(|@import|expression\s*\(|javascript:|behavior\s*:|-moz-binding|\\\\/i';
 
-    /** @throws MailRenderingException naming the first thing refused */
-    public static function assert(string $html, LinkPolicy $links): void
+    /**
+     * The document to send: $html checked, then written out again from what
+     * was checked -- so the bytes a reader gets are the tree this read, not
+     * the renderer's -- with the head's <meta>s written by this alone, the
+     * charset first: the UTF-8 the message's Content-Type also says.
+     *
+     * @throws MailRenderingException naming the first thing refused
+     */
+    public static function clean(string $html, LinkPolicy $links): string
     {
         // No comment at all. `<!--[if mso]>...<![endif]-->` and the
         // downlevel-revealed `<![if !mso]>` are comments to this parser and
@@ -49,12 +73,23 @@ final class SafeMailHtml
             throw new MailRenderingException('An email cannot hold a comment: a conditional one is markup to Outlook that no check here reads.');
         }
 
-        // Read as it is sent: UTF-8, named to the parser so it sniffs no
-        // other charset from the bytes or a <meta>, and a document naming
-        // another refused below -- a client honouring that one would read
-        // the same bytes as markup this check never saw.
+        // Sent as UTF-8, which the message's Content-Type says, and nothing in
+        // it may say otherwise: a client honouring another charset would read
+        // these bytes as markup this check never saw. So no invalid UTF-8; no
+        // escape, shift-out or shift-in byte, which switch an ISO-2022
+        // decoder's character set mid-stream; and no <meta> from the renderer
+        // at all -- looked for in the bytes, since the encoding prescan finds
+        // one inside a <title> or <style> the tree holds as text, and where a
+        // quoted `>` would end a tag for one reader and not another. The
+        // head's few <meta>s, the charset first, are written here (META).
         if (!mb_check_encoding($html, 'UTF-8')) {
             throw new MailRenderingException('An email\'s HTML must be UTF-8, which it is sent as.');
+        }
+        if (strpbrk($html, "\x1b\x0e\x0f") !== false) {
+            throw new MailRenderingException('An email\'s HTML cannot hold an escape or shift byte, which switches a decoder\'s charset.');
+        }
+        if (preg_match('/<meta(?=[\s\/>])/i', $html) === 1) {
+            throw new MailRenderingException('An email\'s HTML cannot hold a <meta>: one could name a charset other than the UTF-8 it is sent as. The framework writes the head\'s own.');
         }
 
         $document = \Dom\HTMLDocument::createFromString($html, \LIBXML_NOERROR | \LIBXML_COMPACT, 'UTF-8');
@@ -66,7 +101,7 @@ final class SafeMailHtml
                 throw new MailRenderingException("An email cannot hold a <{$tag}> element.");
             }
             if ($tag === 'meta') {
-                self::assertMeta($element);
+                throw new MailRenderingException('An email\'s HTML cannot hold a <meta>: one could name a charset other than the UTF-8 it is sent as.');
             }
             if ($tag === 'style') {
                 self::assertStyle((string) $element->textContent, '<style>');
@@ -102,23 +137,22 @@ final class SafeMailHtml
                 }
             }
         }
-    }
 
-    private static function assertMeta(\Dom\Element $meta): void
-    {
-        if ($meta->hasAttribute('charset') && strtolower(trim((string) $meta->getAttribute('charset'))) !== 'utf-8') {
-            throw new MailRenderingException('An email\'s <meta charset> must say UTF-8, which it is sent as.');
+        $head = $document->head;
+        if ($head === null) {
+            throw new MailRenderingException('An email\'s HTML parsed to a document with no <head>.');
         }
-        if (!$meta->hasAttribute('http-equiv')) {
-            return;
+        $metas = [];
+        foreach (self::META as $attributes) {
+            $meta = $document->createElement('meta');
+            foreach ($attributes as $name => $value) {
+                $meta->setAttribute($name, $value);
+            }
+            $metas[] = $meta;
         }
-        if (strtolower(trim((string) $meta->getAttribute('http-equiv'))) !== 'content-type') {
-            throw new MailRenderingException('An email cannot hold a <meta http-equiv> other than Content-Type.');
-        }
-        $content = strtolower((string) $meta->getAttribute('content'));
-        if (preg_match('/charset\s*=\s*["\']?([^"\';\s]*)/', $content, $m) !== 1 || $m[1] !== 'utf-8') {
-            throw new MailRenderingException('An email\'s Content-Type <meta> must name the charset UTF-8, which it is sent as.');
-        }
+        $head->prepend(...$metas);
+
+        return $document->saveHtml();
     }
 
     private static function assertNoComments(\Dom\Node $node): void

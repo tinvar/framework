@@ -39,9 +39,10 @@ final readonly class Mailer
         /** @var array<string, mixed> $props */
         $rendered = $this->renderer->render($email->template, $props, $email->links);
         // Held again here, whatever drew it: the renderer is not trusted
-        // with what reaches a reader (ADR 0086).
-        SafeMailHtml::assert($rendered->html, $email->links);
-        $message = new Message($this->from, $email->to, $email->subject, $rendered->html, $rendered->text, $email->replyTo, $email->unsubscribe);
+        // with what reaches a reader, and what is sent is the document the
+        // check read, written out again (ADR 0086).
+        $html = SafeMailHtml::clean($rendered->html, $email->links);
+        $message = new Message($this->from, $email->to, $email->subject, $html, $rendered->text, $email->replyTo, $email->unsubscribe);
         $this->transport->send($message);
 
         return $message;
