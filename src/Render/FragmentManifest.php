@@ -83,6 +83,15 @@ final class FragmentManifest
     private array $queries = [];
 
     /**
+     * The actions each route's page may call, by route name, as the build
+     * read them over its source (ADR 0095) -- or null where the manifest was
+     * not made from a build that read them, and nothing can say.
+     *
+     * @var array<string, list<string>>|null
+     */
+    private ?array $actions = null;
+
+    /**
      * The params of each built page, by the same key as $byPage, so the
      * manifest can be written back out.
      *
@@ -238,8 +247,9 @@ final class FragmentManifest
         // Absent from a manifest written before the build listed them: every
         // route may then call nothing, which is the side to fail on.
         $queries = $data['queries'] ?? [];
+        $actions = $data['actions'] ?? null;
 
-        if ($data['format'] !== self::FORMAT || !\is_array($routes) || !\is_array($pages) || !\is_array($queries)) {
+        if ($data['format'] !== self::FORMAT || !\is_array($routes) || !\is_array($pages) || !\is_array($queries) || ($actions !== null && !\is_array($actions))) {
             throw new \RuntimeException("The fragment manifest at {$path} is not one this version of Tinvar reads.");
         }
 
@@ -275,6 +285,24 @@ final class FragmentManifest
             $manifest->declareQueries($route, $allowed);
         }
 
+        foreach ($actions ?? [] as $route => $names) {
+            if (!\is_string($route) || $route === '' || !\is_array($names) || !array_is_list($names)) {
+                throw new \RuntimeException("The fragment manifest at {$path} lists a route's actions that are not a name with a list.");
+            }
+            $callable = [];
+            foreach ($names as $name) {
+                if (!\is_string($name) || $name === '') {
+                    throw new \RuntimeException("The fragment manifest at {$path} names an action that is not a name.");
+                }
+                $callable[] = $name;
+            }
+            $manifest->declareActions($route, $callable);
+        }
+        // Listed, and empty: the build read them, and no route calls one.
+        if ($actions !== null) {
+            $manifest->actions ??= [];
+        }
+
         foreach ($pages as $route => $boundaries) {
             if (!\is_string($route) || !\is_array($boundaries) || !array_is_list($boundaries)) {
                 throw new \RuntimeException("The fragment manifest at {$path} lists a page that is not a route with a list of boundaries.");
@@ -305,7 +333,8 @@ final class FragmentManifest
      *     format: int,
      *     routes: array<string, list<string>|null>,
      *     pages: array<string, list<array{id: string, component: string, props: array<string, mixed>, params: array<string, string>}>>,
-     *     queries: array<string, list<string>>
+     *     queries: array<string, list<string>>,
+     *     actions?: array<string, list<string>>
      * }
      */
     public function toArray(): array
@@ -328,7 +357,14 @@ final class FragmentManifest
         }
         ksort($pages);
 
-        return ['format' => self::FORMAT, 'routes' => $routes, 'pages' => $pages, 'queries' => $queries];
+        $array = ['format' => self::FORMAT, 'routes' => $routes, 'pages' => $pages, 'queries' => $queries];
+        if ($this->actions !== null) {
+            $actions = $this->actions;
+            ksort($actions);
+            $array['actions'] = $actions;
+        }
+
+        return $array;
     }
 
     /**
@@ -490,6 +526,46 @@ final class FragmentManifest
     public function queriesFor(string $route): array
     {
         return $this->queries[$route] ?? [];
+    }
+
+    /**
+     * The actions a route's page may call, as the build read them over its
+     * source, client components included (ADR 0095). Declared twice, a
+     * route may call what either declaration lists.
+     *
+     * @param list<string> $actions
+     */
+    public function declareActions(string $route, array $actions): self
+    {
+        if ($route === '') {
+            throw new \InvalidArgumentException('An action list belongs to a route, found by its name.');
+        }
+
+        $names = array_values(array_unique([...$this->actions[$route] ?? [], ...$actions]));
+        sort($names, SORT_STRING);
+        $this->actions ??= [];
+        $this->actions[$route] = $names;
+
+        return $this;
+    }
+
+    /** Whether the build said which actions each route calls: only then can a rule be held to it. */
+    public function knowsActions(): bool
+    {
+        return $this->actions !== null;
+    }
+
+    /**
+     * The actions a route's page may call; none for a route the build did not
+     * list. Not an allowlist -- /_action is answered by the action's own
+     * panel and checks, whoever calls -- but what says which pages an action
+     * is reachable from.
+     *
+     * @return list<string>
+     */
+    public function actionsFor(string $route): array
+    {
+        return $this->actions[$route] ?? [];
     }
 
     /**

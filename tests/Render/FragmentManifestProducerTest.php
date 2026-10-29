@@ -50,8 +50,10 @@ function file(string $contents = ''): string
  * @param array<string, list<string>> $views
  * @param array<string, list<string>> $queries by view; none where not given
  * @param array<string, list<string>> $components by deferred component
+ * @param array<string, list<string>> $actions by view; none where not given
+ * @param array<string, list<string>> $componentActions by deferred component
  */
-function build(array $views, array $queries = [], array $components = []): string
+function build(array $views, array $queries = [], array $components = [], array $actions = [], array $componentActions = []): string
 {
     $registered = [];
     foreach ($views as $named) {
@@ -67,6 +69,8 @@ function build(array $views, array $queries = [], array $components = []): strin
         'views' => $views,
         'queries' => array_map(static fn (string $view): array => $queries[$view] ?? [], array_combine(array_keys($views), array_keys($views))),
         'componentQueries' => (object) [...$registered, ...$components],
+        'actions' => array_map(static fn (string $view): array => $actions[$view] ?? [], array_combine(array_keys($views), array_keys($views))),
+        'componentActions' => (object) [...array_map(static fn (): array => [], $registered), ...$componentActions],
     ], JSON_THROW_ON_ERROR));
 }
 
@@ -166,6 +170,30 @@ describe("each route's query allowlist", function () {
             ->and($manifest->queriesFor('sites.new'))->toBe(['notices.recent']);
     });
 
+    // ADR 0095: what calls an action is the build's to say, and the rule
+    // that refuses an unbound action only a panel's pages call reads it.
+    it('puts beside it the actions its page, its layouts and the components it may name call', function () {
+        $manifest = FragmentManifestProducer::produce(
+            routes(),
+            build(
+                [...QUIET, 'racks/show' => ['UnitHistory']],
+                actions: ['root' => ['account.signOut'], 'racks/show' => ['racks.move']],
+                componentActions: ['UnitHistory' => ['units.undo']],
+            ),
+        );
+
+        expect($manifest->knowsActions())->toBeTrue()
+            ->and($manifest->actionsFor('racks.show'))->toBe(['account.signOut', 'racks.move', 'units.undo'])
+            ->and($manifest->actionsFor('health'))->toBe(['account.signOut']);
+    });
+
+    it('refuses a build that did not list the actions', function () {
+        $path = file('{"format": 1, "views": {"health": []}, "queries": {"health": []}, "componentQueries": {}}');
+
+        expect(fn () => FragmentManifestProducer::produce(routes(), $path))
+            ->toThrow(\RuntimeException::class, 'lists no actions');
+    });
+
     it('lists a route that may call nothing with nothing, and allows a route it does not know nothing', function () {
         $manifest = FragmentManifestProducer::produce(routes(), build(QUIET));
 
@@ -206,6 +234,8 @@ describe("each route's query allowlist", function () {
             'views' => [...QUIET, 'racks/show' => ['UnitHistory']],
             'queries' => array_map(static fn (): array => [], QUIET),
             'componentQueries' => new \stdClass(),
+            'actions' => array_map(static fn (): array => [], QUIET),
+            'componentActions' => new \stdClass(),
         ], JSON_THROW_ON_ERROR));
 
         expect(fn () => FragmentManifestProducer::produce(routes(), $path))

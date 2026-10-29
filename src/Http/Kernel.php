@@ -789,6 +789,11 @@ final class Kernel
         if ($fragments?->allowedQueries !== null) {
             $entry->checkAllowlists($this->routes, $this->queries, $fragments->allowedQueries);
         }
+        // And the same rule's half for actions, wherever the build said which
+        // pages call which actions (ADR 0095).
+        if ($manifest?->knowsActions() === true) {
+            $entry->checkActionCallers($this->routes, $this->actions, $manifest->actionsFor(...));
+        }
         $this->entry = $entry;
 
         // Every error page's layouts are known now; one it could not be

@@ -300,6 +300,7 @@ final class App
      * @param list<class-string<Middleware>> $global
      * @param list<class-string> $extraQueries beside AdminStats
      * @param (\Closure(string): list<string>)|null $allowedQueries each route's query allowlist, by name
+     * @param list<class-string> $extraActions beside AdminActions
      */
     public function __construct(
         array $routes = [],
@@ -309,6 +310,7 @@ final class App
         ?\Closure $allowedQueries = null,
         ?\Tinvar\Data\SharedRegistry $shared = null,
         ?\Tinvar\Cache\TagVersions $tagVersions = null,
+        array $extraActions = [],
     ) {
         Trace::reset();
         $fixture = new TenantFixture();
@@ -326,7 +328,7 @@ final class App
         $registry->registerAll([AdminGroup::class, AdminDashboard::class, AdminOrders::class, Home::class, ResellerHome::class, Reports::class, ...$routes]);
 
         $actions = new ActionRegistry($container->resolver());
-        $actions->register(AdminActions::class);
+        $actions->registerAll([AdminActions::class, ...$extraActions]);
 
         $queries = $this->queries = new QueryRegistry($container->resolver());
         $queries->registerAll([AdminStats::class, ...$extraQueries]);

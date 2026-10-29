@@ -82,9 +82,14 @@ use Tinvar\Validation\FormRequest;
  *      time. A query with no #[Panel] and outside every panel's namespace,
  *      which only routes in a panel may call, fails.
  *
- *      Its action half is not built. A query's reachability is its routes'
- *      allowlists; nothing relates an action to the pages that call it, so
- *      there is nothing to decide "only from admin-panel pages" with.
+ *   panel-only-action-must-be-bound
+ *     Its half for actions, by EntryContext::checkActionCallers() as the
+ *     Kernel is built. Nothing PHP holds relates an action to the pages that
+ *     call it, so the renderer build reads it from source -- each page's
+ *     modules, its client components among them, for the actions they
+ *     import -- into the fragment manifest (ADR 0095). An action with no
+ *     #[Panel] and outside every panel's namespace, which only pages in a
+ *     panel call, fails.
  */
 final class BuildRules
 {
@@ -96,6 +101,7 @@ final class BuildRules
     public const string QUERY_MUST_DECLARE_AUTHORIZATION = 'query-must-declare-authorization';
     public const string CHANNEL_MUST_DECLARE_AUTHORIZATION = 'channel-must-declare-authorization';
     public const string PANEL_ONLY_QUERY_MUST_BE_BOUND = 'panel-only-query-must-be-bound';
+    public const string PANEL_ONLY_ACTION_MUST_BE_BOUND = 'panel-only-action-must-be-bound';
     public const string ATTRIBUTES_MUST_NAME_A_CLASS = 'attributes-must-name-a-class';
     public const string FIELD_ENUMS_NAME_DATA_FIELDS = 'field-enums-name-data-fields';
 

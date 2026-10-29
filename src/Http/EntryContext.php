@@ -360,6 +360,70 @@ final readonly class EntryContext
     }
 
     /**
+     * The rule's half for actions (BuildRules::PANEL_ONLY_ACTION_MUST_BE_BOUND):
+     * refuses, when the Kernel is built, an action with no panel binding
+     * that only pages in a panel call.
+     *
+     * Over /_action an action runs behind its own panel's stack, and an
+     * unbound one behind none -- no guard, no membership, none of the
+     * panel's middleware -- where every page that calls it runs behind one.
+     * Which pages call it is the build's to say: the renderer build reads
+     * each page's source, its client components with it, for the actions it
+     * imports (FragmentManifest::actionsFor()). An action some page in no
+     * panel calls is not the panel's alone, and one no page calls is reached
+     * some other way; both pass, as for queries.
+     *
+     * @param \Closure(string): list<string> $actionsOf the actions a route's page calls, by route name
+     */
+    public function checkActionCallers(RouteRegistry $routes, ActionRegistry $actions, \Closure $actionsOf): void
+    {
+        /** @var array<string, array<string, list<string>>> $unbound action => panel ('' for none) => pages */
+        $unbound = [];
+
+        foreach ($routes->pages() as $page) {
+            if ($page->name === null) {
+                continue;
+            }
+            $panel = $this->panelForChain($routes->chainFor($page->name, array_fill_keys($page->parameters, '')));
+
+            foreach ($actionsOf($page->name) as $name) {
+                if (!$actions->has($name)) {
+                    continue;
+                }
+                $action = $actions->get($name);
+                if ($this->panelFor($action->panels, $action->class) === null) {
+                    $unbound[$name][$panel->name ?? ''][] = $page->name;
+                }
+            }
+        }
+
+        foreach ($unbound as $name => $callers) {
+            if (isset($callers[''])) {
+                continue;
+            }
+
+            $panels = array_keys($callers);
+            $where = implode(', ', array_map(
+                static fn (string $panel, array $pages): string => "'{$panel}' (" . implode(', ', $pages) . ')',
+                $panels,
+                $callers,
+            ));
+            $fix = \count($panels) === 1
+                ? "Bind it with #[Panel('{$panels[0]}')], or move its class into that panel's namespace."
+                : 'An action is in one panel, so split it, one per panel, each bound with #[Panel] or moved into '
+                    . "that panel's namespace.";
+
+            throw new \InvalidArgumentException((string) new Violation(
+                BuildRules::PANEL_ONLY_ACTION_MUST_BE_BOUND,
+                "action '{$name}' (" . $actions->get($name)->where() . ')',
+                "has no panel binding, and every page that calls it is in a panel: {$where}. Over /_action it "
+                . "runs behind no panel's stack -- no guard, no membership check, none of the panel's middleware "
+                . "-- where every page calling it runs behind one. {$fix}",
+            ));
+        }
+    }
+
+    /**
      * Why a call to query $name may not run in the request as it stands, or
      * null when it may: the render path's half of checkAllowlists(), for a
      * route registered after the Kernel, an allowlist the Kernel was never

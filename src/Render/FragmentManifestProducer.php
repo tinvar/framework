@@ -34,6 +34,11 @@ use Tinvar\Routing\RouteRegistry;
  * render of the route -- tinvar-spec.md, "PHP rejects any other name on that
  * route's socket, so a compromised dependency can't call queries the page
  * never uses".
+ *
+ * And the actions each route's page calls, joined the same way from what
+ * the build read over each view's source, its client components with it:
+ * not an allowlist, but what the build rule refusing an unbound action that
+ * only a panel's pages call is held to (ADR 0095).
  */
 final class FragmentManifestProducer
 {
@@ -58,7 +63,7 @@ final class FragmentManifestProducer
      */
     public static function produce(RouteRegistry $routes, string $deferredJson): FragmentManifest
     {
-        ['views' => $views, 'queries' => $viewQueries, 'components' => $componentQueries] = self::read($deferredJson);
+        ['views' => $views, 'queries' => $viewQueries, 'components' => $componentQueries, 'actions' => $viewActions, 'componentActions' => $componentActions] = self::read($deferredJson);
         $manifest = new FragmentManifest();
         $layouts = $routes->layouts();
 
@@ -72,6 +77,7 @@ final class FragmentManifestProducer
 
             $components = [];
             $queries = [];
+            $actions = [];
             $any = false;
             foreach ($rendered as $view) {
                 if (!\array_key_exists($view, $views)) {
@@ -89,6 +95,9 @@ final class FragmentManifestProducer
                 }
                 foreach ($viewQueries[$view] as $query) {
                     $queries[$query] = true;
+                }
+                foreach ($viewActions[$view] ?? [] as $action) {
+                    $actions[$action] = true;
                 }
             }
 
@@ -108,6 +117,9 @@ final class FragmentManifestProducer
                 foreach ($componentQueries[$component] as $query) {
                     $queries[$query] = true;
                 }
+                foreach ($componentActions[$component] ?? [] as $action) {
+                    $actions[$action] = true;
+                }
             }
 
             if ($queries !== []) {
@@ -116,6 +128,15 @@ final class FragmentManifestProducer
                 // Listed with none, so the file says so rather than leaving
                 // the route out.
                 $manifest->declareQueries($page->name, []);
+            }
+
+            // What the page calls over /_action, read over its source with its
+            // client components (ADR 0095). An unnamed page is found by no
+            // name, so says nothing of what calls an action -- which can only
+            // leave an action looking reachable from fewer places, and the
+            // rule it feeds refuses more, never less.
+            if ($page->name !== null) {
+                $manifest->declareActions($page->name, self::sorted(array_map('strval', array_keys($actions))));
             }
 
             if ($components === []) {
@@ -164,7 +185,7 @@ final class FragmentManifestProducer
      * refused: read as "no queries", every route's renders would be refused
      * what they call, and a stale build is the likelier cause.
      *
-     * @return array{views: array<string, list<string>>, queries: array<string, list<string>>, components: array<string, list<string>>}
+     * @return array{views: array<string, list<string>>, queries: array<string, list<string>>, components: array<string, list<string>>, actions: array<string, list<string>>, componentActions: array<string, list<string>>}
      */
     private static function read(string $path): array
     {
@@ -189,11 +210,18 @@ final class FragmentManifestProducer
                 "{$path} lists no queries: build the app again, with this version's deferredBoundaries() Vite plugin.",
             );
         }
+        if (!\is_array($decoded['actions'] ?? null) || !\is_array($decoded['componentActions'] ?? null)) {
+            throw new \RuntimeException(
+                "{$path} lists no actions: build the app again, with this version's deferredBoundaries() Vite plugin.",
+            );
+        }
 
         return [
             'views' => self::names($decoded['views'], $path, 'view', 'component'),
             'queries' => self::names($decoded['queries'], $path, 'view', 'query'),
             'components' => self::names($decoded['componentQueries'], $path, 'deferred component', 'query'),
+            'actions' => self::names($decoded['actions'], $path, 'view', 'action'),
+            'componentActions' => self::names($decoded['componentActions'], $path, 'deferred component', 'action'),
         ];
     }
 
