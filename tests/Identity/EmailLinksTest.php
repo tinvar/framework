@@ -357,6 +357,8 @@ function origins(Domains $domains, ?\Closure $primary = null): CanonicalOrigins
         $realms,
         staff: static fn (Authenticatable $user): bool => $user->authIdentifier() === 'boss',
         clock: static fn (): int => Clock::$now,
+        // u-1 belongs to acme alone; u-2 to acme and to globex beside it.
+        confined: static fn (Authenticatable $user, string $tenant): bool => $user->authIdentifier() === 'u-1' && $tenant === 'acme',
     );
 }
 
@@ -419,7 +421,19 @@ describe('the canonical origin', function () {
             ->and(fn () => new CanonicalOrigins('https://shop.example/path'))->toThrow(\InvalidArgumentException::class)
             ->and(fn () => new CanonicalOrigins(ORIGIN, static fn (): ?string => null))->toThrow(\InvalidArgumentException::class)
             ->and(fn () => new CanonicalOrigins(ORIGIN, static fn (): ?string => null, new Domains(), new Realms(Realm::platform(ORIGIN))))->toThrow(\InvalidArgumentException::class)
+            ->and(fn () => new CanonicalOrigins(ORIGIN, static fn (): ?string => null, new Domains(), new Realms(Realm::platform(ORIGIN)), static fn (): bool => false))->toThrow(\InvalidArgumentException::class)
             ->and(new CanonicalOrigins(ORIGIN . '/')->platform)->toBe(ORIGIN);
+    });
+
+    it('builds a reset on the tenant\'s domain only for an account confined to it', function () {
+        $origins = origins(new Domains(['shop.acme.test' => passing('shop.acme.test')]));
+
+        expect($origins->forReset(new User('u-1'), 'acme'))->toBe('https://shop.acme.test')
+            // Its password would reach globex, which the domain's realm does not.
+            ->and($origins->forReset(new User('u-2'), 'acme'))->toBe(ORIGIN)
+            ->and($origins->forReset(new User('boss'), 'acme'))->toBe(ORIGIN)
+            ->and(origins(new Domains())->forReset(new User('u-1'), 'acme'))->toBe(ORIGIN)
+            ->and(new CanonicalOrigins(ORIGIN)->forReset(new User('u-1'), 'acme'))->toBe(ORIGIN);
     });
 
     it('builds each tenant\'s unsubscribe links on its own origin', function () {
@@ -428,5 +442,74 @@ describe('the canonical origin', function () {
 
         expect($unsubscribe->url('news', 'u-1', 'acme'))->toStartWith('https://shop.acme.test' . UnsubscribeLinks::PATH . '/')
             ->and($unsubscribe->url('news', 'u-1', 'globex'))->toStartWith(ORIGIN . UnsubscribeLinks::PATH . '/');
+    });
+});
+
+describe('a carried link', function () {
+    it('is a reset made on the custom domain, used up there and made again on the platform\'s host, ending when it did', function (EmailLinkStore $store) {
+        $links = links($store, new Users());
+        $issued = $links->issue(EmailLinks::PASSWORD_RESET, 'https://shop.acme.test', '/password/reset', 'acme', new User('u-1'));
+        $token = tokenOf($issued['url']);
+        Clock::$now += 300;
+
+        $carried = $links->carry($token, EmailLinks::PASSWORD_RESET, 'https://shop.acme.test', 'acme', ORIGIN, '/password/reset');
+        \assert($carried !== null);
+        $next = tokenOf($carried);
+
+        expect($carried)->toStartWith(ORIGIN . '/password/reset?token=v1.')
+            // The first opens nothing once carried, here or anywhere.
+            ->and($links->peek($token, EmailLinks::PASSWORD_RESET, 'https://shop.acme.test', 'acme'))->toBeNull()
+            ->and($links->carry($token, EmailLinks::PASSWORD_RESET, 'https://shop.acme.test', 'acme', ORIGIN, '/password/reset'))->toBeNull()
+            // The carried one opens on the platform's host alone, for the same account.
+            ->and($links->peek($next, EmailLinks::PASSWORD_RESET, 'https://shop.acme.test', 'acme'))->toBeNull()
+            ->and($links->peek($next, EmailLinks::PASSWORD_RESET, ORIGIN, 'globex'))->toBeNull()
+            ->and($links->peek($next, EmailLinks::PASSWORD_RESET, ORIGIN, 'acme')?->user)->toBe('u-1')
+            ->and($links->peek($next, EmailLinks::PASSWORD_RESET, ORIGIN, 'acme')?->expiresAt)->toBe($issued['link']->expiresAt);
+
+        // Carrying gained it no time.
+        Clock::$now = $issued['link']->expiresAt;
+        expect($links->consume($next, EmailLinks::PASSWORD_RESET, ORIGIN, 'acme'))->toBeNull();
+    })->with('stores');
+
+    it('is refused for a link that would not open where it is, or whose account moved its epoch', function () {
+        $users = new Users();
+        $links = links(new ArrayEmailLinkStore(), $users);
+        $token = tokenOf($links->issue(EmailLinks::PASSWORD_RESET, 'https://shop.acme.test', '/r', 'acme', new User('u-1'))['url']);
+
+        expect($links->carry($token, EmailLinks::PASSWORD_RESET, 'https://shop.globex.test', 'acme', ORIGIN, '/r'))->toBeNull()
+            ->and($links->carry($token, EmailLinks::PASSWORD_RESET, 'https://shop.acme.test', 'globex', ORIGIN, '/r'))->toBeNull()
+            ->and($links->carry($token, EmailLinks::INVITE, 'https://shop.acme.test', 'acme', ORIGIN, '/r'))->toBeNull();
+
+        $users->epochs['u-1'] = '2';
+        expect($links->carry($token, EmailLinks::PASSWORD_RESET, 'https://shop.acme.test', 'acme', ORIGIN, '/r'))->toBeNull();
+    });
+
+    // One made for a custom domain signs in to that realm alone; carried
+    // to the platform's host it would sign in to every membership.
+    it('is never a sign-in link, nor carried to where it is, nor to an origin that is not one', function () {
+        $links = links(new ArrayEmailLinkStore(), new Users());
+        $token = tokenOf($links->issue(EmailLinks::SIGN_IN, 'https://shop.acme.test', '/l', 'acme', new User('u-1'))['url']);
+        $reset = tokenOf($links->issue(EmailLinks::PASSWORD_RESET, 'https://shop.acme.test', '/r', 'acme', new User('u-1'))['url']);
+
+        expect(fn () => $links->carry($token, EmailLinks::SIGN_IN, 'https://shop.acme.test', 'acme', ORIGIN, '/l'))->toThrow(\InvalidArgumentException::class)
+            ->and(fn () => $links->carry($reset, EmailLinks::PASSWORD_RESET, 'https://shop.acme.test', 'acme', 'https://shop.acme.test', '/r'))->toThrow(\InvalidArgumentException::class)
+            ->and(fn () => $links->carry($reset, EmailLinks::PASSWORD_RESET, 'https://shop.acme.test', 'acme', 'http://evil.example', '/r'))->toThrow(\InvalidArgumentException::class)
+            ->and($links->peek($token, EmailLinks::SIGN_IN, 'https://shop.acme.test', 'acme'))->not->toBeNull()
+            ->and($links->peek($reset, EmailLinks::PASSWORD_RESET, 'https://shop.acme.test', 'acme'))->not->toBeNull();
+    });
+
+    it('carries an invite with what it grants, which is accepted on the platform\'s host', function () {
+        $users = new Users();
+        $links = links(new ArrayEmailLinkStore(), $users);
+        $invitations = new Invitations($links, new Roles(), $users, '/invites');
+        $token = tokenOf($invitations->invite(new User('boss'), 'x@example.com', 'acme', 'staff', 'manager', 'https://shop.acme.test')['url']);
+
+        $carried = $links->carry($token, EmailLinks::INVITE, 'https://shop.acme.test', 'acme', ORIGIN, '/invites');
+        \assert($carried !== null);
+        $accepted = $invitations->accept(tokenOf($carried), ORIGIN, 'acme');
+
+        expect($accepted?->role)->toBe('manager')
+            ->and($accepted?->email)->toBe('x@example.com')
+            ->and($invitations->accept($token, 'https://shop.acme.test', 'acme'))->toBeNull();
     });
 });

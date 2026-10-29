@@ -123,6 +123,59 @@ final readonly class EmailLinks
     public function issue(string $purpose, string $origin, string $path, string $tenant, ?Authenticatable $user, array $data = []): array
     {
         $lifetime = self::LIFETIMES[$purpose] ?? throw new \InvalidArgumentException("'{$purpose}' is not a kind of emailed link.");
+
+        return $this->make($purpose, $origin, $path, $tenant, $user, $data, $this->now() + $lifetime);
+    }
+
+    /**
+     * Carries a link opened on one origin to another -- from a tenant's
+     * custom domain to the platform's host, where a password is typed
+     * (ADR 0097) -- and returns the URL to send the browser on to, or null
+     * for every reason the link would not open here.
+     *
+     * The link is used up here, in the same one write consume() makes, and
+     * a new one made on $to for the same purpose, tenant, account and
+     * data, bound to the account's epoch as it is now, and ending when the
+     * first did: carrying it gains no time, and the first opens nothing
+     * once carried. So the custom domain's page never takes a password,
+     * and the platform's host takes one only with a link it made itself.
+     *
+     * A reset or an invite only. A sign-in link is never carried: one made
+     * for a custom domain signs in to that domain's realm, held to its
+     * subtree, and carried to the platform's host it would sign in to
+     * every membership the account holds.
+     *
+     * @param string $to the origin to carry it to: an emailed link's origin, not the one it is on
+     * @param string $path the page it lands on there
+     */
+    public function carry(string $token, string $purpose, string $origin, string $tenant, string $to, string $path): ?string
+    {
+        if ($purpose !== self::PASSWORD_RESET && $purpose !== self::INVITE) {
+            throw new \InvalidArgumentException('Only a reset or an invite is carried to another origin; a sign-in link signs in where it was built for.');
+        }
+        $to = CanonicalOrigins::origin($to);
+        if ($to === $origin) {
+            throw new \InvalidArgumentException('A link is carried to another origin than the one it is on.');
+        }
+
+        $link = $this->consume($token, $purpose, $origin, $tenant);
+        if ($link === null) {
+            return null;
+        }
+        $user = $link->user === '' ? null : $this->users->find($link->user);
+        if ($link->user !== '' && ($user === null || $user->authIdentifier() !== $link->user)) {
+            return null;
+        }
+
+        return $this->make($purpose, $to, $path, $tenant, $user, $link->data, $link->expiresAt)['url'];
+    }
+
+    /**
+     * @param array<string, string> $data
+     * @return array{url: string, link: EmailLink}
+     */
+    private function make(string $purpose, string $origin, string $path, string $tenant, ?Authenticatable $user, array $data, int $expiresAt): array
+    {
         $origin = CanonicalOrigins::origin($origin);
         if (preg_match('#^/(?!/)[A-Za-z0-9/_.-]*\z#', $path) !== 1) {
             throw new \InvalidArgumentException("'{$path}' is not a path an emailed link lands on: root-relative, no query.");
@@ -147,7 +200,7 @@ final readonly class EmailLinks
             user: $userId,
             data: $data,
             createdAt: $now,
-            expiresAt: $now + $lifetime,
+            expiresAt: $expiresAt,
         );
 
         $this->store->prune($now, self::PRUNE_BATCH);
