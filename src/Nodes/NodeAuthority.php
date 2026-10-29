@@ -17,14 +17,20 @@ use Tinvar\Support\BuildProfile;
  * the node, the gateway that relays commands to it -- is the product's, not
  * the framework's. What the framework holds is the boundary: a CA and every
  * certificate it issues name the one environment they are for, as a URI
- * subject alternative name, `urn:tinvar:environment:<profile>`, and a
+ * subject alternative name, `urn:tinvar:environment:<profile>` -- read from
+ * the certificate's DER, never its printed form (SubjectAltNames) -- and a
  * server believes only a certificate that names its own profile and was
  * signed by a CA that names it too. A production node's certificate, shown
  * to staging, is refused twice over: staging's CA did not sign it, and it
  * says production.
  *
  * One level: a node's certificate is signed by the CA itself, with no
- * intermediate. A node is named by `urn:tinvar:node:<id>`.
+ * intermediate. A node is named by `urn:tinvar:node:<id>`, and a node's
+ * certificate names exactly its environment and itself, as URIs, and
+ * nothing else. Which id a node gets is the CA's word, so the CA -- the
+ * product's -- sets both names itself from the enrollment it approved and
+ * never copies a name or an extension a node's signing request asked for.
+ * Nothing here can tell a name the CA chose from one it was handed.
  */
 final readonly class NodeAuthority
 {
@@ -55,7 +61,11 @@ final readonly class NodeAuthority
         }
         self::assertCurrent($parsed, 'The node CA certificate', $now);
 
-        $environment = self::environmentOf($parsed, 'The node CA certificate');
+        $uris = SubjectAltNames::uris($pem, 'The node CA certificate');
+        $environment = self::environmentOf($uris, 'The node CA certificate');
+        if (\count($uris) !== 1) {
+            throw new NodeRefused('The node CA certificate names something besides its environment.');
+        }
         if ($environment !== $profile) {
             throw new NodeRefused(
                 "The node CA is {$environment}'s, and this server's profile is {$profile}. Each environment enrolls "
@@ -128,15 +138,20 @@ final readonly class NodeAuthority
         }
         self::assertCurrent($parsed, 'The node certificate', $now ?? time());
 
-        $environment = self::environmentOf($parsed, 'The node certificate');
+        $uris = SubjectAltNames::uris($pem, 'The node certificate');
+        $environment = self::environmentOf($uris, 'The node certificate');
         if ($environment !== $this->profile) {
             throw new NodeRefused("The node certificate is {$environment}'s, and this server's profile is {$this->profile}.");
         }
 
-        $nodes = array_values(array_filter(self::uris($parsed), static fn (string $uri): bool => str_starts_with($uri, self::NODE_URN)));
+        // Exactly its environment and itself: nothing else is a node's to name.
+        $nodes = array_values(array_filter($uris, static fn (string $uri): bool => str_starts_with($uri, self::NODE_URN)));
         $id = \count($nodes) === 1 ? substr($nodes[0], \strlen(self::NODE_URN)) : '';
         if (preg_match(self::NODE_ID, $id) !== 1) {
             throw new NodeRefused('The node certificate names no node, or more than one: one ' . self::NODE_URN . '<id> is needed.');
+        }
+        if (\count($uris) !== 2) {
+            throw new NodeRefused('The node certificate names something besides its environment and itself.');
         }
 
         return new NodeIdentity($id, $environment, (string) openssl_x509_fingerprint($pem, 'sha256'));
@@ -172,40 +187,18 @@ final readonly class NodeAuthority
     }
 
     /**
-     * The one environment a certificate names; refused for none, or two.
+     * The one environment a certificate's URIs name; refused for none, or two.
      *
-     * @param array<string, mixed> $parsed
+     * @param list<string> $uris
      */
-    private static function environmentOf(array $parsed, string $what): string
+    private static function environmentOf(array $uris, string $what): string
     {
-        $named = array_values(array_filter(self::uris($parsed), static fn (string $uri): bool => str_starts_with($uri, self::ENVIRONMENT_URN)));
+        $named = array_values(array_filter($uris, static fn (string $uri): bool => str_starts_with($uri, self::ENVIRONMENT_URN)));
         $environment = \count($named) === 1 ? substr($named[0], \strlen(self::ENVIRONMENT_URN)) : '';
         if (!\in_array($environment, BuildProfile::PROFILES, true)) {
             throw new NodeRefused("{$what} names no environment, or more than one: one " . self::ENVIRONMENT_URN . '<profile> is needed.');
         }
 
         return $environment;
-    }
-
-    /**
-     * @param array<string, mixed> $parsed
-     * @return list<string>
-     */
-    private static function uris(array $parsed): array
-    {
-        $names = $parsed['extensions']['subjectAltName'] ?? '';
-        if (!\is_string($names)) {
-            return [];
-        }
-
-        $uris = [];
-        foreach (explode(',', $names) as $name) {
-            $name = trim($name);
-            if (str_starts_with($name, 'URI:')) {
-                $uris[] = substr($name, 4);
-            }
-        }
-
-        return $uris;
     }
 }

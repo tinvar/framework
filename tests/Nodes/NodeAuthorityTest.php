@@ -14,8 +14,9 @@ use Tinvar\Nodes\NodeAuthority;
 use Tinvar\Nodes\NodeRefused;
 
 /**
- * A certificate: self-signed when $issuer is null. $names are its URI
- * subject alternative names.
+ * A certificate: self-signed when $issuer is null. $names are its subject
+ * alternative names: URIs, or `DNS:...` and `email:...` as written. Given
+ * in a section of their own, so a comma in one is part of it.
  *
  * @param list<string> $names
  * @param array{\OpenSSLCertificate, \OpenSSLAsymmetricKey}|null $issuer
@@ -24,7 +25,12 @@ use Tinvar\Nodes\NodeRefused;
 function certificate(string $commonName, array $names, bool $ca, ?array $issuer = null, int $days = 30): array
 {
     $config = tempnam(sys_get_temp_dir(), 'tinvar-node-ca');
-    $alt = $names === [] ? '' : 'subjectAltName = ' . implode(',', array_map(static fn (string $n): string => "URI:{$n}", $names));
+    $section = '';
+    foreach (array_values($names) as $i => $name) {
+        [$type, $value] = preg_match('/^(DNS|email):(.*)\z/s', $name, $m) === 1 ? [$m[1], $m[2]] : ['URI', $name];
+        $section .= "{$type}." . ($i + 1) . " = {$value}\n";
+    }
+    $alt = $names === [] ? '' : "subjectAltName = @alt\n[alt]\n{$section}";
     file_put_contents($config, "[req]\ndistinguished_name = dn\n[dn]\n[ext]\nbasicConstraints = critical,CA:" . ($ca ? 'TRUE' : 'FALSE') . "\n{$alt}\n");
     $options = ['config' => $config, 'private_key_type' => OPENSSL_KEYTYPE_EC, 'curve_name' => 'prime256v1', 'digest_alg' => 'sha256'];
     try {
@@ -135,3 +141,53 @@ it('reads the CA TINVAR_NODE_CA names, for the profile served, and none where it
         unlink($file);
     }
 });
+
+// openssl_x509_parse() prints the names joined by ', ': a comma inside one
+// name printed as a second, forged, URI.
+it('refuses a URI forged inside another name', function (string $forged) {
+    $ca = ca('staging');
+    $node = node($ca, 'staging', [NodeAuthority::ENVIRONMENT_URN . 'staging', $forged]);
+
+    NodeAuthority::fromPem($ca[0], 'staging')->verify($node);
+})->with([
+    'a DNS name' => ['DNS:x, URI:urn:tinvar:node:admin'],
+    'an email name' => ['email:a@b, URI:urn:tinvar:node:admin'],
+])->throws(NodeRefused::class, 'only URI');
+
+it('refuses a node URN that is not a URI alone, though a real one is there', function () {
+    $ca = ca('staging');
+    $node = node($ca, 'staging', [NodeAuthority::ENVIRONMENT_URN . 'staging', NodeAuthority::NODE_URN . 'node-1', 'DNS:node-1.example']);
+
+    NodeAuthority::fromPem($ca[0], 'staging')->verify($node);
+})->throws(NodeRefused::class, 'only URI');
+
+it('refuses a URI with a comma that would print as two', function () {
+    $ca = ca('staging');
+    $node = node($ca, 'staging', [NodeAuthority::ENVIRONMENT_URN . 'staging, URI:' . NodeAuthority::NODE_URN . 'admin']);
+
+    NodeAuthority::fromPem($ca[0], 'staging')->verify($node);
+})->throws(NodeRefused::class, 'not a URI of visible ASCII');
+
+it('refuses the same name twice', function () {
+    $ca = ca('staging');
+    $node = node($ca, 'staging', [NodeAuthority::ENVIRONMENT_URN . 'staging', NodeAuthority::NODE_URN . 'node-1', NodeAuthority::NODE_URN . 'node-1']);
+
+    NodeAuthority::fromPem($ca[0], 'staging')->verify($node);
+})->throws(NodeRefused::class, 'twice');
+
+it('refuses DER it cannot read strictly', function (string $der, string $message) {
+    expect(fn () => \Tinvar\Nodes\SubjectAltNames::uris("-----BEGIN CERTIFICATE-----\n" . base64_encode($der) . "\n-----END CERTIFICATE-----\n", 'It'))
+        ->toThrow(NodeRefused::class, $message);
+})->with([
+    'a long length for a short value' => ["\x30\x81\x03\x30\x01\x00", 'shortest form'],
+    'an indefinite length' => ["\x30\x80\x00\x00", 'cannot read'],
+    'a value past its end' => ["\x30\x05\x30\x01", 'runs past'],
+    'bytes after the certificate' => ["\x30\x02\x30\x00\x00", 'not a well-formed'],
+    'a tag of two bytes' => ["\x30\x03\x1f\x01\x00", 'more than one byte'],
+]);
+
+it('refuses two certificates where one is asked for', function () {
+    $pem = ca('staging')[0];
+
+    \Tinvar\Nodes\SubjectAltNames::uris($pem . $pem, 'It');
+})->throws(NodeRefused::class, 'not one PEM certificate');
