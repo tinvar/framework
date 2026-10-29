@@ -82,6 +82,12 @@ final class RenderChannel
          * platform where PHP cannot ask it.
          */
         private readonly ?PeerCredentials $peerCredentials = null,
+        /**
+         * The retry hook (ADR 0093): which failed renders are tried again,
+         * how often and after what pause. Asked only about a render its
+         * caller says may be repeated. Without one, none is.
+         */
+        private readonly ?RenderRetry $retry = null,
     ) {}
 
     /**
@@ -140,25 +146,65 @@ final class RenderChannel
      * @param SharedReads|null $shared the page's shared data (the Kernel's shared()),
      *        which its components read as query calls; null means this render
      *        may read none (ADR 0060)
+     * @param bool $repeatable the caller's word that this render may be done
+     *        again if it fails -- RenderRetry::permits() for its request: a
+     *        GET's, never an action's. Only then is the retry hook asked.
+     * @param (\Closure(): void)|null $rewind takes back what $sink was given,
+     *        for a caller that buffers the response: a render that failed
+     *        after its first byte is then repeated from a clean start. Without
+     *        one, only a render that had sent nothing is.
      */
-    public function render(array $frame, array $allowed, \Closure $sink, ?\Closure $mint = null, ?SharedReads $shared = null): RenderResult
-    {
-        $trace = $this->telemetry?->renderStarted($frame);
+    public function render(
+        array $frame,
+        array $allowed,
+        \Closure $sink,
+        ?\Closure $mint = null,
+        ?SharedReads $shared = null,
+        bool $repeatable = false,
+        ?\Closure $rewind = null,
+    ): RenderResult {
+        for ($try = 0; ; $try++) {
+            // Whether any of this try's output went to the caller: what
+            // the browser may already hold, unless the caller can take it
+            // back.
+            $sent = false;
+            $tracked = static function (string $bytes) use ($sink, &$sent): void {
+                $sent = true;
+                $sink($bytes);
+            };
 
-        try {
-            $result = $this->exchange($frame, $allowed, $sink, $mint, $trace, $shared);
-        } catch (\Throwable $e) {
-            if ($trace !== null) {
-                $this->telemetry->renderFailed($trace, $e);
+            $trace = $this->telemetry?->renderStarted($frame);
+
+            try {
+                $result = $this->exchange($frame, $allowed, $tracked, $mint, $trace, $shared);
+            } catch (\Throwable $e) {
+                if ($trace !== null) {
+                    $this->telemetry->renderFailed($trace, $e);
+                }
+
+                if (!$repeatable || $this->retry === null || ($sent && $rewind === null)
+                    || !$this->retry->retries($e, $try + 1)) {
+                    throw $e;
+                }
+
+                if ($sent) {
+                    // Only with a rewind: the condition above refused the rest.
+                    $rewind();
+                }
+                if ($trace !== null) {
+                    $this->telemetry->renderRetried($trace, $e, $try + 1);
+                }
+                usleep($this->retry->backoff($try + 1) * 1000);
+
+                continue;
             }
-            throw $e;
-        }
 
-        if ($trace !== null) {
-            $this->telemetry->renderFinished($trace, $result);
-        }
+            if ($trace !== null) {
+                $this->telemetry->renderFinished($trace, $result);
+            }
 
-        return $result;
+            return $result;
+        }
     }
 
     /**

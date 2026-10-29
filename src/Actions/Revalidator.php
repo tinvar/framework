@@ -318,14 +318,17 @@ final class Revalidator
             // navigation. That asymmetry is the one this was supposed to
             // close. Only the cross-cutting parts of the original carry
             // over: the cookies and headers that identify the caller.
-            $asGet = new Request(
+            //
+            // Marked as the action's, though: a GET by its method, it is the
+            // answer to a write, and its render is not repeated (RenderRetry).
+            $asGet = (new Request(
                 'GET',
                 $this->routes->url($route, $params),
                 $request->headers(),
                 [],
                 [],
                 $request->cookies,
-            );
+            ))->withAttribute(RequestAttributes::ACTION_RERENDER, true);
 
             try {
                 // Response is the pipeline's currency; the payload is

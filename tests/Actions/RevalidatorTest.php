@@ -174,6 +174,38 @@ describe('re-rendering after an action', function () {
         expect($renders)->toBe(1);
     });
 
+    // ADR 0093: a GET by its method, and the answer to a write all the same,
+    // so the render retry hook never repeats it.
+    it('marks the GET it renders with as the action re-render', function () {
+        [, $fixture, $signer, $panels, $orm] = revalidator();
+
+        $seen = [];
+        $routes = new RouteRegistry();
+        $routes->registerAll([RootLayout::class, SiteLayout::class, RackShowPage::class]);
+
+        $marking = new Revalidator(
+            routes: $routes,
+            loaders: new LoaderRunner($orm, static fn (string $c): object => new $c(), new AllowAllGate()),
+            signer: $signer,
+            orm: $orm,
+            render: static function (LoadedRoute $l, Request $r) use (&$seen): string {
+                $seen[] = $r;
+
+                return 'payload';
+            },
+            builds: new Tinvar\Http\BuildRegistry('build-1'),
+            middlewareResolver: static fn (string $class): Tinvar\Http\Middleware => new $class(),
+            panels: $panels,
+        );
+
+        $marking->rerender(['racks.show'], [routeToken($signer, $fixture)], Request::post('/_action/x'), session());
+
+        expect($seen)->toHaveCount(1)
+            ->and($seen[0]->method)->toBe('GET')
+            ->and($seen[0]->attribute(Tinvar\Http\RequestAttributes::ACTION_RERENDER))->toBeTrue()
+            ->and(Tinvar\Render\RenderRetry::permits($seen[0]))->toBeFalse();
+    });
+
     it('renders at most the cap, counted in pages', function () {
         // Enough real racks that every page resolves -- synthetic ids would
         // 404 in the loaders and never reach the render closure, so the

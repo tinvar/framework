@@ -36,6 +36,7 @@ final class Telemetry
     public const string RENDER_QUERY_TIME = 'tinvar_render_query_seconds';
     public const string QUERY_BATCH_DURATION = 'tinvar_query_batch_duration_seconds';
     public const string QUERY_CALLS = 'tinvar_query_calls_total';
+    public const string RENDER_RETRIES = 'tinvar_render_retries_total';
 
     /** A query batch is answered in PHP, mostly from memory or one statement: finer buckets than a request's. */
     public const array QUERY_BUCKETS = [0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0];
@@ -275,6 +276,19 @@ final class Telemetry
         }
     }
 
+    /**
+     * A failed render the retry hook is trying again (ADR 0093): counted by
+     * how it failed, and said in the log, at warning -- a renderer that
+     * crashes or cannot be reached is worth a look even when the next try
+     * hides it from the visitor.
+     */
+    public function renderRetried(RenderTrace $trace, \Throwable $e, int $retry): void
+    {
+        $failure = $e instanceof RendererException ? $e->failure()->value : 'error';
+        $this->metrics?->increment(self::RENDER_RETRIES, ['kind' => $trace->kind, 'failure' => $failure]);
+        $this->logger->warning('render retried', ['kind' => $trace->kind, 'failure' => $failure, 'retry' => $retry]);
+    }
+
     /** @return array<string, string> what every log line carries: the request's id */
     private function fields(): array
     {
@@ -292,6 +306,7 @@ final class Telemetry
             ->histogram(self::RENDER_FIRST_BYTE, 'Seconds from the start of a render to its first output.', ['kind'])
             ->histogram(self::RENDER_QUERY_TIME, 'Seconds one render spent answering its query calls.', ['kind'])
             ->histogram(self::QUERY_BATCH_DURATION, 'Seconds PHP took to answer one batch of query calls.', ['kind'], self::QUERY_BUCKETS)
-            ->counter(self::QUERY_CALLS, 'Query calls renders sent.', ['kind']);
+            ->counter(self::QUERY_CALLS, 'Query calls renders sent.', ['kind'])
+            ->counter(self::RENDER_RETRIES, 'Failed renders tried again by the retry hook, by kind and failure.', ['kind', 'failure']);
     }
 }

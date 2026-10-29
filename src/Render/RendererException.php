@@ -11,6 +11,9 @@ final class RendererException extends \RuntimeException
      *        debug -- for the dev overlay -- as the message is
      * @param string|null $sourceFile the application file the stack points at first
      * @param int|null    $sourceLine and the line in it
+     * @param bool        $reported the renderer said so in an error frame, choosing
+     *        the code itself, rather than this side finding it -- not a failure
+     *        RenderRetry takes its word for
      */
     public function __construct(
         string $message,
@@ -19,6 +22,7 @@ final class RendererException extends \RuntimeException
         public readonly ?string $stack = null,
         public readonly ?string $sourceFile = null,
         public readonly ?int $sourceLine = null,
+        public readonly bool $reported = false,
     ) {
         parent::__construct($message);
     }
@@ -109,7 +113,7 @@ final class RendererException extends \RuntimeException
             ? "{$where}: {$e->getMessage()}"
             : "{$where}. {$failure->hint()}";
 
-        return new self($message, $e->code_, $e->digest, $e->stack, $e->sourceFile, $e->sourceLine);
+        return new self($message, $e->code_, $e->digest, $e->stack, $e->sourceFile, $e->sourceLine, reported: true);
     }
 
     /**
@@ -143,6 +147,6 @@ final class RendererException extends \RuntimeException
         $file = $debug && \is_string($frame['file'] ?? null) ? substr($frame['file'], 0, 1024) : null;
         $line = $debug && \is_int($frame['line'] ?? null) && $frame['line'] > 0 ? $frame['line'] : null;
 
-        return new self($message, $code, $digest, $stack, $file, $line);
+        return new self($message, $code, $digest, $stack, $file, $line, reported: true);
     }
 }

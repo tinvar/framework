@@ -70,4 +70,11 @@ final class RequestAttributes
      * it reads.
      */
     public const string HELD_SHARED = 'tinvar.held_shared';
+
+    /**
+     * Marks the GET an action's response re-renders a page with
+     * (Revalidator). A GET by its method, and the answer to a write all the
+     * same: its render is never repeated behind the action (RenderRetry).
+     */
+    public const string ACTION_RERENDER = 'tinvar.action_rerender';
 }
