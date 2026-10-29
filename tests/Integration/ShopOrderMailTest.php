@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 /**
  * The shop's background work through the real renderer, without a browser:
- * the order confirmation drawn from Meridian's email kit and held to MER-36,
+ * the order confirmation drawn from @tinvar/mail's kit and held to MER-36,
  * queued in the transaction that places the order and sent by the worker,
  * and the scheduled task that moves orders along their shipping timeline.
  *
@@ -112,7 +112,7 @@ final class Customer
     }
 }
 
-it('draws the order confirmation from Meridian\'s kit as MER-36 asks: inline styles, tables, both parts, every link in the text', function () {
+it('draws the order confirmation from @tinvar/mail\'s kit as MER-36 asks: inline styles, tables, both parts, every link in the text', function () {
     shop(function (Kernel $kernel): void {
         $id = (string) $kernel->orm->connection()->select('SELECT id FROM orders ORDER BY placed_at DESC LIMIT 1')[0]['id'];
         $order = $kernel->orm->find(Order::class, $id);

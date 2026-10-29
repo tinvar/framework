@@ -401,7 +401,7 @@ describe('drawn by the renderer', function () {
         }
     });
 
-    it('is drawn from Meridian\'s kit as MER-36 asks, and logged with its List-Unsubscribe headers', function () {
+    it('is drawn from @tinvar/mail\'s kit as MER-36 asks, and logged with its List-Unsubscribe headers', function () {
         $directory = \Tinvar\Support\PrivateDirectory::create('tinvar-mktshop');
         $database = "{$directory}/shop.sqlite";
         new \Shop\Database\Seeder(PdoConnection::sqlite($database, 'shop', create: true))->run(customers: 1);
