@@ -15,8 +15,12 @@ use Tinvar\Render\TokenError;
  * that remembers the ids it has run until their expiry runs each once,
  * however often the bus relays it.
  *
- *   - `node`: the agent's own name for itself, as its certificate says it;
- *     letters, digits, '.', '_', ':' and '-', up to 128.
+ *   - `node`: the node's id, as the certificate its environment's CA issued
+ *     it names it (NodeAuthority, ADR 0091): letters, digits, '.', '_' and
+ *     '-', up to 64.
+ *   - `environment`: the build profile that issued it. An agent runs only a
+ *     command for its own environment, as a server believes only a node
+ *     its own environment's CA enrolled.
  *   - `command`: what to do; lower-case letters, digits, '.', '_' and '-'.
  *   - `arguments`: plain data -- strings, numbers, booleans, null and
  *     arrays of them -- at most MAX_ARGUMENT_BYTES of JSON. Readable by the
@@ -24,7 +28,8 @@ use Tinvar\Render\TokenError;
  */
 final readonly class NodeCommand
 {
-    public const string NODE = '/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/';
+    /** A node's id, as its certificate names it (`urn:tinvar:node:<id>`, NodeAuthority). */
+    public const string NODE = '/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z/';
 
     public const string COMMAND = '/^[a-z][a-z0-9._-]{0,63}\z/';
 
@@ -34,6 +39,7 @@ final readonly class NodeCommand
     public function __construct(
         public string $id,
         public string $node,
+        public string $environment,
         public string $tenant,
         public string $command,
         public array $arguments,
@@ -58,6 +64,7 @@ final readonly class NodeCommand
         return [
             'j' => $this->id,
             'node' => $this->node,
+            'env' => $this->environment,
             'y' => $this->tenant,
             'cmd' => $this->command,
             // {} for none: [] would read back as a list.
@@ -81,7 +88,7 @@ final readonly class NodeCommand
         }
 
         try {
-            return new self($string('j'), $string('node'), $string('y'), $string('cmd'), $arguments, $time('i'), $time('e'));
+            return new self($string('j'), $string('node'), $string('env'), $string('y'), $string('cmd'), $arguments, $time('i'), $time('e'));
         } catch (\InvalidArgumentException|\LengthException|\JsonException $e) {
             throw new TokenError('a field is not what a command carries: ' . $e->getMessage());
         }

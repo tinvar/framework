@@ -18,7 +18,8 @@ use Tinvar\Render\TokenError;
  *     cannot recompute either -- it holds no key that could -- and needs
  *     to: they say whose console it was in its log, and tell two tickets'
  *     sessions apart without naming either.
- *   - `build`: the build that issued it.
+ *   - `build`: the build that issued it, and `environment`, its profile: an
+ *     edge believes only its own environment's tickets.
  *   - `id`: unique; the edge spends each once.
  *   - `issuedAt`, `expiresAt`: a minute, unless issued for less; five at most.
  */
@@ -32,6 +33,7 @@ final readonly class ConsoleTicket
         public string $user,
         public string $session,
         public string $build,
+        public string $environment,
         public int $issuedAt,
         public int $expiresAt,
     ) {
@@ -51,6 +53,7 @@ final readonly class ConsoleTicket
             'u' => $this->user,
             's' => $this->session,
             'b' => $this->build,
+            'env' => $this->environment,
             'i' => $this->issuedAt,
             'e' => $this->expiresAt,
         ];
@@ -66,7 +69,7 @@ final readonly class ConsoleTicket
         $time = static fn (string $key): int => \is_int($map[$key] ?? null) && $map[$key] > 0 ? $map[$key] : throw new TokenError("field '{$key}' is missing or not a time");
 
         try {
-            return new self($string('j'), $string('t'), $string('y'), $string('n'), $string('u'), $string('s'), $string('b'), $time('i'), $time('e'));
+            return new self($string('j'), $string('t'), $string('y'), $string('n'), $string('u'), $string('s'), $string('b'), $string('env'), $time('i'), $time('e'));
         } catch (\InvalidArgumentException $e) {
             throw new TokenError($e->getMessage());
         }

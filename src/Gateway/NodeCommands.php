@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Gateway;
 
+use Tinvar\Nodes\NodeIdentity;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\ReadOnlyViolation;
 use Tinvar\Render\TokenClaims;
@@ -50,10 +51,14 @@ final readonly class NodeCommands
         }
     }
 
-    /** The key for node commands, derived from the application key. */
-    public static function key(#[\SensitiveParameter] string $appKey): SigningKey
+    /**
+     * The key for node commands, derived from the application key bound to
+     * the profile (AppKey::application()), for that profile: the process's
+     * own unless given.
+     */
+    public static function key(#[\SensitiveParameter] string $appKey, ?string $profile = null): SigningKey
     {
-        return new SigningKey($appKey, self::PURPOSE);
+        return new SigningKey($appKey, self::PURPOSE, $profile);
     }
 
     /**
@@ -75,7 +80,7 @@ final readonly class NodeCommands
         }
 
         $now = $this->now();
-        $signed = new NodeCommand(Uuid::v7(), $node, $this->orm->tenant(), $command, $arguments, $now, $now + $ttl);
+        $signed = new NodeCommand(Uuid::v7(), $node, $this->key->profile, $this->orm->tenant(), $command, $arguments, $now, $now + $ttl);
         $this->outbox->append($signed, SignedEnvelope::encode($this->key, $signed->toMap()));
 
         return $signed;
@@ -84,20 +89,24 @@ final readonly class NodeCommands
     /**
      * What an agent does with an envelope the bus hands it, written once so
      * an agent in any language has a reference to hold itself to: the
-     * signature under PHP's public key and this purpose, the node its own,
-     * and the command neither expired nor issued for longer than any is.
+     * signature under PHP's public key and this purpose, the node and the
+     * environment its own -- as its certificate names them (NodeIdentity)
+     * -- and the command neither expired nor issued for longer than any is.
      * Remembering ids until they expire, so each runs once, is the agent's.
      *
      * @param string $publicKey the raw public key (SigningKey::$publicKey)
      * @throws TokenError
      */
-    public static function open(string $sealed, string $publicKey, string $node, ?int $now = null): NodeCommand
+    public static function open(string $sealed, string $publicKey, string $node, string $environment, ?int $now = null): NodeCommand
     {
         $command = NodeCommand::fromMap(SignedEnvelope::decode($sealed, $publicKey, self::PURPOSE));
         $now ??= time();
 
         if (!hash_equals($command->node, $node)) {
             throw new TokenError('for another node');
+        }
+        if (!hash_equals($command->environment, $environment)) {
+            throw new TokenError('for another environment');
         }
         if ($command->expiresAt <= $now) {
             throw new TokenError('expired');
@@ -107,6 +116,17 @@ final readonly class NodeCommands
         }
 
         return $command;
+    }
+
+    /**
+     * open(), for the node a NodeAuthority believed: its id and environment
+     * as its certificate names them.
+     *
+     * @throws TokenError
+     */
+    public static function openFor(string $sealed, string $publicKey, NodeIdentity $node, ?int $now = null): NodeCommand
+    {
+        return self::open($sealed, $publicKey, $node->id, $node->environment, $now);
     }
 
     private function now(): int

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Gateway;
 
+use Tinvar\Support\BuildProfile;
+
 /**
  * An Ed25519 key pair derived from the application key for one purpose:
  * what PHP signs a node command or a console ticket with, so the gateway
@@ -18,8 +20,10 @@ namespace Tinvar\Gateway;
  *
  * Derived, as every Signer key is, so the application key stays the one
  * secret and rotating it rotates these: the seed is HKDF-SHA256 of the
- * application key with the purpose in its info, and the pair is Ed25519's
- * from that seed.
+ * application key -- bound to the build profile, as every key is (ADR
+ * 0090) -- with the profile and the purpose in its info, and the pair is
+ * Ed25519's from that seed. Staging's keys are not production's, as its
+ * nodes' CA is not (ADR 0091).
  */
 final readonly class SigningKey
 {
@@ -28,8 +32,25 @@ final readonly class SigningKey
 
     private string $secretKey;
 
-    public function __construct(#[\SensitiveParameter] string $appKey, public string $purpose)
-    {
+    /** The build profile -- the environment -- the key is for. */
+    public string $profile;
+
+    /**
+     * @param string $appKey the application's key as AppKey::application() gives it: bound
+     *        to the build profile this process serves (ADR 0090)
+     * @param string|null $profile that profile, which the seed is bound to as well, and every
+     *        command and ticket names: the process's own unless given
+     */
+    public function __construct(
+        #[\SensitiveParameter]
+        string $appKey,
+        public string $purpose,
+        ?string $profile = null,
+    ) {
+        $this->profile = $profile ?? BuildProfile::fromEnvironment();
+        if (!\in_array($this->profile, BuildProfile::PROFILES, true)) {
+            throw new \InvalidArgumentException("'{$this->profile}' is not a profile: production, staging or test.");
+        }
         if ($appKey === '') {
             throw new \InvalidArgumentException('A signing key is derived from the application key; set APP_KEY.');
         }
@@ -43,8 +64,12 @@ final readonly class SigningKey
         }
 
         // HKDF rather than the HMAC a Signer's key is: no Signer, whatever
-        // purpose it were built for, holds the bytes a seed is made of.
-        $pair = sodium_crypto_sign_seed_keypair(hash_hkdf('sha256', $appKey, SODIUM_CRYPTO_SIGN_SEEDBYTES, "tinvar ed25519 seed\0{$purpose}"));
+        // purpose it were built for, holds the bytes a seed is made of. The
+        // profile is in the info besides the key it is already bound to,
+        // so even production's key, which is the key itself, handed to
+        // staging by mistake signs nothing production's agents believe
+        // (ADR 0091).
+        $pair = sodium_crypto_sign_seed_keypair(hash_hkdf('sha256', $appKey, SODIUM_CRYPTO_SIGN_SEEDBYTES, "tinvar ed25519 seed\0{$this->profile}\0{$purpose}"));
         $this->secretKey = sodium_crypto_sign_secretkey($pair);
         $this->publicKey = sodium_crypto_sign_publickey($pair);
     }
@@ -74,6 +99,6 @@ final readonly class SigningKey
     /** Never the secret half in a dump. */
     public function __debugInfo(): array
     {
-        return ['purpose' => $this->purpose, 'publicKey' => $this->publicKeyText()];
+        return ['purpose' => $this->purpose, 'profile' => $this->profile, 'publicKey' => $this->publicKeyText()];
     }
 }

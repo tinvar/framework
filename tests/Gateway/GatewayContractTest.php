@@ -21,6 +21,7 @@ use Tinvar\Gateway\NodeCommands;
 use Tinvar\Gateway\SignedEnvelope;
 use Tinvar\Gateway\SigningKey;
 use Tinvar\Http\BuildRegistry;
+use Tinvar\Nodes\NodeIdentity;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
@@ -35,6 +36,7 @@ require_once __DIR__ . '/../Calls/Fixtures/calls.php';
 
 const APP_KEY = 'gateway-test-key-of-thirty-two-bytes!';
 const NOW = 1_800_000_000;
+const ENV = 'production';
 
 function orm(): Orm
 {
@@ -47,7 +49,7 @@ function commands(?Orm $orm = null): array
     $orm ??= orm();
     $outbox = new ArrayCommandOutbox();
 
-    return [new NodeCommands(NodeCommands::key(APP_KEY), $outbox, $orm, static fn (): int => NOW), $outbox, $orm];
+    return [new NodeCommands(NodeCommands::key(APP_KEY, ENV), $outbox, $orm, static fn (): int => NOW), $outbox, $orm];
 }
 
 /** Re-signs an envelope's payload, changed, with $key: what a holder of the wrong key can make. */
@@ -64,7 +66,7 @@ describe('node commands', function () {
         $issued = $orm->actAs('acme', fn () => $commands->issue('node-7', 'vm.start', ['vm' => 12]));
 
         $entry = $outbox->since(0)[0];
-        $opened = NodeCommands::open($entry->sealed, NodeCommands::key(APP_KEY)->publicKey, 'node-7', NOW + 10);
+        $opened = NodeCommands::open($entry->sealed, NodeCommands::key(APP_KEY, ENV)->publicKey, 'node-7', ENV, NOW + 10);
 
         expect($entry->node)->toBe('node-7')
             ->and($entry->id)->toBe($issued->id)
@@ -78,19 +80,19 @@ describe('node commands', function () {
         [$commands, $outbox] = commands();
         $commands->issue('node-7', 'vm.stop');
         $sealed = $outbox->since(0)[0]->sealed;
-        $public = NodeCommands::key(APP_KEY)->publicKey;
+        $public = NodeCommands::key(APP_KEY, ENV)->publicKey;
 
-        expect(fn () => NodeCommands::open($sealed, $public, 'node-8', NOW))->toThrow(TokenError::class, 'another node')
-            ->and(fn () => NodeCommands::open($sealed, $public, 'node-7', NOW + NodeCommands::TTL))->toThrow(TokenError::class, 'expired')
-            ->and(fn () => NodeCommands::open($sealed, NodeCommands::key('another-key-of-thirty-two-bytes!!!')->publicKey, 'node-7', NOW))->toThrow(TokenError::class, 'does not verify')
-            ->and(fn () => NodeCommands::open($sealed, ConsoleTickets::key(APP_KEY)->publicKey, 'node-7', NOW))->toThrow(TokenError::class, 'does not verify');
+        expect(fn () => NodeCommands::open($sealed, $public, 'node-8', ENV, NOW))->toThrow(TokenError::class, 'another node')
+            ->and(fn () => NodeCommands::open($sealed, $public, 'node-7', ENV, NOW + NodeCommands::TTL))->toThrow(TokenError::class, 'expired')
+            ->and(fn () => NodeCommands::open($sealed, NodeCommands::key('another-key-of-thirty-two-bytes!!!', ENV)->publicKey, 'node-7', ENV, NOW))->toThrow(TokenError::class, 'does not verify')
+            ->and(fn () => NodeCommands::open($sealed, ConsoleTickets::key(APP_KEY, ENV)->publicKey, 'node-7', ENV, NOW))->toThrow(TokenError::class, 'does not verify');
     });
 
     it('cannot be pointed at another node, or made, by anyone without PHP\'s key', function () {
         [$commands, $outbox] = commands();
         $commands->issue('node-7', 'vm.stop');
         $sealed = $outbox->since(0)[0]->sealed;
-        $public = NodeCommands::key(APP_KEY)->publicKey;
+        $public = NodeCommands::key(APP_KEY, ENV)->publicKey;
 
         // The bus rewrites the node, keeping the signature.
         [$v, $payload, $signature] = explode('.', $sealed);
@@ -99,19 +101,33 @@ describe('node commands', function () {
         $moved = $v . '.' . Signer::encode((string) json_encode($map)) . '.' . $signature;
 
         // A console ticket's key, which the edge could be handed, signing a command.
-        $ticketKeyed = resigned($sealed, ConsoleTickets::key(APP_KEY), static fn (array $m): array => $m);
+        $ticketKeyed = resigned($sealed, ConsoleTickets::key(APP_KEY, ENV), static fn (array $m): array => $m);
 
-        expect(fn () => NodeCommands::open($moved, $public, 'node-8', NOW))->toThrow(TokenError::class, 'does not verify')
-            ->and(fn () => NodeCommands::open($ticketKeyed, $public, 'node-7', NOW))->toThrow(TokenError::class, 'does not verify');
+        expect(fn () => NodeCommands::open($moved, $public, 'node-8', ENV, NOW))->toThrow(TokenError::class, 'does not verify')
+            ->and(fn () => NodeCommands::open($ticketKeyed, $public, 'node-7', ENV, NOW))->toThrow(TokenError::class, 'does not verify');
+    });
+
+    // ADR 0091: an agent believes only its own environment, as a server
+    // believes only a node its own environment's CA enrolled.
+    it('is refused by an agent in another environment, under either key', function () {
+        $outbox = new ArrayCommandOutbox();
+        $staging = new NodeCommands(NodeCommands::key(APP_KEY, 'staging'), $outbox, orm(), static fn (): int => NOW);
+        $staging->issue('node-7', 'vm.stop');
+        $sealed = $outbox->since(0)[0]->sealed;
+
+        expect(fn () => NodeCommands::open($sealed, NodeCommands::key(APP_KEY, ENV)->publicKey, 'node-7', ENV, NOW))->toThrow(TokenError::class, 'does not verify')
+            ->and(fn () => NodeCommands::open($sealed, NodeCommands::key(APP_KEY, 'staging')->publicKey, 'node-7', ENV, NOW))->toThrow(TokenError::class, 'another environment')
+            ->and(NodeCommands::openFor($sealed, NodeCommands::key(APP_KEY, 'staging')->publicKey, new NodeIdentity('node-7', 'staging', 'ab'), NOW)->environment)->toBe('staging')
+            ->and(NodeCommands::key(APP_KEY, 'staging')->publicKey)->not->toBe(NodeCommands::key(APP_KEY, ENV)->publicKey);
     });
 
     it('refuses a command issued for longer than any is, even signed', function () {
-        $key = NodeCommands::key(APP_KEY);
+        $key = NodeCommands::key(APP_KEY, ENV);
         [$commands, $outbox] = commands();
         $commands->issue('node-7', 'vm.stop');
         $long = resigned($outbox->since(0)[0]->sealed, $key, static fn (array $m): array => [...$m, 'e' => NOW + 86_400]);
 
-        expect(fn () => NodeCommands::open($long, $key->publicKey, 'node-7', NOW))->toThrow(TokenError::class, 'longer than any');
+        expect(fn () => NodeCommands::open($long, $key->publicKey, 'node-7', ENV, NOW))->toThrow(TokenError::class, 'longer than any');
     });
 
     it('is issued as a write is: not in a loader or query body, nor across tenants', function () {
@@ -128,7 +144,7 @@ describe('node commands', function () {
         DatabaseCommandOutbox::define(new Schema($connection, Dialect::for($connection)));
         $orm = new Orm($connection, new IdentityMap('gateway-test'));
         $outbox = new DatabaseCommandOutbox($connection);
-        $commands = new NodeCommands(NodeCommands::key(APP_KEY), $outbox, $orm, static fn (): int => NOW);
+        $commands = new NodeCommands(NodeCommands::key(APP_KEY, ENV), $outbox, $orm, static fn (): int => NOW);
 
         try {
             $orm->transaction(function () use ($commands): void {
@@ -143,14 +159,14 @@ describe('node commands', function () {
         $entries = $outbox->since(NOW - 60);
         expect($entries)->toHaveCount(1)
             ->and($entries[0]->id)->toBe($kept->id)
-            ->and(NodeCommands::open($entries[0]->sealed, NodeCommands::key(APP_KEY)->publicKey, 'node-7', NOW)->command)->toBe('vm.start');
+            ->and(NodeCommands::open($entries[0]->sealed, NodeCommands::key(APP_KEY, ENV)->publicKey, 'node-7', ENV, NOW)->command)->toBe('vm.start');
     });
 });
 
 describe('console tickets', function () {
     function tickets(AuthContext $auth, Orm $orm, PanelContext $panels, int $now = NOW): ConsoleTickets
     {
-        return new ConsoleTickets(APP_KEY, ConsoleTickets::key(APP_KEY), $auth, $orm, new BuildRegistry('build-1'), $panels, static fn (): int => $now);
+        return new ConsoleTickets(APP_KEY, ConsoleTickets::key(APP_KEY, ENV), $auth, $orm, new BuildRegistry('build-1'), $panels, static fn (): int => $now);
     }
 
     it('issues a ticket for one console, bound to the user, epoch, session, tenant, panel and build', function () {
@@ -160,7 +176,7 @@ describe('console tickets', function () {
         $ticket = $auth->actingAs(new User('ada'), fn () => $orm->actAs('acme', fn () => $panels->within('admin', fn () => tickets($auth, $orm, $panels)->issue('node:7/vm:12', 'session-1'))), 'e1');
         $other = $auth->actingAs(new User('ada'), fn () => $orm->actAs('acme', fn () => $panels->within('admin', fn () => tickets($auth, $orm, $panels)->issue('node:7/vm:12', 'session-1'))), 'e2');
 
-        $claims = ConsoleTickets::open($ticket, ConsoleTickets::key(APP_KEY)->publicKey, 'node:7/vm:12', NOW);
+        $claims = ConsoleTickets::open($ticket, ConsoleTickets::key(APP_KEY, ENV)->publicKey, 'node:7/vm:12', ENV, NOW);
 
         expect($claims->tenant)->toBe('acme')
             ->and($claims->panel)->toBe('admin')
@@ -170,7 +186,7 @@ describe('console tickets', function () {
             ->and($claims->user)->not->toContain('ada')
             ->and($claims->session)->not->toContain('session-1')
             // Another epoch, another binding.
-            ->and(ConsoleTickets::open($other, ConsoleTickets::key(APP_KEY)->publicKey, 'node:7/vm:12', NOW)->user)->not->toBe($claims->user);
+            ->and(ConsoleTickets::open($other, ConsoleTickets::key(APP_KEY, ENV)->publicKey, 'node:7/vm:12', ENV, NOW)->user)->not->toBe($claims->user);
     });
 
     it('opens one console only, for a minute, and only under its own key', function () {
@@ -178,12 +194,12 @@ describe('console tickets', function () {
         $orm = orm();
         $panels = new PanelContext();
         $ticket = $auth->actingAs(new User('ada'), fn () => tickets($auth, $orm, $panels)->issue('node:7/vm:12', 'session-1'));
-        $public = ConsoleTickets::key(APP_KEY)->publicKey;
+        $public = ConsoleTickets::key(APP_KEY, ENV)->publicKey;
 
-        expect(fn () => ConsoleTickets::open($ticket, $public, 'node:7/vm:13', NOW))->toThrow(TokenError::class, 'another console')
-            ->and(fn () => ConsoleTickets::open($ticket, $public, 'node:7/vm:12', NOW + 60))->toThrow(TokenError::class, 'expired')
-            ->and(fn () => ConsoleTickets::open($ticket, NodeCommands::key(APP_KEY)->publicKey, 'node:7/vm:12', NOW))->toThrow(TokenError::class, 'does not verify')
-            ->and(fn () => NodeCommands::open($ticket, NodeCommands::key(APP_KEY)->publicKey, 'node:7/vm:12', NOW))->toThrow(TokenError::class);
+        expect(fn () => ConsoleTickets::open($ticket, $public, 'node:7/vm:13', ENV, NOW))->toThrow(TokenError::class, 'another console')
+            ->and(fn () => ConsoleTickets::open($ticket, $public, 'node:7/vm:12', ENV, NOW + 60))->toThrow(TokenError::class, 'expired')
+            ->and(fn () => ConsoleTickets::open($ticket, NodeCommands::key(APP_KEY, ENV)->publicKey, 'node:7/vm:12', ENV, NOW))->toThrow(TokenError::class, 'does not verify')
+            ->and(fn () => NodeCommands::open($ticket, NodeCommands::key(APP_KEY, ENV)->publicKey, 'node:7/vm:12', ENV, NOW))->toThrow(TokenError::class);
     });
 
     it('issues none for nobody, with no session, or across tenants', function () {
@@ -200,11 +216,11 @@ describe('console tickets', function () {
 });
 
 it('derives a different key for each purpose, and never prints the secret half', function () {
-    $commands = NodeCommands::key(APP_KEY);
-    $tickets = ConsoleTickets::key(APP_KEY);
+    $commands = NodeCommands::key(APP_KEY, ENV);
+    $tickets = ConsoleTickets::key(APP_KEY, ENV);
 
     expect($commands->publicKey)->not->toBe($tickets->publicKey)
-        ->and(NodeCommands::key(APP_KEY)->publicKey)->toBe($commands->publicKey)
+        ->and(NodeCommands::key(APP_KEY, ENV)->publicKey)->toBe($commands->publicKey)
         ->and(print_r($commands, true))->not->toContain('secretKey')
         ->and(fn () => new NodeCommands($tickets, new ArrayCommandOutbox(), orm()))->toThrow(\InvalidArgumentException::class);
 });

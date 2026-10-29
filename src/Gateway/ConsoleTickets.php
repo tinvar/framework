@@ -63,10 +63,14 @@ final readonly class ConsoleTickets
         $this->binding = new Signer($appKey, self::PURPOSE . '-binding');
     }
 
-    /** The key for console tickets, derived from the application key. */
-    public static function key(#[\SensitiveParameter] string $appKey): SigningKey
+    /**
+     * The key for console tickets, derived from the application key bound
+     * to the profile (AppKey::application()), for that profile: the
+     * process's own unless given.
+     */
+    public static function key(#[\SensitiveParameter] string $appKey, ?string $profile = null): SigningKey
     {
-        return new SigningKey($appKey, self::PURPOSE);
+        return new SigningKey($appKey, self::PURPOSE, $profile);
     }
 
     /**
@@ -96,6 +100,7 @@ final readonly class ConsoleTickets
             user: TokenClaims::hashAuth($this->binding, $user->authIdentifier(), $this->auth->epoch()),
             session: TokenClaims::hashSession($this->binding, $sessionId),
             build: $this->builds->current,
+            environment: $this->key->profile,
             issuedAt: $now,
             expiresAt: $now + $ttl,
         )->toMap());
@@ -104,17 +109,21 @@ final readonly class ConsoleTickets
     /**
      * What the edge does with a ticket a browser presents, written once as
      * a reference: the signature under PHP's public key and this purpose,
-     * the console the one asked for, and neither expired nor issued for
-     * longer than any ticket is. Spending its id once is the edge's.
+     * the environment the edge's own, the console the one asked for, and
+     * neither expired nor issued for longer than any ticket is. Spending
+     * its id once is the edge's.
      *
      * @param string $publicKey the raw public key (SigningKey::$publicKey)
      * @throws TokenError
      */
-    public static function open(string $ticket, string $publicKey, string $target, ?int $now = null): ConsoleTicket
+    public static function open(string $ticket, string $publicKey, string $target, string $environment, ?int $now = null): ConsoleTicket
     {
         $claims = ConsoleTicket::fromMap(SignedEnvelope::decode($ticket, $publicKey, self::PURPOSE));
         $now ??= time();
 
+        if (!hash_equals($claims->environment, $environment)) {
+            throw new TokenError('for another environment');
+        }
         if (!hash_equals($claims->target, $target)) {
             throw new TokenError('for another console');
         }
