@@ -242,14 +242,16 @@ final readonly class Dispatcher
 
     /**
      * The user and epoch sealed with $jobs: the signed-in user's, where any
-     * of them runs as its dispatcher; none otherwise. One sealed in a chain
-     * or batch is read only by the jobs that ask for it.
+     * of them runs as its dispatcher, or runs as its starter (RunsAsStarter)
+     * with someone signed in; none otherwise. One sealed in a chain or batch
+     * is read only by the jobs that ask for it.
      *
      * @param list<Job> $jobs
      * @return array{string|null, string}
      */
     private function dispatcher(array $jobs): array
     {
+        $starter = false;
         foreach ($jobs as $job) {
             if (QueueOptions::of(self::declarations($job))->asUser) {
                 $user = $this->auth->id() ?? throw new \LogicException(
@@ -258,6 +260,14 @@ final readonly class Dispatcher
 
                 return [$user, $this->auth->epoch()];
             }
+            $starter = $starter || $job instanceof RunsAsStarter;
+        }
+
+        // A job that runs as its starter carries whoever is signed in, and
+        // nobody when nobody is.
+        $user = $this->auth->id();
+        if ($starter && $user !== null) {
+            return [$user, $this->auth->epoch()];
         }
 
         return [null, ''];

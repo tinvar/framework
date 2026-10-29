@@ -172,12 +172,20 @@ final readonly class JobRunner
 
     /**
      * The user a job runs as: nobody, unless its class asks for its
-     * dispatcher, who must still be there on the same auth epoch.
+     * dispatcher or its payload sealed one (a job that runs as its starter,
+     * RunsAsStarter), who must still be there on the same auth epoch.
+     *
+     * A job that runs as its starter is checked for the user its payload
+     * seals as an asUser job is, and runs as nobody when it seals none.
      */
     private function userFor(Envelope $envelope): ?Authenticatable
     {
+        // A user sealed in a chain or batch for a job beside this one is not
+        // this job's: it runs as one only when it asked, or runs as its
+        // starter and was started by someone.
         $asUser = QueueOptions::of($envelope->declarations())->asUser;
-        if (!$asUser) {
+        $starter = is_subclass_of($envelope->class, RunsAsStarter::class) && $envelope->user !== null;
+        if (!$asUser && !$starter) {
             return null;
         }
         if ($envelope->user === null) {
