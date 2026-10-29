@@ -19,6 +19,17 @@ final class ArrayUploadStore implements UploadStore
         $this->uploads[$upload->id] = $upload;
     }
 
+    public function addWithin(PendingUpload $upload, int $max, int $now): bool
+    {
+        // One process's memory, so nothing runs between the count and the add.
+        if ($this->pendingCount($upload->ownerHash, $now) >= $max) {
+            return false;
+        }
+        $this->add($upload);
+
+        return true;
+    }
+
     public function find(string $id): ?PendingUpload
     {
         return $this->uploads[$id] ?? null;

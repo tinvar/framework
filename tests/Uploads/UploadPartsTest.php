@@ -300,6 +300,57 @@ describe('an upload store', function () {
         expect($store->find(str_repeat('b', 32)))->toBeNull();
     })->with('upload stores');
 
+    it('adds within the cap only, counting the owner alone', function (\Closure $make) {
+        /** @var UploadStore $store */
+        $store = $make();
+        $store->add(pendingUpload(str_repeat('a', 32), 3000));
+        $store->add(pendingUpload(str_repeat('c', 32), 3000, owner: 'someone else'));
+
+        expect($store->addWithin(pendingUpload(str_repeat('b', 32), 3000), 2, 1500))->toBeTrue()
+            ->and($store->addWithin(pendingUpload(str_repeat('d', 32), 3000), 2, 1500))->toBeFalse()
+            ->and($store->find(str_repeat('d', 32)))->toBeNull()
+            // An expired one no longer counts.
+            ->and($store->addWithin(pendingUpload(str_repeat('d', 32), 4000), 2, 3000))->toBeTrue();
+    })->with('upload stores');
+
+    // Counted and added apart, uploads sent at once each found room and were
+    // all kept. Processes of their own, each with its own connection to one
+    // file, as workers are.
+    it('keeps no more than the cap of uploads sent at once', function () {
+        if (!\function_exists('pcntl_fork')) {
+            test()->markTestSkipped('pcntl is not available.');
+        }
+        $path = sys_get_temp_dir() . '/tinvar-uploads-race-' . bin2hex(random_bytes(4)) . '.sqlite';
+        $connection = \Tinvar\Orm\PdoConnection::sqlite($path, 'test', create: true);
+        DatabaseUploadStore::define(new \Tinvar\Orm\Schema\Schema($connection, \Tinvar\Orm\Schema\Dialect::for($connection)));
+        $start = microtime(true) + 0.3;
+
+        $pids = [];
+        for ($i = 0; $i < 8; $i++) {
+            $pid = pcntl_fork();
+            if ($pid === 0) {
+                $mine = new DatabaseUploadStore(\Tinvar\Orm\PdoConnection::sqlite($path, 'test'));
+                time_sleep_until($start);
+                for ($j = 0; $j < 3; $j++) {
+                    $mine->addWithin(pendingUpload(bin2hex(random_bytes(16)), 3000), 5, 1500);
+                }
+                posix_kill(getmypid(), SIGKILL);
+            }
+            $pids[] = $pid;
+        }
+        foreach ($pids as $pid) {
+            pcntl_waitpid($pid, $status);
+        }
+
+        try {
+            expect(new DatabaseUploadStore($connection)->pendingCount('u', 1500))->toBe(5);
+        } finally {
+            foreach (glob($path . '*') ?: [] as $file) {
+                @unlink($file);
+            }
+        }
+    });
+
     it('brings a table made before uploads had an owner up to date, keeping its rows', function () {
         $connection = \Tinvar\Orm\PdoConnection::sqlite(':memory:', 'test');
         $schema = new \Tinvar\Orm\Schema\Schema($connection, \Tinvar\Orm\Schema\Dialect::for($connection));

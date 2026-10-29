@@ -204,10 +204,10 @@ final class UploadEndpoint
 
         $now = $this->uploads->now();
         $owner = $this->uploads->ownerHash($user);
+        // Asked here to spare storing a file that would be refused; the
+        // count that holds is addWithin()'s, below, made with the add.
         if ($this->uploads->store->pendingCount($owner, $now) >= self::MAX_PENDING) {
-            throw new HttpException(429, 'Too many uploads are waiting to be saved.', 'upload_pending', [
-                'retry-after' => (string) Uploads::PENDING_TTL,
-            ]);
+            throw self::tooManyPending();
         }
 
         $key = StorageKey::generate($declared->prefix, FileTypes::extension($type));
@@ -242,12 +242,19 @@ final class UploadEndpoint
         );
 
         try {
-            $this->uploads->store->add($pending);
+            $added = $this->uploads->store->addWithin($pending, self::MAX_PENDING, $now);
         } catch (\Throwable $e) {
             // A file with no record is one nothing would ever prune.
             $this->uploads->storage->delete($key);
 
             throw $e;
+        }
+        if (!$added) {
+            // Another upload of the user's took the last place while this
+            // one was being stored.
+            $this->uploads->storage->delete($key);
+
+            throw self::tooManyPending();
         }
 
         return Response::make(201, json_encode([
@@ -288,5 +295,12 @@ final class UploadEndpoint
     private static function refused(string $why): HttpException
     {
         return new HttpException(403, "The upload ticket is refused ({$why}).", 'upload_refused');
+    }
+
+    private static function tooManyPending(): HttpException
+    {
+        return new HttpException(429, 'Too many uploads are waiting to be saved.', 'upload_pending', [
+            'retry-after' => (string) Uploads::PENDING_TTL,
+        ]);
     }
 }

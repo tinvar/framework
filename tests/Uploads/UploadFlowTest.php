@@ -419,6 +419,11 @@ describe('an action taking an upload', function () {
                 $this->inner?->add($upload);
             }
 
+            public function addWithin(PendingUpload $upload, int $max, int $now): bool
+            {
+                return $this->inner?->addWithin($upload, $max, $now) === true;
+            }
+
             public function find(string $id): ?PendingUpload
             {
                 return $this->inner?->find($id);

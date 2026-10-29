@@ -15,6 +15,15 @@ interface UploadStore
 {
     public function add(PendingUpload $upload): void;
 
+    /**
+     * Adds an upload only if its owner has fewer than $max unclaimed,
+     * unexpired uploads, counted and added as one write: of uploads sent at
+     * once, no more are kept than the cap allows, however they race.
+     *
+     * @return bool whether it was added; false when the owner is at the cap
+     */
+    public function addWithin(PendingUpload $upload, int $max, int $now): bool;
+
     public function find(string $id): ?PendingUpload;
 
     /** How many uploads of the user $ownerHash names (Uploads::ownerHash()) are unclaimed and not yet expired. */

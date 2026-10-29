@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Uploads;
 
 use Tinvar\Orm\Connection;
+use Tinvar\Orm\NamesDriver;
 use Tinvar\Orm\Schema\Schema;
 use Tinvar\Orm\Schema\Table;
 
@@ -15,7 +16,9 @@ use Tinvar\Orm\Schema\Table;
  *
  * The claim is one conditional UPDATE, so of two requests claiming one
  * upload exactly one changes a row: an upload is attached to one record,
- * once, however the requests race.
+ * once, however the requests race. The per-user cap is counted and the
+ * upload added in one transaction, holding the owner's lock across both
+ * (addWithin()), so uploads sent at once cannot each find room.
  */
 final readonly class DatabaseUploadStore implements UploadStore
 {
@@ -111,6 +114,55 @@ final readonly class DatabaseUploadStore implements UploadStore
                 $upload->ownerHash,
             ],
         );
+    }
+
+    /**
+     * The count and the insert in one transaction, under a lock no other
+     * upload of the owner's can take between them:
+     *
+     *  - SQLite: the transaction begins IMMEDIATE (PdoConnection::sqlite()),
+     *    holding the database's write lock from before the count; on a
+     *    connection opened DEFERRED the second writer's insert fails rather
+     *    than overtake the first's count, which refuses that upload.
+     *  - Postgres: a transaction-scoped advisory lock on the owner, which
+     *    READ COMMITTED's row locks cannot give for rows not yet written.
+     *  - MySQL: a named lock on the owner, held to the commit. Under
+     *    REPEATABLE READ a locking read's gap locks would let both count and
+     *    then deadlock on their inserts.
+     *
+     * A lock not had in five seconds refuses the upload by throwing, rather
+     * than count without it.
+     */
+    public function addWithin(PendingUpload $upload, int $max, int $now): bool
+    {
+        $driver = $this->connection instanceof NamesDriver ? $this->connection->driver() : 'sqlite';
+        $lock = 'tinvar-upload:' . hash('sha256', $this->table . "\0" . $upload->ownerHash);
+
+        $work = function () use ($upload, $max, $now, $driver, $lock): bool {
+            if ($driver === 'pgsql') {
+                $this->connection->select('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [$lock]);
+            }
+            if ($this->pendingCount($upload->ownerHash, $now) >= $max) {
+                return false;
+            }
+            $this->add($upload);
+
+            return true;
+        };
+
+        if ($driver !== 'mysql') {
+            return $this->connection->transaction($work);
+        }
+
+        $held = $this->connection->select('SELECT GET_LOCK(?, 5) AS held', [substr($lock, 0, 64)])[0]['held'] ?? null;
+        if ((string) $held !== '1') {
+            throw new \RuntimeException("The upload owner's lock could not be taken.");
+        }
+        try {
+            return $this->connection->transaction($work);
+        } finally {
+            $this->connection->select('SELECT RELEASE_LOCK(?) AS released', [substr($lock, 0, 64)]);
+        }
     }
 
     public function find(string $id): ?PendingUpload
