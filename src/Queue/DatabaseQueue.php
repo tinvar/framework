@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Queue;
 
 use Tinvar\Orm\Connection;
-use Tinvar\Orm\PdoConnection;
+use Tinvar\Orm\NamesDriver;
 use Tinvar\Orm\Schema\Schema;
 use Tinvar\Orm\Schema\Table;
 
@@ -229,7 +229,6 @@ final class DatabaseQueue implements Queue
 
     private function isPostgres(): bool
     {
-        return $this->connection instanceof PdoConnection
-            && $this->connection->pdo()->getAttribute(\PDO::ATTR_DRIVER_NAME) === 'pgsql';
+        return $this->connection instanceof NamesDriver && $this->connection->driver() === 'pgsql';
     }
 }
