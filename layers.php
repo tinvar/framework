@@ -63,8 +63,10 @@ return [
 
     // The framework's package, held apart inside: the queue's storage on
     // the database alone; the core, which names no module; jobs on the
-    // queue; events, mail, webhooks and transfers each on jobs and none on
-    // another; and the kernel -- the HTTP kernel, the console and the
+    // queue; events, mail, webhooks, transfers and workflows each on jobs
+    // and none on another; calls (an action or query run outside HTTP) on
+    // the core, with tools and services on calls; the gateway's contract on
+    // the core (ADR 0098, 0099); and the kernel -- the HTTP kernel, the console and the
     // server, which a process starts with -- over all of them. An
     // attribute is its module's, though the namespace is shared.
     'modules' => [
@@ -78,6 +80,11 @@ return [
             'mail' => ['Tinvar\\Mail\\'],
             'webhooks' => ['Tinvar\\Webhooks\\', 'Tinvar\\Attributes\\Webhook'],
             'transfers' => ['Tinvar\\Transfers\\'],
+            'workflows' => ['Tinvar\\Workflows\\'],
+            'calls' => ['Tinvar\\Calls\\'],
+            'tools' => ['Tinvar\\Tools\\', 'Tinvar\\Attributes\\Tool'],
+            'services' => ['Tinvar\\Services\\', 'Tinvar\\Attributes\\ServiceCall'],
+            'gateway' => ['Tinvar\\Gateway\\'],
             'kernel' => ['Tinvar\\Http\\Kernel', 'Tinvar\\Console\\', 'Tinvar\\Server\\', 'Tinvar\\Http\\TestableApplication', 'Tinvar\\Http\\BrowserTestable', 'Tinvar\\Attributes\\Command'],
             ...$above,
         ],
@@ -90,10 +97,15 @@ return [
             'mail' => ['support', 'database', 'queue', 'core', 'jobs'],
             'webhooks' => ['support', 'database', 'queue', 'core', 'jobs'],
             'transfers' => ['support', 'database', 'queue', 'core', 'jobs'],
-            'kernel' => ['support', 'database', 'queue', 'core', 'jobs', 'events', 'mail', 'webhooks', 'transfers'],
-            'tenancy' => ['support', 'database', 'queue', 'core', 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'kernel'],
-            'testing' => ['support', 'database', 'queue', 'core', 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'kernel'],
-            'codegen' => ['support', 'database', 'queue', 'core', 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'kernel'],
+            'workflows' => ['support', 'database', 'queue', 'core', 'jobs'],
+            'calls' => ['support', 'database', 'queue', 'core'],
+            'tools' => ['support', 'database', 'queue', 'core', 'calls'],
+            'services' => ['support', 'database', 'queue', 'core', 'calls'],
+            'gateway' => ['support', 'database', 'queue', 'core'],
+            'kernel' => ['support', 'database', 'queue', 'core', 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'calls', 'tools', 'services', 'gateway'],
+            'tenancy' => ['support', 'database', 'queue', 'core', 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'calls', 'tools', 'services', 'gateway', 'kernel'],
+            'testing' => ['support', 'database', 'queue', 'core', 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'calls', 'tools', 'services', 'gateway', 'kernel'],
+            'codegen' => ['support', 'database', 'queue', 'core', 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'calls', 'tools', 'services', 'gateway', 'kernel'],
         ],
         'sources' => [
             'packages/framework/src' => 'Tinvar\\',
