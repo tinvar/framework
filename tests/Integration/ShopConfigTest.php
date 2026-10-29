@@ -1,0 +1,86 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * The shop's settings through its #[Config] classes (ADR 0085): a boot
+ * with a key missing or malformed stops before anything opens, naming
+ * every variable and no value, and a secret can come from a mounted file.
+ */
+
+use Shop\Auth\WarehouseToken;
+use Shop\Config\BuildsIn;
+use Shop\Kernel;
+use Tinvar\Config\ConfigException;
+use Tinvar\Config\Configs;
+
+/**
+ * @param array<string, string|null> $env
+ * @param \Closure(): mixed $body
+ */
+function withShopEnvironment(array $env, \Closure $body): mixed
+{
+    $saved = [];
+    foreach ($env as $name => $value) {
+        $saved[$name] = getenv($name);
+        putenv($value === null ? $name : "{$name}={$value}");
+    }
+    try {
+        return $body();
+    } finally {
+        foreach ($saved as $name => $value) {
+            putenv($value === false ? $name : "{$name}={$value}");
+        }
+    }
+}
+
+it('declares its config as tinvar check holds it', function () {
+    expect(Configs::check(Kernel::CONFIGS))->toBe([]);
+});
+
+it('refuses to boot on a malformed setting, naming every one and quoting none', function () {
+    $token = str_repeat('w', 31);
+    $boot = static function (): string {
+        try {
+            Kernel::fromEnvironment(database: ':memory:', key: str_repeat('k', 32));
+        } catch (ConfigException $e) {
+            return $e->getMessage();
+        }
+
+        throw new \LogicException('The shop booted.');
+    };
+
+    // Each class's keys are parsed first, every one; its own rules -- a
+    // token's length -- run once they have all parsed.
+    withShopEnvironment(['SHOP_WAREHOUSE_TOKEN' => $token, 'TINVAR_PROBE_TRUST_LOOPBACK' => 'yes', 'SHOP_BUILDS' => 'databse'], function () use ($boot, $token): void {
+        expect($boot())
+            ->toContain('TINVAR_PROBE_TRUST_LOOPBACK must be 1 or 0')
+            ->toContain('SHOP_BUILDS must be one of file, database')
+            ->not->toContain($token)
+            ->not->toContain('databse');
+    });
+    withShopEnvironment(['SHOP_WAREHOUSE_TOKEN' => $token, 'TINVAR_PROBE_TRUST_LOOPBACK' => 'yes'], function () use ($boot, $token): void {
+        expect($boot())
+            ->toContain('SHOP_WAREHOUSE_TOKEN must be 32 characters or more')
+            ->toContain('TINVAR_PROBE_TRUST_LOOPBACK must be 1 or 0')
+            ->not->toContain($token);
+    });
+});
+
+it('reads the warehouse token from a mounted file, and refuses it set both ways', function () {
+    $directory = \Tinvar\Support\PrivateDirectory::create('shop-config');
+    $token = str_repeat('t', 40);
+    file_put_contents("{$directory}/warehouse-token", $token . "\n");
+    try {
+        withShopEnvironment(['SHOP_WAREHOUSE_TOKEN_FILE' => "{$directory}/warehouse-token", 'SHOP_BUILDS' => 'database'], function () use ($token): void {
+            expect(WarehouseToken::fromEnvironment())->toBe($token)
+                ->and(Kernel::config()->builds)->toBe(BuildsIn::Database);
+        });
+        withShopEnvironment(['SHOP_WAREHOUSE_TOKEN_FILE' => "{$directory}/warehouse-token", 'SHOP_WAREHOUSE_TOKEN' => $token], function (): void {
+            expect(fn () => WarehouseToken::fromEnvironment())
+                ->toThrow(ConfigException::class, 'SHOP_WAREHOUSE_TOKEN and SHOP_WAREHOUSE_TOKEN_FILE are both set');
+        });
+    } finally {
+        \Tinvar\Support\PrivateDirectory::remove($directory);
+    }
+});

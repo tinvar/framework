@@ -344,7 +344,7 @@ describe('who the shop lets ask its probes', function () {
     it('refuses a value it does not know rather than guess', function () use ($with) {
         foreach (['false', 'no', 'off', ' 0'] as $value) {
             $with(['TINVAR_PROBE_TRUST_LOOPBACK' => $value], function () use ($value) {
-                expect(fn () => Kernel::probeAccess())->toThrow(\InvalidArgumentException::class, 'TINVAR_PROBE_TRUST_LOOPBACK');
+                expect(fn () => Kernel::probeAccess())->toThrow(\Tinvar\Config\ConfigException::class, 'TINVAR_PROBE_TRUST_LOOPBACK must be 1 or 0');
             });
         }
     });

@@ -184,9 +184,9 @@ it('refuses to send the order webhook to the shop\'s own machine, and does not t
 it('refuses an order webhook configured without a secret to sign it with', function () {
     putenv('SHOP_ORDER_WEBHOOK=https://fulfilment.example.test/hooks/pellwick');
     try {
-        expect(fn () => OrderWebhook::subscriptionFromEnvironment())->toThrow(\InvalidArgumentException::class, 'SHOP_ORDER_WEBHOOK_SECRET');
+        expect(fn () => OrderWebhook::subscriptionFromEnvironment())->toThrow(\Tinvar\Config\ConfigException::class, 'SHOP_ORDER_WEBHOOK needs SHOP_ORDER_WEBHOOK_SECRET');
         putenv('SHOP_ORDER_WEBHOOK_SECRET=short');
-        expect(fn () => OrderWebhook::subscriptionFromEnvironment())->toThrow(\InvalidArgumentException::class, '32 bytes');
+        expect(fn () => OrderWebhook::subscriptionFromEnvironment())->toThrow(\Tinvar\Config\ConfigException::class, 'SHOP_ORDER_WEBHOOK_SECRET must be at least 32 bytes');
     } finally {
         putenv('SHOP_ORDER_WEBHOOK');
         putenv('SHOP_ORDER_WEBHOOK_SECRET');

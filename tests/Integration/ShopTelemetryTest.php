@@ -127,6 +127,27 @@ it('answers the probes to no one without the token, on this machine or off it', 
     });
 });
 
+// Nothing set says nothing about loopback, and nothing is fail closed: the
+// default ServerConfig reads is 0, so loopback without the token is a 404.
+it('lets loopback without the token into no probe when TINVAR_PROBE_TRUST_LOOPBACK is unset or empty', function () {
+    $saved = getenv('TINVAR_PROBE_TRUST_LOOPBACK');
+    try {
+        foreach ([null, ''] as $trust) {
+            putenv($trust === null ? 'TINVAR_PROBE_TRUST_LOOPBACK' : "TINVAR_PROBE_TRUST_LOOPBACK={$trust}");
+            expect(Kernel::server()->probeTrustLoopback)->toBeFalse();
+            shop(function (Kernel $kernel): void {
+                foreach (['/_health', '/_ready', '/_metrics'] as $path) {
+                    expect($kernel->handle(from($path, '127.0.0.1'))->status)->toBe(404)
+                        ->and($kernel->handle(from($path, '::1'))->status)->toBe(404);
+                }
+                expect($kernel->handle(probe('/_health'))->status)->toBe(200);
+            });
+        }
+    } finally {
+        putenv($saved === false ? 'TINVAR_PROBE_TRUST_LOOPBACK' : "TINVAR_PROBE_TRUST_LOOPBACK={$saved}");
+    }
+});
+
 it('fails readiness when the renderers are gone, and says which check in the log', function () {
     shop(function (Kernel $kernel, string $log, Renderer $renderer): void {
         $renderer->stop();
