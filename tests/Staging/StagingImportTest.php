@@ -1,0 +1,227 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Production's data into staging, scrubbed and re-encrypted, refused whole
+ * where the plan does not cover the database (ADR 0090).
+ */
+
+namespace Tinvar\Tests\Staging\StagingImport;
+
+use Tinvar\Staging\ImportRefused;
+use Tinvar\Staging\Scrub;
+use Tinvar\Staging\ScrubPlan;
+use Tinvar\Staging\StagingImport;
+use Tinvar\Support\AppKey;
+use Tinvar\Support\Encrypter;
+
+const KEY = 'production-key-of-at-least-thirty-two-bytes';
+
+const SCHEMA = [
+    'CREATE TABLE tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL)',
+    'CREATE TABLE customers (id INTEGER PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id), email TEXT NOT NULL UNIQUE, '
+        . 'name TEXT NOT NULL, password_hash TEXT NOT NULL, notes TEXT, api_token TEXT)',
+    'CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT NOT NULL)',
+    'CREATE TABLE sessions (id TEXT PRIMARY KEY, customer_id INTEGER REFERENCES customers(id))',
+    'CREATE TABLE migrations (name TEXT PRIMARY KEY)',
+];
+
+function database(): \PDO
+{
+    $pdo = new \PDO('sqlite::memory:');
+    $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+    $pdo->exec('PRAGMA foreign_keys = ON');
+    foreach (SCHEMA as $statement) {
+        $pdo->exec($statement);
+    }
+
+    return $pdo;
+}
+
+function production(): Encrypter
+{
+    return new Encrypter(AppKey::forProfile(KEY, 'production'));
+}
+
+/** Staging's key: here, production's TINVAR_APP_KEY copied over, bound to staging -- which is still not production's. */
+function staging(): Encrypter
+{
+    return new Encrypter(AppKey::forProfile(KEY, 'staging'));
+}
+
+function seeded(): \PDO
+{
+    $pdo = database();
+    $pdo->exec("INSERT INTO tenants VALUES ('t1', 'Acme'), ('t2', 'Globex')");
+    $insert = $pdo->prepare('INSERT INTO customers VALUES (?, ?, ?, ?, ?, ?, ?)');
+    $insert->execute([1, 't1', 'ada@example.com', 'Ada Lovelace', password_hash('hunter2', PASSWORD_BCRYPT, ['cost' => 4]),
+        production()->encrypt('allergic to peanuts', 'customers.notes'), 'sk_live_production_secret']);
+    $insert->execute([2, 't2', 'grace@example.com', 'Grace Hopper', password_hash('cobol', PASSWORD_BCRYPT, ['cost' => 4]), null, 'sk_live_other']);
+    $pdo->exec("INSERT INTO products VALUES (1, 'Rope'), (2, 'Lamp')");
+    $pdo->exec("INSERT INTO sessions VALUES ('production-session', 1)");
+    $pdo->exec("INSERT INTO migrations VALUES ('0001_create')");
+
+    return $pdo;
+}
+
+function plan(): ScrubPlan
+{
+    return ScrubPlan::create()
+        ->shared('tenants', ['id' => Scrub::keep(), 'name' => Scrub::pseudonym('Tenant')])
+        ->table('customers', [
+            'id' => Scrub::keep(),
+            'tenant_id' => Scrub::keep(),
+            'email' => Scrub::email(),
+            'name' => Scrub::pseudonym('Customer'),
+            'password_hash' => Scrub::unusablePassword(),
+            'notes' => Scrub::reencrypt(),
+            'api_token' => Scrub::random(),
+        ], tenant: 'tenant_id')
+        ->shared('products', ['id' => Scrub::keep(), 'name' => Scrub::keep()])
+        ->drop('sessions')
+        ->ignore('migrations');
+}
+
+/** @return list<array<string, mixed>> */
+function rows(\PDO $pdo, string $table): array
+{
+    $statement = $pdo->query("SELECT * FROM {$table} ORDER BY 1");
+
+    return $statement === false ? [] : array_values(array_map(static fn (array $row): array => $row, $statement->fetchAll(\PDO::FETCH_ASSOC)));
+}
+
+it('copies every row scrubbed, re-encrypted under staging\'s key, with sessions dropped', function () {
+    $staging = database();
+    $staging->exec("INSERT INTO sessions VALUES ('a-staging-session', NULL)");
+    $staging->exec("INSERT INTO migrations VALUES ('0001_create'), ('0002_staging_only')");
+
+    $written = new StagingImport(plan(), production(), staging())->run(seeded(), $staging);
+
+    expect($written)->toBe(['sessions' => 0, 'tenants' => 2, 'customers' => 2, 'products' => 2]);
+
+    $customers = rows($staging, 'customers');
+    $dump = json_encode(rows($staging, 'customers'), JSON_THROW_ON_ERROR);
+    foreach (['ada@example.com', 'Ada Lovelace', 'Grace', 'sk_live', 'peanuts', '$2y$'] as $production) {
+        expect($dump)->not->toContain($production);
+    }
+
+    expect($customers[0]['email'])->toMatch('/^user-[0-9a-f]{16}@staging\.invalid\z/')
+        ->and($customers[0]['email'])->not->toBe($customers[1]['email'])
+        ->and($customers[0]['name'])->toStartWith('Customer ')
+        ->and(password_verify('hunter2', (string) $customers[0]['password_hash']))->toBeFalse()
+        ->and($customers[0]['api_token'])->toMatch('/^[0-9a-f]{32}\z/')
+        ->and($customers[1]['notes'])->toBeNull()
+        ->and(staging()->decrypt((string) $customers[0]['notes'], 'customers.notes'))->toBe('allergic to peanuts')
+        ->and(production()->decrypt((string) $customers[0]['notes'], 'customers.notes'))->toBeNull()
+        ->and(rows($staging, 'sessions'))->toBe([])
+        ->and(array_column(rows($staging, 'migrations'), 'name'))->toBe(['0001_create', '0002_staging_only'])
+        ->and(array_column(rows($staging, 'products'), 'name'))->toBe(['Rope', 'Lamp']);
+});
+
+it('copies one tenant\'s rows, and shared tables whole', function () {
+    $staging = database();
+    $written = new StagingImport(plan(), production(), staging())->run(seeded(), $staging, tenant: 't1');
+
+    expect($written['customers'])->toBe(1)
+        ->and(array_column(rows($staging, 'customers'), 'tenant_id'))->toBe(['t1'])
+        ->and(\count(rows($staging, 'tenants')))->toBe(2);
+});
+
+it('refuses a column the plan has no rule for, and writes nothing', function () {
+    $production = seeded();
+    $production->exec('ALTER TABLE customers ADD COLUMN phone TEXT');
+    $production->exec("UPDATE customers SET phone = '+44 20 7946 0000'");
+    $staging = database();
+    $staging->exec('ALTER TABLE customers ADD COLUMN phone TEXT');
+    $staging->exec("INSERT INTO products VALUES (9, 'staging only')");
+
+    expect(fn () => new StagingImport(plan(), production(), staging())->run($production, $staging))
+        ->toThrow(ImportRefused::class, 'customers.phone has no rule')
+        ->and(array_column(rows($staging, 'products'), 'name'))->toBe(['staging only'])
+        ->and(rows($staging, 'customers'))->toBe([]);
+});
+
+it('refuses a table the plan does not name', function () {
+    $production = seeded();
+    $production->exec('CREATE TABLE api_keys (id INTEGER PRIMARY KEY, secret TEXT)');
+
+    new StagingImport(plan(), production(), staging())->run($production, database());
+})->throws(ImportRefused::class, 'the table api_keys has no rule');
+
+it('refuses a rule for a column production does not have, and a table staging lacks', function () {
+    $plan = ScrubPlan::create()
+        ->shared('tenants', ['id' => Scrub::keep(), 'name' => Scrub::keep(), 'country' => Scrub::keep()])
+        ->table('customers', ['id' => Scrub::keep()])
+        ->shared('products', ['id' => Scrub::keep(), 'name' => Scrub::keep()])
+        ->drop('sessions')
+        ->ignore('migrations');
+    $staging = database();
+    $staging->exec('DROP TABLE products');
+
+    $refused = null;
+    try {
+        new StagingImport($plan, production(), staging())->run(seeded(), $staging);
+    } catch (ImportRefused $e) {
+        $refused = $e->getMessage();
+    }
+
+    expect($refused)->toContain('tenants.country, which production does not have')
+        ->and($refused)->toContain('customers.email has no rule')
+        ->and($refused)->toContain('staging has no table products');
+});
+
+it('refuses an import of one tenant through a table that says no tenant column', function () {
+    $plan = ScrubPlan::create()
+        ->shared('tenants', ['id' => Scrub::keep(), 'name' => Scrub::keep()])
+        ->table('customers', [
+            'id' => Scrub::keep(), 'tenant_id' => Scrub::keep(), 'email' => Scrub::email(), 'name' => Scrub::null(),
+            'password_hash' => Scrub::unusablePassword(), 'notes' => Scrub::null(), 'api_token' => Scrub::null(),
+        ])
+        ->shared('products', ['id' => Scrub::keep(), 'name' => Scrub::keep()])
+        ->drop('sessions')
+        ->ignore('migrations');
+
+    new StagingImport($plan, production(), staging())->run(seeded(), database(), tenant: 't1');
+})->throws(ImportRefused::class, "would copy every tenant's rows");
+
+it('refuses staging\'s key where it is production\'s', function () {
+    new StagingImport(plan(), production(), new Encrypter(KEY));
+})->throws(ImportRefused::class, "Staging's key is production's");
+
+it('rolls everything back when a value does not open under production\'s key', function () {
+    $production = seeded();
+    // Sealed under some other key: not known to be what the column says.
+    $production->prepare('UPDATE customers SET notes = ? WHERE id = 2')->execute([staging()->encrypt('x', 'customers.notes')]);
+    $staging = database();
+    $staging->exec("INSERT INTO sessions VALUES ('kept', NULL)");
+
+    expect(fn () => new StagingImport(plan(), production(), staging())->run($production, $staging))
+        ->toThrow(ImportRefused::class, 'customers.notes does not decrypt')
+        ->and(array_column(rows($staging, 'sessions'), 'id'))->toBe(['kept'])
+        ->and(rows($staging, 'customers'))->toBe([]);
+});
+
+it('refuses to import a database into itself', function () {
+    $pdo = seeded();
+
+    new StagingImport(plan(), production(), staging())->run($pdo, $pdo);
+})->throws(ImportRefused::class, 'one database');
+
+it('refuses a plan that copies a credential table, or keeps a secret, without saying why', function (\Closure $plan, string $message) {
+    expect($plan)->toThrow(\InvalidArgumentException::class, $message);
+})->with([
+    'a session table' => [static fn () => ScrubPlan::create()->table('user_sessions', ['id' => Scrub::keep()]), 'named like a credential'],
+    'a secret kept' => [static fn () => ScrubPlan::create()->table('customers', ['api_token' => Scrub::keep()]), 'named like a secret'],
+    'a password kept' => [static fn () => ScrubPlan::create()->table('customers', ['password_hash' => Scrub::keep()]), 'named like a secret'],
+    'a table twice' => [static fn () => ScrubPlan::create()->drop('sessions')->ignore('sessions'), 'twice'],
+    'a name SQL would need quoting for' => [static fn () => ScrubPlan::create()->drop('x"; DROP TABLE y; --'), 'not a table name'],
+    'a tenant column scrubbed' => [static fn () => ScrubPlan::create()->table('customers', ['tenant_id' => Scrub::null()], tenant: 'tenant_id'), 'must be one it keeps'],
+]);
+
+it('keeps a secret-looking column, or copies a credential-looking table, that says why it is safe', function () {
+    $plan = ScrubPlan::create()
+        ->table('token_types', ['id' => Scrub::keep(), 'token_count' => Scrub::keep(because: 'a count, not a token')], because: 'kinds of token, none held');
+
+    expect(array_keys($plan->tables()))->toBe(['token_types']);
+});
