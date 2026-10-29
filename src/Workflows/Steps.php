@@ -64,6 +64,9 @@ final class Steps
 
     private int $delay = 0;
 
+    /** The step whose work is running, so one asked for inside another is refused. */
+    private ?string $inStep = null;
+
     /**
      * @param JobControl $job this run's, whose checkpoint holds what has finished
      */
@@ -89,7 +92,12 @@ final class Steps
         }
 
         $this->end();
-        $result = $work();
+        $this->inStep = $name;
+        try {
+            $result = $work();
+        } finally {
+            $this->inStep = null;
+        }
         $this->done[$name] = $result;
         $this->ended = true;
 
@@ -165,6 +173,11 @@ final class Steps
     {
         if (preg_match(self::NAME, $name) !== 1) {
             throw new \InvalidArgumentException("'{$name}' is not a step name: letters, digits, '.', '_', ':' and '-', up to 64.");
+        }
+        // A step inside another would be recorded before the one around it
+        // finished, and replayed without it.
+        if ($this->inStep !== null) {
+            throw new \LogicException("The step '{$name}' was asked for inside the step '{$this->inStep}': steps follow one another.");
         }
         if (isset($this->asked[$name])) {
             throw new \LogicException("The step '{$name}' was asked for twice in one run: each step has a name of its own.");

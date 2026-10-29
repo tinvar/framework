@@ -152,6 +152,16 @@ final readonly class KeepsAnObject implements Workflow
     }
 }
 
+/** Asks for a step inside another. */
+#[Queue(tries: 1)]
+final readonly class Nested implements Workflow
+{
+    public function run(Steps $steps): void
+    {
+        $steps->step('outer', static fn (): int => $steps->step('inner', static fn (): int => 1));
+    }
+}
+
 /** The jobs harness, with Workflows registered for the job to ask for. */
 function harness(): Harness
 {

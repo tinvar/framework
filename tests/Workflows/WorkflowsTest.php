@@ -20,6 +20,7 @@ use Tinvar\Tests\Workflows\Fixtures\AdminFlow;
 use Tinvar\Tests\Workflows\Fixtures\Flaky;
 use Tinvar\Tests\Workflows\Fixtures\Greedy;
 use Tinvar\Tests\Workflows\Fixtures\KeepsAnObject;
+use Tinvar\Tests\Workflows\Fixtures\Nested;
 use Tinvar\Tests\Workflows\Fixtures\Seen;
 use Tinvar\Tests\Workflows\Fixtures\ThreeSteps;
 use Tinvar\Tests\Workflows\Fixtures\Twice;
@@ -196,15 +197,16 @@ it('takes one new step a run, even from a run() that catches the end of its run'
     expect(Seen::$steps)->toBe([['step' => 'b']]);
 });
 
-it('fails a run that asks for one step twice, or keeps what is not plain data', function () {
+it('fails a run that asks for one step twice, or one inside another, or keeps what is not plain data', function () {
     $h = harness();
     workflows($h)->start(new Twice());
     workflows($h)->start(new KeepsAnObject());
+    workflows($h)->start(new Nested());
     $h->work();
 
     $errors = implode("\n", array_map(static fn ($f) => $f->error, queue($h)->failed()));
-    expect(queue($h)->failed())->toHaveCount(2)
-        ->and($errors)->toContain("'same' was asked for twice")->toContain('plain data');
+    expect(queue($h)->failed())->toHaveCount(3)
+        ->and($errors)->toContain("'same' was asked for twice")->toContain('plain data')->toContain("inside the step 'outer'");
 });
 
 it('refuses to start inside a loader or query body, as a job is', function () {
