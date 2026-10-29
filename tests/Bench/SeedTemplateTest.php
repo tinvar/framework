@@ -175,3 +175,28 @@ it('finds what it hashes where this checkout keeps it', function () {
     rmdir("{$this->root}/examples/shop/app/Models");
     expect(fn () => SeedTemplate::path($this->root, 20_000))->toThrow(\RuntimeException::class, 'No directory at');
 });
+
+// ADR 0090: the load test signs in only as the `load` scenario's customers,
+// whose passwords are random and kept beside the template alone.
+it('keeps the scenario\'s sign-ins beside the template, and seeds again without them', function () {
+    $seeded = 0;
+    $withSignIns = static function (string $path) use (&$seeded): void {
+        seed($seeded)($path);
+        file_put_contents(SeedTemplate::credentials($path), '[{"login":"a","password":"b"}]');
+    };
+
+    $template = SeedTemplate::ensure($this->root, 20_000, $withSignIns, credentials: true);
+    expect(file_get_contents(SeedTemplate::credentials($template)))->toContain('"login":"a"')
+        ->and(SeedTemplate::ensure($this->root, 20_000, $withSignIns, credentials: true))->toBe($template)
+        ->and($seeded)->toBe(1);
+
+    unlink(SeedTemplate::credentials($template));
+    SeedTemplate::ensure($this->root, 20_000, $withSignIns, credentials: true);
+    expect($seeded)->toBe(2)->and(is_file(SeedTemplate::credentials($template)))->toBeTrue();
+});
+
+it('refuses a seeding that wrote no sign-ins', function () {
+    $seeded = 0;
+
+    SeedTemplate::ensure($this->root, 20_000, seed($seeded), credentials: true);
+})->throws(\RuntimeException::class, 'wrote no sign-ins');
