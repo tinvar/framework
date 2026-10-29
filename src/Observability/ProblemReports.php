@@ -61,8 +61,12 @@ final class ProblemReports
     /** A list of reports, each an object holding a body of scalars, and one level spare. */
     public const int MAX_JSON_DEPTH = 5;
 
-    /** Reports taken from one request; a batch longer than this is cut. */
-    public const int MAX_REPORTS = 20;
+    /**
+     * Reports taken from one request; a batch longer than this is cut. As
+     * many as /_errors takes errors: each is a log line, and the budget
+     * counts requests, so this is how many lines one request can write.
+     */
+    public const int MAX_REPORTS = 10;
 
     /** Bytes kept of free text: a deprecation's message, a violation's sample. */
     public const int MAX_TEXT = 256;
