@@ -33,8 +33,8 @@ use Tinvar\Validation\ValidationException;
  * run without what it meant.
  *
  * The context -- tenant, panel, user -- is the caller's to have entered and
- * checked (Tools\ToolCalls, Services\ServiceCalls). This runs in whatever
- * is in force.
+ * checked: the tool calls' and the service calls' modules, each against its
+ * own token. This runs in whatever is in force.
  */
 final readonly class CallRunner
 {

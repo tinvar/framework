@@ -194,7 +194,7 @@ describe('the modules', function () {
     it('lets a module use the core and jobs, never one beside it, and only the kernel use them all', function () {
         $modules = Layers::modules();
 
-        expect($modules->names())->toBe(['support', 'database', 'queue', 'core', 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'kernel', 'tenancy', 'testing', 'codegen'])
+        expect($modules->names())->toBe(['support', 'database', 'queue', 'core', 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'calls', 'tools', 'services', 'gateway', 'kernel', 'tenancy', 'testing', 'codegen'])
             ->and($modules->mayUse('queue', 'database'))->toBeTrue()
             ->and($modules->mayUse('queue', 'core'))->toBeFalse()
             ->and($modules->mayUse('queue', 'jobs'))->toBeFalse()
@@ -210,6 +210,17 @@ describe('the modules', function () {
             ->and($modules->mayUse('webhooks', 'mail'))->toBeFalse()
             ->and($modules->mayUse('webhooks', 'events'))->toBeFalse()
             ->and($modules->mayUse('transfers', 'mail'))->toBeFalse()
+            // ADR 0098, 0099: workflows on jobs; tools and services on calls,
+            // and neither on the other; the gateway's contract on the core.
+            ->and($modules->mayUse('workflows', 'jobs'))->toBeTrue()
+            ->and($modules->mayUse('workflows', 'tools'))->toBeFalse()
+            ->and($modules->mayUse('calls', 'core'))->toBeTrue()
+            ->and($modules->mayUse('calls', 'jobs'))->toBeFalse()
+            ->and($modules->mayUse('calls', 'tools'))->toBeFalse()
+            ->and($modules->mayUse('tools', 'calls'))->toBeTrue()
+            ->and($modules->mayUse('tools', 'services'))->toBeFalse()
+            ->and($modules->mayUse('services', 'tools'))->toBeFalse()
+            ->and($modules->mayUse('gateway', 'jobs'))->toBeFalse()
             ->and($modules->mayUse('kernel', 'transfers'))->toBeTrue()
             ->and($modules->mayUse('kernel', 'webhooks'))->toBeTrue()
             ->and($modules->mayUse('kernel', 'tenancy'))->toBeFalse();

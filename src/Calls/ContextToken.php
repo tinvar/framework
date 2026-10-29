@@ -11,8 +11,8 @@ use Tinvar\Render\TokenError;
  * claims: who it is for, the tenant and panel it is held to, the build that
  * issued it, how long it lasts, and the operations it may name.
  *
- * One shape for a tool grant (Tools\ToolCalls) and a service context token
- * (Services\ServiceCalls), told apart by the purpose bound into the MAC
+ * One shape for a tool grant and a service context token, each issued and
+ * checked by its own module, told apart by the purpose bound into the MAC
  * (ContextTokens), as a fragment token and a route token are: one place
  * decides what such a token is bound to, and a second kind inherits it.
  *
