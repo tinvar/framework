@@ -23,6 +23,14 @@ namespace Tinvar\Outbound;
  * not followed"); see PinnedHttp for what following one involves.
  * `readBody: false` stops reading at the body, for a caller that wants the
  * status alone -- a webhook delivery, whose tenant sees only that.
+ *
+ * `sink` takes a successful response's body chunk by chunk instead of the
+ * response holding it, for a body too large to keep in memory -- a disk
+ * image -- which may then be given up to an hour (MAX_STREAM_TIMEOUT)
+ * rather than two minutes, as long as it keeps moving: a transfer slower
+ * than a kilobyte a second for half a minute is stopped (PinnedHttp). The
+ * cap on its size still holds. Only a 2xx's body reaches the sink; a
+ * redirect's or an error's is read into the response as any other is.
  */
 final readonly class OutboundRequest implements \JsonSerializable
 {
@@ -30,6 +38,12 @@ final readonly class OutboundRequest implements \JsonSerializable
 
     /** The most redirects a request may ask to have followed. */
     public const int MAX_REDIRECTS = 5;
+
+    /** Seconds a request may be given: two minutes, its body held in memory. */
+    public const float MAX_TIMEOUT = 120.0;
+
+    /** Seconds a request whose body goes to a sink may be given: an hour. */
+    public const float MAX_STREAM_TIMEOUT = 3600.0;
 
     /** Headers the transport writes itself. */
     private const array RESERVED = ['host', 'content-length', 'transfer-encoding', 'connection', 'keep-alive', 'upgrade', 'te', 'trailer', 'expect', 'proxy-authorization', 'proxy-connection'];
@@ -41,6 +55,7 @@ final readonly class OutboundRequest implements \JsonSerializable
      * @param array<array-key, mixed> $headers name => value
      * @param float|null $timeout seconds the whole request may take, redirects included; the client's default when null
      * @param int|null $maxResponseBytes the largest body read; the client's default when null
+     * @param (\Closure(string): void)|null $sink takes a 2xx response's body as it arrives, in place of the response
      */
     public function __construct(
         public string $method,
@@ -53,12 +68,17 @@ final readonly class OutboundRequest implements \JsonSerializable
         public ?int $maxResponseBytes = null,
         public bool $readBody = true,
         public int $maxRedirects = 0,
+        public ?\Closure $sink = null,
     ) {
         if (!\in_array($method, self::METHODS, true)) {
             throw new \InvalidArgumentException("'{$method}' is not a method outbound requests use: " . implode(', ', self::METHODS) . '.');
         }
-        if ($timeout !== null && ($timeout <= 0 || $timeout > 120)) {
-            throw new \InvalidArgumentException('A timeout is more than 0 seconds and at most 120.');
+        $longest = $sink === null ? self::MAX_TIMEOUT : self::MAX_STREAM_TIMEOUT;
+        if ($timeout !== null && ($timeout <= 0 || $timeout > $longest)) {
+            throw new \InvalidArgumentException("A timeout is more than 0 seconds and at most {$longest}" . ($sink === null ? '; a request streaming its body to a sink may have an hour.' : '.'));
+        }
+        if ($sink !== null && !$readBody) {
+            throw new \InvalidArgumentException('A request that reads no body has nothing for a sink.');
         }
         if ($maxResponseBytes !== null && $maxResponseBytes < 0) {
             throw new \InvalidArgumentException('A response size cap cannot be negative.');
@@ -122,6 +142,7 @@ final readonly class OutboundRequest implements \JsonSerializable
             'maxResponseBytes' => $this->maxResponseBytes,
             'readBody' => $this->readBody,
             'maxRedirects' => $this->maxRedirects,
+            'sink' => $this->sink !== null,
         ];
     }
 

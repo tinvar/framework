@@ -33,7 +33,8 @@ use Tinvar\Attributes\OutboundPolicy;
  * carries a body: a body sent to one origin is not sent on to another.
  *
  * Bounded: the whole request, hops and name lookups included, within its
- * timeout; the connection within the connect timeout; the body within its
+ * timeout (an hour at most for a body streamed to a sink, which must keep
+ * moving); the connection within the connect timeout; the body within its
  * cap and the headers within 64 KB, the transfer stopped as soon as either
  * is passed. Each lookup is given what is left of the timeout, and an
  * answer that comes after it is not used: the request fails as a timeout,
@@ -49,6 +50,15 @@ final readonly class PinnedHttp implements OutboundHttp
     public const float DEFAULT_TIMEOUT = 10.0;
 
     private const int MAX_HEADER_BYTES = 65_536;
+
+    /** The most of a body held in memory beside a sink: a redirect's, an error's. */
+    private const int MAX_HELD_BYTES = 1_048_576;
+
+    /** A body streamed to a sink slower than this many bytes a second... */
+    private const int LOW_SPEED_BYTES = 1024;
+
+    /** ...for this many seconds is stopped. */
+    private const int LOW_SPEED_SECONDS = 30;
 
     /** curl's TLS failures: handshake, certificate, verification, pinning. */
     private const array TLS_ERRORS = [35, 51, 53, 54, 58, 59, 60, 64, 66, 77, 80, 82, 83, 90, 91, 98];
@@ -164,9 +174,12 @@ final readonly class PinnedHttp implements OutboundHttp
         $responseHeaders = [];
         $headerBytes = 0;
         $received = '';
+        $streamed = 0;
         $overLimit = false;
         $stoppedAtBody = false;
         $connectedTo = null;
+        $sinkFailed = null;
+        $sink = $request->sink;
         $expected = (string) inet_pton($address);
         $observe = $this->reportedAddress;
 
@@ -223,13 +236,36 @@ final readonly class PinnedHttp implements OutboundHttp
 
                 return \strlen($line);
             },
-            CURLOPT_WRITEFUNCTION => static function (\CurlHandle $handle, string $chunk) use ($request, $maxBytes, &$received, &$overLimit, &$stoppedAtBody): int {
+            CURLOPT_WRITEFUNCTION => static function (\CurlHandle $handle, string $chunk) use ($request, $sink, $maxBytes, &$status, &$received, &$streamed, &$overLimit, &$stoppedAtBody, &$sinkFailed): int {
                 if (!$request->readBody) {
                     $stoppedAtBody = true;
 
                     return 0;
                 }
-                if (\strlen($received) + \strlen($chunk) > $maxBytes) {
+                // A 2xx's body goes to the sink, counted against the cap as
+                // it passes; anything else -- a redirect's, an error's -- is
+                // the response's, as it would be without one.
+                if ($sink !== null && $status >= 200 && $status < 300) {
+                    if ($streamed + \strlen($chunk) > $maxBytes) {
+                        $overLimit = true;
+
+                        return 0;
+                    }
+                    $streamed += \strlen($chunk);
+                    try {
+                        $sink($chunk);
+                    } catch (\Throwable $e) {
+                        // Thrown again once curl has let go of the transfer.
+                        $sinkFailed = $e;
+
+                        return 0;
+                    }
+
+                    return \strlen($chunk);
+                }
+                // Held in memory: with a sink, never more than a megabyte of
+                // it, whatever the cap a stream may run to.
+                if (\strlen($received) + \strlen($chunk) > ($sink === null ? $maxBytes : min($maxBytes, self::MAX_HELD_BYTES))) {
                     $overLimit = true;
 
                     return 0;
@@ -243,6 +279,13 @@ final readonly class PinnedHttp implements OutboundHttp
             // A Content-Length over the cap is refused before any of the
             // body is read.
             $options[CURLOPT_MAXFILESIZE_LARGE] = $maxBytes;
+        }
+        if ($sink !== null) {
+            // An hour is long enough to hold a worker on a destination
+            // trickling a byte at a time: one that falls under a kilobyte a
+            // second for half a minute is stopped as a timeout.
+            $options[CURLOPT_LOW_SPEED_LIMIT] = self::LOW_SPEED_BYTES;
+            $options[CURLOPT_LOW_SPEED_TIME] = self::LOW_SPEED_SECONDS;
         }
         if ($target->literal === null) {
             $options[CURLOPT_RESOLVE] = ["{$target->host}:{$target->port}:" . (str_contains($address, ':') ? "[{$address}]" : $address)];
@@ -265,6 +308,9 @@ final readonly class PinnedHttp implements OutboundHttp
         $milliseconds = self::since($started);
         $origin = "{$method} {$target->origin()}";
 
+        if ($sinkFailed !== null) {
+            throw $sinkFailed;
+        }
         if ($connectedTo !== null) {
             throw new OutboundFailed(OutboundFailed::ADDRESS_CHANGED, "{$origin} was connected to an address other than the one vetted, and was stopped before it was sent.", null, $milliseconds);
         }
