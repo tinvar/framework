@@ -106,6 +106,15 @@ final readonly class StagingImport
                 $problems[] = "the table {$table} has no rule: copy it, drop it or ignore it";
             }
         }
+        // And staging's: a table only staging has -- tokens, sessions, links
+        // from an earlier staging life -- would go on working against the
+        // users the import brings in. It is dropped (emptied) or ignored by
+        // name, or the import stops.
+        foreach ($to->tables() as $table) {
+            if (!$from->has($table) && !$this->plan->declares($table)) {
+                $problems[] = "staging's table {$table} has no rule: drop it, or ignore it if it holds no secret";
+            }
+        }
 
         foreach ($this->plan->tables() as $table => $declared) {
             if (!$from->has($table)) {

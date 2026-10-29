@@ -225,3 +225,25 @@ it('keeps a secret-looking column, or copies a credential-looking table, that sa
 
     expect(array_keys($plan->tables()))->toBe(['token_types']);
 });
+
+// Staging's own leftovers: a token table from an earlier staging life would
+// go on working against the users the import brings in.
+it('refuses a table staging has and the plan does not name, and writes nothing', function () {
+    $staging = database();
+    $staging->exec('CREATE TABLE personal_access_tokens (id INTEGER PRIMARY KEY, customer_id INTEGER, token TEXT)');
+    $staging->exec("INSERT INTO personal_access_tokens VALUES (1, 1, 'still-works')");
+
+    expect(fn () => new StagingImport(plan(), production(), staging())->run(seeded(), $staging))
+        ->toThrow(ImportRefused::class, "staging's table personal_access_tokens has no rule")
+        ->and(rows($staging, 'customers'))->toBe([]);
+});
+
+it('empties a dropped table staging has and production does not', function () {
+    $staging = database();
+    $staging->exec('CREATE TABLE remember_tokens (id INTEGER PRIMARY KEY, token TEXT)');
+    $staging->exec("INSERT INTO remember_tokens VALUES (1, 'stale')");
+
+    new StagingImport(plan()->drop('remember_tokens'), production(), staging())->run(seeded(), $staging);
+
+    expect(rows($staging, 'remember_tokens'))->toBe([]);
+});
