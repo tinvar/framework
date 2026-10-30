@@ -35,17 +35,21 @@ beforeAll(function () use ($root) {
 /**
  * A running `tinvar serve`, its URL, and a way to stop it.
  *
- * @return array{resource, string, \Closure(): ?int, string} the process, its URL, a stop that returns
- *         its exit status, and the file its children's output goes to
+ * @return array{resource, string, \Closure(): ?int, string, string} the process, its URL, a stop that
+ *         returns its exit status, the file its children's output goes to, and the shop's log
  */
 function serve(string $root, string $keyFile): array
 {
-    // What the children say, kept for a failure message.
+    // What the children say, kept for a failure message; and the shop's
+    // own log, which the renderers' lines are written to as well.
     $log = tempnam(sys_get_temp_dir(), 'tinvar-serve-log-');
+    $appLog = tempnam(sys_get_temp_dir(), 'tinvar-serve-app-log-');
     $owner = getmypid();
-    register_shutdown_function(static function () use ($log, $owner): void {
-        if (getmypid() === $owner && is_file($log)) {
-            unlink($log);
+    register_shutdown_function(static function () use ($log, $appLog, $owner): void {
+        foreach ([$log, $appLog] as $file) {
+            if (getmypid() === $owner && is_file($file)) {
+                unlink($file);
+            }
         }
     });
 
@@ -58,6 +62,7 @@ function serve(string $root, string $keyFile): array
             ...array_diff_key(getenv(), ['TINVAR_APP_KEY' => true]),
             'SHOP_DATABASE' => Shop::database(),
             'TINVAR_APP_KEY_FILE' => $keyFile,
+            'SHOP_LOG' => $appLog,
             // Left over from a dev shell: a serve without --dev keeps both from
             // FrankenPHP, so neither turns dev mode on nor points a proxy anywhere.
             'TINVAR_DEV' => '1',
@@ -102,7 +107,7 @@ function serve(string $root, string $keyFile): array
         );
     }
 
-    return [$process, $m[1], $stop, $log];
+    return [$process, $m[1], $stop, $log, $appLog];
 }
 
 /** @return array{int, array<string, string>, string} status, headers by lowercase name, body */
@@ -132,7 +137,7 @@ function fetch(string $url, array $headers = []): array
 
 it('serves the shop on a free port it chose, and stops cleanly', function () use ($root) {
     $keyFile = sys_get_temp_dir() . '/tinvar-serve-key-' . bin2hex(random_bytes(4)) . '/app.key';
-    [, $url, $stop, $log] = serve($root, $keyFile);
+    [, $url, $stop, $log, $appLog] = serve($root, $keyFile);
 
     try {
         $port = (int) parse_url($url, PHP_URL_PORT);
@@ -194,6 +199,15 @@ it('serves the shop on a free port it chose, and stops cleanly', function () use
 
     expect($code)->toBe(0)
         ->and($answers)->toBeFalse();
+
+    // The renderers' lines, in the shop's log beside PHP's, each as JSON and
+    // the renderer's (ADR 0128); the page's own line under its request id.
+    $records = array_map(static fn (string $line): mixed => json_decode($line, true), file($appLog, FILE_IGNORE_NEW_LINES) ?: []);
+    $renderer = array_values(array_filter($records, static fn (mixed $r): bool => \is_array($r) && ($r['source'] ?? null) === 'renderer'));
+    $request = array_values(array_filter($records, static fn (mixed $r): bool => \is_array($r) && ($r['message'] ?? null) === 'request' && ($r['path'] ?? null) === '/'));
+    expect($renderer)->not->toBeEmpty()
+        ->and($renderer[0]['level'] ?? null)->toBeIn(['info', 'warning', 'error'])
+        ->and($request[0]['request_id'] ?? null)->toBe($headers['x-request-id'] ?? 'none');
 });
 
 // Killed outright, the command forwards no signal: the renderer and

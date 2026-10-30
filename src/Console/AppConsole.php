@@ -98,6 +98,8 @@ final class AppConsole
      * @param bool $workers whether serve may run this console's queue:work and schedule:work beside it
      * @param DatabaseSeeder|null $seeder db:seed's, where the application seeds
      * @param string $connection the name the migrations' connection is opened under
+     * @param (\Closure(): ?\Tinvar\Observability\RendererLines)|null $rendererLog the application's log,
+     *        which serve writes its renderers' lines to as well as to standard error (ADR 0128)
      */
     public function __construct(
         string $root,
@@ -123,6 +125,7 @@ final class AppConsole
         private readonly ?DatabaseSeeder $seeder = null,
         private readonly string $connection = 'app',
         private readonly string $name = 'bin/tinvar',
+        private readonly ?\Closure $rendererLog = null,
     ) {
         $this->root = realpath($root) ?: $root;
         $this->projectRoot = $projectRoot === null ? $this->root : (realpath($projectRoot) ?: $projectRoot);
@@ -276,6 +279,7 @@ final class AppConsole
             $this->projectRoot,
             serverEnvironment: $this->serverEnvironment,
             console: $this->workers ? $this->console : null,
+            rendererLog: $this->rendererLog === null ? null : ($this->rendererLog)(),
         )->run($arguments);
     }
 

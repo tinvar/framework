@@ -7,6 +7,7 @@ namespace Tinvar\Server;
 use Tinvar\Config\ConfigException;
 use Tinvar\Config\FrameworkConfig;
 use Tinvar\Jobs\StopBudget;
+use Tinvar\Observability\RendererLines;
 use Tinvar\Protocol\ProtocolException;
 use Tinvar\Queue\HeldJob;
 use Tinvar\Render\RendererException;
@@ -77,6 +78,13 @@ use Tinvar\Support\PrivateDirectory;
  * deploy. Killed outright, it can do none of that, so each child
  * also stops when this process's end of its standard input closes; and the
  * next start removes the directory a killed one left.
+ *
+ * Given the application's log (RendererLines), the renderers' output is
+ * read here rather than inherited: each line still goes to standard error
+ * as it was written, and into the application's log beside PHP's, under
+ * the request id it carries (ADR 0128). The renderers still write nothing
+ * themselves; this process, which holds the log's path and none of their
+ * sandbox, does.
  */
 final class ServeCommand
 {
@@ -153,6 +161,14 @@ final class ServeCommand
     private array $tethers = [];
 
     /**
+     * The renderers' standard output and error, read here when they are
+     * written to the application's log too, by stream id.
+     *
+     * @var array<int, array{resource, bool}> the pipe, and whether it is standard error
+     */
+    private array $outputs = [];
+
+    /**
      * @param string $projectRoot where the framework's node_modules and tools are
      * @param (\Closure(string): void)|null $out a line for standard output
      * @param (\Closure(string): void)|null $err a line for standard error
@@ -163,6 +179,9 @@ final class ServeCommand
      *        renderer, whose environment stays scrubbed.
      * @param string|null $console the CLI whose `queue:work` and `schedule:work`
      *        --worker and --schedule run; without it, neither is offered
+     * @param RendererLines|null $rendererLog the application's log, which the
+     *        renderers' lines are written to as well as to standard error;
+     *        without it, they go to standard error alone
      */
     public function __construct(
         private readonly string $projectRoot,
@@ -172,6 +191,7 @@ final class ServeCommand
         private readonly ?string $workingDirectory = null,
         private readonly ?\Closure $serverEnvironment = null,
         private readonly ?string $console = null,
+        private readonly ?RendererLines $rendererLog = null,
     ) {
         $this->out = $out ?? static function (string $line): void {
             fwrite(STDOUT, $line . "\n");
@@ -470,6 +490,7 @@ final class ServeCommand
                     ['node', $plan['renderer'], $socket, $plan['app'], "--port={$plan['vitePort']}", "--deferred={$deferred}", '--exit-with-stdin'],
                     $plan['app'],
                     [...$rendererEnv, ...array_intersect_key(getenv(), array_flip(self::DEV_RENDERER_ENV)), 'NODE_ENV' => 'development'],
+                    logged: true,
                 );
                 // Longer than a built renderer's start: Vite optimizes the
                 // app's dependencies the first time, and the socket appears
@@ -495,6 +516,7 @@ final class ServeCommand
                     ['node', $plan['renderer'], $directory, (string) $plan['entry'], '--exit-with-stdin', "--processes={$plan['renderers']}"],
                     $plan['app'],
                     [...$rendererEnv, 'NODE_ENV' => 'production'],
+                    logged: true,
                 );
                 $this->waitFor(
                     static fn (): bool => self::socketsIn($directory) >= $plan['renderers'],
@@ -625,7 +647,7 @@ final class ServeCommand
                 return 1;
             }
 
-            usleep(100_000);
+            $this->pump(0.1);
         }
     }
 
@@ -718,9 +740,11 @@ final class ServeCommand
     /**
      * @param list<string>          $command
      * @param array<string, string> $env
+     * @param bool                  $logged a renderer's: its output is read
+     *        here and written to the application's log too, when there is one
      * @return resource
      */
-    private function spawn(array $command, string $cwd, array $env)
+    private function spawn(array $command, string $cwd, array $env, bool $logged = false)
     {
         // Children write to this process's standard error, so its standard
         // output carries only the URL a caller may be waiting to read.
@@ -730,13 +754,90 @@ final class ServeCommand
         // forwards no signal, and the children kept serving the port as
         // orphans; but the system closes the pipe whatever killed it, and
         // each child stops when its input ends.
-        $process = proc_open($command, [0 => ['pipe', 'r'], 1 => STDERR, 2 => STDERR], $pipes, $cwd, $env);
+        $logged = $logged && $this->rendererLog !== null;
+        $output = $logged ? ['pipe', 'w'] : STDERR;
+        $process = proc_open($command, [0 => ['pipe', 'r'], 1 => $output, 2 => $output], $pipes, $cwd, $env);
         if (!\is_resource($process)) {
             throw new ServeException('Could not start ' . $command[0] . '.');
         }
         $this->tethers[(int) $process] = $pipes[0];
+        if ($logged) {
+            foreach ([1 => false, 2 => true] as $fd => $error) {
+                stream_set_blocking($pipes[$fd], false);
+                $this->outputs[(int) $pipes[$fd]] = [$pipes[$fd], $error];
+            }
+        }
 
         return $process;
+    }
+
+    /**
+     * Waits up to $seconds for a renderer to write, and passes on what it
+     * wrote: to standard error as it was, and a line at a time to the
+     * application's log. Read promptly, since a renderer whose pipe fills
+     * waits on its next write. With nothing to read, a plain wait.
+     */
+    private function pump(float $seconds): void
+    {
+        if ($this->outputs === []) {
+            usleep((int) ($seconds * 1e6));
+
+            return;
+        }
+
+        $read = array_map(static fn (array $output) => $output[0], array_values($this->outputs));
+        $write = $except = null;
+        // A signal interrupts the wait, which is then simply over.
+        $ready = @stream_select($read, $write, $except, 0, (int) ($seconds * 1e6));
+        if ($ready === false || $ready === 0) {
+            return;
+        }
+
+        foreach ($read as $stream) {
+            $this->drain($stream);
+        }
+    }
+
+    /** @param resource $stream */
+    private function drain($stream): void
+    {
+        $id = (int) $stream;
+        if (!isset($this->outputs[$id])) {
+            return;
+        }
+        $error = $this->outputs[$id][1];
+
+        // Up to a megabyte a turn, so one renderer cannot keep the others,
+        // or the supervision, waiting.
+        for ($read = 0; $read < 1_048_576;) {
+            $bytes = fread($stream, 65_536);
+            if ($bytes === false || $bytes === '') {
+                if (feof($stream)) {
+                    $this->rendererLog?->close((string) $id, $error);
+                    fclose($stream);
+                    unset($this->outputs[$id]);
+                }
+
+                return;
+            }
+            $read += \strlen($bytes);
+            fwrite(STDERR, $bytes);
+            $this->rendererLog?->feed((string) $id, $bytes, $error);
+        }
+    }
+
+    /** What the renderers wrote as they stopped: read to its end, or for a second at most. */
+    private function drainAll(): void
+    {
+        $deadline = microtime(true) + 1;
+        while ($this->outputs !== [] && microtime(true) < $deadline) {
+            $this->pump(0.05);
+        }
+        foreach ($this->outputs as $id => [$stream, $error]) {
+            $this->rendererLog?->close((string) $id, $error);
+            fclose($stream);
+        }
+        $this->outputs = [];
     }
 
     /**
@@ -757,7 +858,7 @@ final class ServeCommand
             if ($this->stopRequested()) {
                 throw new ServeException('Stopped before everything had started.');
             }
-            usleep(50_000);
+            $this->pump(0.05);
         }
 
         throw new ServeException("{$name} was not ready within {$seconds}s.");
@@ -783,6 +884,7 @@ final class ServeCommand
         if ($handBack !== null) {
             $this->finishHandBack($handBack);
         }
+        $this->drainAll();
     }
 
     /**
@@ -926,7 +1028,7 @@ final class ServeCommand
         $deadline = microtime(true) + $seconds;
         foreach ($children as $process) {
             while (proc_get_status($process)['running'] && microtime(true) < $deadline) {
-                usleep(50_000);
+                $this->pump(0.05);
             }
             if (proc_get_status($process)['running']) {
                 proc_terminate($process, \defined('SIGKILL') ? SIGKILL : 9);
