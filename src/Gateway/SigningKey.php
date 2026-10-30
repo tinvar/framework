@@ -30,6 +30,7 @@ final readonly class SigningKey
     /** The verifying half, raw: SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES bytes. */
     public string $publicKey;
 
+    /** @var non-empty-string the signing half, raw: SODIUM_CRYPTO_SIGN_SECRETKEYBYTES bytes */
     private string $secretKey;
 
     /** The build profile -- the environment -- the key is for. */
@@ -100,5 +101,25 @@ final readonly class SigningKey
     public function __debugInfo(): array
     {
         return ['purpose' => $this->purpose, 'profile' => $this->profile, 'publicKey' => $this->publicKeyText()];
+    }
+
+    /**
+     * Nor in a serialized copy: the secret half is derived from the
+     * application key where it is used, and written nowhere.
+     *
+     * @return never
+     */
+    public function __serialize(): array
+    {
+        throw new \LogicException('A signing key is never serialized.');
+    }
+
+    /**
+     * @param array<array-key, mixed> $data
+     * @return never
+     */
+    public function __unserialize(array $data): void
+    {
+        throw new \LogicException('A signing key is never serialized, so never unserialized.');
     }
 }

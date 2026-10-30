@@ -223,4 +223,9 @@ it('derives a different key for each purpose, and never prints the secret half',
         ->and(NodeCommands::key(APP_KEY, ENV)->publicKey)->toBe($commands->publicKey)
         ->and(print_r($commands, true))->not->toContain('secretKey')
         ->and(fn () => new NodeCommands($tickets, new ArrayCommandOutbox(), orm()))->toThrow(\InvalidArgumentException::class);
+
+    // Nor writes it anywhere a serialized object goes: a cache, a queue, a
+    // session.
+    expect(fn () => serialize($commands))->toThrow(\LogicException::class, 'never serialized')
+        ->and(fn () => unserialize('O:25:"Tinvar\\Gateway\\SigningKey":0:{}'))->toThrow(\LogicException::class, 'never serialized');
 });
