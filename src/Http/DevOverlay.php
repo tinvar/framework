@@ -99,7 +99,7 @@ final class DevOverlay
         }
 
         if ($e instanceof HttpException) {
-            return ["HTTP {$e->status}" . ($e->code_ === '' ? '' : " · {$e->code_}"), ExceptionHandler::reason($e->status), null];
+            return ["HTTP {$e->status}" . ($e->code_ === '' ? '' : " · {$e->code_}"), HttpError::reason($e->status), null];
         }
 
         return ['Unhandled exception', 'A PHP exception escaped the request', null];

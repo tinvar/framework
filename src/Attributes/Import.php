@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Attributes;
 
-use Tinvar\Actions\TagInvalidation;
+use Tinvar\Cache\TagNamespace;
 
 /**
  * A CSV file a user may load, one row at a time, through a form request.
@@ -65,7 +65,7 @@ final readonly class Import
         public int $maxRows = 10_000,
         public array $revalidates = [],
     ) {
-        TagInvalidation::declared('#[Import]', $revalidates);
+        TagNamespace::declared('#[Import]', $revalidates);
         if ($maxBytes < 1 || $maxBytes > self::MAX_BYTES_CEILING) {
             throw new \InvalidArgumentException('#[Import] maxBytes is between one byte and ' . self::MAX_BYTES_CEILING . '.');
         }

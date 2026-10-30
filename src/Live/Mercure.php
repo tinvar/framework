@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Live;
 
+use Tinvar\Config\HubUrl;
 use Tinvar\Http\Response;
 use Tinvar\Support\Signer;
 
@@ -27,7 +28,7 @@ use Tinvar\Support\Signer;
  */
 final readonly class Mercure implements Hub
 {
-    public const string PATH = '/.well-known/mercure';
+    public const string PATH = HubUrl::PATH;
 
     /** The cookie the hub reads the access token from; the Caddyfile's `cookie_name`. */
     public const string COOKIE = '__Secure-tinvar-live';

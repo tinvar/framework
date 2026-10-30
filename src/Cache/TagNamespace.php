@@ -29,6 +29,27 @@ use Tinvar\Orm\TenantBounds;
 final class TagNamespace
 {
     /**
+     * Refuses tags a declaration cannot mean: an empty one, which names
+     * nothing, and one holding a NUL, the byte a tag's tenant is kept apart
+     * from it by.
+     *
+     * @param array<mixed> $tags
+     * @return list<string>
+     */
+    public static function declared(string $where, array $tags): array
+    {
+        $out = [];
+        foreach ($tags as $tag) {
+            if (!\is_string($tag) || $tag === '' || str_contains($tag, "\0")) {
+                throw new \InvalidArgumentException("{$where} revalidates a tag that is not one: each is a non-empty string with no NUL.");
+            }
+            $out[] = $tag;
+        }
+
+        return array_values(array_unique($out));
+    }
+
+    /**
      * $tags as a read in $tenant files them.
      *
      * @param list<string> $tags as the application names them

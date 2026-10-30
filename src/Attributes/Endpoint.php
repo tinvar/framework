@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Attributes;
 
-use Tinvar\Actions\TagInvalidation;
+use Tinvar\Cache\TagNamespace;
 
 /**
  * A route that is not a page: a JSON API, a download, a callback.
@@ -17,8 +17,7 @@ use Tinvar\Actions\TagInvalidation;
  * #[Middleware], then the path's models resolved scoped to the tenant,
  * every #[Authorize], the form requests validated, and the body. It answers
  * with a Response, a Data object -- sent as JSON through the encoder, which
- * refuses anything else -- or nothing, a 204. See Tinvar\Endpoints and ADR
- * 0067.
+ * refuses anything else -- or nothing, a 204. See ADR 0067.
  *
  * #[Get] and #[Post] are this, for one method each.
  *
@@ -78,7 +77,7 @@ final readonly class Endpoint
         }
         $this->methods = $normalized;
 
-        $this->revalidates = TagInvalidation::declared("An endpoint at '{$path}'", $revalidates);
+        $this->revalidates = TagNamespace::declared("An endpoint at '{$path}'", $revalidates);
         if ($this->revalidates !== [] && $normalized === ['GET']) {
             throw new \InvalidArgumentException(
                 "An endpoint at '{$path}' revalidates tags and answers only GET, which writes nothing: a GET's body "

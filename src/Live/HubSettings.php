@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Live;
 
 use Tinvar\Config\FrameworkConfig;
+use Tinvar\Config\HubUrl;
 use Tinvar\Support\Signer;
 
 /**
@@ -39,14 +40,11 @@ final readonly class HubSettings
     public const string PUBLISHER_ENV = 'TINVAR_LIVE_PUBLISHER_KEY';
     public const string AUDIENCE_ENV = 'TINVAR_LIVE_AUDIENCE';
 
-    /** A hub of its own: its URL as this server reaches it. */
-    public const string HUB_URL_ENV = 'TINVAR_LIVE_HUB_URL';
+    /** A hub of its own: its URL as this server reaches it (HubUrl). */
+    public const string HUB_URL_ENV = HubUrl::ENV;
 
     /** That hub's origin, for the app server's proxy of /.well-known/mercure. */
     public const string HUB_UPSTREAM_ENV = 'TINVAR_LIVE_HUB_UPSTREAM';
-
-    /** Where a client may connect over plain HTTP: this machine, and nowhere else. */
-    private const array LOOPBACK = ['127.0.0.1', '[::1]', 'localhost'];
 
     /**
      * What the hub's access tokens are for (`aud`, its `resource_identifier`)
@@ -147,44 +145,11 @@ final readonly class HubSettings
 
     /**
      * The origin of a hub's URL -- scheme, host and port -- for a proxy to
-     * pass its path on to, once the URL is one this will publish to.
-     *
-     * Refused, so the application does not start: anything but http(s), a
-     * URL carrying credentials, a query or a fragment, or a path other than
-     * the protocol's own -- the proxy forwards /.well-known/mercure as it is,
-     * so a hub anywhere else would answer nothing. And plain HTTP to any host
-     * but this machine: every publisher token PHP sends and every access
-     * cookie a subscriber's request carries would cross the network in the
-     * clear, and either is enough to hear or forge invalidations until it
-     * runs out.
+     * pass its path on to, refusing what HubUrl refuses: config holds the
+     * check, so a malformed URL stops the application at boot.
      */
     public static function upstreamOf(string $hubUrl): string
     {
-        $parts = parse_url($hubUrl);
-        $scheme = \is_array($parts) ? strtolower($parts['scheme'] ?? '') : '';
-        $host = \is_array($parts) ? strtolower($parts['host'] ?? '') : '';
-
-        if (
-            !\is_array($parts)
-            || !\in_array($scheme, ['http', 'https'], true)
-            || preg_match('/^(\[[0-9a-f:.]+\]|[a-z0-9.-]+)\z/', $host) !== 1
-            || isset($parts['user']) || isset($parts['pass']) || isset($parts['query']) || isset($parts['fragment'])
-            || ($parts['path'] ?? '') !== Mercure::PATH
-        ) {
-            throw new \InvalidArgumentException(
-                self::HUB_URL_ENV . ' must be the hub\'s http(s) URL ending in ' . Mercure::PATH . ', with no credentials, query or fragment.',
-            );
-        }
-
-        $loopback = \in_array($host, self::LOOPBACK, true)
-            || (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false && str_starts_with($host, '127.'));
-        if ($scheme === 'http' && !$loopback) {
-            throw new \InvalidArgumentException(
-                self::HUB_URL_ENV . " names {$host} over plain HTTP: a hub on another machine is reached over https, "
-                . 'or its tokens cross the network in the clear.',
-            );
-        }
-
-        return $scheme . '://' . $host . (isset($parts['port']) ? ':' . $parts['port'] : '');
+        return HubUrl::upstreamOf($hubUrl);
     }
 }

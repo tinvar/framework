@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Actions;
 
 use Tinvar\Cache\QueryCache;
+use Tinvar\Cache\TagNamespace;
 use Tinvar\Data\SharedTags;
 use Tinvar\Live\Invalidator;
 use Tinvar\Orm\Metadata;
@@ -61,24 +62,16 @@ final readonly class TagInvalidation
     ) {}
 
     /**
-     * Refuses tags a declaration cannot mean: an empty one, which names
-     * nothing, and one holding a NUL, the byte a tag's tenant is kept apart
-     * from it by (TagNamespace).
+     * Refuses tags a declaration cannot mean, as TagNamespace::declared()
+     * does: the check is the tags', which the attributes declaring them
+     * run as they are built.
      *
      * @param array<mixed> $tags
      * @return list<string>
      */
     public static function declared(string $where, array $tags): array
     {
-        $out = [];
-        foreach ($tags as $tag) {
-            if (!\is_string($tag) || $tag === '' || str_contains($tag, "\0")) {
-                throw new \InvalidArgumentException("{$where} revalidates a tag that is not one: each is a non-empty string with no NUL.");
-            }
-            $out[] = $tag;
-        }
-
-        return array_values(array_unique($out));
+        return TagNamespace::declared($where, $tags);
     }
 
     /**

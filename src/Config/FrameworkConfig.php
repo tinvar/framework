@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Tinvar\Config;
 
 use Tinvar\Attributes\Config;
-use Tinvar\Live\HubSettings;
 use Tinvar\Support\BuildProfile;
 use Tinvar\Support\DevMode;
 
@@ -45,8 +44,8 @@ final readonly class FrameworkConfig
      * @param string|null $rendererUser the renderers' own OS user, a name or a uid (RendererUser)
      * @param Secret|null $liveSubscriberKey the hub's subscriber key, where it is not derived from the app key
      * @param Secret|null $livePublisherKey the hub's publisher key, likewise
-     * @param string|null $liveAudience what the hub's tokens are for, where not HubSettings::DEFAULT_AUDIENCE
-     * @param string|null $liveHubUrl a hub run as a service of its own (HubSettings)
+     * @param string|null $liveAudience what the hub's tokens are for, where not the hub's default audience
+     * @param string|null $liveHubUrl a hub run as a service of its own (HubUrl)
      * @param string|null $stopBudget a queue worker's seconds from SIGTERM to its kill (its stop budget)
      */
     public function __construct(
@@ -75,9 +74,9 @@ final readonly class FrameworkConfig
 
         if ($liveHubUrl !== null) {
             try {
-                HubSettings::upstreamOf($liveHubUrl);
+                HubUrl::upstreamOf($liveHubUrl);
             } catch (\InvalidArgumentException) {
-                $problems[] = HubSettings::HUB_URL_ENV . ' must be the hub\'s https URL ending in /.well-known/mercure, with no '
+                $problems[] = HubUrl::ENV . ' must be the hub\'s https URL ending in /.well-known/mercure, with no '
                     . 'credentials, query or fragment; plain HTTP only to this machine.';
             }
         }

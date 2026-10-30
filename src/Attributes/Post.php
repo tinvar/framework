@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Attributes;
 
-use Tinvar\Actions\TagInvalidation;
+use Tinvar\Cache\TagNamespace;
 
 /**
  * An endpoint answering POST: `#[Endpoint($path, methods: ['POST'])]`.
@@ -26,6 +26,6 @@ final readonly class Post
         public ?string $name = null,
         public array $revalidates = [],
     ) {
-        TagInvalidation::declared("An endpoint at '{$path}'", $revalidates);
+        TagNamespace::declared("An endpoint at '{$path}'", $revalidates);
     }
 }
