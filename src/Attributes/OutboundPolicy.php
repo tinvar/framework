@@ -30,6 +30,13 @@ use Tinvar\Outbound\Target;
  * a time. It never opens a hard one (metadata, the unspecified address,
  * multicast, an IPv6 address carrying an IPv4 one), and `deny` wins over
  * it: a prefix both deny and allow name is refused.
+ *
+ * `ports` are the ports a request may be sent to, each a number or a range
+ * as '8000-8999': by default 80, 443 and every port from 1024 up. The ports
+ * below 1024 are other protocols' -- SMTP, SSH, a database's -- and a URL a
+ * tenant hands the application naming one is the platform made to speak
+ * HTTP at a service that may read it as its own (ADR 0102). Read, as
+ * `allow` is, off the class itself: widening is not inherited.
  */
 #[\Attribute(\Attribute::TARGET_CLASS)]
 final readonly class OutboundPolicy
@@ -40,14 +47,34 @@ final readonly class OutboundPolicy
     /** @var list<Cidr> */
     public array $allow;
 
+    /** The ports allowed when a policy names none. */
+    public const array DEFAULT_PORTS = [80, 443, '1024-65535'];
+
+    /** @var list<array{int, int}> each allowed range, inclusive */
+    public array $ports;
+
     /**
      * @param array<array-key, mixed> $deny  prefixes, as '198.51.100.0/24'; an address alone is its own /32 or /128
      * @param array<array-key, mixed> $allow the same
+     * @param array<array-key, mixed> $ports ports, as 443 or '8000-8999'
      */
-    public function __construct(array $deny = [], array $allow = [])
+    public function __construct(array $deny = [], array $allow = [], array $ports = self::DEFAULT_PORTS)
     {
         $this->deny = self::prefixes($deny);
         $this->allow = self::prefixes($allow);
+        $this->ports = self::ports($ports);
+    }
+
+    /** @throws OutboundRefused when $target's port is not one requests may be sent to */
+    public function assertPort(Target $target): void
+    {
+        foreach ($this->ports as [$from, $to]) {
+            if ($target->port >= $from && $target->port <= $to) {
+                return;
+            }
+        }
+
+        throw new OutboundRefused('port', "{$target->origin()} is refused: outbound requests are not sent to port {$target->port}.");
     }
 
     /**
@@ -107,8 +134,8 @@ final readonly class OutboundPolicy
     }
 
     /**
-     * The address $target may be connected to: its literal address, or its
-     * name resolved once -- refused when any address it resolves to is,
+     * The address $target may be connected to, on a port requests may be
+     * sent to: its literal address, or its name resolved once -- refused when any address it resolves to is,
      * since a name that answers with a private address beside a public one
      * is either misconfigured or an attempt.
      *
@@ -118,6 +145,7 @@ final readonly class OutboundPolicy
      */
     public function vet(Target $target, Resolver $resolver, float $timeout): string
     {
+        $this->assertPort($target);
         $addresses = $target->literal !== null ? [$target->literal] : $resolver->resolve($target->host, $timeout);
         if ($addresses === []) {
             throw new OutboundFailed(OutboundFailed::DNS, "{$target->host} does not resolve.");
@@ -131,6 +159,34 @@ final readonly class OutboundPolicy
         }
 
         return $addresses[0];
+    }
+
+    /**
+     * @param array<array-key, mixed> $ports
+     * @return list<array{int, int}>
+     */
+    private static function ports(array $ports): array
+    {
+        $ranges = [];
+        foreach ($ports as $port) {
+            if (\is_int($port)) {
+                $port = (string) $port;
+            }
+            if (!\is_string($port) || preg_match('/^(\d{1,5})(?:-(\d{1,5}))?\z/', $port, $m) !== 1) {
+                throw new \InvalidArgumentException('An outbound policy names ports as numbers or ranges, as 443 or \'8000-8999\'.');
+            }
+            $from = (int) $m[1];
+            $to = (int) ($m[2] ?? $m[1]);
+            if ($from < 1 || $to > 65535 || $from > $to) {
+                throw new \InvalidArgumentException("'{$port}' is not a port or a range of them.");
+            }
+            $ranges[] = [$from, $to];
+        }
+        if ($ranges === []) {
+            throw new \InvalidArgumentException('An outbound policy allows at least one port.');
+        }
+
+        return $ranges;
     }
 
     /**

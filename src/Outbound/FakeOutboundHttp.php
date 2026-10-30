@@ -15,7 +15,8 @@ use Tinvar\Attributes\OutboundPolicy;
  *     expect($http->sent)->toHaveCount(1);
  *
  * It refuses what PinnedHttp refuses before connecting: a URL it would not
- * accept, a literal address the policy refuses, and -- given a resolver --
+ * accept, a destination or port the request or the policy refuses, a
+ * literal address the policy refuses, and -- given a resolver --
  * a name resolving to one. Without a resolver a name is taken as it is,
  * since a test's hosts need not exist. A response closure may throw
  * OutboundFailed to stand for a timeout or a refused connection. A 2xx's
@@ -37,6 +38,8 @@ final class FakeOutboundHttp implements OutboundHttp
     public function send(OutboundRequest $request): OutboundResponse
     {
         $target = Target::parse($request->url);
+        $request->destinations?->assertAllows($target);
+        $this->policy->assertPort($target);
         if ($target->literal !== null || $this->resolver !== null) {
             $this->policy->vet($target, $this->resolver ?? new StaticResolver([]), $request->timeout ?? PinnedHttp::DEFAULT_TIMEOUT);
         }
