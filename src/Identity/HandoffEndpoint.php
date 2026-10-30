@@ -55,6 +55,14 @@ use Tinvar\Support\Signer;
  *      destination with `error=access_denied`, and no code at all. The
  *      platform's own hosts are never asked about: the platform runs them,
  *      so there is nobody there to be warned about.
+ *
+ *      Given RememberedConsents, the confirm may say not to ask again: a
+ *      domain is then skipped while the person stays on the same auth
+ *      epoch and the domain in the same tenant and panel, for thirty days
+ *      at most, until they take it back. And a screen answered too late,
+ *      or after signing out or in as somebody else, is asked again -- the
+ *      authorize step from the top -- or, for a cancel, cancelled; a ticket
+ *      shown to another session is refused as before (ADR 0125).
  *   3. `/_handoff/callback?code=...`, on the target. The code must verify,
  *      be fresh, name this origin, tenant and panel exactly, be redeemed by
  *      the session whose challenge it carries, name a user still on the auth
@@ -63,8 +71,9 @@ use Tinvar\Support\Signer;
  *      its first redemption started. Then the application starts a **new**
  *      session (HandoffSessions) -- never the one the browser arrived with --
  *      and the browser goes on to the path the handoff started for. Arriving
- *      with `error` instead, from a cancel, it is a 403 `handoff_cancelled`,
- *      and nothing here changes.
+ *      with `error` instead, from a cancel, it is the application's page
+ *      for one (`cancelled`), or a 403 `handoff_cancelled`, and nothing
+ *      here changes.
  *
  * Every refusal at the callback is the same 403, `handoff_refused`, with
  * the cause in the log alone: a caller that could tell "expired" from
@@ -134,6 +143,14 @@ final class HandoffEndpoint
      *        screen a handoff to a custom domain asks with: the destination, the account, and
      *        a confirm and a cancel posting HandoffConsent::fields(). HandoffConsentShell's
      *        unless given. Whatever it answers is sent never framed and never kept.
+     * @param RememberedConsents|null $remembered where a confirm's "do not ask again" is kept
+     *        (ADR 0125): given, a screen offers it, and a handoff to a domain the person chose it
+     *        for -- at their epoch, in its tenant and panel -- skips the screen; none, and every
+     *        handoff to a custom domain asks
+     * @param (\Closure(Request, Realm, string): Response)|null $cancelled the application's page a
+     *        cancelled handoff lands on, at the destination: given the realm and the path the
+     *        handoff was for -- a path on that realm, never a URL, and only a path: it comes back
+     *        in the query, unsigned. The framework's 403 `handoff_cancelled` unless given.
      */
     public function __construct(
         public readonly Realms $realms,
@@ -149,6 +166,8 @@ final class HandoffEndpoint
         private readonly ?\Closure $staff = null,
         private readonly ?\Closure $clock = null,
         private readonly ?\Closure $consent = null,
+        private readonly ?RememberedConsents $remembered = null,
+        private readonly ?\Closure $cancelled = null,
     ) {
         // A host that may be a custom domain is a host a reseller may
         // control. Handing a session to one with nothing to say who is
@@ -295,6 +314,14 @@ final class HandoffEndpoint
             return $this->issue($user, $target, $challenge, $state, $returnTo);
         }
 
+        // A domain the person said not to be asked about again, at the epoch
+        // they are on now, still in the tenant and panel it was then (ADR
+        // 0125). Every check above has held as for any other handoff; only
+        // the screen is skipped.
+        if ($this->remembered?->remembers($user->authIdentifier(), $this->auth->epoch(), TenantClaim::of($this->orm, $target->tenant), $target->panel, $target->origin, $this->now()) === true) {
+            return $this->issue($user, $target, $challenge, $state, $returnTo);
+        }
+
         return $this->ask($request, $user, $target, $challenge, $state, $returnTo);
     }
 
@@ -331,7 +358,7 @@ final class HandoffEndpoint
             $this->now(),
             TenantClaim::of($this->orm, $target->tenant),
         );
-        $consent = new HandoffConsent($user, $target, $ticket->encode($this->signer), $csrf, $ticket->expiresAt);
+        $consent = new HandoffConsent($user, $target, $ticket->encode($this->signer), $csrf, $ticket->expiresAt, remembers: $this->remembered !== null);
         $screen = $this->consent === null ? new HandoffConsentShell()->respond($request, $consent) : ($this->consent)($request, $consent);
 
         return self::unframed(self::private($screen));
@@ -355,19 +382,46 @@ final class HandoffEndpoint
         }
 
         $now = $this->now();
+        $stale = false;
         try {
             $ticket = ConsentTicket::decode($raw, $this->signer, $now);
         } catch (TokenError $e) {
-            throw self::declined($e->getMessage());
+            // Past its five minutes, but this server's, unaltered: the screen
+            // was left open, and the person is asked again (ADR 0125) rather
+            // than shown a bare refusal. Anything else wrong with it is
+            // still refused.
+            try {
+                $ticket = ConsentTicket::decode($raw, $this->signer, $now, stale: true);
+                $stale = true;
+            } catch (TokenError) {
+                throw self::declined($e->getMessage());
+            }
         }
 
+        // Never asked again, nor cancelled, for a ticket lifted from another
+        // browser: that session's screen is not this one's to answer.
         if (!$ticket->belongsTo($this->signer, ($this->sessionId)($request))) {
             throw self::declined('it was shown to another session');
         }
 
         $user = $this->auth->user();
-        if ($user === null || !$ticket->isFor($this->signer, $user->authIdentifier(), $this->auth->epoch())) {
-            throw self::declined('who is signed in, or their auth epoch, has changed since it was shown');
+        if ($stale || $user === null || !$ticket->isFor($this->signer, $user->authIdentifier(), $this->auth->epoch())) {
+            // Left open too long, or answered after signing out, signing in
+            // as somebody else, or a role change: nothing it says is spent.
+            // A cancel still goes back to the domain, empty-handed; a
+            // confirm asks again -- the authorize step from the top, every
+            // check run afresh for whoever is signed in now, or a sign-in
+            // first -- as the person would by starting over.
+            if ($decision === HandoffConsent::CANCEL) {
+                return $this->cancel($ticket);
+            }
+
+            return self::private(Response::location($this->realms->authority->url(self::AUTHORIZE . '?' . http_build_query([
+                'origin' => $ticket->origin,
+                'state' => $ticket->state,
+                'challenge' => $ticket->challenge,
+                'return' => $ticket->returnTo,
+            ], '', '&', PHP_QUERY_RFC3986)), 303));
         }
 
         // The destination the screen named, exactly, and still that realm:
@@ -396,10 +450,33 @@ final class HandoffEndpoint
         }
 
         if ($decision === HandoffConsent::CANCEL) {
-            return self::private(Response::location($target->url(self::CALLBACK . '?error=' . self::CANCELLED), 303));
+            return $this->cancel($ticket);
+        }
+
+        // Ticked: not asked about this domain again, while the person stays
+        // on this epoch and the domain in this tenant and panel (ADR 0125).
+        if ($this->remembered !== null && ($request->body[HandoffConsent::REMEMBER] ?? null) === '1') {
+            $this->remembered->remember($user->authIdentifier(), $this->auth->epoch(), $ticket->tenant, $ticket->panel, $ticket->origin, $now);
         }
 
         return $this->issue($user, $target, $ticket->challenge, $ticket->state, $ticket->returnTo);
+    }
+
+    /**
+     * Back to the destination with no code: OAuth's `access_denied`, and
+     * the path the handoff was for, for the application's page to offer.
+     */
+    private function cancel(ConsentTicket $ticket): Response
+    {
+        $target = $this->realms->forOrigin($ticket->origin);
+        if ($target === null || $this->realms->isAuthority($target)) {
+            throw self::declined("its destination {$ticket->origin} is no longer a realm");
+        }
+
+        return self::private(Response::location($target->url(self::CALLBACK . '?' . http_build_query([
+            'error' => self::CANCELLED,
+            'return' => $ticket->returnTo,
+        ], '', '&', PHP_QUERY_RFC3986)), 303));
     }
 
     /** A code for $user into $target, and the browser sent to redeem it there. */
@@ -437,7 +514,14 @@ final class HandoffEndpoint
         // Declined on the platform host: no code came, and none is read even
         // if one did. Nothing here changes, so nothing needs proving -- a
         // link to this is a page saying so, and no more.
+        // The application's page, given one (ADR 0125): the person is
+        // still signed out here, and the path is a path on this realm --
+        // unsigned, so held to that again -- that it may offer to go on to.
         if (\array_key_exists('error', $request->query)) {
+            if ($this->cancelled !== null) {
+                return self::private(($this->cancelled)($request, $realm, self::returnPath($request->query['return'] ?? null) ?? '/'));
+            }
+
             throw new HttpException(403, 'The handoff was cancelled on the platform host.', 'handoff_cancelled');
         }
 

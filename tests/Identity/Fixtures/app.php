@@ -28,6 +28,7 @@ use Tinvar\Identity\HandoffEndpoint;
 use Tinvar\Identity\HandoffSessions;
 use Tinvar\Identity\Realm;
 use Tinvar\Identity\Realms;
+use Tinvar\Identity\RememberedConsents;
 use Tinvar\Auth\UserLookup;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
@@ -290,8 +291,13 @@ final class App
      *        consent screen; the framework's unless given
      * @param bool $tenancy whether tenancy is registered with the Orm; without it, no tree
      */
-    public function __construct(?TenantSubtrees $tree = null, ?\Closure $consent = null, bool $tenancy = true)
-    {
+    public function __construct(
+        ?TenantSubtrees $tree = null,
+        ?\Closure $consent = null,
+        bool $tenancy = true,
+        public readonly ?RememberedConsents $remembered = null,
+        ?\Closure $cancelled = null,
+    ) {
         $this->orm = new Orm(
             new PdoConnection(new \PDO('sqlite::memory:'), 'identity-test'),
             new IdentityMap('identity-test'),
@@ -332,6 +338,8 @@ final class App
             staff: static fn (Authenticatable $user): bool => $directory->isStaff($user),
             clock: fn (): int => $this->now,
             consent: $consent,
+            remembered: $remembered,
+            cancelled: $cancelled,
         );
 
         $this->kernel = new Kernel(

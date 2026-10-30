@@ -25,7 +25,14 @@ use Tinvar\Identity\HandoffCode;
 use Tinvar\Identity\HandoffConsent;
 use Tinvar\Identity\HandoffConsentShell;
 use Tinvar\Identity\HandoffEndpoint;
+use Tinvar\Identity\ArrayRememberedConsents;
+use Tinvar\Identity\DatabaseRememberedConsents;
 use Tinvar\Identity\Realm;
+use Tinvar\Identity\RememberedConsent;
+use Tinvar\Identity\RememberedConsents;
+use Tinvar\Orm\PdoConnection;
+use Tinvar\Orm\Schema\Dialect;
+use Tinvar\Orm\Schema\Schema;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Render\SignedToken;
 use Tinvar\Render\TenantClaim;
@@ -295,28 +302,44 @@ describe('a confirm', function () {
             ->and($app->lastLogged())->toContain('not the one that started the handoff');
     });
 
-    it('is refused when who is signed in has changed since the screen was shown', function () {
-        // Their epoch moved: a sign-out elsewhere, a role change.
+    // ADR 0125: not a bare 403, and no code -- the person is asked again,
+    // from the authorize step, as whoever is signed in now.
+    it('asks again, issuing nothing, when who is signed in has changed since the screen was shown', function () {
+        $asksAgain = static function (Response $response): void {
+            expect($response->status)->toBe(303)
+                ->and((string) $response->header('location'))->toStartWith('https://id.platform.test' . HandoffEndpoint::AUTHORIZE . '?origin=https%3A%2F%2Facme.example&')
+                ->and((string) $response->header('location'))->not->toContain('code=')
+                ->and($response->header('cache-control'))->toBe('no-store');
+        };
+
+        // Their epoch moved: a sign-out elsewhere, a role change. Asked
+        // again, they see a fresh screen and can confirm it.
         $app = new App();
         $browser = asking($app);
         $screen = screenFor($browser);
         $app->directory->epochs['alice']++;
         $moved = $browser->answer($screen);
-        expect($app->lastLogged())->toContain('has changed since it was shown');
+        $asksAgain($moved);
+        $again = $browser->get((string) $moved->header('location'));
+        expect(Browser::isConsent($again))->toBeTrue();
+        $browser->consent = HandoffConsent::CONFIRM;
+        expect(json($browser->follow((string) $browser->answer($again)->header('location'))))->toBe(['user' => 'alice']);
 
-        // Signed out, or somebody else signed in on the same session.
+        // Somebody else signed in on the same session: the screen asked
+        // again is theirs, naming them.
         $app = new App();
         $browser = asking($app);
         $screen = screenFor($browser);
         $app->sessions->sessions[$browser->jar['id.platform.test']] = ['user' => 'carol', 'realm' => 'id.platform.test'];
         $other = $browser->answer($screen);
+        $asksAgain($other);
+        expect($browser->get((string) $other->header('location'))->body())->toContain('carol');
+
+        // Signed out: asked to sign in first.
         unset($app->sessions->sessions[$browser->jar['id.platform.test']]);
         $signedOut = $browser->answer($screen);
-
-        expect($moved->status)->toBe(403)
-            ->and($other->status)->toBe(403)
-            ->and($signedOut->status)->toBe(403)
-            ->and(errorCode($signedOut))->toBe('handoff_refused');
+        $asksAgain($signedOut);
+        expect((string) $browser->get((string) $signedOut->header('location'))->header('location'))->toStartWith('/sign-in?next=');
     });
 
     it('is refused when the membership it was asked for was taken away while the screen was open', function () {
@@ -346,7 +369,7 @@ describe('a confirm', function () {
             ->and($app->lastLogged())->toContain('shown to another session');
     });
 
-    it('is refused once the screen has been open longer than a ticket lives', function () {
+    it('asks again, issuing nothing, once the screen has been open longer than a ticket lives', function () {
         $app = new App();
         $browser = asking($app);
         $screen = screenFor($browser);
@@ -358,12 +381,33 @@ describe('a confirm', function () {
         $lateScreen = screenFor($late);
         $app->now += ConsentTicket::TTL;
         $expired = $late->answer($lateScreen);
+        $cancelledLate = $late->answer($lateScreen, HandoffConsent::CANCEL);
 
         expect($inTime->status)->toBe(303)
-            ->and($expired->status)->toBe(403)
-            ->and(errorCode($expired))->toBe('handoff_refused')
-            ->and($app->lastLogged())->toContain('expired')
-            ->and($expired->header('location'))->toBeNull();
+            ->and($inTime->header('location'))->toContain('code=')
+            ->and($expired->status)->toBe(303)
+            ->and((string) $expired->header('location'))->toStartWith('https://id.platform.test' . HandoffEndpoint::AUTHORIZE . '?')
+            ->and((string) $expired->header('location'))->not->toContain('code=')
+            ->and(Browser::isConsent($late->get((string) $expired->header('location'))))->toBeTrue()
+            // A late cancel is still a cancel.
+            ->and((string) $cancelledLate->header('location'))->toStartWith('https://acme.example' . HandoffEndpoint::CALLBACK . '?error=access_denied');
+    });
+
+    it('is refused, not asked again, for a late ticket that is altered or shown to another session', function () {
+        $app = new App();
+        $victim = asking($app);
+        [, $fields] = Browser::form(screenFor($victim), HandoffConsent::CONFIRM);
+        $attacker = asking($app);
+        [, $own] = Browser::form(screenFor($attacker), HandoffConsent::CONFIRM);
+        $app->now += ConsentTicket::TTL + 1;
+
+        $lifted = $attacker->post('https://id.platform.test/_handoff/authorize', [...$own, HandoffConsent::TICKET => $fields[HandoffConsent::TICKET]]);
+        $altered = $victim->post('https://id.platform.test/_handoff/authorize', [...$fields, HandoffConsent::TICKET => $fields[HandoffConsent::TICKET] . 'x']);
+
+        expect($lifted->status)->toBe(403)
+            ->and($altered->status)->toBe(403)
+            ->and($lifted->header('location'))->toBeNull()
+            ->and($altered->header('location'))->toBeNull();
     });
 
     it('is not taken without a decision, or with one that is neither', function () {
@@ -469,7 +513,7 @@ describe('a cancel', function () {
         $arrived = $browser->get((string) $cancelled->header('location'));
 
         expect($cancelled->status)->toBe(303)
-            ->and($cancelled->header('location'))->toBe('https://acme.example' . HandoffEndpoint::CALLBACK . '?error=access_denied')
+            ->and($cancelled->header('location'))->toBe('https://acme.example' . HandoffEndpoint::CALLBACK . '?error=access_denied&return=%2Fwhoami')
             ->and($cancelled->header('location'))->not->toContain('code=')
             ->and($arrived->status)->toBe(403)
             ->and(errorCode($arrived))->toBe('handoff_cancelled')
@@ -584,4 +628,165 @@ describe('a ticket\'s claims', function () {
             ->and(static fn () => ConsentTicket::decode(SignedToken::encode($app->signer, ConsentTicket::PURPOSE, ['s' => 'x']), $app->signer, $app->now))->toThrow(TokenError::class)
             ->and(static fn () => ConsentTicket::mint($app->signer, '', 'alice', '1', $realm, str_repeat('c', 43), str_repeat('s', 22), '/', $app->now, $realm->tenant))->toThrow(\InvalidArgumentException::class);
     });
+});
+
+/** Confirms the screen $browser is shown for START, ticking "don't ask again" if $remember. */
+function confirm(Browser $browser, bool $remember): Response
+{
+    return $browser->answer(screenFor($browser), HandoffConsent::CONFIRM, $remember ? [HandoffConsent::REMEMBER => '1'] : []);
+}
+
+describe('a remembered domain (ADR 0125)', function () {
+    it('is offered unticked, and only where the platform keeps the choice', function () {
+        $without = screenFor(asking(new App()));
+        $with = screenFor(asking(new App(remembered: new ArrayRememberedConsents())));
+
+        expect($without->body())->not->toContain('name="' . HandoffConsent::REMEMBER . '"')
+            ->and($with->body())->toContain('<input type="checkbox" name="' . HandoffConsent::REMEMBER . '" value="1">')
+            ->and($with->body())->not->toContain('checked');
+    });
+
+    it('skips the screen next time, for that person and that domain alone', function () {
+        $memory = new ArrayRememberedConsents();
+        $app = new App(remembered: $memory);
+        $browser = asking($app);
+        expect(confirm($browser, remember: true)->header('location'))->toContain('code=');
+
+        // Again: straight to the domain with a code, no screen.
+        $again = $browser->get((string) $browser->get(START)->header('location'));
+        // Another domain of the same tenant is still asked about.
+        $other = $browser->get((string) $browser->get('https://shop.acme.example/_handoff/start?return=%2Fwhoami')->header('location'));
+        // And another person on the same domain.
+        $bob = asking($app, 'bob');
+        $app->directory->members['bob'] = $app->directory->members['alice'];
+
+        expect($again->status)->toBe(303)
+            ->and((string) $again->header('location'))->toStartWith('https://acme.example' . HandoffEndpoint::CALLBACK . '?code=')
+            ->and(Browser::isConsent($other))->toBeTrue()
+            ->and(Browser::isConsent($bob->get((string) $bob->get(START)->header('location'))))->toBeTrue();
+    });
+
+    it('is not kept unless the box is ticked', function () {
+        $memory = new ArrayRememberedConsents();
+        $app = new App(remembered: $memory);
+        $browser = asking($app);
+        confirm($browser, remember: false);
+
+        expect($memory->rows)->toBe([])
+            ->and(Browser::isConsent($browser->get((string) $browser->get(START)->header('location'))))->toBeTrue();
+    });
+
+    it('is forgotten when the epoch moves: a sign-out, a role change, signing out everywhere', function () {
+        $memory = new ArrayRememberedConsents();
+        $app = new App(remembered: $memory);
+        $browser = asking($app);
+        confirm($browser, remember: true);
+        $app->directory->epochs['alice']++;
+
+        expect(Browser::isConsent($browser->get((string) $browser->get(START)->header('location'))))->toBeTrue()
+            ->and($memory->forUser('alice', (string) $app->directory->epochs['alice'], $app->now))->toBe([]);
+    });
+
+    it('is asked about again once the domain moves to another tenant or panel', function (Realm $moved) {
+        $memory = new ArrayRememberedConsents();
+        $app = new App(remembered: $memory);
+        $browser = asking($app);
+        confirm($browser, remember: true);
+        $app->moved['acme.example'] = $moved;
+        $app->directory->members['alice'] = ['portal' => ['acme', 'globex'], 'shop' => ['acme']];
+
+        $toAuthority = $browser->get(START);
+        expect(Browser::isConsent($browser->get((string) $toAuthority->header('location'))))->toBeTrue();
+    })->with([
+        'another tenant' => [Realm::domain('https://acme.example', 'globex', 'portal')],
+        'another panel' => [Realm::domain('https://acme.example', 'acme', 'shop')],
+    ]);
+
+    it('is taken back by the person, and lasts thirty days at most', function () {
+        $memory = new ArrayRememberedConsents();
+        $app = new App(remembered: $memory);
+        $browser = asking($app);
+        confirm($browser, remember: true);
+
+        $listed = $memory->forUser('alice', '1', $app->now);
+        $memory->forget('alice', 'https://acme.example');
+        $forgotten = Browser::isConsent($browser->get((string) $browser->get(START)->header('location')));
+
+        confirm($browser, remember: true);
+        $app->now += RememberedConsents::MAX_AGE;
+        $expired = Browser::isConsent($browser->get((string) $browser->get(START)->header('location')));
+
+        expect(array_map(static fn (RememberedConsent $c): string => $c->origin, $listed))->toBe(['https://acme.example'])
+            ->and($forgotten)->toBeTrue()
+            ->and($expired)->toBeTrue();
+    });
+
+    it('still never hands staff to a custom domain, nor someone whose membership is gone', function () {
+        $memory = new ArrayRememberedConsents();
+        $app = new App(remembered: $memory);
+        $browser = asking($app);
+        confirm($browser, remember: true);
+        $app->directory->members['alice'] = [];
+
+        $toAuthority = $browser->get(START);
+        $response = $browser->get((string) $toAuthority->header('location'));
+
+        expect($response->status)->toBe(403)
+            ->and($response->header('location'))->toBeNull();
+    });
+
+    it('is kept in the database bound to the user, epoch, tenant, panel and domain', function () {
+        $connection = new PdoConnection(new \PDO('sqlite::memory:'), 'consents-test');
+        DatabaseRememberedConsents::define(new Schema($connection, Dialect::for($connection)));
+        $store = new DatabaseRememberedConsents($connection);
+        $store->remember('alice', '1', 'acme', 'portal', 'https://acme.example', 1000);
+
+        expect($store->remembers('alice', '1', 'acme', 'portal', 'https://acme.example', 1001))->toBeTrue()
+            ->and($store->remembers('bob', '1', 'acme', 'portal', 'https://acme.example', 1001))->toBeFalse()
+            ->and($store->remembers('alice', '2', 'acme', 'portal', 'https://acme.example', 1001))->toBeFalse()
+            ->and($store->remembers('alice', '1', 'globex', 'portal', 'https://acme.example', 1001))->toBeFalse()
+            ->and($store->remembers('alice', '1', 'acme', 'admin', 'https://acme.example', 1001))->toBeFalse()
+            ->and($store->remembers('alice', '1', 'acme', 'portal', 'https://acme.example.evil', 1001))->toBeFalse()
+            ->and($store->remembers('alice', '1', 'acme', 'portal', 'https://acme.example', 1000 + RememberedConsents::MAX_AGE))->toBeFalse()
+            ->and($store->forUser('alice', '1', 1001))->toHaveCount(1);
+
+        $store->remember('alice', '1', 'acme', 'portal', 'https://shop.acme.example', 1000);
+        $store->forget('alice', 'https://acme.example');
+        expect($store->remembers('alice', '1', 'acme', 'portal', 'https://acme.example', 1001))->toBeFalse()
+            ->and($store->remembers('alice', '1', 'acme', 'portal', 'https://shop.acme.example', 1001))->toBeTrue();
+        $store->forgetUser('alice');
+        expect($store->forUser('alice', '1', 1001))->toBe([]);
+    });
+});
+
+describe('a cancel landing on the application\'s page (ADR 0125)', function () {
+    it('draws the application\'s page at the destination, signed out, with the path the handoff was for', function () {
+        $landed = [];
+        $app = new App(cancelled: static function (Request $request, Realm $realm, string $returnTo) use (&$landed): Response {
+            $landed[] = [$realm->origin, $returnTo];
+
+            return Response::make(200, 'You stayed signed out.', ['content-type' => 'text/plain']);
+        });
+        $browser = asking($app);
+
+        $page = $browser->get((string) $browser->answer(screenFor($browser), HandoffConsent::CANCEL)->header('location'));
+
+        expect($page->status)->toBe(200)
+            ->and($page->body())->toBe('You stayed signed out.')
+            ->and($page->header('cache-control'))->toContain('no-store')
+            ->and($landed)->toBe([['https://acme.example', '/whoami']])
+            ->and(json($browser->get('https://acme.example/whoami')))->toBe(['user' => '']);
+    });
+
+    it('hands the page a path on the destination alone, whatever the query says', function (string $return) {
+        $landed = [];
+        $app = new App(cancelled: static function (Request $request, Realm $realm, string $returnTo) use (&$landed): Response {
+            $landed[] = $returnTo;
+
+            return Response::make(200, 'ok');
+        });
+        new Browser($app)->get('https://acme.example' . HandoffEndpoint::CALLBACK . '?error=access_denied&return=' . rawurlencode($return));
+
+        expect($landed)->toBe(['/']);
+    })->with(['https://evil.example/', '//evil.example', '/\\evil.example', '/_handoff/start']);
 });

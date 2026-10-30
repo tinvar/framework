@@ -59,6 +59,12 @@ final readonly class HandoffConsentShell
             foreach ($consent->fields($decision) as $name => $value) {
                 $hidden .= '<input type="hidden" name="' . $e($name) . '" value="' . $e($value) . '">';
             }
+            // Unticked unless the person ticks it: not being asked again is
+            // something they choose, never the default.
+            if ($decision === HandoffConsent::CONFIRM && $consent->remembers) {
+                $hidden .= '<label class="remember"><input type="checkbox" name="' . HandoffConsent::REMEMBER . '" value="1"> '
+                    . $e("Don't ask again for {$consent->destination()}") . '</label>';
+            }
 
             return '<form method="post" action="' . $e($consent->action()) . '">' . $hidden
                 . '<button type="submit" class="' . $class . '">' . $e($label) . '</button></form>';
@@ -94,5 +100,7 @@ final readonly class HandoffConsentShell
         . 'button{font:inherit;font-weight:500;padding:8px 16px;border-radius:8px;cursor:pointer}'
         . '.primary{background:var(--ink);color:var(--paper);border:1px solid var(--ink)}'
         . '.secondary{background:transparent;color:var(--ink);border:1px solid var(--rule)}'
-        . 'button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}';
+        . 'button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}'
+        . 'form:has(.remember){display:flex;flex-wrap:wrap;align-items:center;gap:12px}'
+        . '.remember{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:14px}';
 }

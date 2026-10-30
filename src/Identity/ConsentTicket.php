@@ -132,9 +132,13 @@ final readonly class ConsentTicket
      * destination -- is the endpoint's to check against the request; this
      * says only that this server issued it, lately.
      *
+     * $stale takes one past its expiry, and only that: never to be spent,
+     * only for the endpoint to ask the person again about the handoff it
+     * names (ADR 0125), with every check a fresh one runs.
+     *
      * @throws TokenError
      */
-    public static function decode(string $ticket, Signer $signer, int $now): self
+    public static function decode(string $ticket, Signer $signer, int $now, bool $stale = false): self
     {
         if (\strlen($ticket) > self::MAX_LENGTH) {
             throw new TokenError('longer than any ticket issued');
@@ -187,7 +191,7 @@ final readonly class ConsentTicket
         if ($ticket->issuedAt > $now + HandoffCode::SKEW) {
             throw new TokenError('issued in the future');
         }
-        if ($ticket->expiresAt <= $now) {
+        if ($ticket->expiresAt <= $now && !$stale) {
             throw new TokenError('expired');
         }
         // Only minting applies the TTL, so nothing else stops a ticket

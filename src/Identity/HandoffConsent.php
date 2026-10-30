@@ -34,11 +34,19 @@ final readonly class HandoffConsent
     public const string CSRF = '_token';
 
     /**
+     * The confirm form's checkbox, posted as '1' when ticked: do not ask
+     * about this domain again (ADR 0125). A screen draws it only where
+     * remembers() says the platform keeps such a choice.
+     */
+    public const string REMEMBER = 'remember';
+
+    /**
      * @param Authenticatable $user who is signed in on the platform host, and would be signed in there
      * @param Realm $target the destination: always a tenant's custom domain
      * @param string $ticket the signed ConsentTicket the forms carry
      * @param string $csrfToken the session's CSRF token, for the forms' hidden field
      * @param int $expiresAt when the ticket stops being taken, in seconds since the epoch
+     * @param bool $remembers whether the confirm may carry REMEMBER: the platform keeps the choice
      */
     public function __construct(
         public Authenticatable $user,
@@ -47,6 +55,7 @@ final readonly class HandoffConsent
         #[\SensitiveParameter]
         public string $csrfToken,
         public int $expiresAt,
+        public bool $remembers = false,
     ) {}
 
     /** Where both forms post: the step that asked, on the platform host. */
