@@ -39,8 +39,11 @@ final readonly class ImageSanitizer
     /** The most pixels an image may have: 16.7 megapixels, 64 MB decoded. */
     public const int MAX_PIXELS = 16_777_216;
 
-    /** Bytes GD holds per pixel of a truecolor image, and some to spare. */
-    private const int BYTES_PER_PIXEL = 5;
+    /**
+     * Bytes asked of the memory limit per pixel: four for the decoded
+     * image, four more for a JPEG's copy turned upright, and some to spare.
+     */
+    private const int BYTES_PER_PIXEL = 10;
 
     public function __construct(
         private int $maxDimension = self::MAX_DIMENSION,
