@@ -77,8 +77,12 @@ it('is held at every hop of a redirect, before the next name is looked up', func
     }
     $server = Server::start([Server::reply(302, '', ['Location' => '/moved']), Server::reply(302, '', ['Location' => 'http://elsewhere.invalid/'])]);
     $resolver = new StaticResolver(['hooks.invalid' => ['127.0.0.1'], 'elsewhere.invalid' => ['127.0.0.1']]);
-    $request = new OutboundRequest('GET', "http://hooks.invalid:{$server->port}/", maxRedirects: 3,
-        destinations: Destinations::hosts(['hooks.invalid'], [$server->port, 80], plainHttp: true));
+    $request = new OutboundRequest(
+        'GET',
+        "http://hooks.invalid:{$server->port}/",
+        maxRedirects: 3,
+        destinations: Destinations::hosts(['hooks.invalid'], [$server->port, 80], plainHttp: true),
+    );
 
     try {
         $why = reason(fn () => new PinnedHttp(new OutboundPolicy(allow: ['127.0.0.1']), $resolver)->send($request));
