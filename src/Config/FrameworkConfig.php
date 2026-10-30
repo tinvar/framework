@@ -53,6 +53,8 @@ final readonly class FrameworkConfig
      * @param string|null $nodeCa the CA file this environment's nodes are issued by (NodeAuthority), absolute
      * @param Secret|null $stagingAppKey staging's own key, for `staging:import` on production's side (ADR 0090)
      * @param string|null $frankenphp the FrankenPHP binary `tinvar serve` runs, where --frankenphp names none
+     * @param Secret|null $dumpMysqlDsn a mysql: DSN for a user that reaches the dumps' copies of a MySQL
+     *        database alone (`tinvar\_dump\_%`), which `render --dump` and `mcp` make them as (ADR 0113)
      */
     public function __construct(
         public ?string $dev = null,
@@ -69,8 +71,15 @@ final readonly class FrameworkConfig
         #[\SensitiveParameter]
         public ?Secret $stagingAppKey = null,
         public ?string $frankenphp = null,
+        #[\SensitiveParameter]
+        public ?Secret $dumpMysqlDsn = null,
     ) {
         $problems = [];
+
+        // Its driver, never the rest: the DSN carries a password.
+        if ($dumpMysqlDsn !== null && !str_starts_with(trim($dumpMysqlDsn->reveal()), 'mysql:')) {
+            $problems[] = 'TINVAR_DUMP_MYSQL_DSN must be a mysql: DSN.';
+        }
 
         if ($profile !== null && !\in_array(strtolower(trim($profile)), [...BuildProfile::PROFILES, ''], true)) {
             $problems[] = BuildProfile::ENV . ' is not a profile: it is production, staging or test.';

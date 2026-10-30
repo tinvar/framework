@@ -181,3 +181,15 @@ it('reads the node CA, staging\'s key and the FrankenPHP binary, refusing each b
         ->and($e->getMessage())->not->toContain('short-staging-secret')
         ->and($e->getMessage())->not->toContain('relative');
 });
+
+// ADR 0113: a MySQL dump's copy is made as a user of its own, named by a
+// DSN read as a Secret and refused by its variable alone.
+it('reads the dumps\' MySQL user as a Secret, refusing any other driver by variable alone', function () {
+    $config = Configs::load(FrameworkConfig::class, ['TINVAR_DUMP_MYSQL_DSN' => 'mysql:host=db;user=tinvar_dump;password=hunter2']);
+    $e = refusal(['TINVAR_DUMP_MYSQL_DSN' => 'pgsql:host=db;password=hunter2']);
+
+    expect($config->dumpMysqlDsn)->toBeInstanceOf(Secret::class)
+        ->and($config->dumpMysqlDsn?->reveal())->toBe('mysql:host=db;user=tinvar_dump;password=hunter2')
+        ->and($e->problems)->toBe(['TINVAR_DUMP_MYSQL_DSN must be a mysql: DSN.'])
+        ->and($e->getMessage())->not->toContain('hunter2');
+});
