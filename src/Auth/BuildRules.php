@@ -47,9 +47,10 @@ use Tinvar\Validation\FormRequest;
  *      #[TenantScoped] model (siteId, scriptId) fails the build." It reads the
  *      application's models, which a Kernel hands each registry, and finds
  *      one not listed in the namespace of one that is or of one an entry
- *      point takes; the registries run it on each class as it registers,
- *      over the payloads it takes too, and `tinvar check` over every one
- *      (payloadsTakenBy()). ADR 0105.
+ *      point takes, or anywhere the application's composer.json autoloads
+ *      its classes (ApplicationClasses, ADR 0122); the registries run it on
+ *      each class as it registers, over the payloads it takes too, and
+ *      `tinvar check` over every one (payloadsTakenBy()). ADR 0105.
  *
  *   authorize-must-name-a-subject
  *     An #[Authorize] whose argument names nothing resolvable is a 500 on the
@@ -161,12 +162,23 @@ final class BuildRules
     /** @var list<class-string<Model>> the application's models, held to attributes-must-name-a-class */
     private array $models = [];
 
-    /** @param list<class-string<Model>> $models every model the application declares */
-    public function __construct(array $models = [])
+    /** @var array<string, true> the top namespaces of the application's models and entry points: whose classes are looked for */
+    private array $roots = [];
+
+    private readonly ApplicationClasses $classes;
+
+    /**
+     * @param list<class-string<Model>> $models every model the application declares
+     * @param ApplicationClasses|null $classes where a model no list holds is looked for besides:
+     *        the application's composer.json's PSR-4 map, unless given
+     */
+    public function __construct(array $models = [], ?ApplicationClasses $classes = null)
     {
         $this->models = $models;
+        $this->classes = $classes ?? ApplicationClasses::fromComposer();
         foreach ($models as $model) {
             $this->namespaces[self::namespaceOf($model)] = true;
+            $this->roots[self::topOf($model)] = true;
             if (self::isTenantScoped($model)) {
                 $this->tenantScoped[strtolower(Str::shortName($model))] = $model;
             }
@@ -217,10 +229,11 @@ final class BuildRules
         // Every Data object and form request an entry point takes, whether
         // or not the caller listed it. A list kept by hand is a list a new
         // form request is missing from, and the bare id in it then passed in
-        // silence. Only with a model to name -- one listed, or one in the
-        // namespace of a model an entry point takes: without one the rule
-        // cannot fire.
-        if ($this->tenantScoped !== [] || $this->namespaces !== []) {
+        // silence. Only with a model to name -- one listed, one in the
+        // namespace of a model an entry point takes, or one the
+        // application's autoload map may hold: without one the rule cannot
+        // fire.
+        if ($this->mayName()) {
             $payloads = array_values(array_unique([...$payloads, ...self::payloadsTakenBy($entryPoints)]));
         }
 
@@ -255,7 +268,7 @@ final class BuildRules
                 }
             }
         }
-        if ($this->tenantScoped === [] && $this->namespaces === []) {
+        if (!$this->mayName()) {
             return $violations;
         }
         foreach (self::payloadsTakenBy($entryPoints) as $payload) {
@@ -1258,7 +1271,33 @@ final class BuildRules
             }
         }
 
+        // And one in a namespace of its own, beside nothing listed or
+        // taken: wherever the application's composer.json maps its classes,
+        // under the application's own top namespaces (ADR 0122).
+        foreach ($this->classes->named($studly, array_map(strval(...), array_keys($this->roots))) as $class) {
+            if (class_exists($class) && is_subclass_of($class, Model::class) && self::isTenantScoped($class)) {
+                $this->tenantScoped[$candidate] = $class;
+
+                return $class;
+            }
+        }
+
         return null;
+    }
+
+    /** Whether a bare id could name a model here: one listed, one beside a model, or one the autoload map holds. */
+    private function mayName(): bool
+    {
+        return $this->tenantScoped !== [] || $this->namespaces !== []
+            || $this->classes->maps(array_map(strval(...), array_keys($this->roots)));
+    }
+
+    /** A class's first namespace, or '' for one in none. */
+    private static function topOf(string $class): string
+    {
+        $top = strstr($class, '\\', true);
+
+        return $top === false ? '' : $top;
     }
 
     /** @param class-string $class */
@@ -1275,6 +1314,7 @@ final class BuildRules
      */
     private function learnNamespaces(string $class): void
     {
+        $this->roots[self::topOf($class)] = true;
         foreach (self::entryMethods(new \ReflectionClass($class)) as [$method]) {
             foreach ($method->getParameters() as $parameter) {
                 foreach (self::modelTypesOf($parameter) as $model) {
