@@ -317,6 +317,7 @@ final class ActionRegistry
             panels: self::panelsOf($where, $class, $method->getName()),
             uploads: $uploads,
             optionalUploads: $optionalUploads,
+            transaction: $declaration->transaction,
         );
     }
 

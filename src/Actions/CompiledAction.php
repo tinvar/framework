@@ -31,6 +31,8 @@ final readonly class CompiledAction
      * @param array<string, \Tinvar\Attributes\Uploaded> $uploads its `Upload` parameters,
      *        each with what may be uploaded to it
      * @param array<string, true> $optionalUploads upload parameters that may be left out
+     * @param bool $transaction #[Action(transaction: true)]: the body and what answers it
+     *        run in one transaction (ADR 0107)
      */
     public function __construct(
         public string $name,
@@ -49,6 +51,7 @@ final readonly class CompiledAction
         public array $panels = [],
         public array $uploads = [],
         public array $optionalUploads = [],
+        public bool $transaction = false,
     ) {}
 
     /**

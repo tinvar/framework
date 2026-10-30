@@ -261,7 +261,7 @@ final class ActionEndpoint
             // carries: VerifyCsrfToken has read it from the body already.
             unset($input['_token']);
 
-            $result = $this->runner->run($name, $input, $precognitive, $request);
+            $result = $this->runner->run($name, $input, $precognitive, $request, $this->answerable(...));
         } catch (ValidationException $e) {
             if (self::isFormNavigation($request)) {
                 // "Without JavaScript, fall back to redirect-back with
@@ -341,6 +341,27 @@ final class ActionEndpoint
         }
 
         return Response::redirect($result->back ? Flash::back($request) : (string) $result->redirect, 303);
+    }
+
+    /**
+     * Throws for a result this endpoint could not answer: a location() on
+     * no allowed origin, a redirect() off this one, a revalidate() naming
+     * no page. Asked by the runner once the body has returned -- inside the
+     * action's transaction, for one declared with one, so the refusal
+     * leaves nothing written (ADR 0107) -- and by the same rules the answer
+     * is built by afterwards, so the two cannot disagree.
+     */
+    private function answerable(ActionResult $result): void
+    {
+        if ($result->location !== null) {
+            ($this->externalOrigins ?? new ExternalOrigins())->checked($result->location);
+        } elseif ($result->redirect !== null && !$result->back) {
+            Response::redirect($result->redirect, 303);
+        }
+
+        if ($result->revalidatedRoutes !== []) {
+            $this->revalidator?->routesFor($result->revalidatedRoutes);
+        }
     }
 
     /** @param array<string, mixed> $payload */

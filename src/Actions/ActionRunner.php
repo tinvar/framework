@@ -131,8 +131,13 @@ final class ActionRunner
      * @param array<string, mixed> $input
      * @param bool $precognitive validate-only: authorization and the form
      *        request run, the body does not
+     * @param (\Closure(ActionResult): void)|null $answerable throws for a result
+     *        that cannot be answered -- a redirect to where none may go, a
+     *        route that is no page -- once the body has returned and its tags
+     *        are invalidated: inside the action's transaction where it runs in
+     *        one, so a refusal leaves nothing written (ADR 0107)
      */
-    public function run(string $name, array $input, bool $precognitive = false, ?Request $request = null): ActionResult
+    public function run(string $name, array $input, bool $precognitive = false, ?Request $request = null, ?\Closure $answerable = null): ActionResult
     {
         $action = $this->registry->get($name);
 
@@ -165,31 +170,50 @@ final class ActionRunner
         } else {
             $body = static fn (): mixed => $standIn(...$arguments);
         }
-        [$result, $tenants] = $this->orm->tenantsEnteredBy(fn (): mixed => $this->hasUploads($uploads)
-            ? $this->runWithUploads($uploads, $body)
-            : $body());
 
-        if (!$result instanceof ActionResult) {
-            throw ActionException::badReturn($action->where(), get_debug_type($result));
-        }
+        $answered = function () use ($action, $uploads, $body, $answerable): ActionResult {
+            [$result, $tenants] = $this->orm->tenantsEnteredBy(fn (): mixed => $this->hasUploads($uploads)
+                ? $this->runWithUploads($uploads, $body)
+                : $body());
 
-        // 6. Invalidate what the action said it invalidated: the cached
-        //    queries, at once and again once the writes commit -- the
-        //    server-side cache was once never touched, so a
-        //    #[Query(cache: '5m')] kept serving the pre-write answer for the
-        //    rest of its TTL; every client listening, in other tabs and for
-        //    other people, once the writes commit -- the response's
-        //    X-Invalidated-Tags reaches only the client that ran it; every
-        //    hold on a once-shared value carrying one, by any browser; and
-        //    the static pages showing them. In each tenant it ran as, the
-        //    one it was called in first, so a write made as a child reaches
-        //    its parents' reads across the subtree (TagInvalidation).
-        $this->invalidation->invalidateIn($result->revalidatedTags, $tenants);
+            if (!$result instanceof ActionResult) {
+                throw ActionException::badReturn($action->where(), get_debug_type($result));
+            }
 
-        // 7. The data boundary. Only Data objects, scalars, lists and maps
-        //    leave, in every environment -- an action's value and flash were
-        //    reaching the browser unchecked.
-        return $result->encoded($this->encoder);
+            // 6. Invalidate what the action said it invalidated: the cached
+            //    queries, at once and again once the writes commit -- the
+            //    server-side cache was once never touched, so a
+            //    #[Query(cache: '5m')] kept serving the pre-write answer for
+            //    the rest of its TTL; every client listening, in other tabs
+            //    and for other people, once the writes commit -- the
+            //    response's X-Invalidated-Tags reaches only the client that
+            //    ran it; every hold on a once-shared value carrying one, by
+            //    any browser; and the static pages showing them. In each
+            //    tenant it ran as, the one it was called in first, so a write
+            //    made as a child reaches its parents' reads across the
+            //    subtree (TagInvalidation).
+            $this->invalidation->invalidateIn($result->revalidatedTags, $tenants);
+
+            // Then whether it can be answered at all. After the tags, so an
+            // action whose writes are in -- one outside a transaction -- still
+            // has them announced when its redirect is refused. Inside its
+            // transaction, a refusal rolls back the writes with it and the
+            // announcements that wait on the commit.
+            if ($answerable !== null) {
+                $answerable($result);
+            }
+
+            // 7. The data boundary. Only Data objects, scalars, lists and
+            //    maps leave, in every environment -- an action's value and
+            //    flash were reaching the browser unchecked.
+            return $result->encoded($this->encoder);
+        };
+
+        // The body, its tags and the check of its answer in one transaction,
+        // where the action asked for one (ADR 0107): a location() off every
+        // allowed origin was refused after the writes it followed, and they
+        // stayed.
+        return $action->transaction ? $this->orm->transaction($answered) : $answered();
     }
 
     /**
