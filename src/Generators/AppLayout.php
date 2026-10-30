@@ -124,6 +124,20 @@ final readonly class AppLayout
         return str_starts_with($path, '../') ? $path : "./{$path}";
     }
 
+    /**
+     * A file of the application's own that a generator edits -- a Kernel, a
+     * console, the renderer's route table -- named absolute or from the
+     * project, once it is certain to be inside the project: its directory
+     * as the filesystem has it. The file itself is not followed, so a
+     * symbolic link there is still one, for the edit to refuse.
+     */
+    public function inProject(string $path): string
+    {
+        $absolute = str_starts_with($path, '/') ? $path : "{$this->root}/{$path}";
+
+        return $this->inside($this->root, self::resolve(\dirname($absolute)) . '/' . basename($absolute));
+    }
+
     /** $path relative to the project, for what the command prints. */
     public function relative(string $path): string
     {

@@ -30,6 +30,7 @@ use Tinvar\Data\Data;
 use Tinvar\Generators\AppLayout;
 use Tinvar\Generators\GenerationRefused;
 use Tinvar\Generators\MakeCommand;
+use Tinvar\Generators\Registrations;
 use Tinvar\Orm\Connection;
 use Tinvar\Orm\Factory;
 use Tinvar\Orm\Migrations\MigrateCommand;
@@ -98,7 +99,7 @@ final class App
      * @param list<string> $arguments
      * @param list<class-string<Model>> $models
      */
-    public function __invoke(string $command, array $arguments, array $models = []): int
+    public function __invoke(string $command, array $arguments, array $models = [], ?Registrations $registrations = null): int
     {
         $this->out = [];
         $this->err = [];
@@ -112,6 +113,7 @@ final class App
             function (string $line): void {
                 $this->err[] = $line;
             },
+            $registrations ?? new Registrations(),
         )->run($command, $arguments);
     }
 
@@ -529,4 +531,113 @@ it('is wired into bin/tinvar, against the shop, refusing what is there', functio
     [$status, $output] = tool([PHP_BINARY, ROOT . '/bin/tinvar', 'help']);
     expect($output)->toContain('make:page <Name> --path=/racks/{rack}')
         ->and($output)->toContain('make:action <Class> <method>');
+});
+
+/**
+ * Writes a Kernel, a console and a route table into $app as an application
+ * keeps them, and the Registrations that point at them.
+ */
+function registered(App $app, string $kernelRoutes = "[\n        Pages\\Layout::class,\n    ]"): Registrations
+{
+    $ns = $app->namespace;
+    mkdir("{$app->root}/app/Pages", 0o755, true);
+    mkdir("{$app->root}/resources/entries", 0o755, true);
+    mkdir("{$app->root}/bin", 0o755, true);
+    file_put_contents("{$app->root}/app/Pages/Layout.php", "<?php\n\nnamespace {$ns}\\Pages;\n\nuse Tinvar\\Attributes\\Layout as LayoutAttribute;\n\n#[LayoutAttribute('/', view: 'app/layout')]\nfinal class Layout {}\n");
+    file_put_contents("{$app->root}/app/Kernel.php", <<<PHP
+        <?php
+
+        namespace {$ns};
+
+        use Tinvar\\Http\\Request;
+
+        final class Kernel
+        {
+            public const array ROUTES = {$kernelRoutes};
+
+            public const array QUERIES = [];
+
+            public const array ACTIONS = [];
+        }
+
+        PHP);
+    file_put_contents("{$app->root}/bin/console", "<?php\n\nconst APP_MODELS = [\n];\n");
+    file_put_contents("{$app->root}/resources/entries/rsc.tsx", <<<'TSX'
+        import type { ReactNode } from 'react';
+        import AppLayout from '../pages/app/layout';
+
+        type Page = (props: { data: never; params: never }) => ReactNode;
+
+        const ROUTES: Record<string, { Page: Page; layouts: readonly 'app'[] }> = {
+          // The pages.
+        };
+
+        export { AppLayout, ROUTES };
+
+        TSX);
+
+    return new Registrations(
+        lists: [
+            'page' => [['file' => 'app/Kernel.php', 'constant' => 'ROUTES']],
+            'query' => [['file' => 'app/Kernel.php', 'constant' => 'QUERIES']],
+            'action' => [['file' => 'app/Kernel.php', 'constant' => 'ACTIONS']],
+            'model' => [['file' => 'bin/console', 'constant' => 'APP_MODELS']],
+        ],
+        routeTable: 'resources/entries/rsc.tsx',
+        routes: ["{$ns}\\Pages\\Layout"],
+    );
+}
+
+it('registers what it writes in the Kernel\'s lists, the console\'s models and the route table, inside its layouts', function () {
+    $app = $this->app;
+    $registrations = registered($app);
+
+    expect($app('make:model', ['Shelf'], registrations: $registrations))->toBe(0, implode("\n", $app->err))
+        ->and($app('make:page', ['Shelves/Show', '--path=/shelves/{shelf}'], [$app->class('Models\Shelf')], $registrations))->toBe(0, implode("\n", $app->err))
+        ->and($app->out)->toContain("registered {$app->namespace}\\Pages\\Shelves\\Show in app/Kernel.php (ROUTES)")
+        ->and($app->out)->toContain("registered 'shelves/show' in resources/entries/rsc.tsx, in app")
+        ->and($app->out)->toContain("Next: run `tinvar codegen` for PageProps<'shelves/show'>.")
+        ->and($app('make:query', ['Stats'], registrations: $registrations))->toBe(0)
+        ->and($app('make:action', ['ShelfActions', 'move'], registrations: $registrations))->toBe(0);
+
+    $kernel = $app->read('app/Kernel.php');
+    expect($kernel)->toContain("use {$app->namespace}\\Actions\\ShelfActions;\nuse {$app->namespace}\\Pages\\Shelves\\Show;\nuse {$app->namespace}\\Queries\\Stats;\nuse Tinvar\\Http\\Request;")
+        ->and($kernel)->toContain("        Pages\\Layout::class,\n        Show::class,\n    ];")
+        ->and($kernel)->toContain('public const array QUERIES = [Stats::class];')
+        ->and($kernel)->toContain('public const array ACTIONS = [ShelfActions::class];')
+        ->and($app->read('bin/console'))->toBe("<?php\n\nconst APP_MODELS = [\n    {$app->namespace}\\Models\\Shelf::class,\n];\n")
+        ->and($app->read('resources/entries/rsc.tsx'))->toContain("import AppLayout from '../pages/app/layout';\nimport ShelvesShowPage from '../pages/shelves/show';\n")
+        ->and($app->read('resources/entries/rsc.tsx'))->toContain("  // The pages.\n  'shelves/show': { Page: ShelvesShowPage as Page, layouts: ['app'] },\n};");
+
+    [$status, $output] = tool([PHP_BINARY, '-l', "{$app->root}/app/Kernel.php"]);
+    expect($status)->toBe(0, $output);
+});
+
+it('writes its files and says what to register by hand where a list cannot be read', function () {
+    $app = $this->app;
+    $registrations = registered($app, '[...self::BASE, Pages\\Layout::class]');
+    $before = $app->read('app/Kernel.php');
+
+    expect($app('make:page', ['Notes', '--path=/notes'], registrations: $registrations))->toBe(0, implode("\n", $app->err))
+        ->and($app->files())->toContain('app/Pages/Notes.php')
+        ->and($app->read('app/Kernel.php'))->toBe($before)
+        ->and($app->out)->toContain("Left app/Kernel.php as it was -- ROUTES holds something other than Name::class entries: add {$app->namespace}\\Pages\\Notes to ROUTES there by hand.")
+        // The route table is its own edit, made all the same.
+        ->and($app->out)->toContain("registered 'notes' in resources/entries/rsc.tsx, in app");
+});
+
+it('edits no file outside the application', function () {
+    $app = $this->app;
+    registered($app);
+    $outside = sys_get_temp_dir() . '/tinvar-outside-' . bin2hex(random_bytes(4)) . '.php';
+    file_put_contents($outside, "<?php\n\nconst APP_MODELS = [\n];\n");
+    try {
+        $registrations = new Registrations(lists: ['model' => [['file' => $outside, 'constant' => 'APP_MODELS']]]);
+
+        expect($app('make:model', ['Bin'], registrations: $registrations))->toBe(0)
+            ->and(file_get_contents($outside))->toBe("<?php\n\nconst APP_MODELS = [\n];\n")
+            ->and(implode("\n", $app->out))->toContain('is not inside');
+    } finally {
+        unlink($outside);
+    }
 });

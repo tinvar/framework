@@ -65,12 +65,16 @@ final class MakeCommand
      *        parameter or --model is matched against
      * @param (\Closure(string): void)|null $out a line for standard output
      * @param (\Closure(string): void)|null $err a line for standard error
+     * @param Registrations $registrations where what is written is registered: the
+     *        application's lists and route table, or, with none, nowhere -- the
+     *        developer is told where to
      */
     public function __construct(
         private readonly AppLayout $layout,
         private readonly array $models = [],
         ?\Closure $out = null,
         ?\Closure $err = null,
+        private readonly Registrations $registrations = new Registrations(),
     ) {
         $this->out = $out ?? static function (string $line): void {
             fwrite(STDOUT, $line . "\n");
@@ -87,7 +91,7 @@ final class MakeCommand
             $usage = self::USAGES[$command] ?? throw new \InvalidArgumentException("Unknown command '{$command}'.");
             [$positional, $options] = self::parse($arguments, $usage);
 
-            [$files, $next] = match ($command) {
+            [$files, $next, $registered] = match ($command) {
                 'make:page' => $this->page($positional, $options, $usage),
                 'make:query' => $this->query($positional, $options, $usage),
                 'make:action' => $this->action($positional, $options, $usage),
@@ -97,7 +101,13 @@ final class MakeCommand
             foreach ($files->write($this->layout->relative(...)) as $path) {
                 ($this->out)('wrote ' . $this->layout->relative($path));
             }
-            foreach ($next as $line) {
+            // Registered once written: each list and the route table its
+            // own edit, and what could not be made said, file by file.
+            [$done, $left] = $this->registrations->register(...$registered);
+            foreach ($done as $line) {
+                ($this->out)($line);
+            }
+            foreach ([...$left, ...$next] as $line) {
                 ($this->out)($line);
             }
 
@@ -116,7 +126,7 @@ final class MakeCommand
     /**
      * @param list<string> $positional
      * @param array<string, string|true> $options
-     * @return array{FileSet, list<string>}
+     * @return array{FileSet, list<string>, array{string, string, AppLayout, string}}
      */
     private function page(array $positional, array $options, string $usage): array
     {
@@ -158,18 +168,20 @@ final class MakeCommand
             ->add($this->layout->pathOf($data), Sources::data($data, $class))
             ->add($viewFile, Sources::view($view, $this->layout->typesImport($view), $class, $path, $parameters !== []));
 
-        $next = ["Next: register {$class} with the application's routes, add the view to its renderer's route table, and run `tinvar codegen` for PageProps<'{$view}'>."];
+        $next = [$this->registrations->none()
+            ? "Next: register {$class} with the application's routes, add the view to its renderer's route table, and run `tinvar codegen` for PageProps<'{$view}'>."
+            : "Next: run `tinvar codegen` for PageProps<'{$view}'>."];
         if (array_filter($parameters) === []) {
             $next[] = "Until a policy with a view() ability is registered for {$class}, every request to the page is refused.";
         }
 
-        return [$files, $next];
+        return [$files, $next, ['page', $class, $this->layout, $view]];
     }
 
     /**
      * @param list<string> $positional
      * @param array<string, string|true> $options
-     * @return array{FileSet, list<string>}
+     * @return array{FileSet, list<string>, array{string, string, AppLayout}}
      */
     private function query(array $positional, array $options, string $usage): array
     {
@@ -189,18 +201,19 @@ final class MakeCommand
         // No list to keep: the build reads each view's calls into its
         // route's allowlist, so the query is allowed exactly where it is
         // called, and a hand-kept list could only drift from that.
-        $next = ["Next: register {$class} with the application's queries, and run `tinvar codegen` for its `@queries` function. The build allows '{$wire}' on each route whose views call it."];
+        $next = [($this->registrations->none() ? "Next: register {$class} with the application's queries, and run" : 'Next: run')
+            . " `tinvar codegen` for its `@queries` function. The build allows '{$wire}' on each route whose views call it."];
         if ($model === null) {
             $next[] = "Until a policy with a view() ability is registered for {$class}, every call to the query is refused.";
         }
 
-        return [$files, $next];
+        return [$files, $next, ['query', $class, $this->layout]];
     }
 
     /**
      * @param list<string> $positional
      * @param array<string, string|true> $options
-     * @return array{FileSet, list<string>}
+     * @return array{FileSet, list<string>, array{string, string, AppLayout}}
      */
     private function action(array $positional, array $options, string $usage): array
     {
@@ -221,18 +234,19 @@ final class MakeCommand
             $files->add($this->layout->pathOf($request), Sources::request($request, Names::short($class) . "::{$method}"));
         }
 
-        $next = ["Next: register {$class} with the application's actions, and run `tinvar codegen` for `@actions/" . Names::short($class) . '`.'];
+        $next = [($this->registrations->none() ? "Next: register {$class} with the application's actions, and run" : 'Next: run')
+            . ' `tinvar codegen` for `@actions/' . Names::short($class) . '`.'];
         if ($model === null) {
             $next[] = "Until a policy with a {$method}() ability is registered for {$class}, every call to the action is refused.";
         }
 
-        return [$files, $next];
+        return [$files, $next, ['action', $class, $this->layout]];
     }
 
     /**
      * @param list<string> $positional
      * @param array<string, string|true> $options
-     * @return array{FileSet, list<string>}
+     * @return array{FileSet, list<string>, array{string, string, AppLayout}}
      */
     private function model(array $positional, array $options, string $usage): array
     {
@@ -259,7 +273,8 @@ final class MakeCommand
             $files->add($this->layout->pathOf($factory), Sources::factory($factory, $class, $columns));
         }
 
-        return [$files, ["Next: register {$class} with the application's models, and run `tinvar make:migration create_" . strtolower($table) . '` for its table.']];
+        return [$files, [($this->registrations->none() ? "Next: register {$class} with the application's models, and run" : 'Next: run')
+            . ' `tinvar make:migration create_' . strtolower($table) . '` for its table.'], ['model', $class, $this->layout]];
     }
 
     /**
