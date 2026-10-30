@@ -108,6 +108,25 @@ it('cuts a line past its cap, says so, and holds nothing without end', function 
         ->and($tail['message'])->toBe('tail');
 });
 
+// A renderer writing without end must not fill the disk the application's
+// own lines go to.
+it('writes at most its budget of lines a second, and says next how many it dropped', function () {
+    $sink = new MemorySink();
+    $now = 1000.0;
+    $lines = new RendererLines($sink, clock: static function () use (&$now): float {
+        return $now;
+    });
+
+    $lines->feed('1', str_repeat("{\"level\":\"error\",\"message\":\"flood\"}\n", RendererLines::MAX_PER_SECOND + 40), true);
+    $now = 1001.2;
+    $lines->line('{"level":"info","message":"after"}', false);
+
+    $records = $sink->records();
+    expect($records)->toHaveCount(RendererLines::MAX_PER_SECOND + 2)
+        ->and($records[RendererLines::MAX_PER_SECOND])->toMatchArray(['level' => 'warning', 'message' => 'renderer lines dropped', 'dropped' => 40, 'source' => 'renderer'])
+        ->and(end($records)['message'])->toBe('after');
+});
+
 it('writes nothing below the application\'s level', function () {
     $sink = new MemorySink();
     $lines = new RendererLines($sink, 'warning');

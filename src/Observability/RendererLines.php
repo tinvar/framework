@@ -25,6 +25,12 @@ namespace Tinvar\Observability;
  * that is not a JSON object -- Node's own words on a crash -- is a message,
  * redacted, at the stream's level. A line past MAX_LINE is cut there, and
  * says so.
+ *
+ * And at most MAX_PER_SECOND lines a second reach the log: a renderer that
+ * writes without end -- broken, or made to -- would otherwise fill the disk
+ * the application's own lines are written to. Past the budget a line is
+ * dropped, and the next second's first line says how many were. Standard
+ * error is serve's to pass on whole, as it always was.
  */
 final class RendererLines
 {
@@ -33,6 +39,9 @@ final class RendererLines
 
     /** How deep a line's JSON is read: an error's fields, and a little more. */
     private const int MAX_DEPTH = 8;
+
+    /** Lines a second the log takes from the renderers, all of them together. */
+    public const int MAX_PER_SECOND = 500;
 
     /** What the line itself owns, taken from the renderer's only as checked. */
     private const array OWNED = ['time', 'level', 'message', 'source', 'request_id'];
@@ -45,9 +54,21 @@ final class RendererLines
     /** @var array<string, string> each stream's bytes since its last newline */
     private array $partial = [];
 
-    /** @param string $level the least severe level written, as the application's log has it */
-    public function __construct(LogSink $sink, string $level = 'info', Redactor $redactor = new Redactor())
+    /** The second the budget is counted in, its lines so far, and how many were dropped in it. */
+    private int $second = 0;
+    private int $written = 0;
+    private int $dropped = 0;
+
+    /** @var \Closure(): float */
+    private readonly \Closure $clock;
+
+    /**
+     * @param string $level the least severe level written, as the application's log has it
+     * @param (\Closure(): float)|null $clock for tests: the time, as microtime(true)
+     */
+    public function __construct(LogSink $sink, string $level = 'info', Redactor $redactor = new Redactor(), ?\Closure $clock = null)
     {
+        $this->clock = $clock ?? static fn (): float => microtime(true);
         $this->logger = new Logger($sink, $redactor, $level, source: 'renderer');
         $this->logger->contextFrom(fn (): array => $this->requestId === null ? [] : ['request_id' => $this->requestId]);
     }
@@ -115,6 +136,23 @@ final class RendererLines
     /** @param array<array-key, mixed> $context */
     private function write(string $level, string $message, array $context, ?string $requestId): void
     {
+        $second = (int) floor(($this->clock)());
+        if ($second !== $this->second) {
+            $dropped = $this->dropped;
+            $this->second = $second;
+            $this->written = 0;
+            $this->dropped = 0;
+            if ($dropped > 0) {
+                $this->written++;
+                $this->logger->log('warning', 'renderer lines dropped', ['dropped' => $dropped, 'per_second' => self::MAX_PER_SECOND]);
+            }
+        }
+        if (++$this->written > self::MAX_PER_SECOND) {
+            $this->dropped++;
+
+            return;
+        }
+
         $this->requestId = $requestId;
         try {
             $this->logger->log($level, $message, $context);
