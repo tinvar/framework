@@ -11,7 +11,7 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Uploads\ImageSanitizer;
 
 use Tinvar\Http\HttpException;
-use Tinvar\Uploads\FileTypes;
+use Tinvar\Storage\FileTypes;
 use Tinvar\Uploads\ImageSanitizer;
 
 function file(string $bytes): string

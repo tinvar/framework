@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Uploads;
 
 use Tinvar\Http\HttpException;
+use Tinvar\Storage\FileTypes;
 
 /**
  * Every uploaded image drawn again from its pixels, and nothing else of the
