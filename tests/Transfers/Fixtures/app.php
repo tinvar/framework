@@ -419,10 +419,13 @@ final class App
     {
         $refused = [];
         while (($job = $this->queue->reserve([Transfers::QUEUE], $this->now, 60)) !== null) {
+            $envelope = $this->runner->open($job->payload);
             try {
-                $this->runner->run($this->runner->open($job->payload));
+                $this->runner->run($envelope);
             } catch (JobRefused $e) {
                 $refused[] = $e->reason;
+                // As the Worker does once it has failed the job (ADR 0107).
+                $this->runner->refused($envelope, $e);
             }
             $this->queue->delete($job);
             $this->orm->identityMap()->flush();

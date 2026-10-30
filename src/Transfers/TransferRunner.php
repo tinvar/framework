@@ -16,6 +16,7 @@ use Tinvar\Http\ForbiddenException;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Jobs\JobControl;
 use Tinvar\Jobs\JobRefused;
+use Tinvar\Jobs\Refusal;
 use Tinvar\Jobs\WorkerStopping;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
@@ -187,6 +188,41 @@ final readonly class TransferRunner
         }
 
         return $record->with(['status' => TransferRecord::RUNNING]);
+    }
+
+    /**
+     * Fails at once the record of a transfer whose job the worker refused --
+     * its user's epoch moved, their membership gone, the panel no longer
+     * theirs -- rather than leaving it queued or running until it reads as
+     * failed an hour on (ADR 0107). The rows a partial import wrote stay, as
+     * ADR 0101 has them, and the record says how many.
+     *
+     * Found as the job's own run would find it, by the binding the verified
+     * payload sealed: this tenant claim, the panel and the user it was
+     * dispatched by; a record finished since, or started anywhere else, is
+     * left as it is. Nobody is signed in to tell, so nothing is sent: the
+     * user reads it on their list.
+     */
+    public function refused(string $id, Refusal $refusal, ?JobControl $control = null): void
+    {
+        if ($refusal->user === null) {
+            return;
+        }
+        $record = $this->transfers->store->find($id, TenantClaim::current($this->orm), $refusal->panel ?? '', $refusal->user);
+        if ($record === null || ($record->status !== TransferRecord::QUEUED && $record->status !== TransferRecord::RUNNING)) {
+            return;
+        }
+
+        $what = $record->kind === CompiledTransfer::IMPORT ? 'import' : 'export';
+        $this->fail($record, $record->kind === CompiledTransfer::IMPORT && $record->rows > 0
+            ? "You may no longer run this import. The first {$record->rows} rows were imported before it stopped; the rest were not."
+            : "You may no longer run this {$what}.", $control);
+
+        // The file an import was given is applied or refused now, and kept
+        // no longer than the job.
+        if ($record->kind === CompiledTransfer::IMPORT && $record->key !== '') {
+            $this->transfers->storage->delete($record->key);
+        }
     }
 
     /**

@@ -162,12 +162,14 @@ describe('the file', function () {
 
         $app->users->epochs['staff-1'] = 'e2';
 
+        // Failed on its record the moment the worker refused it, not an
+        // hour on (ADR 0107).
         expect($app->work())->toBe(['epoch_changed'])
             ->and($app->storage->keys())->toBe([])
-            ->and($app->record()->status)->toBe(TransferRecord::QUEUED);
+            ->and($app->record()->status)->toBe(TransferRecord::FAILED)
+            ->and($app->record()->failure)->toBe('You may no longer run this export.')
+            ->and($app->record()->finishedAt)->toBe($app->now);
 
-        // And shown as failed once it is plainly never going to run.
-        $app->now += Transfers::STALE_AFTER + 1;
         $app->auth->login(new Tinvar\Tests\Transfers\Fixtures\User('staff-1'), 'e2');
         $status = $app->orm->actAs('acme', fn (): array => $app->kernel->panels?->within('staff', fn (): array => $app->kernel->transferStatus?->recent() ?? []) ?? []);
         expect($status[0]->status)->toBe('failed');

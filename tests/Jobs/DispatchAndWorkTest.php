@@ -29,6 +29,7 @@ use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\Hooks;
 use Tinvar\Tests\Jobs\Fixtures\LeavesState;
 use Tinvar\Tests\Jobs\Fixtures\RecordContext;
+use Tinvar\Tests\Jobs\Fixtures\TellsRefusal;
 use Tinvar\Tests\Jobs\Fixtures\User;
 use Tinvar\Tests\Orm\Fixtures\Script;
 
@@ -136,6 +137,48 @@ it('refuses a job running as a user whose auth epoch has moved, or who is gone',
     $errors = array_map(static fn ($f) => $f->error, queueOf($h)->failed());
     expect($h->journal()->entries)->toBe([])
         ->and(implode("\n", $errors))->toContain('another auth epoch')->toContain('is gone');
+});
+
+// ADR 0107: a refused job's refused() hook runs once it is failed --
+// outside the context that refused it, told where the verified payload says
+// it came from -- so what stands for it (a transfer's record) can say so.
+it('hands a refused job\'s refused() hook where it was sealed, running it as nobody', function () {
+    $h = new Harness();
+    $h->users->epochs = ['u1' => 'e1'];
+    $h->orm->actAs('acme', fn () => $h->auth->actingAs(new User('u1'), fn () => $h->dispatcher->dispatch(new TellsRefusal('moved')), 'e1'));
+    $h->users->epochs = ['u1' => 'e2'];
+    Hooks::$failed = [];
+
+    $h->work();
+
+    expect($h->journal()->entries)->toBe([[
+        'refused' => 'moved',
+        'reason' => 'epoch_changed',
+        'sealed' => ['acme', null, 'u1'],
+        'running as' => ['acme', null, null],
+    ]])
+        ->and(Hooks::$failed)->toBe([], 'its failed() is not run for a refusal')
+        ->and(queueOf($h)->failed())->toHaveCount(1)
+        ->and($h->orm->tenant())->toBe('', 'and the worker is left as it was');
+});
+
+it('runs no refused() hook for a payload that does not verify', function () {
+    $sealer = new Harness();
+    $sealer->users->epochs = ['u1' => 'e1'];
+    $sealer->auth->actingAs(new User('u1'), fn () => $sealer->dispatcher->dispatch(new TellsRefusal('forged')), 'e1');
+    $sealed = queueOf($sealer)->pushed()[0];
+
+    $h = new Harness();
+    $queue = queueOf($h);
+    // The MAC no longer covers the payload: one byte of it flipped.
+    $payload = $sealed->payload;
+    $payload[20] = $payload[20] === 'A' ? 'B' : 'A';
+    $queue->push(new \Tinvar\Queue\PendingJob($sealed->id, $sealed->queue, $payload, $sealed->availableAt));
+
+    $h->work();
+
+    expect($h->journal()->entries)->toBe([])
+        ->and($queue->failed())->toHaveCount(1);
 });
 
 it('refuses dispatch of a job that runs as its dispatcher when nobody is signed in', function () {

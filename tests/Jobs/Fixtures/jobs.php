@@ -23,6 +23,7 @@ use Tinvar\Jobs\Envelope;
 use Tinvar\Jobs\Job;
 use Tinvar\Jobs\JobRunner;
 use Tinvar\Jobs\Queueable;
+use Tinvar\Jobs\Refusal;
 use Tinvar\Auth\UserLookup;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
@@ -185,6 +186,33 @@ final readonly class AsDispatcher implements Job
     public function handle(Journal $journal, AuthContext $auth, PanelContext $panels): void
     {
         $journal->entries[] = ['user' => $auth->id(), 'epoch' => $auth->epoch(), 'panel' => $panels->currentOrNull()];
+    }
+}
+
+/** Runs as its dispatcher, and says where it was refused from (ADR 0107). */
+#[Queue(asUser: true)]
+final readonly class TellsRefusal implements Job
+{
+    public function __construct(public string $note = '') {}
+
+    public function handle(Journal $journal): void
+    {
+        $journal->entries[] = ['ran' => $this->note];
+    }
+
+    public function failed(\Throwable $error): void
+    {
+        Hooks::$failed[] = 'failed: ' . $this->note;
+    }
+
+    public function refused(Refusal $refusal, Journal $journal, Orm $orm, AuthContext $auth, PanelContext $panels): void
+    {
+        $journal->entries[] = [
+            'refused' => $this->note,
+            'reason' => $refusal->reason,
+            'sealed' => [$refusal->tenant, $refusal->panel, $refusal->user],
+            'running as' => [$orm->tenant(), $auth->id(), $panels->currentOrNull()],
+        ];
     }
 }
 

@@ -464,6 +464,16 @@ final class Worker
             } finally {
                 $this->resetScope();
             }
+        } elseif ($envelope !== null && $error instanceof JobRefused) {
+            // A refusal's, outside that context: its refused() hook, told
+            // where the verified payload says it came from (ADR 0107).
+            try {
+                $this->runner->refused($envelope, $error);
+            } catch (\Throwable $e) {
+                $this->reportFailure($e);
+            } finally {
+                $this->resetScope();
+            }
         }
 
         return 'failed';

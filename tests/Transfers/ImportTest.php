@@ -212,13 +212,13 @@ describe('/_import', function () {
         expect($app->import("widget,stock\n" . W1 . ",10\n")->status)->toBe(202);
         $app->users->epochs['staff-1'] = 'e2';
 
+        // Failed on its record at once, and its file kept no longer than
+        // the job (ADR 0107).
         expect($app->work())->toBe(['epoch_changed'])
             ->and($app->stockOf(W1))->toBe(3)
-            ->and($app->storage->keys())->toHaveCount(1);
-
-        $app->now += 86_400;
-        expect($app->transfers->prune())->toBe(1)
-            ->and($app->storage->keys())->toBe([]);
+            ->and($app->storage->keys())->toBe([])
+            ->and($app->record()->status)->toBe(TransferRecord::FAILED)
+            ->and($app->record()->failure)->toBe('You may no longer run this import.');
     });
 
     it('leaves nothing on the queue once it has run', function () {

@@ -146,6 +146,36 @@ final readonly class JobRunner
         });
     }
 
+    /**
+     * Runs the job's refused() hook, if it has one, once it was refused for
+     * good: a job that stands for a record its user can see -- an export,
+     * an import -- says there that it will not run, rather than leaving the
+     * record queued until it reads as failed an hour on (ADR 0107).
+     *
+     * Only for an envelope that verified: what it names is what the
+     * dispatcher sealed. In none of the context that refused it -- the
+     * tenant it was sealed in, nobody signed in, no panel -- with that
+     * context told as a Refusal. The job's models are read again in that
+     * tenant to build it; one gone since leaves nothing to call the hook
+     * on, and nothing is.
+     */
+    public function refused(Envelope $envelope, JobRefused $error): void
+    {
+        if (!method_exists($envelope->class, 'refused')) {
+            return;
+        }
+
+        $refusal = new Refusal($error->reason, $envelope->tenant, $envelope->panel, $envelope->user);
+        $this->orm->withoutSubtreeGrant(fn () => $this->orm->actAs($envelope->tenant, function () use ($envelope, $refusal): void {
+            $this->auth->actingAs(null, function () use ($envelope, $refusal): void {
+                $work = function () use ($envelope, $refusal): void {
+                    $this->call($this->job($envelope), 'refused', $this->control($envelope), $refusal);
+                };
+                $this->panels === null ? $work() : $this->outsidePanels($work);
+            });
+        }));
+    }
+
     /** @param \Closure(): void $work */
     private function within(Envelope $envelope, \Closure $work): void
     {
@@ -274,7 +304,7 @@ final readonly class JobRunner
     }
 
     /** Calls a job's method with what its parameters ask for, built by the resolver. */
-    private function call(Job $job, string $method, ?JobControl $control = null): void
+    private function call(Job $job, string $method, ?JobControl $control = null, ?Refusal $refusal = null): void
     {
         if (!method_exists($job, $method)) {
             throw new JobRefused('handle_missing', $job::class . " has no {$method}() to run.");
@@ -293,6 +323,10 @@ final readonly class JobRunner
             $class = $type->getName();
             // This run's own, never the container's: a JobControl from
             // anywhere else would answer for another job.
+            if ($class === Refusal::class) {
+                $arguments[] = $refusal ?? throw new JobRefused('handle_unresolvable', $job::class . "::{$method}() takes a Refusal, which only refused() is given.");
+                continue;
+            }
             if ($class === JobControl::class) {
                 $arguments[] = $control ?? throw new JobRefused('handle_unresolvable', $job::class . "::{$method}() takes a JobControl, which only handle() is given.");
                 continue;

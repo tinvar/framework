@@ -260,17 +260,16 @@ it('asks its #[Authorize] again on the run that picks it up', function () {
     // Its user's epoch moves while it waits: the next run is refused
     // before it writes another row.
     $app->users->epochs['staff-1'] = 'e2';
-    $job = $app->queue->reserve([Transfers::QUEUE], $app->now, 60);
-    \assert($job !== null);
-    expect(static fn () => $app->runner->run($app->runner->open($job->payload)))->toThrow(\Tinvar\Jobs\JobRefused::class)
+    expect($app->work())->toBe(['epoch_changed'])
         ->and(array_count_values(stocks($app, $count)))->toBe([11 => TransferRunner::PAGE, 10 => 100]);
 
-    // Shown, once plainly never going to run, with how many rows went in:
-    // started again whole, those would be written twice.
-    $app->now += Transfers::STALE_AFTER + 1;
+    // Shown failed at once (ADR 0107), with how many rows went in: started
+    // again whole, those would be written twice. The rows stay, as ADR 0101
+    // has them.
     $app->auth->login(new \Tinvar\Tests\Transfers\Fixtures\User('staff-1'), 'e2');
     $status = $app->orm->actAs('acme', fn (): array => $app->kernel->panels?->within('staff', fn (): array => $app->kernel->transferStatus?->recent() ?? []) ?? []);
     expect($status[0]->status)->toBe('failed')
         ->and($status[0]->rows)->toBe(TransferRunner::PAGE)
-        ->and($status[0]->failure)->toBe('It did not finish. The first ' . TransferRunner::PAGE . ' rows were imported and the rest were not; import only the rest.');
+        ->and($status[0]->failure)->toBe('You may no longer run this import. The first ' . TransferRunner::PAGE . ' rows were imported before it stopped; the rest were not.')
+        ->and($app->storage->keys())->toBe([]);
 });
