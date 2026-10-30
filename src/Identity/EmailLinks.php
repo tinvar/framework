@@ -59,14 +59,29 @@ final readonly class EmailLinks
     public const string INVITE = 'invite';
 
     /**
+     * Confirms that the holder of an address said yes to mail sent to it:
+     * the second step of a double opt-in (ADR 0116). About an address, as an
+     * invite is, and not an account's auth epoch, which a sign-in moves in
+     * some applications long before a reader gets round to their inbox; the
+     * application holds the address it names to the one its subscriber has
+     * when it is used.
+     */
+    public const string OPT_IN = 'opt-in';
+
+    /** The purposes about an address rather than an account. */
+    public const array ADDRESSED = [self::INVITE, self::OPT_IN];
+
+    /**
      * How long each kind of link opens: fifteen minutes for one that signs
      * in or sets a password, the time it takes to read the email; a week
-     * for an invite, the time it takes someone to get round to it.
+     * for an invite or an opt-in, the time it takes someone to get round to
+     * it.
      */
     public const array LIFETIMES = [
         self::SIGN_IN => 900,
         self::PASSWORD_RESET => 900,
         self::INVITE => 604_800,
+        self::OPT_IN => 604_800,
     ];
 
     /** The signer's own purpose; each link's purpose is bound into its MAC beside it. */
@@ -116,7 +131,7 @@ final readonly class EmailLinks
      * @param string $origin the https origin it is built on -- CanonicalOrigins', never a request's
      * @param string $path the path of the page it lands on, which shows it and POSTs it back
      * @param Authenticatable|null $user the account it is about, bound with its auth epoch now;
-     *        null only for an invite, which names an address
+     *        null only for an invite or an opt-in, which name an address (ADDRESSED)
      * @param array<string, string> $data kept with the record, never put in the token
      * @return array{url: string, link: EmailLink}
      */
@@ -180,8 +195,8 @@ final readonly class EmailLinks
         if (preg_match('#^/(?!/)[A-Za-z0-9/_.-]*\z#', $path) !== 1) {
             throw new \InvalidArgumentException("'{$path}' is not a path an emailed link lands on: root-relative, no query.");
         }
-        if (($user === null) !== ($purpose === self::INVITE)) {
-            throw new \InvalidArgumentException('A sign-in or reset link is about an account; an invite is about an address and no account.');
+        if (($user === null) !== \in_array($purpose, self::ADDRESSED, true)) {
+            throw new \InvalidArgumentException('A sign-in or reset link is about an account; an invite or an opt-in is about an address and no account.');
         }
         foreach ($data as $key => $value) {
             if (\strlen($key) > 64 || \strlen($value) > 1024) {
@@ -314,7 +329,7 @@ final readonly class EmailLinks
         }
 
         if ($link->user === '') {
-            return $purpose === self::INVITE && $auth === '' ? [$link, $secretHash] : null;
+            return \in_array($purpose, self::ADDRESSED, true) && $auth === '' ? [$link, $secretHash] : null;
         }
 
         // The account as it is now, at the epoch it is on now: one that has

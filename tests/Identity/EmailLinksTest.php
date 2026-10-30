@@ -513,3 +513,25 @@ describe('a carried link', function () {
             ->and($invitations->accept($token, 'https://shop.acme.test', 'acme'))->toBeNull();
     });
 });
+
+// ADR 0116: the second step of a double opt-in, about an address and no account.
+describe('an opt-in link', function () {
+    it('is about an address, used once, for a week, and is no invite or sign-in link', function () {
+        Clock::$now = NOW;
+        $links = links(new ArrayEmailLinkStore(), new Users());
+        $issued = $links->issue(EmailLinks::OPT_IN, ORIGIN, '/email/confirm', '', null, ['customer' => 'c-1', 'list' => 'newsletter', 'address' => 'ada@example.test']);
+        $token = tokenOf($issued['url']);
+
+        expect(fn () => $links->issue(EmailLinks::OPT_IN, ORIGIN, '/email/confirm', '', new User('u-1')))->toThrow(\InvalidArgumentException::class, 'opt-in')
+            ->and($links->peek($token, EmailLinks::INVITE, ORIGIN, ''))->toBeNull()
+            ->and($links->peek($token, EmailLinks::SIGN_IN, ORIGIN, ''))->toBeNull()
+            ->and($links->peek($token, EmailLinks::OPT_IN, ORIGIN, '')?->data['address'])->toBe('ada@example.test')
+            ->and($links->consume($token, EmailLinks::OPT_IN, ORIGIN, '')?->id)->toBe($issued['link']->id)
+            ->and($links->consume($token, EmailLinks::OPT_IN, ORIGIN, ''))->toBeNull();
+
+        $later = tokenOf($links->issue(EmailLinks::OPT_IN, ORIGIN, '/email/confirm', '', null)['url']);
+        Clock::$now = NOW + EmailLinks::LIFETIMES[EmailLinks::OPT_IN];
+        expect($links->peek($later, EmailLinks::OPT_IN, ORIGIN, ''))->toBeNull();
+        Clock::$now = NOW;
+    });
+});
