@@ -223,6 +223,114 @@ final class CastOnAString extends Model
     #[Column(cast: PriceCast::class)] public string $price;
 }
 
+/** Readonly all the way through its own properties, holding what can change (ADR 0122). */
+final class Counter
+{
+    public int $count = 0;
+}
+
+final readonly class Wrapped
+{
+    public function __construct(public Counter $counter) {}
+}
+
+/**
+ * A value object whose own properties are all readonly, made by the cast
+ * given what the test hands it.
+ *
+ * @implements Cast<Holder>
+ */
+final readonly class Holder implements Cast
+{
+    /** @param array<mixed> $items */
+    public function __construct(public string $name, public array $items = [], public ?Price $price = null) {}
+
+    public static function columnType(): string
+    {
+        return 'json';
+    }
+
+    public static function fromColumn(mixed $stored): self
+    {
+        return NextHolder::$next ?? new self('read');
+    }
+
+    /** @param self $value */
+    public static function toColumn(object $value): array
+    {
+        return ['name' => $value->name];
+    }
+}
+
+/** What Holder::fromColumn() answers next: a test's, to see a read refuse it. */
+final class NextHolder
+{
+    public static ?Holder $next = null;
+}
+
+/** A readonly property holding a class with a property that is not readonly. */
+final readonly class DeepMutable implements Cast
+{
+    public function __construct(public Wrapped $wrapped) {}
+
+    public static function columnType(): string
+    {
+        return 'json';
+    }
+
+    public static function fromColumn(mixed $stored): self
+    {
+        return new self(new Wrapped(new Counter()));
+    }
+
+    public static function toColumn(object $value): array
+    {
+        return [];
+    }
+}
+
+/** A readonly property holding PHP's own mutable DateTime. */
+final readonly class Dated implements Cast
+{
+    public function __construct(public \DateTime $at, public \DateTimeImmutable $fixed) {}
+
+    public static function columnType(): string
+    {
+        return 'json';
+    }
+
+    public static function fromColumn(mixed $stored): self
+    {
+        return new self(new \DateTime(), new \DateTimeImmutable());
+    }
+
+    public static function toColumn(object $value): array
+    {
+        return [];
+    }
+}
+
+#[Table('vo_racks')]
+final class DeepMutableColumn extends Model
+{
+    #[Id] public private(set) string $id;
+    #[Column] public DeepMutable $layout;
+}
+
+#[Table('vo_racks')]
+final class DatedColumn extends Model
+{
+    #[Id] public private(set) string $id;
+    #[Column] public Dated $layout;
+}
+
+#[Table('vo_racks')]
+final class HolderColumn extends Model
+{
+    #[Id] public private(set) string $id;
+    #[Column] public Holder $layout;
+}
+
 final readonly class LayoutData extends Data
 {
     /** @param list<int> $reserved */
@@ -473,6 +581,74 @@ describe('what a value-object column may be', function () {
         'a cast that is not a Cast' => [NotACast::class, 'names stdClass as its cast, which does not implement ' . Cast::class],
         'a cast on a builtin type' => [CastOnAString::class, 'has a cast, so it must be typed as one class'],
     ]);
+});
+
+// ADR 0122: readonly is one level deep in PHP, and immutability is not.
+describe('what a value object holds, all the way down', function () {
+    it('refuses a readonly property holding a class that is not immutable, when the model compiles', function () {
+        expect(fn () => Metadata::for(DeepMutableColumn::class))->toThrow(
+            MappingException::class,
+            'holds ' . DeepMutable::class . ', which is mutable: ' . DeepMutable::class . '::$wrapped holds ' . Wrapped::class
+                . ', and ' . Wrapped::class . '::$counter holds ' . Counter::class . ', and ' . Counter::class . '::$count is not readonly.',
+        );
+    });
+
+    it('refuses PHP\'s own DateTime, and takes DateTimeImmutable', function () {
+        expect(fn () => Metadata::for(DatedColumn::class))->toThrow(
+            MappingException::class,
+            Dated::class . '::$at holds DateTime, and DateTime, a class of PHP\'s own whose state is out of reflection\'s sight, may change in place.',
+        );
+    });
+
+    it('looks inside an array and a class that may be extended, on each value written', function (\Closure $make, string $why) {
+        $orm = sqlite();
+        $model = new HolderColumn();
+        $model->layout = $make();
+
+        expect(fn () => $orm->save($model))->toThrow(MappingException::class, $why);
+    })->with([
+        'a mutable object in an array' => [fn () => new Holder('h', ['when' => new \DateTime()]), 'it holds a DateTime, and DateTime, a class of PHP\'s own'],
+        'one nested in arrays' => [fn () => new Holder('h', [[['deep' => new Counter()]]]), 'it holds a ' . Counter::class . ', and ' . Counter::class . '::$count is not readonly'],
+        'an element held by reference' => [function () {
+            // Kept alive past the call, so the array shares it with
+            // something that can still write it.
+            static $shared = 1;
+            $items = [&$shared];
+
+            return new Holder('h', $items);
+        }, 'an array in it holds an element by reference'],
+        'a mutable subclass where a class is typed' => [fn () => new Holder('h', [], new TaggedPrice(5)), 'it holds a ' . TaggedPrice::class . ', and ' . TaggedPrice::class . '::$tag is not readonly'],
+    ]);
+
+    it('writes and reads one that holds only what cannot change', function () {
+        $orm = sqlite();
+        $model = new HolderColumn();
+        $model->layout = new Holder('h', ['units' => [1, 2], 'at' => new \DateTimeImmutable('2026-01-01'), 'price' => new Price(3)], new Price(5));
+        $orm->save($model);
+
+        NextHolder::$next = new Holder('read', [new Price(1)]);
+        try {
+            $orm->flush();
+            expect($orm->find(HolderColumn::class, $model->primaryKey())?->layout->name)->toBe('read');
+        } finally {
+            NextHolder::$next = null;
+        }
+    });
+
+    it('refuses a mutable value a cast makes when the row is read', function () {
+        $orm = sqlite();
+        $model = new HolderColumn();
+        $model->layout = new Holder('h');
+        $orm->save($model);
+
+        NextHolder::$next = new Holder('read', [new \DateTime()]);
+        try {
+            $orm->flush();
+            expect(fn () => $orm->find(HolderColumn::class, $model->primaryKey()))->toThrow(MappingException::class, 'it holds a DateTime');
+        } finally {
+            NextHolder::$next = null;
+        }
+    });
 });
 
 describe('make:migration', function () {
