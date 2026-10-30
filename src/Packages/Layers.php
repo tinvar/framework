@@ -98,9 +98,10 @@ final readonly class Layers
     /**
      * The modules inside the framework's package (ADR 0077), read over its
      * src/ alone, each file in the module of its class: the queue's storage,
-     * on the database alone; the core, which names no module; jobs, on the
-     * queue and the core; events, mail, webhooks and transfers, each on jobs
-     * and none on another; and the kernel -- the HTTP kernel, the console and
+     * on the database alone; the core, which names no module, held apart in
+     * layers of its own from the transport up (ADR 0114); jobs, on the queue
+     * and the core; events, mail, webhooks and transfers, each on jobs and
+     * none on another; and the kernel -- the HTTP kernel, the console and
      * the server -- which wires them together. The packages around the
      * framework are layers here too, as they are in framework(), so a name
      * of theirs is in theirs rather than the core's.
@@ -147,7 +148,13 @@ final readonly class Layers
         return $this->packages;
     }
 
-    /** The layer $name is in, by its most specific member; null for a name in none. */
+    /**
+     * The layer $name is in, by its most specific member; null for a name in
+     * none. A class member is more specific than a namespace of the same
+     * name, so a class and the namespace beside it named alike -- the
+     * interface `Http\Middleware` and the middleware in `Http\Middleware\`
+     * -- can stand in different layers.
+     */
     public function layerOf(string $name): ?string
     {
         $name = strtolower(ltrim($name, '\\'));
@@ -157,13 +164,14 @@ final readonly class Layers
         foreach ($this->layers as $candidate => $members) {
             foreach ($members as $member) {
                 $member = strtolower($member);
-                $matches = str_ends_with($member, '\\')
-                    ? str_starts_with($name . '\\', $member)
-                    : $name === $member;
+                $specificity = match (true) {
+                    str_ends_with($member, '\\') => str_starts_with($name . '\\', $member) ? 2 * \strlen($member) - 2 : -1,
+                    default => $name === $member ? 2 * \strlen($member) + 1 : -1,
+                };
 
-                if ($matches && \strlen($member) > $length) {
+                if ($specificity > $length) {
                     $layer = $candidate;
-                    $length = \strlen($member);
+                    $length = $specificity;
                 }
             }
         }

@@ -26,6 +26,69 @@ $above = [
     'codegen' => ['Tinvar\\Codegen\\'],
 ];
 
+// The core, held apart into layers of its own (ADR 0114), lowest first:
+// each may use the ones before it, and none after. A namespace is a layer's
+// whole unless a class or a namespace below it is named in another, as the
+// interface `Http\Middleware` stays with the transport while the middleware
+// in `Http\Middleware\` reads who is asking. Every class named here alone is
+// one whose namespace is the name applications know it by, and whose uses
+// are another layer's; ADR 0114 says why for each.
+$core = [
+    // What a request is -- the request, the response, the pipeline and the
+    // middleware interface, the HTTP exceptions and the stores -- and what
+    // an application declares with: attributes are declarations, so they
+    // stand with the transport, except those that run a check of a layer
+    // above as they are built. Anything of Tinvar's no layer names is here,
+    // the lowest, so a new namespace that uses anything above fails.
+    'http' => [
+        'Tinvar\\', 'Tinvar\\Http\\', 'Tinvar\\Http\\Middleware', 'Tinvar\\Http\\Endpoints\\Limits', 'Tinvar\\Console\\Cron',
+        'Tinvar\\Attributes\\ClassAttributes', 'Tinvar\\Attributes\\Authorize', 'Tinvar\\Attributes\\Panel', 'Tinvar\\Attributes\\PublicAccess',
+    ],
+    // Who is asking: the user, the panel, the gates and the policies, the
+    // middleware that reads them, and the throttle keyed by them.
+    'auth' => ['Tinvar\\Auth\\', 'Tinvar\\Http\\Middleware\\', 'Tinvar\\Http\\Throttle'],
+    // What is held and sent: config, Data and its encoder, the renderer's
+    // wire format, storage, outbound HTTP, validation, the tag caches and
+    // flags; the signed tokens every entry point mints; the route a loader
+    // is given; and the attributes whose checks are these.
+    'data' => [
+        'Tinvar\\Config\\', 'Tinvar\\Data\\', 'Tinvar\\Protocol\\', 'Tinvar\\Storage\\', 'Tinvar\\Outbound\\',
+        'Tinvar\\Validation\\', 'Tinvar\\Cache\\', 'Tinvar\\Features\\',
+        'Tinvar\\Render\\SignedToken', 'Tinvar\\Render\\TokenClaims', 'Tinvar\\Render\\TokenError', 'Tinvar\\Render\\TenantClaim',
+        'Tinvar\\Routing\\CompiledRoute', 'Tinvar\\Routing\\RouteKind', 'Tinvar\\Routing\\RoutingException',
+        'Tinvar\\Attributes\\',
+    ],
+    // The reads: pages and their loaders, queries and their cache, and the
+    // build rules every declared entry point is held to.
+    'reads' => ['Tinvar\\Routing\\', 'Tinvar\\Query\\', 'Tinvar\\Auth\\BuildRules', 'Tinvar\\Attributes\\Query', 'Tinvar\\Cache\\QueryCache', 'Tinvar\\Live\\TagsRead'],
+    // The renderer and what watches it: telemetry, probes and the dev
+    // toolbar.
+    'render' => ['Tinvar\\Render\\', 'Tinvar\\Observability\\', 'Tinvar\\Dev\\', 'Tinvar\\Http\\DevOverlay'],
+    // Which host and which user's origin: realms, custom domains, the
+    // cross-host handoff and emailed links.
+    'identity' => ['Tinvar\\Identity\\', 'Tinvar\\Http\\Middleware\\RequirePlatformHost'],
+    // The other entry points -- actions, endpoints, channels and live
+    // updates, uploads -- the page router, and the checks every one of them
+    // is entered through.
+    'entry' => [
+        'Tinvar\\Live\\', 'Tinvar\\Channels\\', 'Tinvar\\Actions\\', 'Tinvar\\Endpoints\\', 'Tinvar\\Uploads\\',
+        'Tinvar\\Http\\EntryContext', 'Tinvar\\Http\\BuildRegistry', 'Tinvar\\Http\\Middleware\\CheckVersion', 'Tinvar\\Routing\\Router',
+    ],
+    // The framework's own endpoints under /_ and what a request's scope and
+    // failure are made of, which the kernel mounts.
+    'requests' => ['Tinvar\\Http\\Endpoints\\', 'Tinvar\\Http\\RequestScope', 'Tinvar\\Http\\FragmentSupport', 'Tinvar\\Http\\PageCursors', 'Tinvar\\Http\\ExceptionHandler'],
+    // Tools over the rest: the supply chain and the layer rule, generators,
+    // scenarios, staging, nodes.
+    'operations' => ['Tinvar\\Packages\\', 'Tinvar\\Generators\\', 'Tinvar\\Scenarios\\', 'Tinvar\\Staging\\', 'Tinvar\\Nodes\\'],
+];
+$coreUses = [];
+$below = ['support', 'database', 'queue'];
+foreach (array_keys($core) as $layer) {
+    $coreUses[$layer] = $below;
+    $below[] = $layer;
+}
+$coreNames = array_keys($core);
+
 return [
     'packages' => [
         'layers' => [
@@ -74,7 +137,7 @@ return [
             'support' => ['Tinvar\\Support\\', 'Tinvar\\Codec\\', 'Tinvar\\Container\\'],
             'database' => ['Tinvar\\Orm\\'],
             'queue' => ['Tinvar\\Queue\\'],
-            'core' => ['Tinvar\\', 'Tinvar\\Console\\Cron'],
+            ...$core,
             'jobs' => ['Tinvar\\Jobs\\', 'Tinvar\\Attributes\\Queue'],
             'events' => ['Tinvar\\Events\\', 'Tinvar\\Attributes\\Listener'],
             'mail' => ['Tinvar\\Mail\\'],
@@ -92,22 +155,22 @@ return [
         'uses' => [
             'database' => ['support'],
             'queue' => ['support', 'database'],
-            'core' => ['support', 'database', 'queue'],
-            'jobs' => ['support', 'database', 'queue', 'core'],
-            'events' => ['support', 'database', 'queue', 'core', 'jobs'],
-            'mail' => ['support', 'database', 'queue', 'core', 'jobs'],
-            'webhooks' => ['support', 'database', 'queue', 'core', 'jobs'],
-            'transfers' => ['support', 'database', 'queue', 'core', 'jobs'],
-            'workflows' => ['support', 'database', 'queue', 'core', 'jobs'],
-            'push' => ['support', 'database', 'queue', 'core', 'jobs'],
-            'calls' => ['support', 'database', 'queue', 'core'],
-            'tools' => ['support', 'database', 'queue', 'core', 'calls'],
-            'services' => ['support', 'database', 'queue', 'core', 'calls'],
-            'gateway' => ['support', 'database', 'queue', 'core'],
-            'kernel' => ['support', 'database', 'queue', 'core', 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway'],
-            'tenancy' => ['support', 'database', 'queue', 'core', 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway', 'kernel'],
-            'testing' => ['support', 'database', 'queue', 'core', 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway', 'kernel'],
-            'codegen' => ['support', 'database', 'queue', 'core', 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway', 'kernel'],
+            ...$coreUses,
+            'jobs' => ['support', 'database', 'queue', ...$coreNames],
+            'events' => ['support', 'database', 'queue', ...$coreNames, 'jobs'],
+            'mail' => ['support', 'database', 'queue', ...$coreNames, 'jobs'],
+            'webhooks' => ['support', 'database', 'queue', ...$coreNames, 'jobs'],
+            'transfers' => ['support', 'database', 'queue', ...$coreNames, 'jobs'],
+            'workflows' => ['support', 'database', 'queue', ...$coreNames, 'jobs'],
+            'push' => ['support', 'database', 'queue', ...$coreNames, 'jobs'],
+            'calls' => ['support', 'database', 'queue', ...$coreNames],
+            'tools' => ['support', 'database', 'queue', ...$coreNames, 'calls'],
+            'services' => ['support', 'database', 'queue', ...$coreNames, 'calls'],
+            'gateway' => ['support', 'database', 'queue', ...$coreNames],
+            'kernel' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway'],
+            'tenancy' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway', 'kernel'],
+            'testing' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway', 'kernel'],
+            'codegen' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway', 'kernel'],
         ],
         'sources' => [
             'packages/framework/src' => 'Tinvar\\',

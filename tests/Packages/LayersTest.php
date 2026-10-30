@@ -19,6 +19,9 @@ namespace Tinvar\Tests\Packages\Layers;
 use Tinvar\Packages\Layers;
 use Tinvar\Packages\SourceReferences;
 
+/** The core's layers, lowest first (ADR 0114). */
+const CORE = ['http', 'auth', 'data', 'reads', 'render', 'identity', 'entry', 'requests', 'operations'];
+
 /** The framework's namespaces, as check() finds them, for comments' shortened names. */
 const NAMESPACES = ['Tinvar', 'Tinvar\Orm', 'Tinvar\Orm\Schema', 'Tinvar\Http', 'Tinvar\Live', 'Tinvar\Testing', 'Tinvar\Tenancy', 'Tinvar\Support'];
 
@@ -177,15 +180,15 @@ describe('the modules', function () {
         'the webhook endpoint' => ['Tinvar\Webhooks\WebhookEndpoint', 'webhooks'],
         '#[Webhook]' => ['Tinvar\Attributes\Webhook', 'webhooks'],
         'an export\'s runner' => ['Tinvar\Transfers\TransferRunner', 'transfers'],
-        '#[Export], which the build rules read' => ['Tinvar\Attributes\Export', 'core'],
-        'the user lookup, which the handoff asks too' => ['Tinvar\Auth\UserLookup', 'core'],
-        'the nonce store, which the handoff claims in too' => ['Tinvar\Http\DatabaseNonceStore', 'core'],
-        'the request attributes' => ['Tinvar\Http\RequestAttributes', 'core'],
+        '#[Export], which the build rules read' => ['Tinvar\Attributes\Export', 'data'],
+        'the user lookup, which the handoff asks too' => ['Tinvar\Auth\UserLookup', 'auth'],
+        'the nonce store, which the handoff claims in too' => ['Tinvar\Http\DatabaseNonceStore', 'http'],
+        'the request attributes' => ['Tinvar\Http\RequestAttributes', 'http'],
         'the HTTP kernel' => ['Tinvar\Http\Kernel', 'kernel'],
         'what an application shows the testing layer' => ['Tinvar\Http\TestableApplication', 'kernel'],
         'the console' => ['Tinvar\Console\Console', 'kernel'],
-        'a cron expression, which #[Schedule] is written in' => ['Tinvar\Console\Cron', 'core'],
-        '#[Schedule], which tasks anywhere carry' => ['Tinvar\Attributes\Schedule', 'core'],
+        'a cron expression, which #[Schedule] is written in' => ['Tinvar\Console\Cron', 'http'],
+        '#[Schedule], which tasks anywhere carry' => ['Tinvar\Attributes\Schedule', 'data'],
         'the server' => ['Tinvar\Server\ServeCommand', 'kernel'],
         'the ORM' => ['Tinvar\Orm\Orm', 'database'],
         'tenancy' => ['Tinvar\Tenancy\TenantHosts', 'tenancy'],
@@ -194,15 +197,16 @@ describe('the modules', function () {
     it('lets a module use the core and jobs, never one beside it, and only the kernel use them all', function () {
         $modules = Layers::modules();
 
-        expect($modules->names())->toBe(['support', 'database', 'queue', 'core', 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway', 'kernel', 'tenancy', 'testing', 'codegen'])
+        expect($modules->names())->toBe(['support', 'database', 'queue', ...CORE, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway', 'kernel', 'tenancy', 'testing', 'codegen'])
             ->and($modules->mayUse('queue', 'database'))->toBeTrue()
-            ->and($modules->mayUse('queue', 'core'))->toBeFalse()
+            ->and($modules->mayUse('queue', 'http'))->toBeFalse()
             ->and($modules->mayUse('queue', 'jobs'))->toBeFalse()
-            ->and($modules->mayUse('core', 'queue'))->toBeTrue()
-            ->and($modules->mayUse('core', 'jobs'))->toBeFalse()
-            ->and($modules->mayUse('core', 'kernel'))->toBeFalse()
+            ->and($modules->mayUse('http', 'queue'))->toBeTrue()
+            ->and($modules->mayUse('operations', 'jobs'))->toBeFalse()
+            ->and($modules->mayUse('requests', 'kernel'))->toBeFalse()
             ->and($modules->mayUse('jobs', 'queue'))->toBeTrue()
-            ->and($modules->mayUse('jobs', 'core'))->toBeTrue()
+            ->and($modules->mayUse('jobs', 'http'))->toBeTrue()
+            ->and($modules->mayUse('jobs', 'operations'))->toBeTrue()
             ->and($modules->mayUse('jobs', 'events'))->toBeFalse()
             ->and($modules->mayUse('events', 'jobs'))->toBeTrue()
             ->and($modules->mayUse('mail', 'jobs'))->toBeTrue()
@@ -214,7 +218,7 @@ describe('the modules', function () {
             // and neither on the other; the gateway's contract on the core.
             ->and($modules->mayUse('workflows', 'jobs'))->toBeTrue()
             ->and($modules->mayUse('workflows', 'tools'))->toBeFalse()
-            ->and($modules->mayUse('calls', 'core'))->toBeTrue()
+            ->and($modules->mayUse('calls', 'requests'))->toBeTrue()
             ->and($modules->mayUse('calls', 'jobs'))->toBeFalse()
             ->and($modules->mayUse('calls', 'tools'))->toBeFalse()
             ->and($modules->mayUse('tools', 'calls'))->toBeTrue()
@@ -233,18 +237,96 @@ describe('the modules', function () {
         $file = static fn (string $namespace, string $class, string $line): string => "<?php\nnamespace {$namespace};\n\n{$line}\n\nfinal class {$class} {}\n";
         $crossed = static fn (string $source): array => Layers::modules()->checkSource($source, 'Example.php');
 
-        expect($crossed($file('Tinvar\\Identity', 'Example', 'use Tinvar\\Jobs\\JobRunner;')))->toBe(['Example.php:4: core uses jobs, Tinvar\Jobs\JobRunner (use)'])
-            ->and($crossed($file('Tinvar\\Http', 'Example', 'use Tinvar\\Webhooks\\WebhookEndpoint;')))->toBe(['Example.php:4: core uses webhooks, Tinvar\Webhooks\WebhookEndpoint (use)'])
-            ->and($crossed($file('Tinvar\\Actions', 'Example', 'use Tinvar\\Http\\Kernel;')))->toBe(['Example.php:4: core uses kernel, Tinvar\Http\Kernel (use)'])
-            ->and($crossed($file('Tinvar\\Render', 'Example', "const BUS = 'Tinvar\\\\Events\\\\';")))->toBe(['Example.php:4: core uses events, Tinvar\Events (string)'])
+        expect($crossed($file('Tinvar\\Identity', 'Example', 'use Tinvar\\Jobs\\JobRunner;')))->toBe(['Example.php:4: identity uses jobs, Tinvar\Jobs\JobRunner (use)'])
+            ->and($crossed($file('Tinvar\\Http', 'Example', 'use Tinvar\\Webhooks\\WebhookEndpoint;')))->toBe(['Example.php:4: http uses webhooks, Tinvar\Webhooks\WebhookEndpoint (use)'])
+            ->and($crossed($file('Tinvar\\Actions', 'Example', 'use Tinvar\\Http\\Kernel;')))->toBe(['Example.php:4: entry uses kernel, Tinvar\Http\Kernel (use)'])
+            ->and($crossed($file('Tinvar\\Render', 'Example', "const BUS = 'Tinvar\\\\Events\\\\';")))->toBe(['Example.php:4: render uses events, Tinvar\Events (string)'])
             ->and($crossed($file('Tinvar\\Queue', 'Example', 'use Tinvar\\Jobs\\Envelope;')))->toBe(['Example.php:4: queue uses jobs, Tinvar\Jobs\Envelope (use)'])
-            ->and($crossed($file('Tinvar\\Queue', 'Example', 'use Tinvar\\Http\\RequestScope;')))->toBe(['Example.php:4: queue uses core, Tinvar\Http\RequestScope (use)'])
+            ->and($crossed($file('Tinvar\\Queue', 'Example', 'use Tinvar\\Http\\RequestScope;')))->toBe(['Example.php:4: queue uses requests, Tinvar\Http\RequestScope (use)'])
             ->and($crossed($file('Tinvar\\Mail', 'Example', 'use Tinvar\\Webhooks\\OutboundWebhooks;')))->toBe(['Example.php:4: mail uses webhooks, Tinvar\Webhooks\OutboundWebhooks (use)'])
             ->and($crossed($file('Tinvar\\Jobs', 'Example', 'use Tinvar\\Events\\Events;')))->toBe(['Example.php:4: jobs uses events, Tinvar\Events\Events (use)'])
-            ->and($crossed($file('Tinvar\\Attributes', 'Schedule', 'use Tinvar\\Console\\Console;')))->toBe(['Example.php:4: core uses kernel, Tinvar\Console\Console (use)'])
+            ->and($crossed($file('Tinvar\\Attributes', 'Schedule', 'use Tinvar\\Console\\Console;')))->toBe(['Example.php:4: data uses kernel, Tinvar\Console\Console (use)'])
             ->and($crossed($file('Tinvar\\Mail', 'Example', 'use Tinvar\\Jobs\\Dispatcher;')))->toBe([])
             ->and($crossed($file('Tinvar\\Http', 'Kernel', 'use Tinvar\\Webhooks\\WebhookEndpoint;')))->toBe([])
             ->and($crossed($file('Tinvar\\Observability', 'Example', 'use Tinvar\\Queue\\Queue;')))->toBe([]);
+    });
+});
+
+// ADR 0114: the core, held apart into layers inside the framework.
+describe('the core', function () {
+    it('puts each class in its layer, by its namespace or by its own name', function (string $name, string $layer) {
+        expect(Layers::modules()->layerOf($name))->toBe($layer);
+    })->with([
+        'a request' => ['Tinvar\Http\Request', 'http'],
+        'the middleware interface, a class named like a namespace' => ['Tinvar\Http\Middleware', 'http'],
+        'the endpoints\' limits' => ['Tinvar\Http\Endpoints\Limits', 'http'],
+        'an attribute the gates read' => ['Tinvar\Attributes\Authorize', 'http'],
+        'a namespace no layer names' => ['Tinvar\Shiny\Thing', 'http'],
+        'the user asking' => ['Tinvar\Auth\AuthContext', 'auth'],
+        'middleware reading it' => ['Tinvar\Http\Middleware\RequireAuthentication', 'auth'],
+        'the throttle, keyed by it' => ['Tinvar\Http\Throttle', 'auth'],
+        'Data' => ['Tinvar\Data\Data', 'data'],
+        'config' => ['Tinvar\Config\FrameworkConfig', 'data'],
+        'the hub\'s URL' => ['Tinvar\Config\HubUrl', 'data'],
+        'the file types, moved to storage' => ['Tinvar\Storage\FileTypes', 'data'],
+        'the head tag, moved to the protocol' => ['Tinvar\Protocol\HeadTag', 'data'],
+        'a signed token' => ['Tinvar\Render\SignedToken', 'data'],
+        'an attribute with no layer of its own' => ['Tinvar\Attributes\Page', 'data'],
+        'the page registry' => ['Tinvar\Routing\RouteRegistry', 'reads'],
+        'the build rules' => ['Tinvar\Auth\BuildRules', 'reads'],
+        'the query cache' => ['Tinvar\Cache\QueryCache', 'reads'],
+        'the renderer\'s channel' => ['Tinvar\Render\RenderChannel', 'render'],
+        'telemetry' => ['Tinvar\Observability\Telemetry', 'render'],
+        'the realms' => ['Tinvar\Identity\Realms', 'identity'],
+        'the action runner' => ['Tinvar\Actions\ActionRunner', 'entry'],
+        'the entry checks' => ['Tinvar\Http\EntryContext', 'entry'],
+        'the page router' => ['Tinvar\Routing\Router', 'entry'],
+        'the fragment endpoint' => ['Tinvar\Http\Endpoints\FragmentEndpoint', 'requests'],
+        'the layer rule' => ['Tinvar\Packages\Layers', 'operations'],
+    ]);
+
+    it('lets each layer use those below it and none above, and every module use them all', function () {
+        $modules = Layers::modules();
+
+        foreach (CORE as $i => $layer) {
+            foreach (CORE as $j => $other) {
+                expect($modules->mayUse($layer, $other))->toBe($j <= $i, "{$layer} using {$other}");
+            }
+            foreach (['support', 'database', 'queue'] as $below) {
+                expect($modules->mayUse($layer, $below))->toBeTrue();
+            }
+            foreach (['jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway', 'kernel'] as $module) {
+                expect($modules->mayUse($module, $layer))->toBeTrue("{$module} using {$layer}")
+                    ->and($modules->mayUse($layer, $module))->toBeFalse("{$layer} using {$module}");
+            }
+        }
+    });
+
+    it('fails a layer naming one above it, in code or in a comment', function () {
+        $file = static fn (string $namespace, string $line): string => "<?php\nnamespace {$namespace};\n\n{$line}\n\nfinal class Example {}\n";
+        $crossed = static fn (string $source): array => Layers::modules()->checkSource($source, 'Example.php');
+
+        expect($crossed($file('Tinvar\\Http', 'use Tinvar\\Auth\\AuthContext;')))->toBe(['Example.php:4: http uses auth, Tinvar\Auth\AuthContext (use)'])
+            ->and($crossed($file('Tinvar\\Auth', 'use Tinvar\\Data\\Encoder;')))->toBe(['Example.php:4: auth uses data, Tinvar\Data\Encoder (use)'])
+            ->and($crossed($file('Tinvar\\Data', 'use Tinvar\\Routing\\RouteRegistry;')))->toBe(['Example.php:4: data uses reads, Tinvar\Routing\RouteRegistry (use)'])
+            ->and($crossed($file('Tinvar\\Query', 'use Tinvar\\Render\\RenderChannel;')))->toBe(['Example.php:4: reads uses render, Tinvar\Render\RenderChannel (use)'])
+            ->and($crossed($file('Tinvar\\Actions', 'use Tinvar\\Http\\Endpoints\\ActionEndpoint;')))->toBe(['Example.php:4: entry uses requests, Tinvar\Http\Endpoints\ActionEndpoint (use)'])
+            ->and($crossed($file('Tinvar\\Cache', '// A write reaches the page through Tinvar\\Http\\EntryContext::check().')))->toBe(['Example.php:4: data uses entry, Tinvar\Http\EntryContext (comment)'])
+            ->and($crossed($file('Tinvar\\Http', 'use Tinvar\\Http\\Middleware;')))->toBe([])
+            ->and($crossed($file('Tinvar\\Http\\Endpoints', 'use Tinvar\\Actions\\ActionRunner;')))->toBe([])
+            ->and($crossed($file('Tinvar\\Shiny', 'use Tinvar\\Auth\\AuthContext;')))->toBe(['Example.php:4: http uses auth, Tinvar\Auth\AuthContext (use)']);
+    });
+
+    it('takes a class over a namespace of the same name, and a namespace over the one around it', function () {
+        $layers = new Layers(
+            ['low' => ['A\\', 'A\\B'], 'high' => ['A\\B\\']],
+            ['high' => ['low']],
+        );
+
+        expect($layers->layerOf('A\\B'))->toBe('low')
+            ->and($layers->layerOf('A\\B\\C'))->toBe('high')
+            ->and($layers->layerOf('A\\C'))->toBe('low')
+            ->and((new Layers(['low' => ['A\\'], 'high' => ['A\\B\\']], ['high' => ['low']]))->layerOf('A\\B'))->toBe('high');
     });
 });
 
