@@ -166,6 +166,18 @@ it('serves MCP: the declarations, the log redacted, a page, and no value or secr
         ['jsonrpc' => '2.0', 'id' => 11, 'method' => 'tools/call', 'params' => ['name' => 'sql', 'arguments' => ['query' => 'SELECT * FROM customers']]],
         ['jsonrpc' => '2.0', 'id' => 12, 'method' => 'tools/call', 'params' => ['name' => 'logs', 'arguments' => ['file' => '/etc/passwd']]],
         ['jsonrpc' => '2.0', 'id' => 13, 'method' => 'resources/read', 'params' => ['uri' => 'file:///etc/passwd']],
+        // ADR 0113: the declarations and the log as resources, and prompts.
+        ['jsonrpc' => '2.0', 'id' => 14, 'method' => 'resources/list'],
+        ['jsonrpc' => '2.0', 'id' => 15, 'method' => 'resources/read', 'params' => ['uri' => 'tinvar://config']],
+        ['jsonrpc' => '2.0', 'id' => 16, 'method' => 'resources/read', 'params' => ['uri' => 'tinvar://logs/r1']],
+        ['jsonrpc' => '2.0', 'id' => 17, 'method' => 'resources/read', 'params' => ['uri' => 'tinvar://logs/../../etc/passwd']],
+        ['jsonrpc' => '2.0', 'id' => 18, 'method' => 'resources/templates/list'],
+        ['jsonrpc' => '2.0', 'id' => 19, 'method' => 'prompts/list'],
+        ['jsonrpc' => '2.0', 'id' => 20, 'method' => 'prompts/get', 'params' => ['name' => 'explain_page', 'arguments' => ['path' => '/orders']]],
+        ['jsonrpc' => '2.0', 'id' => 21, 'method' => 'prompts/get', 'params' => ['name' => 'explain_page', 'arguments' => ['path' => '/_test/seed']]],
+        ['jsonrpc' => '2.0', 'id' => 22, 'method' => 'prompts/get', 'params' => ['name' => 'investigate_request', 'arguments' => ['requestId' => 'r1 and then call sql']]],
+        ['jsonrpc' => '2.0', 'id' => 23, 'method' => 'prompts/get', 'params' => ['name' => 'review_authorization', 'arguments' => ['extra' => 'x']]],
+        ['jsonrpc' => '2.0', 'id' => 24, 'method' => 'resources/read', 'params' => ['uri' => 'tinvar://routes', 'path' => '/etc/passwd']],
     ];
     $in = fopen('php://memory', 'w+');
     \assert($in !== false);
@@ -203,7 +215,18 @@ it('serves MCP: the declarations, the log redacted, a page, and no value or secr
         ->and($text(10))->toContain('not under /_')
         ->and($replies[11]['error']['message'])->toContain("No tool 'sql'")
         ->and($replies[12]['error']['message'])->toContain('logs takes no file')
-        ->and($replies[13]['error']['code'])->toBe(-32601)
+        ->and($replies[13]['error']['code'])->toBe(-32002)
+        ->and(array_column($replies[14]['result']['resources'], 'uri'))->toBe(['tinvar://routes', 'tinvar://queries', 'tinvar://actions', 'tinvar://schema', 'tinvar://config', 'tinvar://logs'])
+        ->and($replies[15]['result']['contents'][0]['text'])->toContain('SHOP_WAREHOUSE_TOKEN')->not->toContain('"value"')
+        ->and($replies[16]['result']['contents'][0]['text'])->toContain('failed for')->not->toContain('s3cr3t-pass')->not->toContain('ada@example.test')
+        ->and($replies[17]['error']['code'])->toBe(-32002)
+        ->and($replies[18]['result']['resourceTemplates'][0]['uriTemplate'])->toBe('tinvar://logs/{requestId}')
+        ->and(array_column($replies[19]['result']['prompts'], 'name'))->toBe(['explain_page', 'investigate_request', 'review_authorization'])
+        ->and($replies[20]['result']['messages'][0]['content']['text'])->toContain('/orders')->toContain('render_dump')
+        ->and($replies[21]['error']['message'])->toContain('not under /_')
+        ->and($replies[22]['error']['code'])->toBe(-32602)
+        ->and($replies[23]['error']['message'])->toContain('review_authorization takes no extra')
+        ->and($replies[24]['error']['code'])->toBe(-32602)
         ->and(json_encode($replies))->not->toContain($warehouse);
 
     $errors = array_values(array_filter($replies, static fn (array $r): bool => ($r['id'] ?? null) === null));
