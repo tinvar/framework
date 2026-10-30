@@ -191,3 +191,16 @@ it('refuses two certificates where one is asked for', function () {
 
     \Tinvar\Nodes\SubjectAltNames::uris($pem . $pem, 'It');
 })->throws(NodeRefused::class, 'not one PEM certificate');
+
+// OpenSSL reads the first block its PEM reader takes, `X509 CERTIFICATE`
+// among them; the names were read from the one `CERTIFICATE` block. A real
+// node's certificate under the old label, and one of an attacker's own
+// naming another node after it, verified the first and named the second.
+it('refuses a PEM whose certificate OpenSSL reads is not the one its names are read from', function () {
+    $ca = ca('staging');
+    $real = node($ca, 'staging');
+    $forged = certificate('node-1', [NodeAuthority::ENVIRONMENT_URN . 'staging', NodeAuthority::NODE_URN . 'admin'], false)[0];
+    $oldLabel = str_replace('CERTIFICATE-----', 'X509 CERTIFICATE-----', $real);
+
+    NodeAuthority::fromPem($ca[0], 'staging')->verify($oldLabel . $forged);
+})->throws(NodeRefused::class, 'not one PEM certificate');

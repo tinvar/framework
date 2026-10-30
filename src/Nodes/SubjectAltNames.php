@@ -106,7 +106,12 @@ final class SubjectAltNames
 
     private static function der(string $pem, string $what): string
     {
-        if (preg_match_all('/-----BEGIN CERTIFICATE-----\s*([A-Za-z0-9+\/=\s]+?)\s*-----END CERTIFICATE-----/', $pem, $m) !== 1) {
+        // One PEM block of any label, and that one a CERTIFICATE: OpenSSL,
+        // which verifies the signature, reads the first block its reader
+        // takes -- `X509 CERTIFICATE` and `TRUSTED CERTIFICATE` among them --
+        // and the names must be read from the certificate it verified.
+        if (substr_count($pem, '-----BEGIN ') !== 1
+            || preg_match_all('/-----BEGIN CERTIFICATE-----\s*([A-Za-z0-9+\/=\s]+?)\s*-----END CERTIFICATE-----/', $pem, $m) !== 1) {
             throw new NodeRefused("{$what} is not one PEM certificate.");
         }
         $der = base64_decode(preg_replace('/\s+/', '', $m[1][0]) ?? '', true);
