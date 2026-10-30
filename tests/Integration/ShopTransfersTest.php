@@ -232,7 +232,10 @@ it('writes nothing once the staff member\'s epoch has moved before the worker ra
     new AuthEpochs($this->kernel->orm)->bump($account->id, $this->kernel->orm->connection());
     work($this->kernel);
 
-    expect(records($this->kernel)[0]->status)->toBe(TransferRecord::QUEUED)
+    // Failed on its record at once, where the staff member reads it (ADR
+    // 0107); nobody is signed in to be told by mail.
+    expect(records($this->kernel)[0]->status)->toBe(TransferRecord::FAILED)
+        ->and(records($this->kernel)[0]->failure)->toBe('You may no longer run this export.')
         ->and(records($this->kernel)[0]->key)->toBe('');
     $this->mail->assertNothingSent();
 });
