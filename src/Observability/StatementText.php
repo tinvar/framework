@@ -55,10 +55,11 @@ final class StatementText
     }
 
     /**
-     * The span's name for $sql: summary() of its text with SQLite's
-     * double-quoted tokens left in, so a quoted table is named. Only the
-     * operation and the identifier after FROM, INTO or UPDATE reach the
-     * name, and a value cannot stand there.
+     * The span's name for $sql: summary() of its sanitized text, in which
+     * an SQLite double-quoted token is kept only where it is a table's --
+     * right after FROM, INTO, UPDATE or JOIN outside every literal and
+     * comment, and shaped as a plain name -- so a quoted table is named and
+     * nothing read inside a quoted token ever is.
      */
     public static function name(string $sql, string $system): string
     {
@@ -74,7 +75,8 @@ final class StatementText
         $postgres = $system === 'postgresql';
         // Which double-quoted tokens are taken out as strings: MySQL's,
         // which are strings, and SQLite's, which may be.
-        $doubleQuoted = $mysql || ($system === 'sqlite' && !$quotedNames);
+        $sqlite = $system === 'sqlite';
+        $doubleQuoted = $mysql || $sqlite;
 
         // One pattern, every comment and literal an alternative of it, read
         // left to right: whichever begins first is taken whole, as the
@@ -105,7 +107,7 @@ final class StatementText
             '(?<![' . self::NAME_BYTES . '])' . ($mysql ? "[XxBbNn]?'(?:''|\\\\.|[^'\\\\])*+(?:'|\\z)" : "[XxBbNn]?'(?:''|[^'])*+(?:'|\\z)"),
             // A double-quoted string: MySQL's, where a backslash escapes,
             // and SQLite's, where only a doubled quote does.
-            $doubleQuoted ? ($mysql ? '"(?:""|\\\\.|[^"\\\\])*+(?:"|\z)' : '"(?:""|[^"])*+(?:"|\z)') : '(*FAIL)',
+            '(?<quoted>' . ($doubleQuoted ? ($mysql ? '"(?:""|\\\\.|[^"\\\\])*+(?:"|\z)' : '"(?:""|[^"])*+(?:"|\z)') : '(*FAIL)') . ')',
             // A number standing alone -- not a placeholder's ($1), not part
             // of a name (t1): decimal, perhaps with a fraction, an exponent
             // or Postgres's underscores, or hex, binary or octal (0xCAFE).
@@ -113,15 +115,44 @@ final class StatementText
         ];
         [$block, $line] = $alternatives;
 
-        $out = preg_replace_callback(
+        $found = preg_match_all(
             '~(?<comment>' . $block . '|' . $line . ')|' . implode('|', \array_slice($alternatives, 2)) . '~s',
-            // A comment to a space, everything else to a placeholder.
-            static fn (array $m): string => ($m['comment'] ?? '') !== '' ? ' ' : '?',
             $sql,
+            $matches,
+            PREG_SET_ORDER | PREG_OFFSET_CAPTURE | PREG_UNMATCHED_AS_NULL,
         );
-        // PCRE gave up on it, or a quote is left that no pattern closed:
-        // nothing of it is kept, rather than a value.
-        if (!\is_string($out) || str_contains($out, "'") || ($doubleQuoted && str_contains($out, '"'))) {
+        // PCRE gave up on it: nothing of it is kept, rather than a value.
+        if ($found === false) {
+            return '?';
+        }
+
+        // A comment to a space, everything else to a placeholder -- but for
+        // the span's name, an SQLite double-quoted token that is a table's
+        // by where it stands: right after FROM, INTO, UPDATE or JOIN in
+        // what is already read -- comments and literals taken out, so a
+        // FROM inside one is no keyword -- and shaped as a plain name.
+        $out = '';
+        $at = 0;
+        foreach ($matches as $m) {
+            [$text, $offset] = $m[0];
+            $out .= substr($sql, $at, $offset - $at);
+            $at = $offset + \strlen((string) $text);
+            if (($m['comment'][0] ?? null) !== null) {
+                $out .= ' ';
+            } elseif ($quotedNames && $sqlite && ($m['quoted'][0] ?? null) !== null
+                && preg_match('/^"[A-Za-z_][A-Za-z0-9_]*"\z/', (string) $text) === 1
+                && preg_match('/(?<![' . self::NAME_BYTES . '])(?:FROM|INTO|UPDATE|JOIN)\s+\z/i', $out) === 1) {
+                $out .= $text;
+            } else {
+                $out .= '?';
+            }
+        }
+        $out .= substr($sql, $at);
+
+        // A quote is left that no pattern closed: nothing of it is kept.
+        // Only a quote restored above is a name's.
+        $quotes = $quotedNames && $sqlite ? (string) preg_replace('/"[A-Za-z_][A-Za-z0-9_]*"/', '', $out) : $out;
+        if (str_contains($out, "'") || ($doubleQuoted && str_contains($quotes, '"'))) {
             return '?';
         }
 

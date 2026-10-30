@@ -258,6 +258,14 @@ describe('a statement\'s span', function () {
             ->and(StatementText::sanitize('SELECT * FROM "orders" WHERE note = "hunter2"', 'sqlite'))->toBe('SELECT * FROM ? WHERE note = ?')
             ->and(StatementText::name('SELECT * FROM "orders" WHERE note = "hunter2"', 'sqlite'))->toBe('SELECT orders')
             ->and(StatementText::sanitize('SELECT "a""b", "hunter2', 'sqlite'))->toBe('SELECT ?, ?')
+            // A double-quoted token names the span only as the one right
+            // after FROM, INTO, UPDATE or JOIN, shaped as a name: never a
+            // FROM read inside one, nor one a comment stands before.
+            ->and(StatementText::name('SELECT "a FROM hunter2" FROM t', 'sqlite'))->toBe('SELECT t')
+            ->and(StatementText::name('SELECT "x", "y" FROM "a b"', 'sqlite'))->toBe('SELECT')
+            ->and(StatementText::name("SELECT a -- FROM\n \"hunter2\"", 'sqlite'))->toBe('SELECT')
+            ->and(StatementText::name('INSERT INTO "order_lines" VALUES ("hunter2")', 'sqlite'))->toBe('INSERT order_lines')
+            ->and(StatementText::name('SELECT * FROM "hunter2', 'sqlite'))->toBe('SELECT')
             ->and(StatementText::sanitize('SELECT "orders"."id" FROM "orders"', 'postgresql'))->toBe('SELECT "orders"."id" FROM "orders"')
             // A system whose lexer is not read here keeps nothing of its text.
             ->and(StatementText::sanitize("SELECT 'hunter2'", 'other_sql'))->toBe('?')
