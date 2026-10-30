@@ -881,16 +881,25 @@ it('signs in by an emailed link, resets a password by one, and joins the staff b
         ->and($result['invite']['again'])->toBe("This invite won't work");
 });
 
-it('saves an email preference the moment its switch is flipped', function () use ($root) {
+// ADR 0116: a yes is asked of the inbox, and on once its link is used.
+it('asks the inbox when a switch is flipped on, and turns it on from the emailed link', function () use ($root) {
+    $mailDirectory = sys_get_temp_dir() . '/tinvar-e2e-mail-' . bin2hex(random_bytes(4));
+    mkdir($mailDirectory, 0o700);
+    $mailLog = "{$mailDirectory}/mail.log";
     $output = '';
-    served($root, function (string $origin, string $log, Renderer $renderer, string $token) use ($root, &$output): void {
-        $output = runWithTimeout(
-            ['node', "{$root}/examples/shop/e2e/email-preferences.mjs", $origin],
-            $root,
-            60,
-            ['TINVAR_TEST_TOKEN' => $token],
-        );
-    }, ['SHOP_DATABASE' => Shop::testDatabase()], testProfile: true);
+    try {
+        served($root, function (string $origin, string $log, Renderer $renderer, string $token, array $env) use ($root, &$output): void {
+            $output = runWithTimeout(
+                ['node', "{$root}/examples/shop/e2e/email-preferences.mjs", $origin],
+                $root,
+                90,
+                [...array_filter($env, \is_string(...)), 'TINVAR_TEST_TOKEN' => $token, 'TINVAR_E2E_PHP' => PHP_BINARY],
+            );
+        }, ['SHOP_DATABASE' => Shop::testDatabase(), 'SHOP_MAIL_LOG' => $mailLog], testProfile: true);
+    } finally {
+        @unlink($mailLog);
+        @rmdir($mailDirectory);
+    }
 
     $result = json_decode((string) $output, true);
     expect($result)->toBeArray("the browser script failed:\n{$output}");
@@ -900,7 +909,14 @@ it('saves an email preference the moment its switch is flipped', function () use
         ->and($result['email'])->toMatch('/^browser-[0-9a-f]{16}@shop\.test$/')
         ->and($result['before'])->toBeFalse()
         ->and([$result['firstStatus'], $result['secondStatus']])->toBe([200, 200])
-        ->and($result['afterFlip'])->toBeTrue()
-        ->and($result['afterReload'])->toBeTrue()
+        // Asked, not done: the switch stays off until the link is used.
+        ->and($result['afterFlip'])->toBeFalse()
+        ->and($result['afterReload'])->toBeFalse()
+        ->and($result['waiting'])->toBeTrue()
+        ->and($result['confirm']['sent'])->toBe(1)
+        ->and($result['confirm']['built'])->toBe(\Shop\Mail\Links::MAIL_ORIGIN)
+        ->and($result['confirm']['heading'])->toBe('Confirm Newsletter')
+        ->and($result['confirm']['done'])->toBe('?confirmed=newsletter')
+        ->and($result['confirmed'])->toBeTrue()
         ->and($result['restored'])->toBeFalse();
 });
