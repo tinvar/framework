@@ -187,7 +187,10 @@ final class UploadEndpoint
             throw self::refused($e->getMessage());
         }
 
-        [$action] = $this->declarationFor($ticket);
+        [$action, $declared] = $this->declarationFor($ticket);
+        // The model the declaration names, which declarationFor() held the
+        // ticket's class to.
+        $model = $action->models[$declared->to];
         $panels = $this->entry->panelFor($action->panels, $action->class);
         $stack = [
             ...$this->entry->stackFor($action->tenantFrom, $panels),
@@ -197,9 +200,9 @@ final class UploadEndpoint
             ),
         ];
 
-        return new Pipeline($stack)->run($request, function (Request $inner) use ($ticket, $now): Response {
+        return new Pipeline($stack)->run($request, function (Request $inner) use ($ticket, $now, $model): Response {
             $this->assertBinding($inner, $ticket);
-            if ($this->orm->find($ticket->targetClass, $ticket->targetId) === null) {
+            if ($this->orm->find($model, $ticket->targetId) === null) {
                 throw self::refused('names a record that is not there');
             }
 

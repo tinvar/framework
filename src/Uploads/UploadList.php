@@ -20,6 +20,7 @@ final readonly class UploadList implements \IteratorAggregate, \Countable
     /** @param list<Upload> $files */
     public function __construct(public array $files = []) {}
 
+    /** @return \ArrayIterator<int, Upload> */
     public function getIterator(): \ArrayIterator
     {
         return new \ArrayIterator($this->files);
