@@ -80,13 +80,13 @@ function rows(Customer $customer): array
 /**
  * Each list the page shows, as it encodes it, with what the customer said.
  *
- * @return list<array{id: string, label: string, description: string, subscribed: bool}>
+ * @return list<array{id: string, label: string, description: string, subscribed: bool, pending: bool}>
  */
-function lists(bool $newsletter, bool $announcements): array
+function lists(bool $newsletter, bool $announcements, bool $newsletterPending = false): array
 {
     return [
-        ['id' => 'newsletter', 'label' => MarketingList::Newsletter->label(), 'description' => MarketingList::Newsletter->description(), 'subscribed' => $newsletter],
-        ['id' => 'announcements', 'label' => MarketingList::Announcements->label(), 'description' => MarketingList::Announcements->description(), 'subscribed' => $announcements],
+        ['id' => 'newsletter', 'label' => MarketingList::Newsletter->label(), 'description' => MarketingList::Newsletter->description(), 'subscribed' => $newsletter, 'pending' => $newsletterPending],
+        ['id' => 'announcements', 'label' => MarketingList::Announcements->label(), 'description' => MarketingList::Announcements->description(), 'subscribed' => $announcements, 'pending' => false],
     ];
 }
 
@@ -112,17 +112,21 @@ describe('the preferences page', function () {
 });
 
 describe('a switch on it', function () {
-    it('saves the customer\'s yes or no to one list at once, and the page shows it', function () {
+    it('saves the customer\'s no at once, asks the inbox for a yes, and the page shows both', function () {
         $demo = customer();
         $other = customer('customer1@shop.test');
 
         actingAs($demo)->action('account.setMarketing', customer: $demo, list: 'announcements', subscribed: false)->assertOk();
         actingAs($other)->action('account.setMarketing', customer: $other, list: 'newsletter', subscribed: true)->assertOk();
 
+        // A yes waits on its confirmation (ADR 0116): no row says it yet.
         expect(rows($demo))->toBe(['announcements' => false, 'newsletter' => true])
-            ->and(rows($other))->toBe(['newsletter' => true]);
+            ->and(rows($other))->toBe([]);
         actingAs($demo)->get('/account/email')->assertPage(EmailPreferences::class, fn (AssertablePage $page) => $page
             ->where('lists', lists(newsletter: true, announcements: false))
+            ->etc());
+        actingAs($other)->get('/account/email')->assertPage(EmailPreferences::class, fn (AssertablePage $page) => $page
+            ->where('lists', lists(newsletter: false, announcements: false, newsletterPending: true))
             ->etc());
     });
 

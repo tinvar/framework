@@ -85,7 +85,7 @@ function rows(Customer $customer): array
 /** The token a marketing email's body link carries for $customer, as the shop signs it. */
 function token(Customer $customer): string
 {
-    $url = new Unsubscribes(KEY, new Links('https://shop.test'))->preferencesUrl($customer->id);
+    $url = new Unsubscribes(KEY, new Links('https://shop.test'))->preferencesUrl($customer->id, $customer->email);
     parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
 
     return (string) $query['token'];
@@ -100,11 +100,14 @@ function forgeries(Customer $customer): array
 
     return [
         'another customer named over a valid signature' => $version . '.' . Signer::encode((string) json_encode([...$claims, 'p' => customer('customer1@shop.test')->id])) . '.' . $mac,
-        'another key' => PreferenceLinks::fromKey(KEY . '-other')->token($customer->id),
+        'another key' => PreferenceLinks::fromKey(KEY . '-other')->token($customer->id, '', $customer->email),
+        // ADR 0116: a link opens only for the address it was sent to.
+        'sent to an address the customer no longer has' => PreferenceLinks::fromKey(KEY)->token($customer->id, '', 'old-' . $customer->email),
+        'made for no address' => PreferenceLinks::fromKey(KEY)->token($customer->id),
         'another purpose' => SignedToken::encode(new Signer(KEY, PreferenceLinks::PURPOSE), 'route-token', $claims),
         'the one-click link\'s token' => substr((string) parse_url(UnsubscribeLinks::fromKey(KEY, 'https://shop.test')->url('newsletter', $customer->id), PHP_URL_PATH), \strlen(UnsubscribeLinks::PATH) + 1),
-        'another tenant' => PreferenceLinks::fromKey(KEY)->token($customer->id, 'acme'),
-        'expired' => PreferenceLinks::fromKey(KEY, static fn (): int => time() - PreferenceLinks::LIFETIME - 1)->token($customer->id),
+        'another tenant' => PreferenceLinks::fromKey(KEY)->token($customer->id, 'acme', $customer->email),
+        'expired' => PreferenceLinks::fromKey(KEY, static fn (): int => time() - PreferenceLinks::LIFETIME - 1)->token($customer->id, '', $customer->email),
         'not a token' => 'v1.not.a-token',
     ];
 }
@@ -121,8 +124,8 @@ describe('the page a link opens', function () {
                 ->where('token', $token)
                 ->where('email', DemoAccount::EMAIL)
                 ->where('lists', [
-                    ['id' => 'newsletter', 'label' => MarketingList::Newsletter->label(), 'description' => MarketingList::Newsletter->description(), 'subscribed' => true],
-                    ['id' => 'announcements', 'label' => MarketingList::Announcements->label(), 'description' => MarketingList::Announcements->description(), 'subscribed' => true],
+                    ['id' => 'newsletter', 'label' => MarketingList::Newsletter->label(), 'description' => MarketingList::Newsletter->description(), 'subscribed' => true, 'pending' => false],
+                    ['id' => 'announcements', 'label' => MarketingList::Announcements->label(), 'description' => MarketingList::Announcements->description(), 'subscribed' => true, 'pending' => false],
                 ]));
     });
 
@@ -133,6 +136,19 @@ describe('the page a link opens', function () {
                 ->where('email', null)
                 ->where('lists', []), $why);
         }
+    });
+
+    // ADR 0116: a customer whose address changes has every link sent to the old one revoked.
+    it('shows nothing once its customer has another address', function () {
+        $demo = customer('customer1@shop.test');
+        $token = token($demo);
+        orm()->connection()->execute('UPDATE customers SET email = ? WHERE id = ?', ['moved-1@shop.test', $demo->id]);
+        orm()->flush();
+
+        get('/email/preferences?token=' . $token)->assertPage(LinkPreferences::class, fn (AssertablePage $page) => $page
+            ->where('email', null)
+            ->etc());
+        action('email.setByLink', token: $token, list: 'newsletter', subscribed: false)->assertInvalid(['token' => MarketingLinkActions::LINK_REFUSED]);
     });
 
     it('shows nothing once its customer is gone', function () {
@@ -154,10 +170,13 @@ describe('a switch on it', function () {
         $other = customer('customer1@shop.test');
 
         action('email.setByLink', token: token($demo), list: 'newsletter', subscribed: false)->assertOk();
+        // A yes from a link asks the inbox first (ADR 0116): nothing is on yet.
         action('email.setByLink', token: token($other), list: 'announcements', subscribed: true)->assertOk();
 
         expect(rows($demo))->toBe(['announcements' => true, 'newsletter' => false])
-            ->and(rows($other))->toBe(['announcements' => true]);
+            ->and(rows($other))->toBe([])
+            ->and(orm()->connection()->select('SELECT list, source, confirmed_at FROM marketing_opt_ins WHERE customer_id = ?', [$other->id]))
+            ->toBe([['list' => 'announcements', 'source' => 'email-link', 'confirmed_at' => null]]);
     });
 
     it('turns every list off in one click', function () {

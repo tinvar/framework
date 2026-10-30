@@ -17,6 +17,7 @@ use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Mail\Links;
 use Shop\Mail\OrderConfirmation;
+use Shop\Mail\SendOrderConfirmation;
 use Shop\Models\Order;
 use Shop\OrderChanges;
 use Shop\Tasks\AdvanceShipments;
@@ -118,26 +119,35 @@ it('draws the order confirmation from @tinvar/mail\'s kit as MER-36 asks: inline
         $order = $kernel->orm->find(Order::class, $id);
         \assert($order instanceof Order);
 
-        $message = $kernel->mailer->send(new OrderConfirmation($order, 'https://shop.test', Links::UNSUBSCRIBE));
+        $preferences = 'https://shop.test' . Links::PREFERENCES_LINK . '?token=v1.preferences.token';
+        $message = $kernel->mailer->send(new OrderConfirmation($order, 'https://shop.test', $preferences));
 
         // The subject and the first line say what happened (MER-36.4).
         expect($message->subject)->toMatch('/^Order PW-\d{6}-\d{4,} placed: \$[\d,]+\.\d{2}$/')
             ->and($message->text)->toContain("Order {$order->number} is placed");
 
-        // Inline styles and table layout (MER-36.1): no class for a client
-        // to ignore, no stylesheet for it to strip.
+        // Inline styles and table layout (MER-36.1): every colour inline, so
+        // a client that strips the head keeps them. The one stylesheet is
+        // the kit's dark palette over them (ADR 0116), and the only classes
+        // are the ones it names.
+        preg_match_all('/\sclass="([^"]*)"/', $message->html, $classes);
         expect($message->html)->toContain('style="')
             ->and($message->html)->toContain('<table')
-            ->and($message->html)->not->toMatch('/\sclass="/')
-            ->and($message->html)->not->toContain('<style');
+            ->and(array_unique(explode(' ', implode(' ', $classes[1]))))->each->toStartWith('tm-')
+            ->and(substr_count($message->html, '<style'))->toBe(1)
+            ->and($message->html)->toContain('@media (prefers-color-scheme: dark)')
+            ->and($message->html)->toContain('<meta name="color-scheme" content="light dark">');
 
         // The logo as a hosted PNG, why the reader is getting it, how to
         // stop, and the postal address (MER-36.3) -- in both parts.
         expect($message->html)->toContain('src="https://shop.test/brand/mark-64.png"')
             ->and($message->html)->toContain('Why am I getting this?')
             ->and($message->text)->toContain("Why am I getting this? You placed order {$order->number} at Pellwick Supply as " . DemoAccount::EMAIL)
-            ->and($message->html)->toContain('href="mailto:unsubscribe@pellwick.test?subject=Unsubscribe"')
-            ->and($message->text)->toContain('unsubscribe@pellwick.test?subject=Unsubscribe')
+            // A confirmation is on no list: the footer links to the reader's
+            // marketing preferences instead, and says so (ADR 0116).
+            ->and($message->html)->toContain('>Manage your marketing email</a>')
+            ->and($message->text)->toContain("Manage your marketing email: {$preferences}")
+            ->and($message->html)->not->toContain('mailto:')
             ->and($message->text)->toContain('Pellwick Supply · 1 Example Way · Springfield, ST 00000');
 
         // A plain-text part with every link as text (MER-36.2), and on the
@@ -184,6 +194,9 @@ it('queues the confirmation with the order, and the worker sends it to the custo
             ->and($sent[0]['to'])->toBe(['"' . DemoAccount::NAME . '" <' . DemoAccount::EMAIL . '>'])
             ->and($sent[0]['from'])->toBe('"Pellwick Supply" <orders@pellwick.test>')
             ->and((string) $sent[0]['text'])->toContain("https://shop.test/orders/{$id}")
+            // Its footer opens the customer's preferences, by a token made on
+            // the worker and bound to this address (ADR 0116).
+            ->and((string) $sent[0]['text'])->toContain('Manage your marketing email: https://shop.test' . Links::PREFERENCES_LINK . '?token=v1.')
             ->and($kernel->queue->size('mail'))->toBe(0)
             ->and($kernel->queue->failed())->toBe([]);
     });
@@ -197,7 +210,7 @@ it('sends no confirmation for an order whose transaction rolled back', function 
 
         try {
             $kernel->orm->transaction(function () use ($kernel, $order): void {
-                $kernel->mailer->queue(new OrderConfirmation($order, 'https://shop.test', Links::UNSUBSCRIBE));
+                $kernel->jobs->dispatch(new SendOrderConfirmation($order));
 
                 throw new \RuntimeException('the order was not placed after all');
             });

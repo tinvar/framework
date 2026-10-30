@@ -16,19 +16,26 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopMarketingMail;
 
-use Shop\Commands\SendNewsletterIssue;
+use Shop\Actions\MarketingLinkActions;
 use Shop\DemoAccount;
 use Shop\Kernel;
+use Shop\Mail\ConfirmSubscription;
 use Shop\Mail\Links;
+use Shop\Mail\MarketingConsents;
+use Shop\Mail\NewsletterIssues;
 use Shop\Mail\MarketingList;
 use Shop\Mail\MarketingPreferences;
 use Shop\Mail\Newsletter;
 use Shop\Mail\ProductAnnouncement;
 use Shop\Mail\SendNewsletter;
+use Shop\Mail\SendOptInConfirmation;
 use Shop\Mail\SendProductAnnouncement;
 use Shop\Mail\Unsubscribes;
 use Shop\Models\Customer;
 use Shop\Models\Product;
+use Shop\Pages\ConfirmMarketing;
+use Shop\Pages\OneClickUnsubscribe;
+use Shop\Tasks\ScheduleNewsletter;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;
 use Tinvar\Console\Output;
@@ -41,12 +48,15 @@ use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Render\SignedToken;
 use Tinvar\Support\Signer;
+use Tinvar\Testing\AssertablePage;
 use Tinvar\Testing\Fakes\HubFake;
 use Tinvar\Testing\Fakes\MailFake;
 use Tinvar\Testing\Fakes\QueueFake;
 use Tinvar\Testing\Testing;
 
+use function Tinvar\Testing\action;
 use function Tinvar\Testing\actingAs;
+use function Tinvar\Testing\get;
 use function Tinvar\Testing\testing;
 
 const KEY = 'shop-marketing-mail-key-of-32-bytes!';
@@ -145,7 +155,7 @@ function preferencesOf(mixed $url, string $base): ?string
     }
     parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
 
-    return \is_string($query['token'] ?? null) ? new Unsubscribes(KEY, new Links($base))->preferencesOf($query['token']) : null;
+    return \is_string($query['token'] ?? null) ? new Unsubscribes(KEY, new Links($base))->preferencesOf($query['token'], orm())?->id : null;
 }
 
 /** @return array{int, list<string>} a console command's exit status, and everything it printed */
@@ -179,12 +189,17 @@ describe('one-click unsubscribe', function () {
     });
 
     // A link scanner GETs every link in a mailbox; a reader's client may
-    // open the URL as a page. Neither unsubscribes anyone.
+    // open the URL as a page. Neither unsubscribes anyone: the GET lands on
+    // the shop's page for the link, which asks first (ADR 0116).
     it('unsubscribes no one from a GET, or a POST without RFC 8058\'s body', function () {
         $demo = customer();
         $path = oneClickPath(MarketingList::Newsletter, $demo);
+        $token = substr($path, \strlen(UnsubscribeLinks::PATH . '/'));
+        $get = oneClick($path, method: 'GET');
 
-        expect(oneClick($path, method: 'GET')->status)->toBe(405)
+        expect($get->status)->toBe(303)
+            ->and($get->header('location'))->toBe(Links::UNSUBSCRIBE_LINK . '?token=' . $token)
+            ->and($get->header('referrer-policy'))->toBe('no-referrer')
             ->and(oneClick($path, 'unsubscribe=yes')->status)->toBe(400)
             ->and(rows($demo))->toBe(['announcements' => true, 'newsletter' => true]);
     });
@@ -298,7 +313,8 @@ describe('the product announcement', function () {
 
         expect($status)->toBe(0, implode("\n", $lines))
             ->and($lines)->toBe(['Queued the announcement of Imaginary espresso beans (PW-1003) for 1 customer; the queue worker sends it.']);
-        Fakes::$queue->assertPushedCount(1)->assertPushed(
+        // The other customer's yes is unconfirmed (ADR 0116): no announcement for them.
+        Fakes::$queue->assertPushedCount(1, SendProductAnnouncement::class)->assertPushed(
             SendProductAnnouncement::class,
             fn (SendProductAnnouncement $job): bool => $job->customer->email === DemoAccount::EMAIL && $job->product->sku === 'PW-1003',
         );
@@ -420,9 +436,9 @@ describe('the newsletter', function () {
 
         expect($status)->toBe(0, implode("\n", $lines))
             ->and($lines)->toBe(['Queued the October 2026 newsletter for 1 customer; the queue worker sends it.']);
-        Fakes::$queue->assertPushedCount(1)->assertPushed(
+        Fakes::$queue->assertPushedCount(1, SendNewsletter::class)->assertPushed(
             SendNewsletter::class,
-            fn (SendNewsletter $job): bool => $job->customer->email === DemoAccount::EMAIL && \count($job->products) === SendNewsletterIssue::PRODUCTS,
+            fn (SendNewsletter $job): bool => $job->customer->email === DemoAccount::EMAIL && \count($job->products) === NewsletterIssues::PRODUCTS,
         );
         Fakes::$mail->assertNothingSent();
     });
@@ -442,7 +458,7 @@ describe('the newsletter', function () {
             ->and(preg_match('#^<(https://pellwick\.test/_mail/unsubscribe/(v1\.[\w.-]+))>$#', $headers['List-Unsubscribe'] ?? '', $m))->toBe(1)
             ->and(UnsubscribeLinks::fromKey(KEY, Links::MAIL_ORIGIN)->verify($m[2]))->toBe(['list' => 'newsletter', 'recipient' => $demo->id, 'tenant' => ''])
             ->and(preferencesOf($sent->props['unsubscribeUrl'], Kernel::baseUrl()))->toBe($demo->id)
-            ->and($sent->props['products'])->toHaveCount(SendNewsletterIssue::PRODUCTS);
+            ->and($sent->props['products'])->toHaveCount(NewsletterIssues::PRODUCTS);
 
         // One click from the reader's mail client, no sign-in, turns it off.
         expect(oneClick((string) parse_url($m[1], PHP_URL_PATH))->status)->toBe(200)
@@ -534,5 +550,189 @@ describe('drawn by the renderer', function () {
             $renderer->stop();
             \Tinvar\Support\PrivateDirectory::remove($directory);
         }
+    });
+});
+
+// ADR 0116: a yes to marketing is asked of the inbox, recorded with where
+// it was said, and turns the list on only once its single-use link is used.
+describe('the double opt-in', function () {
+    /** The confirmation's link for $customer, sent by the worker; its token. */
+    function confirmation(): string
+    {
+        [$status, $lines] = console('queue:work', ['--stop-when-empty']);
+        expect($status)->toBe(0, implode("\n", $lines));
+        $sent = Fakes::$mail->sent(ConfirmSubscription::TEMPLATE);
+        $url = (string) end($sent)->props['url'];
+        expect($url)->toStartWith(Links::MAIL_ORIGIN . Links::CONFIRM_LINK . '?token=');
+        parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+
+        return (string) $query['token'];
+    }
+
+    /** @return list<array<string, mixed>> */
+    function consents(Customer $customer): array
+    {
+        return orm()->connection()->select('SELECT list, address, source, confirmed_at, link_id FROM marketing_opt_ins WHERE customer_id = ? ORDER BY requested_at', [$customer->id]);
+    }
+
+    it('asks the inbox, records where the yes was said, and turns the list on once its link is used', function () {
+        $other = customer('customer1@shop.test');
+
+        $asked = actingAs($other)->action('account.setMarketing', customer: $other, list: 'newsletter', subscribed: true)->assertOk();
+        expect($asked->value())->toBe(['list' => 'newsletter', 'subscribed' => false, 'pending' => true]);
+        expect(rows($other))->toBe([]);
+        Fakes::$queue->assertPushed(SendOptInConfirmation::class);
+        Fakes::$mail->assertNothingSent();
+
+        $token = confirmation();
+        Fakes::$mail->assertSentTo('customer1@shop.test', ConfirmSubscription::TEMPLATE);
+        $sent = Fakes::$mail->sent(ConfirmSubscription::TEMPLATE)[0];
+        // Not marketing: no List-Unsubscribe, and nothing to leave yet.
+        expect($sent->message->unsubscribe)->toBeNull();
+
+        // Opening the link confirms nothing: a scanner opens links too.
+        get(Links::CONFIRM_LINK . '?token=' . $token)->assertOk()
+            ->assertHeader('referrer-policy', 'no-referrer')
+            ->assertPage(ConfirmMarketing::class, fn (AssertablePage $page) => $page
+                ->where('token', $token)
+                ->where('list', 'Newsletter')
+                ->where('email', 'customer1@shop.test')
+                ->where('done', false));
+        expect(rows($other))->toBe([]);
+
+        action('email.confirmSubscription', token: $token)->assertRedirect(Links::CONFIRM_LINK . '?confirmed=newsletter');
+        expect(rows($other))->toBe(['newsletter' => true])
+            ->and(consents($other)[0]['list'])->toBe('newsletter')
+            ->and(consents($other)[0]['address'])->toBe('customer1@shop.test')
+            ->and(consents($other)[0]['source'])->toBe(MarketingConsents::ACCOUNT)
+            ->and(consents($other)[0]['confirmed_at'])->toBeString();
+
+        // Single-use: used, it confirms nothing again.
+        action('email.confirmSubscription', token: $token)->assertInvalid(['token' => MarketingLinkActions::CONFIRM_REFUSED]);
+        get(Links::CONFIRM_LINK . '?token=' . $token)->assertPage(ConfirmMarketing::class, fn (AssertablePage $page) => $page
+            ->where('token', '')->where('list', null)->etc());
+    });
+
+    it('says where the yes came from when an emailed link said it', function () {
+        $other = customer('customer1@shop.test');
+        $url = new Unsubscribes(KEY, new Links('https://shop.test'))->preferencesUrl($other->id, $other->email);
+        parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+        action('email.setByLink', token: (string) $query['token'], list: 'announcements', subscribed: true)->assertOk();
+        action('email.confirmSubscription', token: confirmation())->assertRedirect();
+
+        expect(consents($other)[0]['source'])->toBe(MarketingConsents::EMAIL_LINK)
+            ->and(rows($other))->toBe(['announcements' => true]);
+    });
+
+    // A no said since puts back nothing an older confirmation would.
+    it('withdraws a pending yes when the list is turned off, its link with it', function () {
+        $other = customer('customer1@shop.test');
+        actingAs($other)->action('account.setMarketing', customer: $other, list: 'newsletter', subscribed: true)->assertOk();
+        $token = confirmation();
+        actingAs($other)->action('account.setMarketing', customer: $other, list: 'newsletter', subscribed: false)->assertOk();
+
+        action('email.confirmSubscription', token: $token)->assertInvalid(['token' => MarketingLinkActions::CONFIRM_REFUSED]);
+        expect(rows($other))->toBe(['newsletter' => false])
+            ->and(consents($other))->toBe([]);
+    });
+
+    it('opens for the address it went to and no other', function () {
+        $other = customer('customer1@shop.test');
+        actingAs($other)->action('account.setMarketing', customer: $other, list: 'newsletter', subscribed: true)->assertOk();
+        $token = confirmation();
+        orm()->connection()->execute('UPDATE customers SET email = ? WHERE id = ?', ['moved-1@shop.test', $other->id]);
+        orm()->flush();
+
+        action('email.confirmSubscription', token: $token)->assertInvalid(['token' => MarketingLinkActions::CONFIRM_REFUSED]);
+        expect(rows(customer('moved-1@shop.test')))->toBe([]);
+    });
+
+    it('sends one confirmation for a switch flipped over and over, and none for a list already on', function () {
+        $demo = customer();
+        $other = customer('customer1@shop.test');
+        foreach ([true, true, true] as $on) {
+            actingAs($other)->action('account.setMarketing', customer: $other, list: 'newsletter', subscribed: $on)->assertOk();
+        }
+        $already = actingAs($demo)->action('account.setMarketing', customer: $demo, list: 'newsletter', subscribed: true)->assertOk();
+        expect($already->value())->toBe(['list' => 'newsletter', 'subscribed' => true, 'pending' => false]);
+
+        Fakes::$queue->assertPushedCount(1, SendOptInConfirmation::class);
+    });
+
+    it('refuses a token that is not a confirmation link, the same way', function () {
+        $demo = customer();
+        $preferences = new Unsubscribes(KEY, new Links('https://shop.test'))->preferencesUrl($demo->id, $demo->email);
+        parse_str((string) parse_url($preferences, PHP_URL_QUERY), $query);
+
+        foreach ([(string) $query['token'], substr(oneClickPath(MarketingList::Newsletter, $demo), \strlen(UnsubscribeLinks::PATH . '/')), 'v1.not.a-token'] as $token) {
+            action('email.confirmSubscription', token: $token)->assertInvalid(['token' => MarketingLinkActions::CONFIRM_REFUSED]);
+        }
+    });
+});
+
+// ADR 0116: the page a reader who opens a one-click link lands on, which
+// asks before it turns the list off.
+describe('the page a one-click link lands on', function () {
+    it('names the list and asks, and its button turns that one list off', function () {
+        $demo = customer();
+        $token = substr(oneClickPath(MarketingList::Newsletter, $demo), \strlen(UnsubscribeLinks::PATH . '/'));
+
+        get(Links::UNSUBSCRIBE_LINK . '?token=' . $token)->assertOk()
+            ->assertHeader('referrer-policy', 'no-referrer')
+            ->assertPage(OneClickUnsubscribe::class, fn (AssertablePage $page) => $page
+                ->where('token', $token)->where('list', 'Newsletter')->where('email', null)->where('done', false));
+        expect(rows($demo))->toBe(['announcements' => true, 'newsletter' => true]);
+
+        action('email.unsubscribeByOneClickLink', token: $token)->assertRedirect(Links::UNSUBSCRIBE_LINK . '?stopped=newsletter');
+        expect(rows($demo))->toBe(['announcements' => true, 'newsletter' => false]);
+    });
+
+    it('shows nothing and changes nothing for a link it did not make', function () {
+        $demo = customer();
+        $forged = substr((string) parse_url(new Unsubscribes(KEY . '-other', new Links('https://shop.test'))->url(MarketingList::Newsletter, $demo->id), PHP_URL_PATH), \strlen(UnsubscribeLinks::PATH . '/'));
+
+        get(Links::UNSUBSCRIBE_LINK . '?token=' . $forged)->assertPage(OneClickUnsubscribe::class, fn (AssertablePage $page) => $page
+            ->where('token', '')->where('list', null)->etc());
+        action('email.unsubscribeByOneClickLink', token: $forged)->assertInvalid(['token' => MarketingLinkActions::LINK_REFUSED]);
+        expect(rows($demo))->toBe(['announcements' => true, 'newsletter' => true]);
+    });
+});
+
+// ADR 0116: the newsletter goes once a month by itself.
+describe('the scheduled newsletter', function () {
+    function issues(): NewsletterIssues
+    {
+        return new NewsletterIssues(orm(), kernel()->jobs, new MarketingPreferences(orm()), new Unsubscribes(KEY, new Links(Kernel::baseUrl())));
+    }
+
+    it('queues the month\'s issue once, however many times it runs, from nine on the first', function () {
+        $task = new ScheduleNewsletter();
+
+        expect($task->run(issues(), new \DateTimeImmutable('2026-11-01T08:59:00Z')))->toBeNull()
+            ->and($task->run(issues(), new \DateTimeImmutable('2026-11-01T09:23:00Z')))->toBe(1)
+            ->and($task->run(issues(), new \DateTimeImmutable('2026-11-01T10:23:00Z')))->toBeNull()
+            ->and($task->run(issues(), new \DateTimeImmutable('2026-11-17T10:23:00Z')))->toBeNull()
+            ->and(orm()->connection()->select('SELECT month, title, queued FROM newsletter_issues'))->toBe([['month' => '2026-11', 'title' => 'November 2026', 'queued' => 1]]);
+        Fakes::$queue->assertPushedCount(1, SendNewsletter::class)->assertPushed(
+            SendNewsletter::class,
+            fn (SendNewsletter $job): bool => $job->customer->email === DemoAccount::EMAIL && $job->issue === 'November 2026',
+        );
+
+        expect($task->run(issues(), new \DateTimeImmutable('2026-12-02T00:23:00Z')))->toBe(1);
+    });
+
+    it('is listed among the shop\'s tasks, hourly', function () {
+        $schedule = new \ReflectionClass(ScheduleNewsletter::class)->getAttributes(\Tinvar\Attributes\Schedule::class)[0]->newInstance();
+
+        expect(Kernel::TASKS)->toContain(ScheduleNewsletter::class)
+            ->and($schedule->expression)->toBe('23 * * * *');
+    });
+
+    it('claims nothing where the shop has no https address, so a later run sends it', function () {
+        $issues = new NewsletterIssues(orm(), kernel()->jobs, new MarketingPreferences(orm()), new Unsubscribes(KEY, new Links('http://shop.example'), []));
+
+        expect(new ScheduleNewsletter()->run($issues, new \DateTimeImmutable('2026-11-03T12:00:00Z')))->toBeNull()
+            ->and(orm()->connection()->select('SELECT month FROM newsletter_issues'))->toBe([]);
+        Fakes::$queue->assertNotPushed(SendNewsletter::class);
     });
 });
