@@ -27,8 +27,15 @@ use Tinvar\Orm\Orm;
  * POST only, with the body RFC 8058 says. A GET is a link scanner, or a
  * reader whose client opened the URL as a page: neither unsubscribes
  * anyone, since a scanner following every link in a mailbox would
- * unsubscribe its owner from everything. The page a reader lands on from
- * the email's own unsubscribe link is the application's.
+ * unsubscribe its owner from everything.
+ *
+ * Where it lands is the application's to name (ADR 0116): given a
+ * $landing path, a GET of a link that verifies is sent there -- a 303 on
+ * this origin, the token in its query, no Referer, kept by nothing -- and
+ * the page there shows the reader what the link would do and asks before
+ * it does it, as its own action under CSRF. A GET still writes nothing,
+ * and one of a link that does not verify is the same 404 as a POST's.
+ * Without a landing page, a GET is refused as before.
  */
 final readonly class UnsubscribeEndpoint
 {
@@ -38,11 +45,25 @@ final readonly class UnsubscribeEndpoint
     /** Longer than any token UnsubscribeLinks makes. */
     private const string TOKEN_SHAPE = '/^v1\.[A-Za-z0-9_-]{1,1200}\.[A-Za-z0-9_-]{1,100}\z/';
 
+    /** The query parameter the landing page is handed the token in. */
+    public const string PARAMETER = 'token';
+
+    /**
+     * @param string|null $landing the root-relative path of the application's page a
+     *        reader who opens the link lands on; none, and a GET is refused
+     */
     public function __construct(
         private UnsubscribeLinks $links,
         private Unsubscriber $unsubscriber,
         private Orm $orm,
-    ) {}
+        private ?string $landing = null,
+    ) {
+        // Root-relative, never `//host`, and no query or fragment of its own:
+        // the token is the one thing added, and it goes nowhere but here.
+        if ($landing !== null && preg_match('#^/(?![/\\\\])[A-Za-z0-9/_.~-]*\z#', $landing) !== 1) {
+            throw new \InvalidArgumentException("'{$landing}' is not a page a reader lands on: a root-relative path, no query.");
+        }
+    }
 
     public function matches(Request $request): bool
     {
@@ -51,6 +72,9 @@ final readonly class UnsubscribeEndpoint
 
     public function handle(Request $request, string $rawBody = ''): Response
     {
+        if (($request->method === 'GET' || $request->method === 'HEAD') && $this->landing !== null) {
+            return $this->land($request);
+        }
         if ($request->method !== 'POST') {
             throw new HttpException(405, 'A one-click unsubscribe is POSTed to.', 'method_not_allowed', ['allow' => 'POST']);
         }
@@ -61,11 +85,7 @@ final readonly class UnsubscribeEndpoint
             throw new HttpException(400, 'A one-click unsubscribe POSTs List-Unsubscribe=One-Click.', 'bad_request');
         }
 
-        $token = substr($request->path, \strlen(UnsubscribeLinks::PATH) + 1);
-        $claims = preg_match(self::TOKEN_SHAPE, $token) === 1 ? $this->links->verify($token) : null;
-        if ($claims === null) {
-            throw new HttpException(404, 'No unsubscribe link answers here.', 'not_found');
-        }
+        [, $claims] = $this->verified($request);
 
         $this->orm->actAs($claims['tenant'], fn () => $this->unsubscriber->unsubscribe($claims['list'], $claims['recipient']));
 
@@ -75,6 +95,39 @@ final readonly class UnsubscribeEndpoint
             'content-type' => 'text/plain; charset=utf-8',
             'cache-control' => 'no-store',
         ]);
+    }
+
+    /**
+     * A GET of the link, sent on to the application's page: nothing is
+     * written, nothing run in the link's tenant, and a link that does not
+     * verify lands nowhere.
+     */
+    private function land(Request $request): Response
+    {
+        [$token] = $this->verified($request);
+
+        return Response::make(303, '', [
+            'location' => $this->landing . '?' . self::PARAMETER . '=' . $token,
+            'cache-control' => 'no-store',
+            'referrer-policy' => 'no-referrer',
+        ]);
+    }
+
+    /**
+     * The token in the path and what it names, or the 404 every link that
+     * does not verify gets.
+     *
+     * @return array{string, array{list: string, recipient: string, tenant: string}}
+     */
+    private function verified(Request $request): array
+    {
+        $token = substr($request->path, \strlen(UnsubscribeLinks::PATH) + 1);
+        $claims = preg_match(self::TOKEN_SHAPE, $token) === 1 ? $this->links->verify($token) : null;
+        if ($claims === null) {
+            throw new HttpException(404, 'No unsubscribe link answers here.', 'not_found');
+        }
+
+        return [$token, $claims];
     }
 
     /**

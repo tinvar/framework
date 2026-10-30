@@ -15,6 +15,7 @@ use Tinvar\Auth\AllowAllGate;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Http\CsrfTokens;
+use Tinvar\Http\HttpException;
 use Tinvar\Http\Kernel;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
@@ -199,3 +200,56 @@ describe('the endpoint', function () {
             ->toBe(404);
     });
 })->group('wired');
+
+// The page a reader lands on from the link (ADR 0116): the application's,
+// named by path; a GET is sent there and still unsubscribes no one.
+describe('a GET of the link', function () {
+    function endpoint(?string $landing): array
+    {
+        $orm = new Orm(PdoConnection::sqlite(':memory:', 'test'), new IdentityMap('test'));
+        $recorder = new Recorder($orm);
+
+        return [new UnsubscribeEndpoint(links(time()), $recorder, $orm, $landing), $recorder];
+    }
+
+    it('lands on the page the application named, carrying the token and nothing written', function (string $method) {
+        [$endpoint, $recorder] = endpoint('/email/unsubscribe');
+        $token = tokenOf(links(time())->url('digest', 'c-42', 'tenant-7'));
+
+        $response = $endpoint->handle(new Request($method, UnsubscribeLinks::PATH . "/{$token}"));
+
+        expect($response->status)->toBe(303)
+            ->and($response->header('location'))->toBe("/email/unsubscribe?token={$token}")
+            ->and($response->header('cache-control'))->toBe('no-store')
+            ->and($response->header('referrer-policy'))->toBe('no-referrer')
+            ->and($recorder->calls)->toBe([]);
+    })->with(['GET', 'HEAD']);
+
+    it('lands nowhere for a link it did not make', function () {
+        [$endpoint, $recorder] = endpoint('/email/unsubscribe');
+        $forged = tokenOf(links(time(), KEY . 'x')->url('digest', 'c-42'));
+
+        expect(fn () => $endpoint->handle(new Request('GET', UnsubscribeLinks::PATH . "/{$forged}")))
+            ->toThrow(HttpException::class)
+            ->and(fn () => $endpoint->handle(new Request('GET', UnsubscribeLinks::PATH . '/v1.x.y')))->toThrow(HttpException::class)
+            ->and($recorder->calls)->toBe([]);
+    });
+
+    it('is refused as before where the application names no page', function () {
+        [$endpoint] = endpoint(null);
+        $token = tokenOf(links(time())->url('digest', 'c-42'));
+
+        try {
+            $endpoint->handle(new Request('GET', UnsubscribeLinks::PATH . "/{$token}"));
+            $status = null;
+        } catch (HttpException $e) {
+            $status = $e->status;
+        }
+
+        expect($status)->toBe(405);
+    });
+
+    it('lands only on a path of this origin', function (string $landing) {
+        expect(fn () => endpoint($landing))->toThrow(\InvalidArgumentException::class, 'root-relative');
+    })->with(['//evil.example/x', '/\\evil.example', 'https://evil.example/', '/unsubscribe?next=x', 'unsubscribe', "/x\r\nSet-Cookie: a=b"]);
+});
