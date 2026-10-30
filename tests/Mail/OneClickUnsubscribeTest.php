@@ -133,6 +133,8 @@ function oneClick(string $path, string $body = 'List-Unsubscribe=One-Click', str
     return new Request($method, $path, ['content-type' => 'application/x-www-form-urlencoded'], body: $fields);
 }
 
+// Through the Kernel, which mounts the endpoint: a test of modules wired
+// together, run in the whole suite only (bin/module-alone, ADR 0114).
 describe('the endpoint', function () {
     it('unsubscribes the reader a link names, in its tenant, from a POST with no session or CSRF token', function () {
         [$kernel, $recorder] = kernel();
@@ -196,4 +198,4 @@ describe('the endpoint', function () {
         expect($kernel->handle(oneClick($path), static fn (): Response => Response::make(200), 'List-Unsubscribe=One-Click')->status)
             ->toBe(404);
     });
-});
+})->group('wired');

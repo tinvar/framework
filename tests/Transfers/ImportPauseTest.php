@@ -19,6 +19,12 @@ use Tinvar\Transfers\TransferRunner;
 
 require_once __DIR__ . '/Fixtures/app.php';
 
+// A test of modules wired together -- here through the Kernel, which
+// mounts the transfers' endpoints and runs their checks -- runs in the
+// whole suite only, never in the module's own run (bin/module-alone, ADR
+// 0114).
+pest()->group('wired');
+
 /** Acme's $count restockable widgets, M-00000 up, each at stock 10. */
 function restockable(int $count, bool $databaseStore = true): App
 {

@@ -13,7 +13,7 @@ declare(strict_types=1);
  * its attempt counted.
  */
 
-namespace Tinvar\Tests\Queue\StopAndPause;
+namespace Tinvar\Tests\Jobs\StopAndPause;
 
 use Tinvar\Attributes\Queue as QueueOptions;
 use Tinvar\Container\Dependency;
@@ -38,7 +38,7 @@ use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 
 use function Tinvar\Tests\Jobs\Fixtures\databaseQueue;
 
-require_once __DIR__ . '/../Jobs/Fixtures/jobs.php';
+require_once __DIR__ . '/Fixtures/jobs.php';
 
 /** What a test does to the worker from inside a job: the stop's signal, the alarm. */
 #[Dependency(Lifetime::Worker)]

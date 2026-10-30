@@ -11,7 +11,7 @@ declare(strict_types=1);
  * hand before: ADR 0063's 70, 85 and 190 s.
  */
 
-namespace Tinvar\Tests\Queue\StopBudgetManifests;
+namespace Tinvar\Tests\Jobs\StopBudgetManifests;
 
 use Tinvar\Jobs\StopBudget;
 

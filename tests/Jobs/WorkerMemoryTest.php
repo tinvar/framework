@@ -14,14 +14,14 @@ declare(strict_types=1);
  * handed in, so each case is exact.
  */
 
-namespace Tinvar\Tests\Queue\WorkerMemory;
+namespace Tinvar\Tests\Jobs\WorkerMemory;
 
 use Tinvar\Jobs\Worker;
 use Tinvar\Jobs\WorkerOptions;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\RecordContext;
 
-require_once __DIR__ . '/../Jobs/Fixtures/jobs.php';
+require_once __DIR__ . '/Fixtures/jobs.php';
 
 const MB = 1024 * 1024;
 

@@ -12,7 +12,7 @@ declare(strict_types=1);
  * failed or due again a job another worker now holds.
  */
 
-namespace Tinvar\Tests\Queue\Reservation;
+namespace Tinvar\Tests\Jobs\Reservation;
 
 use Tinvar\Container\Dependency;
 use Tinvar\Attributes\Queue as QueueOptions;
@@ -28,7 +28,7 @@ use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 
 use function Tinvar\Tests\Jobs\Fixtures\databaseQueue;
 
-require_once __DIR__ . '/../Jobs/Fixtures/jobs.php';
+require_once __DIR__ . '/Fixtures/jobs.php';
 
 /** Another worker, reaching for jobs while one runs. */
 #[Dependency(Lifetime::Worker)]

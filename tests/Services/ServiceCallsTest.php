@@ -9,7 +9,7 @@ declare(strict_types=1);
  * the tenant and panel the token was issued for.
  */
 
-namespace Tinvar\Tests\Calls\ServiceCalls;
+namespace Tinvar\Tests\Services\ServiceCalls;
 
 use Tinvar\Calls\CallResult;
 use Tinvar\Http\Request;
@@ -18,7 +18,8 @@ use Tinvar\Support\Signer;
 use Tinvar\Tests\Calls\Fixtures\Harness;
 use Tinvar\Tests\Calls\Fixtures\Ran;
 
-require_once __DIR__ . '/Fixtures/calls.php';
+require_once __DIR__ . '/../Calls/Fixtures/calls.php';
+require_once __DIR__ . '/../Calls/Fixtures/warehouse.php';
 
 it('runs a service\'s call in the context its token was issued for, through the action\'s own validation and policy', function () {
     $h = new Harness();
@@ -118,9 +119,11 @@ it('issues no token for a panel\'s operation with nobody signed in, nor by a ser
         ->and(fn () => $h->orm->acrossTenants(fn () => $h->services->context('warehouse', ['racks.show'])))->toThrow(\LogicException::class, 'acrossTenants');
 });
 
+// The tools' grant beside the services' token: both modules, wired
+// together as an application has them, so the whole suite's alone.
 it('refuses a tool grant presented as a service context token', function () {
     $h = new Harness();
     $grant = $h->as('ada', fn () => $h->tools->grant(['show_rack']));
 
     expect($h->asWarehouse(fn () => $h->services->call($grant, 'racks.show', ['rack' => $h->rack()]))->reason)->toBe('context');
-});
+})->group('wired');

@@ -10,7 +10,7 @@ declare(strict_types=1);
  * saying why, with no server to run against.
  */
 
-namespace Tinvar\Tests\Queue\DatabaseQueue;
+namespace Tinvar\Tests\Jobs\DatabaseQueue;
 
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Queue\DatabaseQueue;
@@ -23,7 +23,7 @@ use Tinvar\Tests\Support\Fixtures\Databases;
 
 use function Tinvar\Tests\Jobs\Fixtures\databaseQueue;
 
-require_once __DIR__ . '/../Jobs/Fixtures/jobs.php';
+require_once __DIR__ . '/Fixtures/jobs.php';
 require_once __DIR__ . '/../Support/Fixtures/databases.php';
 
 // ADR 0107: an idle worker looks for a job by a read, and takes SQLite's

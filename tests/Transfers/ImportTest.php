@@ -22,6 +22,12 @@ use const Tinvar\Tests\Transfers\Fixtures\W3;
 
 require_once __DIR__ . '/Fixtures/app.php';
 
+// A test of modules wired together -- here through the Kernel, which
+// mounts the transfers' endpoints and runs their checks -- runs in the
+// whole suite only, never in the module's own run (bin/module-alone, ADR
+// 0114).
+pest()->group('wired');
+
 /** Sends the file, works the queue, and answers the record. */
 function imported(App $app, string $csv): TransferRecord
 {

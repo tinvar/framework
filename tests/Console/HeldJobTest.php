@@ -10,7 +10,7 @@ declare(strict_types=1);
  * only while the token is still the job's.
  */
 
-namespace Tinvar\Tests\Queue\HeldJob;
+namespace Tinvar\Tests\Console\HeldJob;
 
 use Tinvar\Console\Console;
 use Tinvar\Console\Output;

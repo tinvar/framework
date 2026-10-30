@@ -9,7 +9,7 @@ declare(strict_types=1);
  * user's own call, held to the grant's user, epoch, tenant and panel.
  */
 
-namespace Tinvar\Tests\Calls\ToolCalls;
+namespace Tinvar\Tests\Tools\ToolCalls;
 
 use Tinvar\Calls\CallResult;
 use Tinvar\Calls\Operations;
@@ -23,7 +23,7 @@ use Tinvar\Tools\ToolCalls;
 
 use const Tinvar\Tests\Calls\Fixtures\KEY;
 
-require_once __DIR__ . '/Fixtures/calls.php';
+require_once __DIR__ . '/../Calls/Fixtures/calls.php';
 
 it('tells a model each tool\'s name, description and the schema of its input', function () {
     $h = new Harness();

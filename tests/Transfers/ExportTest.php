@@ -23,6 +23,12 @@ use const Tinvar\Tests\Transfers\Fixtures\KEY;
 
 require_once __DIR__ . '/Fixtures/app.php';
 
+// A test of modules wired together -- here through the Kernel, which
+// mounts the transfers' endpoints and runs their checks -- runs in the
+// whole suite only, never in the module's own run (bin/module-alone, ADR
+// 0114).
+pest()->group('wired');
+
 /** Starts the export, works the queue, and answers the record it made. */
 function exported(App $app, array $body = []): TransferRecord
 {

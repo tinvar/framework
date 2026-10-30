@@ -31,7 +31,6 @@ use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
-use Tinvar\Services\Service;
 use Tinvar\Services\ServiceCalls;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
 use Tinvar\Tests\Orm\Fixtures\Rack;
@@ -72,21 +71,9 @@ final class Users implements UserLookup
     }
 }
 
-/** The warehouse's stock system, signed in by its own credential. */
-final class Warehouse implements Service
-{
-    public function __construct(private readonly string $name = 'warehouse') {}
-
-    public function authIdentifier(): string
-    {
-        return "service:{$this->name}";
-    }
-
-    public function serviceName(): string
-    {
-        return $this->name;
-    }
-}
+/** What the calls' own tests mark callable, beside a tool or a service call. */
+#[\Attribute(\Attribute::TARGET_METHOD | \Attribute::TARGET_CLASS)]
+final class Exposed {}
 
 /** Staff hold the admin panel, with the permissions a test gives them. */
 final class Staff implements Memberships
@@ -142,7 +129,7 @@ final class RackActions
 {
     public function __construct(private readonly Orm $orm) {}
 
-    #[Action(name: 'racks.rename'), Authorize('update', 'rack'), Tool('Renames a rack.'), ServiceCall('warehouse')]
+    #[Action(name: 'racks.rename'), Authorize('update', 'rack'), Tool('Renames a rack.'), ServiceCall('warehouse'), Exposed]
     public function rename(Rack $rack, RenameRequest $request): ActionResult
     {
         Ran::$bodies[] = 'rename';
@@ -175,7 +162,7 @@ final class AuditActions
     }
 }
 
-#[Query(name: 'racks.show'), Authorize('view', 'rack'), Tool('Shows a rack.', name: 'show_rack'), ServiceCall('warehouse', 'carrier')]
+#[Query(name: 'racks.show'), Authorize('view', 'rack'), Tool('Shows a rack.', name: 'show_rack'), ServiceCall('warehouse', 'carrier'), Exposed]
 final class ShowRack
 {
     public function __invoke(Rack $rack): RackData
@@ -232,8 +219,37 @@ final class Harness
     public EntryContext $entry;
     public BuildRegistry $builds;
     public CallRunner $runner;
-    public ToolCalls $tools;
-    public ServiceCalls $services;
+
+    /**
+     * The tools and the service calls, each made when a test first asks
+     * for it: a calls test, and each module's own run, loads neither
+     * (ADR 0114).
+     */
+    public ToolCalls $tools {
+        get => $this->tools ??= new ToolCalls(
+            ToolCalls::discover($this->actions, $this->queries, $this->entry),
+            $this->runner,
+            ToolCalls::grants(KEY, $this->builds, fn (): int => $this->now),
+            $this->auth,
+            $this->orm,
+            $this->panels,
+            $this->staff,
+            $this->users,
+        );
+    }
+
+    public ServiceCalls $services {
+        get => $this->services ??= new ServiceCalls(
+            ServiceCalls::discover($this->actions, $this->queries, $this->entry),
+            $this->runner,
+            ServiceCalls::tokens(KEY, $this->builds, fn (): int => $this->now),
+            $this->auth,
+            $this->orm,
+            $this->panels,
+            $this->staff,
+            $this->users,
+        );
+    }
     public int $now = 1_800_000_000;
 
     public function __construct(?BuildRegistry $builds = null)
@@ -263,27 +279,6 @@ final class Harness
         );
 
         $this->builds = $builds ?? new BuildRegistry('build-1');
-        $clock = fn (): int => $this->now;
-        $this->tools = new ToolCalls(
-            ToolCalls::discover($this->actions, $this->queries, $this->entry),
-            $this->runner,
-            ToolCalls::grants(KEY, $this->builds, $clock),
-            $this->auth,
-            $this->orm,
-            $this->panels,
-            $this->staff,
-            $this->users,
-        );
-        $this->services = new ServiceCalls(
-            ServiceCalls::discover($this->actions, $this->queries, $this->entry),
-            $this->runner,
-            ServiceCalls::tokens(KEY, $this->builds, $clock),
-            $this->auth,
-            $this->orm,
-            $this->panels,
-            $this->staff,
-            $this->users,
-        );
     }
 
     public function rack(int $index = 0): string
@@ -311,6 +306,8 @@ final class Harness
     }
 
     /**
+     * Runs $work as the warehouse's service (warehouse.php).
+     *
      * @template T
      * @param \Closure(): T $work
      * @return T
