@@ -21,7 +21,9 @@ use Tinvar\Jobs\Job;
 use Tinvar\Queue\ArrayQueue;
 use Tinvar\Queue\PendingJob;
 use Tinvar\Queue\Queue;
+use Tinvar\Queue\RedisQueue;
 use Tinvar\Queue\ReservedJob;
+use Tinvar\Tests\Support\Fixtures\Databases;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\Journal;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
@@ -29,6 +31,7 @@ use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 use function Tinvar\Tests\Jobs\Fixtures\databaseQueue;
 
 require_once __DIR__ . '/Fixtures/jobs.php';
+require_once __DIR__ . '/../Support/Fixtures/databases.php';
 
 /** Another worker, reaching for jobs while one runs. */
 #[Dependency(Lifetime::Worker)]
@@ -56,6 +59,11 @@ function queues(): array
     return [
         'in memory' => [static fn (TenantFixture $f): Queue => new ArrayQueue()],
         'SQLite' => [static fn (TenantFixture $f): Queue => databaseQueue($f->connection)],
+        // Where a Redis server runs, as CI's does (ADR 0118).
+        ...(Databases::redisMissing() === null ? ['Redis' => [static fn (TenantFixture $f): Queue => new RedisQueue(
+            Databases::redisClient(),
+            '{tinvar-test-' . bin2hex(random_bytes(4)) . '}:queue:',
+        )]] : []),
     ];
 }
 

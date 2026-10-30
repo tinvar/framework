@@ -27,6 +27,7 @@ use Tinvar\Orm\Orm;
 use Tinvar\Queue\ArrayQueue;
 use Tinvar\Queue\Coordination;
 use Tinvar\Queue\DatabaseQueue;
+use Tinvar\Queue\RedisQueue;
 use Tinvar\Tests\Support\Fixtures\Databases;
 use Tinvar\Jobs\Chain;
 use Tinvar\Jobs\Dispatcher;
@@ -155,6 +156,11 @@ function queues(): array
 
             return $queue;
         }],
+        // Where a Redis server runs, as CI's does (ADR 0118).
+        ...(Databases::redisMissing() === null ? ['Redis' => [static fn (TenantFixture $f): JobQueue => new RedisQueue(
+            Databases::redisClient(),
+            '{tinvar-test-' . bin2hex(random_bytes(4)) . '}:queue:',
+        )]] : []),
     ];
 }
 
