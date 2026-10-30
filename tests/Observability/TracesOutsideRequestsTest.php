@@ -228,7 +228,7 @@ describe('a statement\'s span', function () {
 
         $telemetry->trace('job', [], static function () use ($connection): void {
             $connection->execute('INSERT INTO customers (id, email) VALUES (?, ?)', [1, 'bound-secret@example.com']);
-            $connection->select("SELECT * FROM customers WHERE email = 'literal-secret@example.com' AND id > 0 -- ada");
+            $connection->select("SELECT * FROM customers WHERE email = 'literal-secret@example.com' AND id > 0 -- trailing-remark");
         });
 
         $insert = $kept->named('INSERT customers');
@@ -236,7 +236,7 @@ describe('a statement\'s span', function () {
         expect($insert->kind)->toBe(Span::KIND_CLIENT)
             ->and($insert->attributes)->toBe(['db.system.name' => 'sqlite', 'db.query.text' => 'INSERT INTO customers (id, email) VALUES (?, ?)'])
             ->and($select->attributes['db.query.text'])->toBe('SELECT * FROM customers WHERE email = ? AND id > ?')
-            ->and(json_encode($kept->spans))->not->toContain('secret@')->not->toContain('ada');
+            ->and(json_encode($kept->spans))->not->toContain('secret@')->not->toContain('trailing-remark');
     });
 
     it('is not made outside a trace, nor kept with no tracer', function () {
