@@ -6,6 +6,7 @@ namespace Tinvar\Live;
 
 use Tinvar\Config\FrameworkConfig;
 use Tinvar\Config\HubUrl;
+use Tinvar\Support\AppKey;
 use Tinvar\Support\Signer;
 
 /**
@@ -15,7 +16,9 @@ use Tinvar\Support\Signer;
  * Derived from the application key, each for its own purpose, as every key
  * here is (Signer) -- so there is no second secret to generate, keep and
  * rotate, and rotating the application key rotates these. Or taken from the
- * environment, for a hub of its own whose keys are provisioned separately.
+ * environment, for a hub of its own whose keys are provisioned separately,
+ * and bound to the build profile as the application key is: a hub serving
+ * staging is configured with the keys resolve() gives under staging.
  *
  * They reach the hub as environment variables its configuration reads --
  * the shop's Caddyfile reads environment() -- and never reach a client: the
@@ -88,10 +91,20 @@ final readonly class HubSettings
     {
         $config = FrameworkConfig::load();
         $derived = self::derive($appKey, $config->liveAudience ?? self::DEFAULT_AUDIENCE);
+        $profile = $config->buildProfile();
+
+        // Keys from the environment are bound to the profile as the app key
+        // is (AppKey::bound(), ADR 0090): a staging server given
+        // production's signs nothing production's hub believes. Derived keys
+        // are bound already, through the app key they come from. Bound
+        // idempotently, since `tinvar serve` hands these to its workers in
+        // the variables they were read from.
+        $subscriber = $config->liveSubscriberKey?->reveal();
+        $publisher = $config->livePublisherKey?->reveal();
 
         return new self(
-            $config->liveSubscriberKey?->reveal() ?? $derived->subscriberKey,
-            $config->livePublisherKey?->reveal() ?? $derived->publisherKey,
+            $subscriber !== null ? AppKey::bound($subscriber, $profile) : $derived->subscriberKey,
+            $publisher !== null ? AppKey::bound($publisher, $profile) : $derived->publisherKey,
             $derived->audience,
             $config->liveHubUrl,
         );

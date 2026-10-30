@@ -17,6 +17,7 @@ use Tinvar\Config\Secret;
 use Tinvar\Jobs\StopBudget;
 use Tinvar\Live\HubSettings;
 use Tinvar\Render\RendererUser;
+use Tinvar\Support\AppKey;
 use Tinvar\Support\BuildProfile;
 
 /**
@@ -126,6 +127,26 @@ it('keeps the live hub\'s keys as Secrets, and the hub signs with them', functio
         // Unset: derived from the application key, as before.
         ->and($settings->publisherKey)->toBe(HubSettings::derive($key)->publisherKey)
         ->and($settings->audience)->toBe('https://live.example/.well-known/mercure');
+});
+
+it('binds the hub\'s keys from the environment to the profile, once', function () {
+    $key = 'an-application-key-of-thirty-two-bytes!!';
+    $staging = ['TINVAR_PROFILE' => 'staging', 'TINVAR_ENV' => 'staging'];
+
+    $settings = withEnv(
+        ['TINVAR_LIVE_SUBSCRIBER_KEY' => 'sub-key-from-the-env', 'TINVAR_LIVE_PUBLISHER_KEY' => 'pub-key-from-the-env', ...$staging],
+        static fn (): HubSettings => HubSettings::resolve($key),
+    );
+    // What `tinvar serve` hands its workers, in the same variables.
+    $handedOn = withEnv([...$settings->environment(), ...$staging], static fn (): HubSettings => HubSettings::resolve($key));
+
+    expect($settings->subscriberKey)->toBe(AppKey::forProfile('sub-key-from-the-env', 'staging'))
+        ->and($settings->publisherKey)->toBe(AppKey::forProfile('pub-key-from-the-env', 'staging'))
+        ->and($handedOn->subscriberKey)->toBe($settings->subscriberKey)
+        ->and($handedOn->publisherKey)->toBe($settings->publisherKey)
+        // Staging's handed to production is refused, not believed.
+        ->and(static fn () => withEnv(['TINVAR_LIVE_SUBSCRIBER_KEY' => $settings->subscriberKey], static fn (): HubSettings => HubSettings::resolve($key)))
+        ->toThrow(\InvalidArgumentException::class, 'bound to the staging profile');
 });
 
 it('names the renderers\' user from the config, blank as unset', function () {
