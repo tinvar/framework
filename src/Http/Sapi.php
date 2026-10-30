@@ -357,7 +357,7 @@ final class Sapi
      * response that follows carries only the Link header it sets itself.
      * Nothing a worker writes waits on the client here: the hint is a few
      * hundred bytes of headers, written by the server, not through PHP's
-     * output (ADR 0109).
+     * output (ADR 0108).
      *
      * @param (\Closure(string): bool)|null $send sends the hint with the
      *        given Link value; FrankenPHP's, by default
