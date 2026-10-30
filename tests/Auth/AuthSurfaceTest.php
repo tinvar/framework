@@ -19,8 +19,8 @@ use Tinvar\Tests\Orm\Fixtures\Rack;
 use Tinvar\Tests\Orm\Fixtures\Script;
 use Tinvar\Validation\FormRequest;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenant.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/models.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenant.php';
 
 final readonly class SurfaceUser implements Authenticatable
 {

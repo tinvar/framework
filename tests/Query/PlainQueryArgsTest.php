@@ -23,8 +23,8 @@ use Tinvar\Tests\Orm\Fixtures\Fixture;
 use Tinvar\Tests\Orm\Fixtures\Rack;
 use Tinvar\Tests\Orm\Fixtures\Site;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/models.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/schema.php';
 
 /** Records the type of every subject it is handed. */
 final class SubjectGate implements Gate

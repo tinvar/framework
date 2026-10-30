@@ -54,9 +54,9 @@ use Tinvar\Tests\Auth\Fixtures\User;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
 use Tinvar\Tests\Orm\Fixtures\Script;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenant.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/models.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/schema.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenant.php';
 require_once __DIR__ . '/../Auth/Fixtures/policies.php';
 
 const NONCE = 'R4nd0m+N/once==';

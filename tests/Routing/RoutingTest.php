@@ -35,8 +35,8 @@ use Tinvar\Tests\Routing\Fixtures\Trace;
 use Tinvar\Tests\Routing\Fixtures\TypedParamPage;
 use Tinvar\Tests\Routing\Fixtures\UnguardedModelPage;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/models.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/Fixtures/routes.php';
 
 const ROUTE_CLASSES = [

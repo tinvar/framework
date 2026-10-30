@@ -30,7 +30,7 @@ use Tinvar\Tests\Auth\Fixtures\User as AuthUser;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
 
 require_once __DIR__ . '/../Auth/Fixtures/policies.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenancy.php';
 
 /**
  * History encryption, the server's half: the session-scoped key, which pages

@@ -35,7 +35,7 @@ use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 use Tinvar\Tests\Support\Fixtures\Sources;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenant.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenant.php';
 require_once __DIR__ . '/../Support/Fixtures/tenants.php';
 
 final readonly class NamesData extends Data

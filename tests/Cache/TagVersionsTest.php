@@ -27,9 +27,9 @@ use Tinvar\Tests\Support\Fixtures\Databases;
 use Tinvar\Validation\Validator;
 
 require_once __DIR__ . '/../Actions/Fixtures/actions.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/models.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/schema.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenancy.php';
 require_once __DIR__ . '/../Support/Fixtures/databases.php';
 
 /**

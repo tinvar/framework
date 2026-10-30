@@ -43,7 +43,7 @@ use Tinvar\Uploads\Upload;
 use Tinvar\Uploads\Uploads;
 use Tinvar\Uploads\UploadStore;
 
-require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenancy.php';
 
 const KEY = 'upload-flow-test-application-key-0123456789';
 const SESSION_COOKIE = '__Host-test_session';

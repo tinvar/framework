@@ -25,8 +25,8 @@ use Tinvar\Query\QueryRunner;
 use Tinvar\Tests\Auth\Fixtures\Review as R;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/models.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/Fixtures/review.php';
 require_once __DIR__ . '/../Query/Fixtures/queries.php';
 

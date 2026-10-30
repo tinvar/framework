@@ -48,7 +48,7 @@ use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\Signer;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenancy.php';
 
 const KEY = 'live-rerender-test-application-key-0123456789';
 const SESSION_COOKIE = '__Host-test_session';

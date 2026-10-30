@@ -38,7 +38,7 @@ use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 use function Tinvar\Tests\Jobs\Fixtures\databaseQueue;
 
 require_once __DIR__ . '/Fixtures/jobs.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenancy.php';
 
 final readonly class DispatchedData extends Data
 {

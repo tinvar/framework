@@ -21,8 +21,8 @@ use Tinvar\Query\QueryRunner;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
 use Tinvar\Tests\Query\Fixtures\CachedSummary;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/models.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/../Query/Fixtures/queries.php';
 
 it('records the tags a query declares with no cache to keep its answer in', function () {

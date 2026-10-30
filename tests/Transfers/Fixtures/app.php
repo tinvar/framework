@@ -66,7 +66,7 @@ use Tinvar\Transfers\TransferStore;
 use Tinvar\Validation\FormRequest;
 use Tinvar\Validation\Rules\Min;
 
-require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenancy.php';
 
 const KEY = 'transfer-test-application-key-0123456789';
 const SESSION_COOKIE = '__Host-test_session';

@@ -20,8 +20,8 @@ use Tinvar\Tests\Orm\Fixtures\Fixture;
 use Tinvar\Validation\ValidationException;
 use Tinvar\Validation\Validator;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/models.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/Fixtures/actions.php';
 
 /** @return array{0: ActionRunner, 1: Fixture, 2: Orm} */

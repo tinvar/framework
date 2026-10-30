@@ -33,12 +33,12 @@ use Tinvar\Tests\Orm\Fixtures\Rack;
 use Tinvar\Tests\Orm\Fixtures\Site;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/models.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/../Auth/Fixtures/policies.php';
 require_once __DIR__ . '/../Actions/Fixtures/actions.php';
 require_once __DIR__ . '/../Routing/Fixtures/routes.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenancy.php';
 
 /** @return array{0: Kernel, 1: Fixture} */
 function kernel(?AuthUser $user = null): array

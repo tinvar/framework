@@ -19,8 +19,8 @@ use Tinvar\Query\BatchQuery;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Tests\Orm\Fixtures\Script;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenant.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/models.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenant.php';
 
 #[Query(name: 'batchArgs.undeclared'), NoAuthorization(reason: 'the declaration is what is under test')]
 final class Undeclared implements BatchQuery

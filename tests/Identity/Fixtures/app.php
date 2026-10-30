@@ -41,7 +41,7 @@ use Tinvar\Orm\TenantSubtrees;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Http\ArrayNonceStore;
 
-require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenancy.php';
 
 /**
  * A platform with hosts of every kind: the platform host sign-in happens on,

@@ -32,8 +32,8 @@ use Tinvar\Tests\Query\Fixtures\UnitLoad;
 use Tinvar\Tests\Query\Fixtures\UnitLoadData;
 use Tinvar\Tests\Orm\Fixtures\Unit;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/models.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/Fixtures/queries.php';
 
 /**

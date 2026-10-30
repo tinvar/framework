@@ -39,7 +39,7 @@ use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenancy.php';
 
 const KEY = 'subscribe-endpoint-test-key-0123456789abcdef';
 const SESSION_COOKIE = '__Host-test_session';

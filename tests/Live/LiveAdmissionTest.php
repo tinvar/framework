@@ -51,7 +51,7 @@ use Tinvar\Routing\RouteRegistry;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Tests\Support\Fixtures\Sources;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenancy.php';
 require_once __DIR__ . '/../Support/Fixtures/tenants.php';
 
 const KEY = 'live-admission-test-application-key-012345';

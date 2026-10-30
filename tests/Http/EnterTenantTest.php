@@ -34,7 +34,7 @@ use Tinvar\Http\ArrayNonceStore;
 use Tinvar\Webhooks\DerivedSecrets;
 use Tinvar\Webhooks\WebhookEndpoint;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenancy.php';
 
 /** A class an entry point names as its tenant source: what it is is the resolver's to say. */
 final class FromHeader {}

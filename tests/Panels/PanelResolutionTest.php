@@ -50,7 +50,7 @@ use Tinvar\Tests\Panels\Fixtures\Trace;
 use Tinvar\Tests\Support\Fixtures\Sources;
 
 require_once __DIR__ . '/Fixtures/app.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenancy.php';
 require_once __DIR__ . '/../Support/Fixtures/tenants.php';
 
 /** @return array<string, mixed> */

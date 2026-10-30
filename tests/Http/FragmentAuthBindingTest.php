@@ -40,10 +40,10 @@ use Tinvar\Tests\Routing\Fixtures\RackShowPage;
 use Tinvar\Tests\Routing\Fixtures\RootLayout;
 use Tinvar\Tests\Routing\Fixtures\SiteLayout;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/models.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/schema.php';
 require_once __DIR__ . '/../Routing/Fixtures/routes.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenancy.php';
 
 const SESSION = 'session-abc';
 

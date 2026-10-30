@@ -28,8 +28,8 @@ use Tinvar\Render\RendererException;
 use Tinvar\Render\SocketTrust;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/schema.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/models.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/schema.php';
 
 $root = \dirname(__DIR__, 4);
 

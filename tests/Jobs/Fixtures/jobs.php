@@ -35,8 +35,8 @@ use Tinvar\Tests\Orm\Fixtures\Script;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 
-require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenant.php';
-require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenant.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenancy.php';
 
 const KEY = 'jobs-test-key-of-thirty-two-bytes!!';
 

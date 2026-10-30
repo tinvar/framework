@@ -48,8 +48,8 @@ use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 use Tinvar\Tests\Panels\Fixtures\Admin\Reports;
 use Tinvar\Tests\Support\Fixtures\Sources;
 
-require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenant.php';
-require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/tenancy.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenant.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenancy.php';
 require_once __DIR__ . '/../../Support/Fixtures/tenants.php';
 
 /**

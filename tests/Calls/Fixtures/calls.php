@@ -39,8 +39,8 @@ use Tinvar\Validation\FormRequest;
 use Tinvar\Validation\Rules\Max;
 use Tinvar\Validation\Rules\Min;
 
-require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/models.php';
-require_once __DIR__ . '/../../../../database/tests/Orm/Fixtures/schema.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/models.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/schema.php';
 
 const KEY = 'calls-test-key-of-thirty-two-bytes!!';
 

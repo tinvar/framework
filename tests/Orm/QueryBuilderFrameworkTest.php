@@ -45,7 +45,7 @@ use Tinvar\Validation\Validator;
 
 use function Tinvar\Data\scroll;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/shelves.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/shelves.php';
 
 #[MapsFrom(Shelf::class)]
 final readonly class ShelfCardData extends Data

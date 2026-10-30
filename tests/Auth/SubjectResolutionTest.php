@@ -18,7 +18,7 @@ use Tinvar\Auth\PolicyGate;
 use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Tests\Orm\Fixtures\Rack;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/models.php';
 
 // A global alias, as an application's alias map would register. Its name
 // matches the parameter below once case is ignored.

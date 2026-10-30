@@ -20,7 +20,7 @@ use Tinvar\Tests\Routing\Fixtures\RootLayout;
 use Tinvar\Tests\Routing\Fixtures\SiteLayout;
 use Tinvar\Tests\Routing\Fixtures\SiteNewPage;
 
-require_once __DIR__ . '/../../../database/tests/Orm/Fixtures/models.php';
+require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/models.php';
 require_once __DIR__ . '/../Routing/Fixtures/routes.php';
 
 /** A page with no route name: nothing can find its allowlist. */
