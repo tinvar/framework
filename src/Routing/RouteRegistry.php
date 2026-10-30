@@ -59,6 +59,12 @@ final class RouteRegistry
      */
     private const string NO_LAYOUTS = "\0";
 
+    /**
+     * @param list<class-string<\Tinvar\Orm\Model>> $models the application's models, which
+     *        tenant-scoped-ids-must-be-typed reads as each class registers (ADR 0105)
+     */
+    public function __construct(private readonly array $models = []) {}
+
     /** @param class-string $class */
     public function register(string $class): CompiledRoute
     {
@@ -148,7 +154,7 @@ final class RouteRegistry
         // now only ActionRegistry had it: a #[Page('/racks/{rack}')] whose
         // loader took Rack $rack and declared no check registered happily and
         // served its data under a gate that denies everything.
-        $violations = (new BuildRules())->check([$class]);
+        $violations = new BuildRules($this->models)->checkEntryPoints([$class]);
         if ($violations !== []) {
             throw RoutingException::buildRules($class, $violations);
         }

@@ -12,6 +12,7 @@ use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\PublicAccess;
 use Tinvar\Attributes\TenantFrom;
 use Tinvar\Attributes\WithoutSession;
+use Tinvar\Auth\BuildRules;
 use Tinvar\Auth\PanelBinding;
 use Tinvar\Auth\Violation;
 use Tinvar\Data\Data;
@@ -48,6 +49,12 @@ final class ChannelRegistry
     /** @var array<class-string, CompiledChannel> */
     private array $byClass = [];
 
+    /**
+     * @param list<class-string<\Tinvar\Orm\Model>> $models the application's models, which
+     *        tenant-scoped-ids-must-be-typed reads as each class registers (ADR 0105)
+     */
+    public function __construct(private readonly array $models = []) {}
+
     /** @param class-string $class */
     public function register(string $class): CompiledChannel
     {
@@ -59,6 +66,13 @@ final class ChannelRegistry
             KnownAttributes::check($reflection);
         } catch (\LogicException $e) {
             throw new ChannelException($e->getMessage(), 0, $e);
+        }
+
+        // A subscription parameter that is a bare id naming a tenant's model
+        // is looked up unscoped (ADR 0105).
+        $bare = BuildRules::bareTenantIds($class, $this->models);
+        if ($bare !== null) {
+            throw new ChannelException($bare);
         }
 
         $compiled = $this->compile($reflection);

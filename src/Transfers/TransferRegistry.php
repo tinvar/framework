@@ -43,12 +43,18 @@ final class TransferRegistry
     private array $byName = [CompiledTransfer::EXPORT => [], CompiledTransfer::IMPORT => []];
 
     /**
+     * @param list<class-string<\Tinvar\Orm\Model>> $models the application's models, which
+     *        tenant-scoped-ids-must-be-typed reads as each class registers (ADR 0105)
+     */
+    public function __construct(private readonly array $models = []) {}
+
+    /**
      * @param class-string $class
      * @throws \InvalidArgumentException naming what is wrong with it
      */
     public function register(string $class): CompiledTransfer
     {
-        $compiled = self::compile($class);
+        $compiled = self::compile($class, $this->models);
         $existing = $this->byName[$compiled->kind][$compiled->name] ?? null;
         if ($existing !== null) {
             throw new \InvalidArgumentException("Two {$compiled->kind}s are named '{$compiled->name}': {$existing->class} and {$class}.");
@@ -116,8 +122,11 @@ final class TransferRegistry
         return $violations;
     }
 
-    /** @param class-string $class */
-    private static function compile(string $class): CompiledTransfer
+    /**
+     * @param class-string $class
+     * @param list<class-string<\Tinvar\Orm\Model>> $models
+     */
+    private static function compile(string $class, array $models): CompiledTransfer
     {
         $reflection = new \ReflectionClass($class);
         try {
@@ -142,7 +151,7 @@ final class TransferRegistry
         // "Every model-typed input of every routable entry point (... imports,
         // exports ...) needs an #[Authorize] naming it" -- and one with no
         // check at all needs a #[NoAuthorization] saying why (BuildRules).
-        $violations = (new BuildRules())->check([$class]);
+        $violations = new BuildRules($models)->checkEntryPoints([$class]);
         if ($violations !== []) {
             throw new \InvalidArgumentException(
                 "{$class} fails the security model's build rules:\n  " . implode("\n  ", array_map(strval(...), $violations)),

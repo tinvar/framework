@@ -44,10 +44,12 @@ use Tinvar\Validation\FormRequest;
  *
  *   tenant-scoped-ids-must-be-typed
  *     "a form request or Data field typed string or int whose name refers to a
- *      #[TenantScoped] model (siteId, scriptId) fails the build." It needs the
- *      application's models, which the registries -- checking each class as
- *      it registers -- are not given; `tinvar check` runs it, over them and
- *      every payload the entry points take (payloadsTakenBy()).
+ *      #[TenantScoped] model (siteId, scriptId) fails the build." It reads the
+ *      application's models, which a Kernel hands each registry, and finds
+ *      one not listed in the namespace of one that is or of one an entry
+ *      point takes; the registries run it on each class as it registers,
+ *      over the payloads it takes too, and `tinvar check` over every one
+ *      (payloadsTakenBy()). ADR 0105.
  *
  *   authorize-must-name-a-subject
  *     An #[Authorize] whose argument names nothing resolvable is a 500 on the
@@ -153,6 +155,9 @@ final class BuildRules
     /** @var array<string, class-string> lowercased model name => class */
     private array $tenantScoped = [];
 
+    /** @var array<string, true> the namespaces the application's models are in */
+    private array $namespaces = [];
+
     /** @var list<class-string<Model>> the application's models, held to attributes-must-name-a-class */
     private array $models = [];
 
@@ -161,7 +166,8 @@ final class BuildRules
     {
         $this->models = $models;
         foreach ($models as $model) {
-            if ((new \ReflectionClass($model))->getAttributes(TenantScoped::class, \ReflectionAttribute::IS_INSTANCEOF) !== []) {
+            $this->namespaces[self::namespaceOf($model)] = true;
+            if (self::isTenantScoped($model)) {
                 $this->tenantScoped[strtolower(Str::shortName($model))] = $model;
             }
         }
@@ -180,6 +186,26 @@ final class BuildRules
             $violations = [...$violations, ...self::checkKnownAttributes($model)];
         }
 
+        return [...$violations, ...$this->checkEntryPoints($entryPoints, $payloads)];
+    }
+
+    /**
+     * The rules over entry points and the payloads they take, without the
+     * models' own: what a registry runs on each class as it registers it,
+     * given the application's models (ADR 0007, 0105).
+     *
+     * @param list<class-string> $entryPoints
+     * @param list<class-string> $payloads
+     * @return list<Violation>
+     */
+    public function checkEntryPoints(array $entryPoints, array $payloads = []): array
+    {
+        $violations = [];
+
+        foreach ($entryPoints as $class) {
+            $this->learnNamespaces($class);
+        }
+
         foreach ($entryPoints as $class) {
             $violations = [...$violations, ...self::checkKnownAttributes($class)];
             $violations = [...$violations, ...$this->checkEntryPoint($class)];
@@ -191,10 +217,10 @@ final class BuildRules
         // Every Data object and form request an entry point takes, whether
         // or not the caller listed it. A list kept by hand is a list a new
         // form request is missing from, and the bare id in it then passed in
-        // silence. Only with a tenant-scoped model to name: without one the
-        // rule cannot fire, and the registries, which check each class as it
-        // registers, build this with none.
-        if ($this->tenantScoped !== []) {
+        // silence. Only with a model to name -- one listed, or one in the
+        // namespace of a model an entry point takes: without one the rule
+        // cannot fire.
+        if ($this->tenantScoped !== [] || $this->namespaces !== []) {
             $payloads = array_values(array_unique([...$payloads, ...self::payloadsTakenBy($entryPoints)]));
         }
 
@@ -204,6 +230,55 @@ final class BuildRules
         }
 
         return $violations;
+    }
+
+    /**
+     * tenant-scoped-ids-must-be-typed alone, over entry points and every
+     * payload they take: what the registries whose own checks are the rest
+     * of the rules -- actions, endpoints, channels -- run on each class as it
+     * registers (ADR 0105).
+     *
+     * @param list<class-string> $entryPoints
+     * @return list<Violation>
+     */
+    public function checkTenantScopedIds(array $entryPoints): array
+    {
+        $violations = [];
+        foreach ($entryPoints as $class) {
+            $this->learnNamespaces($class);
+        }
+        foreach ($entryPoints as $class) {
+            $reflection = new \ReflectionClass($class);
+            foreach (self::entryMethods($reflection) as [$method]) {
+                if (!$method->isStatic()) {
+                    $violations = [...$violations, ...$this->checkBareIds($reflection, $method, "{$class}::{$method->getName()}")];
+                }
+            }
+        }
+        if ($this->tenantScoped === [] && $this->namespaces === []) {
+            return $violations;
+        }
+        foreach (self::payloadsTakenBy($entryPoints) as $payload) {
+            $violations = [...$violations, ...$this->checkPayload($payload, $payload, [])];
+        }
+
+        return $violations;
+    }
+
+    /**
+     * Why a class a registry is registering is refused, when it takes a
+     * bare id naming a #[TenantScoped] model; null when it does not.
+     *
+     * @param class-string $class
+     * @param list<class-string<Model>> $models the application's models
+     */
+    public static function bareTenantIds(string $class, array $models): ?string
+    {
+        $violations = new self($models)->checkTenantScopedIds([$class]);
+
+        return $violations === []
+            ? null
+            : "{$class} fails the security model's build rules:\n  " . implode("\n  ", array_map(strval(...), $violations));
     }
 
     /**
@@ -394,51 +469,7 @@ final class BuildRules
                 }
             }
 
-            // The same hazard as a bare id in a payload, on the path that has
-            // no validation at all: a body that looks the row up itself runs
-            // unscoped and unauthorized. Checked whether or not the method is
-            // exempt: #[NoAuthorization] opts out of the authorization rule,
-            // not out of tenant scoping.
-            foreach ($method->getParameters() as $parameter) {
-                $bare = self::bareIdType($parameter->getType());
-                if ($bare === null) {
-                    continue;
-                }
-
-                $model = $this->tenantScopedNamedBy($parameter->getName());
-                if ($model === null) {
-                    continue;
-                }
-
-                $violations[] = new Violation(
-                    self::TENANT_SCOPED_IDS_MUST_BE_TYPED,
-                    "{$where}(\${$parameter->getName()})",
-                    "is a bare {$bare} naming {$model}, which is #[TenantScoped]. "
-                    . 'Type it as the model so it is resolved and scoped; a raw id is not.',
-                );
-            }
-
-            // The same hazard on a batch query, whose per-call arguments are
-            // declared on the attribute rather than as parameters. One typed
-            // as anything but a model reaches loadMany() as the raw value the
-            // renderer sent.
-            foreach (self::batchArguments($reflection, $method) as $argument => $type) {
-                if (is_a($type, Model::class, true)) {
-                    continue;
-                }
-
-                $model = $this->tenantScopedNamedBy($argument);
-                if ($model === null) {
-                    continue;
-                }
-
-                $violations[] = new Violation(
-                    self::TENANT_SCOPED_IDS_MUST_BE_TYPED,
-                    "{$where}(\${$argument})",
-                    "is declared in #[Query(args:)] as {$type}, naming {$model}, which is #[TenantScoped]. "
-                    . 'Declare it as the model so it is resolved and scoped; a raw id is not.',
-                );
-            }
+            $violations = [...$violations, ...$this->checkBareIds($reflection, $method, $where)];
 
             if ($exempt) {
                 continue;
@@ -1133,6 +1164,66 @@ final class BuildRules
     }
 
     /**
+     * tenant-scoped-ids-must-be-typed on one entry method: its parameters,
+     * and a batch query's declared arguments.
+     *
+     * @param \ReflectionClass<object> $reflection
+     * @return list<Violation>
+     */
+    private function checkBareIds(\ReflectionClass $reflection, \ReflectionMethod $method, string $where): array
+    {
+        $violations = [];
+
+        // The same hazard as a bare id in a payload, on the path that has
+        // no validation at all: a body that looks the row up itself runs
+        // unscoped and unauthorized. Checked whether or not the method is
+        // exempt: #[NoAuthorization] opts out of the authorization rule,
+        // not out of tenant scoping.
+        foreach ($method->getParameters() as $parameter) {
+            $bare = self::bareIdType($parameter->getType());
+            if ($bare === null) {
+                continue;
+            }
+
+            $model = $this->tenantScopedNamedBy($parameter->getName());
+            if ($model === null) {
+                continue;
+            }
+
+            $violations[] = new Violation(
+                self::TENANT_SCOPED_IDS_MUST_BE_TYPED,
+                "{$where}(\${$parameter->getName()})",
+                "is a bare {$bare} naming {$model}, which is #[TenantScoped]. "
+                . 'Type it as the model so it is resolved and scoped; a raw id is not.',
+            );
+        }
+
+        // The same hazard on a batch query, whose per-call arguments are
+        // declared on the attribute rather than as parameters. One typed
+        // as anything but a model reaches loadMany() as the raw value the
+        // renderer sent.
+        foreach (self::batchArguments($reflection, $method) as $argument => $type) {
+            if (is_a($type, Model::class, true)) {
+                continue;
+            }
+
+            $model = $this->tenantScopedNamedBy($argument);
+            if ($model === null) {
+                continue;
+            }
+
+            $violations[] = new Violation(
+                self::TENANT_SCOPED_IDS_MUST_BE_TYPED,
+                "{$where}(\${$argument})",
+                "is declared in #[Query(args:)] as {$type}, naming {$model}, which is #[TenantScoped]. "
+                . 'Declare it as the model so it is resolved and scoped; a raw id is not.',
+            );
+        }
+
+        return $violations;
+    }
+
+    /**
      * `siteId`, `site_id`, `siteID`, `site` and `siteIds` all name Site --
      * and `scriptRunId`, `script_run_id` and `script_run` all name
      * ScriptRun: the models are keyed by their lowercased short name, which
@@ -1143,9 +1234,63 @@ final class BuildRules
      */
     private function tenantScopedNamedBy(string $property): ?string
     {
-        $candidate = strtolower(str_replace('_', '', (string) preg_replace('/(_ids?|ids?)$/i', '', $property)));
+        $stem = (string) preg_replace('/(_ids?|ids?)$/i', '', $property);
+        $candidate = strtolower(str_replace('_', '', $stem));
+        $known = $this->tenantScoped[$candidate] ?? $this->tenantScoped[strtolower(str_replace('_', '', $property))] ?? null;
+        if ($known !== null) {
+            return $known;
+        }
 
-        return $this->tenantScoped[$candidate] ?? $this->tenantScoped[strtolower(str_replace('_', '', $property))] ?? null;
+        // A model the application did not list, beside one it did or one an
+        // entry point takes: `siteId` names Site in each models' namespace.
+        // The list is kept by hand, and one missing a model would let a bare
+        // id to it pass in silence.
+        $studly = ucfirst(str_replace('_', '', ucwords($stem, '_')));
+        if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/D', $studly) !== 1) {
+            return null;
+        }
+        foreach (array_keys($this->namespaces) as $namespace) {
+            $class = ltrim("{$namespace}\\{$studly}", '\\');
+            if (class_exists($class) && is_subclass_of($class, Model::class) && self::isTenantScoped($class)) {
+                $this->tenantScoped[$candidate] = $class;
+
+                return $class;
+            }
+        }
+
+        return null;
+    }
+
+    /** @param class-string $class */
+    private static function isTenantScoped(string $class): bool
+    {
+        return (new \ReflectionClass($class))->getAttributes(TenantScoped::class, \ReflectionAttribute::IS_INSTANCEOF) !== [];
+    }
+
+    /**
+     * The namespaces of the models a class's entry points take, where a
+     * model a bare id names is looked for too.
+     *
+     * @param class-string $class
+     */
+    private function learnNamespaces(string $class): void
+    {
+        foreach (self::entryMethods(new \ReflectionClass($class)) as [$method]) {
+            foreach ($method->getParameters() as $parameter) {
+                foreach (self::modelTypesOf($parameter) as $model) {
+                    if (is_subclass_of($model, Model::class)) {
+                        $this->namespaces[self::namespaceOf($model)] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    private static function namespaceOf(string $class): string
+    {
+        $slash = strrpos($class, '\\');
+
+        return $slash === false ? '' : substr($class, 0, $slash);
     }
 
     /**

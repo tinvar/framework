@@ -62,8 +62,10 @@ final class QueryRegistry
      * a real container.
      *
      * @param (\Closure(class-string): object)|null $resolver
+     * @param list<class-string<\Tinvar\Orm\Model>> $models the application's models, which
+     *        tenant-scoped-ids-must-be-typed reads as each class registers (ADR 0105)
      */
-    public function __construct(private readonly ?\Closure $resolver = null) {}
+    public function __construct(private readonly ?\Closure $resolver = null, private readonly array $models = []) {}
 
     /** @param class-string $class */
     public function register(string $class): string
@@ -145,7 +147,7 @@ final class QueryRegistry
         // is served to a caller every policy denies, and a `shared: true`
         // query that reads the current user caches one caller's answer for
         // everyone. Both were registering silently; only actions were checked.
-        $violations = (new BuildRules())->check([$class]);
+        $violations = new BuildRules($this->models)->checkEntryPoints([$class]);
         if ($violations !== []) {
             throw new \InvalidArgumentException(
                 "{$class} fails the security model's build rules:\n  "

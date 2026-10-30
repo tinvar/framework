@@ -13,16 +13,17 @@ use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\TenantFrom;
 use Tinvar\Attributes\Throttle;
 use Tinvar\Attributes\Uploaded;
+use Tinvar\Auth\BuildRules;
 use Tinvar\Auth\PanelBinding;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Http\Request;
 use Tinvar\Orm\Model;
 use Tinvar\Storage\StorageKey;
+use Tinvar\Support\KnownAttributes;
 use Tinvar\Support\Str;
 use Tinvar\Storage\FileTypes;
 use Tinvar\Uploads\Upload;
 use Tinvar\Validation\FormRequest;
-use Tinvar\Support\KnownAttributes;
 
 /**
  * Wire name to #[Action] method.
@@ -36,8 +37,12 @@ final class ActionRegistry
     /** @var array<string, CompiledAction> */
     private array $actions = [];
 
-    /** @param (\Closure(class-string): object)|null $resolver */
-    public function __construct(private readonly ?\Closure $resolver = null) {}
+    /**
+     * @param (\Closure(class-string): object)|null $resolver
+     * @param list<class-string<\Tinvar\Orm\Model>> $models the application's models, which
+     *        tenant-scoped-ids-must-be-typed reads as each class registers (ADR 0105)
+     */
+    public function __construct(private readonly ?\Closure $resolver = null, private readonly array $models = []) {}
 
     /**
      * @param class-string $class
@@ -49,6 +54,13 @@ final class ActionRegistry
         // A Tinvar attribute naming no class would be matched by nothing, and
         // what it declares would not hold (KnownAttributes).
         KnownAttributes::check($reflection);
+
+        // A bare id naming a tenant's model, in an action's parameters or the
+        // form request it takes, reaches the body unscoped (ADR 0105).
+        $bare = BuildRules::bareTenantIds($class, $this->models);
+        if ($bare !== null) {
+            throw new ActionException($bare);
+        }
 
 
         // Class-level #[Authorize] and #[NoAuthorization] do not COVER action

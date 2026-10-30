@@ -15,6 +15,7 @@ use Tinvar\Attributes\PublicAccess;
 use Tinvar\Attributes\TenantFrom;
 use Tinvar\Attributes\Throttle;
 use Tinvar\Attributes\WithoutSession;
+use Tinvar\Auth\BuildRules;
 use Tinvar\Auth\PanelBinding;
 use Tinvar\Auth\Violation;
 use Tinvar\Data\Data;
@@ -56,6 +57,12 @@ final class EndpointRegistry
     private bool $sorted = true;
 
     /**
+     * @param list<class-string<\Tinvar\Orm\Model>> $models the application's models, which
+     *        tenant-scoped-ids-must-be-typed reads as each class registers (ADR 0105)
+     */
+    public function __construct(private readonly array $models = []) {}
+
+    /**
      * @param class-string $class
      * @return list<CompiledEndpoint>
      */
@@ -63,6 +70,13 @@ final class EndpointRegistry
     {
         $reflection = new \ReflectionClass($class);
         KnownAttributes::check($reflection);
+
+        // A bare id naming a tenant's model reaches the method unscoped
+        // (ADR 0105).
+        $bare = BuildRules::bareTenantIds($class, $this->models);
+        if ($bare !== null) {
+            throw new EndpointException($bare);
+        }
 
         // As an action holder's: a check or an exemption on the class covers
         // no method. A class-level #[Authorize] still runs ahead of each

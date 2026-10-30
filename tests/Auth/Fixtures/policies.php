@@ -239,6 +239,14 @@ final readonly class BadIdRequest extends FormRequest
     ) {}
 }
 
+/** Names Rack, which carries no #[TenantScoped]. */
+final readonly class RackIdRequest extends FormRequest
+{
+    public function __construct(
+        public string $rackId,
+    ) {}
+}
+
 final readonly class GoodIdRequest extends FormRequest
 {
     public function __construct(

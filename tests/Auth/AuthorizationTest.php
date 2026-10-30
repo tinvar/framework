@@ -304,7 +304,16 @@ describe('build rules', function () {
 
         it('ignores an id naming a model that is not tenant-scoped', function () {
             // Rack carries no #[TenantScoped], so rackId is not flagged.
-            expect((new BuildRules([Rack::class]))->check([], [A\BadIdRequest::class]))->toBe([]);
+            expect((new BuildRules([Rack::class]))->check([], [A\RackIdRequest::class]))->toBe([]);
+        });
+
+        it('finds a tenant-scoped model the list leaves out, in the namespace of one it names', function () {
+            // Only Rack is listed; Script, beside it, is #[TenantScoped].
+            $violations = (new BuildRules([Rack::class]))->check([], [A\BadIdRequest::class]);
+
+            expect($violations)->toHaveCount(1)
+                ->and($violations[0]->where)->toBe(A\BadIdRequest::class . '::$scriptId')
+                ->and($violations[0]->message)->toContain('naming ' . Tinvar\Tests\Orm\Fixtures\Script::class);
         });
 
         it('recurses into a nested Data object', function () use ($rules) {
