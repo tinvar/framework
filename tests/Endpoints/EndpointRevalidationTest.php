@@ -81,6 +81,20 @@ final class Racks
 
     #[Post('/api/racks/{rack}/quiet'), Authorize('update', 'rack')]
     public function quiet(Rack $rack): void {}
+
+    /** Names the record it changed by its path, as an action's result would (ADR 0106). */
+    #[Post('/api/racks/{rack}/slots/{slot}', revalidates: ['racks', 'rack:{rack}', 'slot:{rack}:{slot}']), Authorize('update', 'rack')]
+    public function slot(Rack $rack, string $slot): void
+    {
+        $rack->name = "Slot {$slot}";
+        $this->orm->save($rack);
+    }
+}
+
+final class UnknownPlaceholder
+{
+    #[Post('/api/racks/{rack}/x', revalidates: ['rack:{rck}']), NoAuthorization(reason: 'test')]
+    public function x(string $rack): void {}
 }
 
 final class SignIn implements Middleware
@@ -238,3 +252,53 @@ final class GetOnly
     #[Get('/api/only'), NoAuthorization(reason: 'test')]
     public function show(): void {}
 }
+
+// ADR 0106: an endpoint's tags name the record it changed, from its path,
+// and its answer lists them for the caller's prefetch cache.
+describe('a tag filled from the path', function () {
+    it('invalidates the record the path names, and no other record\'s', function () {
+        $world = world();
+        $rack = $world->rack();
+        $world->cache('this-rack', "rack:{$rack}");
+        $world->cache('another-rack', 'rack:another');
+        $world->cache('this-slot', "slot:{$rack}:a1");
+
+        $response = $world->send('POST', "/api/racks/{$rack}/slots/a1");
+
+        expect($response->status)->toBe(204)
+            ->and($response->header('x-invalidated-tags'))->toBe("racks,rack:{$rack},slot:{$rack}:a1")
+            ->and($world->cached('this-rack'))->toBeFalse()
+            ->and($world->cached('this-slot'))->toBeFalse()
+            ->and($world->cached('another-rack'))->toBeTrue()
+            ->and($world->told("rack:{$rack}", "slot:{$rack}:a1"))->toBeTrue();
+    });
+
+    it('refuses a path segment no tag may carry, writing nothing', function (string $slot) {
+        $world = world();
+        $rack = $world->rack();
+        $world->cache('racks-list', 'racks');
+
+        expect($world->send('POST', "/api/racks/{$rack}/slots/{$slot}")->status)->toBe(400)
+            ->and($world->cached('racks-list'))->toBeTrue()
+            ->and($world->hub->published)->toBe([])
+            ->and($world->fixture->connection->select('SELECT name FROM racks WHERE id = ?', [$rack])[0]['name'])->not->toStartWith('Slot');
+    })->with([
+        // A control character never reaches here: the request refuses it.
+        'a comma' => ['a%2Cb'],
+        'a bare comma' => ['a,b'],
+    ]);
+
+    it('refuses, at registration, a placeholder the path does not have', function () {
+        expect(fn () => (new EndpointRegistry())->register(UnknownPlaceholder::class))
+            ->toThrow(EndpointException::class, "has no parameter named 'rck'");
+    });
+});
+
+it('lists the tags it invalidated for the caller, and none on a GET', function () {
+    $world = world();
+
+    expect($world->send('POST', "/api/racks/{$world->rack()}/rename")->header('x-invalidated-tags'))->toBe('racks,racks:names')
+        ->and($world->send('GET', "/api/racks/{$world->rack()}")->header('x-invalidated-tags'))->toBeNull()
+        ->and($world->send('PATCH', "/api/racks/{$world->rack()}")->header('x-invalidated-tags'))->toBe('racks')
+        ->and($world->send('POST', "/api/racks/{$world->rack()}/quiet")->header('x-invalidated-tags'))->toBeNull();
+});

@@ -10,6 +10,7 @@ use Tinvar\Auth\Gate;
 use Tinvar\Data\Data;
 use Tinvar\Data\Encoder;
 use Tinvar\Http\ForbiddenException;
+use Tinvar\Http\HttpException;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
@@ -74,9 +75,20 @@ final class EndpointRunner
         $instance = ($this->resolver)($endpoint->class);
         $body = static fn (): mixed => $instance->{$endpoint->method}(...$arguments);
         $safe = CompiledEndpoint::isSafeMethod($request->method);
+        $tags = [];
         if ($safe) {
             $result = $this->orm->readOnly($body);
         } else {
+            // Its tags, each placeholder filled from the path -- a model by
+            // its key, a scalar as bound -- before anything is written, so a
+            // segment no tag may carry is refused with nothing changed
+            // (ADR 0106).
+            try {
+                $tags = TagInvalidation::filled($endpoint->revalidates, [...$path, ...$models, ...array_intersect_key($arguments, $endpoint->scalars)]);
+            } catch (\InvalidArgumentException) {
+                throw new HttpException(400, 'A path parameter holds a character this endpoint cannot name.', 'bad_request');
+            }
+
             // Noting every tenant it ran as, as an action's body is: a row
             // it wrote by actAs()ing a child is the child's, and so are the
             // pages to tell.
@@ -88,17 +100,25 @@ final class EndpointRunner
             // the writes are in (TagInvalidation). Once the body has
             // returned -- one that threw changed nothing to announce -- and
             // never for a GET, which wrote nothing.
-            $this->invalidation?->invalidateIn($endpoint->revalidates, $tenants);
+            $this->invalidation?->invalidateIn($tags, $tenants);
         }
 
         // 5. Answer.
-        return match ($endpoint->returns) {
+        $response = match ($endpoint->returns) {
             CompiledEndpoint::RETURNS_RESPONSE => $result instanceof Response
                 ? ($safe ? $this->streamedReadOnly($result) : self::seeOther($request->method, $result))
                 : throw new \LogicException("{$endpoint->where()} returned " . get_debug_type($result) . ', not a Response.'),
             CompiledEndpoint::RETURNS_DATA => $this->json($endpoint, $result),
             default => Response::make(204),
         };
+
+        // "An action's response lists the server-side query tags it
+        // invalidated (X-Invalidated-Tags), and the client flushes matching
+        // prefetch entries" -- an endpoint's that wrote, too, so the caller's
+        // own prefetched pages and fragments are not left showing what it
+        // changed (ADR 0106). The tags as filled, never another's: they are
+        // what this call declared, about this call's path.
+        return $tags === [] ? $response : $response->withHeader('x-invalidated-tags', implode(',', $tags));
     }
 
     /**

@@ -7,6 +7,8 @@ namespace Tinvar\Actions;
 use Tinvar\Cache\QueryCache;
 use Tinvar\Data\SharedTags;
 use Tinvar\Live\Invalidator;
+use Tinvar\Orm\Metadata;
+use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 use Tinvar\Render\StaticPages;
 
@@ -40,6 +42,9 @@ use Tinvar\Render\StaticPages;
  */
 final readonly class TagInvalidation
 {
+    /** A placeholder in a declared tag: `{name}`, a PHP parameter's name. */
+    private const string PLACEHOLDER = '/\{([A-Za-z_][A-Za-z0-9_]*)\}/';
+
     public function __construct(
         private Orm $orm,
         private ?QueryCache $cache = null,
@@ -74,6 +79,90 @@ final readonly class TagInvalidation
         }
 
         return array_values(array_unique($out));
+    }
+
+    /**
+     * The `{name}` placeholders a declared tag holds, each once: what an
+     * endpoint's path parameter or an import's argument fills, so a write
+     * names the one record it changed -- `rack:{rack}` -- as an action's
+     * result does (ADR 0106).
+     *
+     * @return list<string>
+     */
+    public static function placeholders(string $tag): array
+    {
+        preg_match_all(self::PLACEHOLDER, $tag, $found);
+
+        return array_values(array_unique($found[1]));
+    }
+
+    /**
+     * Refuses a declaration whose tags name a placeholder $known does not:
+     * a typo would otherwise fill nothing and invalidate a tag no read
+     * carries, the first time anyone wrote.
+     *
+     * @param list<string> $declared
+     * @param list<string> $known the names a placeholder may take
+     * @throws \InvalidArgumentException naming the first unknown one
+     */
+    public static function assertPlaceholders(string $where, array $declared, array $known): void
+    {
+        foreach ($declared as $tag) {
+            foreach (self::placeholders($tag) as $name) {
+                if (!\in_array($name, $known, true)) {
+                    throw new \InvalidArgumentException(
+                        "{$where} revalidates '{$tag}', and has no " . ($known === [] ? 'parameter' : 'parameter named') . " '{$name}' to fill it: "
+                        . ($known === [] ? 'it has none.' : 'it has ' . implode(', ', $known) . '.'),
+                    );
+                }
+            }
+        }
+    }
+
+    /**
+     * The declared tags with each placeholder filled from $values: a model
+     * by its key, a backed enum by its value, a scalar as text; nothing for
+     * none. A tag with no placeholder is as declared.
+     *
+     * A value is what a caller sent -- a path segment, an argument -- so it
+     * is refused where it would carry what no tag may: a control character,
+     * which a header line or a tag's namespace could be split on, or the
+     * comma X-Invalidated-Tags lists tags apart with. Asked before the write
+     * it describes, so a refusal changes nothing.
+     *
+     * @param list<string> $declared
+     * @param array<string, mixed> $values by placeholder name
+     * @return list<string>
+     * @throws \InvalidArgumentException for a value no tag may carry
+     */
+    public static function filled(array $declared, array $values): array
+    {
+        $out = [];
+        foreach ($declared as $tag) {
+            $out[] = preg_replace_callback(self::PLACEHOLDER, static function (array $match) use ($values): string {
+                $value = self::text($values[$match[1]] ?? null);
+                if (preg_match('/[\x00-\x1f\x7f,]/', $value) === 1) {
+                    throw new \InvalidArgumentException("The value of '{$match[1]}' cannot be carried by a tag.");
+                }
+
+                return $value;
+            }, $tag) ?? $tag;
+        }
+
+        return array_values(array_unique($out));
+    }
+
+    /** A placeholder's value as a tag spells it. */
+    private static function text(mixed $value): string
+    {
+        return match (true) {
+            $value === null => '',
+            $value instanceof Model => (string) Metadata::for($value::class)->keyOf($value),
+            $value instanceof \BackedEnum => (string) $value->value,
+            \is_bool($value) => $value ? '1' : '0',
+            \is_scalar($value) => (string) $value,
+            default => throw new \InvalidArgumentException('A tag is filled from a model, an enum or a scalar, and was given ' . get_debug_type($value) . '.'),
+        };
     }
 
     /**

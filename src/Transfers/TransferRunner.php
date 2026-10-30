@@ -106,6 +106,19 @@ final readonly class TransferRunner
             $arguments[$name] = $this->validator->coerceParameter($parameter, $transfer->class, $input[$name]);
         }
 
+        // An argument a tag is filled from is held, at the start, to what a
+        // tag may carry (ADR 0106): refused here, it is the caller's 422,
+        // never a run that fails once its rows are written.
+        foreach ($transfer->revalidates as $tag) {
+            foreach (TagInvalidation::placeholders($tag) as $name) {
+                try {
+                    TagInvalidation::filled(['{' . $name . '}'], [$name => $arguments[$name] ?? null]);
+                } catch (\InvalidArgumentException) {
+                    throw new ValidationException([$name => ["{$name} holds a character this import cannot name."]]);
+                }
+            }
+        }
+
         return $arguments;
     }
 
@@ -649,7 +662,9 @@ final readonly class TransferRunner
                     // a failure rolling the chunk back -- and again, with
                     // the live clients told and the static pages taken
                     // down, once it commits.
-                    $this->invalidation?->invalidateIn($transfer->revalidates, $tenants);
+                    // Its tags filled from its arguments as this run read
+                    // them (ADR 0106).
+                    $this->invalidation?->invalidateIn(TagInvalidation::filled($transfer->revalidates, $arguments), $tenants);
                     if ($enlisted) {
                         $this->transfers->store->update($written);
                     }

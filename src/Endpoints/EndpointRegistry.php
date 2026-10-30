@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Endpoints;
 
+use Tinvar\Actions\TagInvalidation;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Cors;
 use Tinvar\Attributes\Endpoint;
@@ -298,6 +299,14 @@ final class EndpointRegistry
                 "{$where} is #[WithoutSession] and allows other origins credentials. It reads no cookie: its callers "
                 . "send their token in a header, which #[Cors(headers: ['authorization'])] allows.",
             );
+        }
+
+        // A tag that names the record it changes -- `rack:{rack}` -- names
+        // it by a path parameter (ADR 0106), and by nothing else.
+        try {
+            TagInvalidation::assertPlaceholders($where, $declaration->revalidates, $parameters);
+        } catch (\InvalidArgumentException $e) {
+            throw new EndpointException($e->getMessage(), 0, $e);
         }
 
         return new CompiledEndpoint(

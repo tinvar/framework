@@ -233,6 +233,12 @@ final class TransferRegistry
             $mapsRows = false;
         }
 
+        // An import's tag names the record it writes under by one of its
+        // arguments -- `warehouse:{warehouse}` -- and by nothing else (ADR 0106).
+        if ($declaration instanceof Import) {
+            TagInvalidation::assertPlaceholders($class, $declaration->revalidates, [...array_keys($models), ...array_keys($scalars)]);
+        }
+
         return new CompiledTransfer(
             kind: $declaration instanceof Export ? CompiledTransfer::EXPORT : CompiledTransfer::IMPORT,
             name: $name,
