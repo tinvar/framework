@@ -22,6 +22,9 @@ use Tinvar\Http\Request;
 use Tinvar\Http\SqliteThrottleStore;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Support\Signer;
+use Tinvar\Tests\Support\Fixtures\Databases;
+
+require_once __DIR__ . '/../Support/Fixtures/databases.php';
 
 const KEY = 'shop-shared-throttle-test-key-32-bytes!';
 
@@ -173,33 +176,97 @@ describe('SHOP_THROTTLE_STORE', function () {
     });
 });
 
-// Two servers, each with a database of its own and APCu or a file of its
-// own to count in -- and one store, named, that both reach.
-it('spends one sign-in budget across two servers counting in the store it names', function () {
-    $directory = directory();
-    $throttles = "{$directory}/throttle.sqlite";
-    new PdoThrottleStore(new \PDO("sqlite:{$throttles}"))->install();
-
-    [$first, $second] = withEnv(['SHOP_THROTTLE_STORE' => "sqlite:{$throttles}", 'TINVAR_THROTTLE' => null], static function () use ($directory): array {
-        $servers = [];
-        foreach (['first', 'second'] as $name) {
-            $database = "{$directory}/{$name}.sqlite";
-            new Seeder(PdoConnection::sqlite($database, 'shop', create: true))->run(customers: 1);
-            $servers[] = Kernel::fromEnvironment("{$directory}/no-renderer.sock", key: KEY, database: $database);
-        }
-
-        return $servers;
-    });
-
-    $wrong = [];
-    for ($i = 0; $i < SignInThrottle::PER_ACCOUNT; $i++) {
-        $wrong[] = signIn($i % 2 === 0 ? $first : $second, "guess-{$i}");
+/**
+ * $work with the store SHOP_THROTTLE_STORE names on $server -- a SQLite
+ * file, a MySQL database of the test's own, or Redis -- made empty, and
+ * the environment that names it; the test is skipped where the server is
+ * not there.
+ *
+ * @param \Closure(array<string, string|null>): void $work
+ */
+function onStore(string $server, \Closure $work): void
+{
+    $missing = match ($server) {
+        'mysql' => Databases::mysqlMissing(),
+        'redis' => Databases::redisMissing(),
+        default => null,
+    };
+    if ($missing !== null) {
+        test()->markTestSkipped($missing);
     }
 
-    expect(array_unique($wrong))->toBe([422])
-        ->and(signIn($first, DemoAccount::PASSWORD))->toBe(429, 'the budget was spent across both servers')
-        ->and(signIn($second, DemoAccount::PASSWORD))->toBe(429);
-});
+    if ($server === 'sqlite') {
+        $throttles = directory() . '/throttle.sqlite';
+        new PdoThrottleStore(new \PDO("sqlite:{$throttles}"))->install();
+        $work(['SHOP_THROTTLE_STORE' => "sqlite:{$throttles}"]);
+
+        return;
+    }
+
+    if ($server === 'redis') {
+        $found = Databases::redis();
+        \assert(\is_array($found));
+        if ($found[1] === 0) {
+            test()->markTestSkipped('The shop names Redis by host and port, and the one found is on a socket.');
+        }
+        $redis = Databases::redisClient();
+        $left = $redis->keys('shop:throttle:*');
+        if (\is_array($left) && $left !== []) {
+            $redis->del($left);
+        }
+        $work(['SHOP_THROTTLE_STORE' => "redis://{$found[0]}:{$found[1]}"]);
+
+        return;
+    }
+
+    // The credentials go apart from the DSN, as the shop reads them.
+    Databases::inScratchSchema('mysql', static function (\PDO $pdo, string $schema) use ($work): void {
+        new PdoThrottleStore($pdo)->install();
+        $user = $password = null;
+        $pairs = [];
+        foreach (explode(';', substr(Databases::dsn('mysql'), \strlen('mysql:'))) as $pair) {
+            [$key, $value] = explode('=', $pair, 2) + [1 => ''];
+            match ($key) {
+                'user' => $user = $value,
+                'password' => $password = $value,
+                'dbname' => null,
+                default => $pairs[] = $pair,
+            };
+        }
+        $work([
+            'SHOP_THROTTLE_STORE' => 'mysql:' . implode(';', [...$pairs, "dbname={$schema}"]),
+            'SHOP_THROTTLE_USER' => $user,
+            'SHOP_THROTTLE_PASSWORD' => $password,
+        ]);
+    });
+}
+
+// Two servers, each with a database of its own and APCu or a file of its
+// own to count in -- and one store, named, that both reach.
+it('spends one sign-in budget across two servers counting in the store it names', function (string $server) {
+    onStore($server, static function (array $env): void {
+        $directory = directory();
+        [$first, $second] = withEnv([...$env, 'TINVAR_THROTTLE' => null], static function () use ($directory): array {
+            $servers = [];
+            foreach (['first', 'second'] as $name) {
+                $database = "{$directory}/{$name}.sqlite";
+                new Seeder(PdoConnection::sqlite($database, 'shop', create: true))->run(customers: 1);
+                $servers[] = Kernel::fromEnvironment("{$directory}/no-renderer.sock", key: KEY, database: $database);
+            }
+
+            return $servers;
+        });
+
+        $wrong = [];
+        for ($i = 0; $i < SignInThrottle::PER_ACCOUNT; $i++) {
+            $wrong[] = signIn($i % 2 === 0 ? $first : $second, "guess-{$i}");
+        }
+
+        expect(array_unique($wrong))->toBe([422])
+            ->and(signIn($first, DemoAccount::PASSWORD))->toBe(429, 'the budget was spent across both servers')
+            ->and(signIn($second, DemoAccount::PASSWORD))->toBe(429);
+    });
+})->with(['sqlite', 'mysql', 'redis']);
 
 // What the store is for: the same guesses against two servers counting
 // each in its own file leave both with budget to spare.
