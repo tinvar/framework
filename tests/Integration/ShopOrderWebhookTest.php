@@ -168,7 +168,7 @@ it('queues nothing where no order webhook is configured', function () {
 });
 
 it('refuses to send the order webhook to the shop\'s own machine, and does not try again', function () {
-    shop('http://127.0.0.1:9/hooks/pellwick', null, function (Kernel $kernel): void {
+    shop('http://127.0.0.1:9999/hooks/pellwick', null, function (Kernel $kernel): void {
         placeOrder($kernel);
         work($kernel);
 

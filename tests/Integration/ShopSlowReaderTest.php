@@ -217,11 +217,13 @@ it('answers other visitors while a client that stopped reading downloads a recei
             $customer = new SlowReader($host, $port);
             $receipt = $customer->receipt(DemoAccount::EMAIL, DemoAccount::PASSWORD, 'dev');
 
-            // Sent whole, as uploaded, with the headers PHP gave it -- and
-            // neither of the two the Caddyfile reads.
+            // Sent whole, as kept -- drawn again from the uploaded pixels
+            // (ADR 0103), so the same image, not the same bytes -- with the
+            // headers PHP gave it, and neither of the two the Caddyfile reads.
             $fetched = $customer->request('GET', $receipt['path']);
+            $size = static fn (string $bytes): array => \array_slice((array) getimagesizefromstring($bytes), 0, 3);
             expect($fetched['status'] ?? null)->toBe(200)
-                ->and(($fetched['body'] ?? '') === $receipt['bytes'])->toBeTrue('the receipt did not come back as uploaded')
+                ->and($size($fetched['body'] ?? ''))->toBe($size($receipt['bytes']), 'the receipt did not come back whole')
                 ->and($fetched['headers']['content-type'] ?? null)->toBe(['image/png'])
                 ->and($fetched['headers']['x-content-type-options'] ?? null)->toBe(['nosniff'])
                 ->and($fetched['headers']['content-security-policy'] ?? null)->toBe(["default-src 'none'; sandbox"])

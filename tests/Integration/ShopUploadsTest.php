@@ -218,7 +218,12 @@ it('uploads an avatar and a receipt from the account page, and shows them to the
         $row = $pdo->query('SELECT avatar_key, avatar_type FROM customers WHERE id = ' . $pdo->quote($demo))?->fetch(\PDO::FETCH_ASSOC);
         expect($row['avatar_key'] ?? null)->toMatch('#^avatars/[a-f0-9]{32}\.png$#')
             ->and($row['avatar_type'] ?? null)->toBe('image/png');
-        $storage->assertStoredUnder('avatars', (string) $row['avatar_key'])->assertContents((string) $row['avatar_key'], $bytes);
+        // Kept as drawn again from its pixels (ImageSanitizer, ADR 0103):
+        // the same image, not the same bytes.
+        $storage->assertStoredUnder('avatars', (string) $row['avatar_key'])->assertContents(
+            (string) $row['avatar_key'],
+            static fn (string $kept): bool => \array_slice((array) getimagesizefromstring($kept), 0, 3) === \array_slice((array) getimagesizefromstring($bytes), 0, 3),
+        );
 
         // A receipt, kept with the account and listed on the page.
         $receipt = $customer->upload($tickets['receipt'], png(), 'till receipt.png');

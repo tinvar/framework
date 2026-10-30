@@ -147,3 +147,21 @@ it('refuses an image GD cannot read, and one whose type is not what it sniffed a
     expect(fn () => new ImageSanitizer()->sanitize(file($truncated), 'image/png'))->toThrow(HttpException::class)
         ->and(fn () => new ImageSanitizer()->sanitize(file(drawn('image/gif')), 'image/png'))->toThrow(HttpException::class, 'cannot be read');
 });
+
+// Asked to save alpha it never had, GD wrote every pixel of an RGB PNG with
+// an alpha byte, a third larger, and a receipt near its limit went over.
+it('keeps a PNG\'s alpha where it has one, and adds none where it has not', function () {
+    $rgb = (string) file_get_contents(new ImageSanitizer()->sanitize(file(drawn('image/png')), 'image/png'));
+
+    $translucent = imagecreatetruecolor(4, 2);
+    imagealphablending($translucent, false);
+    imagesavealpha($translucent, true);
+    imagefilledrectangle($translucent, 0, 0, 3, 1, (int) imagecolorallocatealpha($translucent, 10, 20, 30, 64));
+    ob_start();
+    imagepng($translucent);
+    $rgba = (string) file_get_contents(new ImageSanitizer()->sanitize(file((string) ob_get_clean()), 'image/png'));
+
+    // The colour type, in the IHDR: 2 is RGB, 6 RGB with alpha.
+    expect(\ord($rgb[25]))->toBe(2)
+        ->and(\ord($rgba[25]))->toBe(6);
+});

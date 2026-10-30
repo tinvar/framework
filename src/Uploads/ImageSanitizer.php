@@ -109,20 +109,23 @@ final readonly class ImageSanitizer
                 $image = self::upright($image, $path);
             }
 
-            return $this->encode($image, $type);
+            return $this->encode($image, $type, $type !== 'image/png' || self::pngHasAlpha($path));
         } finally {
             unset($image);
         }
     }
 
-    private function encode(\GdImage $image, string $type): string
+    private function encode(\GdImage $image, string $type, bool $alpha): string
     {
         $out = tempnam(sys_get_temp_dir(), 'tinvar-image-');
         if ($out === false) {
             throw new \RuntimeException('No temporary file to draw an image into.');
         }
 
-        if ($type === 'image/png' || $type === 'image/webp') {
+        // Its alpha channel kept where it has one. Asked of a PNG without
+        // one, GD would write every pixel with an alpha byte it never
+        // needed, a third larger again.
+        if ($alpha && ($type === 'image/png' || $type === 'image/webp')) {
             imagealphablending($image, false);
             imagesavealpha($image, true);
         }
@@ -165,6 +168,14 @@ final readonly class ImageSanitizer
             throw new \RuntimeException('An image could not be turned upright.');
         }
         return $turned;
+    }
+
+    /** Whether a PNG's header says its pixels carry alpha: grey or colour with an alpha sample (types 4 and 6). */
+    private static function pngHasAlpha(string $path): bool
+    {
+        $head = (string) @file_get_contents($path, length: 26);
+
+        return \strlen($head) === 26 && \in_array(\ord($head[25]), [4, 6], true);
     }
 
     /** Whether $pixels decoded fit in what is left of PHP's memory limit. */
