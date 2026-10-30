@@ -59,6 +59,19 @@ final readonly class BuiltAssets
     /** A name the build writes: a name, a dash, a hash, an extension. */
     private const string NAME = '/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}-[A-Za-z0-9_-]{8,32}\.([a-z0-9]{2,5})\z/';
 
+    /**
+     * The same names, as the path a Caddyfile's asset route matches
+     * (`@assets path_regexp ...`): under PATH, one segment, and only the
+     * extensions above, so the route serves what this would and nothing
+     * else under client/ (ADR 0108). Held to it by `tinvar check`
+     * (Tinvar\Server\AssetRouteRules).
+     */
+    public static function routePattern(): string
+    {
+        return '^' . self::PATH . '[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}-[A-Za-z0-9_-]{8,32}\.('
+            . implode('|', array_keys(self::TYPES)) . ')$';
+    }
+
     /** Read in chunks this size. */
     private const int CHUNK = 65_536;
 
@@ -170,5 +183,21 @@ final readonly class BuiltAssets
         }
 
         return $origin;
+    }
+
+    /**
+     * The build's asset record as written -- its origin, each asset's
+     * digest where the build has them, and what every page loads first --
+     * or nothing for a build without one. Read as data: AssetLinks holds
+     * each part to its shape.
+     *
+     * @return array<array-key, mixed>
+     */
+    public function record(): array
+    {
+        $record = $this->build . '/rsc/' . self::RECORD;
+        $data = is_file($record) ? json_decode((string) file_get_contents($record), true) : null;
+
+        return \is_array($data) ? $data : [];
     }
 }

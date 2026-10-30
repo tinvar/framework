@@ -1,10 +1,11 @@
 <?php
 
 // What FrankenPHP defines when PHP runs under it, for static analysis: the
-// built-in Mercure hub's publisher (Tinvar\Live\Mercure::builtIn()), and the
+// built-in Mercure hub's publisher (Tinvar\Live\Mercure::builtIn()), the
 // call that ends a response before the worker's terminate work
-// (Tinvar\Http\Worker). Not loaded at runtime -- code that calls them checks
-// function_exists() first.
+// (Tinvar\Http\Worker), and the one that sends the headers set so far as
+// a response of their own, a 103 Early Hint (Tinvar\Http\Sapi). Not loaded
+// at runtime -- code that calls them checks function_exists() first.
 
 /**
  * @param string|list<string> $topics
@@ -16,5 +17,10 @@ function mercure_publish(string|array $topics, string $data = '', bool $private 
 
 /** Sends what the response holds and ends it; what runs after is not waited for. */
 function frankenphp_finish_request(): bool
+{
+}
+
+/** Sends the status and the headers set so far, now; for 103, an informational response, after which more may be set. */
+function headers_send(int $status = 200): int
 {
 }

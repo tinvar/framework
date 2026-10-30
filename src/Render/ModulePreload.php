@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Render;
 
+use Tinvar\Http\AssetLinks;
+
 /**
  * The `Link` header that preloads a page's client modules, capped.
  *
@@ -23,7 +25,11 @@ namespace Tinvar\Render;
  *
  * The renderer is the side that runs third-party npm code, so every entry
  * is checked to be a path on this origin, of characters a URL path is made
- * of, before it is written into a header.
+ * of, before it is written into a header -- or, given the build's
+ * AssetLinks, a path it writes on this origin or its CDN's, with its digest
+ * where the build has them (ADR 0108). A CDN build without digests names no
+ * CDN module here: a preload fetched from a header, before the page's
+ * import map is read, would not be held to it.
  */
 final class ModulePreload
 {
@@ -40,31 +46,33 @@ final class ModulePreload
      * The Link header for what a render's head preloads, or null when it
      * preloads nothing.
      */
-    public static function header(RenderResult $result, int $maxEntries = self::MAX_ENTRIES, int $maxBytes = self::MAX_BYTES): ?string
-    {
+    public static function header(
+        RenderResult $result,
+        int $maxEntries = self::MAX_ENTRIES,
+        int $maxBytes = self::MAX_BYTES,
+        ?AssetLinks $assets = null,
+    ): ?string {
+        $assets ??= AssetLinks::none();
         $links = [];
-        $bytes = 0;
-        foreach (self::modulesOf($result->meta) as $href) {
-            $link = "<{$href}>; rel=modulepreload";
-            $added = \strlen($link) + ($links === [] ? 0 : 2);
-            if (\count($links) >= $maxEntries || $bytes + $added > $maxBytes) {
-                break;
+        foreach (self::modulesOf($result->meta, $assets) as $href) {
+            $link = $assets->link($href);
+            if ($link !== null) {
+                $links[] = $link;
             }
-            $links[] = $link;
-            $bytes += $added;
         }
 
-        return $links === [] ? null : implode(', ', $links);
+        return AssetLinks::capped($links, $maxEntries, $maxBytes);
     }
 
     /**
      * The modules the renderer's meta frames name, in order, each once,
-     * leaving out any that is not a path on this origin.
+     * leaving out any that is not a path on this origin -- or, given the
+     * build's AssetLinks, any it would not write into a header.
      *
      * @param list<array<string, mixed>> $meta
      * @return list<string>
      */
-    public static function modulesOf(array $meta): array
+    public static function modulesOf(array $meta, ?AssetLinks $assets = null): array
     {
         // Kept by key, so each path is looked for once: read after the
         // render has returned, past its deadline, a list searched for every
@@ -77,7 +85,7 @@ final class ModulePreload
                 continue;
             }
             foreach ($preload as $href) {
-                if (\is_string($href) && !isset($modules[$href]) && preg_match(self::PATH, $href) === 1) {
+                if (\is_string($href) && !isset($modules[$href]) && ($assets === null ? preg_match(self::PATH, $href) === 1 : $assets->accepts($href))) {
                     $modules[$href] = true;
                 }
             }

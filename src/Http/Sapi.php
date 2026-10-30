@@ -230,6 +230,42 @@ final class Sapi
     }
 
     /**
+     * Sends a 103 Early Hints response carrying $link, ahead of the response
+     * itself, where the server can: FrankenPHP's `headers_send()`. The
+     * browser starts on the stylesheets and modules it names while the page
+     * renders. Elsewhere -- `php -S`, the CLI -- nothing is sent.
+     *
+     * The header is set for the hint alone and removed after, so the
+     * response that follows carries only the Link header it sets itself.
+     * Nothing a worker writes waits on the client here: the hint is a few
+     * hundred bytes of headers, written by the server, not through PHP's
+     * output (ADR 0109).
+     *
+     * @param (\Closure(string): bool)|null $send sends the hint with the
+     *        given Link value; FrankenPHP's, by default
+     */
+    public static function earlyHints(string $link, ?\Closure $send = null): bool
+    {
+        if ($link === '' || preg_match('/[\r\n\0]/', $link) === 1) {
+            return false;
+        }
+
+        return ($send ?? self::sendEarlyHints(...))($link);
+    }
+
+    private static function sendEarlyHints(string $link): bool
+    {
+        if (!\function_exists('headers_send') || headers_sent()) {
+            return false;
+        }
+        header("link: {$link}");
+        headers_send(103);
+        header_remove('link');
+
+        return true;
+    }
+
+    /**
      * Writes a Response to the real SAPI output, flushing each chunk so it
      * streams -- as the server is to take it (forServer()), told by this
      * request's server variables whether it sends stored files itself.
