@@ -763,6 +763,44 @@ it('asks for a customer\'s orders of a product only when they press the button f
         ->and($result['sameDocument'])->toBeTrue();
 });
 
+// The shop's one action that revalidates its page in place (ADR 0121): a
+// customer cancels a placed order from its page. No redirect -- the same
+// document, the same URL -- and the page says cancelled; the shipping
+// updates below, a <Deferred> boundary, dim while the action runs and are
+// fetched again for the order's tag it invalidated.
+it('cancels an order from its page in place, the shipping updates dimmed and fetched again', function () use ($root) {
+    $database = Shop::testDatabase();
+    $pdo = new \PDO('sqlite:' . $database);
+    $customer = (string) $pdo->query('SELECT id FROM customers WHERE email = ' . $pdo->quote(DemoAccount::EMAIL))?->fetchColumn();
+    $order = (string) $pdo->query('SELECT id FROM orders WHERE customer_id = ' . $pdo->quote($customer) . ' ORDER BY placed_at DESC LIMIT 1')?->fetchColumn();
+    // Placed just now, so nothing moves it on while the browser reads it.
+    $pdo->prepare("UPDATE orders SET status = 'placed', placed_at = ? WHERE id = ?")->execute([gmdate('Y-m-d\TH:i:s\Z'), $order]);
+    unset($pdo);
+
+    $output = '';
+    served($root, function (string $origin) use ($root, $order, &$output): void {
+        $output = runWithTimeout(
+            ['node', "{$root}/examples/shop/e2e/cancel-order.mjs", $origin, DemoAccount::EMAIL, DemoAccount::PASSWORD, "/orders/{$order}"],
+            $root,
+            60,
+        );
+    }, ['SHOP_DATABASE' => $database]);
+
+    $result = json_decode((string) $output, true);
+    expect($result)->toBeArray("the browser script failed:\n{$output}");
+
+    expect($result['errors'])->toBe([])
+        ->and($result['before'])->toBe(['fragments' => 1, 'status' => 'Placed'])
+        ->and($result['actions'])->toBe([['action' => 'orders.cancel', 'status' => 200]])
+        ->and($result['after']['status'])->toBe('Cancelled')
+        ->and($result['after']['path'])->toBe("/orders/{$order}")
+        ->and($result['after']['cancelButton'])->toBe(0)
+        ->and($result['sameDocument'])->toBeTrue()
+        // Dimmed while the action ran, then fetched once more.
+        ->and($result['dimmed'])->toBeTrue()
+        ->and($result['after']['fragments'])->toBe(2);
+});
+
 // The browser test endpoint, in a browser (ADR 0066): a customer seeded and
 // signed in through the shop's own sessions, a session run out by the
 // shop's clock and back, and a page's own script, with no token, finding
