@@ -273,8 +273,8 @@ it('takes a vitals report from a page it served, under the route its token names
     expect($claims['r'] ?? null)->toBe('shop.catalog')
         ->and($report->status)->toBe(204)
         ->and($report->cookies())->toBe([])
-        ->and($metrics->exposition())->toContain('tinvar_web_vitals_seconds_count{route="shop.catalog",metric="LCP"} 1')
-        ->and($metrics->exposition())->toContain('tinvar_web_vitals_score_count{route="shop.catalog",metric="CLS"} 1');
+        ->and($metrics->exposition())->toContain('tinvar_web_vitals_seconds_count{route="shop.catalog",metric="LCP",navigation="document"} 1')
+        ->and($metrics->exposition())->toContain('tinvar_web_vitals_score_count{route="shop.catalog",metric="CLS",navigation="document"} 1');
 });
 
 // ADR 0093: every document names /_reports in its policy and in

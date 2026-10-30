@@ -367,6 +367,7 @@ final class Kernel
     private readonly Pipeline $fileStack;
     private readonly Pipeline $transferStack;
     private readonly Pipeline $telemetryStack;
+    private readonly Pipeline $sessionlessTelemetryStack;
     private readonly Pipeline $reportsStack;
 
     /**
@@ -1072,6 +1073,18 @@ final class Kernel
             ...$this->throttleFor($throttle, 'telemetry', $limits, byAddress: false),
         ]);
 
+        // A page's report that rides no session -- no cookie, no token, as
+        // a static page's visitor sends one (ADR 0129): no global stack, so
+        // no session is opened, and no CSRF check, which guards a session
+        // there is none of. The telemetry budget by address, in a bucket of
+        // its own, as a browser's own reports are.
+        $this->sessionlessTelemetryStack = new Pipeline([
+            ...$this->floodGuardFor($throttle, 'telemetry', $limits),
+            ...($throttle === null || ($limits['telemetry'] ?? 0) <= 0
+                ? []
+                : [new ThrottleRequests($throttle, 'telemetry-sessionless', $limits['telemetry'], byAddress: true)]),
+        ]);
+
         // A browser's own reports (ADR 0093): no global stack, so no session
         // is opened, read or written, and no CSRF -- a browser sends none.
         // The telemetry budget, by address alone, since there is no one
@@ -1523,7 +1536,8 @@ final class Kernel
 
     /**
      * Whether $request opens no session here: a probe (answersProbe()), a
-     * browser's problem report (ADR 0093), or a call to a #[WithoutSession]
+     * browser's problem report (ADR 0093), a page's report that rides no
+     * session (ADR 0129), or a call to a #[WithoutSession]
      * endpoint -- for an application to issue no session cookie, write no
      * session row and set nothing per visitor on its answer (ADR 0075).
      *
@@ -1547,6 +1561,9 @@ final class Kernel
     public function opensNoSession(Request $request): bool
     {
         if ($this->answersProbe($request) || ($this->problemReports_?->matches($request) ?? false)) {
+            return true;
+        }
+        if (($this->clientTelemetry_?->matches($request) ?? false) && TelemetryEndpoint::ridesNoSession($request)) {
             return true;
         }
 
@@ -1640,7 +1657,7 @@ final class Kernel
                 $this->telemetry?->route(TelemetryEndpoint::endpoint($request));
                 TelemetryEndpoint::assertMethod($request);
 
-                return $this->telemetryStack->run(
+                return (TelemetryEndpoint::ridesNoSession($request) ? $this->sessionlessTelemetryStack : $this->telemetryStack)->run(
                     $request,
                     fn (Request $passed): Response => $this->clientTelemetry_->handle($passed, $rawBody),
                 );

@@ -148,14 +148,14 @@ describe('vitals', function () {
         expect($response->status)->toBe(204)
             ->and($response->body())->toBe('')
             ->and($response->cookies())->toBe([])
-            ->and($exposition)->toContain('tinvar_web_vitals_seconds_bucket{route="shop.catalog",metric="LCP",le="2.5"} 1')
-            ->and($exposition)->toContain('tinvar_web_vitals_seconds_bucket{route="shop.catalog",metric="LCP",le="1.8"} 0')
-            ->and($exposition)->toContain('tinvar_web_vitals_seconds_sum{route="shop.catalog",metric="INP"} 0.1805')
-            ->and($exposition)->toContain('tinvar_web_vitals_seconds_bucket{route="shop.catalog",metric="TTFB",le="0.2"} 1')
-            ->and($exposition)->toContain('tinvar_web_vitals_seconds_count{route="shop.catalog",metric="FCP"} 1')
-            ->and($exposition)->toContain('tinvar_web_vitals_score_bucket{route="shop.catalog",metric="CLS",le="0.1"} 1')
-            ->and($exposition)->toContain('tinvar_web_vitals_score_bucket{route="shop.catalog",metric="CLS",le="0.05"} 0')
-            ->and($exposition)->not->toContain('tinvar_web_vitals_seconds_count{route="shop.catalog",metric="CLS"}');
+            ->and($exposition)->toContain('tinvar_web_vitals_seconds_bucket{route="shop.catalog",metric="LCP",navigation="document",le="2.5"} 1')
+            ->and($exposition)->toContain('tinvar_web_vitals_seconds_bucket{route="shop.catalog",metric="LCP",navigation="document",le="1.8"} 0')
+            ->and($exposition)->toContain('tinvar_web_vitals_seconds_sum{route="shop.catalog",metric="INP",navigation="document"} 0.1805')
+            ->and($exposition)->toContain('tinvar_web_vitals_seconds_bucket{route="shop.catalog",metric="TTFB",navigation="document",le="0.2"} 1')
+            ->and($exposition)->toContain('tinvar_web_vitals_seconds_count{route="shop.catalog",metric="FCP",navigation="document"} 1')
+            ->and($exposition)->toContain('tinvar_web_vitals_score_bucket{route="shop.catalog",metric="CLS",navigation="document",le="0.1"} 1')
+            ->and($exposition)->toContain('tinvar_web_vitals_score_bucket{route="shop.catalog",metric="CLS",navigation="document",le="0.05"} 0')
+            ->and($exposition)->not->toContain('tinvar_web_vitals_seconds_count{route="shop.catalog",metric="CLS",navigation="document"}');
     });
 
     // By the endpoint's name, as every other endpoint is, never its path.
@@ -168,6 +168,52 @@ describe('vitals', function () {
         expect($metrics->exposition())->toContain('tinvar_http_requests_total{method="POST",route="_vitals",status="204"} 1')
             ->and($access[0]['route'] ?? null)->toBe('_vitals')
             ->and(RequestId::isValid((string) $response->header('x-request-id')))->toBeTrue();
+    });
+
+    // ADR 0129: a page a client navigation mounted has vitals of its own --
+    // its shifts, its interactions and how long its visit took -- filed apart.
+    it('records a client navigation\'s vitals apart from the document\'s, with how long its visit took', function () {
+        [$kernel, , $metrics] = kernel();
+
+        $response = send($kernel, '/_vitals', ['route' => 'shop.catalog', 'navigation' => 'client', 'metrics' => ['NAV' => 340, 'INP' => 72, 'CLS' => 0.04]]);
+        $exposition = $metrics->exposition();
+
+        expect($response->status)->toBe(204)
+            ->and($exposition)->toContain('tinvar_web_vitals_seconds_sum{route="shop.catalog",metric="NAV",navigation="client"} 0.34')
+            ->and($exposition)->toContain('tinvar_web_vitals_seconds_count{route="shop.catalog",metric="INP",navigation="client"} 1')
+            ->and($exposition)->toContain('tinvar_web_vitals_score_count{route="shop.catalog",metric="CLS",navigation="client"} 1');
+    });
+
+    it('refuses a vital its navigation has none of, and a navigation it does not know', function (array $body, string $code) {
+        [$kernel, , $registry] = kernel();
+
+        $response = send($kernel, '/_vitals', ['route' => 'shop.catalog', ...$body]);
+
+        expect($response->status)->toBe(422)
+            ->and(errorCode($response)['code'])->toBe($code)
+            ->and($registry->exposition())->not->toContain('tinvar_web_vitals_seconds_count');
+    })->with([
+        'a load for a client navigation' => [['navigation' => 'client', 'metrics' => ['LCP' => 1000]], 'unknown_metric'],
+        'a visit for a document' => [['navigation' => 'document', 'metrics' => ['NAV' => 1000]], 'unknown_metric'],
+        'a visit with no navigation' => [['metrics' => ['NAV' => 1000]], 'unknown_metric'],
+        'a navigation of its own' => [['navigation' => 'prerender', 'metrics' => ['INP' => 10]], 'unknown_navigation'],
+        'a navigation that is not a word' => [['navigation' => ['client'], 'metrics' => ['INP' => 10]], 'unknown_navigation'],
+    ]);
+
+    // An unnamed page has no route name; its view, which the registry has for
+    // a page with none, files its reports (ADR 0129).
+    it('files an unnamed page\'s report under its view, and refuses a view a named page has or no page has', function () {
+        [$kernel, , $metrics] = kernel();
+
+        $unnamed = send($kernel, '/_vitals', ['route' => 'about', 'metrics' => ['CLS' => 0.1]]);
+        $named = send($kernel, '/_vitals', ['route' => 'catalog', 'metrics' => ['CLS' => 0.1]]);
+        $nowhere = send($kernel, '/_errors', ['route' => 'admin/secret', 'errors' => [['kind' => 'error', 'message' => 'x']]]);
+        $path = send($kernel, '/_vitals', ['route' => '../about', 'metrics' => ['CLS' => 0.1]]);
+
+        expect($unnamed->status)->toBe(204)
+            ->and($metrics->exposition())->toContain('tinvar_web_vitals_score_count{route="about",metric="CLS",navigation="document"} 1')
+            ->and([$named->status, $nowhere->status, $path->status])->toBe([422, 422, 422])
+            ->and($metrics->exposition())->not->toContain('route="catalog"');
     });
 
     it('refuses a metric it does not take', function (array $metrics) {
@@ -405,6 +451,50 @@ describe('the stack in front', function () {
         'made up' => ['made-up-token'],
         'another session' => [fn (): string => (string) tokens()->for(new Request('GET', '/', cookies: [SESSION => 's2']))],
     ]);
+
+    // ADR 0129: a static page's visitor has no session, and so no token; a
+    // report with no cookie and no token rides no session a forgery could.
+    it('takes a report that rides no session without a token, and opens none for it', function () {
+        [$kernel, , $metrics] = kernel();
+        $raw = '{"route":"shop.catalog","metrics":{"LCP":1000}}';
+        $request = new Request('POST', '/_vitals', ['content-type' => 'application/json', 'host' => 'shop.test'], remoteAddress: '10.0.0.9');
+
+        $response = $kernel->handle($request, page(), $raw);
+
+        expect($response->status)->toBe(204)
+            ->and($response->cookies())->toBe([])
+            ->and($kernel->opensNoSession($request))->toBeTrue()
+            ->and($metrics->exposition())->toContain('tinvar_web_vitals_seconds_count{route="shop.catalog",metric="LCP",navigation="document"} 1');
+    });
+
+    it('holds a report with any cookie, or a token, to its session\'s token', function (array $headers, array $cookies) {
+        [$kernel, , $metrics] = kernel();
+        $raw = '{"route":"shop.catalog","metrics":{"LCP":1000}}';
+        $request = new Request('POST', '/_vitals', ['content-type' => 'application/json', 'host' => 'shop.test', ...$headers], cookies: $cookies, remoteAddress: '10.0.0.9');
+
+        expect($kernel->handle($request, page(), $raw)->status)->toBe(419)
+            ->and($kernel->opensNoSession($request))->toBeFalse()
+            ->and($metrics->exposition())->not->toContain('tinvar_web_vitals_seconds_count');
+    })->with([
+        'a session cookie' => [[], [SESSION => 's1']],
+        'any cookie' => [[], ['theme' => 'dark']],
+        'a cookie header alone' => [['cookie' => 'sid=s1'], []],
+        'a made-up token' => [['x-xsrf-token' => 'made-up-token'], []],
+    ]);
+
+    it('throttles reports that ride no session by address, in a bucket of their own', function () {
+        [$kernel] = kernel(['limits' => ['telemetry' => 2]]);
+        $raw = '{"route":"shop.catalog","metrics":{"LCP":1000}}';
+        $anonymous = static fn (string $address): int => $kernel->handle(
+            new Request('POST', '/_vitals', ['content-type' => 'application/json', 'host' => 'shop.test'], remoteAddress: $address),
+            page(),
+            $raw,
+        )->status;
+
+        expect([$anonymous('10.0.0.9'), $anonymous('10.0.0.9'), $anonymous('10.0.0.9'), $anonymous('10.0.0.8')])->toBe([204, 204, 429, 204])
+            // A session's own reports are counted apart.
+            ->and(send($kernel, '/_vitals', ['route' => 'shop.catalog', 'metrics' => ['LCP' => 1000]])->status)->toBe(204);
+    });
 
     it('throttles reports in their own bucket', function () {
         [$kernel] = kernel(['limits' => ['telemetry' => 3]]);

@@ -24,9 +24,11 @@ use Tinvar\Support\Str;
  * anything to believe:
  *
  * - **Labels come from the server.** A report names its page by route name,
- *   and a name the route registry does not have is refused with a 422 rather
- *   than counted: a client that could choose a label could make a series per
- *   request. Metric names and error kinds are fixed lists, refused likewise.
+ *   or, for a page with none, by its view (ADR 0129); a name the route
+ *   registry does not have, or a view no unnamed page of its renders, is
+ *   refused with a 422 rather than counted: a client that could choose a
+ *   label could make a series per request. Metric names, navigations and
+ *   error kinds are fixed lists, refused likewise.
  * - **Values are bounded.** A vital that is not a finite number between zero
  *   and its ceiling refuses the whole report, which is recorded all or not
  *   at all; one hostile client can then move a histogram's sum by no more
@@ -44,6 +46,12 @@ use Tinvar\Support\Str;
  * - **Nothing comes back.** 204, no body, no cookie; nothing is written to
  *   the session. A refusal is the framework's fixed answer for its status,
  *   never a word of what was sent.
+ *
+ * A report that rides no session -- no cookie at all, and no CSRF token,
+ * as a static page's visitor sends it -- is taken without the CSRF check,
+ * since there is no session for a forged one to ride: the Kernel answers
+ * it ahead of the global stack, opening none, by address in a bucket of
+ * its own (ADR 0129). Everything here holds for it as for any other.
  *
  * Problem reports -- the CSP violation reports a browser sends of its own
  * accord, with no CSRF token -- are not answered here, but by ProblemReports,
@@ -78,7 +86,25 @@ final class TelemetryEndpoint
         'CLS' => 10.0,
         'FCP' => 120_000.0,
         'TTFB' => 120_000.0,
+        'NAV' => 120_000.0,
     ];
+
+    /**
+     * How the page a report is about came to be shown, and the vitals each
+     * has (ADR 0129): a document's load has all five of the web's; a page
+     * a client navigation mounted has no load of its own, so its layout
+     * shift and interactions from its mount, and NAV, how long the visit
+     * took from its start to the page's mount.
+     *
+     * @var array<string, list<string>>
+     */
+    public const array NAVIGATIONS = [
+        'document' => ['LCP', 'INP', 'CLS', 'FCP', 'TTFB'],
+        'client' => ['INP', 'CLS', 'NAV'],
+    ];
+
+    /** A view, as a page without a route name is filed under: a path of names. */
+    private const string VIEW = '#^[A-Za-z0-9_][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)*\z#';
 
     /**
      * Where an error was seen: a window `error` event, an unhandled
@@ -129,8 +155,8 @@ final class TelemetryEndpoint
         private readonly ?string $assets = null,
     ) {
         $metrics
-            ->histogram(self::VITAL_SECONDS, 'Web vitals measured in seconds by the browser, by route and metric: LCP, INP, FCP, TTFB.', ['route', 'metric'], self::SECONDS_BUCKETS)
-            ->histogram(self::VITAL_SCORES, 'Web vitals that are scores, by route and metric: CLS.', ['route', 'metric'], self::SCORE_BUCKETS)
+            ->histogram(self::VITAL_SECONDS, 'Web vitals measured in seconds by the browser, by route, metric and navigation: LCP, INP, FCP, TTFB, and a client navigation\'s NAV.', ['route', 'metric', 'navigation'], self::SECONDS_BUCKETS)
+            ->histogram(self::VITAL_SCORES, 'Web vitals that are scores, by route, metric and navigation: CLS.', ['route', 'metric', 'navigation'], self::SCORE_BUCKETS)
             ->counter(self::CLIENT_ERRORS, 'Errors pages reported from the browser, by route and kind.', ['route', 'kind']);
     }
 
@@ -143,6 +169,20 @@ final class TelemetryEndpoint
     public static function endpoint(Request $request): string
     {
         return $request->path === self::VITALS ? '_vitals' : '_errors';
+    }
+
+    /**
+     * Whether a report rides no session: it carries no cookie at all and no
+     * CSRF token, as a page with no session sends one (ADR 0129). The Kernel
+     * answers such a report without a session and without the CSRF check,
+     * which protects what a session can do, and there is none here. One
+     * with any cookie, or a token, rides the session it names, and meets
+     * the check as every other POST does.
+     */
+    public static function ridesNoSession(Request $request): bool
+    {
+        return $request->cookies === [] && $request->header('cookie') === null
+            && $request->header(VerifyCsrfToken::HEADER) === null;
     }
 
     /** POST only: a report is sent, never fetched. */
@@ -161,8 +201,9 @@ final class TelemetryEndpoint
         $route = $this->route($body['route'] ?? null);
 
         if ($request->path === self::VITALS) {
-            self::fields($body, ['route', 'metrics']);
-            $this->recordVitals($route, $this->vitals($body['metrics'] ?? null));
+            self::fields($body, ['route', 'metrics', 'navigation']);
+            $navigation = self::navigation($body['navigation'] ?? 'document');
+            $this->recordVitals($route, $navigation, $this->vitals($body['metrics'] ?? null, $navigation));
         } else {
             self::fields($body, ['route', 'errors']);
             $this->recordErrors($route, $this->errors($body['errors'] ?? null, self::secretsOf($request)));
@@ -203,23 +244,49 @@ final class TelemetryEndpoint
     }
 
     /**
-     * The page's route name, when the registry has a page by that name.
-     * "Route names checked against the manifest": the registry is the list
-     * of every page this build has, and the only names a label may hold.
+     * The page's route name, when the registry has a page by that name; or
+     * the view of a page with no name, when the registry has such a page --
+     * an error page, one declared without a name (ADR 0129). "Route names
+     * checked against the manifest": the registry is the list of every page
+     * this build has, and the only labels a report may hold. A view is
+     * taken only for a page with no name: a named page is filed by its name
+     * alone, so one page is never two series.
      */
     private function route(mixed $name): string
     {
-        if (!\is_string($name) || \strlen($name) > 128 || !Str::isDottedIdentifier($name)) {
+        if (!\is_string($name) || \strlen($name) > 128) {
             throw new HttpException(422, 'A telemetry report names its page by route name.', 'unknown_route');
         }
 
-        try {
-            $this->routes->named($name);
-        } catch (RoutingException) {
-            throw new HttpException(422, 'A telemetry report must name one of the application\'s pages.', 'unknown_route');
+        if (Str::isDottedIdentifier($name)) {
+            try {
+                $this->routes->named($name);
+
+                return $name;
+            } catch (RoutingException) {
+                // A view may be one word, as a name is.
+            }
         }
 
-        return $name;
+        if (preg_match(self::VIEW, $name) === 1) {
+            foreach ([...$this->routes->pages(), ...$this->routes->errorPages()] as $page) {
+                if ($page->name === null && $page->view === $name) {
+                    return $name;
+                }
+            }
+        }
+
+        throw new HttpException(422, 'A telemetry report must name one of the application\'s pages.', 'unknown_route');
+    }
+
+    /** How the page was shown: one of NAVIGATIONS. */
+    private static function navigation(mixed $navigation): string
+    {
+        if (!\is_string($navigation) || !isset(self::NAVIGATIONS[$navigation])) {
+            throw new HttpException(422, 'A vitals report\'s navigation is document or client.', 'unknown_navigation');
+        }
+
+        return $navigation;
     }
 
     /**
@@ -234,21 +301,22 @@ final class TelemetryEndpoint
     }
 
     /**
-     * Each vital named, checked against its ceiling -- every one before any
-     * is recorded.
+     * Each vital named, checked against its ceiling and against what its
+     * navigation has -- every one before any is recorded.
      *
      * @return array<string, float>
      */
-    private function vitals(mixed $metrics): array
+    private function vitals(mixed $metrics, string $navigation): array
     {
         if (!\is_array($metrics) || $metrics === [] || array_is_list($metrics)) {
             throw new HttpException(422, 'A vitals report carries its metrics as an object.', 'bad_metrics');
         }
 
+        $named = self::NAVIGATIONS[$navigation];
         $vitals = [];
         foreach ($metrics as $name => $value) {
-            if (!\is_string($name) || !isset(self::VITALS_CEILINGS[$name])) {
-                throw new HttpException(422, 'A vitals report names only LCP, INP, CLS, FCP and TTFB.', 'unknown_metric');
+            if (!\is_string($name) || !\in_array($name, $named, true)) {
+                throw new HttpException(422, "A {$navigation} navigation's vitals report names only " . implode(', ', $named) . '.', 'unknown_metric');
             }
             if ((!\is_int($value) && !\is_float($value)) || !is_finite((float) $value)
                 || $value < 0 || $value > self::VITALS_CEILINGS[$name]) {
@@ -261,10 +329,10 @@ final class TelemetryEndpoint
     }
 
     /** @param array<string, float> $vitals */
-    private function recordVitals(string $route, array $vitals): void
+    private function recordVitals(string $route, string $navigation, array $vitals): void
     {
         foreach ($vitals as $name => $value) {
-            $labels = ['route' => $route, 'metric' => $name];
+            $labels = ['route' => $route, 'metric' => $name, 'navigation' => $navigation];
             if ($name === 'CLS') {
                 $this->metrics->observe(self::VITAL_SCORES, $value, $labels);
             } else {

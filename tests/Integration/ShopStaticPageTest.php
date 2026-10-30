@@ -217,7 +217,9 @@ describe('the built catalog', function () {
             ->and($html)->toContain('/sign-in')
             // The page metadata: the build's version, and no route token or
             // history key, which are a session's.
-            ->and($metadata)->toBe(['url' => '/', 'version' => 'dev', 'routeToken' => null, 'view' => 'shop/catalog'])
+            // What its reports are filed under, with no token to name it
+            // (ADR 0129).
+            ->and($metadata)->toBe(['url' => '/', 'version' => 'dev', 'routeToken' => null, 'view' => 'shop/catalog', 'route' => 'shop.catalog'])
             // No token of any kind, no CSRF value, no cookie's name.
             ->and(preg_match('/v1\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/', $html))->toBe(0)
             ->and($html)->not->toContain('__Host-')
@@ -414,6 +416,25 @@ describe('serving it', function () use ($root) {
             ->and($result['visited']['cookies'])->toContain('__Host-XSRF-TOKEN')
             ->and($result['second']['headerPolicy'])->toStartWith("script-src 'nonce-")
             ->and($result['second']['metaPolicy'])->toBeNull('from PHP, not the file');
+
+        // What the page reported (ADR 0129): the document's vitals as the
+        // visit left it, filed under the route its metadata names, and the
+        // plugin its policy blocked, sent on to /_reports by the page itself
+        // -- no token, and the blocked URL with no query.
+        $vitals = array_values(array_filter($result['reported'], static fn (array $r): bool => $r['path'] === '/_vitals'));
+        $reports = array_values(array_filter($result['reported'], static fn (array $r): bool => $r['path'] === '/_reports'));
+        expect($vitals[0]['status'] ?? null)->toBe(204)
+            ->and($vitals[0]['body']['route'] ?? null)->toBe('shop.catalog')
+            ->and($vitals[0]['body']['navigation'] ?? null)->toBe('document')
+            ->and($result['blocked'])->toBe(['object-src http://127.0.0.1:' . parse_url((string) ($reports[0]['body'][0]['body']['documentURL'] ?? ''), PHP_URL_PORT) . '/brand/logo.png?token=s3cret'])
+            ->and($reports)->toHaveCount(1)
+            ->and($reports[0]['status'])->toBe(204)
+            ->and($reports[0]['type'])->toBe('application/reports+json')
+            ->and($reports[0]['token'])->toBeFalse()
+            ->and($reports[0]['body'][0]['type'] ?? null)->toBe('csp-violation')
+            ->and($reports[0]['body'][0]['body']['effectiveDirective'] ?? null)->toBe('object-src')
+            ->and($reports[0]['body'][0]['body']['blockedURL'] ?? null)->toEndWith('/brand/logo.png')
+            ->and(json_encode($reports))->not->toContain('s3cret');
     });
 
     // The Caddyfile's rule, under FrankenPHP: the same answer, with no PHP.
