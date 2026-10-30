@@ -26,6 +26,52 @@ use function Tinvar\Tests\Jobs\Fixtures\databaseQueue;
 require_once __DIR__ . '/../Jobs/Fixtures/jobs.php';
 require_once __DIR__ . '/../Support/Fixtures/databases.php';
 
+// ADR 0107: an idle worker looks for a job by a read, and takes SQLite's
+// write lock only to claim one it found. It waited behind every writer to
+// find nothing, once per queue, three times a second.
+it('looks for a job without the write lock, and takes it only to claim one', function () {
+    $path = sys_get_temp_dir() . '/tinvar-peek-' . bin2hex(random_bytes(4)) . '.sqlite';
+    try {
+        $connection = PdoConnection::sqlite($path, 'worker', create: true, busyTimeoutMs: 50);
+        $queue = databaseQueue($connection);
+        $queue->push(new PendingJob('later', 'default', 'payload', 500));
+
+        // Another connection holds the write lock, as an order being placed does.
+        $writer = PdoConnection::sqlite($path, 'writer');
+        $writer->pdo()->exec('BEGIN IMMEDIATE');
+        $writer->pdo()->exec("INSERT INTO jobs (id, queue, payload, attempts, available_at, queued_at) VALUES ('w', 'mail', 'p', 0, 999999, 1)");
+
+        // Nothing due: found so by a read, which no writer's lock refuses.
+        expect($queue->reserve(['mail', 'default'], 100, 60))->toBeNull();
+
+        // Work to claim: it waits for the lock, as a claim must.
+        expect(static fn () => $queue->reserve(['default'], 600, 60))->toThrow(\PDOException::class);
+
+        $writer->pdo()->exec('COMMIT');
+        expect($queue->reserve(['mail', 'default'], 600, 60)?->id)->toBe('later')
+            ->and($queue->reserve(['mail', 'default'], 600, 60))->toBeNull('held, and the writer\'s is not due');
+    } finally {
+        foreach (['', '-wal', '-shm'] as $suffix) {
+            if (is_file($path . $suffix)) {
+                unlink($path . $suffix);
+            }
+        }
+    }
+});
+
+it('claims, inside a transaction of the caller\'s, what that transaction pushed', function () {
+    $connection = PdoConnection::sqlite(':memory:', 'own');
+    $queue = databaseQueue($connection);
+
+    $reserved = $connection->transaction(static function () use ($queue) {
+        $queue->push(new PendingJob('mine', 'default', 'payload', 100));
+
+        return $queue->reserve(['default'], 100, 60);
+    });
+
+    expect($reserved?->id)->toBe('mine');
+});
+
 /**
  * What every driver must do, run against one.
  *

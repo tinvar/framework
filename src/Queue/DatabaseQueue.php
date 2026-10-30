@@ -144,9 +144,25 @@ final class DatabaseQueue implements Queue, Coordination
         );
     }
 
+    /**
+     * Takes the first job free on the first of $queues that has one.
+     *
+     * Looked for first, by one read outside any transaction, and only the
+     * queues that read finds work on are reserved from (ADR 0107). The
+     * reservation is a write transaction -- SQLite's begins IMMEDIATE,
+     * taking the database's one write lock -- and an idle worker took it
+     * once per queue, three a second, waiting behind every order and
+     * sign-in to find nothing. The read takes no lock, and waits on none in
+     * WAL mode.
+     *
+     * It decides only where to look. The claim is the conditional update
+     * inside the transaction, as before: a job the read saw that another
+     * worker takes first is not taken twice, and one pushed after the read
+     * is found on the next poll.
+     */
     public function reserve(array $queues, int $now, int $reserveFor): ?ReservedJob
     {
-        foreach ($queues as $queue) {
+        foreach ($this->withWork($queues, $now) as $queue) {
             $reserved = $this->connection->transaction(fn (): ?ReservedJob => $this->reserveFrom($queue, $now, $reserveFor));
             if ($reserved !== null) {
                 return $reserved;
@@ -154,6 +170,33 @@ final class DatabaseQueue implements Queue, Coordination
         }
 
         return null;
+    }
+
+    /**
+     * Those of $queues with a job free now, in $queues' order: every one of
+     * them inside a transaction already open on the connection, where a read
+     * outside it cannot be had and a job it pushed is seen by nothing else.
+     *
+     * @param list<string> $queues
+     * @return list<string>
+     */
+    private function withWork(array $queues, int $now): array
+    {
+        if ($queues === [] || $this->connection->inTransaction()) {
+            return $queues;
+        }
+
+        $found = [];
+        foreach ($this->connection->select(
+            "SELECT DISTINCT queue FROM {$this->table}
+              WHERE queue IN (" . implode(', ', array_fill(0, \count($queues), '?')) . ')
+                AND available_at <= ? AND (reserved_until IS NULL OR reserved_until <= ?)',
+            [...$queues, $now, $now],
+        ) as $row) {
+            $found[self::text($row['queue'] ?? null)] = true;
+        }
+
+        return array_values(array_filter($queues, static fn (string $queue): bool => isset($found[$queue])));
     }
 
     private function reserveFrom(string $queue, int $now, int $reserveFor): ?ReservedJob
