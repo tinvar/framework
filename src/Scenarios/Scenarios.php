@@ -6,6 +6,8 @@ namespace Tinvar\Scenarios;
 
 use Tinvar\Config\FrameworkConfig;
 use Tinvar\Attributes\Scenario;
+use Tinvar\Orm\Connection;
+use Tinvar\Orm\Migrations\ProductionMarker;
 use Tinvar\Support\BuildProfile;
 use Tinvar\Support\DevMode;
 use Tinvar\Support\KnownAttributes;
@@ -20,13 +22,16 @@ use Tinvar\Support\KnownAttributes;
 final readonly class Scenarios
 {
     /** @param array<string, SeedsScenario> $scenarios */
-    private function __construct(private array $scenarios) {}
+    private function __construct(private array $scenarios, private ?Connection $database) {}
 
     /**
      * @param iterable<SeedsScenario> $scenarios each carrying #[Scenario]
+     * @param Connection|null $database the database they seed, held to its
+     *        production mark as db:seed is: a staging or test process
+     *        pointed at production's database by mistake seeds nothing there
      * @throws \LogicException for a class without the attribute, or two with one name
      */
-    public static function of(iterable $scenarios): self
+    public static function of(iterable $scenarios, ?Connection $database = null): self
     {
         $named = [];
         foreach ($scenarios as $scenario) {
@@ -43,7 +48,7 @@ final readonly class Scenarios
             $named[$name] = $scenario;
         }
 
-        return new self($named);
+        return new self($named, $database);
     }
 
     /** @return list<string> */
@@ -75,6 +80,11 @@ final readonly class Scenarios
         $marker = DevMode::productionMarker($env);
         if ($marker !== null && $profile !== BuildProfile::STAGING) {
             throw new \LogicException("Seeding a scenario is refused: {$marker}=production.");
+        }
+
+        // The profile is the process's word; the mark is the database's.
+        if ($this->database !== null) {
+            ProductionMarker::refuse($this->database, 'Seeding a scenario', 'makes accounts whose passwords a load test knows');
         }
 
         $scenario = $this->scenarios[$name] ?? throw new \InvalidArgumentException(

@@ -11,6 +11,8 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Scenarios\Scenarios;
 
 use Tinvar\Attributes\Scenario;
+use Tinvar\Orm\Migrations\ProductionMarker;
+use Tinvar\Orm\PdoConnection;
 use Tinvar\Scenarios\ScenarioSeedCommand;
 use Tinvar\Scenarios\Scenarios;
 use Tinvar\Scenarios\Seeded;
@@ -70,6 +72,21 @@ it('refuses to seed a scenario under production, and seeds nothing', function (a
     'local, but production\'s profile' => [['TINVAR_ENV' => 'local'], 'production profile'],
     'test beside NODE_ENV=production' => [['TINVAR_PROFILE' => 'test', 'TINVAR_ENV' => 'testing', 'NODE_ENV' => 'production'], 'NODE_ENV=production'],
 ]);
+
+// The profile is the process's word, and a staging process pointed at
+// production's database by mistake would say staging all the same.
+it('refuses to seed a database marked production\'s, under any profile, and seeds nothing', function () {
+    $connection = new PdoConnection(new \PDO('sqlite::memory:'));
+    $shoppers = new Shoppers();
+    $scenarios = Scenarios::of([$shoppers], $connection);
+
+    expect($scenarios->seed('shoppers', [], STAGING)->users)->toBe(['user-1']);
+
+    ProductionMarker::mark($connection);
+
+    expect(fn () => $scenarios->seed('shoppers', [], STAGING))->toThrow(\RuntimeException::class, 'marked production\'s')
+        ->and($shoppers->seeded)->toBe(1);
+});
 
 it('refuses a class with no #[Scenario] name, and two with one', function () {
     expect(fn () => Scenarios::of([new Unnamed()]))->toThrow(\LogicException::class, 'says no #[Scenario] name')
