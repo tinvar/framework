@@ -20,6 +20,7 @@ use Shop\Data\ShippingUpdatesData;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Mail\OrderConfirmation;
+use Shop\Mail\SendOrderConfirmation;
 use Shop\Models\Customer;
 use Shop\Models\Order;
 use Shop\Models\OrderLine;
@@ -283,8 +284,8 @@ it('calls an action in PHP: its redirect, the tags it invalidated, and what it q
 
     // Queued in the order's transaction, and opened as a worker opens it.
     Fakes::$queue->assertPushed(
-        SendMail::class,
-        fn (SendMail $job, Envelope $envelope): bool => $job->mailable instanceof OrderConfirmation && $envelope->tenant === '',
+        SendOrderConfirmation::class,
+        fn (SendOrderConfirmation $job, Envelope $envelope): bool => $job->order->customerId() === $demo->id && $envelope->tenant === '',
         queue: SendMail::QUEUE,
     );
     // Every other client holding a page that read the tags is told, once
