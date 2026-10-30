@@ -100,6 +100,22 @@ final class ServeCommand
      */
     private const array DEV_ENV = ['TINVAR_DEV', 'TINVAR_VITE_PORT', 'TINVAR_DEFERRED_MANIFEST'];
 
+    /** The prefix of the private directory each serve runs in (PrivateDirectory). */
+    public const string RUN_PREFIX = 'tinvar-serve';
+
+    /** The dev renderer's socket, in that directory. */
+    public const string DEV_SOCKET = 'renderer.sock';
+
+    /** The deferred manifest the dev renderer writes beside its socket. */
+    public const string DEV_DEFERRED = 'deferred.json';
+
+    /**
+     * What a serve --dev says of itself in its directory, once its dev
+     * renderer listens: the application it serves. `render --dump --dev`
+     * and `mcp --dev` find the run by it (ADR 0132).
+     */
+    public const string DEV_RECORD = 'dev.json';
+
     /** The addresses dev mode may listen on. */
     private const array LOOPBACK = ['127.0.0.1', '::1'];
 
@@ -416,11 +432,11 @@ final class ServeCommand
     {
         $this->stopBudget = $plan['stopBudget'];
         // One killed outright had no chance to remove its own.
-        PrivateDirectory::removeAbandoned('tinvar-serve');
-        $directory = PrivateDirectory::create('tinvar-serve', owner: getmypid() ?: null);
+        PrivateDirectory::removeAbandoned(self::RUN_PREFIX);
+        $directory = PrivateDirectory::create(self::RUN_PREFIX, owner: getmypid() ?: null);
         $this->held = "{$directory}/queue-work.held";
-        $socket = "{$directory}/renderer.sock";
-        $deferred = "{$directory}/deferred.json";
+        $socket = "{$directory}/" . self::DEV_SOCKET;
+        $deferred = "{$directory}/" . self::DEV_DEFERRED;
         $children = [];
 
         $this->trapSignals();
@@ -461,6 +477,11 @@ final class ServeCommand
                 // are loaded -- the shop's some 2,000 modules, which took 45
                 // to 55 s on a loaded machine and 90 s on one far past it.
                 $this->waitFor(static fn (): bool => file_exists($socket), $renderer, 'The dev renderer', 180);
+                // Which application this run serves, for the dev tools that
+                // render through its dev renderer: the record names the app
+                // alone, and they take the socket from where it is, here.
+                file_put_contents("{$directory}/" . self::DEV_RECORD, json_encode(['app' => $plan['app']], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+                chmod("{$directory}/" . self::DEV_RECORD, 0600);
                 $phpEnv = [
                     ...$phpEnv,
                     'TINVAR_DEV' => '1',

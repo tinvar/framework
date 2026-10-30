@@ -18,9 +18,15 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Server\DevIntegration;
 
+use Shop\Kernel as ShopKernel;
 use Tinvar\Bench\Shop;
+use Tinvar\Mail\ArrayTransport;
+use Tinvar\Render\FragmentManifest;
+use Tinvar\Render\FragmentManifestProducer;
+use Tinvar\Routing\RouteRegistry;
 use Tinvar\Server\FrankenPhp;
 use Tinvar\Server\ServeException;
+use Tinvar\Testing\Dev\DevToolsCommand;
 
 $root = \dirname(__DIR__, 4);
 
@@ -128,6 +134,9 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
         $firefox = firefoxInstalled($root)
             ? runWithTimeout(['node', "{$root}/examples/shop/e2e/devtools-extension-firefox.mjs", $url], $root, 150)
             : null;
+        // render --dump --dev: the catalog rendered through this run's dev
+        // server, found by its record, on a copy of the database (ADR 0132).
+        [$dumpStatus, $dumped, $dumpErr] = devDump($copy);
     } finally {
         $status = proc_get_status($process);
         if ($status['running']) {
@@ -165,6 +174,15 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
         ->and($result['styled'])->toBe('fixed');
 
     // The catalog, as the renderer was given it.
+    // The dump came from the dev server: its module script, from source.
+    $dump = json_decode($dumped, true);
+    expect($dumpStatus)->toBe(0, $dumpErr)
+        ->and($dump['status'] ?? null)->toBe(200)
+        ->and($dump['html'])->toContain('Pellwick Supply')
+        ->and($dump['html'])->toContain('/_vite/@id/__x00__virtual:vite-rsc/entry-browser')
+        ->and($dump['html'])->not->toMatch('/nonce="(?!\[redacted\])/')
+        ->and($dump['payload'])->not->toBe('');
+
     // Each file:line a link to the editor TINVAR_EDITOR names, and the
     // catalog's fields with the lines of its loader that made them.
     expect($result['catalog']['props'])->toContain('made at')
@@ -243,6 +261,51 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
         ->and($made['products'][0] ?? '')->toEndWith('/examples/shop/app/Pages/Catalog.php:' . lineOf("{$root}/examples/shop/app/Pages/Catalog.php", 'products: array_map('))
         ->and($fox['elsewhere'])->toBe(['plain' => 'no-toolbar', 'forged' => 'not-dev-server']);
 });
+
+/**
+ * `render --dump / --dev --json` for the app at $app, as the shop's
+ * bin/tinvar builds it, through the `tinvar dev` serving it.
+ *
+ * @return array{int, string, string} the status, what it printed and what it said on error
+ */
+function devDump(string $app): array
+{
+    $routes = new RouteRegistry();
+    $routes->registerAll(ShopKernel::ROUTES);
+    $out = $err = '';
+    $before = getenv('TINVAR_ENV');
+    putenv('TINVAR_ENV=local');
+    try {
+        $status = new DevToolsCommand(
+            app: $app,
+            projectRoot: \dirname(Shop::root(), 2),
+            database: Shop::database(),
+            application: static function (string $socket, string $database, string $key, ?string $build, ?string $dev = null) use ($routes): ShopKernel {
+                $deferred = $dev ?? "{$build}/rsc/deferred.json";
+
+                return ShopKernel::fromEnvironment(
+                    $socket,
+                    key: $key,
+                    database: $database,
+                    manifest: is_file($deferred) ? FragmentManifestProducer::produce($routes, $deferred) : new FragmentManifest(),
+                    dev: $dev !== null,
+                    mailTransport: new ArrayTransport(),
+                );
+            },
+            env: ['TINVAR_ENV' => 'local'],
+            out: static function (string $text) use (&$out): void {
+                $out .= $text;
+            },
+            err: static function (string $line) use (&$err): void {
+                $err .= $line . "\n";
+            },
+        )->render(['--dump', '/', '--dev', '--json']);
+    } finally {
+        putenv($before === false ? 'TINVAR_ENV' : "TINVAR_ENV={$before}");
+    }
+
+    return [$status, $out, $err];
+}
 
 /** Whether Playwright's own Firefox is installed (`npx playwright install firefox`). */
 function firefoxInstalled(string $root): bool
