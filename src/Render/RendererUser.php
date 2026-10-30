@@ -47,7 +47,8 @@ final readonly class RendererUser
      *
      * Never root: a renderer running as root is the opposite of what naming
      * a user of its own is for, and a socket root owns passes every other
-     * check this process makes.
+     * check this process makes. Nor, on Linux, the overflow user, nobody:
+     * the kernel names it for an answer it cannot attribute (PeerCredentials).
      *
      * @throws \InvalidArgumentException
      */
@@ -68,6 +69,10 @@ final readonly class RendererUser
 
         if ($uid === 0) {
             throw new \InvalidArgumentException(self::ENV . ' names root. The renderers run as a user of their own with no privileges, never as root.');
+        }
+        if ($uid === PeerCredentials::overflowUid()) {
+            throw new \InvalidArgumentException(self::ENV . " names {$name} (uid {$uid}), the user Linux names when it cannot say who wrote "
+                . 'to a socket: an answer no one can be told from could pass for the renderers\'. Give them a user of their own.');
         }
 
         return new self($uid, $name);

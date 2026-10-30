@@ -59,7 +59,7 @@ it('renders nothing through a renderer of its own user, and serves its own 500 p
     $logged = [];
 
     try {
-        [$response, $served] = asRendererUser('nobody', function () use ($renderer, &$logged): array {
+        [$response, $served] = asRendererUser('daemon', function () use ($renderer, &$logged): array {
             $kernel = Kernel::fromEnvironment($renderer->socketPath, key: KEY, database: Shop::database(), log: function (\Throwable $e) use (&$logged): void {
                 $logged[] = $e;
             });
@@ -77,4 +77,4 @@ it('renders nothing through a renderer of its own user, and serves its own 500 p
         ->and($served)->toBe(0)
         ->and($refusal)->toBeInstanceOf(RendererException::class)
         ->and($refusal?->failure())->toBe(RenderFailure::RendererUntrusted);
-})->skip(fn () => !\function_exists('posix_geteuid') || posix_geteuid() === 0 || posix_getpwnam('nobody') === false, 'needs a user nobody, and not root');
+})->skip(fn () => !\function_exists('posix_geteuid') || posix_geteuid() === 0 || posix_getpwnam('daemon') === false, 'needs a user daemon, and not root');

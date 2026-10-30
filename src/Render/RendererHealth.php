@@ -80,7 +80,7 @@ final class RendererHealth
             throw RendererException::cannotConnect($socketPath, $reason !== '' ? $reason : "errno {$errno}");
         }
         try {
-            $this->trust->assertPeer($socket, $socketPath);
+            $this->trust->assertPeer($socket, $socketPath, $this->codec, $this->timeoutSeconds);
         } catch (RendererException $e) {
             fclose($socket);
 

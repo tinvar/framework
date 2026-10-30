@@ -230,6 +230,14 @@ describe('the health check', function () {
             ->and(Frame::RENDERER_TO_PHP)->not->toContain(Frame::HEALTH);
     });
 
+    it('is asked, where the renderer runs as a user of its own, with a hello the renderer answers ready', function () {
+        expect(Frame::hello())->toBe(['t' => Frame::HELLO])
+            ->and(Frame::PHP_TO_RENDERER)->toContain(Frame::HELLO)
+            ->and(Frame::RENDERER_TO_PHP)->toContain(Frame::READY)
+            ->and(Frame::RENDERER_TO_PHP)->not->toContain(Frame::HELLO)
+            ->and(Frame::PHP_TO_RENDERER)->not->toContain(Frame::READY);
+    });
+
     it('reads what a renderer says of itself', function () {
         expect(Frame::readHealthy(['t' => Frame::HEALTHY, 'pid' => 4242, 'inFlight' => 3, 'served' => 17]))
             ->toBe(['pid' => 4242, 'inFlight' => 3, 'served' => 17]);

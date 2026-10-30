@@ -28,10 +28,13 @@ it('refuses to serve when the pool is answered by anyone but the renderers\' use
     // As a renderer sharing it with a group makes it, so the refusal is the
     // peer's and not the socket's mode.
     chmod($socket, 0660);
-    // A health check answered, should it ever be asked: it is not.
+    // The hello answered, as a renderer answers it, and a health check
+    // after it, should it ever be asked: it is not.
     $answerer = pcntl_fork();
     if ($answerer === 0) {
         while (($client = @stream_socket_accept($server, 10)) !== false) {
+            fread($client, 4096);
+            fwrite($client, new MessagePackCodec()->encodeFrame(['t' => Frame::READY]));
             fread($client, 4096);
             fwrite($client, new MessagePackCodec()->encodeFrame(['t' => Frame::HEALTHY, 'pid' => getmypid(), 'inFlight' => 0, 'served' => 0]));
             fclose($client);
@@ -52,7 +55,7 @@ it('refuses to serve when the pool is answered by anyone but the renderers\' use
         $root,
         [
             'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
-            'TINVAR_RENDERER_USER' => 'nobody',
+            'TINVAR_RENDERER_USER' => 'daemon',
             'TINVAR_SOCKET' => "{$dir}/pool",
             'TINVAR_FRANKENPHP' => "{$dir}/frankenphp",
         ],
@@ -73,4 +76,4 @@ it('refuses to serve when the pool is answered by anyone but the renderers\' use
         ->and($err)->toContain(PHP_OS_FAMILY === 'Linux' ? 'it is answered by a process of uid ' . posix_geteuid() : 'that cannot be verified')
         // At once, not after waiting out the pool's start.
         ->and($took)->toBeLessThan(10.0);
-})->skip(fn () => !\function_exists('pcntl_fork') || posix_geteuid() === 0 || posix_getpwnam('nobody') === false || !is_file($root . '/examples/shop/dist/rsc/index.js'), 'needs pcntl, a user nobody, the shop built, and not root');
+})->skip(fn () => !\function_exists('pcntl_fork') || posix_geteuid() === 0 || posix_getpwnam('daemon') === false || !is_file($root . '/examples/shop/dist/rsc/index.js'), 'needs pcntl, a user daemon, the shop built, and not root');

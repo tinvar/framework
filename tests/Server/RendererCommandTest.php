@@ -154,7 +154,7 @@ describe('renderer:start', function () use ($root) {
     // would be refused by every render: refused here instead.
     it('refuses to start as anyone but the renderers\' user, where one is named', function () use ($root) {
         [$command, , $err, $execs] = command($root);
-        putenv('TINVAR_RENDERER_USER=nobody');
+        putenv('TINVAR_RENDERER_USER=daemon');
 
         try {
             $status = $command->run('renderer:start', ["--app={$root}/examples/shop", '--socket=' . poolPath()]);
@@ -163,9 +163,9 @@ describe('renderer:start', function () use ($root) {
         }
 
         expect($status)->toBe(RendererCommand::USAGE)
-            ->and(implode("\n", $err->getArrayCopy()))->toContain('TINVAR_RENDERER_USER says the renderers run as nobody')
+            ->and(implode("\n", $err->getArrayCopy()))->toContain('TINVAR_RENDERER_USER says the renderers run as daemon')
             ->and($execs)->toHaveCount(0);
-    })->skip(fn () => !is_file("{$root}/examples/shop/dist/rsc/index.js") || posix_getpwnam('nobody') === false || posix_geteuid() === posix_getpwnam('nobody')['uid'], 'the shop is not built');
+    })->skip(fn () => !is_file("{$root}/examples/shop/dist/rsc/index.js") || posix_getpwnam('daemon') === false || posix_geteuid() === posix_getpwnam('daemon')['uid'], 'the shop is not built');
 
     it('starts as the renderers\' user, where it is the one named, sharing its sockets with a group', function () use ($root) {
         [$command, , $err, $execs] = command($root);

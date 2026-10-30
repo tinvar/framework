@@ -15,6 +15,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Render\SeparateRendererUser;
 
+use Tinvar\Codec\MessagePackCodec;
+use Tinvar\Protocol\Frame;
 use Tinvar\Render\PeerCredentials;
 use Tinvar\Render\RendererException;
 use Tinvar\Render\RendererUser;
@@ -31,84 +33,13 @@ function strangerUid(): int
     }
 }
 
-/** A procfs of one process, $pid, whose status says these uids: real, effective, saved, filesystem. */
-function fakeProc(int $pid, string $uids): string
-{
-    $proc = '/tmp/tvproc-' . bin2hex(random_bytes(4));
-    mkdir("{$proc}/{$pid}", 0700, true);
-    file_put_contents("{$proc}/{$pid}/status", "Name:\tnode\nPid:\t{$pid}\nUid:\t{$uids}\nGid:\t33\t33\t33\t33\n");
-    file_put_contents("{$proc}/{$pid}/stat", statLine($pid, 81234));
-
-    return $proc;
-}
-
-/** A /proc/<pid>/stat line, its name holding the spaces and parentheses a name may. */
-function statLine(int $pid, int $startTime): string
-{
-    // The state (field 3), fields 4 to 21, the start time (22), and the rest.
-    return "{$pid} (node (renderer) 1) S " . implode(' ', array_fill(0, 18, '0')) . " {$startTime} 0 0\n";
-}
-
 /**
- * A procfs whose stat for one process says a different start time each time
- * it is read: the pid taken by another process between two reads.
+ * Linux's answer, on any platform: the user the kernel attaches to what is
+ * read stood in for, null for none.
  */
-final class ReplacedProc
+function peers(?int $uid): PeerCredentials
 {
-    /** @var resource|null */
-    public $context;
-
-    private static int $reads = 0;
-
-    private string $contents = '';
-
-    private int $at = 0;
-
-    public function stream_open(string $path, string $mode): bool
-    {
-        if (str_ends_with($path, '/stat')) {
-            $this->contents = statLine(4242, 81234 + self::$reads++);
-        } elseif (str_ends_with($path, '/status')) {
-            $this->contents = "Uid:\t990\t990\t990\t990\n";
-        } else {
-            return false;
-        }
-
-        return true;
-    }
-
-    public function stream_read(int $count): string
-    {
-        $chunk = substr($this->contents, $this->at, $count);
-        $this->at += \strlen($chunk);
-
-        return $chunk;
-    }
-
-    public function stream_eof(): bool
-    {
-        return $this->at >= \strlen($this->contents);
-    }
-
-    /** @return array<string, int> */
-    public function stream_stat(): array
-    {
-        return ['size' => \strlen($this->contents)];
-    }
-}
-
-function removeProc(string $proc): void
-{
-    exec('rm -rf ' . escapeshellarg($proc));
-}
-
-/**
- * Linux's answer, on any platform: the kernel's pid stood in for, and the
- * user read from a procfs the test wrote.
- */
-function linuxPeers(string $proc, int|false $pid = 4242): PeerCredentials
-{
-    return new PeerCredentials('Linux', 'x86_64', $proc, static fn ($stream): int|false => $pid);
+    return new PeerCredentials('Linux', static fn (\Socket $socket): ?int => $uid);
 }
 
 /** @param array<string, string|null> $env */
@@ -128,15 +59,44 @@ function withEnvironment(array $env, \Closure $body): mixed
     }
 }
 
-/** @return resource a connected pair's end, which no test here reads from; the other end is kept open */
-function aStream()
+/**
+ * A connected pair's end, its peer kept open, with $answer already written
+ * to it from the far end -- a renderer's answer to the hello, there before
+ * it is asked, which the read cannot tell apart -- and the far end, to read
+ * what was sent to it.
+ *
+ * @return array{resource, resource}
+ */
+function answered(string $answer = 'ready'): array
 {
     static $kept = [];
     $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
     \assert($pair !== false);
     $kept[] = $pair[1];
+    $frame = match ($answer) {
+        'ready' => new MessagePackCodec()->encodeFrame(['t' => Frame::READY]),
+        'nothing' => '',
+        default => $answer,
+    };
+    if ($frame !== '') {
+        fwrite($pair[1], $frame);
+    }
 
-    return $pair[0];
+    return [$pair[0], $pair[1]];
+}
+
+/** @return resource a connected pair's end whose peer has answered the hello */
+function aStream()
+{
+    return answered()[0];
+}
+
+/** @param resource $far what the far end was sent, read without waiting */
+function sentTo($far): string
+{
+    stream_set_blocking($far, false);
+
+    return (string) stream_get_contents($far);
 }
 
 describe('naming the renderers\' user', function () {
@@ -148,12 +108,12 @@ describe('naming the renderers\' user', function () {
     });
 
     it('is a user by name, or by a uid an account need not have', function () {
-        $nobody = posix_getpwnam('nobody');
-        \assert($nobody !== false);
+        $daemon = posix_getpwnam('daemon');
+        \assert($daemon !== false);
         $stranger = strangerUid();
 
-        expect(RendererUser::named('nobody')->uid)->toBe($nobody['uid'])
-            ->and(RendererUser::named('nobody')->name)->toBe('nobody')
+        expect(RendererUser::named('daemon')->uid)->toBe($daemon['uid'])
+            ->and(RendererUser::named('daemon')->name)->toBe('daemon')
             ->and(RendererUser::named((string) $stranger)->uid)->toBe($stranger)
             ->and(RendererUser::named((string) $stranger)->owners())->toBe([$stranger]);
     });
@@ -168,6 +128,16 @@ describe('naming the renderers\' user', function () {
             ->toThrow(\InvalidArgumentException::class, 'names root');
     })->with(['root', '0']);
 
+    // Every answer the kernel could not attribute names it: a renderer held
+    // to it would be held to no one.
+    it('refuses the overflow user, nobody, on Linux', function () {
+        $overflow = PeerCredentials::overflowUid();
+        \assert($overflow !== null);
+
+        expect(fn () => RendererUser::named((string) $overflow))
+            ->toThrow(\InvalidArgumentException::class, 'the user Linux names when it cannot say who wrote to a socket');
+    })->skip(PHP_OS_FAMILY !== 'Linux', 'the overflow user is Linux\'s');
+
     // The user is separate or it is nothing: PHP running as it would hold
     // every socket to its own processes, and prove nothing.
     it('is refused, for PHP, when it is the user this process runs as', function () {
@@ -178,7 +148,7 @@ describe('naming the renderers\' user', function () {
             expect(fn () => RendererUser::socketOwners())
                 ->toThrow(\InvalidArgumentException::class, 'the user this process runs as');
         });
-    });
+    })->skip(fn () => posix_geteuid() === 0, 'root is refused as root first');
 
     it('gives SocketTrust the one user it names', function () {
         $stranger = strangerUid();
@@ -190,156 +160,130 @@ describe('naming the renderers\' user', function () {
 })->skip(fn () => !\function_exists('posix_getpwnam'), 'needs POSIX');
 
 describe('telling who is at the other end', function () {
-    it('reads the effective uid of the peer process the kernel names, on Linux', function () {
-        $proc = fakeProc(4242, "1001\t1002\t1001\t1001");
+    it('asks with a hello, and names the user the kernel attaches to the ready frame that answers it', function () {
+        [$stream, $far] = answered();
 
-        try {
-            expect(linuxPeers($proc)->uid(aStream()))->toBe(1002)
-                ->and(linuxPeers($proc)->unsupported())->toBeNull();
-        } finally {
-            removeProc($proc);
-        }
+        expect(peers(990)->uid($stream, new MessagePackCodec(), 1.0))->toBe(990)
+            ->and(peers(990)->unsupported())->toBeNull();
+        $offset = 0;
+        expect(new MessagePackCodec()->decodeFrame(sentTo($far), $offset))->toBe(['t' => Frame::HELLO]);
     });
 
-    it('says why, and names no user, when the kernel names no process', function (int|false $pid) {
-        $proc = fakeProc(4242, "1001\t1001\t1001\t1001");
+    it('says why, and names no user, when the answer is not one ready frame from one user', function (string $answer, ?int $uid, string $why) {
+        [$stream] = answered($answer);
 
-        try {
-            expect(linuxPeers($proc, $pid)->uid(aStream()))->toBe('the kernel named no peer process for the connection (SO_PEERCRED)');
-        } finally {
-            removeProc($proc);
-        }
+        expect(peers($uid)->uid($stream, new MessagePackCodec(), 0.2))->toBe($why);
     })->with([
-        // A peer in a pid namespace this process cannot see.
-        'pid 0' => [0],
-        'no answer' => [false],
+        'no user attached' => ['ready', null, 'the kernel named no user for the answer to the hello (SCM_CREDENTIALS)'],
+        'no answer in time' => ['nothing', 990, 'no answer to the hello within 0.2s'],
+        'another frame' => [new MessagePackCodec()->encodeFrame(['t' => Frame::CHUNK, 'b' => 'x']), 990, 'the hello was answered with something other than a ready frame'],
+        'a ready frame saying more' => [new MessagePackCodec()->encodeFrame(['t' => Frame::READY, 'pid' => 1]), 990, 'the hello was answered with something other than a ready frame'],
+        'more after it' => [new MessagePackCodec()->encodeFrame(['t' => Frame::READY]) . new MessagePackCodec()->encodeFrame(['t' => Frame::CHUNK, 'b' => 'x']), 990, 'the hello was answered with something other than a ready frame'],
+        'too much' => [str_repeat("\xff", PeerCredentials::MAX_READY_BYTES + 1), 990, 'the hello was answered with more than a ready frame'],
     ]);
 
-    // Gone already, or hidden by procfs's hidepid.
-    it('says why, and names no user, when the process cannot be read', function () {
-        $proc = fakeProc(4242, "1001\t1001\t1001\t1001");
-
-        try {
-            expect(linuxPeers($proc, 4343)->uid(aStream()))->toBe("cannot read the user of the peer process 4343 from {$proc}");
-        } finally {
-            removeProc($proc);
-        }
-    });
-
-    // ADR 0028: the pid is the kernel's, the user read from procfs after it.
-    // A pid taken by another process in between is not read as the peer's.
-    it('names no user when the process at that pid changed while it was read', function () {
-        stream_wrapper_register('tvreplaced', ReplacedProc::class);
-
-        try {
-            expect(linuxPeers('tvreplaced://proc')->uid(aStream()))->toBe('the peer process 4242 was replaced by another while it was being read');
-        } finally {
-            stream_wrapper_unregister('tvreplaced');
-        }
-    });
-
-    // Its pid is free to be taken only once the process has closed every
-    // descriptor it held, this connection's far end among them: closed, the
-    // pid read may already be another's.
-    it('names no user when the peer has closed the connection', function () {
-        $proc = fakeProc(4242, "990\t990\t990\t990");
+    it('says why when the peer has closed the connection', function () {
         $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
         \assert($pair !== false);
         fclose($pair[1]);
 
-        try {
-            expect(linuxPeers($proc)->uid($pair[0]))->toContain('the peer closed the connection while it was being checked');
-        } finally {
-            removeProc($proc);
-        }
+        expect(peers(990)->uid($pair[0], new MessagePackCodec(), 1.0))->toBeIn([
+            'the connection was closed instead of the hello being answered',
+            'the hello could not be sent',
+        ]);
     });
 
-    it('still names the user when the peer has already written, which only an open connection can', function () {
-        $proc = fakeProc(4242, "990\t990\t990\t990");
-        $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
-        \assert($pair !== false);
-        fwrite($pair[1], 'early');
+    it('leaves the connection as it found it, for the render to read and write', function () {
+        [$stream, $far] = answered();
+        peers(990)->uid($stream, new MessagePackCodec(), 1.0);
+        fwrite($far, 'then the render');
 
-        try {
-            expect(linuxPeers($proc)->uid($pair[0]))->toBe(990)
-                // A peek: what the peer wrote is still there to be read.
-                ->and(fread($pair[0], 5))->toBe('early');
-        } finally {
-            removeProc($proc);
-        }
+        expect(fread($stream, 15))->toBe('then the render');
     });
 
-    it('cannot tell on macOS, and says why', function () {
-        $peers = new PeerCredentials('Darwin', 'arm64');
+    it('cannot tell on macOS, and says why, sending nothing', function () {
+        $peers = new PeerCredentials('Darwin');
+        [$stream, $far] = answered();
 
         expect($peers->unsupported())->toContain("PHP cannot read a Unix socket peer's user on Darwin")
-            ->and($peers->uid(aStream()))->toBe($peers->unsupported());
+            ->and($peers->uid($stream, new MessagePackCodec(), 1.0))->toBe($peers->unsupported())
+            ->and(sentTo($far))->toBe('');
     });
 
-    it('cannot tell on a Linux whose SO_PEERCRED is numbered otherwise', function () {
-        expect(new PeerCredentials('Linux', 'mips64')->unsupported())->toBe('SO_PEERCRED is numbered otherwise on mips64');
-    });
-
-    // The real thing, where there is one: the peer of a socket this process
-    // listens on is this process's own user.
-    it('reads this process\'s own user off a socket it listens on, on Linux', function () {
+    // The real thing, where there is one. An answer the renderer wrote
+    // once asked names its user; one written before PHP asked carries no
+    // credentials, which the kernel reads as the overflow user -- refused,
+    // since anything listening could write one.
+    it('reads the user of whoever answered the hello, and refuses an answer written before it, on Linux', function () {
         $path = '/tmp/tvpeer-' . bin2hex(random_bytes(4)) . '.sock';
         $server = stream_socket_server("unix://{$path}");
         \assert($server !== false);
+        $ready = new MessagePackCodec()->encodeFrame(['t' => Frame::READY]);
 
         try {
-            $client = stream_socket_client("unix://{$path}");
-            \assert($client !== false);
-            expect(new PeerCredentials()->uid($client))->toBe(posix_geteuid());
+            $early = stream_socket_client("unix://{$path}");
+            \assert($early !== false);
+            $accepted = stream_socket_accept($server);
+            \assert($accepted !== false);
+            fwrite($accepted, $ready);
+            $before = new PeerCredentials()->uid($early, new MessagePackCodec(), 1.0);
+
+            $answerer = pcntl_fork();
+            if ($answerer === 0) {
+                $connection = stream_socket_accept($server, 5);
+                if ($connection !== false && fread($connection, 64) !== '') {
+                    fwrite($connection, $ready);
+                    fread($connection, 1);
+                }
+                posix_kill(getmypid(), SIGKILL);
+                exit(0);
+            }
+            $asked = stream_socket_client("unix://{$path}");
+            \assert($asked !== false);
+            $after = new PeerCredentials()->uid($asked, new MessagePackCodec(), 2.0);
+            posix_kill($answerer, SIGKILL);
+            pcntl_waitpid($answerer, $status);
         } finally {
             fclose($server);
             @unlink($path);
         }
-    })->skip(PHP_OS_FAMILY !== 'Linux', 'SO_PEERCRED is Linux\'s');
+
+        expect($after)->toBe(posix_getuid())
+            ->and($before)->toContain('it named the overflow user');
+    })->skip(PHP_OS_FAMILY !== 'Linux' || !\function_exists('pcntl_fork'), 'SCM_CREDENTIALS is Linux\'s');
 });
 
 describe('a socket, once the renderers\' user is named', function () {
     it('is answered by that user, and passes', function () {
-        $proc = fakeProc(4242, "990\t990\t990\t990");
+        new SocketTrust([990], peers(990))->assertPeer(aStream(), '/run/pool/renderer-0-1.sock', new MessagePackCodec(), 1.0);
 
-        try {
-            new SocketTrust([990], linuxPeers($proc))->assertPeer(aStream(), '/run/pool/renderer-0-1.sock');
-            expect(true)->toBeTrue();
-        } finally {
-            removeProc($proc);
-        }
+        expect(true)->toBeTrue();
     });
 
-    it('is refused when anyone else answers -- this user, or root', function (string $uids) {
-        $proc = fakeProc(4242, $uids);
-
-        try {
-            expect(fn () => new SocketTrust([990], linuxPeers($proc))->assertPeer(aStream(), '/run/pool/renderer-0-1.sock'))
+    it('is refused when anyone else answers -- this user, or root', function (int $uid) {
+        expect(fn () => new SocketTrust([990], peers($uid))->assertPeer(aStream(), '/run/pool/renderer-0-1.sock', new MessagePackCodec(), 1.0))
                 ->toThrow(function (RendererException $e): void {
                     expect($e->failure())->toBe(RenderFailure::RendererUntrusted)
                         ->and($e->failure()->leavesRendererUsable())->toBeFalse()
                         ->and($e->getMessage())->toContain('Refusing the renderer at /run/pool/renderer-0-1.sock')
                         ->toContain("not the renderer's own user (uid 990)");
                 });
-        } finally {
-            removeProc($proc);
-        }
     })->with([
-        'this user' => [(string) posix_geteuid() . "\t" . (string) posix_geteuid() . "\t0\t0"],
-        'root' => ["0\t0\t0\t0"],
-        // SO_PEERCRED names the effective user, and so does this.
-        'another, really this one' => ["990\t1001\t990\t990"],
+        'this user' => [posix_getuid()],
+        'root' => [0],
     ]);
 
     it('is refused when who answers cannot be told: fail closed', function () {
-        expect(fn () => new SocketTrust([990], new PeerCredentials('Darwin', 'arm64'))->assertPeer(aStream(), '/run/pool/renderer-0-1.sock'))
+        expect(fn () => new SocketTrust([990], new PeerCredentials('Darwin'))->assertPeer(aStream(), '/run/pool/renderer-0-1.sock', new MessagePackCodec(), 1.0))
             ->toThrow(RendererException::class, 'the renderer is to run as a user of its own, and that cannot be verified: PHP cannot read');
     });
 
     it('is not asked about where no user is named: the renderer runs as this one', function () {
-        new SocketTrust([], new PeerCredentials('Darwin', 'arm64'))->assertPeer(aStream(), '/tmp/r.sock');
+        [$stream, $far] = answered();
+        new SocketTrust([], new PeerCredentials('Darwin'))->assertPeer($stream, '/tmp/r.sock', new MessagePackCodec(), 1.0);
 
-        expect(new SocketTrust()->separateUser())->toBeFalse()
+        expect(sentTo($far))->toBe('')
+            ->and(new SocketTrust()->separateUser())->toBeFalse()
             ->and(new SocketTrust([990])->separateUser())->toBeTrue();
     });
 

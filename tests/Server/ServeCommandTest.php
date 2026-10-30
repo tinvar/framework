@@ -433,7 +433,7 @@ describe('renderers run as a user of their own', function () {
         withoutEnvironmentBinary(function () use ($withEnvironment) {
             [$command] = command(project());
             $plan = $withEnvironment(
-                ['TINVAR_RENDERER_USER' => 'nobody', 'TINVAR_SOCKET' => '/run/tinvar-renderer/'],
+                ['TINVAR_RENDERER_USER' => 'daemon', 'TINVAR_SOCKET' => '/run/tinvar-renderer/'],
                 fn (): array => $command->plan(['--app=' . app()]),
             );
 
@@ -450,15 +450,15 @@ describe('renderers run as a user of their own', function () {
                 ->and(implode("\n", $errors->getArrayCopy()))->toContain($message);
         });
     })->with([
-        'dev mode' => [['TINVAR_RENDERER_USER' => 'nobody', 'TINVAR_SOCKET' => '/run/pool'], ['--dev'], "dev mode's renderer would run as this user"],
-        'a pool size' => [['TINVAR_RENDERER_USER' => 'nobody', 'TINVAR_SOCKET' => '/run/pool'], ['--renderers=2'], 'serve starts none, so --renderers has nothing to size'],
-        'no pool' => [['TINVAR_RENDERER_USER' => 'nobody', 'TINVAR_SOCKET' => null], [], 'set TINVAR_SOCKET to the absolute path'],
-        'a relative pool' => [['TINVAR_RENDERER_USER' => 'nobody', 'TINVAR_SOCKET' => 'run/pool'], [], 'set TINVAR_SOCKET to the absolute path'],
+        'dev mode' => [['TINVAR_RENDERER_USER' => 'daemon', 'TINVAR_SOCKET' => '/run/pool'], ['--dev'], "dev mode's renderer would run as this user"],
+        'a pool size' => [['TINVAR_RENDERER_USER' => 'daemon', 'TINVAR_SOCKET' => '/run/pool'], ['--renderers=2'], 'serve starts none, so --renderers has nothing to size'],
+        'no pool' => [['TINVAR_RENDERER_USER' => 'daemon', 'TINVAR_SOCKET' => null], [], 'set TINVAR_SOCKET to the absolute path'],
+        'a relative pool' => [['TINVAR_RENDERER_USER' => 'daemon', 'TINVAR_SOCKET' => 'run/pool'], [], 'set TINVAR_SOCKET to the absolute path'],
         'no such user' => [['TINVAR_RENDERER_USER' => 'tinvar-no-such-user', 'TINVAR_SOCKET' => '/run/pool'], [], 'there is no such user here'],
         'root' => [['TINVAR_RENDERER_USER' => 'root', 'TINVAR_SOCKET' => '/run/pool'], [], 'names root'],
         'this user' => [['TINVAR_RENDERER_USER' => (string) posix_geteuid(), 'TINVAR_SOCKET' => '/run/pool'], [], 'the user this process runs as'],
     ]);
-})->skip(fn () => !\function_exists('posix_geteuid') || posix_geteuid() === 0 || posix_getpwnam('nobody') === false, 'needs a user nobody, and not root');
+})->skip(fn () => !\function_exists('posix_geteuid') || posix_geteuid() === 0 || posix_getpwnam('daemon') === false, 'needs a user daemon, and not root');
 
 // ADR 0066: the browser test endpoint "binds to localhost".
 describe('the test profile', function () {

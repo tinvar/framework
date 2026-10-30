@@ -435,6 +435,10 @@ final class RenderChannel
                         // The renderer's own direction, but the answer to a
                         // health check, which a render never asks.
                         throw new ProtocolException("The renderer sent a 'healthy' frame during a render.");
+                    } elseif ($type === Frame::READY) {
+                        // The answer to a hello, which was read before the
+                        // render was sent; one now answers nothing.
+                        throw new ProtocolException("The renderer sent a 'ready' frame during a render.");
                     }
                 }
 
@@ -558,7 +562,7 @@ final class RenderChannel
             // The render frame carries this visitor's data, so who is at the
             // other end is settled before it is sent.
             try {
-                $this->trust->assertPeer($socket, $path);
+                $this->trust->assertPeer($socket, $path, $this->codec, $this->connectTimeoutSeconds);
             } catch (RendererException $e) {
                 fclose($socket);
 

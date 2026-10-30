@@ -287,3 +287,19 @@ it('refuses a healthy frame during a render', function () {
         $done();
     }
 });
+
+// The answer to a hello is read before the render is sent, where it is
+// asked at all; one arriving mid-render answers nothing.
+it('refuses a ready frame during a render', function () {
+    $dir = privateDirectory();
+    $path = $dir . '/r.sock';
+    $pid = hostileRenderer($path, [['t' => Frame::READY]]);
+    $done = cleanUp($dir, $pid);
+
+    try {
+        expect(fn () => hardeningChannel($path)->render(['t' => 'render'], [], static function (string $bytes): void {}))
+            ->toThrow(ProtocolException::class, "'ready' frame during a render");
+    } finally {
+        $done();
+    }
+});

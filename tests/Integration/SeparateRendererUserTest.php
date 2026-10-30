@@ -15,7 +15,7 @@ declare(strict_types=1);
  * in for in the first, and the refusal is the real one.
  *
  * What needs root, on Linux, and is skipped otherwise: the pool started as
- * `nobody` in a group of its own, and PHP as `daemon` rendering through it
+ * `bin` in a group of its own, and PHP as `daemon` rendering through it
  * -- a real second user, the kernel's real answer, and a user outside the
  * group refused by the file system. The manual procedure in
  * docs/deployment.md does the same by hand.
@@ -169,17 +169,14 @@ function renderOnce(RenderChannel $channel): string
  * The kernel's answer where PHP can ask it (Linux), and otherwise stood in
  * for: the process answering is this user's, as it is.
  */
-function peersOfThisUser(string $dir): PeerCredentials
+function peersOfThisUser(): PeerCredentials
 {
     if (PHP_OS_FAMILY === 'Linux') {
         return new PeerCredentials();
     }
     $uid = posix_geteuid();
-    mkdir("{$dir}/proc/4242", 0700, true);
-    file_put_contents("{$dir}/proc/4242/status", "Uid:\t{$uid}\t{$uid}\t{$uid}\t{$uid}\n");
-    file_put_contents("{$dir}/proc/4242/stat", '4242 (node) S ' . implode(' ', array_fill(0, 18, '0')) . " 81234 0 0\n");
 
-    return new PeerCredentials('Linux', 'x86_64', "{$dir}/proc", static fn ($stream): int => 4242);
+    return new PeerCredentials('Linux', static fn (\Socket $socket): int => $uid);
 }
 
 /** Renders served, by every renderer in the pool, as each says. */
@@ -210,7 +207,7 @@ describe('a pool sharing its sockets with a group', function () use ($root) {
                 ->and(filegroup($pool))->toBe($group);
 
             // Held to the renderers' user -- here, the one this test runs as.
-            $html = renderOnce(channel($pool, [posix_geteuid()], peersOfThisUser($dir)));
+            $html = renderOnce(channel($pool, [posix_geteuid()], peersOfThisUser()));
         } finally {
             stopPool($process);
             exec('rm -rf ' . escapeshellarg($dir));
@@ -295,7 +292,7 @@ function asUser(string $user, array $groups, \Closure $body): string
 
 describe('a pool run as another user', function () use ($root) {
     it('is rendered through by PHP as a user in its group, held to the renderers\' user by the kernel', function () use ($root) {
-        $renderer = posix_getpwnam('nobody');
+        $renderer = posix_getpwnam('bin');
         $php = posix_getpwnam('daemon');
         \assert($renderer !== false && $php !== false);
         // A group no account has: as root, a process may be put in any gid.
@@ -315,17 +312,17 @@ describe('a pool run as another user', function () use ($root) {
         // The checkout must be readable by the renderers' user for this to run
         // at all -- a deployment's permissions, which a checkout under /root
         // does not have.
-        $readable = asUser('nobody', [], static fn (): string => is_readable("{$root}/packages/renderer/bin/renderer.js")
+        $readable = asUser('bin', [], static fn (): string => is_readable("{$root}/packages/renderer/bin/renderer.js")
             && is_readable("{$root}/node_modules/@msgpack/msgpack/package.json") ? 'yes' : 'no');
         if ($readable !== 'yes') {
             exec('rm -rf ' . escapeshellarg($dir));
-            test()->markTestSkipped("the checkout at {$root} is not readable by nobody");
+            test()->markTestSkipped("the checkout at {$root} is not readable by bin");
         }
 
         $node = trim((string) shell_exec('command -v node'));
         $supervisor = pcntl_fork();
         if ($supervisor === 0) {
-            posix_initgroups('nobody', $group);
+            posix_initgroups('bin', $group);
             posix_setgid($group);
             posix_setuid($renderer['uid']);
             pcntl_exec('/bin/sh', [
@@ -366,15 +363,32 @@ describe('a pool run as another user', function () use ($root) {
                 $server = stream_socket_server("unix://{$dir}/php/r.sock");
                 \assert($server !== false);
                 chmod("{$dir}/php/r.sock", 0600);
+                // It answers the hello as a renderer would: the kernel, not
+                // the answer, says whose it is.
+                $answerer = pcntl_fork();
+                if ($answerer === 0) {
+                    $connection = stream_socket_accept($server, 5);
+                    if ($connection !== false) {
+                        fwrite($connection, new MessagePackCodec()->encodeFrame(['t' => 'ready']));
+                        fread($connection, 1);
+                    }
+                    posix_kill(getmypid(), SIGKILL);
+                    exit(0);
+                }
 
-                return renderOnce(channel("{$dir}/php/r.sock", [$renderer['uid']]));
+                try {
+                    return renderOnce(channel("{$dir}/php/r.sock", [$renderer['uid']]));
+                } finally {
+                    posix_kill($answerer, SIGKILL);
+                    pcntl_waitpid($answerer, $status);
+                }
             });
             // The kernel's own answer, read the way a render reads it.
             $peer = asUser('daemon', [$group], static function () use ($pool): string {
                 $socket = stream_socket_client('unix://' . socketsIn($pool)[0]);
                 \assert($socket !== false);
 
-                return (string) new PeerCredentials()->uid($socket);
+                return (string) new PeerCredentials()->uid($socket, new MessagePackCodec(), 2.0);
             });
             // Open to every user, a socket is refused however it is answered.
             foreach (socketsIn($pool) as $socket) {
@@ -400,7 +414,77 @@ describe('a pool run as another user', function () use ($root) {
             ->and($peer)->toBe((string) $renderer['uid'])
             ->and($openToAll)->toContain('it is mode 666, open to every user');
     });
+
+    // ADR 0130: who answers is read from the kernel's credentials on the
+    // answer, in PHP's user namespace and no pid namespace, so the two
+    // sides need not share one -- as two containers of a pod need not.
+    it('is held to the renderers\' user across pid namespaces kept apart', function () use ($root) {
+        $renderer = posix_getpwnam('bin');
+        $php = posix_getpwnam('daemon');
+        \assert($renderer !== false && $php !== false);
+        foreach (['unshare', 'setpriv'] as $tool) {
+            if (trim((string) shell_exec('command -v ' . $tool)) === '') {
+                test()->markTestSkipped("needs {$tool} (util-linux) to start each side in a pid namespace of its own");
+            }
+        }
+        $group = 47_392;
+        $dir = scratch();
+        $pool = "{$dir}/pool";
+        mkdir($pool, 0700);
+        chown($pool, $renderer['uid']);
+        touch("{$dir}/pool.log");
+        chown("{$dir}/pool.log", $renderer['uid']);
+        $node = trim((string) shell_exec('command -v node'));
+
+        // Each side in a pid namespace of its own, under the test's: neither
+        // can see the other's processes.
+        $pidNamespace = ['unshare', '--pid', '--fork', '--mount-proc', '--kill-child=SIGTERM', 'setpriv'];
+        $process = proc_open(
+            [...$pidNamespace, "--reuid={$renderer['uid']}", "--regid={$group}", '--clear-groups', $node,
+                "{$root}/packages/renderer/bin/renderer.js", $pool, "{$dir}/app/dist/rsc/index.js", '--processes=2', "--socket-group={$group}"],
+            [0 => ['file', '/dev/null', 'r'], 1 => ['file', "{$dir}/pool.log", 'a'], 2 => ['file', "{$dir}/pool.log", 'a']],
+            $pipes,
+            $root,
+            ['PATH' => '/usr/local/bin:/usr/bin:/bin', 'NODE_ENV' => 'production'],
+        );
+        \assert(\is_resource($process));
+
+        $check = <<<'PHP'
+            require $argv[1] . '/vendor/autoload.php';
+            $seen = 0;
+            foreach (glob('/proc/[0-9]*/cmdline') ?: [] as $cmdline) {
+                $seen += str_contains((string) @file_get_contents($cmdline), 'renderer' . '.js') ? 1 : 0;
+            }
+            $answers = new Tinvar\Render\RendererHealth(trust: new Tinvar\Render\SocketTrust([(int) $argv[3]]))->checkAll($argv[2]);
+            echo json_encode(['seen' => $seen, 'answers' => $answers]);
+            PHP;
+
+        try {
+            $deadline = microtime(true) + 20;
+            while (\count(socketsIn($pool)) < 2 && microtime(true) < $deadline) {
+                usleep(50_000);
+            }
+            usleep(200_000);
+            $out = (string) shell_exec(implode(' ', array_map(escapeshellarg(...), [
+                ...$pidNamespace, "--reuid={$php['uid']}", "--regid={$php['gid']}", "--groups={$group}",
+                PHP_BINARY, '-r', $check, $root, $pool, (string) $renderer['uid'],
+            ])) . ' 2>&1');
+        } finally {
+            // unshare ignores SIGTERM while it waits; killed, it hands its child SIGTERM.
+            proc_terminate($process, SIGKILL);
+            proc_close($process);
+            $log = (string) @file_get_contents("{$dir}/pool.log");
+            exec('rm -rf ' . escapeshellarg($dir));
+        }
+
+        /** @var array{seen: int, answers: array<string, array<string, int>|string>}|null $read */
+        $read = json_decode($out, true);
+        expect($read)->toBeArray("{$out}\n{$log}")
+            ->and($read['seen'] ?? null)->toBe(0)
+            ->and($read['answers'] ?? [])->toHaveCount(2)
+            ->and($read['answers'] ?? [])->each->toBeArray();
+    });
 })->skip(
-    fn () => PHP_OS_FAMILY !== 'Linux' || !\function_exists('posix_geteuid') || posix_geteuid() !== 0 || posix_getpwnam('nobody') === false || posix_getpwnam('daemon') === false,
-    'needs root on Linux, and the users nobody and daemon: run as root to start renderers as another user',
+    fn () => PHP_OS_FAMILY !== 'Linux' || !\function_exists('posix_geteuid') || posix_geteuid() !== 0 || posix_getpwnam('bin') === false || posix_getpwnam('daemon') === false,
+    'needs root on Linux, and the users bin and daemon: run as root to start renderers as another user',
 );

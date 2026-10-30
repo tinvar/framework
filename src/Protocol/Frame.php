@@ -56,8 +56,18 @@ final class Frame
     public const string HEALTH = 'health';
     public const string HEALTHY = 'healthy';
 
+    /**
+     * Asked first on a connection where the renderer runs as a user of its
+     * own, and answered at once: the kernel attaches the writing process's
+     * user to the answer (SCM_CREDENTIALS), which is how PHP knows who is at
+     * the other end before it sends anything of a request (PeerCredentials).
+     * Neither carries anything.
+     */
+    public const string HELLO = 'hello';
+    public const string READY = 'ready';
+
     /** @var list<string> */
-    public const array PHP_TO_RENDERER = [self::RENDER, self::FRAGMENT, self::RESULT, self::MINTED, self::MAIL, self::HEALTH];
+    public const array PHP_TO_RENDERER = [self::RENDER, self::FRAGMENT, self::RESULT, self::MINTED, self::MAIL, self::HEALTH, self::HELLO];
 
     /** @var list<string> */
     public const array RENDERER_TO_PHP = [
@@ -69,6 +79,7 @@ final class Frame
         self::DONE,
         self::ERROR,
         self::HEALTHY,
+        self::READY,
     ];
 
     /**
@@ -221,6 +232,12 @@ final class Frame
     public static function health(): array
     {
         return ['t' => self::HEALTH];
+    }
+
+    /** @return array<string, mixed> */
+    public static function hello(): array
+    {
+        return ['t' => self::HELLO];
     }
 
     /**

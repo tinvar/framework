@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Render;
 
+use Tinvar\Codec\FrameCodec;
+
 /**
  * Whether a renderer socket, or a pool's directory of them, is one this
  * process may hand a render to.
@@ -122,20 +124,23 @@ final class SocketTrust
      * Holds a connection to the renderer's own user, where it runs as one:
      * whoever answers is told the render, so the process at the other end
      * must be that user's, as the kernel says -- not this user's, and not
-     * root's, however the socket and its directory looked. A connection
-     * that cannot be asked fails the same way. Nothing is checked where no
-     * owners were named: the renderer runs as this user.
+     * root's, however the socket and its directory looked. It is asked with
+     * a hello, which the renderer answers before anything of a request is
+     * sent (PeerCredentials). A connection that cannot be asked fails the
+     * same way. Nothing is checked, and nothing sent, where no owners were
+     * named: the renderer runs as this user.
      *
      * @param resource $stream connected to $socketPath, with nothing sent yet
+     * @param float $timeoutSeconds how long the renderer may take to answer the hello
      * @throws RendererException
      */
-    public function assertPeer($stream, string $socketPath): void
+    public function assertPeer($stream, string $socketPath, FrameCodec $codec, float $timeoutSeconds): void
     {
         if (!$this->separateUser()) {
             return;
         }
 
-        $uid = $this->peers->uid($stream);
+        $uid = $this->peers->uid($stream, $codec, $timeoutSeconds);
         if (\is_string($uid)) {
             throw RendererException::untrusted(
                 $socketPath,
