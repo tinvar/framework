@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Push;
 
+use Tinvar\Outbound\Destinations;
 use Tinvar\Outbound\OutboundRefused;
 use Tinvar\Outbound\Target;
 
@@ -42,6 +43,16 @@ final readonly class PushServices
             }
         }
         $this->hosts = $hosts;
+    }
+
+    /**
+     * The services as a push's request is held to them at every hop
+     * (OutboundRequest::$destinations): each host and every host under it,
+     * on 443 -- so a service that redirects is followed only to another.
+     */
+    public function destinations(): Destinations
+    {
+        return Destinations::hosts([...$this->hosts, ...array_map(static fn (string $host): string => "*.{$host}", $this->hosts)]);
     }
 
     /** Whether $endpoint is at one of the services. */

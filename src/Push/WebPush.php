@@ -79,6 +79,6 @@ final readonly class WebPush
             $headers['topic'] = $topic;
         }
 
-        return $this->http->send(new OutboundRequest('POST', $subscription->endpoint, $headers, $body, timeout: self::TIMEOUT, readBody: false));
+        return $this->http->send(new OutboundRequest('POST', $subscription->endpoint, $headers, $body, timeout: self::TIMEOUT, readBody: false, destinations: $this->services->destinations()));
     }
 }
