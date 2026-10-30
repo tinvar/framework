@@ -265,3 +265,19 @@ describe('headers', function () {
             ->toThrow(\InvalidArgumentException::class, 'at most 255');
     });
 });
+
+// ADR 0116: a message with the kit's dark palette says it draws dark too.
+it('says light and dark where the head has a dark palette\'s rule, and light only otherwise', function () {
+    $links = new LinkPolicy('https://shop.test');
+    $style = ':root{color-scheme:light dark}@media (prefers-color-scheme: dark){.tm-bg{background-color:#111110 !important}}'
+        . '[data-ogsc] .tm-bg{background-color:#111110 !important}';
+    $dark = SafeMailHtml::clean("<!DOCTYPE html><html><head><title>x</title><style>{$style}</style></head><body class=\"tm-bg\"><p>x</p></body></html>", $links);
+    $light = SafeMailHtml::clean('<!DOCTYPE html><html><head><title>x</title></head><body><p>x</p></body></html>', $links);
+    $printOnly = SafeMailHtml::clean('<!DOCTYPE html><html><head><style>@media print{p{color:#000}} .x{content:"prefers-color-scheme: dark"}</style></head><body><p>x</p></body></html>', $links);
+
+    expect($dark)->toContain('<meta name="color-scheme" content="light dark"><meta name="supported-color-schemes" content="light dark">')
+        ->and($light)->toContain('<meta name="color-scheme" content="light"><meta name="supported-color-schemes" content="light">')
+        ->and($printOnly)->toContain('<meta name="color-scheme" content="light">')
+        ->and(fn () => SafeMailHtml::clean('<html><head><style>@media (prefers-color-scheme: dark){.a{background:url(https://t.example/x)}}</style></head><body></body></html>', $links))
+        ->toThrow(MailRenderingException::class, 'url()');
+});

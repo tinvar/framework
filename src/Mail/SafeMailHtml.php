@@ -38,16 +38,21 @@ final class SafeMailHtml
     /**
      * The head's <meta>s, which only this writes: the charset the message's
      * Content-Type names, first; a phone's width; no reformatting by Apple
-     * Mail; and light only, since the kit's colours are inline and a
-     * client's dark mode inverts them unasked.
+     * Mail; and the colour schemes the message draws -- light only, since
+     * the kit's colours are inline and a client's dark mode inverts them
+     * unasked, unless its head has a dark palette's rule (ADR 0116), when
+     * it is `light dark` (SCHEMES).
      */
     private const array META = [
         ['charset' => 'utf-8'],
         ['name' => 'viewport', 'content' => 'width=device-width, initial-scale=1'],
         ['name' => 'x-apple-disable-message-reformatting', 'content' => ''],
-        ['name' => 'color-scheme', 'content' => 'light'],
-        ['name' => 'supported-color-schemes', 'content' => 'light'],
+        ['name' => 'color-scheme', 'content' => self::SCHEMES],
+        ['name' => 'supported-color-schemes', 'content' => self::SCHEMES],
     ];
+
+    /** Stands for the schemes in META, filled in as the document says. */
+    private const string SCHEMES = 'light';
 
     /** What a style may not hold: a fetch, an import, or the old ways of running script from CSS. */
     private const string UNSAFE_STYLE = '/url\s*\(|image-set\s*\(|@import|expression\s*\(|javascript:|behavior\s*:|-moz-binding|\\\\/i';
@@ -66,6 +71,7 @@ final class SafeMailHtml
 
         $document = \Dom\HTMLDocument::createFromString($html, \LIBXML_NOERROR | \LIBXML_COMPACT, 'UTF-8');
         self::assertNodes($document);
+        $dark = false;
 
         foreach ($document->getElementsByTagName('*') as $element) {
             $tag = strtolower($element->localName);
@@ -77,6 +83,7 @@ final class SafeMailHtml
             }
             if ($tag === 'style') {
                 self::assertStyle((string) $element->textContent, '<style>');
+                $dark = $dark || preg_match('/@media[^{]*prefers-color-scheme\s*:\s*dark/i', (string) $element->textContent) === 1;
             }
 
             foreach ($element->attributes as $attribute) {
@@ -127,7 +134,7 @@ final class SafeMailHtml
         foreach (self::META as $attributes) {
             $meta = $document->createElement('meta');
             foreach ($attributes as $name => $value) {
-                $meta->setAttribute($name, $value);
+                $meta->setAttribute($name, $value === self::SCHEMES && $dark ? 'light dark' : $value);
             }
             $metas[] = $meta;
         }
