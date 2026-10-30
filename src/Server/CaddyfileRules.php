@@ -595,8 +595,10 @@ final class CaddyfileRules
      * same line, and the block that follows them, if any.
      *
      * @return list<array{name: string, args: list<string>, line: int, file: string, children: list<mixed>}>
+     *
+     * @throws \UnexpectedValueException for what it cannot read
      */
-    private static function parse(string $contents, string $file): array
+    public static function parse(string $contents, string $file = 'Caddyfile'): array
     {
         $lines = [];
         foreach (self::tokens($contents) as [$token, $line, $quoted]) {
