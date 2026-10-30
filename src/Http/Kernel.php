@@ -90,6 +90,7 @@ use Tinvar\Uploads\Uploads;
 use Tinvar\Cache\TagVersions;
 use Tinvar\Data\SharedTags;
 use Tinvar\Endpoints\CompiledEndpoint;
+use Tinvar\Endpoints\CookielessGlobals;
 use Tinvar\Endpoints\EndpointHandler;
 use Tinvar\Endpoints\EndpointRegistry;
 use Tinvar\Endpoints\EndpointRunner;
@@ -2214,9 +2215,15 @@ final class Kernel
                 );
             }
             $request = $request->withoutCookies();
+
+            // And PHP's own copies of them, for the stack's run (ADR 0125).
+            return CookielessGlobals::run(fn (): Response => $this->sessionlessStack->run(
+                $request->withAttribute(EndpointHandler::MATCHED, $endpoint),
+                fn (Request $passed): Response => $handler->handle($passed, $endpoint, $parameters, $rawBody),
+            ));
         }
 
-        return ($endpoint->sessionless ? $this->sessionlessStack : $this->endpointStack)->run(
+        return $this->endpointStack->run(
             $request->withAttribute(EndpointHandler::MATCHED, $endpoint),
             fn (Request $passed): Response => $handler->handle($passed, $endpoint, $parameters, $rawBody),
         );

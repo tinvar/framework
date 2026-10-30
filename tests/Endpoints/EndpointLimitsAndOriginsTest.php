@@ -60,6 +60,9 @@ final class Ran
 
     /** @var list<array{cookies: array<string, string>, header: string|null}> */
     public static array $seenBySessionless = [];
+
+    /** @var list<array<string, mixed>> PHP's cookie superglobals as a sessionless endpoint's middleware saw them */
+    public static array $globalsSeen = [];
 }
 
 final class OwnerPolicy
@@ -170,7 +173,9 @@ final class TokenOrCookie implements Middleware
     public function handle(Request $request, \Closure $next): Response
     {
         Ran::$seenBySessionless[] = ['cookies' => $request->cookies, 'header' => $request->header('cookie')];
-        if ($request->header('authorization') === 'Bearer scanner-token' || $request->cookie('sid') === 'owner') {
+        Ran::$globalsSeen[] = ['cookie' => $_COOKIE, 'server' => $_SERVER['HTTP_COOKIE'] ?? null, 'request' => $_REQUEST];
+        // A helper reading PHP's own copy, as a library might.
+        if ($request->header('authorization') === 'Bearer scanner-token' || $request->cookie('sid') === 'owner' || ($_COOKIE['sid'] ?? null) === 'owner') {
             $this->auth->login(new User('scanner', ownedRackNames: ['R-01']));
         }
 
@@ -532,6 +537,35 @@ describe('a #[WithoutSession] endpoint, held by the Kernel', function () {
         expect(send($kernel, 'POST', "/api/scanner/racks/{$fixture->ids['racks'][0]}", csrf: false)->status)->toBe(401)
             ->and(Ran::$seenBySessionless)->toBe([['cookies' => [], 'header' => null]])
             ->and(Ran::$bodies)->toBe([]);
+    });
+
+    // ADR 0125: PHP's own copies of the cookies too, which the Request
+    // never carried -- and put back once the endpoint has run.
+    it('empties $_COOKIE, the Cookie header in $_SERVER and $_REQUEST\'s cookies while it runs', function () {
+        [$fixture, $kernel] = racks();
+        $saved = [$_COOKIE, $_SERVER['HTTP_COOKIE'] ?? null, $_REQUEST, $_GET, $_POST];
+        $_COOKIE = ['sid' => 'owner'];
+        $_SERVER['HTTP_COOKIE'] = 'sid=owner';
+        $_GET = ['q' => '1'];
+        $_POST = [];
+        $_REQUEST = ['q' => '1', 'sid' => 'owner'];
+        Ran::$globalsSeen = [];
+
+        try {
+            $status = send($kernel, 'POST', "/api/scanner/racks/{$fixture->ids['racks'][0]}", csrf: false)->status;
+            $after = [$_COOKIE, $_SERVER['HTTP_COOKIE'], $_REQUEST];
+        } finally {
+            [$_COOKIE, $header, $_REQUEST, $_GET, $_POST] = $saved;
+            if ($header === null) {
+                unset($_SERVER['HTTP_COOKIE']);
+            } else {
+                $_SERVER['HTTP_COOKIE'] = $header;
+            }
+        }
+
+        expect($status)->toBe(401)
+            ->and(Ran::$globalsSeen)->toBe([['cookie' => [], 'server' => null, 'request' => ['q' => '1']]])
+            ->and($after)->toBe([['sid' => 'owner'], 'sid=owner', ['q' => '1', 'sid' => 'owner']]);
     });
 
     // ADR 0075: what an application's front controller asks before issuing
