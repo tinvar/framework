@@ -21,6 +21,7 @@ use Tinvar\Tests\Workflows\Fixtures\Flaky;
 use Tinvar\Tests\Workflows\Fixtures\Greedy;
 use Tinvar\Tests\Workflows\Fixtures\KeepsAnObject;
 use Tinvar\Tests\Workflows\Fixtures\Nested;
+use Tinvar\Tests\Workflows\Fixtures\OnePerOrder;
 use Tinvar\Tests\Workflows\Fixtures\Seen;
 use Tinvar\Tests\Workflows\Fixtures\ThreeSteps;
 use Tinvar\Tests\Workflows\Fixtures\Twice;
@@ -228,4 +229,15 @@ it('refuses to start inside a loader or query body, as a job is', function () {
 
     expect(fn () => $h->orm->readOnly(fn () => workflows($h)->start(new ThreeSteps())))
         ->toThrow(\Tinvar\Orm\ReadOnlyViolation::class);
+});
+
+it('holds a unique workflow to its own uniqueId(), one at a time for each', function () {
+    $h = harness();
+    $first = workflows($h)->start(new OnePerOrder('order-1'));
+
+    // The same order's again is the one already queued; another order's
+    // is its own, not held behind the first's lock.
+    expect(workflows($h)->start(new OnePerOrder('order-1')))->toBe($first)
+        ->and(workflows($h)->start(new OnePerOrder('order-2')))->not->toBe($first)
+        ->and($h->queue->size('default'))->toBe(2);
 });

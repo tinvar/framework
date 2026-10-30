@@ -183,6 +183,23 @@ final readonly class StarterRan implements \Tinvar\Jobs\Job, \Tinvar\Jobs\RunsAs
     }
 }
 
+/** One at a time per order, by its own uniqueId(). */
+#[Queue(unique: 600)]
+final readonly class OnePerOrder implements Workflow, \Tinvar\Jobs\UniqueJob
+{
+    public function __construct(public string $order) {}
+
+    public function uniqueId(): string
+    {
+        return $this->order;
+    }
+
+    public function run(Steps $steps): void
+    {
+        $steps->step('only', fn (): string => $this->order);
+    }
+}
+
 /** The jobs harness, with Workflows registered for the job to ask for. */
 function harness(): Harness
 {

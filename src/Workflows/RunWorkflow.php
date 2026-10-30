@@ -8,6 +8,7 @@ use Tinvar\Jobs\DeclaredBy;
 use Tinvar\Jobs\Job;
 use Tinvar\Jobs\JobControl;
 use Tinvar\Jobs\RunsAsStarter;
+use Tinvar\Jobs\UniqueJob;
 
 /**
  * The job a workflow travels in: one run of it, which replays its finished
@@ -19,14 +20,23 @@ use Tinvar\Jobs\RunsAsStarter;
  * sealed with it and checked before every step, beside the tenant and the
  * panel. A job in every other respect: retried, paused, handed back at a
  * stop and refused as any job is.
+ *
+ * Unique as the workflow says: its #[Queue(unique:)], scoped by its own
+ * uniqueId() where it implements UniqueJob -- so one order's workflow
+ * holds no lock another order's waits behind.
  */
-final readonly class RunWorkflow implements Job, DeclaredBy, RunsAsStarter
+final readonly class RunWorkflow implements Job, DeclaredBy, RunsAsStarter, UniqueJob
 {
     public function __construct(public Workflow $workflow) {}
 
     public function declaredBy(): string
     {
         return $this->workflow::class;
+    }
+
+    public function uniqueId(): string
+    {
+        return $this->workflow instanceof UniqueJob ? $this->workflow->uniqueId() : '';
     }
 
     public function handle(JobControl $job, Workflows $workflows): void
