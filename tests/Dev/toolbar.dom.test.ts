@@ -479,6 +479,138 @@ describe('what the render did, and where', () => {
     expect(root.querySelector(`button[data-id="${PAGE}"] .flag`)!.textContent).toBe('acrossTenants ×3');
   });
 
+  it("lists each field under its slot with where it is declared, and a fragment's props as minted", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      respond(
+        200,
+        url.endsWith(PAGE)
+          ? {
+              protocol: 1,
+              request: {
+                ...traced,
+                origins: [
+                  {
+                    ...traced.origins[1],
+                    route: 'shop.catalog',
+                    fields: [
+                      {
+                        name: 'title',
+                        type: 'string',
+                        site: '/app/Data/CatalogData.php:14',
+                        declaredIn: 'Shop\\Data\\CatalogData',
+                      },
+                    ],
+                  },
+                  {
+                    slot: 'props',
+                    kind: 'fragment',
+                    loader: '<Deferred> Reviews',
+                    data: 'props minted with the page',
+                    site: '',
+                    route: 'shop.product',
+                    fields: [{ name: 'sku', type: 'string', site: '', declaredIn: '<Deferred> Reviews' }],
+                  },
+                ],
+              },
+            }
+          : { protocol: 1, requests: flagged },
+      ),
+    );
+    const root = mount();
+    await open(root);
+    const rows = [...tab(root, 'Props').querySelectorAll('.origins li')].map((li) => li.textContent);
+
+    expect(rows.slice(0, 4)).toEqual([
+      'pagedata.pageCatalogData from Catalog::__invoke · shop.catalogCatalog.php:48',
+      'data.page.titlestring · CatalogDataCatalogData.php:14',
+      'fragmentpropsprops minted with the page from <Deferred> Reviews · shop.productunknown site',
+      'props.skustring · <Deferred> Reviews',
+    ]);
+  });
+
+  it("shows each cached query's lookup, the flags read, and the boundaries that failed", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      respond(
+        200,
+        url.endsWith(PAGE)
+          ? {
+              protocol: 1,
+              request: {
+                ...traced,
+                cacheHits: 1,
+                cacheMisses: 2,
+                cacheLookups: [
+                  { query: 'catalog.stats', hit: true, why: '' },
+                  { query: 'catalog.stats', hit: false, why: 'flags' },
+                ],
+                flagReads: [
+                  { flag: 'beta', value: true, reads: 2, otherScope: false },
+                  { flag: '<b>x</b>', value: false, reads: 1, otherScope: true },
+                ],
+                boundaryFailures: [{ code: 'query_failed', title: 'A query failed', digest: 'abc123' }],
+              },
+            }
+          : { protocol: 1, requests: flagged.map((r) => (r.id === PAGE ? { ...r, boundaries: 1 } : r)) },
+      ),
+    );
+    const root = mount();
+    await open(root);
+
+    const cache = tab(root, 'Cache');
+    expect(cache.textContent).toContain('1 answered from the cache, 2 ran their body.');
+    expect([...cache.querySelectorAll('.load')].map((row) => row.textContent)).toEqual([
+      'hitcatalog.stats',
+      'misscatalog.statsnothing cached for the flags read now',
+    ]);
+    expect(cache.textContent).toContain('1 more were not kept.');
+    expect(cache.textContent).toContain('1 boundary rendered as an error');
+
+    const flags = tab(root, 'Flags');
+    expect([...flags.querySelectorAll('.load')].map((row) => row.textContent)).toEqual([
+      'onbeta2 reads',
+      'off<b>x</b>1 readanother scope',
+    ]);
+    expect(flags.querySelector('b')).toBeNull();
+    expect(root.querySelector(`button[data-id="${PAGE}"]`)!.textContent).toContain('boundary failed ×1');
+  });
+
+  it('reads the list again when a fragment or an action finishes, while it is open', async () => {
+    let observe: ((list: { getEntries(): { name: string }[] }) => void) | null = null;
+    vi.stubGlobal(
+      'PerformanceObserver',
+      class {
+        constructor(callback: (list: { getEntries(): { name: string }[] }) => void) {
+          observe = callback;
+        }
+        observe() {}
+      },
+    );
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const root = mount();
+      root.querySelector<HTMLButtonElement>('.toggle')!.click();
+      await vi.advanceTimersByTimeAsync(0);
+      const before = fetchMock.mock.calls.length;
+
+      observe!({ getEntries: () => [{ name: `${window.location.origin}/assets/app.js` }] });
+      await vi.advanceTimersByTimeAsync(200);
+      expect(fetchMock.mock.calls.length).toBe(before);
+
+      observe!({ getEntries: () => [{ name: `${window.location.origin}/_fragment/v1.abc.def` }] });
+      observe!({ getEntries: () => [{ name: `${window.location.origin}/_action/cart.add` }] });
+      await vi.advanceTimersByTimeAsync(200);
+      expect(fetchMock.mock.calls[before]![0]).toBe('/_dev/toolbar');
+
+      // Another origin's path is not this page's.
+      const after = fetchMock.mock.calls.length;
+      observe!({ getEntries: () => [{ name: 'https://elsewhere.test/_action/x' }] });
+      await vi.advanceTimersByTimeAsync(200);
+      expect(fetchMock.mock.calls.length).toBe(after);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('says so when there were none', async () => {
     fetchMock.mockImplementation((url: string) =>
       respond(200, url.endsWith(PAGE) ? { request: detail } : { requests }),
@@ -487,6 +619,8 @@ describe('what the render did, and where', () => {
     await open(root);
 
     expect(tab(root, 'Lazy loads').textContent).toBe('No lazy relation loads.');
+    expect(tab(root, 'Cache').textContent).toBe('No cached query was looked up.');
+    expect(tab(root, 'Flags').textContent).toBe('No feature flag was read.');
     expect(tab(root, 'Across tenants').textContent).toBe('No acrossTenants() calls.');
   });
 

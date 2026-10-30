@@ -225,6 +225,9 @@ summary {
 .badge.shared {
   color: #ffd27a;
 }
+.badge.fragment {
+  color: #b5e8a8;
+}
 .site {
   color: #a3a29d;
   overflow-wrap: anywhere;
@@ -239,4 +242,8 @@ summary {
     border-right: 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   }
+}
+
+.origins li.field {
+  padding-left: 1.5em;
 }

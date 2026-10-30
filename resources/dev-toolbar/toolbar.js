@@ -63,7 +63,17 @@
     );
     root.append(toggle, panel);
 
-    const TABS = ['Props', 'Timings', 'Ticks', 'Lazy loads', 'Across tenants', 'Raw SQL', 'Frames'];
+    const TABS = [
+      'Props',
+      'Timings',
+      'Ticks',
+      'Cache',
+      'Flags',
+      'Lazy loads',
+      'Across tenants',
+      'Raw SQL',
+      'Frames',
+    ];
     /** @type {Record<string, HTMLButtonElement>} */
     const tabButtons = {};
     for (const name of TABS) {
@@ -177,6 +187,13 @@
             request.lazyLoads > 0
               ? el('span', { class: 'note', title: 'Lazy relation loads' }, `lazy ×${request.lazyLoads}`)
               : '',
+            (request.boundaries ?? 0) > 0
+              ? el(
+                  'span',
+                  { class: 'flag', title: 'Boundaries rendered as their error state' },
+                  `boundary failed ×${request.boundaries}`,
+                )
+              : '',
           );
           list.append(el('li', { class: index === 0 ? 'visit' : 'follow' }, button));
         });
@@ -216,11 +233,34 @@
           ),
         );
       }
+      const failed = detail.boundaryFailures ?? [];
+      if (failed.length > 0) {
+        parts.push(
+          el(
+            'div',
+            { class: 'failure' },
+            el(
+              'strong',
+              {},
+              `${failed.length} ${failed.length === 1 ? 'boundary' : 'boundaries'} rendered as an error`,
+            ),
+            ...failed.map((boundary) =>
+              el(
+                'p',
+                { class: 'muted' },
+                `${boundary.code} · ${boundary.title} · reference ${boundary.digest}`,
+              ),
+            ),
+          ),
+        );
+      }
       parts.push(
         ...{
           Props: props,
           Timings: timings,
           Ticks: ticks,
+          Cache: cache,
+          Flags: flags,
           'Lazy loads': lazyLoads,
           'Across tenants': acrossTenants,
           'Raw SQL': rawSql,
@@ -288,6 +328,38 @@
       }
     });
 
+    // And so are a fragment, an action and a query a component made, which
+    // no navigation follows: the browser's own record of each finished
+    // fetch says one went, and the open list is read again -- once, a
+    // moment after the last of a burst, by which time PHP has kept it. The
+    // page's fetch is not touched; nothing of the request is read here but
+    // its path.
+    let again = null;
+    const followUp = /\/_(fragment|action|query)\//;
+    if (typeof win?.PerformanceObserver === 'function') {
+      try {
+        new win.PerformanceObserver((entries) => {
+          if (!host.isConnected || panel.hidden) return;
+          const ours = entries.getEntries().some((entry) => {
+            try {
+              const url = new URL(entry.name);
+              return url.origin === win.location.origin && followUp.test(url.pathname);
+            } catch {
+              return false;
+            }
+          });
+          if (!ours) return;
+          clearTimeout(again);
+          again = setTimeout(() => {
+            selected = null;
+            void load();
+          }, 150);
+        }).observe({ type: 'resource', buffered: false });
+      } catch {
+        // No resource timing here: Refresh still reads the list.
+      }
+    }
+
     doc.body.append(host);
     // The page's root is React's, and a render it has to redo from scratch
     // clears what it did not draw -- scripts aside, so the data block stays:
@@ -330,23 +402,46 @@
           : { [body.tokens ? 'tokens' : 'token']: body.tokens ?? body.token };
     const origins = detail.origins ?? [];
     if (origins.length > 0) {
-      parts.push(
-        el('h3', {}, 'Where each came from'),
-        el(
-          'ul',
-          { class: 'origins' },
-          ...origins.map((origin) =>
+      parts.push(el('h3', {}, 'Where each came from'));
+      const routes = new Set(origins.map((origin) => origin.route ?? ''));
+      for (const origin of origins) {
+        const fields = origin.fields ?? [];
+        parts.push(
+          el(
+            'ul',
+            { class: 'origins' },
             el(
               'li',
               {},
               el('span', { class: `badge ${origin.kind}` }, origin.kind),
-              el('code', {}, `data.${origin.slot}`),
-              el('span', { class: 'muted' }, `${short(origin.data)} from ${short(origin.loader)}`),
+              el('code', {}, origin.kind === 'fragment' ? origin.slot : `data.${origin.slot}`),
+              el(
+                'span',
+                { class: 'muted' },
+                `${short(origin.data)} from ${short(origin.loader)}` +
+                  (routes.size > 1 && origin.route ? ` · ${origin.route}` : ''),
+              ),
               el('span', { class: 'site', title: origin.site }, site(origin.site)),
             ),
+            ...fields.map((field) =>
+              el(
+                'li',
+                { class: 'field' },
+                el(
+                  'code',
+                  {},
+                  `${origin.kind === 'fragment' ? origin.slot : `data.${origin.slot}`}.${field.name}`,
+                ),
+                el('span', { class: 'muted' }, `${short(field.type)} · ${short(field.declaredIn)}`),
+                el('span', { class: 'site', title: field.site }, field.site === '' ? '' : site(field.site)),
+              ),
+            ),
           ),
-        ),
-      );
+        );
+      }
+      if ((detail.originsDropped ?? 0) > 0) {
+        parts.push(el('p', { class: 'muted' }, `${detail.originsDropped} more were not kept.`));
+      }
     }
     const reads = sharedReads(detail);
     if (reads.length > 0) {
@@ -475,6 +570,72 @@
   /** The components that made a call: the first of each chain. */
   function components(call) {
     return chains(call).map((chain) => chain[0]);
+  }
+
+  /**
+   * Each lookup of a cached query: answered from the cache, or why not. A
+   * moved auth epoch, a sign-in or a role change, shows here as every
+   * lookup of the user's missing once.
+   */
+  function cache(detail) {
+    const lookups = detail.cacheLookups ?? [];
+    if (lookups.length === 0) {
+      return [el('p', { class: 'muted' }, 'No cached query was looked up.')];
+    }
+    const why = {
+      absent: 'nothing cached under this key',
+      flags: 'nothing cached for the flags read now',
+      unkeyable: 'its arguments cannot be keyed, so it is never cached',
+      error: 'the flag store could not answer',
+    };
+    const parts = [
+      el(
+        'p',
+        { class: 'muted' },
+        `${detail.cacheHits ?? 0} answered from the cache, ${detail.cacheMisses ?? 0} ran their body.`,
+      ),
+      ...lookups.map((lookup) =>
+        el(
+          'div',
+          { class: 'load' },
+          el('span', { class: lookup.hit ? 'note' : 'flag' }, lookup.hit ? 'hit' : 'miss'),
+          el('code', {}, lookup.query),
+          el('span', { class: 'muted' }, lookup.hit ? '' : (why[lookup.why] ?? lookup.why)),
+        ),
+      ),
+    ];
+    const kept = lookups.length;
+    const all = (detail.cacheHits ?? 0) + (detail.cacheMisses ?? 0);
+    if (all > kept) parts.push(el('p', { class: 'muted' }, `${all - kept} more were not kept.`));
+    return parts;
+  }
+
+  /** Each feature flag the request read, and what it read as. */
+  function flags(detail) {
+    const reads = detail.flagReads ?? [];
+    if (reads.length === 0) {
+      return [el('p', { class: 'muted' }, 'No feature flag was read.')];
+    }
+    const parts = reads.map((read) =>
+      el(
+        'div',
+        { class: 'load' },
+        el('span', { class: read.value ? 'note' : 'muted' }, read.value ? 'on' : 'off'),
+        el('code', {}, read.flag),
+        el('span', { class: 'muted' }, `${read.reads} ${read.reads === 1 ? 'read' : 'reads'}`),
+        read.otherScope
+          ? el(
+              'span',
+              { class: 'flag', title: 'Read for a scope the code named, not the visitor' },
+              'another scope',
+            )
+          : '',
+      ),
+    );
+    if ((detail.flagsDropped ?? 0) > 0) {
+      parts.push(el('p', { class: 'muted' }, `${detail.flagsDropped} more were not kept.`));
+    }
+    return parts;
   }
 
   /**

@@ -165,12 +165,64 @@ final class Recording
     private int $acrossTenantsDropped = 0;
 
     /**
-     * Where each slot of the props came from: the loader that returned it,
-     * the Data class, and its file:line (DevToolbar::loaded()).
+     * Where each slot of the props came from, and each field of it: the
+     * loader that returned it, the Data class, its file:line, and each
+     * field's declaration (DevToolbar::loaded()) -- every render's, a
+     * fragment's and an action's re-renders too, each under its route.
      *
-     * @var list<array{slot: string, kind: string, loader: string, data: string, site: string}>
+     * @var list<array{slot: string, kind: string, loader: string, data: string, site: string, route: string, fields: list<array{name: string, type: string, site: string, declaredIn: string}>}>
      */
     private array $origins = [];
+
+    private int $originsDropped = 0;
+
+    /** Origins kept of one request, across its renders; fields kept of one origin. */
+    public const int MAX_ORIGINS = 50;
+
+    public const int MAX_FIELDS = 100;
+
+    /** Cache lookups kept of one request; past it they are counted, not kept. */
+    public const int MAX_CACHE_LOOKUPS = 200;
+
+    /** Distinct flags kept of one request. */
+    public const int MAX_FLAGS = 100;
+
+    /** Failed boundaries kept of one request. */
+    public const int MAX_BOUNDARIES = 32;
+
+    /**
+     * Each query cache lookup the request made (QueryCache::observe()): the
+     * query, whether it was answered from the cache, and why not when it
+     * was not -- never its key, which holds the user, nor its answer.
+     *
+     * @var list<array{query: string, hit: bool, why: string}>
+     */
+    private array $cacheLookups = [];
+
+    private int $cacheHits = 0;
+
+    private int $cacheMisses = 0;
+
+    /**
+     * Each feature flag the request read (Features::observe()), by name:
+     * what it read as, how often, and whether it was read for someone else
+     * -- an operator's screen naming another scope -- as well as the caller.
+     *
+     * @var array<string, array{flag: string, value: bool, reads: int, otherScope: bool}>
+     */
+    private array $flags = [];
+
+    private int $flagsDropped = 0;
+
+    /**
+     * Each subtree the renderer rendered as an error row in a render that
+     * went on: a RenderFailed marked `boundary` (ADR 0112).
+     *
+     * @var list<array{code: string, title: string, digest: string}>
+     */
+    private array $boundaries = [];
+
+    private int $boundariesDropped = 0;
 
     /**
      * The secret values PHP sent the renderer, to take out of what it sends
@@ -355,19 +407,88 @@ final class Recording
     }
 
     /**
-     * Where the props of a render came from, slot by slot: the badges the
-     * Props panel draws ("per-request props with origin badges and
-     * `file:line` links"). The last render's, for a request that rendered
-     * more than one.
+     * Where the props of a render came from, slot by slot and field by
+     * field: the badges the Props panel draws ("per-request props with
+     * origin badges and `file:line` links"). Added to what the request's
+     * earlier renders gave -- an action re-renders each route it
+     * revalidates -- with each origin's route; a route rendered again
+     * replaces what it gave before.
      *
-     * @param list<array{slot: string, kind: string, loader: string, data: string, site: string}> $origins
+     * @param list<array{slot: string, kind: string, loader: string, data: string, site: string, route?: string, fields?: list<array{name: string, type: string, site: string, declaredIn: string}>}> $origins
      */
     public function origins(array $origins): void
     {
-        $this->origins = array_map(
-            static fn (array $origin): array => array_map(self::text(...), $origin),
-            $origins,
-        );
+        $kept = [];
+        foreach ($origins as $origin) {
+            $fields = \array_slice($origin['fields'] ?? [], 0, self::MAX_FIELDS);
+            $kept[] = [
+                'slot' => self::text($origin['slot']),
+                'kind' => self::text($origin['kind']),
+                'loader' => self::text($origin['loader']),
+                'data' => self::text($origin['data']),
+                'site' => self::text($origin['site']),
+                'route' => self::text($origin['route'] ?? ''),
+                'fields' => array_map(static fn (array $field): array => array_map(self::text(...), $field), $fields),
+            ];
+        }
+
+        $routes = array_unique(array_column($kept, 'route'));
+        $this->origins = array_values(array_filter(
+            $this->origins,
+            static fn (array $origin): bool => !\in_array($origin['route'], $routes, true),
+        ));
+        foreach ($kept as $origin) {
+            if (\count($this->origins) >= self::MAX_ORIGINS) {
+                $this->originsDropped++;
+
+                continue;
+            }
+            $this->origins[] = $origin;
+        }
+    }
+
+    /**
+     * A query cache lookup: its query's name, whether it hit, and why it
+     * missed -- the toolbar's view of the cache, where a moved auth epoch
+     * shows as every lookup missing (ADR 0112).
+     */
+    public function cacheLookup(string $query, bool $hit, string $why): void
+    {
+        $hit ? $this->cacheHits++ : $this->cacheMisses++;
+        if (\count($this->cacheLookups) < self::MAX_CACHE_LOOKUPS) {
+            $this->cacheLookups[] = ['query' => self::text($query), 'hit' => $hit, 'why' => self::text($why)];
+        }
+    }
+
+    /** A feature flag read: for the caller, or -- $otherScope -- for a scope the code named. */
+    public function flagRead(string $flag, bool $value, bool $otherScope): void
+    {
+        $name = self::text($flag);
+        if (!isset($this->flags[$name])) {
+            if (\count($this->flags) >= self::MAX_FLAGS) {
+                $this->flagsDropped++;
+
+                return;
+            }
+            $this->flags[$name] = ['flag' => $name, 'value' => $value, 'reads' => 0, 'otherScope' => false];
+        }
+        $this->flags[$name]['reads']++;
+        if ($otherScope) {
+            $this->flags[$name]['otherScope'] = true;
+        } else {
+            $this->flags[$name]['value'] = $value;
+        }
+    }
+
+    /** A boundary rendered as an error row, in a render that went on. */
+    public function boundaryFailed(RenderFailure $failure, string $digest): void
+    {
+        if (\count($this->boundaries) >= self::MAX_BOUNDARIES) {
+            $this->boundariesDropped++;
+
+            return;
+        }
+        $this->boundaries[] = ['code' => $failure->value, 'title' => $failure->title(), 'digest' => self::text($digest)];
     }
 
     /** The render failed: its classification, the framework's hint for it, and the reference the visitor was shown. */
@@ -404,6 +525,10 @@ final class Recording
             'rawSql' => \count($this->rawSql) + $this->rawSqlDropped,
             'lazyLoads' => \count($this->lazyLoads) + $this->lazyLoadsDropped,
             'acrossTenants' => \count($this->acrossTenants) + $this->acrossTenantsDropped,
+            'cacheHits' => $this->cacheHits,
+            'cacheMisses' => $this->cacheMisses,
+            'flags' => \count($this->flags) + $this->flagsDropped,
+            'boundaries' => \count($this->boundaries) + $this->boundariesDropped,
         ];
 
         return [
@@ -422,6 +547,12 @@ final class Recording
                 'acrossTenants' => $this->acrossTenants,
                 'acrossTenantsDropped' => $this->acrossTenantsDropped,
                 'origins' => $this->origins,
+                'originsDropped' => $this->originsDropped,
+                'cacheLookups' => $this->cacheLookups,
+                'flagReads' => array_values($this->flags),
+                'flagsDropped' => $this->flagsDropped,
+                'boundaryFailures' => $this->boundaries,
+                'boundariesDropped' => $this->boundariesDropped,
             ],
         ];
     }

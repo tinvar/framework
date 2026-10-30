@@ -11,6 +11,7 @@ use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Orm\LazyLoad;
 use Tinvar\Orm\RawStatement;
+use Tinvar\Render\FragmentToken;
 use Tinvar\Render\FrameTap;
 use Tinvar\Render\RenderFailed;
 use Tinvar\Render\RenderResult;
@@ -187,7 +188,57 @@ final class DevToolbar implements FrameTap
 
     public function failed(RenderFailed $event): void
     {
+        if ($event->boundary) {
+            $this->current?->boundaryFailed($event->failure, $event->digest);
+
+            return;
+        }
         $this->current?->failed($event->failure, $event->digest);
+    }
+
+    /** A query cache lookup: what the Kernel hands QueryCache::observe() when it has a toolbar. */
+    public function cacheLookup(string $query, bool $hit, string $why): void
+    {
+        $this->current?->cacheLookup($query, $hit, $why);
+    }
+
+    /** A feature flag read: what the Kernel hands Features::observe() when it has a toolbar. */
+    public function flagRead(string $flag, bool $value, bool $otherScope): void
+    {
+        $this->current?->flagRead($flag, $value, $otherScope);
+    }
+
+    /**
+     * The deferred boundaries a fragment request renders: where each prop
+     * of each came from -- the page that minted it, under its route, and
+     * the component it was minted for. Its props were the page's, signed
+     * into its token when the page rendered; this request ran no loader.
+     *
+     * @param list<FragmentToken> $tokens
+     */
+    public function fragment(array $tokens): void
+    {
+        if ($this->current === null) {
+            return;
+        }
+
+        $origins = [];
+        foreach ($tokens as $i => $token) {
+            $fields = [];
+            foreach ($token->props as $name => $value) {
+                $fields[] = ['name' => (string) $name, 'type' => get_debug_type($value), 'site' => '', 'declaredIn' => "<Deferred> {$token->component}"];
+            }
+            $origins[] = [
+                'slot' => \count($tokens) === 1 ? 'props' : "tokens.{$i}.props",
+                'kind' => 'fragment',
+                'loader' => "<Deferred> {$token->component}",
+                'data' => 'props minted with the page',
+                'site' => '',
+                'route' => $token->route,
+                'fields' => $fields,
+            ];
+        }
+        $this->current->origins($origins);
     }
 
     /**
@@ -222,20 +273,24 @@ final class DevToolbar implements FrameTap
             return;
         }
 
+        $route = $loaded->chain->page->name ?? $loaded->chain->page->view;
         $origins = [];
         foreach ($loaded->chain->layouts as $layout) {
             if (isset($loaded->layouts[$layout->layoutKey])) {
-                $origins[] = self::origin("layouts.{$layout->layoutKey}", 'layout', $layout, $loaded->layouts[$layout->layoutKey]::class);
+                $origins[] = self::origin("layouts.{$layout->layoutKey}", 'layout', $layout, $loaded->layouts[$layout->layoutKey]::class, $route);
             }
         }
         if ($loaded->page !== null) {
-            $origins[] = self::origin('page', 'page', $loaded->chain->page, $loaded->page::class);
+            $origins[] = self::origin('page', 'page', $loaded->chain->page, $loaded->page::class, $route);
         }
         $this->current->origins($origins);
     }
 
-    /** @return array{slot: string, kind: string, loader: string, data: string, site: string} */
-    private static function origin(string $slot, string $kind, CompiledRoute $route, string $data): array
+    /**
+     * @param class-string $data
+     * @return array{slot: string, kind: string, loader: string, data: string, site: string, route: string, fields: list<array{name: string, type: string, site: string, declaredIn: string}>}
+     */
+    private static function origin(string $slot, string $kind, CompiledRoute $route, string $data, string $routeName): array
     {
         $loader = "{$route->class}::__invoke";
         $site = '';
@@ -246,7 +301,15 @@ final class DevToolbar implements FrameTap
             $site = $file === false ? '' : "{$file}:{$where->getStartLine()}";
         }
 
-        return ['slot' => $slot, 'kind' => $kind, 'loader' => $loader, 'data' => $data, 'site' => $site];
+        return [
+            'slot' => $slot,
+            'kind' => $kind,
+            'loader' => $loader,
+            'data' => $data,
+            'site' => $site,
+            'route' => $routeName,
+            'fields' => FieldOrigins::of($data),
+        ];
     }
 
     /**

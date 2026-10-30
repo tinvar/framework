@@ -114,6 +114,23 @@ final class QueryCache
 
     private const int MAX_LOOKED = 1024;
 
+    /** @var (\Closure(string, bool, string): void)|null told of each lookup: the dev toolbar's */
+    private ?\Closure $observer = null;
+
+    /**
+     * Tells $observer of each lookup of a cached query: its name, whether
+     * it was answered from the cache, and why not -- `absent`, `flags` (no
+     * answer for the flags read now), `unkeyable` or `error`. Never its key,
+     * which holds who asked, nor its answer. Only the dev toolbar's, which
+     * only a dev Kernel has (ADR 0112).
+     *
+     * @param (\Closure(string, bool, string): void)|null $observer
+     */
+    public function observe(?\Closure $observer): void
+    {
+        $this->observer = $observer;
+    }
+
     public function enabledFor(Query $declaration): bool
     {
         return $declaration->cache !== null;
@@ -125,14 +142,32 @@ final class QueryCache
      */
     public function get(string $name, Query $declaration, array $arguments, string $tenant): array
     {
-        $miss = ['hit' => false, 'value' => null];
         if (!$this->enabledFor($declaration)) {
-            return $miss;
+            return ['hit' => false, 'value' => null];
         }
+        $why = 'absent';
+        $found = $this->lookup($name, $declaration, $arguments, $tenant, $why);
+        if ($this->observer !== null) {
+            ($this->observer)($name, $found['hit'], $found['hit'] ? '' : $why);
+        }
+
+        return $found;
+    }
+
+    /**
+     * @param array<string, mixed> $arguments
+     * @param-out string $why
+     * @return array{hit: bool, value: mixed}
+     */
+    private function lookup(string $name, Query $declaration, array $arguments, string $tenant, string &$why): array
+    {
+        $miss = ['hit' => false, 'value' => null];
 
         // Unkeyable means uncacheable, never loosely keyed.
         $key = $this->keyOrNull($name, $declaration, $arguments, $tenant);
         if ($key === null) {
+            $why = 'unkeyable';
+
             return $miss;
         }
 
@@ -150,6 +185,7 @@ final class QueryCache
             $entry = $found['value'];
             $flags = self::flagsNamed($entry);
             if ($flags !== null) {
+                $why = 'flags';
                 $values = $this->currentValues($flags);
                 if ($values === null) {
                     return $miss;
@@ -167,9 +203,12 @@ final class QueryCache
             // whose flags read as its body's did.
             $answer = self::answer($entry);
             if ($answer === null || $this->currentValues(array_keys($answer['read'])) !== $answer['read']) {
+                $why = 'flags';
+
                 return $miss;
             }
         } catch (\Throwable $e) {
+            $why = 'error';
             // A flag store that cannot answer leaves the answer unproven, and
             // the body runs -- to fail the same way, or to answer.
             $this->failures[] = $e;

@@ -52,6 +52,21 @@ final class Features
         }
     }
 
+    /** @var (\Closure(string, bool, bool): void)|null told of each read: the dev toolbar's */
+    private ?\Closure $observer = null;
+
+    /**
+     * Tells $observer of each flag read: its name, its value, and whether it
+     * was read for a scope the code named rather than the caller's. Only the
+     * dev toolbar's, which only a dev Kernel has (ADR 0112).
+     *
+     * @param (\Closure(string, bool, bool): void)|null $observer
+     */
+    public function observe(?\Closure $observer): void
+    {
+        $this->observer = $observer;
+    }
+
     /**
      * Whether $flag is on for the tenant, user and panel in force. An enum
      * case names its flag by its value.
@@ -61,6 +76,9 @@ final class Features
         $declared = $this->flag($flag);
         $active = $this->valueIn($declared, $this->current());
         FlagReads::record($declared->name, $active);
+        if ($this->observer !== null) {
+            ($this->observer)($declared->name, $active, false);
+        }
 
         return $active;
     }
@@ -77,8 +95,13 @@ final class Features
     public function in(string|\BackedEnum $flag, FlagScope $scope): bool
     {
         FlagReads::unattributable();
+        $declared = $this->flag($flag);
+        $active = $this->valueIn($declared, $scope);
+        if ($this->observer !== null) {
+            ($this->observer)($declared->name, $active, true);
+        }
 
-        return $this->valueIn($this->flag($flag), $scope);
+        return $active;
     }
 
     /**

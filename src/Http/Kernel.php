@@ -56,6 +56,7 @@ use Tinvar\Protocol\ProtocolException;
 use Tinvar\Render\FragmentManifest;
 use Tinvar\Render\StaticPages;
 use Tinvar\Render\FragmentMinter;
+use Tinvar\Render\FragmentToken;
 use Tinvar\Render\RenderFailed;
 use Tinvar\Render\RenderFailure;
 use Tinvar\Render\RendererException;
@@ -772,6 +773,12 @@ final class Kernel
         $cache ??= new QueryCache(new \Tinvar\Cache\ArrayStore(), $this->auth, $panels, build: $this->builds->current ?? '');
         $this->gate = $gate;
         $this->cache = $cache;
+        // Each lookup and each flag read, for the toolbar's Cache and Flags
+        // panels (ADR 0112); a Kernel not built for dev has no toolbar.
+        if ($this->toolbar !== null) {
+            $cache->observe($this->toolbar->cacheLookup(...));
+            $features?->observe($this->toolbar->flagRead(...));
+        }
 
         // What every entry point's declarations put around it -- the tenant
         // its #[TenantFrom] names, the panel its #[Panel] or namespace puts
@@ -1274,13 +1281,37 @@ final class Kernel
         // budget is a budget of renders (ADR 0018).
         $perToken = FragmentEndpoint::tokenCount(...);
 
-        $this->fragments_ = $fragments === null ? null : new FragmentEndpoint(
+        // Under `tinvar dev`, each fragment's props badged with where they
+        // came from -- the page that minted them -- before it renders
+        // (ADR 0112).
+        $render = $fragments?->render;
+        $renderGroup = $fragments?->renderGroup;
+        $toolbar = $this->toolbar;
+        if ($toolbar !== null && $render !== null) {
+            $one = $render;
+            $render = static function (FragmentToken $token, Request $request, array $models, array $allowed, ?SharedReads $shared) use ($toolbar, $one): Response {
+                $toolbar->fragment([$token]);
+
+                return $one($token, $request, $models, array_values($allowed), $shared);
+            };
+        }
+        if ($toolbar !== null && $renderGroup !== null) {
+            $group = $renderGroup;
+            $renderGroup = static function (array $tokens, Request $request, array $models, array $allowed, ?SharedReads $shared) use ($toolbar, $group): Response {
+                $tokens = array_values($tokens);
+                $toolbar->fragment($tokens);
+
+                return $group($tokens, $request, $models, array_values($allowed), $shared);
+            };
+        }
+
+        $this->fragments_ = $fragments === null || $render === null ? null : new FragmentEndpoint(
             routes: $this->routes,
-            loaders: new LoaderRunner($this->orm, $resolver, $gate),
+            loaders: new LoaderRunner($this->orm, $resolver, $gate, telemetry: $this->telemetry),
             orm: $this->orm,
             signer: $fragments->signer,
             builds: $fragments->builds,
-            render: $fragments->render,
+            render: $render,
             sessionId: $fragments->sessionId,
             allowedQueries: $fragments->allowedQueries,
             middlewareResolver: self::middlewareFrom($resolver),
@@ -1288,7 +1319,7 @@ final class Kernel
             extraGlobal: $this->throttleFor($throttle, 'fragments', $limits, byAddress: true, cost: $perToken),
             panels: $panels,
             extraInner: $this->throttleFor($throttle, 'fragments', $limits, byAddress: false, cost: $perToken),
-            renderGroup: $fragments->renderGroup,
+            renderGroup: $renderGroup,
             auth: $this->auth,
             entry: $entry,
             shared: $this->sharedForFragment(...),

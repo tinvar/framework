@@ -17,7 +17,14 @@ use Tinvar\Attributes\Page;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Data\Data;
+use Tinvar\Attributes\Query as QueryAttribute;
+use Tinvar\Cache\ArrayStore;
+use Tinvar\Cache\QueryCache;
 use Tinvar\Dev\DevToolbar;
+use Tinvar\Dev\FieldOrigins;
+use Tinvar\Features\Features;
+use Tinvar\Features\Flag;
+use Tinvar\Features\FlagRules;
 use Tinvar\Dev\Recording;
 use Tinvar\Dev\ToolbarToken;
 use Tinvar\Http\DevOverlay;
@@ -32,7 +39,10 @@ use Tinvar\Orm\Metadata;
 use Tinvar\Orm\Orm;
 use Tinvar\Protocol\Frame;
 use Tinvar\Query\QueryRegistry;
+use Tinvar\Render\FragmentToken;
 use Tinvar\Render\FrameTap;
+use Tinvar\Render\RenderFailed;
+use Tinvar\Render\RenderFailure;
 use Tinvar\Render\RendererException;
 use Tinvar\Render\RenderResult;
 use Tinvar\Render\TokenError;
@@ -54,6 +64,15 @@ const NONCE = 'R4nd0m+N/once==';
 final readonly class CatalogData extends Data
 {
     public function __construct(public string $title = 'Lanterns') {}
+}
+
+final readonly class ShelfData extends Data
+{
+    public function __construct(
+        public string $label = 'Lamps',
+        public CatalogData $catalog = new CatalogData(),
+        public ?ShelfData $next = null,
+    ) {}
 }
 
 #[Page('/catalog', view: 'catalog', name: 'catalog')]
@@ -123,6 +142,27 @@ function kernel(?DevToolbar $toolbar, bool $dev = true): Kernel
         globalMiddleware: [SignIn::class],
         dev: $dev,
         toolbar: $toolbar,
+    );
+}
+
+function kernelWith(?DevToolbar $toolbar, QueryCache $cache, ?Features $features, Orm $orm, AuthContext $auth, bool $dev = true): Kernel
+{
+    $routes = new RouteRegistry();
+    $routes->register(CatalogPage::class);
+
+    return new Kernel(
+        orm: $orm,
+        routes: $routes,
+        queries: new QueryRegistry(),
+        actions: new ActionRegistry(),
+        auth: $auth,
+        policies: new PolicyRegistry(),
+        resolver: static fn (string $class): object => new $class(),
+        allowedQueries: static fn (Request $r): array => [],
+        dev: $dev,
+        toolbar: $toolbar,
+        cache: $cache,
+        features: $features,
     );
 }
 
@@ -559,11 +599,98 @@ it('badges the page\'s props with the loader that returned them and its file:lin
     [, $one] = read($kernel, DevToolbar::PATH . '/' . $list['requests'][0]['id'], $token);
     $invoke = new \ReflectionMethod(CatalogPage::class, '__invoke');
 
+    $constructor = new \ReflectionMethod(CatalogData::class, '__construct');
+
     expect($one['request']['origins'])->toBe([[
         'slot' => 'page',
         'kind' => 'page',
         'loader' => CatalogPage::class . '::__invoke',
         'data' => CatalogData::class,
         'site' => __FILE__ . ':' . $invoke->getStartLine(),
-    ]]);
+        'route' => 'catalog',
+        'fields' => [[
+            'name' => 'title',
+            'type' => 'string',
+            'site' => __FILE__ . ':' . $constructor->getStartLine(),
+            'declaredIn' => CatalogData::class,
+        ]],
+    ]])->and($one['request']['originsDropped'])->toBe(0);
+});
+
+it('badges a nested Data\'s fields under the field that holds it, and stops where a shape repeats', function () {
+    $fields = FieldOrigins::of(ShelfData::class);
+
+    expect(array_column($fields, 'name'))->toBe(['label', 'catalog', 'catalog.title', 'next'])
+        ->and($fields[1]['type'])->toBe(CatalogData::class)
+        ->and($fields[0]['site'])->toEndWith(':' . (new \ReflectionMethod(ShelfData::class, '__construct'))->getStartLine() + 1)
+        ->and(FieldOrigins::of(ShelfData::class, max: 2))->toHaveCount(2);
+});
+
+it('lists a fragment\'s props as minted by its page, and adds an action\'s re-render to the request\'s origins', function () {
+    $toolbar = toolbar(run());
+    $toolbar->begin(local('/_fragment/x'));
+    $toolbar->fragment([new FragmentToken('Reviews', ['sku' => 'L-1', 'limit' => 3], 'shop.product', [], '', '', 'dev', 'h', time() + 60, time())]);
+    $toolbar->fragment([new FragmentToken('Reviews', ['sku' => 'L-2'], 'shop.product', [], '', '', 'dev', 'h', time() + 60, time())]);
+    $recording = (new \ReflectionProperty(DevToolbar::class, 'current'))->getValue($toolbar);
+    \assert($recording instanceof Recording);
+    $detail = $recording->finish(200, 's', 'a')['detail'];
+
+    // The same route rendered again replaces what it gave, as a re-render would.
+    expect($detail['origins'])->toHaveCount(1)
+        ->and($detail['origins'][0]['kind'])->toBe('fragment')
+        ->and($detail['origins'][0]['route'])->toBe('shop.product')
+        ->and($detail['origins'][0]['loader'])->toBe('<Deferred> Reviews')
+        ->and(array_column($detail['origins'][0]['fields'], 'name'))->toBe(['sku']);
+});
+
+it('lists the cache lookups, the flags read and the boundaries that failed, without a key or an answer', function () {
+    $toolbar = toolbar(run());
+    $toolbar->begin(local('/catalog'));
+    $toolbar->cacheLookup('catalog.stats', true, '');
+    $toolbar->cacheLookup('catalog.stats', false, 'absent');
+    $toolbar->flagRead('beta', true, false);
+    $toolbar->flagRead('beta', true, false);
+    $toolbar->flagRead('dark.mode', false, true);
+    $toolbar->failed(new RenderFailed(new RendererException('no', 'query_failed', 'd1g3st'), RenderFailure::QueryFailed, local('/catalog'), 'd1g3st', boundary: true));
+    $recording = (new \ReflectionProperty(DevToolbar::class, 'current'))->getValue($toolbar);
+    \assert($recording instanceof Recording);
+    ['summary' => $summary, 'detail' => $detail] = $recording->finish(200, 's', 'a');
+
+    expect($summary['cacheHits'])->toBe(1)->and($summary['cacheMisses'])->toBe(1)
+        ->and($summary['flags'])->toBe(2)->and($summary['boundaries'])->toBe(1)
+        // A boundary is not the render's failure: the page rendered.
+        ->and($summary['failure'])->toBeNull()
+        ->and($detail['cacheLookups'])->toBe([
+            ['query' => 'catalog.stats', 'hit' => true, 'why' => ''],
+            ['query' => 'catalog.stats', 'hit' => false, 'why' => 'absent'],
+        ])
+        ->and($detail['flagReads'])->toBe([
+            ['flag' => 'beta', 'value' => true, 'reads' => 2, 'otherScope' => false],
+            ['flag' => 'dark.mode', 'value' => false, 'reads' => 1, 'otherScope' => true],
+        ])
+        ->and($detail['boundaryFailures'][0]['digest'])->toBe('d1g3st');
+});
+
+it('hears the Kernel\'s query cache and feature flags only when it is given a toolbar', function () {
+    $auth = new AuthContext();
+    $orm = new Orm((new Fixture(racks: 0, unitsPerRack: 0, sites: 0))->connection, new IdentityMap('test'));
+    $features = new Features([new Flag('beta', default: true)], FlagRules::new(), $auth, $orm);
+    $cache = new QueryCache(new ArrayStore(), $auth);
+    $toolbar = toolbar(run());
+    kernelWith($toolbar, $cache, $features, $orm, $auth);
+    $toolbar->begin(local('/catalog'));
+
+    $features->active('beta');
+    $cache->get('stats', new QueryAttribute(cache: '1 minute'), [], '');
+    $recording = (new \ReflectionProperty(DevToolbar::class, 'current'))->getValue($toolbar);
+    \assert($recording instanceof Recording);
+    $detail = $recording->finish(200, 's', 'a')['detail'];
+
+    expect($detail['flagReads'][0]['flag'])->toBe('beta')
+        ->and($detail['cacheLookups'])->toBe([['query' => 'stats', 'hit' => false, 'why' => 'absent']]);
+
+    // A Kernel without one sets no observer: nothing to hear it.
+    $quiet = new QueryCache(new ArrayStore(), $auth);
+    kernelWith(null, $quiet, null, $orm, $auth, dev: false);
+    expect((new \ReflectionProperty(QueryCache::class, 'observer'))->getValue($quiet))->toBeNull();
 });
