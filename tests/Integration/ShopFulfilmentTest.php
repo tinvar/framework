@@ -240,7 +240,7 @@ describe('the fulfilment workflow', function () {
         $staff = account($kernel, StaffAccount::EMAIL);
         $progress = fn () => $kernel->kernel()->auth->actingAs($staff, fn () => $kernel->kernel()->panels?->within(StaffMemberships::PANEL, fn () => $kernel->workflows->progress($fulfilment)), epochOf($kernel, $staff));
         expect($progress()?->status)->toBe(WorkflowRecord::WAITING)
-            ->and($progress()?->step)->toBe('collected');
+            ->and($progress()?->step)->toBe("collected:{$order}");
 
         // Its word is a signal to the workflow, which wakes and ships it.
         $collected = callBack($kernel, 'orders.collected', $context, ['order' => $order, 'fulfilment' => $fulfilment]);
