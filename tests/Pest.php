@@ -9,8 +9,17 @@ declare(strict_types=1);
  * runs alone (bin/package-alone).
  */
 
-// The testing layer's Pest-style functions: get(), actingAs(), query() ...
-\Tinvar\Testing\Testing::functions();
+// A module's own run (bin/module-alone, ADR 0114) holds the process to what
+// that module may load, before anything else is; the testing layer stands
+// over the kernel, so it has none of its functions. Every other run has the
+// testing layer's Pest-style functions: get(), actingAs(), query() ...
+$alone = getenv('TINVAR_MODULE_ALONE');
+if (\is_string($alone) && $alone !== '') {
+    require_once __DIR__ . '/Support/Fixtures/module-alone.php';
+    \Tinvar\Tests\Support\Fixtures\ModuleAlone::hold($alone);
+} else {
+    \Tinvar\Testing\Testing::functions();
+}
 
 /*
  * A generated app key and probe token for this run, in a temporary
