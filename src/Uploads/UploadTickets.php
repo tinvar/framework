@@ -41,28 +41,38 @@ final readonly class UploadTickets
     /**
      * @param string|array{class-string, string} $action the action's wire name, or its class and method
      * @param string $field the action's `Upload` parameter
-     * @param Model $target the record the file is for: of the model `to:` names, and saved
+     * @param Model|null $target the record the file is for: of the model `to:` names, and saved;
+     *        null for a parameter declared `to: null`, for a record its action has yet to make
      * @throws \LogicException when the call cannot produce a ticket that would ever be honoured
      */
-    public function issue(Request $request, string|array $action, string $field, Model $target, int $ttl = UploadTicket::DEFAULT_TTL): string
+    public function issue(Request $request, string|array $action, string $field, ?Model $target, int $ttl = UploadTicket::DEFAULT_TTL): string
     {
         $compiled = $this->compiled($action);
         $declared = $compiled->uploads[$field] ?? throw new \LogicException(
             "{$compiled->where()} has no #[Uploaded] Upload parameter named '{$field}'.",
         );
 
-        $targetClass = $compiled->models[$declared->to];
-        if (!$target instanceof $targetClass) {
-            throw new \LogicException(\sprintf(
-                "%s attaches '%s' to a %s, and the ticket was asked for a %s.",
-                $compiled->where(),
-                $field,
-                $targetClass,
-                $target::class,
-            ));
-        }
-        if (!$target->isPersisted()) {
-            throw new \LogicException('An upload ticket names a saved record; this one has no row yet.');
+        if ($declared->to === null) {
+            if ($target !== null) {
+                throw new \LogicException("{$compiled->where()} attaches '{$field}' to no record (to: null), and the ticket was asked for one.");
+            }
+            $targetClass = '';
+            $targetId = '';
+        } else {
+            $targetClass = $compiled->models[$declared->to];
+            if (!$target instanceof $targetClass) {
+                throw new \LogicException(\sprintf(
+                    "%s attaches '%s' to a %s, and the ticket was asked for %s.",
+                    $compiled->where(),
+                    $field,
+                    $targetClass,
+                    $target === null ? 'none' : 'a ' . $target::class,
+                ));
+            }
+            if (!$target->isPersisted()) {
+                throw new \LogicException('An upload ticket names a saved record; this one has no row yet. Declare the parameter `to: null` for a record its action makes.');
+            }
+            $targetId = $target->primaryKey();
         }
 
         if ($ttl < 1 || $ttl > UploadTicket::MAX_TTL) {
@@ -86,7 +96,7 @@ final readonly class UploadTickets
             action: $compiled->name,
             field: $field,
             targetClass: $targetClass,
-            targetId: $target->primaryKey(),
+            targetId: $targetId,
             prefix: $declared->prefix,
             tenant: $this->entry->tenantClaimFor($compiled->tenantFrom, $request),
             panel: $panel->name ?? '',

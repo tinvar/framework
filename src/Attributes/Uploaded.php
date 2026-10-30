@@ -25,7 +25,12 @@ namespace Tinvar\Attributes;
  *
  * - `to` names the action's model parameter the file is attached to. A
  *   ticket names one record of it, and the upload is bound to it: called
- *   with another record, the action is refused the upload.
+ *   with another record, the action is refused the upload. `to: null` is
+ *   for a record not yet created -- the action that takes the file is the
+ *   one that makes it -- and binds the upload to no record: still to the
+ *   action and parameter, the session, the user at their auth epoch, the
+ *   tenant and the panel, and to nothing a record could be swapped for,
+ *   since there is none (ADR 0127). Said out loud, never a default.
  * - `prefix` is where the file's storage key goes, below which the
  *   framework draws the rest of the key at random.
  * - `types` are the media types the bytes may sniff as -- from what
@@ -49,7 +54,7 @@ final readonly class Uploaded
 
     /** @param array<mixed> $types as written, checked here */
     public function __construct(
-        public string $to,
+        public ?string $to,
         public string $prefix,
         array $types,
         public int $maxBytes = 5_242_880,

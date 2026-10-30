@@ -191,8 +191,8 @@ final class UploadEndpoint
 
         [$action, $declared] = $this->declarationFor($ticket);
         // The model the declaration names, which declarationFor() held the
-        // ticket's class to.
-        $model = $action->models[$declared->to];
+        // ticket's class to; none for a parameter attached to no record.
+        $model = $declared->to === null ? null : $action->models[$declared->to];
         $panels = $this->entry->panelFor($action->panels, $action->class);
         $stack = [
             ...$this->entry->stackFor($action->tenantFrom, $panels),
@@ -204,7 +204,7 @@ final class UploadEndpoint
 
         return new Pipeline($stack)->run($request, function (Request $inner) use ($ticket, $now, $model): Response {
             $this->assertBinding($inner, $ticket);
-            if ($this->orm->find($model, $ticket->targetId) === null) {
+            if ($model !== null && $this->orm->find($model, $ticket->targetId) === null) {
                 throw self::refused('names a record that is not there');
             }
 
@@ -237,7 +237,12 @@ final class UploadEndpoint
         $action = $this->actions->get($ticket->action);
         $declared = $action->uploads[$ticket->field] ?? throw self::refused('names no upload parameter of the action');
 
-        if ($ticket->targetClass !== $action->models[$declared->to] || $ticket->prefix !== $declared->prefix) {
+        // A record of the declared model, by an id -- or, attached to no
+        // record (`to: null`), neither a model nor an id.
+        $holds = $declared->to === null
+            ? $ticket->targetClass === '' && $ticket->targetId === ''
+            : $ticket->targetClass === $action->models[$declared->to] && $ticket->targetId !== '';
+        if (!$holds || $ticket->prefix !== $declared->prefix) {
             throw self::refused('names another target or prefix than the parameter declares');
         }
 

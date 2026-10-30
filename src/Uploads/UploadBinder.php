@@ -67,15 +67,11 @@ final readonly class UploadBinder
             return null;
         }
 
-        $target = $models[$declared->to] ?? null;
         $session = $this->uploads->sessionOf($request);
 
         $holds = $pending->action === $action->name
             && $pending->field === $field
-            && $target !== null
-            && $pending->targetClass === $action->models[$declared->to]
-            && $target instanceof $pending->targetClass
-            && hash_equals($pending->targetId, $target->primaryKey())
+            && $this->targetHolds($pending, $declared->to, $action, $models)
             && $pending->prefix === $declared->prefix
             && str_starts_with($pending->key, $declared->prefix . '/')
             && \in_array($pending->type, $declared->types, true)
@@ -91,6 +87,25 @@ final readonly class UploadBinder
         }
 
         return $pending->upload();
+    }
+
+    /**
+     * The upload was made for the record the action was called with -- or,
+     * for a parameter attached to no record (`to: null`), for none.
+     *
+     * @param array<string, Model> $models
+     */
+    private function targetHolds(PendingUpload $pending, ?string $to, CompiledAction $action, array $models): bool
+    {
+        if ($to === null) {
+            return $pending->targetClass === '' && $pending->targetId === '';
+        }
+        $target = $models[$to] ?? null;
+
+        return $target !== null
+            && $pending->targetClass === $action->models[$to]
+            && $target instanceof $pending->targetClass
+            && hash_equals($pending->targetId, $target->primaryKey());
     }
 
     /** Claims an upload for the call about to run; false when another got there first. */

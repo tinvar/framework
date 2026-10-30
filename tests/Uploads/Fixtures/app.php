@@ -178,6 +178,17 @@ final class ProfileActions
         return ActionResult::ok(['keys' => array_map(static fn (Upload $one): string => $one->key, $photos->files)]);
     }
 
+    /** A profile made with its avatar: the upload is for a record not yet created. */
+    #[Action(name: 'profiles.create')]
+    public function create(
+        #[Uploaded(to: null, prefix: 'avatars', types: ['image/png'], maxBytes: 4096)]
+        Upload $avatar,
+    ): ActionResult {
+        self::$received = $avatar;
+
+        return ActionResult::ok(['key' => $avatar->key]);
+    }
+
     #[Action(name: 'albums.cover'), Authorize('update', 'album')]
     public function cover(
         Album $album,
@@ -266,7 +277,7 @@ final class App
      * @param string|array{class-string, string} $action
      */
     public function ticket(
-        Model $target,
+        ?Model $target,
         string $user = 'u-1',
         string $session = 'session-a',
         string|array $action = 'profiles.avatar',

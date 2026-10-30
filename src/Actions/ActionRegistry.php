@@ -356,7 +356,7 @@ final class ActionRegistry
         // The record is the action's own parameter, resolved and authorized
         // before the upload is looked at, and always there: an upload bound
         // to a record could not be checked against one that was left out.
-        if (!isset($models[$declared->to]) || isset($optional[$declared->to])) {
+        if ($declared->to !== null && (!isset($models[$declared->to]) || isset($optional[$declared->to]))) {
             throw new ActionException(
                 "{$where}: \${$name} is attached to '{$declared->to}', which is not a required model parameter of the action.",
             );

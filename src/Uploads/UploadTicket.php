@@ -93,8 +93,10 @@ final readonly class UploadTicket
         $claims = new self(
             action: self::string($decoded, 'a'),
             field: self::string($decoded, 'f'),
-            targetClass: self::string($decoded, 'm'),
-            targetId: self::string($decoded, 'k'),
+            // Both '' for a parameter attached to no record (`to: null`),
+            // and held to that declaration where the ticket is used.
+            targetClass: self::string($decoded, 'm', allowEmpty: true),
+            targetId: self::string($decoded, 'k', allowEmpty: true),
             prefix: self::string($decoded, 'x'),
             tenant: self::string($decoded, 'y', allowEmpty: true),
             panel: self::string($decoded, 'n', allowEmpty: true),
