@@ -18,6 +18,7 @@ use Tinvar\Orm\Orm;
 use Tinvar\Render\StaticPages;
 use Tinvar\Uploads\Upload;
 use Tinvar\Uploads\UploadBinder;
+use Tinvar\Uploads\UploadList;
 use Tinvar\Validation\FormRequest;
 use Tinvar\Validation\ValidationException;
 use Tinvar\Validation\Validator;
@@ -304,7 +305,7 @@ final class ActionRunner
      *
      * @param array<string, mixed> $input
      * @param array<string, Model> $models
-     * @return array{array<string, FormRequest>, array<string, mixed>, array<string, Upload|null>} the
+     * @return array{array<string, FormRequest>, array<string, mixed>, array<string, Upload|UploadList|null>} the
      *         requests built, the scalars read and the uploads verified, each by parameter
      */
     private function validateInputs(CompiledAction $action, array $input, ?Model $subject, array $models, ?Request $request): array
@@ -366,7 +367,7 @@ final class ActionRunner
      *
      * @param array<string, mixed> $input
      * @param array<string, Model> $models
-     * @return array{Upload|null, list<string>} the upload, and what was wrong with it
+     * @return array{Upload|UploadList|null, list<string>} the upload or uploads, and what was wrong with them
      */
     private function verifyUpload(CompiledAction $action, string $field, array $input, array $models, ?Request $request): array
     {
@@ -377,16 +378,42 @@ final class ActionRunner
         }
 
         $reference = $input[$field] ?? null;
-        if ($reference === null || $reference === '') {
+        $declared = $action->uploads[$field];
+        if ($reference === null || $reference === '' || $reference === []) {
             return isset($action->optionalUploads[$field]) ? [null, []] : [null, ["{$field} is required."]];
         }
 
-        $upload = $this->uploads->verify($action, $field, $reference, $models, $request);
+        if ($declared->maxFiles === 1) {
+            $upload = $this->uploads->verify($action, $field, $reference, $models, $request);
 
-        return $upload === null ? [null, [self::UPLOAD_REFUSED]] : [$upload, []];
+            return $upload === null ? [null, [self::UPLOAD_REFUSED]] : [$upload, []];
+        }
+
+        // A list: each reference once, no more than declared, and every one
+        // held to its ticket's binding as a single upload is -- one that is
+        // not refuses them all.
+        if (!\is_array($reference) || !array_is_list($reference)) {
+            return [null, [self::UPLOAD_REFUSED]];
+        }
+        if (\count($reference) > $declared->maxFiles) {
+            return [null, ["{$field} takes at most {$declared->maxFiles} files."]];
+        }
+        if (\count(array_unique(array_map(static fn (mixed $one): string => \is_string($one) ? $one : '', $reference))) !== \count($reference)) {
+            return [null, [self::UPLOAD_REFUSED]];
+        }
+        $files = [];
+        foreach ($reference as $one) {
+            $upload = $this->uploads->verify($action, $field, $one, $models, $request);
+            if ($upload === null) {
+                return [null, [self::UPLOAD_REFUSED]];
+            }
+            $files[] = $upload;
+        }
+
+        return [new UploadList($files), []];
     }
 
-    /** @param array<string, Upload|null> $uploads */
+    /** @param array<string, Upload|UploadList|null> $uploads */
     private function hasUploads(array $uploads): bool
     {
         return array_filter($uploads) !== [];
@@ -406,7 +433,7 @@ final class ActionRunner
      * too; a process killed mid-body leaves the upload as it was, or
      * claimed and unused -- a file kept, never a record dangling.
      *
-     * @param array<string, Upload|null> $uploads
+     * @param array<string, Upload|UploadList|null> $uploads
      * @param \Closure(): mixed $body
      */
     private function runWithUploads(array $uploads, \Closure $body): mixed
@@ -439,24 +466,23 @@ final class ActionRunner
      * call claimed first gives the rest back and refuses this one, as an
      * upload that failed verification does.
      *
-     * @param array<string, Upload|null> $uploads
+     * @param array<string, Upload|UploadList|null> $uploads
      * @return list<Upload> what was claimed
      */
     private function claim(array $uploads): array
     {
         $claimed = [];
-        foreach ($uploads as $field => $upload) {
-            if ($upload === null) {
-                continue;
-            }
-            if ($this->uploads?->claim($upload) !== true) {
-                foreach ($claimed as $taken) {
-                    $this->uploads?->release($taken);
-                }
+        foreach ($uploads as $field => $given) {
+            foreach ($given instanceof UploadList ? $given->files : ($given === null ? [] : [$given]) as $upload) {
+                if ($this->uploads?->claim($upload) !== true) {
+                    foreach ($claimed as $taken) {
+                        $this->uploads?->release($taken);
+                    }
 
-                throw new ValidationException([$field => [self::UPLOAD_REFUSED]]);
+                    throw new ValidationException([$field => [self::UPLOAD_REFUSED]]);
+                }
+                $claimed[] = $upload;
             }
-            $claimed[] = $upload;
         }
 
         return $claimed;
@@ -633,7 +659,7 @@ final class ActionRunner
      * @param array<string, Model>       $models
      * @param array<string, FormRequest> $requests already validated, by parameter
      * @param array<string, mixed>       $scalars  already coerced and judged, by parameter
-     * @param array<string, Upload|null> $uploads  already verified, by parameter
+     * @param array<string, Upload|UploadList|null> $uploads  already verified, by parameter
      * @return array<string, mixed>
      */
     private function bind(

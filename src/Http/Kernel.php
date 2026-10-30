@@ -1748,7 +1748,7 @@ final class Kernel
 
                 return $this->uploadStack->run(
                     $request,
-                    fn (Request $passed): Response => $this->uploads_->handle($passed),
+                    fn (Request $passed): Response => $this->uploads_->handle($passed, $rawBody),
                 );
             }
 

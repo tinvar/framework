@@ -32,12 +32,18 @@ namespace Tinvar\Attributes;
  *   Storage\FileTypes recognises, which is never one a browser would run.
  * - `maxBytes` is the largest file taken, under the application's own
  *   ceiling (the uploads' own maxBytes).
+ * - `maxFiles` is how many files the parameter takes: 1 for an `Upload`,
+ *   2 or more for an `UploadList`, whose files each go to /_upload under
+ *   the one ticket and are each held to all of the above.
  *
  * ActionRegistry refuses a declaration it could not hold an upload to.
  */
 #[\Attribute(\Attribute::TARGET_PARAMETER)]
 final readonly class Uploaded
 {
+    /** The most files one parameter takes: each is a file kept until it is claimed or pruned. */
+    public const int MAX_FILES = 20;
+
     /** @var list<string> */
     public array $types;
 
@@ -47,6 +53,7 @@ final readonly class Uploaded
         public string $prefix,
         array $types,
         public int $maxBytes = 5_242_880,
+        public int $maxFiles = 1,
     ) {
         $list = [];
         foreach ($types as $type) {

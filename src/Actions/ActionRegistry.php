@@ -23,6 +23,7 @@ use Tinvar\Support\KnownAttributes;
 use Tinvar\Support\Str;
 use Tinvar\Storage\FileTypes;
 use Tinvar\Uploads\Upload;
+use Tinvar\Uploads\UploadList;
 use Tinvar\Validation\FormRequest;
 
 /**
@@ -200,8 +201,8 @@ final class ActionRegistry
             // A declaration on anything but an Upload would be one nothing
             // reads: the author meant a limit, and there would be none.
             $uploaded = $parameter->getAttributes(Uploaded::class);
-            if ($uploaded !== [] && (!$type instanceof \ReflectionNamedType || $type->getName() !== Upload::class)) {
-                throw new ActionException("{$where}: \${$name} carries #[Uploaded] and is not typed Upload.");
+            if ($uploaded !== [] && (!$type instanceof \ReflectionNamedType || !\in_array($type->getName(), [Upload::class, UploadList::class], true))) {
+                throw new ActionException("{$where}: \${$name} carries #[Uploaded] and is not typed Upload or UploadList.");
             }
 
             if (!$type instanceof \ReflectionNamedType) {
@@ -246,11 +247,20 @@ final class ActionRegistry
             // ticket": the parameter takes the upload /_upload stored under
             // one, and what may be uploaded to it is declared beside it --
             // there is no default, so no upload is ever taken unlimited.
-            if ($typeName === Upload::class) {
+            if ($typeName === Upload::class || $typeName === UploadList::class) {
                 if ($uploaded === []) {
-                    throw new ActionException("{$where}: \${$name} takes an Upload and declares no #[Uploaded] saying what may be uploaded to it.");
+                    throw new ActionException("{$where}: \${$name} takes an upload and declares no #[Uploaded] saying what may be uploaded to it.");
                 }
-                $uploads[$name] = $uploaded[0]->newInstance();
+                $declaration = $uploaded[0]->newInstance();
+                // One file is an Upload, more an UploadList: the type says
+                // which the body is handed, the declaration how many.
+                if ($typeName === Upload::class && $declaration->maxFiles !== 1) {
+                    throw new ActionException("{$where}: \${$name} takes one Upload, and declares maxFiles: {$declaration->maxFiles}; take an UploadList for more.");
+                }
+                if ($typeName === UploadList::class && ($declaration->maxFiles < 2 || $declaration->maxFiles > Uploaded::MAX_FILES)) {
+                    throw new ActionException("{$where}: \${$name} takes an UploadList, of between 2 and " . Uploaded::MAX_FILES . " files by its maxFiles; take an Upload for one.");
+                }
+                $uploads[$name] = $declaration;
                 if ($type->allowsNull() || $parameter->isDefaultValueAvailable()) {
                     $optionalUploads[$name] = true;
                 }

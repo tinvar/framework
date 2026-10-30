@@ -40,6 +40,7 @@ use Tinvar\Storage\Storage;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Uploads\ArrayUploadStore;
 use Tinvar\Uploads\Upload;
+use Tinvar\Uploads\UploadList;
 use Tinvar\Uploads\Uploads;
 use Tinvar\Uploads\UploadStore;
 
@@ -158,6 +159,20 @@ final class ProfileActions
         self::$received = $document;
 
         return ActionResult::ok(['attached' => $document !== null]);
+    }
+
+    /** What the last list body was handed. */
+    public static ?UploadList $photos = null;
+
+    #[Action(name: 'profiles.photos'), Authorize('update', 'profile')]
+    public function photos(
+        Profile $profile,
+        #[Uploaded(to: 'profile', prefix: 'photos', types: ['image/png'], maxBytes: 4096, maxFiles: 3)]
+        UploadList $photos,
+    ): ActionResult {
+        self::$photos = $photos;
+
+        return ActionResult::ok(['keys' => array_map(static fn (Upload $one): string => $one->key, $photos->files)]);
     }
 
     #[Action(name: 'albums.cover'), Authorize('update', 'album')]
@@ -314,6 +329,27 @@ final class App
         } finally {
             @unlink($path);
         }
+    }
+
+    /** POSTs a ticket to /_upload/refresh, as a page that has outlived it does. */
+    public function refresh(string $ticket, string $user = 'u-1', string $session = 'session-a', string $epoch = 'e1'): Response
+    {
+        return $this->kernel->handle(
+            new Request(
+                'POST',
+                '/_upload/refresh',
+                [
+                    'content-type' => 'application/json',
+                    'accept' => 'application/json',
+                    'x-xsrf-token' => CSRF,
+                    'x-test-user' => $user,
+                    'x-test-epoch' => $epoch,
+                ],
+                cookies: [SESSION_COOKIE => $session, VerifyCsrfToken::COOKIE => CSRF],
+            ),
+            self::noPage(...),
+            json_encode(['ticket' => $ticket], JSON_THROW_ON_ERROR),
+        );
     }
 
     /**

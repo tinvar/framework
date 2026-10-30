@@ -57,6 +57,13 @@ final class UploadEndpoint
 {
     public const string PATH = '/_upload';
 
+    /**
+     * Where a page that has outlived its ticket asks for it again: the same
+     * binding, holding for this request, issued for another hour -- but
+     * never past a day from the ticket first issued (UploadTicket).
+     */
+    public const string REFRESH_PATH = '/_upload/refresh';
+
     /** The multipart fields: the ticket, and the file. */
     public const string TICKET_FIELD = 'ticket';
     public const string FILE_FIELD = 'file';
@@ -93,7 +100,7 @@ final class UploadEndpoint
 
     public function matches(Request $request): bool
     {
-        return $request->path === self::PATH;
+        return $request->path === self::PATH || $request->path === self::REFRESH_PATH;
     }
 
     public static function assertMethod(Request $request): void
@@ -103,9 +110,12 @@ final class UploadEndpoint
         }
     }
 
-    public function handle(Request $request): Response
+    public function handle(Request $request, string $rawBody = ''): Response
     {
         self::assertMethod($request);
+        if ($request->path === self::REFRESH_PATH) {
+            return $this->refresh($request, $rawBody);
+        }
 
         $type = strtolower(trim(explode(';', $request->header('content-type') ?? '', 2)[0]));
         if ($type !== 'multipart/form-data') {
@@ -147,6 +157,66 @@ final class UploadEndpoint
     }
 
     /**
+     * The ticket again, for another hour. Only for the binding it was
+     * issued under, holding for this request as an upload would have to:
+     * this session, this user at this auth epoch, the tenant and panel the
+     * action's own stack resolves -- so a sign-out, a sign-in elsewhere
+     * that moved the epoch, or a moved tenant refuses it -- and a record
+     * still there to attach files to, found as the tenant sees it. A day
+     * from the first issue at most: past it, the page is loaded again.
+     */
+    private function refresh(Request $request, string $rawBody): Response
+    {
+        $raw = $request->body[self::TICKET_FIELD] ?? null;
+        if (!\is_string($raw) && $rawBody !== '' && \strlen($rawBody) <= self::MAX_TICKET_BYTES + 64) {
+            try {
+                $json = json_decode($rawBody, true, 4, JSON_THROW_ON_ERROR);
+            } catch (\JsonException) {
+                $json = null;
+            }
+            $raw = \is_array($json) ? ($json[self::TICKET_FIELD] ?? null) : null;
+        }
+        if (!\is_string($raw) || $raw === '' || \strlen($raw) > self::MAX_TICKET_BYTES) {
+            throw new HttpException(400, 'Send the upload ticket in the `ticket` field.', 'bad_request');
+        }
+
+        $now = $this->uploads->now();
+        try {
+            $ticket = UploadTicket::decodeForRefresh($raw, $this->uploads->ticketSigner, $now);
+        } catch (TokenError $e) {
+            throw self::refused($e->getMessage());
+        }
+
+        [$action] = $this->declarationFor($ticket);
+        $panels = $this->entry->panelFor($action->panels, $action->class);
+        $stack = [
+            ...$this->entry->stackFor($action->tenantFrom, $panels),
+            ...array_map(
+                fn (string $class): Middleware => ($this->middlewareResolver)($class),
+                array_values(array_diff($action->middleware, $this->globalMiddleware)),
+            ),
+        ];
+
+        return new Pipeline($stack)->run($request, function (Request $inner) use ($ticket, $now): Response {
+            $this->assertBinding($inner, $ticket);
+            if ($this->orm->find($ticket->targetClass, $ticket->targetId) === null) {
+                throw self::refused('names a record that is not there');
+            }
+
+            $renewed = $ticket->renewedAt($now);
+
+            return Response::make(200, json_encode([
+                'ticket' => $renewed->encode($this->uploads->ticketSigner),
+                'expiresAt' => $renewed->expiresAt,
+            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES), [
+                'content-type' => 'application/json',
+                'cache-control' => 'private, no-store',
+                'vary' => 'Cookie',
+            ]);
+        });
+    }
+
+    /**
      * The action and the declaration a ticket names, as they stand now: a
      * ticket minted before a deploy that renamed the action, retargeted the
      * parameter or moved its prefix names something this server no longer
@@ -171,18 +241,8 @@ final class UploadEndpoint
 
     private function store(Request $request, UploadTicket $ticket, Uploaded $declared): Response
     {
-        // Checked, never applied: the ticket agrees with where the request
-        // is, and can put it nowhere.
-        $session = $this->uploads->sessionOf($request);
-        $user = $this->auth->id();
-        if (TenantClaim::current($this->orm) !== $ticket->tenant
-            || ($this->panels?->currentOrNull() ?? '') !== $ticket->panel
-            || $session === ''
-            || $user === null
-            || !hash_equals($ticket->sessionHash, $this->uploads->sessionHash($session))
-            || !hash_equals($ticket->authHash, $this->uploads->authHash($this->auth->id(), $this->auth->epoch()))) {
-            throw self::refused('was issued to another session, user, tenant or panel');
-        }
+        $this->assertBinding($request, $ticket);
+        $user = (string) $this->auth->id();
 
         $file = $this->receivedFile($request);
         $size = filesize($file->path);
@@ -314,6 +374,23 @@ final class UploadEndpoint
     private static function refused(string $why): HttpException
     {
         return new HttpException(403, "The upload ticket is refused ({$why}).", 'upload_refused');
+    }
+
+    /**
+     * Checked, never applied: the ticket agrees with where the request is,
+     * and can put it nowhere.
+     */
+    private function assertBinding(Request $request, UploadTicket $ticket): void
+    {
+        $session = $this->uploads->sessionOf($request);
+        if (TenantClaim::current($this->orm) !== $ticket->tenant
+            || ($this->panels?->currentOrNull() ?? '') !== $ticket->panel
+            || $session === ''
+            || $this->auth->id() === null
+            || !hash_equals($ticket->sessionHash, $this->uploads->sessionHash($session))
+            || !hash_equals($ticket->authHash, $this->uploads->authHash($this->auth->id(), $this->auth->epoch()))) {
+            throw self::refused('was issued to another session, user, tenant or panel');
+        }
     }
 
     private static function tooManyPending(): HttpException

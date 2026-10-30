@@ -119,6 +119,45 @@ final readonly class UploadTicket
         return $claims;
     }
 
+    /**
+     * A ticket a page still holds, to be issued again (UploadEndpoint's
+     * refresh): verified as decode() verifies one, except that it may have
+     * run out -- but not past a day from when it was first issued, which a
+     * refresh keeps, so no chain of refreshes outlives MAX_TTL.
+     *
+     * @throws TokenError
+     */
+    public static function decodeForRefresh(string $ticket, Signer $signer, int $now): self
+    {
+        $decoded = self::decode($ticket, $signer, min($now, self::lastMoment($ticket, $signer)));
+        if ($decoded->issuedAt + self::MAX_TTL <= $now) {
+            throw new TokenError('first issued more than a day ago');
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * This ticket again, running out an hour from $now, or a day from when
+     * it was first issued if that is sooner.
+     */
+    public function renewedAt(int $now): self
+    {
+        return clone($this, ['expiresAt' => min($now + self::DEFAULT_TTL, $this->issuedAt + self::MAX_TTL)]);
+    }
+
+    /** The second before a ticket runs out, read from it once its signature holds; 0 for one that does not. */
+    private static function lastMoment(string $ticket, Signer $signer): int
+    {
+        try {
+            $decoded = SignedToken::decode($ticket, $signer, self::PURPOSE);
+        } catch (TokenError) {
+            return 0;
+        }
+
+        return \is_int($decoded['e'] ?? null) ? $decoded['e'] - 1 : 0;
+    }
+
     /** @param array<string, mixed> $decoded */
     private static function string(array $decoded, string $key, bool $allowEmpty = false): string
     {
