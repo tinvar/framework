@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Staging\StagingImport;
 
+use Tinvar\Orm\Migrations\ProductionMarker;
 use Tinvar\Staging\ImportRefused;
 use Tinvar\Staging\Scrub;
 use Tinvar\Staging\ScrubPlan;
@@ -266,3 +267,26 @@ it('copies no table named like those without saying why', function (string $tabl
 it('ignores a table only with a reason it holds no secret', function () {
     ScrubPlan::create()->ignore('migrations', because: '');
 })->throws(\InvalidArgumentException::class, 'holds no secret');
+
+// Production's own mark (ADR 0103): never copied, and no plan's to name --
+// and a database marked with it is no staging database to write into.
+it('leaves production\'s mark behind, and refuses to write into a database that has it', function () {
+    $production = seeded();
+    $production->exec('CREATE TABLE ' . ProductionMarker::TABLE . ' (id INTEGER PRIMARY KEY, marked_at TEXT NOT NULL)');
+    $production->exec('INSERT INTO ' . ProductionMarker::TABLE . " VALUES (1, '2026-10-29T00:00:00Z')");
+
+    $staging = database();
+    $written = new StagingImport(plan(), production(), staging())->run($production, $staging);
+    expect($written)->not->toHaveKey(ProductionMarker::TABLE)
+        ->and(rows($staging, 'customers'))->toHaveCount(2);
+
+    // Production's database passed as staging's.
+    $marked = database();
+    $marked->exec('CREATE TABLE ' . ProductionMarker::TABLE . ' (id INTEGER PRIMARY KEY, marked_at TEXT NOT NULL)');
+    $marked->exec('INSERT INTO ' . ProductionMarker::TABLE . " VALUES (1, '2026-10-29T00:00:00Z')");
+    $marked->exec("INSERT INTO products VALUES (9, 'Kept')");
+
+    expect(fn () => new StagingImport(plan(), production(), staging())->run(seeded(), $marked))
+        ->toThrow(ImportRefused::class, "marked production's")
+        ->and(rows($marked, 'products'))->toBe([['id' => 9, 'name' => 'Kept']]);
+});

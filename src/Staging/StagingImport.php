@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Staging;
 
+use Tinvar\Orm\Migrations\ProductionMarker;
 use Tinvar\Support\Encrypter;
 
 /**
@@ -60,6 +61,12 @@ final readonly class StagingImport
         if ($production === $staging || ($from->file() !== null && $from->file() === $to->file())) {
             throw new ImportRefused('Production and staging are one database here; the import writes only into staging\'s.');
         }
+        // Staging's database marked production's is production's, whatever
+        // was passed as staging: the import empties every table it writes.
+        if ($to->has(ProductionMarker::TABLE)
+            && (int) $staging->query('SELECT COUNT(*) FROM ' . $to->quote(ProductionMarker::TABLE))->fetchColumn() > 0) {
+            throw new ImportRefused('The database given as staging\'s is marked production\'s (' . ProductionMarker::TABLE . '); the import writes into it nothing.');
+        }
         $this->check($from, $to, $tenant);
 
         $context = new ScrubContext($this->production, $this->staging);
@@ -102,6 +109,10 @@ final readonly class StagingImport
     {
         $problems = [];
         foreach ($from->tables() as $table) {
+            // Production's own mark: never copied, and no plan's to name.
+            if ($table === ProductionMarker::TABLE) {
+                continue;
+            }
             if (!$this->plan->declares($table)) {
                 $problems[] = "the table {$table} has no rule: copy it, drop it or ignore it";
             }
@@ -111,7 +122,7 @@ final readonly class StagingImport
         // users the import brings in. It is dropped (emptied) or ignored by
         // name, or the import stops.
         foreach ($to->tables() as $table) {
-            if (!$from->has($table) && !$this->plan->declares($table)) {
+            if ($table !== ProductionMarker::TABLE && !$from->has($table) && !$this->plan->declares($table)) {
                 $problems[] = "staging's table {$table} has no rule: drop it, or ignore it if it holds no secret";
             }
         }

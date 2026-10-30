@@ -365,6 +365,7 @@ final class AppConsole
             'migrate:status' => ['', ''],
             'migrate:fresh' => ['', ''],
             'make:migration' => ['make:migration <name> [--blank] [--rename=TABLE.OLD:NEW]', 'Write the migration that brings the database to the models; a rename only where --rename or a terminal says one'],
+            'db:mark-production' => ['db:mark-production', "Mark the database production's, as migrate does wherever the environment says production: migrate:fresh and db:seed are then refused on it whatever the environment says (ADR 0103)"],
         ] as $name => [$usage, $about]) {
             $this->command($name, $usage, $about, fn (array $a): int => $this->migrate($name, $a));
         }
