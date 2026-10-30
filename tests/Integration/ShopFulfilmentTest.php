@@ -30,6 +30,7 @@ use Tinvar\Services\ServiceCalls;
 use Tinvar\Testing\AssertablePage;
 use Tinvar\Testing\Testing;
 use Tinvar\Webhooks\DeliverWebhook;
+use Tinvar\Workflows\WorkflowRecord;
 
 use function Tinvar\Testing\actingAs;
 
@@ -230,16 +231,40 @@ describe('the fulfilment workflow', function () {
             ->and(json_encode($kernel->orm->connection()->select('SELECT data FROM webhook_events')))->not->toContain($context);
 
         // Without its own credential the token is nothing.
-        expect(callBack($kernel, 'orders.collected', $context, ['order' => $order], signedIn: false)->status)->toBe(401)
+        $fulfilment = $sent['data']['fulfilment'];
+        expect(callBack($kernel, 'orders.collected', $context, ['order' => $order, 'fulfilment' => $fulfilment], signedIn: false)->status)->toBe(401)
             ->and(statusOf($kernel, $order))->toBe(Order::PACKED);
 
-        $collected = callBack($kernel, 'orders.collected', $context, ['order' => $order]);
-        expect($collected->status)->toBe(200)
-            ->and(json_decode($collected->body(), true))->toBe(['status' => 'ok', 'value' => ['order' => $sent['data']['number'], 'status' => Order::SHIPPED]])
-            ->and(statusOf($kernel, $order))->toBe(Order::SHIPPED);
+        // The workflow waits on the warehouse's word, holding no worker
+        // (ADR 0119), and its progress says so.
+        $staff = account($kernel, StaffAccount::EMAIL);
+        $progress = fn () => $kernel->kernel()->auth->actingAs($staff, fn () => $kernel->kernel()->panels?->within(StaffMemberships::PANEL, fn () => $kernel->workflows->progress($fulfilment)), epochOf($kernel, $staff));
+        expect($progress()?->status)->toBe(WorkflowRecord::WAITING)
+            ->and($progress()?->step)->toBe('collected');
 
-        // Said twice, the second finds it shipped already.
-        expect(callBack($kernel, 'orders.collected', $context, ['order' => $order])->status)->toBe(422);
+        // Its word is a signal to the workflow, which wakes and ships it.
+        $collected = callBack($kernel, 'orders.collected', $context, ['order' => $order, 'fulfilment' => $fulfilment]);
+        expect($collected->status)->toBe(200)
+            ->and(json_decode($collected->body(), true))->toBe(['status' => 'ok', 'value' => ['order' => $sent['data']['number'], 'status' => 'collected']])
+            ->and(statusOf($kernel, $order))->toBe(Order::PACKED);
+        work($kernel);
+        expect(statusOf($kernel, $order))->toBe(Order::SHIPPED)
+            ->and($progress()?->status)->toBe(WorkflowRecord::FINISHED)
+            ->and(failures($kernel))->toBe([]);
+
+        // Said twice, the token is spent.
+        $again = callBack($kernel, 'orders.collected', $context, ['order' => $order, 'fulfilment' => $fulfilment]);
+        expect($again->status)->toBe(403)
+            ->and(json_decode($again->body(), true)['reason'])->toBe('spent');
+    });
+
+    it('takes no signal for a fulfilment that is not waiting on this order', function () {
+        $order = placedOrder($this->kernel);
+        $this->kernel->orm->connection()->execute('UPDATE orders SET status = ? WHERE id = ?', [Order::PACKED, $order]);
+
+        $refused = callBack($this->kernel, 'orders.collected', contextFor($this->kernel), ['order' => $order, 'fulfilment' => '01900000-0000-7000-8000-000000000000']);
+        expect($refused->status)->toBe(422)
+            ->and(statusOf($this->kernel, $order))->toBe(Order::PACKED);
     });
 });
 
@@ -270,8 +295,8 @@ describe('the warehouse\'s service calls', function () {
     it('validate the arguments as the operation\'s own', function () {
         $context = contextFor($this->kernel);
 
-        expect(callBack($this->kernel, 'orders.collected', $context, ['order' => '01900000-0000-7000-8000-000000000000'])->status)->toBe(404)
-            ->and(callBack($this->kernel, 'orders.collected', $context, ['order' => 'x', 'status' => 'delivered'])->status)->toBe(422);
+        expect(callBack($this->kernel, 'orders.collected', $context, ['order' => '01900000-0000-7000-8000-000000000000', 'fulfilment' => 'f'])->status)->toBe(404)
+            ->and(callBack($this->kernel, 'orders.collected', contextFor($this->kernel), ['order' => 'x', 'status' => 'delivered'])->status)->toBe(422);
     });
 });
 

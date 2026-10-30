@@ -220,6 +220,17 @@ final class Steps
         throw new StepTaken($this);
     }
 
+    /**
+     * This workflow's id, the same on every run: what to hand whoever will
+     * signal it (Workflows::signal()). It grants nothing -- a signal is
+     * taken only in the workflow's tenant and panel, and only by code the
+     * application lets send one.
+     */
+    public function workflowId(): string
+    {
+        return $this->job->id();
+    }
+
     /** Whether the step $name has finished, in an earlier run or this one. */
     public function finished(string $name): bool
     {
