@@ -467,11 +467,12 @@ it('refuses a list or map with anything malformed, naming each by its place and 
         ->toContain('LISTTEST_HOSTS has an empty item, the 4th')
         ->toContain("LISTTEST_PORTS's 2nd item must be a whole number")
         ->toContain("LISTTEST_PORTS's 3rd item must be a whole number")
-        ->toContain('LISTTEST_LIMITS gives the key actions twice')
+        ->toContain("LISTTEST_LIMITS's 2nd entry gives a key an entry before it gave")
         ->toContain("LISTTEST_LIMITS's 3rd entry is not key=value")
         ->toContain("LISTTEST_LIMITS's 4th entry is not key=value")
         ->toContain("LISTTEST_SHADES's 2nd item must be one of dark, light")
         ->not->toContain('sekret-port')
+        ->not->toContain('actions')
         ->not->toContain('purple');
 });
 

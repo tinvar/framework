@@ -76,6 +76,18 @@ it('refuses a table it cannot read, or a layout its type does not list, and leav
     'a table built' => ["import x from 'y';\nconst ROUTES = build({\n});\n", [], 'not an object literal'],
 ]);
 
+it('refuses a view or a path that could end its string', function (string $view, string $component) {
+    $after = table(TABLE, function (string $file) use ($view, $component): void {
+        expect(fn () => RouteTable::add($file, $view, $component, []))->toThrow(RegistrationRefused::class);
+    });
+
+    expect($after)->toBe(TABLE);
+})->with([
+    'a quote in the view' => ["notes'; evil()", '../pages/notes'],
+    'a quote in the path' => ['notes', "../pa'ges/notes"],
+    'a bare path' => ['notes', 'pages/notes'],
+]);
+
 it('names an import path from the entry\'s directory', function () {
     expect(RouteTable::importPath('/app/resources/entries/rsc.tsx', '/app/resources/pages/notes/show'))->toBe('../pages/notes/show')
         ->and(RouteTable::importPath('/app/resources/rsc.tsx', '/app/resources/pages/notes'))->toBe('./pages/notes');

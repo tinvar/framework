@@ -40,6 +40,16 @@ final class RouteTable
      */
     public static function add(string $file, string $view, string $component, array $layouts): bool
     {
+        // Both go into the file between quotes: a view is a view's name,
+        // and a component a path with nothing in it that could end its
+        // string, whatever directory the project was made in.
+        if (preg_match('/^[a-z0-9][a-z0-9\/_-]*\z/', $view) !== 1) {
+            throw new RegistrationRefused("'{$view}' is not a view name the table takes");
+        }
+        if (preg_match('/^\.{1,2}\/[A-Za-z0-9_.\/-]+\z/', $component) !== 1 || str_contains($component, '//')) {
+            throw new RegistrationRefused('the view\'s path from it holds characters an import is not written with');
+        }
+
         $source = ClassList::read($file);
         $lines = explode("\n", $source);
 

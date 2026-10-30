@@ -374,7 +374,8 @@ final class Configs
                     continue;
                 }
                 if (\array_key_exists($name, $out)) {
-                    $problems[] = "{$key->variable} gives the key {$name} twice.";
+                    // Its place, not its key: a key is part of the value.
+                    $problems[] = "{$key->variable}'s {$at}" . self::ordinal($at) . ' entry gives a key an entry before it gave.';
 
                     continue;
                 }
