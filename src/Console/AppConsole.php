@@ -24,6 +24,7 @@ use Tinvar\Render\FragmentManifestProducer;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Server\BuildCommand;
 use Tinvar\Server\CaddyfileRules;
+use Tinvar\Server\ComposerSources;
 use Tinvar\Server\ConfigCommand;
 use Tinvar\Server\DevCommand;
 use Tinvar\Server\PhpCommand;
@@ -345,7 +346,9 @@ final class AppConsole
             ->command('serve', 'serve [--host=HOST] [--port=PORT] [--workers=N] [--renderers=N] [--frankenphp=PATH]', 'Serve the build with FrankenPHP workers and a pool of renderers', $this->serve(...))
             ->command('dev', 'dev [--host=HOST] [--port=PORT] [--frankenphp=PATH]', "Vite's dev server as the renderer, codegen on every PHP change, and the dev toolbar, on loopback; never in production", fn (array $a): int => new DevCommand(
                 console: $this->console,
-                watch: is_dir("{$this->root}/app") ? ["{$this->root}/app"] : [],
+                // Where composer.json autoloads the application from; app/
+                // where it names nothing under the application.
+                watch: ComposerSources::of($this->projectRoot, $this->root) ?: (is_dir("{$this->root}/app") ? ["{$this->root}/app"] : []),
                 codegen: fn (string $app): array => [...PhpCommand::prefix(), $this->console, 'codegen', "--out={$app}/resources/types"],
                 // An app with a console of its own runs where it is; one
                 // console over a workspace's apps, where it was run from.

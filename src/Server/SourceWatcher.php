@@ -35,7 +35,10 @@ final class SourceWatcher
      */
     private array $pending = [];
 
-    /** @param list<string> $directories */
+    /** Directories never walked: what Composer and npm install, and what version control keeps. */
+    private const array SKIPPED = ['vendor', 'node_modules'];
+
+    /** @param list<string> $directories the directories to watch, and any single files beside them */
     public function __construct(private readonly array $directories)
     {
         $this->seen = $this->look();
@@ -74,36 +77,53 @@ final class SourceWatcher
     {
         $files = [];
         foreach ($this->directories as $directory) {
+            if (is_file($directory)) {
+                $this->stamp($directory, $files);
+                continue;
+            }
             if (!is_dir($directory)) {
                 continue;
             }
-            $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator(
-                $directory,
-                \FilesystemIterator::SKIP_DOTS,
+            // An autoload root can be the application's own directory, so
+            // what Composer and npm installed there, and dot-directories, are
+            // not walked: they are not the application's PHP.
+            $iterator = new \RecursiveIteratorIterator(new \RecursiveCallbackFilterIterator(
+                new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS),
+                static fn (\SplFileInfo $file): bool => !$file->isDir()
+                    || (!\in_array($file->getFilename(), self::SKIPPED, true) && !str_starts_with($file->getFilename(), '.')),
             ));
             foreach ($iterator as $file) {
                 if ($file instanceof \SplFileInfo && $file->isFile() && $file->getExtension() === 'php') {
-                    // Read now, and the file gone before it could be: it is
-                    // simply not there on this look.
-                    $path = $file->getPathname();
-                    $stat = @stat($path);
-                    if ($stat === false) {
-                        continue;
-                    }
-                    // Times are whole seconds, so two saves of the same size
-                    // in one second look alike: what the file holds is read
-                    // as well while it is recent, or new, or its time or size
-                    // moved -- and otherwise carried over from the last look,
-                    // so a file leaving the recent window is no change.
-                    $stamp = $stat['mtime'] . ':' . $stat['size'];
-                    $last = $this->seen[$path] ?? '';
-                    $files[$path] = $stat['mtime'] < time() - self::RECENT && str_starts_with($last, "{$stamp}:")
-                        ? $last
-                        : $stamp . ':' . hash('xxh3', (string) @file_get_contents($path));
+                    $this->stamp($file->getPathname(), $files);
                 }
             }
         }
 
         return $files;
+    }
+
+    /**
+     * $path's time, size and -- while it is recent -- contents, into $files.
+     *
+     * @param array<string, string> $files
+     */
+    private function stamp(string $path, array &$files): void
+    {
+        // Read now, and the file gone before it could be: it is simply not
+        // there on this look.
+        $stat = @stat($path);
+        if ($stat === false) {
+            return;
+        }
+        // Times are whole seconds, so two saves of the same size in one
+        // second look alike: what the file holds is read as well while it
+        // is recent, or new, or its time or size moved -- and otherwise
+        // carried over from the last look, so a file leaving the recent
+        // window is no change.
+        $stamp = $stat['mtime'] . ':' . $stat['size'];
+        $last = $this->seen[$path] ?? '';
+        $files[$path] = $stat['mtime'] < time() - self::RECENT && str_starts_with($last, "{$stamp}:")
+            ? $last
+            : $stamp . ':' . hash('xxh3', (string) @file_get_contents($path));
     }
 }

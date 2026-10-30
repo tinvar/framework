@@ -61,7 +61,8 @@ final class DevCommand
 
     /**
      * @param string $console the CLI whose `serve` runs PHP, the renderer and Vite
-     * @param list<string> $watch the directories of the application's PHP that codegen reads
+     * @param list<string> $watch the directories (and files) of the application's PHP that codegen
+     *        reads: where its composer.json autoloads it from (ComposerSources)
      * @param (\Closure(string): list<string>)|null $codegen the codegen command for the
      *        app directory given; without one, nothing is generated
      * @param (\Closure(string): void)|null $err a line for standard error; standard output

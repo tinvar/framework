@@ -11,6 +11,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Server\DevCommand;
 
+use Tinvar\Server\ComposerSources;
 use Tinvar\Server\DevCommand;
 use Tinvar\Server\ServeException;
 use Tinvar\Server\SourceWatcher;
@@ -147,6 +148,59 @@ it('waits while a file keeps changing, and reports it once', function () {
         expect($watcher->changes())->toBe([]);
     }
     expect($watcher->changes())->toBe(["{$dir}/app/Query.php"]);
+});
+
+it('watches a single file, and walks past vendor, node_modules and dot-directories', function () {
+    $dir = app();
+    foreach (['vendor/acme', 'node_modules/x', '.cache', 'app'] as $sub) {
+        mkdir("{$dir}/{$sub}", 0755, true);
+    }
+    file_put_contents("{$dir}/helpers.php", '<?php');
+    $watcher = new SourceWatcher([$dir, "{$dir}/helpers.php"]);
+
+    foreach (['vendor/acme/A.php', 'node_modules/x/b.php', '.cache/c.php'] as $ignored) {
+        file_put_contents("{$dir}/{$ignored}", '<?php');
+    }
+    $watcher->changes();
+    expect($watcher->changes())->toBe([]);
+
+    file_put_contents("{$dir}/helpers.php", '<?php // changed');
+    file_put_contents("{$dir}/app/Page.php", '<?php');
+    $watcher->changes();
+    expect($watcher->changes())->toBe(["{$dir}/app/Page.php", "{$dir}/helpers.php"]);
+});
+
+it('finds what composer.json autoloads under the app, and nothing outside it', function () {
+    $root = app();
+    foreach (['shop/app', 'shop/database/factories', 'shop/lib', 'docs/app', 'outside'] as $sub) {
+        mkdir("{$root}/{$sub}", 0755, true);
+    }
+    file_put_contents("{$root}/shop/helpers.php", '<?php');
+    file_put_contents("{$root}/composer.json", json_encode(['autoload' => [
+        'psr-4' => [
+            'Shop\\' => 'shop/app/',
+            'Shop\\Database\\' => 'shop/database/',
+            'Shop\\Database\\Factories\\' => 'shop/database/factories/',
+            'Docs\\' => 'docs/app/',
+            'Twice\\' => ['shop/lib', 'outside'],
+            'Gone\\' => 'shop/missing/',
+        ],
+        'classmap' => ['shop/lib/', '../'],
+        'files' => ['shop/helpers.php'],
+    ], 'autoload-dev' => ['psr-4' => ['Tests\\' => 'shop/']]]));
+
+    expect(ComposerSources::of($root, "{$root}/shop"))->toBe([
+        "{$root}/shop/app",
+        "{$root}/shop/database",
+        "{$root}/shop/helpers.php",
+        "{$root}/shop/lib",
+    ])
+        ->and(ComposerSources::of($root, "{$root}/docs"))->toBe(["{$root}/docs/app"])
+        ->and(ComposerSources::of("{$root}/shop", "{$root}/shop"))->toBe([], 'no composer.json there')
+        ->and(ComposerSources::of("{$root}/nowhere", "{$root}/shop"))->toBe([]);
+
+    file_put_contents("{$root}/composer.json", '{not json');
+    expect(ComposerSources::of($root, "{$root}/shop"))->toBe([]);
 });
 
 // ------------------------------------------------------------------ running
