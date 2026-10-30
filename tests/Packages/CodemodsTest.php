@@ -623,6 +623,98 @@ it('keeps a codemod off the network through the clients PHP was built with', fun
         ->and($pending)->toBe(0);
 });
 
+// A Unix socket is not on the network: a socket file a database listens
+// on, its peer authentication taking whoever connects for the user running
+// the codemod, is reached through the filesystem. bubblewrap's network
+// namespace leaves it open, and a sandbox that showed the codemod the whole
+// filesystem, read-only, let a static PHP's PDO read the live database
+// through /run/postgresql. A listener where such sockets live -- /tmp, and
+// /run where this user may make one -- sees whether anything got through.
+it('keeps a codemod off the Unix sockets outside its copy, through the clients PHP was built with', function () {
+    $listeners = [];
+    $directories = [];
+    foreach (['/tmp', '/run'] as $parent) {
+        $directory = $parent . '/tvcm-' . bin2hex(random_bytes(4));
+        if (!is_writable($parent) || !@mkdir($directory, 0o777)) {
+            continue;
+        }
+        chmod($directory, 0o777);
+        $directories[] = $directory;
+        $listener = stream_socket_server("unix://{$directory}/.s.PGSQL.5432", $errno, $error);
+        expect($listener)->not->toBeFalse($error);
+        chmod("{$directory}/.s.PGSQL.5432", 0o777);
+        $listeners[] = $listener;
+    }
+    $dirs = var_export($directories, true);
+
+    $codemods = withCodemod($this, <<<PHP
+    <?php
+    foreach ({$dirs} as \$dir) {
+        foreach (["pgsql:host={\$dir};dbname=live;connect_timeout=1", "mysql:unix_socket={\$dir}/.s.PGSQL.5432;dbname=live"] as \$dsn) {
+            try {
+                new PDO(\$dsn, null, null, [PDO::ATTR_TIMEOUT => 1]);
+            } catch (Throwable) {
+            }
+        }
+        if (class_exists('Redis')) {
+            try { (new Redis())->connect("{\$dir}/.s.PGSQL.5432"); } catch (Throwable) {}
+        }
+    }
+    PHP);
+
+    try {
+        $result = $codemods->run($this->app, allowed: true);
+        $read = $listeners;
+        $write = $except = null;
+        $pending = $listeners === [] ? 0 : stream_select($read, $write, $except, 0);
+    } finally {
+        foreach ($listeners as $listener) {
+            fclose($listener);
+        }
+        foreach ($directories as $directory) {
+            @unlink("{$directory}/.s.PGSQL.5432");
+            @rmdir($directory);
+        }
+    }
+
+    expect($listeners)->not->toBe([])
+        ->and($pending)->toBe(0, 'a codemod connected to a Unix socket outside its copy')
+        ->and($result->failed)->toBe([]);
+});
+
+it('shows a codemod under bubblewrap the system\'s directories and its own, and nothing that holds sockets', function () {
+    $arguments = Codemods::bubblewrap('/tmp/tinvar-codemods-x', '/usr/bin/php8.5');
+    $mounts = [];
+    foreach ($arguments as $at => $argument) {
+        if (\in_array($argument, ['--ro-bind', '--bind'], true)) {
+            $mounts[] = $arguments[$at + 1];
+        }
+    }
+
+    $elsewhere = Codemods::bubblewrap('/tmp/r', '/opt/php-8.5/bin/php');
+
+    // Of where sockets live, the run's own directory alone.
+    expect(array_values(array_filter($mounts, static fn (string $path): bool => preg_match('#^/(run|tmp|var|home|root|srv|opt|mnt|media)?(/|$)#', $path) === 1)))
+        ->toBe(['/tmp/tinvar-codemods-x'])
+        ->and(\array_slice($arguments, -11))->toBe([
+            '--dev', '/dev', '--proc', '/proc', '--bind', '/tmp/tinvar-codemods-x', '/tmp/tinvar-codemods-x',
+            '--unshare-all', '--die-with-parent', '--new-session', '--',
+        ])
+        // A PHP installed outside /usr brings its own directory, and nothing above it.
+        ->and($elsewhere)->toContain('/opt/php-8.5/bin')
+        ->and($elsewhere)->not->toContain('/opt/php-8.5')
+        ->and($elsewhere)->not->toContain('/opt');
+});
+
+it('says why when bubblewrap could not make the sandbox', function () {
+    $codemods = withCodemod($this, "<?php fwrite(STDERR, 'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted'); exit(1);\n");
+
+    expect($codemods->run($this->app, allowed: true)->failed)->toBe([
+        'acme/billing codemods/upgrade.php: exited 1: bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted'
+        . ' (the sandbox could not be made: where AppArmor restricts unprivileged user namespaces, bwrap needs a profile that allows them)',
+    ]);
+});
+
 // The flags and failures are printed to the terminal of whoever runs the
 // codemods, and a codemod chooses part of them: a line it changed, what it
 // printed. An escape sequence in either moved the cursor and erased the

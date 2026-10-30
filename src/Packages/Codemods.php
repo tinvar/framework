@@ -152,8 +152,14 @@ final class Codemods
                 [$status, $output] = $this->sandboxed($run, $run . '/package/' . $codemod['script']);
                 $label = self::printable("{$codemod['package']} {$codemod['script']}");
                 if ($status !== 0) {
+                    // bubblewrap could not build the sandbox, and nothing ran:
+                    // most often Ubuntu's AppArmor, which since 23.10 strips an
+                    // unprivileged user's new namespace of what bwrap needs.
+                    $hint = str_starts_with($output, 'bwrap: ')
+                        ? ' (the sandbox could not be made: where AppArmor restricts unprivileged user namespaces, bwrap needs a profile that allows them)'
+                        : '';
                     $failed[] = "{$label}: " . ($status === 124 ? "killed after {$this->timeout}s" : "exited {$status}")
-                        . ($output === '' ? '' : ': ' . self::printable(trim(substr($output, 0, 2000)), lines: true));
+                        . ($output === '' ? '' : ': ' . self::printable(trim(substr($output, 0, 2000)), lines: true)) . $hint;
 
                     break;
                 }
@@ -225,10 +231,7 @@ final class Codemods
         if (\PHP_OS_FAMILY === 'Linux') {
             foreach (['/usr/bin/bwrap', '/bin/bwrap', '/usr/local/bin/bwrap'] as $bwrap) {
                 if (is_executable($bwrap)) {
-                    return [
-                        $bwrap, '--ro-bind', '/', '/', '--dev', '/dev', '--bind', $root, $root,
-                        '--unshare-all', '--die-with-parent', '--new-session', '--',
-                    ];
+                    return [$bwrap, ...self::bubblewrap($root, (string) realpath(\PHP_BINARY))];
                 }
             }
         }
@@ -236,6 +239,58 @@ final class Codemods
         throw new \RuntimeException(
             'No operating-system sandbox to run codemods in: install bubblewrap (bwrap) on Linux; macOS has sandbox-exec.',
         );
+    }
+
+    /**
+     * bubblewrap's arguments: a filesystem of the system's directories
+     * alone, read-only, beside the run's own directory, and every namespace
+     * unshared, the network's among them.
+     *
+     * Not the whole filesystem read-only: a Unix socket is reached through
+     * its file, not the network, and connecting needs no write to the mount
+     * it is on. A codemod shown `/` reached every socket on the host -- a
+     * database's in /run or /tmp, whose peer authentication takes whoever
+     * connects for the user running the codemod -- through the PDO, Redis
+     * and SOAP clients a static PHP carries, which no ini setting takes
+     * away. So /run, /tmp, /var, /home and the app itself are not there:
+     * only /usr, /etc and the directories a system links into /usr, which
+     * hold programs, libraries and settings rather than sockets, and PHP's
+     * own directory, with a `lib` beside it, where PHP is installed
+     * elsewhere. A fresh /dev and a /proc of the sandbox's own pids.
+     *
+     * @internal
+     * @return list<string> what follows `bwrap` on its command line, ending with `--`
+     */
+    public static function bubblewrap(string $root, string $php): array
+    {
+        $arguments = [];
+        $bound = [];
+        foreach (['/usr', '/etc', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/libx32', '/nix/store'] as $path) {
+            if (is_link($path)) {
+                // A merged /usr's /bin -> usr/bin: the link, not a second mount.
+                $arguments = [...$arguments, '--symlink', (string) readlink($path), $path];
+            } elseif (is_dir($path)) {
+                $arguments = [...$arguments, '--ro-bind', $path, $path];
+                $bound[] = $path;
+            }
+        }
+        if ($php !== '') {
+            $directory = \dirname($php);
+            $covered = array_filter($bound, static fn (string $path): bool => str_starts_with($directory . '/', $path . '/'));
+            if ($covered === []) {
+                $arguments = [...$arguments, '--ro-bind', $directory, $directory];
+                $lib = \dirname($directory) . '/lib';
+                if (is_dir($lib)) {
+                    $arguments = [...$arguments, '--ro-bind', $lib, $lib];
+                }
+            }
+        }
+
+        return [
+            ...$arguments,
+            '--dev', '/dev', '--proc', '/proc', '--bind', $root, $root,
+            '--unshare-all', '--die-with-parent', '--new-session', '--',
+        ];
     }
 
     /**
