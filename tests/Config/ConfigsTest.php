@@ -13,6 +13,8 @@ namespace Tinvar\Tests\Config\Configs;
 
 use Tinvar\Attributes\Config;
 use Tinvar\Attributes\Env;
+use Tinvar\Attributes\ListOf;
+use Tinvar\Attributes\MapOf;
 use Tinvar\Config\ConfigException;
 use Tinvar\Config\Configs;
 use Tinvar\Config\Secret;
@@ -104,6 +106,56 @@ final readonly class ArrayKey
 {
     /** @param list<string> $hosts */
     public function __construct(public array $hosts = []) {}
+}
+
+enum Shade: string
+{
+    case Dark = 'dark';
+    case Light = 'light';
+}
+
+#[Config(prefix: 'LISTTEST_')]
+final readonly class Lists
+{
+    /**
+     * @param list<string> $hosts
+     * @param list<int> $ports
+     * @param array<string, int> $limits
+     * @param list<Shade> $shades
+     * @param array<string, bool> $flags
+     */
+    public function __construct(
+        #[ListOf('string')]
+        public array $hosts = [],
+        #[ListOf('int')]
+        public array $ports = [80, 443],
+        #[MapOf('int')]
+        public array $limits = [],
+        #[ListOf(Shade::class)]
+        public array $shades = [],
+        #[MapOf('bool')]
+        public ?array $flags = null,
+    ) {}
+}
+
+#[Config]
+final readonly class SecretList
+{
+    /** @param list<Secret> $keys */
+    public function __construct(#[ListOf(Secret::class)] public array $keys = []) {}
+}
+
+#[Config]
+final readonly class StringList
+{
+    public function __construct(#[ListOf('string')] public string $hosts = '') {}
+}
+
+#[Config]
+final readonly class ListAndMap
+{
+    /** @param array<mixed> $both */
+    public function __construct(#[ListOf('string'), MapOf('string')] public array $both = []) {}
 }
 
 #[Config]
@@ -290,7 +342,10 @@ it('refuses a class that is not config, or would let a secret be printed', funct
     'a Secret unmarked' => [UnmarkedSecret::class, 'mark it #[\SensitiveParameter]'],
     'a sensitive string' => [SensitiveString::class, 'type it Secret'],
     'a secret in the source' => [SecretWithDefault::class, 'a secret in the source is no secret'],
-    'an array' => [ArrayKey::class, 'which no variable can say'],
+    'an array unmarked' => [ArrayKey::class, 'mark it #[ListOf] or #[MapOf]'],
+    'a list of secrets' => [SecretList::class, 'never Secret'],
+    'a list that is a string' => [StringList::class, 'a list or a map is an array'],
+    'both a list and a map' => [ListAndMap::class, 'mark it #[ListOf] or #[MapOf], once'],
     'a file for a string' => [FileOnString::class, 'only a Secret does'],
 ]);
 
@@ -376,4 +431,59 @@ it('lists every key, where it comes from, and no secret, and fails where the boo
     expect($failing->run())->toBe(1)
         ->and(implode("\n", $errors))->toContain('APPTEST_NAME is required')->toContain('APPTEST_WORKERS must be a whole number')
         ->and(implode("\n", $errors))->not->toContain('twelve');
+});
+
+// ADR 0111: a list or a map, each item read as strictly as a key of its
+// type alone, and every malformed one named by its place, never its text.
+it('reads a list and a map, item by item, as strictly as one key', function (): void {
+    $config = Configs::load(Lists::class, [
+        'LISTTEST_HOSTS' => 'a.test, b.test',
+        'LISTTEST_PORTS' => '8080',
+        'LISTTEST_LIMITS' => 'actions=600, sign-in.address=0',
+        'LISTTEST_SHADES' => 'dark,light',
+        'LISTTEST_FLAGS' => 'beta=1,legacy=0',
+    ]);
+
+    expect($config->hosts)->toBe(['a.test', 'b.test'])
+        ->and($config->ports)->toBe([8080])
+        ->and($config->limits)->toBe(['actions' => 600, 'sign-in.address' => 0])
+        ->and($config->shades)->toBe([Shade::Dark, Shade::Light])
+        ->and($config->flags)->toBe(['beta' => true, 'legacy' => false])
+        ->and(Configs::load(Lists::class, [])->ports)->toBe([80, 443])
+        ->and(Configs::load(Lists::class, [])->flags)->toBeNull();
+});
+
+it('refuses a list or map with anything malformed, naming each by its place and none by its value', function (): void {
+    $message = refusal(static function (): void {
+        Configs::load(Lists::class, [
+            'LISTTEST_HOSTS' => 'a.test,,b.test,',
+            'LISTTEST_PORTS' => '80,04,sekret-port',
+            'LISTTEST_LIMITS' => 'actions=600,actions=5,no-equals,bad key=1',
+            'LISTTEST_SHADES' => 'dark,purple',
+        ]);
+    });
+
+    expect($message)->toContain('LISTTEST_HOSTS has an empty item, the 2nd')
+        ->toContain('LISTTEST_HOSTS has an empty item, the 4th')
+        ->toContain("LISTTEST_PORTS's 2nd item must be a whole number")
+        ->toContain("LISTTEST_PORTS's 3rd item must be a whole number")
+        ->toContain('LISTTEST_LIMITS gives the key actions twice')
+        ->toContain("LISTTEST_LIMITS's 3rd entry is not key=value")
+        ->toContain("LISTTEST_LIMITS's 4th entry is not key=value")
+        ->toContain("LISTTEST_SHADES's 2nd item must be one of dark, light")
+        ->not->toContain('sekret-port')
+        ->not->toContain('purple');
+});
+
+it('lists a list or map with its type and default', function (): void {
+    $rows = Configs::inspect(Lists::class, [])['keys'];
+    $described = array_map(static fn (array $row): array => [$row['key']->describe(), $row['value']], $rows);
+
+    expect($described)->toBe([
+        ['list<string>', null],
+        ['list<int>', '80,443'],
+        ['map<int>', null],
+        ['list<' . Shade::class . '>', null],
+        ['?map<bool>', null],
+    ]);
 });

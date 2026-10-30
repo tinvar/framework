@@ -18,9 +18,12 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ExampleComposition;
 
+use Shop\Config\ServerConfig;
 use Shop\Database\Seeder;
 use Shop\Kernel;
 use Shop\Models\Product;
+use Tinvar\Config\ConfigException;
+use Tinvar\Config\Configs;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
@@ -101,9 +104,11 @@ it('refuses a short app key rather than signing with it', function () {
 // A typo in the throttle setting would otherwise leave the limit where it was
 // and read as configured.
 it('reads throttle limits from the environment, or refuses them', function () {
-    expect(Kernel::limitsFrom(''))->toBe([])
-        ->and(Kernel::limitsFrom('actions=600, sign-in.address=0'))->toBe(['actions' => 600, 'sign-in.address' => 0])
-        ->and(fn () => Kernel::limitsFrom('actions=lots'))->toThrow(\InvalidArgumentException::class, 'bucket=limit');
+    expect(Configs::load(ServerConfig::class, [])->throttle)->toBe([])
+        ->and(Configs::load(ServerConfig::class, ['TINVAR_THROTTLE' => 'actions=600, sign-in.address=0'])->throttle)->toBe(['actions' => 600, 'sign-in.address' => 0])
+        ->and(fn () => Configs::load(ServerConfig::class, ['TINVAR_THROTTLE' => 'actions=lots']))->toThrow(ConfigException::class, "TINVAR_THROTTLE's 1st value must be a whole number")
+        ->and(fn () => Configs::load(ServerConfig::class, ['TINVAR_THROTTLE' => 'Actions=5']))->toThrow(ConfigException::class, 'TINVAR_THROTTLE names buckets in lower case')
+        ->and(fn () => Configs::load(ServerConfig::class, ['TINVAR_THROTTLE' => 'actions=99999999']))->toThrow(ConfigException::class, 'from 0 to 9999999');
 });
 
 // Signing stops a client inventing a session id. It does NOT stop fixation:

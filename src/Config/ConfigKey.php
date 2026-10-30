@@ -14,11 +14,12 @@ final readonly class ConfigKey
     /**
      * @param string $variable the environment variable read
      * @param string $parameter the constructor parameter it fills
-     * @param 'string'|'int'|'float'|'bool'|'secret'|'enum' $type
-     * @param class-string<\BackedEnum>|null $enum for an enum, which one
+     * @param 'string'|'int'|'float'|'bool'|'secret'|'enum'|'list'|'map' $type
+     * @param class-string<\BackedEnum>|null $enum for an enum, or a list or map of one, which one
      * @param bool $required set or boot fails: no default and not nullable
      * @param bool $file a secret also read from the file VARIABLE_FILE names
      * @param bool $hasDefault whether the parameter has a default, used when unset
+     * @param 'string'|'int'|'float'|'bool'|'enum'|null $item a list's or map's items' type
      */
     public function __construct(
         public string $variable,
@@ -29,6 +30,7 @@ final readonly class ConfigKey
         public bool $required,
         public bool $file,
         public bool $hasDefault,
+        public ?string $item = null,
     ) {}
 
     public function secret(): bool
@@ -42,12 +44,15 @@ final readonly class ConfigKey
         return $this->file ? $this->variable . '_FILE' : null;
     }
 
-    /** The type as the listing shows it: `?int`, `Secret`, `?Shop\Config\BuildHistory`. */
+    /** The type as the listing shows it: `?int`, `Secret`, `?Shop\Config\BuildHistory`, `map<int>`. */
     public function describe(): string
     {
+        $item = $this->item === 'enum' ? (string) $this->enum : (string) $this->item;
         $type = match ($this->type) {
             'secret' => 'Secret',
             'enum' => (string) $this->enum,
+            'list' => "list<{$item}>",
+            'map' => "map<{$item}>",
             default => $this->type,
         };
 

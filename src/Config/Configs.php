@@ -6,6 +6,8 @@ namespace Tinvar\Config;
 
 use Tinvar\Attributes\Config;
 use Tinvar\Attributes\Env;
+use Tinvar\Attributes\ListOf;
+use Tinvar\Attributes\MapOf;
 use Tinvar\Auth\Violation;
 use Tinvar\Data\Data;
 use Tinvar\Data\ProvidesData;
@@ -20,7 +22,9 @@ use Tinvar\Data\ProvidesData;
  * takes the parameter's default, or null where it is nullable, and is
  * refused where it has neither. The types are the ones a variable can say
  * without guessing: string, int, float, bool (`1` or `0`, as every
- * TINVAR_ switch is), a backed enum, and Secret. Anything else -- `yes`
+ * TINVAR_ switch is), a backed enum, and Secret; and, on an `array`
+ * marked #[ListOf] or #[MapOf], a comma-separated list or `key=value` map
+ * of any of those but Secret (ADR 0111). Anything else -- `yes`
  * for a bool, `12abc` for an int, a case the enum has not -- is refused,
  * never read as something near it: a value that is not what was meant
  * stops the boot rather than run the app on a guess.
@@ -334,7 +338,89 @@ final class Configs
     /** @throws ConfigException */
     private static function parse(ConfigKey $key, #[\SensitiveParameter] string $given): mixed
     {
-        switch ($key->type) {
+        if ($key->type === 'list' || $key->type === 'map') {
+            return self::parseMany($key, $given);
+        }
+
+        return self::parseOne($key->type, $key->enum, $key->variable, $given);
+    }
+
+    /**
+     * A list's items, or a map's entries, each read as one key of its type
+     * is: every malformed one named by its place, never its text, and all
+     * of them before anything is thrown.
+     *
+     * @return list<mixed>|array<string, mixed>
+     * @throws ConfigException
+     */
+    private static function parseMany(ConfigKey $key, string $given): array
+    {
+        $out = [];
+        $problems = [];
+        foreach (explode(',', $given) as $i => $part) {
+            $at = $i + 1;
+            $part = trim($part, " \t");
+            if ($part === '') {
+                $problems[] = "{$key->variable} has an empty item, the {$at}" . self::ordinal($at) . ': separate items with one comma, and end with none.';
+
+                continue;
+            }
+            if ($key->type === 'map') {
+                $pair = explode('=', $part, 2);
+                $name = trim($pair[0], " \t");
+                if (\count($pair) !== 2 || preg_match('/^[A-Za-z0-9_.-]{1,128}\z/', $name) !== 1) {
+                    $problems[] = "{$key->variable}'s {$at}" . self::ordinal($at) . ' entry is not key=value, the key letters, digits, _, - and .';
+
+                    continue;
+                }
+                if (\array_key_exists($name, $out)) {
+                    $problems[] = "{$key->variable} gives the key {$name} twice.";
+
+                    continue;
+                }
+                $part = trim($pair[1], " \t");
+            }
+            try {
+                $value = self::parseOne((string) $key->item, $key->enum, "{$key->variable}'s {$at}" . self::ordinal($at) . ($key->type === 'map' ? ' value' : ' item'), $part);
+            } catch (ConfigException $e) {
+                array_push($problems, ...$e->problems);
+
+                continue;
+            }
+            if ($key->type === 'map') {
+                $out[$name] = $value;
+            } else {
+                $out[] = $value;
+            }
+        }
+
+        if ($problems !== []) {
+            throw new ConfigException($problems);
+        }
+
+        return $out;
+    }
+
+    private static function ordinal(int $n): string
+    {
+        return match (true) {
+            $n % 100 >= 11 && $n % 100 <= 13 => 'th',
+            $n % 10 === 1 => 'st',
+            $n % 10 === 2 => 'nd',
+            $n % 10 === 3 => 'rd',
+            default => 'th',
+        };
+    }
+
+    /**
+     * One value of a type: a key's, or one item of a list or map.
+     *
+     * @param class-string<\BackedEnum>|null $enum
+     * @throws ConfigException
+     */
+    private static function parseOne(string $type, ?string $enum, string $variable, #[\SensitiveParameter] string $given): mixed
+    {
+        switch ($type) {
             case 'string':
                 return $given;
 
@@ -345,31 +431,30 @@ final class Configs
                 return match ($given) {
                     '1' => true,
                     '0' => false,
-                    default => throw ConfigException::invalid($key->variable, 'must be 1 or 0'),
+                    default => throw ConfigException::invalid($variable, 'must be 1 or 0'),
                 };
 
             case 'int':
                 $int = preg_match('/^-?(0|[1-9][0-9]*)\z/', $given) === 1 ? filter_var($given, FILTER_VALIDATE_INT) : false;
 
-                return \is_int($int) ? $int : throw ConfigException::invalid($key->variable, 'must be a whole number');
+                return \is_int($int) ? $int : throw ConfigException::invalid($variable, 'must be a whole number');
 
             case 'float':
                 if (preg_match('/^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?\z/', $given) !== 1 || !is_finite((float) $given)) {
-                    throw ConfigException::invalid($key->variable, 'must be a number');
+                    throw ConfigException::invalid($variable, 'must be a number');
                 }
 
                 return (float) $given;
 
             default:
                 /** @var class-string<\BackedEnum> $enum */
-                $enum = $key->enum;
                 $backing = (string) new \ReflectionEnum($enum)->getBackingType();
                 $case = $backing === 'int'
                     ? (preg_match('/^-?(0|[1-9][0-9]*)\z/', $given) === 1 ? $enum::tryFrom((int) $given) : null)
                     : $enum::tryFrom($given);
 
                 return $case ?? throw ConfigException::invalid(
-                    $key->variable,
+                    $variable,
                     'must be one of ' . implode(', ', array_map(static fn (\BackedEnum $c): string => (string) $c->value, $enum::cases())),
                 );
         }
@@ -394,6 +479,16 @@ final class Configs
                 \is_bool($default) => $default ? '1' : '0',
                 \is_scalar($default) => (string) $default,
                 $default instanceof \BackedEnum => (string) $default->value,
+                \is_array($default) && $default !== [] => implode(',', array_map(
+                    static fn (mixed $value, int|string $name): string => (\is_string($name) ? "{$name}=" : '') . match (true) {
+                        \is_bool($value) => $value ? '1' : '0',
+                        $value instanceof \BackedEnum => (string) $value->value,
+                        \is_scalar($value) => (string) $value,
+                        default => '',
+                    },
+                    $default,
+                    array_keys($default),
+                )),
                 default => null,
             };
         }
@@ -465,15 +560,37 @@ final class Configs
 
         $typeName = $type->getName();
         $enum = null;
+        $item = null;
+        $listOf = ($parameter->getAttributes(ListOf::class)[0] ?? null)?->newInstance();
+        $mapOf = ($parameter->getAttributes(MapOf::class)[0] ?? null)?->newInstance();
         $kind = match (true) {
             \in_array($typeName, ['string', 'int', 'float', 'bool'], true) => $typeName,
             $typeName === Secret::class => 'secret',
             enum_exists($typeName) && is_subclass_of($typeName, \BackedEnum::class) => 'enum',
-            default => throw new \LogicException("{$where} is {$typeName}, which no variable can say: string, int, float, bool, a backed enum or Secret."),
+            $typeName === 'array' && ($listOf === null) !== ($mapOf === null) => $listOf !== null ? 'list' : 'map',
+            $typeName === 'array' => throw new \LogicException("{$where} is an array: mark it #[ListOf] or #[MapOf], once, to say how its variable is read."),
+            default => throw new \LogicException("{$where} is {$typeName}, which no variable can say: string, int, float, bool, a backed enum, Secret, or an array marked #[ListOf] or #[MapOf]."),
         };
         if ($kind === 'enum') {
             /** @var class-string<\BackedEnum> $typeName */
             $enum = $typeName;
+        }
+        if (($listOf !== null || $mapOf !== null) && $typeName !== 'array') {
+            throw new \LogicException("{$where} is marked #[ListOf] or #[MapOf], and is {$typeName}: a list or a map is an array.");
+        }
+        if ($kind === 'list' || $kind === 'map') {
+            $of = ($listOf ?? $mapOf)->of ?? '';
+            $item = match (true) {
+                \in_array($of, ['string', 'int', 'float', 'bool'], true) => $of,
+                enum_exists($of) && is_subclass_of($of, \BackedEnum::class) => 'enum',
+                // A secret is one value, read whole; a list of them would be
+                // a string some dump could split and print.
+                default => throw new \LogicException("{$where} is a {$kind} of '{$of}': its items are string, int, float, bool or a backed enum, never Secret."),
+            };
+            if ($item === 'enum') {
+                /** @var class-string<\BackedEnum> $of */
+                $enum = $of;
+            }
         }
 
         $sensitive = $parameter->getAttributes(\SensitiveParameter::class) !== [];
@@ -508,6 +625,7 @@ final class Configs
             required: !$hasDefault && !$type->allowsNull(),
             file: $env !== null && $env->file,
             hasDefault: $hasDefault,
+            item: $item,
         );
     }
 }
