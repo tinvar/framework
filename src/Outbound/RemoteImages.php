@@ -113,7 +113,9 @@ final readonly class RemoteImages
     private static function read(string $bytes, string $origin): RemoteImage
     {
         $type = FileTypes::sniff(substr($bytes, 0, FileTypes::HEAD_BYTES));
-        if ($type === null || !FileTypes::isImage($type)) {
+        // The four every browser shows. An AVIF is an upload's, drawn again
+        // before it is kept; what is fetched here is kept as sent.
+        if ($type === null || !\in_array($type, ['image/png', 'image/jpeg', 'image/gif', 'image/webp'], true)) {
             throw new RemoteContentRefused(RemoteContentRefused::TYPE, "What {$origin} sent is not a PNG, JPEG, GIF or WebP image.");
         }
 

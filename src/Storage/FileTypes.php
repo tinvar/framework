@@ -28,11 +28,15 @@ final class FileTypes
         'image/jpeg' => 'jpg',
         'image/gif' => 'gif',
         'image/webp' => 'webp',
+        'image/avif' => 'avif',
         'application/pdf' => 'pdf',
     ];
 
-    /** How much of a file is read to sniff it. */
-    public const int HEAD_BYTES = 16;
+    /**
+     * How much of a file is read to sniff it: enough for an ISO media
+     * file's whole `ftyp` box, whose brands say whether it is an AVIF.
+     */
+    public const int HEAD_BYTES = 64;
 
     public static function known(string $type): bool
     {
@@ -56,11 +60,14 @@ final class FileTypes
      *
      * Past the bare signature where the format allows: a PNG's must be
      * followed by its IHDR chunk, a WebP's RIFF container must hold a VP8
-     * stream. Eight bytes anyone can type are not a format.
+     * stream, an AVIF's `ftyp` box must name the still-image brand. Eight
+     * bytes anyone can type are not a format. An animated AVIF (`avis`) is
+     * none of these: nothing here draws its frames.
      */
     public static function sniff(string $head): ?string
     {
         return match (true) {
+            self::isAvif($head) => 'image/avif',
             str_starts_with($head, "\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR") => 'image/png',
             str_starts_with($head, "\xFF\xD8\xFF") => 'image/jpeg',
             str_starts_with($head, 'GIF87a'), str_starts_with($head, 'GIF89a') => 'image/gif',
@@ -68,6 +75,30 @@ final class FileTypes
             str_starts_with($head, '%PDF-') => 'application/pdf',
             default => null,
         };
+    }
+
+    /**
+     * Whether $head opens an ISO media file branded as a still AVIF: an
+     * `ftyp` box whose major brand is `avif`, or `mif1` with `avif` among
+     * its compatible brands -- and `avis`, an image sequence, nowhere.
+     */
+    private static function isAvif(string $head): bool
+    {
+        if (\strlen($head) < 16 || substr($head, 4, 4) !== 'ftyp') {
+            return false;
+        }
+        $size = unpack('N', substr($head, 0, 4))[1] ?? 0;
+        if (!\is_int($size) || $size < 16 || $size > \strlen($head) || $size % 4 !== 0) {
+            return false;
+        }
+
+        $major = substr($head, 8, 4);
+        $compatible = str_split(substr($head, 16, $size - 16), 4);
+        if ($major === 'avis' || \in_array('avis', $compatible, true)) {
+            return false;
+        }
+
+        return $major === 'avif' || ($major === 'mif1' && \in_array('avif', $compatible, true));
     }
 
     /**

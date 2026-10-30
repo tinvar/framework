@@ -165,3 +165,51 @@ it('keeps a PNG\'s alpha where it has one, and adds none where it has not', func
     expect(\ord($rgb[25]))->toBe(2)
         ->and(\ord($rgba[25]))->toBe(6);
 });
+
+/** An AVIF of $width by $height, drawn by Imagick, with a comment in it. */
+function avif(int $width = 6, int $height = 4): string
+{
+    $image = new \Imagick();
+    $image->newImage($width, $height, 'rgb(200,30,30)');
+    $image->setImageProperty('comment', 'taken at 51.5007N 0.1246W');
+    $image->setImageFormat('avif');
+
+    return $image->getImageBlob();
+}
+
+describe('AVIF', function () {
+    beforeEach(function () {
+        if (!ImageSanitizer::draws('image/avif') || !ImageSanitizer::imagickCan('AVIF')) {
+            $this->markTestSkipped('This PHP draws no AVIF, or has no Imagick to make one with.');
+        }
+    });
+
+    it('sniffs a still AVIF by its brands, and an image sequence or a HEIC as nothing', function () {
+        $still = avif();
+        $sequence = substr_replace($still, 'avis', 8, 4);
+
+        expect(FileTypes::sniff(substr($still, 0, FileTypes::HEAD_BYTES)))->toBe('image/avif')
+            ->and(FileTypes::sniffFile(file($still)))->toBe('image/avif')
+            ->and(FileTypes::sniff(substr($sequence, 0, FileTypes::HEAD_BYTES)))->toBeNull()
+            ->and(FileTypes::sniff("\0\0\0\x18ftypheic\0\0\0\0mif1heic"))->toBeNull()
+            ->and(FileTypes::extension('image/avif'))->toBe('avif');
+    });
+
+    it('draws an AVIF again from its pixels alone, at its size, keeping nothing else of the file', function () {
+        $sent = avif(6, 4) . '<script>alert(1)</script>';
+        $kept = (string) file_get_contents(new ImageSanitizer()->sanitize(file($sent), 'image/avif'));
+        $size = getimagesizefromstring($kept);
+
+        expect(FileTypes::sniffFile(file($kept)))->toBe('image/avif')
+            ->and([$size[0] ?? 0, $size[1] ?? 0])->toBe([6, 4])
+            ->and($kept)->not->toContain('51.5007N')
+            ->and($kept)->not->toContain('<script>');
+    });
+
+    it('refuses an AVIF declaring more pixels than images may have, before decoding it', function () {
+        expect(fn () => new ImageSanitizer(maxDimension: 5)->sanitize(file(avif(6, 4)), 'image/avif'))
+            ->toThrow(HttpException::class, 'larger than images may be')
+            ->and(fn () => new ImageSanitizer()->sanitize(file(substr(avif(), 0, 40)), 'image/avif'))
+            ->toThrow(HttpException::class);
+    });
+});
