@@ -183,6 +183,9 @@ final class RestockImport
 {
     public static ?string $stopAt = null;
 
+    /** The sku whose chunk the stop's interrupt lands after, once it has committed. */
+    public static ?string $stopAfterCommitAt = null;
+
     public function __construct(private readonly Orm $orm) {}
 
     public function __invoke(AddStockRow $row): void
@@ -191,6 +194,12 @@ final class RestockImport
             self::$stopAt = null;
 
             throw WorkerStopping::in(self::class, 70);
+        }
+        if (self::$stopAfterCommitAt !== null && $row->widget->sku === self::$stopAfterCommitAt) {
+            self::$stopAfterCommitAt = null;
+            $this->orm->afterCommit(static function (): void {
+                throw WorkerStopping::in(self::class, 70);
+            });
         }
         $row->widget->stock += $row->add;
         $this->orm->save($row->widget);

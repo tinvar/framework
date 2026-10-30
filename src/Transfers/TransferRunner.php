@@ -538,8 +538,11 @@ final readonly class TransferRunner
             // Stopped by the worker's stop, and handed back to run again:
             // `queued` for the next run to claim, with what is done so far
             // as the record kept it -- the rows the last commit counted,
-            // never the chunk the stop rolled back.
-            $this->transfers->store->update($record->with(['status' => TransferRecord::QUEUED]));
+            // never the chunk the stop rolled back. The interrupt can land
+            // after a chunk's commit and before this run noted it, so where
+            // the count commits with the rows, the store's count is the one
+            // put back, not this run's memory of the count before it.
+            $this->transfers->store->update($this->counted($record)->with(['status' => TransferRecord::QUEUED]));
 
             throw $e;
         } finally {
@@ -680,7 +683,16 @@ final readonly class TransferRunner
             $failures = new RowFailures();
             $written = $record->with(['rows' => $record->rows + \count($chunk)]);
             try {
-                $this->orm->transaction(function () use ($transfer, $arguments, $instance, $chunk, $failures, $written, $enlisted): void {
+                $this->orm->transaction(function () use ($transfer, $arguments, $instance, $chunk, $failures, $written, $enlisted, &$record): void {
+                    // The chunk is this run's once it commits, before what
+                    // else waits on the commit runs: an interrupt or a
+                    // failure there -- the tags told below, say -- comes
+                    // after rows that are in, and what the stop puts back or
+                    // the failure says counts them.
+                    $this->orm->afterCommit(static function () use (&$record, $written): void {
+                        $record = $written;
+                    });
+
                     // Noting every tenant a row ran as, as an action's body is.
                     [, $tenants] = $this->orm->tenantsEnteredBy(function () use ($transfer, $arguments, $instance, $chunk, $failures): void {
                         foreach ($chunk as [$line, $input]) {
@@ -740,6 +752,22 @@ final readonly class TransferRunner
         $this->finish($record->with(['status' => TransferRecord::DONE]));
 
         return true;
+    }
+
+    /**
+     * $record with the rows its store counts as written, where the count
+     * commits with the rows (TransferStore::enlistsIn()): the one count a
+     * run cut off anywhere cannot get ahead of or behind. Elsewhere, the
+     * run's own.
+     */
+    private function counted(TransferRecord $record): TransferRecord
+    {
+        if (!$this->transfers->store->enlistsIn($this->orm->statements())) {
+            return $record;
+        }
+        $stored = $this->transfers->store->find($record->id, $record->tenant, $record->panel, $record->user);
+
+        return $stored === null ? $record : $record->with(['rows' => $stored->rows]);
     }
 
     /** What the user is told of a row the write refused, after $before rows were written. */

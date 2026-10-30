@@ -119,6 +119,7 @@ function stopAfter(int $calls): \Closure
 
 afterEach(function () {
     RestockImport::$stopAt = null;
+    RestockImport::$stopAfterCommitAt = null;
 });
 
 it('pauses its check between chunks, writing nothing, and picks it up where it got to', function () {
@@ -200,6 +201,38 @@ it('writes each row once when the stop interrupts a chunk part of the way throug
 
     expect(runImportOnce($app, static fn (): bool => false))->toBe('done')
         ->and(array_unique(stocks($app, $count)))->toBe([11]);
+});
+
+it('writes each row once when the stop lands after a chunk has committed, before the run has said so', function () {
+    $count = TransferRunner::PAGE * 2 + 100;
+    $app = restockable($count);
+    $app->import(restockFile($count), name: 'restock');
+
+    // The interrupt lands in what waits on the first chunk's commit -- its
+    // tags told, say: the rows and their count are in, and the stop must
+    // not put back the count from before them.
+    RestockImport::$stopAfterCommitAt = sprintf('M-%05d', 10);
+    expect(runImportOnce($app, static fn (): bool => false))->toBe('handed back')
+        ->and($app->record()->status)->toBe(TransferRecord::QUEUED)
+        ->and($app->record()->rows)->toBe(TransferRunner::PAGE);
+
+    expect(runImportOnce($app, static fn (): bool => false))->toBe('done')
+        ->and(array_unique(stocks($app, $count)))->toBe([11])
+        ->and($app->record()->rows)->toBe($count);
+});
+
+it('writes each row once on a store elsewhere when the stop lands after its one chunk has committed', function () {
+    $count = TransferRunner::PAGE + 100;
+    $app = restockable($count, databaseStore: false);
+    $app->import(restockFile($count), name: 'restock');
+
+    RestockImport::$stopAfterCommitAt = sprintf('M-%05d', 10);
+    expect(runImportOnce($app, static fn (): bool => false))->toBe('handed back')
+        ->and($app->record()->rows)->toBe($count);
+
+    expect(runImportOnce($app, static fn (): bool => false))->toBe('done')
+        ->and(array_unique(stocks($app, $count)))->toBe([11])
+        ->and($app->record()->status)->toBe(TransferRecord::DONE);
 });
 
 it('writes in one transaction on a store that cannot commit with the rows, so a stop leaves none written', function () {
