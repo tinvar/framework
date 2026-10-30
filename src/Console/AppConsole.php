@@ -6,6 +6,7 @@ namespace Tinvar\Console;
 
 use Tinvar\Auth\BuildRules;
 use Tinvar\Config\Configs;
+use Tinvar\Gateway\GatewayKeys;
 use Tinvar\Generators\AppLayout;
 use Tinvar\Generators\GenerationRefused;
 use Tinvar\Generators\MakeCommand;
@@ -154,6 +155,28 @@ final class AppConsole
         $this->checks[] = [$heading, $check, $passed];
 
         return $this;
+    }
+
+    /**
+     * `gateway:keys` (ADR 0119): the public keys node agents and the console
+     * edge verify PHP's commands and tickets with, for this environment's
+     * profile, from the key $appKey gives -- the application's, bound to
+     * the profile (AppKey::application()). The public halves alone.
+     *
+     * @param \Closure(): string $appKey
+     */
+    public function withGatewayKeys(\Closure $appKey): self
+    {
+        return $this->command('gateway:keys', 'gateway:keys', "Print the public keys this environment's node agents and console edge verify PHP's commands and tickets with; never a secret", static function (array $arguments) use ($appKey): int {
+            if ($arguments !== []) {
+                fwrite(STDERR, "Usage: gateway:keys\n");
+
+                return 64;
+            }
+            echo implode("\n", GatewayKeys::lines($appKey())), "\n";
+
+            return 0;
+        });
     }
 
     /** @param list<string> $argv the script's own, as PHP hands it over */
