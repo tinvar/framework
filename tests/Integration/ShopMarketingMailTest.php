@@ -16,12 +16,15 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopMarketingMail;
 
+use Shop\Commands\SendNewsletterIssue;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Mail\Links;
 use Shop\Mail\MarketingList;
 use Shop\Mail\MarketingPreferences;
+use Shop\Mail\Newsletter;
 use Shop\Mail\ProductAnnouncement;
+use Shop\Mail\SendNewsletter;
 use Shop\Mail\SendProductAnnouncement;
 use Shop\Mail\Unsubscribes;
 use Shop\Models\Customer;
@@ -132,6 +135,17 @@ function oneClick(string $path, string $body = 'List-Unsubscribe=One-Click', str
         new Request($method, $path, ['content-type' => 'application/x-www-form-urlencoded'], [], $fields, [], null, '203.0.113.9'),
         $body,
     );
+}
+
+/** The customer a body's unsubscribe link opens the preferences of, on $base; null for any other link. */
+function preferencesOf(mixed $url, string $base): ?string
+{
+    if (!\is_string($url) || !str_starts_with($url, $base . Links::PREFERENCES_LINK . '?token=')) {
+        return null;
+    }
+    parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+
+    return \is_string($query['token'] ?? null) ? new Unsubscribes(KEY, new Links($base))->preferencesOf($query['token']) : null;
 }
 
 /** @return array{int, list<string>} a console command's exit status, and everything it printed */
@@ -306,8 +320,9 @@ describe('the product announcement', function () {
             ->and(preg_match('#^<(https://pellwick\.test/_mail/unsubscribe/(v1\.[\w.-]+))>$#', $headers['List-Unsubscribe'] ?? '', $m))->toBe(1)
             // The link is this customer's, for this list, signed by the shop.
             ->and(UnsubscribeLinks::fromKey(KEY, Links::MAIL_ORIGIN)->verify($m[2]))->toBe(['list' => 'announcements', 'recipient' => $demo->id, 'tenant' => ''])
-            // The body's unsubscribe link is the preferences page.
-            ->and($sent->props['unsubscribeUrl'])->toBe(Kernel::baseUrl() . '/account/email')
+            // The body's unsubscribe link opens this customer's preferences
+            // by a signed token, with no sign-in (ADR 0107).
+            ->and(preferencesOf($sent->props['unsubscribeUrl'], Kernel::baseUrl()))->toBe($demo->id)
             ->and($sent->props['productUrl'])->toStartWith(Kernel::baseUrl() . '/products/');
 
         // And POSTed, as the reader's mail client would, it turns the list off.
@@ -389,7 +404,72 @@ describe('the product announcement', function () {
 
         $sent = Fakes::$mail->sent(ProductAnnouncement::TEMPLATE)[0];
         expect($sent->message->unsubscribe?->headers()['List-Unsubscribe'] ?? '')->toStartWith('<https://shop.test/_mail/unsubscribe/v1.')
-            ->and($sent->props['unsubscribeUrl'])->toBe('https://shop.test/account/email');
+            ->and($sent->props['unsubscribeUrl'])->toStartWith('https://shop.test/email/preferences?token=v1.');
+    });
+});
+
+// ADR 0107: the newsletter the preferences page lists, sent as the
+// announcement is -- to its subscribers alone, with one-click
+// List-Unsubscribe headers and a body link that needs no sign-in.
+describe('the newsletter', function () {
+    it('is queued by mail:newsletter for the customers who said yes to it, and nobody else', function () {
+        $other = customer('customer1@shop.test');
+        actingAs($other)->action('account.setMarketing', customer: $other, list: 'announcements', subscribed: true)->assertOk();
+
+        [$status, $lines] = console('mail:newsletter', ['--issue=October 2026']);
+
+        expect($status)->toBe(0, implode("\n", $lines))
+            ->and($lines)->toBe(['Queued the October 2026 newsletter for 1 customer; the queue worker sends it.']);
+        Fakes::$queue->assertPushedCount(1)->assertPushed(
+            SendNewsletter::class,
+            fn (SendNewsletter $job): bool => $job->customer->email === DemoAccount::EMAIL && \count($job->products) === SendNewsletterIssue::PRODUCTS,
+        );
+        Fakes::$mail->assertNothingSent();
+    });
+
+    it('is sent with one-click List-Unsubscribe for its list, and a body link to the reader\'s preferences', function () {
+        $demo = customer();
+        console('mail:newsletter', ['--issue=October 2026']);
+
+        [$status, $lines] = console('queue:work', ['--stop-when-empty']);
+
+        expect($status)->toBe(0, implode("\n", $lines));
+        Fakes::$mail->assertSentCount(1)->assertSentTo(DemoAccount::EMAIL, Newsletter::TEMPLATE);
+        $sent = Fakes::$mail->sent(Newsletter::TEMPLATE)[0];
+        $headers = $sent->message->unsubscribe?->headers() ?? [];
+        expect($sent->message->subject)->toStartWith('Pellwick Supply, October 2026: ')
+            ->and($headers['List-Unsubscribe-Post'] ?? null)->toBe('List-Unsubscribe=One-Click')
+            ->and(preg_match('#^<(https://pellwick\.test/_mail/unsubscribe/(v1\.[\w.-]+))>$#', $headers['List-Unsubscribe'] ?? '', $m))->toBe(1)
+            ->and(UnsubscribeLinks::fromKey(KEY, Links::MAIL_ORIGIN)->verify($m[2]))->toBe(['list' => 'newsletter', 'recipient' => $demo->id, 'tenant' => ''])
+            ->and(preferencesOf($sent->props['unsubscribeUrl'], Kernel::baseUrl()))->toBe($demo->id)
+            ->and($sent->props['products'])->toHaveCount(SendNewsletterIssue::PRODUCTS);
+
+        // One click from the reader's mail client, no sign-in, turns it off.
+        expect(oneClick((string) parse_url($m[1], PHP_URL_PATH))->status)->toBe(200)
+            ->and(rows($demo))->toBe(['announcements' => true, 'newsletter' => false]);
+    });
+
+    it('is not sent to a customer who turned it off after it was queued', function () {
+        $demo = customer();
+        console('mail:newsletter');
+        oneClick(oneClickPath(MarketingList::Newsletter, $demo));
+
+        [$status] = console('queue:work', ['--stop-when-empty']);
+
+        expect($status)->toBe(0);
+        Fakes::$mail->assertNothingSent();
+    });
+
+    it('is refused, nothing queued, where the shop has no https address, or for an issue no subject should carry', function () {
+        putenv('SHOP_URL=http://shop.example');
+        [$plain, $plainLines] = console('mail:newsletter', [], shop());
+        putenv('SHOP_URL');
+        [$bad] = console('mail:newsletter', ["--issue=a\nb"], shop());
+
+        expect($plain)->toBe(78)
+            ->and($plainLines[0])->toContain('RFC 8058')
+            ->and($bad)->toBe(64);
+        Fakes::$queue->assertNothingPushed();
     });
 });
 
@@ -433,7 +513,7 @@ describe('drawn by the renderer', function () {
                 ->and($html)->not->toMatch('/\sclass="/')
                 ->and($html)->toContain('src="https://shop.test/brand/mark-64.png"')
                 ->and($text)->toContain('Why am I getting this? You turned on product announcements for ' . DemoAccount::EMAIL)
-                ->and($html)->toContain('href="https://shop.test/account/email"')
+                ->and($html)->toContain('href="https://shop.test/email/preferences?token=v1.')
                 ->and($text)->toContain('Pellwick Supply · 1 Example Way · Springfield, ST 00000');
             foreach (\Tinvar\Mail\RenderedMail::links($html) as $link) {
                 expect($link)->toStartWith('https://shop.test/')
