@@ -84,3 +84,37 @@ it('reads the warehouse token from a mounted file, and refuses it set both ways'
         \Tinvar\Support\PrivateDirectory::remove($directory);
     }
 });
+
+// ADR 0116: mail is DKIM-signed over SMTP where TINVAR_MAIL_DKIM_* say how,
+// and a key that cannot sign stops the boot without being quoted.
+it('signs its SMTP mail with the DKIM key the environment names, and refuses one that cannot sign', function () {
+    $seed = base64_encode(str_repeat("\x07", 32));
+    $dkim = static function (\Tinvar\Mail\Transport $transport): ?\Tinvar\Mail\DkimSigner {
+        $value = new \ReflectionProperty($transport, 'dkim')->getValue($transport);
+
+        return $value instanceof \Tinvar\Mail\DkimSigner ? $value : null;
+    };
+
+    withShopEnvironment([
+        'SHOP_MAIL' => 'smtp+plain://127.0.0.1:1025',
+        'TINVAR_MAIL_DKIM_DOMAIN' => 'pellwick.test',
+        'TINVAR_MAIL_DKIM_SELECTOR' => 'mail2026',
+        'TINVAR_MAIL_DKIM_PRIVATE_KEY' => $seed,
+    ], function () use ($dkim): void {
+        expect($dkim(Kernel::mailTransport(':memory:'))?->selector)->toBe('mail2026');
+    });
+    withShopEnvironment(['SHOP_MAIL' => 'smtp+plain://127.0.0.1:1025'], function () use ($dkim): void {
+        expect($dkim(Kernel::mailTransport(':memory:')))->toBeNull();
+    });
+
+    withShopEnvironment(['TINVAR_MAIL_DKIM_DOMAIN' => 'pellwick.test', 'TINVAR_MAIL_DKIM_SELECTOR' => 'mail', 'TINVAR_MAIL_DKIM_PRIVATE_KEY' => 'c2VjcmV0'], function (): void {
+        try {
+            Kernel::fromEnvironment(database: ':memory:', key: str_repeat('k', 32));
+            $said = 'booted';
+        } catch (ConfigException $e) {
+            $said = $e->getMessage();
+        }
+
+        expect($said)->toContain('TINVAR_MAIL_DKIM_* cannot sign')->not->toContain('c2VjcmV0');
+    });
+});
