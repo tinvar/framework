@@ -26,12 +26,13 @@
 
   /**
    * @param {Document} doc
-   * @param {{endpoint: string, header: string, token: string, request: string, style: string}} config
+   * @param {{endpoint: string, header: string, token: string, request: string, style: string, editor?: {template: string, paths: [string, string][]}}} config
    * @param {string | undefined} nonce
    * @param {Element} data the data block it was configured from
    */
   function mount(doc, config, nonce, data) {
     if (doc.getElementById(ID)) return;
+    editor = config.editor ?? null;
 
     const host = doc.createElement('div');
     host.id = ID;
@@ -421,7 +422,7 @@
                 `${short(origin.data)} from ${short(origin.loader)}` +
                   (routes.size > 1 && origin.route ? ` · ${origin.route}` : ''),
               ),
-              el('span', { class: 'site', title: origin.site }, site(origin.site)),
+              siteOf(origin.site),
             ),
             ...fields.map((field) =>
               el(
@@ -433,7 +434,8 @@
                   `${origin.kind === 'fragment' ? origin.slot : `data.${origin.slot}`}.${field.name}`,
                 ),
                 el('span', { class: 'muted' }, `${short(field.type)} · ${short(field.declaredIn)}`),
-                el('span', { class: 'site', title: field.site }, field.site === '' ? '' : site(field.site)),
+                field.site === '' ? '' : siteOf(field.site),
+                ...madeAt(field.made),
               ),
             ),
           ),
@@ -652,7 +654,7 @@
         el('span', { class: load.batch === 'alone' ? 'flag' : 'note' }, load.batch),
         el('code', {}, short(load.relation)),
         el('span', { class: 'muted' }, `${load.parents} ${load.parents === 1 ? 'parent' : 'parents'}`),
-        el('span', { class: 'site', title: load.site }, site(load.site)),
+        siteOf(load.site),
       ),
     );
     if ((detail.lazyLoadsDropped ?? 0) > 0) {
@@ -674,12 +676,7 @@
   function acrossTenants(detail) {
     const calls = detail.acrossTenants ?? [];
     const parts = calls.map((call) =>
-      el(
-        'div',
-        { class: 'load' },
-        el('span', { class: 'flag' }, 'acrossTenants()'),
-        el('span', { class: 'site', title: call.site }, site(call.site)),
-      ),
+      el('div', { class: 'load' }, el('span', { class: 'flag' }, 'acrossTenants()'), siteOf(call.site)),
     );
     if ((detail.acrossTenantsDropped ?? 0) > 0) {
       parts.push(el('p', { class: 'muted' }, `${detail.acrossTenantsDropped} more were not kept.`));
@@ -776,6 +773,92 @@
   function site(where) {
     const text = String(where ?? '');
     return text === '' ? 'unknown site' : text.slice(text.lastIndexOf('/') + 1);
+  }
+
+  /**
+   * The schemes an editor link may have: the editors' own, as
+   * Tinvar\Config\EditorTemplate::SCHEMES holds them. PHP refuses any other
+   * template before the page is drawn; this holds the link drawn to them
+   * again, so nothing in the data block can make one a script.
+   */
+  const SCHEMES = [
+    'vscode',
+    'vscode-insiders',
+    'vscodium',
+    'cursor',
+    'windsurf',
+    'zed',
+    'phpstorm',
+    'idea',
+    'jetbrains',
+    'subl',
+    'txmt',
+    'mvim',
+    'nova',
+  ];
+
+  /** @type {{template: string, paths: [string, string][]} | null} the developer's editor (TINVAR_EDITOR) */
+  let editor = null;
+
+  /**
+   * The editor link for a file:line, or null: no editor named, or a site
+   * that is not an absolute path and a line, or one with a `.` or `..`
+   * segment that would walk out of a mapped prefix.
+   *
+   * @param {string} where
+   * @returns {string | null}
+   */
+  function editorLink(where) {
+    if (editor === null || typeof editor.template !== 'string') return null;
+    const match = /^(\/[^\x00-\x1f]*|[A-Za-z]:[\\/][^\x00-\x1f]*):([0-9]{1,9})$/.exec(where);
+    if (match === null) return null;
+    let path = match[1].replaceAll('\\', '/');
+    if (path.split('/').some((part) => part === '.' || part === '..')) return null;
+    for (const pair of Array.isArray(editor.paths) ? editor.paths : []) {
+      const [from, to] = Array.isArray(pair) ? pair : [];
+      if (
+        typeof from === 'string' &&
+        typeof to === 'string' &&
+        (path === from || path.startsWith(`${from}/`))
+      ) {
+        path = to + path.slice(from.length);
+        break;
+      }
+    }
+    if (!/^(\/|[A-Za-z]:\/)/.test(path)) return null;
+    let encoded = path.split('/').map(encodeURIComponent).join('/');
+    encoded = encoded.startsWith('/') ? encoded : `/${encoded.replace(/^([A-Za-z])%3A/, '$1:')}`;
+    const line = match[2];
+    const link = editor.template.replaceAll('{file}', () => encoded).replaceAll('{line}', () => line);
+    let scheme = '';
+    try {
+      scheme = new URL(link).protocol.slice(0, -1).toLowerCase();
+    } catch {
+      return null;
+    }
+    return SCHEMES.includes(scheme) ? link : null;
+  }
+
+  /** A file:line: a link to the developer's editor where one is named, its name and line as text otherwise. */
+  function siteOf(where) {
+    const text = String(where ?? '');
+    const link = text === '' ? null : editorLink(text);
+    return link === null
+      ? el('span', { class: 'site', title: text }, site(text))
+      : el('a', { class: 'site', href: link, title: `Open ${text} in the editor` }, site(text));
+  }
+
+  /** Where the loader made a field (ADR 0132): each branch's line, or nothing where its source does not say. */
+  function madeAt(made) {
+    const sites = Array.isArray(made) ? made.filter((where) => typeof where === 'string') : [];
+    if (sites.length === 0) return [];
+    return [
+      el('span', { class: 'muted' }, 'made at'),
+      ...sites.flatMap((where, i) => [
+        ...(i === 0 ? [] : [el('span', { class: 'muted' }, 'or')]),
+        siteOf(where),
+      ]),
+    ];
   }
 
   function ms(value) {

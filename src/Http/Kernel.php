@@ -26,6 +26,8 @@ use Tinvar\Http\Endpoints\Limits;
 use Tinvar\Http\Endpoints\QueryEndpoint;
 use Tinvar\Http\Middleware\CheckVersion;
 use Tinvar\Http\Middleware\TranslateRedirects;
+use Tinvar\Config\EditorTemplate;
+use Tinvar\Config\FrameworkConfig;
 use Tinvar\Container\Container;
 use Tinvar\Dev\DevToolbar;
 use Tinvar\Dev\Loopback;
@@ -2006,7 +2008,7 @@ final class Kernel
             return $page;
         }
 
-        $overlay = DevOverlay::render($failure, $error->digest, DevOverlay::nonceOf($page->header('content-security-policy')));
+        $overlay = DevOverlay::render($failure, $error->digest, DevOverlay::nonceOf($page->header('content-security-policy')), $this->editor());
 
         return Response::make($page->status, DevOverlay::into($page->body(), $overlay), $page->headers())->withCookiesOf($page);
     }
@@ -2070,6 +2072,21 @@ final class Kernel
             && !$request->wantsRscPayload()
             && !str_starts_with($request->path, '/_')
             && str_contains($request->header('accept') ?? '', 'text/html');
+    }
+
+    /**
+     * The developer's editor, which the overlay links a failure's
+     * `file:line` to (ADR 0132); null where none is named, or where the
+     * framework's config cannot be read -- the overlay is the failure, and
+     * shows it as text rather than fail again.
+     */
+    private function editor(): ?EditorTemplate
+    {
+        try {
+            return FrameworkConfig::load()->editorTemplate();
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     /**

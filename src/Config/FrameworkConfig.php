@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Config;
 
 use Tinvar\Attributes\Config;
+use Tinvar\Attributes\ListOf;
 use Tinvar\Support\AppKey;
 use Tinvar\Support\BuildProfile;
 use Tinvar\Support\DevMode;
@@ -55,6 +56,10 @@ final readonly class FrameworkConfig
      * @param string|null $frankenphp the FrankenPHP binary `tinvar serve` runs, where --frankenphp names none
      * @param Secret|null $dumpMysqlDsn a mysql: DSN for a user that reaches the dumps' copies of a MySQL
      *        database alone (`tinvar\_dump\_%`), which `render --dump` and `mcp` make them as (ADR 0113)
+     * @param string|null $editor the developer's editor as a URL template, `vscode://file{file}:{line}`,
+     *        which dev's toolbar and overlay link each `file:line` by (EditorTemplate, ADR 0132)
+     * @param list<string> $editorPaths `from=to` prefixes from where the server sees a file to where
+     *        the editor does
      */
     public function __construct(
         public ?string $dev = null,
@@ -73,8 +78,17 @@ final readonly class FrameworkConfig
         public ?string $frankenphp = null,
         #[\SensitiveParameter]
         public ?Secret $dumpMysqlDsn = null,
+        public ?string $editor = null,
+        #[ListOf('string')]
+        public array $editorPaths = [],
     ) {
         $problems = [];
+
+        try {
+            EditorTemplate::of($editor, $editorPaths);
+        } catch (\InvalidArgumentException $e) {
+            $problems[] = $e->getMessage();
+        }
 
         // Its driver, never the rest: the DSN carries a password.
         if ($dumpMysqlDsn !== null && !str_starts_with(trim($dumpMysqlDsn->reveal()), 'mysql:')) {
@@ -147,6 +161,15 @@ final readonly class FrameworkConfig
     public function buildProfile(): string
     {
         return BuildProfile::resolve($this->profile ?? '', $this->dev === '1');
+    }
+
+    /**
+     * The developer's editor link, or null where TINVAR_EDITOR names none.
+     * Read only where dev draws a `file:line`.
+     */
+    public function editorTemplate(): ?EditorTemplate
+    {
+        return EditorTemplate::of($this->editor, $this->editorPaths);
     }
 
     /** The renderers' own user as named, or null where none is. */

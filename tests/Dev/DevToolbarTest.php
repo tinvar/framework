@@ -80,7 +80,7 @@ final class CatalogPage
 {
     public function __invoke(): CatalogData
     {
-        return new CatalogData();
+        return new CatalogData(title: 'Lanterns');
     }
 }
 
@@ -613,6 +613,8 @@ it('badges the page\'s props with the loader that returned them and its file:lin
             'type' => 'string',
             'site' => __FILE__ . ':' . $constructor->getStartLine(),
             'declaredIn' => CatalogData::class,
+            // The line of the loader that fills it (ValueSites).
+            'made' => [__FILE__ . ':' . ($invoke->getStartLine() + 2)],
         ]],
     ]])->and($one['request']['originsDropped'])->toBe(0);
 });

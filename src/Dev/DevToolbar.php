@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Tinvar\Dev;
 
-use Tinvar\Config\FrameworkConfig;
 use Tinvar\Auth\AuthContext;
+use Tinvar\Config\Configs;
+use Tinvar\Config\EditorTemplate;
+use Tinvar\Config\FrameworkConfig;
 use Tinvar\Http\DevOverlay;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
@@ -92,6 +94,8 @@ final class DevToolbar implements FrameTap
      * @param string $key the run's key, which signs the toolbar's tokens and keys its bindings
      * @param \Closure(Request): string $sessionId the request's session id, '' without one
      * @param string $build the build tokens are bound to
+     * @param EditorTemplate|null $editor the developer's editor, which each `file:line` links to;
+     *        text where none is named
      */
     public function __construct(
         string $directory,
@@ -99,6 +103,7 @@ final class DevToolbar implements FrameTap
         string $key,
         private readonly \Closure $sessionId,
         private readonly string $build = 'dev',
+        private readonly ?EditorTemplate $editor = null,
     ) {
         $this->signer = new Signer($key, ToolbarToken::PURPOSE);
         $this->store = new RecordingStore($directory);
@@ -141,8 +146,9 @@ final class DevToolbar implements FrameTap
         if (!$dev) {
             return null;
         }
+        $config = $given ? Configs::load(FrameworkConfig::class, $env) : FrameworkConfig::load();
 
-        return new self($directory, self::readKey($directory), $sessionId, $build);
+        return new self($directory, self::readKey($directory), $sessionId, $build, $config->editorTemplate());
     }
 
     /**
@@ -226,7 +232,7 @@ final class DevToolbar implements FrameTap
         foreach ($tokens as $i => $token) {
             $fields = [];
             foreach ($token->props as $name => $value) {
-                $fields[] = ['name' => (string) $name, 'type' => get_debug_type($value), 'site' => '', 'declaredIn' => "<Deferred> {$token->component}"];
+                $fields[] = ['name' => (string) $name, 'type' => get_debug_type($value), 'site' => '', 'declaredIn' => "<Deferred> {$token->component}", 'made' => []];
             }
             $origins[] = [
                 'slot' => \count($tokens) === 1 ? 'props' : "tokens.{$i}.props",
@@ -288,7 +294,7 @@ final class DevToolbar implements FrameTap
 
     /**
      * @param class-string $data
-     * @return array{slot: string, kind: string, loader: string, data: string, site: string, route: string, fields: list<array{name: string, type: string, site: string, declaredIn: string}>}
+     * @return array{slot: string, kind: string, loader: string, data: string, site: string, route: string, fields: list<array{name: string, type: string, site: string, declaredIn: string, made: list<string>}>}
      */
     private static function origin(string $slot, string $kind, CompiledRoute $route, string $data, string $routeName): array
     {
@@ -301,6 +307,12 @@ final class DevToolbar implements FrameTap
             $site = $file === false ? '' : "{$file}:{$where->getStartLine()}";
         }
 
+        // Each field's declaration, and the lines of the loader's class that
+        // fill it, where its source says (ValueSites).
+        $fields = FieldOrigins::of($data);
+        $made = ValueSites::of($route->class, $data, $fields);
+        ValueSites::forget();
+
         return [
             'slot' => $slot,
             'kind' => $kind,
@@ -308,7 +320,7 @@ final class DevToolbar implements FrameTap
             'data' => $data,
             'site' => $site,
             'route' => $routeName,
-            'fields' => FieldOrigins::of($data),
+            'fields' => array_map(static fn (array $field): array => [...$field, 'made' => $made[$field['name']] ?? []], $fields),
         ];
     }
 
@@ -426,6 +438,7 @@ final class DevToolbar implements FrameTap
             'header' => self::HEADER,
             'token' => $binding->encode($this->signer),
             'request' => $recording,
+            ...($this->editor === null ? [] : ['editor' => $this->editor->toArray()]),
         ]);
 
         return Response::make($response->status, DevOverlay::into($response->body(), $markup), $response->headers())
@@ -437,7 +450,7 @@ final class DevToolbar implements FrameTap
      * from, which is never run and so takes no nonce, and the script, which
      * carries the nonce and applies it to the style it makes.
      *
-     * @param array<string, string> $config
+     * @param array<string, mixed> $config
      */
     public static function markup(string $nonce, array $config): string
     {

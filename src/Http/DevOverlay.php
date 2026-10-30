@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Http;
 
+use Tinvar\Config\EditorTemplate;
 use Tinvar\Protocol\ProtocolException;
 use Tinvar\Render\RendererException;
 use Tinvar\Render\RenderFailure;
@@ -36,8 +37,10 @@ final class DevOverlay
      *
      * @param string|null $nonce the nonce the document's policy allows; without
      *        one the overlay is drawn with no style or script of its own
+     * @param EditorTemplate|null $editor the developer's editor, which the
+     *        failure's `file:line` links to (ADR 0132); text without one
      */
-    public static function render(\Throwable $e, string $digest, ?string $nonce): string
+    public static function render(\Throwable $e, string $digest, ?string $nonce, ?EditorTemplate $editor = null): string
     {
         $h = static fn (string $text): string => htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         [$kind, $title, $hint] = self::classify($e);
@@ -47,7 +50,7 @@ final class DevOverlay
         $previous = '';
         for ($cause = $e->getPrevious(); $cause !== null; $cause = $cause->getPrevious()) {
             $previous .= '<p class="cause">Caused by ' . $h($cause::class . ': ' . $cause->getMessage())
-                . ' at ' . $h($cause->getFile() . ':' . $cause->getLine()) . '</p>';
+                . ' at ' . self::site($cause->getFile() . ':' . $cause->getLine(), $editor) . '</p>';
         }
 
         return '<div id="' . self::ID . '" role="dialog" aria-labelledby="' . self::ID . '-title" data-kind="' . $h($kind) . '">'
@@ -56,7 +59,7 @@ final class DevOverlay
             . '<p class="kind">' . $h($kind) . ' · shown in dev only</p>'
             . '<h2 id="' . self::ID . '-title">' . $h($title) . '</h2>'
             . '<p class="message">' . $h($e::class . ': ' . $e->getMessage()) . '</p>'
-            . ($file === null ? '' : '<p class="where">' . $h($line === null ? $file : "{$file}:{$line}") . '</p>')
+            . ($file === null ? '' : '<p class="where">' . self::site($line === null ? $file : "{$file}:{$line}", $editor) . '</p>')
             . ($hint === null ? '' : '<p class="hint">' . $h($hint) . '</p>')
             . $previous
             . '<pre class="stack">' . $h($stack) . '</pre>'
@@ -67,6 +70,20 @@ final class DevOverlay
                 . 'document.querySelector("#' . self::ID . ' [data-close]").addEventListener("click",function(){'
                 . 'document.getElementById("' . self::ID . '").remove()})</script>')
             . '</div>';
+    }
+
+    /**
+     * A `file:line` as text, or as a link to the developer's editor where
+     * one is named and the site is an absolute path and a line. The link is
+     * the template's -- an editor's own scheme, never a script's -- and is
+     * escaped into its attribute like any other text.
+     */
+    private static function site(string $site, ?EditorTemplate $editor): string
+    {
+        $h = static fn (string $text): string => htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $link = $editor?->link($site);
+
+        return $link === null ? $h($site) : '<a href="' . $h($link) . '">' . $h($site) . '</a>';
     }
 
     /**
@@ -127,6 +144,7 @@ final class DevOverlay
         . '#' . self::ID . ' h2{margin:8px 0 16px;font:600 22px/1.3 system-ui,sans-serif}'
         . '#' . self::ID . ' .message{margin:0 0 8px;font-size:15px;white-space:pre-wrap;overflow-wrap:anywhere}'
         . '#' . self::ID . ' .where{margin:0 0 16px;color:#9ecbff;overflow-wrap:anywhere}'
+        . '#' . self::ID . ' a{color:inherit;text-decoration:underline}'
         . '#' . self::ID . ' .hint{margin:0 0 16px;padding:12px;border-left:3px solid #9ecbff;background:rgba(158,203,255,.08);font-family:system-ui,sans-serif}'
         . '#' . self::ID . ' .cause{margin:0 0 8px;color:#c9c8c3;overflow-wrap:anywhere}'
         . '#' . self::ID . ' .stack{margin:0;padding:12px;overflow:auto;background:rgba(255,255,255,.05);color:#c9c8c3;font-size:12px}'

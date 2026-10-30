@@ -127,7 +127,7 @@ function respond(status: number, body: unknown) {
   return Promise.resolve(new Response(JSON.stringify(body), { status }));
 }
 
-function mount() {
+function mount(extra: Record<string, unknown> = {}) {
   const data = document.createElement('script');
   data.type = 'application/json';
   data.id = 'tinvar-dev-toolbar-config';
@@ -137,6 +137,7 @@ function mount() {
     token: 'v1.token.mac',
     request: PAGE,
     style: '.toggle{position:fixed}',
+    ...extra,
   });
   document.body.append(data);
   new Function(SCRIPT)();
@@ -526,6 +527,86 @@ describe('what the render did, and where', () => {
       'fragmentpropsprops minted with the page from <Deferred> Reviews · shop.productunknown site',
       'props.skustring · <Deferred> Reviews',
     ]);
+  });
+
+  // ADR 0132: TINVAR_EDITOR makes each file:line a link, and a field the
+  // loader made shows the lines that made it.
+  function withFields(fields: unknown[]) {
+    fetchMock.mockImplementation((url: string) =>
+      respond(
+        200,
+        url.endsWith(PAGE)
+          ? {
+              protocol: 1,
+              request: { ...traced, origins: [{ ...traced.origins[1], route: 'shop.catalog', fields }] },
+            }
+          : { protocol: 1, requests: flagged },
+      ),
+    );
+  }
+
+  const made = {
+    name: 'total',
+    type: 'int',
+    site: '/app/Data/CatalogData.php:14',
+    declaredIn: 'Shop\\Data\\CatalogData',
+    made: ['/app/Pages/Catalog.php:51', '/app/Pages/Catalog.php:60', 7],
+  };
+
+  it('links each file:line to the editor TINVAR_EDITOR names, and shows where the loader made a field', async () => {
+    withFields([made]);
+    const root = mount({
+      editor: {
+        template: 'phpstorm://open?file={file}&line={line}',
+        paths: [['/app', '/Users/ada/my shop']],
+      },
+    });
+    await open(root);
+    const view = tab(root, 'Props');
+    const field = [...view.querySelectorAll('.origins li')].find((li) =>
+      li.textContent?.includes('page.total'),
+    )!;
+
+    expect(field.textContent).toBe(
+      'data.page.totalint · CatalogDataCatalogData.php:14made atCatalog.php:51orCatalog.php:60',
+    );
+    expect([...field.querySelectorAll('a.site')].map((a) => a.getAttribute('href'))).toEqual([
+      'phpstorm://open?file=/Users/ada/my%20shop/Data/CatalogData.php&line=14',
+      'phpstorm://open?file=/Users/ada/my%20shop/Pages/Catalog.php&line=51',
+      'phpstorm://open?file=/Users/ada/my%20shop/Pages/Catalog.php&line=60',
+    ]);
+  });
+
+  it("draws text, never a link, without an editor or for a template that is not an editor's", async () => {
+    for (const editor of [
+      undefined,
+      { template: 'javascript:alert(1)//{file}{line}', paths: [] },
+      { template: 'https://example.com/?f={file}&l={line}', paths: [] },
+      { template: 'data:text/html,{file}{line}', paths: [] },
+      { template: 7, paths: [] },
+    ]) {
+      withFields([made]);
+      const root = mount(editor === undefined ? {} : { editor });
+      await open(root);
+      const view = tab(root, 'Props');
+      expect(view.querySelectorAll('a').length).toBe(0);
+      expect(view.querySelectorAll('.origins .site').length).toBeGreaterThan(0);
+      document.body.replaceChildren();
+    }
+  });
+
+  it('links no site with a . or .. segment, or one that is not an absolute path and a line', async () => {
+    withFields([
+      { name: 'a', type: 'int', site: '/app/../etc/passwd:1', declaredIn: 'X' },
+      { name: 'b', type: 'int', site: 'relative/File.php:2', declaredIn: 'X' },
+      { name: 'c', type: 'int', site: '/app/File.php', declaredIn: 'X' },
+      { name: 'd', type: 'int', site: '/app/File.php:3', declaredIn: 'X' },
+    ]);
+    const root = mount({ editor: { template: 'vscode://file{file}:{line}', paths: [] } });
+    await open(root);
+    const links = [...tab(root, 'Props').querySelectorAll('a.site')].map((a) => a.getAttribute('href'));
+
+    expect(links).toEqual(['vscode://file/app/Pages/Catalog.php:48', 'vscode://file/app/File.php:3']);
   });
 
   it("shows each cached query's lookup, the flags read, and the boundaries that failed", async () => {

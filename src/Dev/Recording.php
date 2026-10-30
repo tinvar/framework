@@ -170,7 +170,7 @@ final class Recording
      * field's declaration (DevToolbar::loaded()) -- every render's, a
      * fragment's and an action's re-renders too, each under its route.
      *
-     * @var list<array{slot: string, kind: string, loader: string, data: string, site: string, route: string, fields: list<array{name: string, type: string, site: string, declaredIn: string}>}>
+     * @var list<array{slot: string, kind: string, loader: string, data: string, site: string, route: string, fields: list<array{name: string, type: string, site: string, declaredIn: string, made: list<string>}>}>
      */
     private array $origins = [];
 
@@ -414,7 +414,7 @@ final class Recording
      * revalidates -- with each origin's route; a route rendered again
      * replaces what it gave before.
      *
-     * @param list<array{slot: string, kind: string, loader: string, data: string, site: string, route?: string, fields?: list<array{name: string, type: string, site: string, declaredIn: string}>}> $origins
+     * @param list<array{slot: string, kind: string, loader: string, data: string, site: string, route?: string, fields?: list<array{name: string, type: string, site: string, declaredIn: string, made?: list<string>}>}> $origins
      */
     public function origins(array $origins): void
     {
@@ -428,7 +428,13 @@ final class Recording
                 'data' => self::text($origin['data']),
                 'site' => self::text($origin['site']),
                 'route' => self::text($origin['route'] ?? ''),
-                'fields' => array_map(static fn (array $field): array => array_map(self::text(...), $field), $fields),
+                'fields' => array_map(static fn (array $field): array => [
+                    'name' => self::text($field['name']),
+                    'type' => self::text($field['type']),
+                    'site' => self::text($field['site']),
+                    'declaredIn' => self::text($field['declaredIn']),
+                    'made' => array_map(self::text(...), \array_slice($field['made'] ?? [], 0, ValueSites::MAX_SITES)),
+                ], $fields),
             ];
         }
 

@@ -247,3 +247,8 @@ summary {
 .origins li.field {
   padding-left: 1.5em;
 }
+
+a.site {
+  color: #9ecbff;
+  text-decoration: underline;
+}
