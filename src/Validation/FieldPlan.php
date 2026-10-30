@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Tinvar\Validation;
 
 use Tinvar\Orm\Model;
+use Tinvar\Uploads\Upload;
+use Tinvar\Uploads\UploadList;
 
 /**
  * One form-request field, reflected once.
@@ -18,10 +20,10 @@ use Tinvar\Orm\Model;
 final readonly class FieldPlan
 {
     /** Kinds the validator knows how to produce and rules can be written against. */
-    public const array KINDS = ['string', 'int', 'float', 'bool', 'array', 'enum', 'model'];
+    public const array KINDS = ['string', 'int', 'float', 'bool', 'array', 'enum', 'model', 'upload'];
 
     /**
-     * @param 'string'|'int'|'float'|'bool'|'array'|'enum'|'model' $kind
+     * @param 'string'|'int'|'float'|'bool'|'array'|'enum'|'model'|'upload' $kind
      * @param list<Rule>                     $rules
      * @param class-string<Model>|null       $modelClass
      * @param class-string<\BackedEnum>|null $enumClass
@@ -113,7 +115,7 @@ final readonly class FieldPlan
         return is_subclass_of($attribute->getName(), Rule::class);
     }
 
-    /** @return array{'string'|'int'|'float'|'bool'|'array'|'enum'|'model', class-string<Model>|null, class-string<\BackedEnum>|null} */
+    /** @return array{'string'|'int'|'float'|'bool'|'array'|'enum'|'model'|'upload', class-string<Model>|null, class-string<\BackedEnum>|null} */
     private static function kindOf(\ReflectionParameter $parameter, string $where): array
     {
         $type = $parameter->getType();
@@ -139,6 +141,12 @@ final readonly class FieldPlan
             }
             if (is_subclass_of($name, \BackedEnum::class)) {
                 return ['enum', null, $name];
+            }
+            // Never built from the input: the action runner verifies the
+            // reference against everything its ticket bound it to, and hands
+            // the validator the upload it names (ADR 0127).
+            if ($name === Upload::class || $name === UploadList::class) {
+                return ['upload', null, null];
             }
 
             throw new \LogicException(

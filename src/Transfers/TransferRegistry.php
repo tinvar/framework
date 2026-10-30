@@ -21,6 +21,7 @@ use Tinvar\Orm\Query;
 use Tinvar\Support\KnownAttributes;
 use Tinvar\Support\Str;
 use Tinvar\Validation\FormRequest;
+use Tinvar\Validation\Validator;
 
 /**
  * The #[Export] and #[Import] classes of an application, by kind and name.
@@ -190,6 +191,9 @@ final class TransferRegistry
                 }
                 if ($type->allowsNull()) {
                     throw new \InvalidArgumentException("{$where} is the row, and may not be null.");
+                }
+                if (Validator::uploadFields($typeName) !== []) {
+                    throw new \InvalidArgumentException("{$where} takes an upload field, which only an action is handed: a row is read from a file.");
                 }
                 $rowParameter = $parameter->getName();
                 $row = $typeName;

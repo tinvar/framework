@@ -115,8 +115,33 @@ final class SignIn implements Middleware
     }
 }
 
+/** A new profile's form: a caption, and the picture it is made with. */
+final readonly class NewProfile extends \Tinvar\Validation\FormRequest
+{
+    public function __construct(
+        #[\Tinvar\Validation\Rules\Max(20)]
+        public string $caption,
+        #[Uploaded(to: null, prefix: 'avatars', types: ['image/png'], maxBytes: 4096)]
+        public Upload $picture,
+        #[Uploaded(to: null, prefix: 'documents', types: ['application/pdf'])]
+        public ?Upload $attachment = null,
+    ) {}
+}
+
+/** A photo for a profile that exists, as a form request's field. */
+final readonly class ProfilePhoto extends \Tinvar\Validation\FormRequest
+{
+    public function __construct(
+        #[Uploaded(to: 'profile', prefix: 'photos', types: ['image/png'], maxBytes: 4096)]
+        public Upload $photo,
+    ) {}
+}
+
 final class ProfileActions
 {
+    /** What the last form-request body was handed. */
+    public static ?NewProfile $form = null;
+
     /** What the last body to run was handed. */
     public static ?Upload $received = null;
 
@@ -187,6 +212,22 @@ final class ProfileActions
         self::$received = $avatar;
 
         return ActionResult::ok(['key' => $avatar->key]);
+    }
+
+    #[Action(name: 'profiles.submit')]
+    public function submit(NewProfile $form): ActionResult
+    {
+        self::$form = $form;
+
+        return ActionResult::ok(['key' => $form->picture->key]);
+    }
+
+    #[Action(name: 'profiles.photo'), Authorize('update', 'profile')]
+    public function photo(Profile $profile, ProfilePhoto $form): ActionResult
+    {
+        self::$received = $form->photo;
+
+        return ActionResult::ok();
     }
 
     #[Action(name: 'albums.cover'), Authorize('update', 'album')]

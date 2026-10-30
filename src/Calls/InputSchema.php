@@ -57,6 +57,8 @@ final class InputSchema
                 'type' => 'string',
                 'description' => 'The id of a ' . self::shortName((string) $field->modelClass) . '.',
             ],
+            // Operations refuses an action taking one.
+            'upload' => throw new \LogicException('An upload is no input a call can send.'),
         };
 
         foreach ($field->rules as $rule) {

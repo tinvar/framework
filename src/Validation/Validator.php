@@ -9,6 +9,8 @@ use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 use Tinvar\Support\Str;
 use Tinvar\Support\KnownAttributes;
+use Tinvar\Uploads\Upload;
+use Tinvar\Uploads\UploadList;
 
 /**
  * Builds a FormRequest from raw input, or throws with every error at once.
@@ -37,10 +39,12 @@ final class Validator
      * @param Model|null           $subject the record being edited, resolved
      *        and authorized by the router -- rules that need it read it here
      *        rather than from the payload
-     * @param array<string, Model> $resolved models the caller already resolved
-     *        and authorized; a model-typed field named here is taken from this
-     *        map rather than looked up again, so validation cannot substitute
-     *        a different row for the one that was checked
+     * @param array<string, Model|Upload|UploadList> $resolved models the caller already
+     *        resolved and authorized; a model-typed field named here is taken from
+     *        this map rather than looked up again, so validation cannot substitute
+     *        a different row for the one that was checked. And the uploads the
+     *        action runner verified, by field: an upload field is never read
+     *        from the input
      * @param array<string, Model> $subjects every resolved model, so a rule
      *        that exempts "the row being edited" can pick the one of its own
      *        class rather than whichever came first
@@ -103,6 +107,27 @@ final class Validator
     }
 
     /**
+     * The fields of $class that take an upload. Only an action verifies one
+     * (ADR 0127); anything else handed such a form request -- an endpoint,
+     * an import's row -- refuses it when it is registered, since the field
+     * could only ever be missing.
+     *
+     * @param class-string<FormRequest> $class
+     * @return list<string>
+     */
+    public static function uploadFields(string $class): array
+    {
+        $fields = [];
+        foreach (self::planFor($class) as $field) {
+            if ($field->kind === 'upload') {
+                $fields[] = $field->name;
+            }
+        }
+
+        return $fields;
+    }
+
+    /**
      * Validates one field, for Precognition's `validate('email')`.
      *
      * Only that field is checked. Running the whole request to answer about
@@ -112,7 +137,7 @@ final class Validator
      *
      * @param class-string<FormRequest> $class
      * @param array<string, mixed>      $input
-     * @param array<string, Model>      $resolved
+     * @param array<string, Model|Upload|UploadList> $resolved
      * @param array<string, Model>      $subjects
      * @param array<string, class-string<Model>> $unsupplied
      * @return list<string>
@@ -153,7 +178,7 @@ final class Validator
 
     /**
      * @param array<string, mixed> $input
-     * @param array<string, Model>  $resolved
+     * @param array<string, Model|Upload|UploadList> $resolved
      * @return list<string>
      */
     private function checkField(
@@ -175,13 +200,25 @@ final class Validator
      * was "must be text", and '' for a `?int` was "must be a whole number".
      *
      * @param array<string, mixed> $input
-     * @param array<string, Model> $resolved
+     * @param array<string, Model|Upload|UploadList> $resolved
      * @return array{mixed, list<string>} the value, meaningful only when the
      *         list of what is wrong with it is empty
      */
     private function read(FieldPlan $field, array $input, ValidationContext $context, array $resolved = []): array
     {
         $name = $field->name;
+
+        // An upload is never read from the input: what stands for it there
+        // is a reference, which only the action runner can hold to its
+        // ticket. It hands over the upload it verified, or nothing.
+        if ($field->kind === 'upload') {
+            $upload = $resolved[$name] ?? null;
+            if ($upload !== null) {
+                return [$upload, []];
+            }
+
+            return $field->nullable || $field->hasDefault ? [$field->default, []] : [null, ["{$name} is required."]];
+        }
         $present = \array_key_exists($name, $input);
         $raw = $present ? $input[$name] : null;
 
@@ -304,7 +341,7 @@ final class Validator
             'bool' => self::toBool($raw, $field->name),
             'array' => self::toArray($raw, $field->name),
             // Handled above by their class; reaching here is a plan built wrong.
-            'enum', 'model' => throw new \LogicException("{$field->name}: a {$field->kind} field without its class."),
+            'enum', 'model', 'upload' => throw new \LogicException("{$field->name}: a {$field->kind} field without its class."),
         };
     }
 

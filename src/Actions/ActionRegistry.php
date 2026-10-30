@@ -248,19 +248,7 @@ final class ActionRegistry
             // one, and what may be uploaded to it is declared beside it --
             // there is no default, so no upload is ever taken unlimited.
             if ($typeName === Upload::class || $typeName === UploadList::class) {
-                if ($uploaded === []) {
-                    throw new ActionException("{$where}: \${$name} takes an upload and declares no #[Uploaded] saying what may be uploaded to it.");
-                }
-                $declared = $uploaded[0]->newInstance();
-                // One file is an Upload, more an UploadList: the type says
-                // which the body is handed, the declaration how many.
-                if ($typeName === Upload::class && $declared->maxFiles !== 1) {
-                    throw new ActionException("{$where}: \${$name} takes one Upload, and declares maxFiles: {$declared->maxFiles}; take an UploadList for more.");
-                }
-                if ($typeName === UploadList::class && ($declared->maxFiles < 2 || $declared->maxFiles > Uploaded::MAX_FILES)) {
-                    throw new ActionException("{$where}: \${$name} takes an UploadList, of between 2 and " . Uploaded::MAX_FILES . " files by its maxFiles; take an Upload for one.");
-                }
-                $uploads[$name] = $declared;
+                $uploads[$name] = self::declaredUpload("{$where}: \${$name}", $typeName, $uploaded);
                 if ($type->allowsNull() || $parameter->isDefaultValueAvailable()) {
                     $optionalUploads[$name] = true;
                 }
@@ -289,6 +277,24 @@ final class ActionRegistry
                     $optional[$field] = true;
                 } else {
                     $required[$field] = true;
+                }
+            }
+        }
+
+        // An upload inside a form request is a field of the form, posted
+        // flat under its name as a nested model is, and held to everything
+        // an upload parameter is -- verified with the rest of the input,
+        // claimed in the body's transaction (ADR 0127).
+        foreach ($formRequests as $requestClass) {
+            foreach (self::uploadFieldsOf($requestClass) as $field => $parameter) {
+                $type = $parameter->getType();
+                \assert($type instanceof \ReflectionNamedType);
+                if (isset($uploads[$field]) || isset($models[$field]) || isset($nestedModels[$field])) {
+                    throw new ActionException("{$where}: {$requestClass}::\${$field} takes an upload under a name the action already gives another input.");
+                }
+                $uploads[$field] = self::declaredUpload("{$where}: {$requestClass}::\${$field}", $type->getName(), $parameter->getAttributes(Uploaded::class));
+                if ($type->allowsNull() || $parameter->isDefaultValueAvailable()) {
+                    $optionalUploads[$field] = true;
                 }
             }
         }
@@ -511,6 +517,55 @@ final class ActionRegistry
                 && !$type->isBuiltin()
                 && is_subclass_of($type->getName(), Model::class)) {
                 $fields[$parameter->getName()] = $type->getName();
+            }
+        }
+
+        return $fields;
+    }
+
+    /**
+     * What an upload parameter or field declares, held to its type: one
+     * file is an Upload, more an UploadList -- the type says which the body
+     * is handed, the declaration how many. There is no default: no upload
+     * is ever taken unlimited.
+     *
+     * @param list<\ReflectionAttribute<Uploaded>> $uploaded
+     */
+    private static function declaredUpload(string $where, string $typeName, array $uploaded): Uploaded
+    {
+        if ($uploaded === []) {
+            throw new ActionException("{$where} takes an upload and declares no #[Uploaded] saying what may be uploaded to it.");
+        }
+        $declared = $uploaded[0]->newInstance();
+        if ($typeName === Upload::class && $declared->maxFiles !== 1) {
+            throw new ActionException("{$where} takes one Upload, and declares maxFiles: {$declared->maxFiles}; take an UploadList for more.");
+        }
+        if ($typeName === UploadList::class && ($declared->maxFiles < 2 || $declared->maxFiles > Uploaded::MAX_FILES)) {
+            throw new ActionException("{$where} takes an UploadList, of between 2 and " . Uploaded::MAX_FILES . ' files by its maxFiles; take an Upload for one.');
+        }
+
+        return $declared;
+    }
+
+    /**
+     * A form request's constructor parameters that take an upload, by
+     * name; one that carries #[Uploaded] and is not typed Upload or
+     * UploadList is refused, as it is on an action.
+     *
+     * @param class-string $class
+     * @return array<string, \ReflectionParameter>
+     */
+    private static function uploadFieldsOf(string $class): array
+    {
+        $fields = [];
+        foreach ((new \ReflectionClass($class))->getConstructor()?->getParameters() ?? [] as $parameter) {
+            $type = $parameter->getType();
+            $typed = $type instanceof \ReflectionNamedType && \in_array($type->getName(), [Upload::class, UploadList::class], true);
+            if ($parameter->getAttributes(Uploaded::class) !== [] && !$typed) {
+                throw new ActionException("{$class}::\${$parameter->getName()} carries #[Uploaded] and is not typed Upload or UploadList.");
+            }
+            if ($typed) {
+                $fields[$parameter->getName()] = $parameter;
             }
         }
 

@@ -314,7 +314,20 @@ final class ActionRunner
         $scalars = [];
         $uploads = [];
         $errors = [];
+        $refused = [];
         $unsupplied = self::unsupplied($action, $models);
+
+        // The uploads first: one inside a form request is handed to it as
+        // the upload its reference named, verified here, never read from
+        // the input by the validator.
+        foreach (array_keys($action->uploads) as $name) {
+            [$upload, $found] = $this->verifyUpload($action, $name, $input, $models, $request);
+            if ($found === []) {
+                $uploads[$name] = $upload;
+            } else {
+                $refused[$name] = $found;
+            }
+        }
 
         foreach ($action->formRequests as $parameter => $class) {
             try {
@@ -322,12 +335,14 @@ final class ActionRunner
                     $class,
                     $input,
                     $subject,
-                    $models,
+                    [...$models, ...array_filter($uploads)],
                     $models,
                     $unsupplied,
                 );
             } catch (ValidationException $e) {
-                $errors = self::mergeErrors($errors, $e->errors);
+                // An upload refused is said once, in its own words, not
+                // again as "required" by the form it is a field of.
+                $errors = self::mergeErrors($errors, array_diff_key($e->errors, $refused));
             }
         }
 
@@ -346,13 +361,7 @@ final class ActionRunner
             $errors = self::mergeErrors($errors, [$name => $found]);
         }
 
-        foreach (array_keys($action->uploads) as $name) {
-            [$upload, $found] = $this->verifyUpload($action, $name, $input, $models, $request);
-            if ($found === []) {
-                $uploads[$name] = $upload;
-            }
-            $errors = self::mergeErrors($errors, [$name => $found]);
-        }
+        $errors = self::mergeErrors($errors, $refused);
 
         if ($errors !== []) {
             throw new ValidationException($errors);

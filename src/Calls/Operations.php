@@ -81,13 +81,16 @@ final class Operations
             $inputs[$field->name] = $field;
         };
 
+        // Its own parameter's or a form request's field: either way a file
+        // only a browser holding its ticket can send.
+        foreach (array_keys($action->uploads) as $name) {
+            throw self::refuse($where, $attribute, "takes an upload as \${$name}, which only a browser holding its ticket can send");
+        }
+
         foreach (new \ReflectionMethod($action->class, $action->method)->getParameters() as $parameter) {
             $name = $parameter->getName();
             $type = $parameter->getType();
 
-            if (isset($action->uploads[$name])) {
-                throw self::refuse($where, $attribute, "takes an upload as \${$name}, which only a browser holding its ticket can send");
-            }
             if ($type instanceof \ReflectionNamedType && $type->getName() === Request::class) {
                 throw self::refuse($where, $attribute, 'takes the Request, and a call from outside a browser has none');
             }

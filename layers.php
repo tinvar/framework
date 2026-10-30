@@ -58,6 +58,9 @@ $core = [
         'Tinvar\\Render\\SignedToken', 'Tinvar\\Render\\TokenClaims', 'Tinvar\\Render\\TokenError', 'Tinvar\\Render\\TenantClaim',
         'Tinvar\\Routing\\CompiledRoute', 'Tinvar\\Routing\\RouteKind', 'Tinvar\\Routing\\RoutingException',
         'Tinvar\\Observability\\Span', 'Tinvar\\Observability\\Spans',
+        // What a form request's upload field holds, built by the action
+        // runner and handed to the validator as a value (ADR 0127).
+        'Tinvar\\Uploads\\Upload', 'Tinvar\\Uploads\\UploadList',
         'Tinvar\\Attributes\\',
     ],
     // The reads: pages and their loaders, queries and their cache, and the

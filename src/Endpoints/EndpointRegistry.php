@@ -27,6 +27,7 @@ use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\KnownAttributes;
 use Tinvar\Support\Str;
 use Tinvar\Validation\FormRequest;
+use Tinvar\Validation\Validator;
 
 /**
  * The #[Get], #[Post] and #[Endpoint] methods of the classes an application
@@ -208,6 +209,9 @@ final class EndpointRegistry
             }
 
             if (!$type->isBuiltin() && is_subclass_of($typeName, FormRequest::class)) {
+                if (Validator::uploadFields($typeName) !== []) {
+                    throw new EndpointException("{$where}: \${$parameterName} takes an upload field, which only an action is handed: an endpoint verifies no upload.");
+                }
                 $formRequests[$parameterName] = $typeName;
                 continue;
             }
