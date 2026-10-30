@@ -17,6 +17,7 @@ namespace Tinvar\Tests\Data\MergeField;
 use Tinvar\Attributes\Merge;
 use Tinvar\Attributes\Optional;
 use Tinvar\Attributes\Rescue;
+use Tinvar\Data\CursorScroll;
 use Tinvar\Data\Data;
 use Tinvar\Data\DataShape;
 use Tinvar\Data\Encoder;
@@ -309,6 +310,30 @@ describe('a Scroll page', function () {
         expect(fn () => new Scroll([], page: 0, previous: null, next: null))->toThrow(\InvalidArgumentException::class)
             ->and(fn () => new Scroll([], page: 1, previous: null, next: null, pageName: 'a b'))
             ->toThrow(\InvalidArgumentException::class);
+    });
+});
+
+// ADR 0120: a page read by cursor crosses with its cursors in place of
+// page numbers -- sealed and bound when cursorPaginate() made them -- and
+// no count.
+describe('a CursorScroll page', function () {
+    it('crosses as its items, the cursor it was read at and the cursors either side', function () {
+        $page = new CursorScroll([new MessageData('m-1', 'one')], cursor: 'at.x', previous: 'p.x', next: null, perPage: 1, matchOn: 'id');
+
+        $encoded = (new Encoder())->encode(['history' => $page], new PayloadContext(resets: ['page.history']), 'page');
+
+        expect($encoded['history'])->toBe([
+            '$scroll' => 'page.history',
+            'reset' => true,
+            'cursor' => 'at.x',
+            'previous' => 'p.x',
+            'next' => null,
+            'total' => null,
+            'perPage' => 1,
+            'pageName' => 'cursor',
+            'matchOn' => 'id',
+            'items' => [['id' => 'm-1', 'text' => 'one']],
+        ]);
     });
 });
 

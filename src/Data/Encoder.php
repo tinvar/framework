@@ -99,7 +99,7 @@ final class Encoder
             $value instanceof Lazy => $this->deferred($scope, fn (): mixed => $this->walk($value->resolve(), $path, $depth, $seen, $scope)),
             $value instanceof Data => $this->walkData($value, $path, $depth, $seen, $scope),
             $value instanceof ProvidesData => $this->deferred($scope, fn (): mixed => $this->walk($this->provided($value, $path, $scope), $path, $depth, $seen, $scope)),
-            $value instanceof Scroll => $this->walkScroll($value, $path, $depth, $seen, $scope),
+            $value instanceof Scroll, $value instanceof CursorScroll => $this->walkScroll($value, $path, $depth, $seen, $scope),
             \is_object($value) => throw DataBoundaryException::notData($value, $path),
             default => throw DataBoundaryException::badResource($path, get_debug_type($value)),
         };
@@ -339,13 +339,16 @@ final class Encoder
 
     /**
      * One page of a Scroll: its items, which page they are, the pages either
-     * side, and the same reset a #[Merge] field carries.
+     * side, and the same reset a #[Merge] field carries. A CursorScroll's
+     * page is its cursor and the pages either side are theirs -- sealed and
+     * bound when cursorPaginate() made them -- and it has no count (ADR
+     * 0120).
      *
-     * @param Scroll<mixed>    $scroll
+     * @param Scroll<mixed>|CursorScroll<mixed> $scroll
      * @param array<int, true> $seen
      * @return array<string, mixed>
      */
-    private function walkScroll(Scroll $scroll, string $path, int $depth, array $seen, EncodeScope $scope): array
+    private function walkScroll(Scroll|CursorScroll $scroll, string $path, int $depth, array $seen, EncodeScope $scope): array
     {
         $dot = $scope->dotPath($path);
 
@@ -354,6 +357,21 @@ final class Encoder
         $items = [];
         foreach ($scroll->items as $i => $item) {
             $items[] = $this->walk($item, "{$path}.items[{$i}]", $depth + 1, $seen, $scope);
+        }
+
+        if ($scroll instanceof CursorScroll) {
+            return [
+                self::SCROLL_KEY => $dot,
+                'reset' => $scope->context->resets($dot),
+                'cursor' => $scroll->cursor,
+                'previous' => $scroll->previous,
+                'next' => $scroll->next,
+                'total' => null,
+                'perPage' => $scroll->perPage,
+                'pageName' => $scroll->cursorName,
+                'matchOn' => self::matchOn($scroll->matchOn, $path),
+                'items' => $items,
+            ];
         }
 
         return [

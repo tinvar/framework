@@ -335,7 +335,7 @@ final class DataShape
 
             return false;
         }
-        if ($value instanceof Scroll) {
+        if ($value instanceof Scroll || $value instanceof CursorScroll) {
             return self::holdsAlways($value->items, $depth + 1);
         }
         if (!$value instanceof Data) {

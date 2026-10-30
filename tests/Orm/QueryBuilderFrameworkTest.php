@@ -25,10 +25,12 @@ use Tinvar\Cache\ArrayStore;
 use Tinvar\Cache\QueryCache;
 use Tinvar\Data\Data;
 use Tinvar\Data\DataFields;
+use Tinvar\Data\CursorScroll;
 use Tinvar\Data\Scroll;
 use Tinvar\Http\BuildRegistry;
 use Tinvar\Http\PageCursors;
 use Tinvar\Http\Request;
+use Tinvar\Orm\CursorPage;
 use Tinvar\Orm\InvalidCursor;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\Page;
@@ -193,6 +195,35 @@ describe('scroll()', function () {
         expect([$scroll->items, $scroll->page, $scroll->previous, $scroll->next, $scroll->total, $scroll->matchOn])
             ->toBe([['c', 'd'], 2, 1, 3, 5, 'id'])
             ->and(Scroll::fromPage(new Page([], 9, 2, 5))->previous)->toBe(3);
+    });
+
+    // ADR 0120: a cursor page makes a CursorScroll, placed by its cursors.
+    it('makes a CursorScroll of a cursor page, named by the cursor it was read at', function () {
+        $page = new CursorPage(['c', 'd'], perPage: 2, next: 'n.1', previous: 'p.1', cursor: 'at.1');
+
+        $scroll = scroll($page, matchOn: 'id');
+
+        expect($scroll)->toBeInstanceOf(CursorScroll::class)
+            ->and([$scroll->items, $scroll->cursor, $scroll->previous, $scroll->next, $scroll->perPage, $scroll->cursorName, $scroll->matchOn])
+            ->toBe([['c', 'd'], 'at.1', 'p.1', 'n.1', 2, 'cursor', 'id'])
+            ->and(scroll($page, pageName: 'after')->cursorName)->toBe('after')
+            ->and(scroll(new Page([], 1, 2, 0))->pageName)->toBe('page');
+    });
+
+    it('reads a cursor from a query string as a string a sealed one could be, or none', function (mixed $value, ?string $cursor) {
+        expect(CursorScroll::cursorFrom($value))->toBe($cursor);
+    })->with([
+        ['abc.def', 'abc.def'],
+        ['', null],
+        [null, null],
+        [['abc'], null],
+        [str_repeat('a', SignedCursors::MAX_LENGTH + 1), null],
+    ]);
+
+    it('refuses a cursor no sealed one could be, and a parameter that is not a plain name', function () {
+        expect(fn () => new CursorScroll([], cursor: '', previous: null, next: null))->toThrow(\InvalidArgumentException::class)
+            ->and(fn () => new CursorScroll([], cursor: null, previous: null, next: str_repeat('a', 513)))->toThrow(\InvalidArgumentException::class)
+            ->and(fn () => new CursorScroll([], cursor: null, previous: null, next: null, cursorName: 'a b'))->toThrow(\InvalidArgumentException::class);
     });
 });
 
