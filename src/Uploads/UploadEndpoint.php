@@ -210,15 +210,34 @@ final class UploadEndpoint
             throw self::tooManyPending();
         }
 
-        $key = StorageKey::generate($declared->prefix, FileTypes::extension($type));
-        $stream = fopen($file->path, 'rb');
-        if ($stream === false) {
-            throw new \RuntimeException('A received upload cannot be read.');
+        // An image is kept as drawn again from its pixels, never as sent:
+        // its metadata -- a photo's GPS position among it -- and anything
+        // after its pixels go (ImageSanitizer).
+        $kept = $file->path;
+        if (FileTypes::isImage($type)) {
+            $kept = $this->uploads->images->sanitize($file->path, $type);
+            $size = filesize($kept);
+            if ($size === false || $size > min($declared->maxBytes, $this->uploads->maxBytes)) {
+                @unlink($kept);
+                throw self::tooLarge();
+            }
         }
+
+        $key = StorageKey::generate($declared->prefix, FileTypes::extension($type));
         try {
-            $this->uploads->storage->put($key, $stream);
+            $stream = fopen($kept, 'rb');
+            if ($stream === false) {
+                throw new \RuntimeException('A received upload cannot be read.');
+            }
+            try {
+                $this->uploads->storage->put($key, $stream);
+            } finally {
+                fclose($stream);
+            }
         } finally {
-            fclose($stream);
+            if ($kept !== $file->path) {
+                @unlink($kept);
+            }
         }
 
         $pending = new PendingUpload(

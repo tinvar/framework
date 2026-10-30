@@ -88,15 +88,33 @@ describe('/_upload', function () {
         $body = json($response);
         expect($body['upload'])->toMatch('/^[a-f0-9]{32}$/')
             ->and($body['name'])->toBe('holiday photo.png')
-            ->and($body['type'])->toBe('image/png')
-            ->and($body['size'])->toBe(\strlen($bytes));
+            ->and($body['type'])->toBe('image/png');
 
+        // Kept as drawn again from its pixels (ImageSanitizer): the same
+        // image, not the same bytes.
         $pending = $app->store->find((string) $body['upload']);
+        $kept = $storage->contents((string) $pending?->key);
         expect($pending)->toBeInstanceOf(PendingUpload::class)
             ->and($pending?->key)->toMatch('#^avatars/[a-f0-9]{32}\.png$#')
-            ->and($storage->contents((string) $pending?->key))->toBe($bytes)
+            ->and($body['size'])->toBe(\strlen($kept))
+            ->and(getimagesizefromstring($kept)[0] ?? null)->toBe(getimagesizefromstring($bytes)[0] ?? null)
             ->and($pending?->claimedAt)->toBeNull()
             ->and($pending?->expiresAt)->toBe($app->now + Uploads::PENDING_TTL);
+    });
+
+    // A few bytes declaring a hundred thousand pixels a side: refused from
+    // its header, and nothing stored.
+    it('refuses an image declaring more pixels than images may have, and keeps nothing', function () {
+        $app = new App($storage = new MemoryStorage());
+        $png = png();
+        $ihdr = 'IHDR' . pack('NN', 100_000, 100_000) . substr($png, 24, 5);
+        $bomb = substr($png, 0, 12) . $ihdr . pack('N', crc32($ihdr)) . substr($png, 33);
+
+        $response = $app->upload($app->ticket($app->profile(P1)), $bomb);
+
+        expect($response->status)->toBe(422)
+            ->and(json($response)['error']['code'])->toBe('upload_image')
+            ->and($storage->keys())->toBe([]);
     });
 
     it('refuses another user\'s ticket', function () {

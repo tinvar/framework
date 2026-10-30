@@ -55,6 +55,8 @@ final readonly class Uploads
      * @param \Closure(Request): string $sessionId the session a request belongs to, as
      *        every other token's; '' for none, and nothing is issued or honoured then
      * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
+     * @param ImageSanitizer $images draws every uploaded image again before it is kept, within
+     *        its limits; there is no keeping one as sent
      */
     public function __construct(
         public Storage $storage,
@@ -64,6 +66,7 @@ final readonly class Uploads
         public \Closure $sessionId,
         public int $maxBytes = self::DEFAULT_MAX_BYTES,
         public ?\Closure $clock = null,
+        public ImageSanitizer $images = new ImageSanitizer(),
     ) {
         if ($maxBytes < 1) {
             throw new \InvalidArgumentException('An upload ceiling is at least one byte.');
@@ -82,6 +85,7 @@ final readonly class Uploads
         \Closure $sessionId,
         int $maxBytes = self::DEFAULT_MAX_BYTES,
         ?\Closure $clock = null,
+        ImageSanitizer $images = new ImageSanitizer(),
     ): self {
         return new self(
             $storage,
@@ -91,6 +95,7 @@ final readonly class Uploads
             $sessionId,
             $maxBytes,
             $clock,
+            $images,
         );
     }
 
