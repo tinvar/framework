@@ -174,33 +174,51 @@ describe('a handoff', function () {
 });
 
 describe('the code', function () {
-    // A double click, a prefetch, a redirect followed twice: the same
-    // browser, which is not a copy, gets the first answer again -- no new
-    // session, and nothing ended.
-    it('answers the same browser again as it did, from the session that redeemed it or with the cookie it arrived with', function () {
+    // A reload, a redirect followed twice: the browser the redemption
+    // signed in presents the session it made, which nobody else can hold,
+    // and gets the first answer again -- no new session, nothing ended.
+    it('answers the browser it signed in again as it did, with nothing made or ended', function () {
         $app = new App();
         $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
         $callback = codeFor($browser, 'https://acme.example');
-        $arrivedWith = $browser->sessionAt('acme.example');
 
         expect($browser->get($callback)->status)->toBe(303);
         $arrived = $browser->sessionAt('acme.example');
         $sessions = $app->sessions->sessions;
 
         $again = $browser->get($callback);
-        $sameCookie = $app->get($callback, ['__Host-sid' => $arrivedWith]);
 
         expect($again->status)->toBe(303)
             ->and($again->header('location'))->toBe('/whoami')
-            ->and($sameCookie->status)->toBe(303)
             ->and($app->sessions->sessions)->toBe($sessions)
             ->and($browser->sessionAt('acme.example'))->toBe($arrived)
             ->and(json($browser->get('https://acme.example/whoami')))->toBe(['user' => 'alice']);
     });
 
-    // Both requests of a double click carry the cookie the handoff started
-    // with, and the second can land while the first is making its session.
-    it('answers a double submit from the same browser without ending the session the first makes', function () {
+    // The handoff's first cookie is the one a fixation plants: once the
+    // redemption has made its session, a repeat with it is a copy.
+    it('ends the session when the code comes back with the handoff\'s first cookie after it arrived', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+        $callback = codeFor($browser, 'https://acme.example');
+        $startedWith = $browser->sessionAt('acme.example');
+
+        expect($browser->get($callback)->status)->toBe(303);
+        $arrived = $browser->sessionAt('acme.example');
+
+        $copied = $app->get($callback, ['__Host-sid' => $startedWith]);
+
+        expect($copied->status)->toBe(403)
+            ->and(errorCode($copied))->toBe('handoff_refused')
+            ->and($app->sessions->sessions)->not->toHaveKey($arrived)
+            ->and(json($browser->get('https://acme.example/whoami')))->not->toBe(['user' => 'alice']);
+    });
+
+    // A double click: both requests carry the handoff's first cookie, and
+    // the second lands while the first is making its session. It is given
+    // nothing -- no session of its own -- and ends nothing; and someone
+    // who fixed that cookie gains nothing by sending it then either.
+    it('gives a double submit with the handoff\'s first cookie nothing, and leaves the session the first makes', function () {
         $app = new App();
         $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
         $callback = codeFor($browser, 'https://acme.example');
@@ -213,9 +231,18 @@ describe('the code', function () {
         $first = $browser->get($callback);
 
         expect($second?->status)->toBe(303)
+            ->and($second?->cookies())->not->toHaveKey('__Host-sid')
             ->and($first->status)->toBe(303)
+            ->and($app->arrivals->redemptions)->toHaveCount(1)
+            ->and($app->sessions->sessions)->toHaveCount(2)
             ->and($app->sessions->sessions)->toHaveKey($browser->sessionAt('acme.example'))
-            ->and(json($browser->get('https://acme.example/whoami')))->toBe(['user' => 'alice']);
+            ->and(json($browser->get('https://acme.example/whoami')))->toBe(['user' => 'alice'])
+            // The cookie itself signs nobody in on the realm.
+            ->and(json($app->get('https://acme.example/whoami', ['__Host-sid' => $startedWith])))->not->toBe(['user' => 'alice']);
+
+        // And once the session exists, the same cookie again is a copy.
+        expect($app->get($callback, ['__Host-sid' => $startedWith])->status)->toBe(403)
+            ->and($app->sessions->sessions)->not->toHaveKey($browser->sessionAt('acme.example'));
     });
 
     // RFC 6749, 4.1.2: a code used twice was copied, and the session its

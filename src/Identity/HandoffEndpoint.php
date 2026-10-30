@@ -96,6 +96,13 @@ final class HandoffEndpoint
      */
     public const string REVOKED_SCOPE = 'handoff-revoked';
 
+    /**
+     * The NonceStore scope a redemption is marked under once its session
+     * exists -- or by a repeat from the handoff's first session that came
+     * before it did, which is given nothing.
+     */
+    public const string MADE_SCOPE = 'handoff-made';
+
     /** The NonceStore scope the session a redemption made is recorded under, hashed with it. */
     public const string ARRIVED_SCOPE = 'handoff-arrived';
 
@@ -474,15 +481,26 @@ final class HandoffEndpoint
         // That session ends (HandoffSessions::revoke()). Before the session
         // is made, so two at once cannot both get one.
         if (!$this->nonces->claim(self::NONCE_SCOPE, $code->id, $code->expiresAt, $now)) {
-            // The same browser again -- a double click, a prefetch, a
-            // redirect followed twice -- is not a copy: it still holds the
-            // session the handoff started for (its challenge matches), or
-            // the one the redemption made. Answered as the first was, with
-            // no new session and nothing ended. Only a repeat from any
-            // other session is the code's copy.
+            // The browser the redemption signed in, again -- a reload, a
+            // redirect followed twice -- presents the session the redemption
+            // made: issued by this server, never fixable by anyone. Answered
+            // as the first was, nothing made and nothing ended.
             $session = ($this->sessionId)($request);
-            if ($session !== '' && (Pkce::matches($this->signer, $session, $code->state, $code->challenge)
-                || $this->arrivedAs(Arrival::redemptionOf($code), $session, $code, $now))) {
+            $redemption = Arrival::redemptionOf($code);
+            if ($session !== '' && $this->arrivedAs($redemption, $session, $code, $now)) {
+                return self::private(Response::redirect($code->returnTo, 303));
+            }
+
+            // The session the handoff started from -- a double click, both
+            // requests carrying it -- matches the challenge too. But that
+            // cookie is the one a fixation would plant, so it is believed
+            // only while the first redemption has made nothing: it takes
+            // the redemption's MADE mark, which that redemption claims once
+            // its session exists, and gets a redirect carrying nothing.
+            // Once the session exists the mark is taken, and the repeat is
+            // a copy like any other.
+            if ($session !== '' && Pkce::matches($this->signer, $session, $code->state, $code->challenge)
+                && $this->nonces->claim(self::MADE_SCOPE, $redemption, $code->expiresAt + self::TOMBSTONE_SECONDS, $now)) {
                 return self::private(Response::redirect($code->returnTo, 303));
             }
 
@@ -541,6 +559,10 @@ final class HandoffEndpoint
 
             throw self::refused('it was replayed while it was being redeemed; the session it started is ended');
         }
+        // The session exists: a repeat with the handoff's first cookie is a
+        // copy from here on. Taken already only by such a repeat that came
+        // while this one was in flight, which was given nothing.
+        $this->nonces->claim(self::MADE_SCOPE, $redemption, $code->expiresAt + self::TOMBSTONE_SECONDS, $this->now());
         // Which session the redemption made, so the same browser coming
         // back with it is known for itself (arrivedAs()). Its hash, never
         // the id.
