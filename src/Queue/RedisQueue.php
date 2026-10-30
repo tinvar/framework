@@ -30,8 +30,8 @@ use Tinvar\Orm\Connection;
  *     -- another worker ending the same batch's job, a lapsed reservation
  *     taken over -- aborts the EXEC, and the work is done again from the
  *     top on what Redis holds now. So a job's delete and what follows it
- *     (Jobs\Continuation) land together or neither does, as they do in a
- *     database's transaction.
+ *     -- its lock, its chain's next job, its batch's count -- land
+ *     together or neither does, as they do in a database's transaction.
  *
  * What it cannot be is the outbox. A push is never part of the
  * application's database transaction (enlistsIn() says no), so the

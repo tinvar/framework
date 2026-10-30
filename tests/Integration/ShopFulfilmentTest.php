@@ -258,6 +258,10 @@ describe('the fulfilment workflow', function () {
             ->and(json_decode($again->body(), true)['reason'])->toBe('spent');
     });
 
+    it('is pruned nightly once ended, with the queue\'s finished batches and lapsed locks', function () {
+        expect(Kernel::TASKS)->toContain(\Tinvar\Jobs\PruneQueue::class, \Tinvar\Workflows\PruneWorkflows::class);
+    });
+
     it('takes no signal for a fulfilment that is not waiting on this order', function () {
         $order = placedOrder($this->kernel);
         $this->kernel->orm->connection()->execute('UPDATE orders SET status = ? WHERE id = ?', [Order::PACKED, $order]);
