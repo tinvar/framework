@@ -1444,6 +1444,7 @@ final class Kernel
         $request = $this->telemetry?->begin($request) ?? $request;
         $request = $this->withPreviousUrl($request);
         $this->toolbar?->begin($request);
+        $handling = $this->handling;
         $this->handling = $request;
         $failure = null;
         $ended = false;
@@ -1470,7 +1471,7 @@ final class Kernel
                 $this->telemetry?->end(null, $failure);
             }
             $this->toolbar?->end();
-            $this->handling = null;
+            $this->handling = $handling;
             $this->scope->reset();
         }
     }

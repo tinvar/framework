@@ -255,6 +255,10 @@ describe('a statement\'s span', function () {
             ->and(StatementText::summary('frobnicate the table'))->toBe('statement')
             ->and(StatementText::sanitize('SELECT $1, t1.x FROM t1 WHERE a = $tag$ x $tag$ AND b = E\'it\\\'s\''))->toBe('SELECT $1, t1.x FROM t1 WHERE a = ? AND b = ?')
             ->and(StatementText::sanitize('SELECT "ada@example.com"', 'mysql'))->toBe('SELECT ?')
+            // On Postgres a backslash ends nothing: 'x\\' is a whole string,
+            // and the next one's value must not be left between them.
+            ->and(StatementText::sanitize("SELECT * FROM t WHERE a = 'x\\' AND b = 'hunter2'", 'postgresql'))->toBe('SELECT * FROM t WHERE a = ? AND b = ?')
+            ->and(StatementText::sanitize("SELECT * FROM t WHERE a = 'it\\'s' AND b = 'hunter2'", 'mysql'))->toBe('SELECT * FROM t WHERE a = ? AND b = ?')
             ->and(StatementText::sanitize('SELECT "orders"."id" FROM "orders"', 'postgresql'))->toBe('SELECT "orders"."id" FROM "orders"');
     });
 });

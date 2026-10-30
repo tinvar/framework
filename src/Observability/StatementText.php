@@ -36,21 +36,29 @@ final class StatementText
         if (!\is_string($sql)) {
             return '?';
         }
+        $mysql = $system === 'mysql' || $system === 'mariadb';
         $patterns = [
             // Postgres's dollar-quoted strings, $$...$$ or $tag$...$tag$.
             '~\$([A-Za-z_][A-Za-z0-9_]*)?\$.*?(\$\1\$|\z)~s',
-            // A quoted string, with '' or \' inside it, and its prefix: E'', X'', B'', N''.
-            "~(?<![A-Za-z0-9_])[EeXxBbNn]?'(?:''|\\\\.|[^'\\\\])*('|\\z)~s",
+            // An escape string, E'...', where a backslash escapes the quote.
+            "~(?<![A-Za-z0-9_])[Ee]'(?:''|\\\\.|[^'\\\\])*('|\\z)~s",
+            // Any other quoted string and its prefix -- X'', B'', N''. A
+            // backslash escapes a quote on MySQL alone: elsewhere 'a\' is a
+            // whole string, and reading it as escaped would end the literal
+            // at the next string's opening quote and leave that one's value
+            // in the text.
+            $mysql ? "~(?<![A-Za-z0-9_])[XxBbNn]?'(?:''|\\\\.|[^'\\\\])*('|\\z)~s" : "~(?<![A-Za-z0-9_])[XxBbNn]?'(?:''|[^'])*('|\\z)~s",
         ];
-        if ($system === 'mysql' || $system === 'mariadb') {
+        if ($mysql) {
             $patterns[] = '~"(?:""|\\\\.|[^"\\\\])*("|\z)~s';
         }
         // A number standing alone: not a placeholder's ($1), not part of a name (t1).
         $patterns[] = '~(?<![A-Za-z0-9_$.])-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?(?![A-Za-z0-9_])~';
 
         $out = preg_replace($patterns, '?', $sql);
-        if (!\is_string($out)) {
-            // PCRE gave up on it: nothing of it is kept, rather than all.
+        // PCRE gave up on it, or a quote is left that no pattern closed:
+        // nothing of it is kept, rather than a value.
+        if (!\is_string($out) || str_contains($out, "'") || ($mysql && str_contains($out, '"'))) {
             return '?';
         }
 
