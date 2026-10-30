@@ -267,6 +267,10 @@ describe('a statement\'s span', function () {
             ->and(StatementText::sanitize("SELECT * FROM t WHERE a = 'x/*y' AND b = 'hunter2' AND c = '*/'", 'postgresql'))->toBe('SELECT * FROM t WHERE a = ? AND b = ? AND c = ?')
             ->and(StatementText::sanitize("SELECT 1 # it's\n, 'hunter2'", 'mysql'))->toBe('SELECT ? , ?')
             ->and(StatementText::sanitize('SELECT /* a /* b */ hunter2 */ 1', 'postgresql'))->toBe('SELECT ?')
+            // Elsewhere a comment ends at its first */, and the quote after
+            // it opens a string.
+            ->and(StatementText::sanitize("SELECT /* a /* b */ 'c */ hunter2 ', 'x'", 'mysql'))->toBe('SELECT ?, ?')
+            ->and(StatementText::sanitize("SELECT /* a /* b */ 'c */ hunter2 ', 'x'", 'sqlite'))->toBe('SELECT ?, ?')
             ->and(StatementText::sanitize("SELECT \$\$ hunter2 \$\$, 'x', \$\$ more \$\$", 'postgresql'))->toBe('SELECT ?, ?, ?');
     });
 

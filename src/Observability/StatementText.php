@@ -32,6 +32,7 @@ final class StatementText
     public static function sanitize(string $sql, string $system = ''): string
     {
         $mysql = $system === 'mysql' || $system === 'mariadb';
+        $postgres = $system === 'postgresql';
 
         // One pattern, every comment and literal an alternative of it, read
         // left to right: whichever begins first is taken whole, as the
@@ -41,9 +42,11 @@ final class StatementText
         // string's opening quote with a closing one, leaving the value
         // between them in the text.
         $alternatives = [
-            // A block comment. They nest, as Postgres has them; on MySQL,
-            // whose do not, reading them as nested only takes out more.
-            '(?<block>/\*(?:(?&block)|[^*/]++|\*(?!/)|/(?!\*))*+(?:\*/|\z))',
+            // A block comment: nested on Postgres, which nests them, and to
+            // the first `*/` elsewhere. Read as nested where the database
+            // does not nest them, the `'` after that first `*/` opens a
+            // string the database reads and this would not.
+            $postgres ? '(?<block>/\*(?:(?&block)|[^*/]++|\*(?!/)|/(?!\*))*+(?:\*/|\z))' : '/\*.*?(?:\*/|\z)',
             // A line comment, and MySQL's # one.
             '--[^\n]*+' . ($mysql ? '|\#[^\n]*+' : ''),
             // Postgres's dollar-quoted strings, $$...$$ or $tag$...$tag$.
