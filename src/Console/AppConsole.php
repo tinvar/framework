@@ -206,7 +206,9 @@ final class AppConsole
             // object and form request one takes; and the config classes,
             // held as a boot holds them, with no variable read twice.
             ['Build rules failed:', [
-                ...RouteRegistry::check($this->routes, new RouteRegistry()),
+                // Given the models, as the Kernel's registry is, so it
+                // refuses a bare id to a tenant's model too (ADR 0105).
+                ...RouteRegistry::check($this->routes, new RouteRegistry($this->models)),
                 ...new BuildRules($this->models)->check($entryPoints, $payloads),
                 ...Configs::check($this->configs),
             ], [
@@ -214,7 +216,10 @@ final class AppConsole
                 \sprintf('ok: %d config classes, every secret a Secret', \count($this->configs)),
             ]],
             ['Supply chain failed:', new SupplyChain($this->projectRoot, ($this->packages)())->check(), [\sprintf('ok: %s and %s pinned, no undeclared packages', Lockfiles::COMPOSER, Lockfiles::NPM)]],
-            ['Caddyfile failed:', CaddyfileRules::check("{$this->root}/Caddyfile"), ['ok: Caddyfile holds every PHP response whole and keeps the X-Accel headers from clients']],
+            // Read through its imports: every PHP response held whole, the
+            // X-Accel headers kept from clients, and a stalled write cut off
+            // by `write_idle` (ADR 0081, 0105).
+            ['Caddyfile failed:', CaddyfileRules::check("{$this->root}/Caddyfile"), ['ok: Caddyfile holds every PHP response whole, keeps the X-Accel headers from clients and cuts off a stalled write']],
         ];
         foreach ($this->checks as [$heading, $check, $passed]) {
             $results[] = [$heading, $check(), [$passed]];
@@ -330,7 +335,7 @@ final class AppConsole
 
     private function builtIns(): void
     {
-        $this->command('check', 'check', "Run the security model's build rules over the app, hold its lockfiles to its PackagePolicy (no network), and its Caddyfile to holding each response whole", fn (array $a): int => $a === [] ? $this->check() : $this->usage('check'))
+        $this->command('check', 'check', "Run the security model's build rules over the app, hold its lockfiles to its PackagePolicy (no network), and its Caddyfile to holding each response whole and bounding a stalled write", fn (array $a): int => $a === [] ? $this->check() : $this->usage('check'))
             ->command('config', 'config', "Every key the app's #[Config] classes read, where each value comes from, and no secret's; exits 1, naming each key, where the server would refuse to boot", fn (array $a): int => new ConfigCommand($this->configs)->run($a))
             ->command('codegen', 'codegen [--out=DIR] [--check]', 'Write the TypeScript the views use from the PHP; with --check, write nothing and fail if what is there differs', $this->codegen ?? static function (): int {
                 fwrite(STDERR, "tinvar/codegen is not installed: it is a dev dependency, which this install left out.\n");
