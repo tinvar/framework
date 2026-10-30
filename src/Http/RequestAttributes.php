@@ -56,7 +56,7 @@ final class RequestAttributes
      * The page's LiveMinter, for the responder to mint the page's live token
      * with once the render has run -- what it read is known only then -- and
      * hand it over: in `X-Live-Token` on a payload, at the end of a document
-     * (Tinvar\Live). Absent without live updates, a route name or a session.
+     * (live updates). Absent without them, a route name or a session.
      */
     public const string LIVE_MINTER = 'tinvar.live_minter';
 

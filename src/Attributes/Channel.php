@@ -22,7 +22,7 @@ namespace Tinvar\Attributes;
  * enum. A client subscribes by the channel's name and those parameters,
  * and is let in through the pipeline every entry point runs: the tenant,
  * the panel and its stack, the class's #[Middleware], the models resolved,
- * every #[Authorize] (see Tinvar\Channels and ADR 0069).
+ * every #[Authorize] (see ADR 0069).
  *
  * What it carries is one Data class, sent through the encoder, which
  * refuses anything else.

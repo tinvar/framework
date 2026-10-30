@@ -12,7 +12,7 @@ use Tinvar\Data\Encoder;
 /**
  * A cached value as PdoStore keeps it in its table.
  *
- * What is cached is the encoder's output (QueryRunner::settle()): null,
+ * What is cached is the encoder's output, as the query runner settles it: null,
  * booleans, integers, floats, strings -- any bytes, not only UTF-8 -- lists,
  * maps with integer or string keys, and Bin for bytes that must reach the
  * renderer as MessagePack `bin`. The table is a trust boundary: anyone who

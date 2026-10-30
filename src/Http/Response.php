@@ -75,7 +75,7 @@ final class Response
     /**
      * A same-origin redirect.
      *
-     * "ActionResult::redirect(), back() and the 419 redirect accept
+     * "An action result's redirect(), back() and the 419 redirect accept
      * same-origin URLs only. External URLs go through location() with an
      * allowlist." An absolute or scheme-relative target is refused here rather
      * than checked by every caller.
@@ -172,7 +172,7 @@ final class Response
      *
      * Separate from redirect() on purpose: the allowlist decision belongs to
      * the caller, and making it type out a different method name is the point.
-     * An action's is ActionResult::location(), which the action endpoint
+     * An action's is its result's location(), which the action endpoint
      * checks against the application's ExternalOrigins before it gets here.
      */
     public static function location(string $url, int $status = 302): self

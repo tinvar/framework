@@ -12,7 +12,7 @@ namespace Tinvar\Http;
  * tinvar-spec.md: "client filenames are metadata only." So is the type the
  * client sent. Both are kept here because PHP reports them, and nothing in
  * the framework decides anything by them: the bytes are sniffed for their
- * type (Uploads\FileTypes), and the storage key is drawn at random.
+ * type, never by its name, and the storage key is drawn at random.
  */
 final readonly class UploadedFile
 {

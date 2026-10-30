@@ -6,7 +6,7 @@ namespace Tinvar\Attributes;
 
 /**
  * A named set of rows a test or a load test starts from, and the users it
- * makes, on a class implementing Scenarios\SeedsScenario (ADR 0090).
+ * makes, on a class implementing the scenarios' SeedsScenario (ADR 0090).
  *
  *     #[Scenario('customer')]
  *     final readonly class NewCustomer implements SeedsScenario { ... }

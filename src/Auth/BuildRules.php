@@ -77,13 +77,13 @@ use Tinvar\Validation\FormRequest;
  *   panel-only-query-must-be-bound
  *     "an action or query reachable only from admin-panel pages with no panel
  *      binding fails the build." Checked where the Kernel is built, by
- *      EntryContext::checkAllowlists(), not here: it needs the panel registry
+ *      the entry checks' allowlist check, not here: it needs the panel registry
  *      and the routes' query allowlists, and this class sees one class at a
  *      time. A query with no #[Panel] and outside every panel's namespace,
  *      which only routes in a panel may call, fails.
  *
  *   panel-only-action-must-be-bound
- *     Its half for actions, by EntryContext::checkActionCallers() as the
+ *     Its half for actions, by the entry checks' action callers as the
  *     Kernel is built. Nothing PHP holds relates an action to the pages that
  *     call it, so the renderer build reads it from source -- each page's
  *     modules, its client components among them, for the actions they

@@ -9,7 +9,7 @@ use Tinvar\Attributes\Panel;
 /**
  * An entry point a module above the core compiles -- an export or an
  * import -- as the core checks it when the Kernel is built
- * (EntryContext::check()): where it is, the panels it declares, and where
+ * (the entry checks): where it is, the panels it declares, and where
  * its tenant comes from.
  *
  * So the core holds a module's entry points to the rules every entry point

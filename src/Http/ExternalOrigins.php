@@ -5,10 +5,10 @@ declare(strict_types=1);
 namespace Tinvar\Http;
 
 /**
- * The external origins an action may send a browser to, with
- * ActionResult::location().
+ * The external origins an action may send a browser to, with its result's
+ * location().
  *
- * tinvar-spec.md, "HTTP": "ActionResult::redirect(), back() and the 419
+ * tinvar-spec.md, "HTTP": "An action result's redirect(), back() and the 419
  * redirect accept same-origin URLs only. External URLs go through
  * location() with an allowlist." This is the allowlist, given to the Kernel
  * by the application; with none, location() goes nowhere.

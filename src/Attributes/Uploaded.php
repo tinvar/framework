@@ -29,9 +29,9 @@ namespace Tinvar\Attributes;
  * - `prefix` is where the file's storage key goes, below which the
  *   framework draws the rest of the key at random.
  * - `types` are the media types the bytes may sniff as -- from what
- *   Uploads\FileTypes recognises, which is never one a browser would run.
+ *   Storage\FileTypes recognises, which is never one a browser would run.
  * - `maxBytes` is the largest file taken, under the application's own
- *   ceiling (Uploads::$maxBytes).
+ *   ceiling (the uploads' own maxBytes).
  *
  * ActionRegistry refuses a declaration it could not hold an upload to.
  */

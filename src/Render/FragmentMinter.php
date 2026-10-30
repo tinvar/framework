@@ -30,7 +30,7 @@ final class FragmentMinter
      * The frame cap is 16 MiB and the mint cap counts TOKENS, so without a
      * byte bound one render could hand PHP 64 × 16 MiB of renderer-chosen
      * data to encode, HMAC and base64. Every such token would also be far
-     * past FragmentEndpoint::MAX_TOKEN_BYTES and therefore unusable, so the
+     * past the fragment endpoint's MAX_TOKEN_BYTES and therefore unusable, so the
      * only thing an unbounded props buys is the work of making it.
      */
     public const int MAX_PROPS_BYTES = 2048;

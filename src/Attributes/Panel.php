@@ -20,7 +20,7 @@ namespace Tinvar\Attributes;
  * stack -- its guard, the membership check, its MFA, network allowlist and
  * email verification -- runs before the entry point's own middleware, and
  * `requires` and `permission` are held against the user's membership of
- * the panel in the request's tenant (see Auth\Memberships). Both only add:
+ * the panel in the request's tenant (see the memberships). Both only add:
  * a page saying `permission: 'orders.refund'` in a panel whose definition
  * requires `orders.view` needs both.
  *

@@ -63,7 +63,7 @@ final class PolicyRegistry
      * policy until something remembered to call reset(): its Request-lived
      * services and its user then answered for the next caller, and for any
      * actingAs() begun after it was built. So the resolver is asked every
-     * time, as QueryRegistry::instanceFor() does: a container keeps what
+     * time, as the query registry asks for a query's instance: a container keeps what
      * should be kept.
      *
      * @param class-string $subject

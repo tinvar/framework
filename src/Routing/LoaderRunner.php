@@ -36,7 +36,7 @@ final class LoaderRunner
     /**
      * @param \Closure(class-string): object $resolver builds a page or layout class
      * @param TagsRead|null $tags told which segment each loader is, so the
-     *        tags a loader reads are its segment's (see Tinvar\Live)
+     *        tags a loader reads are its segment's (see live updates)
      * @param Telemetry|null $telemetry where each loader is a span of the
      *        request, its statements its children (ADR 0112)
      * @param (\Closure(LoadedRoute): void)|null $loaded told of each route

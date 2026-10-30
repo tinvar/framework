@@ -62,7 +62,7 @@ final class QueryCache
      * A null context means an application with no panels at all, which keys
      * as the empty panel rather than guessing a name.
      *
-     * @param string $build the build this code is (BuildRegistry::$current). Give it
+     * @param string $build the build this code is, as the build registry names it. Give it
      *        with any store that outlives a worker -- ApcuStore, PdoStore -- where
      *        entries cached by the build before a deploy, or by servers still on it
      *        during one, would otherwise be read: what a query returns is its
@@ -353,7 +353,7 @@ final class QueryCache
     /**
      * The same, with no cache to ask: a query's tags say what it read
      * whether or not its answer is kept. A render's live subscription is
-     * scoped to them (Tinvar\Live), and an application that caches nothing
+     * scoped to them (live updates), and an application that caches nothing
      * still wants its pages told when what they read changes.
      *
      * @param array<string, mixed> $arguments

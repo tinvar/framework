@@ -24,7 +24,7 @@ use Tinvar\Cache\Duration;
  *
  * The pages a route builds are listed by `params`, or -- where they are not
  * known when the attribute is written, as a directory of content's are not
- * -- named by `from`, a Tinvar\Render\StaticParams class the builder asks
+ * -- named by `from`, a class implementing the renderer's StaticParams the builder asks
  * for them. One or the other: a route given both would build the union of
  * two lists nobody wrote together.
  *
@@ -47,7 +47,7 @@ final readonly class StaticPage
      * @param string|null $revalidate how long a built page stands before it is
      *        built again: '30s', '10m', '1h'
      * @param list<string> $tags what it shows, by the tags actions invalidate
-     * @param class-string|null $from a Tinvar\Render\StaticParams class whose
+     * @param class-string|null $from a class implementing StaticParams whose
      *        params() lists the pages to build, in place of `params`
      */
     public function __construct(

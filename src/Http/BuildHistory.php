@@ -38,7 +38,7 @@ final readonly class BuildHistory
      * Its own number, so a Tinvar from before pruning refuses the file rather
      * than reading it without them -- which would put a server still running
      * a pruned build back above a floor set over it. A registry refusing its
-     * store answers for its own build alone (BuildRegistry::sync()), which is
+     * store answers for its own build alone (the build registry's sync), which is
      * the safe direction. Nothing pruned, the file is written as before.
      */
     public const int PRUNED_FORMAT = 2;
@@ -49,7 +49,7 @@ final readonly class BuildHistory
     /**
      * @param list<array{id: string, at: int}> $builds releases, OLDEST FIRST, each
      *        with the unix time it was recorded. The order is the record, never
-     *        inferred from the IDs: see BuildRegistry::$retained.
+     *        inferred from the IDs: see the build registry's retained builds.
      * @param list<string> $revoked
      * @param list<string> $pruned releases pruned from $builds, OLDEST FIRST, all
      *        older than every build still in it
@@ -115,7 +115,7 @@ final readonly class BuildHistory
      * Recording the newest again is nothing, so a deploy script can run the
      * same step twice. Recording an OLDER one again is refused: moving it to
      * the end would make it newer than the builds after it, which lifts it
-     * over a floor set above it -- the mistake BuildRegistry::retain() was
+     * over a floor set above it -- the mistake the build registry's retain() was
      * written to stop.
      */
     public function released(string $build, int $at): self

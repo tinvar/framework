@@ -89,7 +89,7 @@ final readonly class Scroll
     }
 
     /**
-     * One page of an ORM paginator (Query::paginate()), its items already
+     * One page of an ORM paginator (the query builder's paginate()), its items already
      * Data -- Page::map() them first, since a model never crosses to the
      * renderer and the encoder refuses one.
      *

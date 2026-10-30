@@ -8,7 +8,7 @@ namespace Tinvar\Auth;
  * The application's panels, by name, and the namespaces that belong to them.
  *
  * A #[Panel] naming a panel that is not here is refused when the Kernel is
- * built (EntryContext::check()): a typo in a panel's name would otherwise
+ * built, by the entry checks: a typo in a panel's name would otherwise
  * be a page with no guard, no membership check and no MFA, that looked as if
  * it had all three.
  */

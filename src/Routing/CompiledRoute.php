@@ -104,7 +104,7 @@ final readonly class CompiledRoute
      * by a one-character typo.
      *
      * A name mismatch is still a bug, but it is caught loudly at registration
-     * (RouteRegistry::assertParameterNamesAgree) rather than silently
+     * (by the route registry) rather than silently
      * unguarding a route here.
      */
     public function wraps(self $page): bool
