@@ -17,6 +17,10 @@ use Tinvar\Auth\Authenticatable;
  * the application lists them (TenantMemberships) -- a reseller's customer
  * arriving on the reseller's domain arrives as the customer. Never one
  * outside the realm's subtree, and never empty for a realm in a panel.
+ *
+ * The redemption names the code that brought them, hashed: the
+ * application keeps it with the session it starts, so a replay of that
+ * code can end the session (HandoffSessions::revoke()).
  */
 final readonly class Arrival
 {
@@ -26,5 +30,12 @@ final readonly class Arrival
         public Realm $realm,
         public string $returnTo,
         public string $tenant = '',
+        public string $redemption = '',
     ) {}
+
+    /** The handle a code's redemption is known by: its id, hashed, so no store holds the id itself. */
+    public static function redemptionOf(HandoffCode $code): string
+    {
+        return hash('sha256', 'handoff-redemption:' . $code->id);
+    }
 }

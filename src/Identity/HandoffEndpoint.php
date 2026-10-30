@@ -59,7 +59,8 @@ use Tinvar\Support\Signer;
  *      be fresh, name this origin, tenant and panel exactly, be redeemed by
  *      the session whose challenge it carries, name a user still on the auth
  *      epoch it was minted on and still admitted here, and never have been
- *      redeemed before (NonceStore). Then the application starts a **new**
+ *      presented here before (NonceStore): one that has ends the session
+ *      its first redemption started. Then the application starts a **new**
  *      session (HandoffSessions) -- never the one the browser arrived with --
  *      and the browser goes on to the path the handoff started for. Arriving
  *      with `error` instead, from a cancel, it is a 403 `handoff_cancelled`,
@@ -449,35 +450,50 @@ final class HandoffEndpoint
             throw self::refused('it was minted for another panel than this realm\'s');
         }
 
-        $session = ($this->sessionId)($request);
-        if (!Pkce::matches($this->signer, $session, $code->state, $code->challenge)) {
-            throw self::refused('the session redeeming it is not the one that started the handoff');
-        }
-
-        $user = $this->users->find($code->user);
-        if ($user === null || $user->authIdentifier() !== $code->user) {
-            throw self::refused('its user is not there any more');
-        }
-        $epoch = $this->users->epoch($user);
-        if (!hash_equals(TokenClaims::hashAuth($this->signer, $code->user, $epoch), $code->authHash)) {
-            throw self::refused('its user\'s auth epoch has moved since it was minted');
-        }
-
-        // Held again: a membership taken away, or a user made staff, in the
-        // minute the code was in flight. And where the session lands: the
-        // realm's tenant, or the one below it the user belongs to.
-        [$refusal, $tenant] = $this->admission($user, $realm);
-        if ($refusal !== null) {
-            throw self::refused($refusal);
-        }
-
-        // Last, so a code is spent by the one redemption that gets this far;
-        // and before the session, so two at once cannot both get one.
+        // Claimed here, by the first presentation of a good code meant for
+        // this realm, so a code shown again is known for one whatever else
+        // it fails: a code redeemed once and shown a second time was copied,
+        // and the session its first redemption started may be the copier's.
+        // That session ends (HandoffSessions::revoke()). Before the session
+        // is made, so two at once cannot both get one.
         if (!$this->nonces->claim(self::NONCE_SCOPE, $code->id, $code->expiresAt, $now)) {
-            throw self::refused('it has been redeemed before');
+            $this->sessions->revoke(Arrival::redemptionOf($code));
+
+            throw self::refused('it has been redeemed before; the session it started is ended');
         }
 
-        $fresh = $this->sessions->arrive($request, new Arrival($user, $epoch, $realm, $code->returnTo, $tenant));
+        // Given back when a check below refuses it, so a copy presented
+        // first, from a session that did not start the handoff, neither
+        // spends the code nor gets anything: its owner can still redeem it.
+        try {
+            $session = ($this->sessionId)($request);
+            if (!Pkce::matches($this->signer, $session, $code->state, $code->challenge)) {
+                throw self::refused('the session redeeming it is not the one that started the handoff');
+            }
+
+            $user = $this->users->find($code->user);
+            if ($user === null || $user->authIdentifier() !== $code->user) {
+                throw self::refused('its user is not there any more');
+            }
+            $epoch = $this->users->epoch($user);
+            if (!hash_equals(TokenClaims::hashAuth($this->signer, $code->user, $epoch), $code->authHash)) {
+                throw self::refused('its user\'s auth epoch has moved since it was minted');
+            }
+
+            // Held again: a membership taken away, or a user made staff, in
+            // the minute the code was in flight. And where the session lands:
+            // the realm's tenant, or the one below it the user belongs to.
+            [$refusal, $tenant] = $this->admission($user, $realm);
+            if ($refusal !== null) {
+                throw self::refused($refusal);
+            }
+        } catch (\Throwable $e) {
+            $this->nonces->release(self::NONCE_SCOPE, $code->id);
+
+            throw $e;
+        }
+
+        $fresh = $this->sessions->arrive($request, new Arrival($user, $epoch, $realm, $code->returnTo, $tenant, Arrival::redemptionOf($code)));
         if ($fresh === '' || hash_equals($session, $fresh)) {
             // The one thing the application must not get wrong here: a
             // session the browser arrived with may be one an attacker

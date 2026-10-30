@@ -193,6 +193,9 @@ final readonly class StartSession implements Middleware
 /** A new session for each arrival -- or, told to misbehave, the one the browser came with. */
 final class Arrivals implements HandoffSessions
 {
+    /** @var array<string, string> redemption => the session it started */
+    public array $redemptions = [];
+
     public function __construct(private readonly SessionStore $store, public bool $keepId = false) {}
 
     public function arrive(Request $request, Arrival $arrival): string
@@ -210,9 +213,15 @@ final class Arrivals implements HandoffSessions
         unset($this->store->sessions[$box->id]);
         $fresh = bin2hex(random_bytes(16));
         $this->store->sessions[$fresh] = $row;
+        $this->redemptions[$arrival->redemption] = $fresh;
         $box->replacement = $fresh;
 
         return $fresh;
+    }
+
+    public function revoke(string $redemption): void
+    {
+        unset($this->store->sessions[$this->redemptions[$redemption] ?? '']);
     }
 }
 

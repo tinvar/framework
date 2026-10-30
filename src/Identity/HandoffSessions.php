@@ -26,6 +26,12 @@ use Tinvar\Http\Request;
  * - **Set on the response.** The cookie for the new session goes on the
  *   redirect the endpoint answers with -- through the application's own
  *   global middleware, which runs around the endpoint.
+ * - **Ended when its code comes back.** A code is redeemed once; one shown
+ *   again was copied -- from a log, a history, a referrer -- and whoever
+ *   holds the copy may have been the first to redeem it. So the session the
+ *   first redemption started is ended (revoke()), as RFC 6749, 4.1.2 asks
+ *   of an authorization code used twice. The application keeps each
+ *   arrival's redemption with the session it starts, to find it by.
  */
 interface HandoffSessions
 {
@@ -36,4 +42,12 @@ interface HandoffSessions
      * @return string the new session's id
      */
     public function arrive(Request $request, Arrival $arrival): string;
+
+    /**
+     * Ends the session the arrival with this redemption
+     * (Arrival::$redemption) started, wherever it is now, if it is still
+     * there; nothing if it is not. Durable: a revocation a power cut took
+     * back is a session that works again.
+     */
+    public function revoke(string $redemption): void;
 }

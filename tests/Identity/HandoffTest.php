@@ -189,10 +189,38 @@ describe('the code', function () {
             ->and(errorCode($again))->toBe('handoff_refused')
             ->and($replayed->status)->toBe(403)
             ->and(errorCode($replayed))->toBe('handoff_refused')
-            // The rotated session fails PKCE; the cookie it arrived with
-            // passes that, and meets the nonce already claimed.
-            ->and($app->log[\count($app->log) - 2])->toContain('not the one that started the handoff')
+            // Each meets the code already spent, before anything else is
+            // asked of it.
+            ->and($app->log[\count($app->log) - 2])->toContain('redeemed before')
             ->and($app->lastLogged())->toContain('redeemed before');
+    });
+
+    // RFC 6749, 4.1.2: a code used twice was copied, and the session its
+    // first redemption made may be the copier's.
+    it('ends the session its first redemption started when it is replayed, and no other', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+        $callback = codeFor($browser, 'https://acme.example');
+        expect($browser->get($callback)->status)->toBe(303);
+        $arrived = $browser->sessionAt('acme.example');
+
+        // Another arrival of alice's, by a code of its own: untouched.
+        $other = new Browser($app)->signedInAt('id.platform.test', 'alice');
+        expect($other->get(codeFor($other, 'https://acme.example'))->status)->toBe(303);
+        $kept = $other->sessionAt('acme.example');
+
+        expect($app->sessions->sessions)->toHaveKey($arrived)
+            ->and($app->arrivals->redemptions)->toHaveCount(2);
+
+        // Replayed from a browser that never started the handoff.
+        $replayed = $app->get($callback);
+
+        expect($replayed->status)->toBe(403)
+            ->and(errorCode($replayed))->toBe('handoff_refused')
+            ->and($app->lastLogged())->toContain('the session it started is ended')
+            ->and($app->sessions->sessions)->not->toHaveKey($arrived)
+            ->and($app->sessions->sessions)->toHaveKey($kept)
+            ->and(json($browser->get('https://acme.example/whoami')))->not->toBe(['user' => 'alice']);
     });
 
     it('is refused at any origin but the one it was minted for: another domain of the tenant, another tenant\'s, the platform\'s', function () {
