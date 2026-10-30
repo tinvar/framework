@@ -111,6 +111,17 @@ function served(string $root, \Closure $drive, array $env = [], bool $testProfil
     // A file of its own: php -S writes its standard error without
     // appending, over whatever another writer appended.
     $appLog = (string) tempnam(sys_get_temp_dir(), 'tinvar-e2e-app-');
+    // No TINVAR_APP_KEY: the app generates one into a fresh key file.
+    // Every php -S request is its own process, so a deferred boundary
+    // loading at all shows that they all read the one key.
+    $serverEnv = [
+        ...array_diff_key(getenv(), ['TINVAR_APP_KEY' => true]),
+        'TINVAR_SOCKET' => $renderer->socketPath,
+        'TINVAR_APP_KEY_FILE' => $keyFile,
+        'SHOP_DATABASE' => Shop::database(),
+        'SHOP_LOG' => $appLog,
+        ...$env,
+    ];
     $server = proc_open(
         // Port 0: the system picks a free one as php -S binds it, and php -S
         // names it in the line it starts with. A port picked here at random
@@ -122,17 +133,7 @@ function served(string $root, \Closure $drive, array $env = [], bool $testProfil
         [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', $errorLog, 'w']],
         $pipes,
         $root,
-        // No TINVAR_APP_KEY: the app generates one into a fresh key file.
-        // Every php -S request is its own process, so a deferred boundary
-        // loading at all shows that they all read the one key.
-        [
-            ...array_diff_key(getenv(), ['TINVAR_APP_KEY' => true]),
-            'TINVAR_SOCKET' => $renderer->socketPath,
-            'TINVAR_APP_KEY_FILE' => $keyFile,
-            'SHOP_DATABASE' => Shop::database(),
-            'SHOP_LOG' => $appLog,
-            ...$env,
-        ],
+        $serverEnv,
     );
 
     try {
@@ -149,7 +150,9 @@ function served(string $root, \Closure $drive, array $env = [], bool $testProfil
         }
         expect($port)->not->toBeNull('php -S did not start: ' . file_get_contents($errorLog));
 
-        $drive("http://127.0.0.1:{$port}", $appLog, $renderer, $run['token'] ?? '');
+        // And the server's environment, for a script that runs the shop's
+        // own commands beside it -- its queue worker.
+        $drive("http://127.0.0.1:{$port}", $appLog, $renderer, $run['token'] ?? '', $serverEnv);
     } finally {
         proc_terminate($server);
         proc_close($server);
@@ -783,6 +786,51 @@ it('seeds, signs in and moves the clock through the test endpoint, and to no pag
 // CSRF token, and the page drawn again shows it kept. For a customer of its
 // own, seeded and signed in through the test endpoint (ADR 0066), rather
 // than the demo account through the form, which other tests cover.
+// The emailed links' pages, which only the framework's tests drove: each
+// link asked for on its form, mailed by the shop's queue worker, opened --
+// which signs nobody in -- used by its button, and refused the second time.
+it('signs in by an emailed link, resets a password by one, and joins the staff by an invite', function () use ($root) {
+    $mailDirectory = sys_get_temp_dir() . '/tinvar-e2e-mail-' . bin2hex(random_bytes(4));
+    mkdir($mailDirectory, 0o700);
+    $mailLog = "{$mailDirectory}/mail.log";
+    $output = '';
+    try {
+        served($root, function (string $origin, string $log, Renderer $renderer, string $token, array $env) use ($root, &$output): void {
+            $output = runWithTimeout(
+                ['node', "{$root}/examples/shop/e2e/email-links.mjs", $origin, StaffAccount::EMAIL, StaffAccount::PASSWORD],
+                $root,
+                120,
+                [...array_filter($env, \is_string(...)), 'TINVAR_TEST_TOKEN' => $token, 'TINVAR_E2E_PHP' => PHP_BINARY],
+            );
+        }, ['SHOP_DATABASE' => Shop::testDatabase(), 'SHOP_MAIL_LOG' => $mailLog], testProfile: true);
+    } finally {
+        @unlink($mailLog);
+        @rmdir($mailDirectory);
+    }
+
+    $result = json_decode((string) $output, true);
+    expect($result)->toBeArray("the browser script failed:\n{$output}");
+
+    expect($result['errors'])->toBe([])
+        // Built on the canonical https origin, never the request's Host.
+        ->and([$result['signIn']['built'], $result['reset']['built'], $result['invite']['built']])
+        ->toBe(['https://pellwick.test', 'https://pellwick.test', 'https://pellwick.test'])
+        ->and($result['signIn']['heading'])->toBe('Sign in to Pellwick Supply')
+        ->and($result['signIn']['names'])->toBeTrue()
+        ->and($result['signIn']['signedInByOpening'])->toBeFalse('opening the link only looks')
+        ->and($result['signIn']['landed'])->toBe('/orders')
+        ->and($result['signIn']['account'])->toBe('/account')
+        ->and($result['signIn']['again'])->toBe("This link won't work")
+        ->and($result['reset']['heading'])->toBe('Choose a new password')
+        ->and($result['reset']['landed'])->toBe('/orders')
+        ->and($result['reset']['again'])->toBe("This link won't work")
+        ->and($result['reset']['signedInWithIt'])->not->toBe('/sign-in')
+        ->and($result['invite']['listed'])->toBeTrue()
+        ->and($result['invite']['heading'])->toBe("Join Pellwick Supply's staff")
+        ->and($result['invite']['landed'])->toBe('/admin/orders')
+        ->and($result['invite']['again'])->toBe("This invite won't work");
+});
+
 it('saves an email preference the moment its switch is flipped', function () use ($root) {
     $output = '';
     served($root, function (string $origin, string $log, Renderer $renderer, string $token) use ($root, &$output): void {
