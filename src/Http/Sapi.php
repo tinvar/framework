@@ -39,6 +39,21 @@ final class Sapi
     public const string STREAM_HEADER = 'x-accel-buffering';
 
     /**
+     * Where a body too large to hold in memory is written for the server to
+     * send as a file: a directory of the file root's own (ADR 0109).
+     */
+    public const string SPOOL_DIRECTORY = 'tinvar-spool';
+
+    /** The largest body written there; past it, the worker passes it on itself. */
+    public const int SPOOL_MAX_BYTES = 1_073_741_824;
+
+    /**
+     * How long a spooled body is kept: the server opens the file as soon as
+     * the worker is done, and a file it has open is still sent once removed.
+     */
+    public const int SPOOL_KEPT_SECONDS = 600;
+
+    /**
      * Builds a Request from SAPI values. Throws NotFoundException for a path
      * Request refuses; the caller answers that as a 404.
      *
@@ -155,9 +170,16 @@ final class Sapi
      *
      * Held whole only up to BUFFERED_BYTES, known before the first byte: a
      * body that is a string, or a stream that says its Content-Length. A
-     * larger one, or a stream of no known length -- a render streamed as it
-     * is made -- is marked to be passed on as it comes (`X-Accel-Buffering:
-     * no`, the convention nginx reads too), and its writes can still block.
+     * larger one, or a stream of no known length -- a GET endpoint's
+     * Response::stream() -- is spooled (ADR 0109): written whole to a file
+     * of its own under the file root, which the server sends as it sends a
+     * stored file, so the worker's writes go to disk and never to a client
+     * that stopped reading. Only a 200 -- the file server answers with that
+     * -- and never an event stream, which must arrive as it is written, nor
+     * a body past SPOOL_MAX_BYTES. Those, and every large body where there
+     * is no file root, are marked to be passed on as they come
+     * (`X-Accel-Buffering: no`, the convention nginx reads too), and their
+     * writes can still block.
      *
      * A file the server sends itself goes out with no body at all. When the
      * Caddyfile names a directory it sends stored files from ($fileRoot) and
@@ -180,11 +202,107 @@ final class Sapi
         }
 
         $length = $response->isStreaming() ? $response->header('content-length') : (string) \strlen($response->body());
-        if ($length === null || preg_match('/^\d{1,15}\z/', $length) !== 1 || (int) $length > self::BUFFERED_BYTES) {
-            return $response->withHeader(self::STREAM_HEADER, 'no');
+        $known = $length !== null && preg_match('/^\d{1,15}\z/', $length) === 1 ? (int) $length : null;
+        if ($known !== null && $known <= self::BUFFERED_BYTES) {
+            return $response;
         }
 
-        return $response;
+        $spooled = $fileRoot === null || $fileRoot === '' ? null : self::spool($response, $fileRoot, $known);
+
+        return $spooled ?? $response->withHeader(self::STREAM_HEADER, 'no');
+    }
+
+    /**
+     * $response with its body written to a file of its own under the
+     * spool directory, for the server to send, or null when it is not one
+     * to spool or the directory cannot take it -- and then its body has not
+     * been read.
+     *
+     * The name is 128 random bits, the file 0600 in a 0700 directory, and
+     * only this response names it to the server; a body that fails to be
+     * written whole is not sent at all, rather than sent cut short. Files
+     * older than SPOOL_KEPT_SECONDS go as the next one is written.
+     */
+    private static function spool(Response $response, string $fileRoot, ?int $length): ?Response
+    {
+        $type = strtolower((string) $response->header('content-type'));
+        if ($response->status !== 200 || str_starts_with($type, 'text/event-stream')
+            || ($length !== null && $length > self::SPOOL_MAX_BYTES)) {
+            return null;
+        }
+
+        $root = realpath($fileRoot);
+        if ($root === false || !is_dir($root)) {
+            return null;
+        }
+        $directory = $root . '/' . self::SPOOL_DIRECTORY;
+        if (!is_dir($directory) && !@mkdir($directory, 0o700) && !is_dir($directory)) {
+            return null;
+        }
+        // Its own directory, never one a link put somewhere else.
+        if (is_link($directory) || realpath($directory) !== $directory) {
+            return null;
+        }
+        self::sweep($directory);
+
+        $name = bin2hex(random_bytes(16));
+        $path = "{$directory}/{$name}";
+        $file = @fopen($path, 'xb');
+        if ($file === false) {
+            return null;
+        }
+        chmod($path, 0o600);
+
+        $written = 0;
+        $failed = false;
+        try {
+            $response->sendBody(static function (string $chunk) use ($file, &$written, &$failed): void {
+                if ($failed) {
+                    return;
+                }
+                $written += \strlen($chunk);
+                if ($written > self::SPOOL_MAX_BYTES || fwrite($file, $chunk) !== \strlen($chunk)) {
+                    $failed = true;
+                }
+            });
+        } catch (\Throwable $e) {
+            fclose($file);
+            @unlink($path);
+
+            throw $e;
+        }
+        fclose($file);
+
+        if ($failed) {
+            @unlink($path);
+            error_log("tinvar: a response body could not be spooled whole ({$written} bytes, at most " . self::SPOOL_MAX_BYTES . '); answered 500.');
+
+            return Response::make(500, 'The response could not be sent.', ['content-type' => 'text/plain; charset=utf-8', 'cache-control' => 'no-store']);
+        }
+
+        return Response::make($response->status, '', $response->headers())
+            ->withCookiesOf($response)
+            ->withoutHeader('content-length')
+            ->withHeader(self::FILE_HEADER, '/' . self::SPOOL_DIRECTORY . "/{$name}");
+    }
+
+    /** Removes what was spooled more than SPOOL_KEPT_SECONDS ago: at most once a minute a process, for each directory. */
+    private static function sweep(string $directory): void
+    {
+        /** @var array<string, int> $last */
+        static $last = [];
+        $now = time();
+        if ($now - ($last[$directory] ?? 0) < 60) {
+            return;
+        }
+        $last[$directory] = $now;
+
+        foreach (glob("{$directory}/*") ?: [] as $file) {
+            $modified = @filemtime($file);
+            if (preg_match('#/[0-9a-f]{32}\z#', $file) === 1 && $modified !== false && $now - $modified > self::SPOOL_KEPT_SECONDS) {
+                @unlink($file);
+            }
+        }
     }
 
     /**

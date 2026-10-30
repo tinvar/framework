@@ -222,8 +222,10 @@ describe('a response as the server takes it', function () {
         try {
             $from = static fn (string $path): Response => Response::stream(static function (Closure $sink): void {}, 200)->withFile($path);
 
+            // Sent by the worker -- or, of no known length, spooled under a
+            // name of its own (ADR 0109) -- never handed over by its path.
             foreach (["{$outside}/secret", "{$root}/link", "{$root}/a name?x=1", "{$root}/.hidden", "{$root}/missing", $root] as $path) {
-                expect(Sapi::forServer($from($path), $root)->header(Sapi::FILE_HEADER))->toBeNull($path);
+                expect(Sapi::forServer($from($path), $root)->header(Sapi::FILE_HEADER) ?? '/tinvar-spool/')->toStartWith('/tinvar-spool/', $path);
             }
         } finally {
             exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg($outside));
@@ -245,5 +247,120 @@ describe('a response as the server takes it', function () {
     it('sends only a streamed response from a file, and only by its absolute path', function () {
         expect(fn () => Response::make(200, 'x')->withFile('/tmp/x'))->toThrow(LogicException::class)
             ->and(fn () => Response::stream(static function (Closure $sink): void {})->withFile('relative'))->toThrow(InvalidArgumentException::class);
+    });
+});
+
+// ADR 0109: a body too large to hold whole, or a stream of no known length,
+// was still written by its worker to the client, under `parallel`'s mutex.
+// It is written to a file under the file root instead, for the server to
+// send as it sends a stored file.
+describe('a body too large to hold', function () {
+    /** A file root of its own, removed after. */
+    $root = static function (): string {
+        $root = sys_get_temp_dir() . '/tinvar-sapi-spool-' . bin2hex(random_bytes(4));
+        mkdir($root, 0o700);
+        register_shutdown_function(static fn () => exec('rm -rf ' . escapeshellarg($root)));
+
+        return $root;
+    };
+    $spooled = static fn (string $root, Response $handed): string => $root . (string) $handed->header(Sapi::FILE_HEADER);
+
+    it('is written whole to a file of its own under the file root, and handed over with every header and cookie', function () use ($root, $spooled) {
+        $files = $root();
+        $body = str_repeat('x', Sapi::BUFFERED_BYTES + 1);
+        $response = Response::make(200, $body, ['content-type' => 'text/html; charset=utf-8', 'content-length' => (string) \strlen($body), 'cache-control' => 'no-store'])
+            ->withCookie('__Host-a', 'b');
+
+        $handed = Sapi::forServer($response, $files);
+
+        expect($handed->header(Sapi::FILE_HEADER))->toMatch('#^/tinvar-spool/[0-9a-f]{32}\z#')
+            ->and($handed->header(Sapi::STREAM_HEADER))->toBeNull()
+            ->and($handed->body())->toBe('')
+            ->and($handed->status)->toBe(200)
+            ->and($handed->header('content-type'))->toBe('text/html; charset=utf-8')
+            ->and($handed->header('cache-control'))->toBe('no-store')
+            ->and($handed->header('content-length'))->toBeNull()
+            ->and(array_keys($handed->cookies()))->toBe(['__Host-a'])
+            ->and(file_get_contents($spooled($files, $handed)))->toBe($body)
+            ->and(fileperms($spooled($files, $handed)) & 0o777)->toBe(0o600)
+            ->and(fileperms("{$files}/tinvar-spool") & 0o777)->toBe(0o700);
+    });
+
+    it('takes a stream of no known length, run once', function () use ($root, $spooled) {
+        $files = $root();
+        $runs = 0;
+        $response = Response::stream(static function (Closure $sink) use (&$runs): void {
+            $runs++;
+            $sink('a');
+            $sink('b');
+        }, 200, ['content-type' => 'text/csv']);
+
+        $handed = Sapi::forServer($response, $files);
+
+        expect(file_get_contents($spooled($files, $handed)))->toBe('ab')
+            ->and($runs)->toBe(1)
+            ->and(Sapi::forServer($response, $files)->header(Sapi::FILE_HEADER))->not->toBe($handed->header(Sapi::FILE_HEADER));
+    });
+
+    // The file server answers 200; an event stream must arrive as it is
+    // written; and with nowhere to write it, the worker passes it on.
+    it('is passed on as it comes when it is not a 200, an event stream, or there is no file root', function () use ($root) {
+        $files = $root();
+        $big = str_repeat('x', Sapi::BUFFERED_BYTES + 1);
+        $events = Response::stream(static function (Closure $sink): void {
+            $sink("data: 1\n\n");
+        }, 200, ['content-type' => 'text/event-stream']);
+
+        foreach ([
+            [Response::make(404, $big), $files],
+            [$events, $files],
+            [Response::make(200, $big), null],
+            [Response::make(200, $big), "{$files}/missing"],
+            [Response::stream(static function (Closure $sink): void {}, 200, ['content-length' => (string) (Sapi::SPOOL_MAX_BYTES + 1)]), $files],
+        ] as [$response, $at]) {
+            $sent = Sapi::forServer($response, $at);
+            expect($sent->header(Sapi::FILE_HEADER))->toBeNull()
+                ->and($sent->header(Sapi::STREAM_HEADER))->toBe('no');
+        }
+    });
+
+    it('is never spooled into a directory a link points elsewhere', function () use ($root) {
+        $files = $root();
+        $elsewhere = $root();
+        symlink($elsewhere, "{$files}/tinvar-spool");
+
+        $sent = Sapi::forServer(Response::make(200, str_repeat('x', Sapi::BUFFERED_BYTES + 1)), $files);
+
+        expect($sent->header(Sapi::FILE_HEADER))->toBeNull()
+            ->and($sent->header(Sapi::STREAM_HEADER))->toBe('no')
+            ->and(glob("{$elsewhere}/*"))->toBe([]);
+    });
+
+    it('removes what it spooled long ago as it writes the next', function () use ($root, $spooled) {
+        $files = $root();
+        mkdir("{$files}/tinvar-spool", 0o700);
+        $old = "{$files}/tinvar-spool/" . str_repeat('a', 32);
+        $recent = "{$files}/tinvar-spool/" . str_repeat('b', 32);
+        file_put_contents($old, 'old');
+        file_put_contents($recent, 'recent');
+        touch($old, time() - Sapi::SPOOL_KEPT_SECONDS - 5);
+
+        $handed = Sapi::forServer(Response::make(200, str_repeat('x', Sapi::BUFFERED_BYTES + 1)), $files);
+
+        expect(is_file($old))->toBeFalse()
+            ->and(is_file($recent))->toBeTrue()
+            ->and(is_file($spooled($files, $handed)))->toBeTrue();
+    });
+
+    it('removes a body whose producer failed, and lets the failure through', function () use ($root) {
+        $files = $root();
+        $failing = Response::stream(static function (Closure $sink): void {
+            $sink('part');
+
+            throw new RuntimeException('render failed');
+        }, 200);
+
+        expect(fn () => Sapi::forServer($failing, $files))->toThrow(RuntimeException::class, 'render failed')
+            ->and(glob("{$files}/tinvar-spool/*"))->toBe([]);
     });
 });
