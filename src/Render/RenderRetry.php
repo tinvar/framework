@@ -50,10 +50,13 @@ final class RenderRetry
 
     /**
      * What no hook may retry: a renderer that is not the one renders may go
-     * to, and a render that asked for more work than one render may. The
-     * first must not be asked again, the second must not be paid for twice.
+     * to, a render that asked for more work than one render may, and a
+     * renderer that broke the protocol. The first must not be asked again,
+     * the second must not be paid for twice, and the third is never asked
+     * again whether this side found the violation or the renderer named it
+     * in an error frame of its own.
      */
-    public const array NEVER = ['renderer_untrusted', 'render_query_budget'];
+    public const array NEVER = ['renderer_untrusted', 'render_query_budget', 'protocol_violation'];
 
     /**
      * @param int $retries how many more tries a render gets, up to MAX_RETRIES

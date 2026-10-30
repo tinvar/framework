@@ -206,7 +206,10 @@ describe('RenderRetry', function () {
             ->and($always->retries(new RendererException('x', 'render_failed'), 3))->toBeFalse()
             ->and($always->retries(RendererException::queryBudget('too much'), 1))->toBeFalse()
             ->and($always->retries(RendererException::untrusted('/s', 'not its user'), 1))->toBeFalse()
-            ->and($always->retries(new \RuntimeException('protocol'), 1))->toBeFalse();
+            ->and($always->retries(new \RuntimeException('protocol'), 1))->toBeFalse()
+            // A renderer naming a protocol violation in its own error frame
+            // is held to it, whatever the hook says.
+            ->and($always->retries(RendererException::fromErrorFrame(['code' => 'protocol_violation']), 1))->toBeFalse();
 
         $default = new RenderRetry();
         expect($default->retries(RendererException::closedEarly(), 1))->toBeTrue()
