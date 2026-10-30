@@ -96,10 +96,19 @@ final class Directory implements UserLookup, Memberships, TenantMemberships
     /** @var list<string> the tenant the ORM ran as each time a membership was asked */
     public array $askedAs = [];
 
+    /** Run once, as find() begins: a test's seam inside the callback's checks. */
+    public ?\Closure $onFind = null;
+
     public function __construct(private readonly Orm $orm) {}
 
     public function find(string $id): ?Authenticatable
     {
+        $hook = $this->onFind;
+        $this->onFind = null;
+        if ($hook !== null) {
+            $hook();
+        }
+
         return isset($this->epochs[$id]) ? new User($id) : null;
     }
 

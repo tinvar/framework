@@ -174,25 +174,48 @@ describe('a handoff', function () {
 });
 
 describe('the code', function () {
-    it('is refused when replayed, from the session that redeemed it or with the cookie it arrived with', function () {
+    // A double click, a prefetch, a redirect followed twice: the same
+    // browser, which is not a copy, gets the first answer again -- no new
+    // session, and nothing ended.
+    it('answers the same browser again as it did, from the session that redeemed it or with the cookie it arrived with', function () {
         $app = new App();
         $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
         $callback = codeFor($browser, 'https://acme.example');
         $arrivedWith = $browser->sessionAt('acme.example');
 
         expect($browser->get($callback)->status)->toBe(303);
+        $arrived = $browser->sessionAt('acme.example');
+        $sessions = $app->sessions->sessions;
 
         $again = $browser->get($callback);
-        $replayed = $app->get($callback, ['__Host-sid' => $arrivedWith]);
+        $sameCookie = $app->get($callback, ['__Host-sid' => $arrivedWith]);
 
-        expect($again->status)->toBe(403)
-            ->and(errorCode($again))->toBe('handoff_refused')
-            ->and($replayed->status)->toBe(403)
-            ->and(errorCode($replayed))->toBe('handoff_refused')
-            // Each meets the code already spent, before anything else is
-            // asked of it.
-            ->and($app->log[\count($app->log) - 2])->toContain('redeemed before')
-            ->and($app->lastLogged())->toContain('redeemed before');
+        expect($again->status)->toBe(303)
+            ->and($again->header('location'))->toBe('/whoami')
+            ->and($sameCookie->status)->toBe(303)
+            ->and($app->sessions->sessions)->toBe($sessions)
+            ->and($browser->sessionAt('acme.example'))->toBe($arrived)
+            ->and(json($browser->get('https://acme.example/whoami')))->toBe(['user' => 'alice']);
+    });
+
+    // Both requests of a double click carry the cookie the handoff started
+    // with, and the second can land while the first is making its session.
+    it('answers a double submit from the same browser without ending the session the first makes', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+        $callback = codeFor($browser, 'https://acme.example');
+        $startedWith = $browser->sessionAt('acme.example');
+        $second = null;
+        $app->arrivals->beforeArrive = function () use ($app, $callback, $startedWith, &$second): void {
+            $second = $app->get($callback, ['__Host-sid' => $startedWith]);
+        };
+
+        $first = $browser->get($callback);
+
+        expect($second?->status)->toBe(303)
+            ->and($first->status)->toBe(303)
+            ->and($app->sessions->sessions)->toHaveKey($browser->sessionAt('acme.example'))
+            ->and(json($browser->get('https://acme.example/whoami')))->toBe(['user' => 'alice']);
     });
 
     // RFC 6749, 4.1.2: a code used twice was copied, and the session its
@@ -240,6 +263,34 @@ describe('the code', function () {
         expect($replayed?->status)->toBe(403)
             ->and($first->status)->toBe(403)
             ->and(errorCode($first))->toBe('handoff_refused')
+            ->and($app->arrivals->redemptions)->toHaveCount(1)
+            ->and($app->sessions->sessions)->not->toHaveKey((string) array_values($app->arrivals->redemptions)[0])
+            ->and(json($browser->get('https://acme.example/whoami')))->not->toBe(['user' => 'alice']);
+    });
+
+    // A copy shown while the code's first redemption is still being checked
+    // marks the code compromised for good: that redemption failing and
+    // giving its claim back does not clear it, and a retry that then gets a
+    // session has it ended at once.
+    it('leaves a code a copy was shown of with no session, even when its redemption is retried', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+        $callback = codeFor($browser, 'https://acme.example');
+        $copy = null;
+        $app->directory->onFind = function () use ($app, $callback, &$copy): void {
+            $copy = $app->get($callback);
+            // And the first redemption is refused, giving its claim back.
+            $app->directory->epochs['alice']++;
+        };
+
+        $first = $browser->get($callback);
+        $app->directory->epochs['alice']--;
+        $retry = $browser->get($callback);
+
+        expect($copy?->status)->toBe(403)
+            ->and($first->status)->toBe(403)
+            ->and($retry->status)->toBe(403)
+            ->and($app->lastLogged())->toContain('replayed while it was being redeemed')
             ->and($app->arrivals->redemptions)->toHaveCount(1)
             ->and($app->sessions->sessions)->not->toHaveKey((string) array_values($app->arrivals->redemptions)[0])
             ->and(json($browser->get('https://acme.example/whoami')))->not->toBe(['user' => 'alice']);

@@ -282,10 +282,15 @@ it('redeems a code once, across every worker the database is shared by, and ends
     expect($browser->get($callback)->status)->toBe(303);
 
     // Another worker -- another Kernel over the same database -- with the
-    // cookie the browser arrived with, which the code's challenge is for.
-    $replay = new Browser(kernel($database));
-    $replay->jar['admin.shop.test'] = $arrivedWith;
-    $refused = $replay->get($callback);
+    // cookie the browser arrived with, which the code's challenge is for:
+    // the same browser again, answered as before, with nothing made or ended.
+    $same = new Browser(kernel($database));
+    $same->jar['admin.shop.test'] = $arrivedWith;
+    expect($same->get($callback)->status)->toBe(303)
+        ->and(orm($database)->connection()->select("SELECT COUNT(*) AS n FROM sessions WHERE realm = 'admin.shop.test'"))->toBe([['n' => 1]]);
+
+    // A copy, from a browser that never started the handoff.
+    $refused = new Browser(kernel($database))->get($callback);
 
     $sessions = "SELECT COUNT(*) AS n FROM sessions WHERE realm = 'admin.shop.test'";
     expect($refused->status)->toBe(403)
