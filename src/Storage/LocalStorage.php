@@ -44,6 +44,27 @@ final readonly class LocalStorage implements Storage
             throw new \InvalidArgumentException('Storage::put() takes a readable stream.');
         }
 
+        $writer = $this->writer($key);
+        try {
+            while (!feof($stream)) {
+                $chunk = fread($stream, 1_048_576);
+                if ($chunk === false) {
+                    throw new StorageException('A stored file could not be written to the end.');
+                }
+                $writer->write($chunk);
+            }
+            $writer->commit();
+        } finally {
+            $writer->abort();
+        }
+    }
+
+    /**
+     * A temporary file beside the destination, inside the root, renamed into
+     * place on commit (LocalStorageWriter).
+     */
+    public function writer(string $key): StorageWriter
+    {
         $root = $this->madeRoot();
         StorageKey::assertValid($key);
         $path = $root . '/' . $key;
@@ -60,26 +81,9 @@ final readonly class LocalStorage implements Storage
         if ($out === false) {
             throw new StorageException('A stored file cannot be written.');
         }
+        @chmod($temporary, 0o600);
 
-        try {
-            @chmod($temporary, 0o600);
-            if (stream_copy_to_stream($stream, $out) === false || !fflush($out)) {
-                throw new StorageException('A stored file could not be written to the end.');
-            }
-            fclose($out);
-            $out = null;
-
-            if (!@rename($temporary, $path)) {
-                throw new StorageException('A stored file cannot be moved into place.');
-            }
-        } catch (\Throwable $e) {
-            if (\is_resource($out)) {
-                fclose($out);
-            }
-            @unlink($temporary);
-
-            throw $e;
-        }
+        return new LocalStorageWriter($out, $temporary, $path);
     }
 
     public function read(string $key): mixed

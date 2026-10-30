@@ -41,4 +41,13 @@ interface Storage
 
     /** Removes what is at $key. Nothing there is not a failure. */
     public function delete(string $key): void;
+
+    /**
+     * A file to be written at $key as its bytes arrive, kept there only once
+     * it is committed (StorageWriter): for bytes pushed in chunks, which
+     * put() would need gathered somewhere first.
+     *
+     * @throws StorageException
+     */
+    public function writer(string $key): StorageWriter;
 }

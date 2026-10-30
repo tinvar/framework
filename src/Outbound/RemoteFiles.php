@@ -19,13 +19,16 @@ use Tinvar\Storage\StorageKey;
  * -- vetted again. https only: a download is fetched over a connection
  * whose certificate was checked, as well as against its digest.
  *
- * The body is never held in memory. It is streamed to a temporary file and
- * hashed as it arrives, within its size cap and its time -- an hour at
- * most, the transfer stopped if it stalls -- and stored only when the
- * digest is the one asked for. The digest is not optional: a file whose
- * bytes nobody vouched for is not one to boot a machine from, and a URL
- * alone vouches for nothing once a mirror or a name changes hands. A file
- * that fails is never stored, and its temporary copy goes with the stream.
+ * The body is never held in memory, nor gathered in the temporary
+ * directory first. It is written to the store as it arrives -- through a
+ * StorageWriter, which keeps nothing at the key until it is committed: a
+ * file beside its destination on disk, a multipart upload on an object
+ * store -- and hashed on the way, within its size cap and its time -- an
+ * hour at most, the transfer stopped if it stalls. It is committed only
+ * when the digest is the one asked for. The digest is not optional: a file
+ * whose bytes nobody vouched for is not one to boot a machine from, and a
+ * URL alone vouches for nothing once a mirror or a name changes hands. A
+ * file that fails is never kept: what was written is given up.
  *
  * The key is the prefix asked for, a name drawn at random, and the
  * extension asked for: nothing the URL or the server said reaches it.
@@ -77,10 +80,8 @@ final readonly class RemoteFiles
             throw new OutboundRefused('scheme', "{$target->origin()} is not https; a download is fetched over a connection whose certificate was checked.");
         }
 
-        $file = tmpfile();
-        if ($file === false) {
-            throw new \RuntimeException('No temporary file to download into.');
-        }
+        $key = "{$prefix}/" . bin2hex(random_bytes(16)) . ".{$extension}";
+        $file = $this->storage->writer($key);
 
         try {
             $hash = hash_init('sha256');
@@ -93,9 +94,7 @@ final readonly class RemoteFiles
                 maxResponseBytes: $maxBytes,
                 maxRedirects: OutboundRequest::MAX_REDIRECTS,
                 sink: static function (string $chunk) use ($file, $hash, &$bytes): void {
-                    if (fwrite($file, $chunk) !== \strlen($chunk)) {
-                        throw new \RuntimeException('A download could not be written to its temporary file.');
-                    }
+                    $file->write($chunk);
                     hash_update($hash, $chunk);
                     $bytes += \strlen($chunk);
                 },
@@ -108,13 +107,12 @@ final readonly class RemoteFiles
                 throw new RemoteContentRefused(RemoteContentRefused::CHECKSUM, "The file from {$target->origin()} is not the one its digest names; it was not stored.", $response->status);
             }
 
-            rewind($file);
-            $key = "{$prefix}/" . bin2hex(random_bytes(16)) . ".{$extension}";
-            $this->storage->put($key, $file);
+            $file->commit();
 
             return new RemoteFile($key, $bytes, $sha256, $response->milliseconds);
         } finally {
-            fclose($file);
+            // Nothing after a commit; everything written before a failure.
+            $file->abort();
         }
     }
 }

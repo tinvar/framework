@@ -66,6 +66,15 @@ final class MemoryStorage implements Storage
         unset($this->files[$key]);
     }
 
+    public function writer(string $key): StorageWriter
+    {
+        StorageKey::assertValid($key);
+
+        return new BufferedWriter(function (string $bytes) use ($key): void {
+            $this->files[$key] = $bytes;
+        });
+    }
+
     /** @return list<string> every key held, for a test to look at */
     public function keys(): array
     {

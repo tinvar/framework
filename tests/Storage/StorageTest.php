@@ -43,6 +43,44 @@ dataset('stores', [
 ]);
 
 describe('every store', function () {
+    it('keeps what a writer was given only once it is committed, and nothing of one given up', function (Closure $make) {
+        /** @var Storage $storage */
+        [$storage, $root] = $make();
+        $key = StorageKey::generate('images', 'iso');
+        $other = StorageKey::generate('images', 'iso');
+
+        try {
+            $writer = $storage->writer($key);
+            $writer->write('first ');
+            $writer->write('and second');
+            expect($storage->exists($key))->toBeFalse();
+            $writer->commit();
+            $writer->abort();
+            expect(stream_get_contents($storage->read($key)))->toBe('first and second')
+                ->and(fn () => $writer->write('more'))->toThrow(StorageException::class);
+
+            $given = $storage->writer($other);
+            $given->write('half');
+            $given->abort();
+            $given->abort();
+
+            // Dropped without a commit, as a transfer that threw drops one.
+            $dropped = $storage->writer($other);
+            $dropped->write('half');
+            unset($dropped);
+
+            expect($storage->exists($other))->toBeFalse();
+            if ($root !== null) {
+                // Not a temporary file left beside the one that was kept.
+                expect(array_values(array_diff(scandir("{$root}/images") ?: [], ['.', '..'])))->toBe([basename($key)]);
+            }
+
+            expect(fn () => $storage->writer('../escape'))->toThrow(StorageException::class);
+        } finally {
+            $root === null || removeStorageTestRoot($root);
+        }
+    })->with('stores');
+
     it('writes, reads, sizes and deletes by key', function (Closure $make) {
         /** @var Storage $storage */
         [$storage, $root] = $make();

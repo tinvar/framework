@@ -22,8 +22,10 @@ use Tinvar\Outbound\RemoteContentRefused;
 use Tinvar\Outbound\RemoteFiles;
 use Tinvar\Outbound\RemoteImages;
 use Tinvar\Outbound\StaticResolver;
+use Tinvar\Storage\LocalStorage;
 use Tinvar\Storage\MemoryStorage;
 use Tinvar\Storage\Storage;
+use Tinvar\Storage\StorageWriter;
 use Tinvar\Tests\Outbound\Fixtures\Server;
 
 require_once __DIR__ . '/Fixtures/server.php';
@@ -90,6 +92,41 @@ final class Kept implements Storage
     public function delete(string $key): void
     {
         $this->memory->delete($key);
+    }
+
+    /** @var list<int> the size of each chunk written, as it was written */
+    public array $chunks = [];
+
+    public function writer(string $key): StorageWriter
+    {
+        $inner = $this->memory->writer($key);
+        $chunks = &$this->chunks;
+        $put = &$this->put;
+
+        return new class ($inner, $key, $chunks, $put) implements StorageWriter {
+            /**
+             * @param list<int> $chunks
+             * @param list<string> $put
+             */
+            public function __construct(private StorageWriter $inner, private string $key, private array &$chunks, private array &$put) {}
+
+            public function write(string $bytes): void
+            {
+                $this->chunks[] = \strlen($bytes);
+                $this->inner->write($bytes);
+            }
+
+            public function commit(): void
+            {
+                $this->inner->commit();
+                $this->put[] = $this->key;
+            }
+
+            public function abort(): void
+            {
+                $this->inner->abort();
+            }
+        };
     }
 }
 
@@ -204,6 +241,44 @@ describe('downloads', function () {
                 ->download('https://mirror.example/a.iso', hash('sha256', 'nope'), 'images', 'iso'))
             ->toThrow(fn (RemoteContentRefused $e) => expect($e->status)->toBe(404))
             ->and($storage->put)->toBe([]);
+    });
+
+    it('writes a download into the store as it arrives, never gathered whole first', function () {
+        $iso = random_bytes(40_000);
+        $storage = new Kept();
+        $file = new RemoteFiles(new FakeOutboundHttp(static fn (): OutboundResponse => new OutboundResponse(200, [], $iso)), $storage)
+            ->download('https://mirror.example/a.iso', hash('sha256', $iso), 'images', 'iso');
+
+        // The fake hands the body over 8 KiB at a time, as curl does: each
+        // chunk reached the store as it came.
+        expect($storage->chunks)->toBe([8192, 8192, 8192, 8192, 7232])
+            ->and($storage->put)->toBe([$file->key])
+            ->and(stored($storage, $file->key))->toBe($iso);
+    });
+
+    it('leaves nothing on disk -- beside the destination or anywhere -- for a download that fails its digest', function () {
+        $root = sys_get_temp_dir() . '/tinvar-remote-' . bin2hex(random_bytes(4));
+        $storage = new LocalStorage($root);
+
+        try {
+            expect(fn () => new RemoteFiles(new FakeOutboundHttp(static fn (): OutboundResponse => new OutboundResponse(200, [], random_bytes(20_000))), $storage)
+                ->download('https://mirror.example/a.iso', hash('sha256', 'something else'), 'images', 'iso'))
+                ->toThrow(RemoteContentRefused::class);
+
+            $left = [];
+            foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS)) as $found) {
+                $left[] = (string) $found;
+            }
+            expect($left)->toBe([]);
+
+            $iso = random_bytes(20_000);
+            $kept = new RemoteFiles(new FakeOutboundHttp(static fn (): OutboundResponse => new OutboundResponse(200, [], $iso)), $storage)
+                ->download('https://mirror.example/a.iso', hash('sha256', $iso), 'images', 'iso');
+            expect(stored($storage, $kept->key))->toBe($iso)
+                ->and(fileperms("{$root}/{$kept->key}") & 0o777)->toBe(0o600);
+        } finally {
+            exec('rm -rf ' . escapeshellarg($root));
+        }
     });
 
     it('refuses plain http, a digest that is not one, and a key it could not make safely', function () {
