@@ -18,9 +18,10 @@ use Tinvar\Observability\SqliteMetricsStore;
 use Tinvar\Queue\ArrayQueue;
 use Tinvar\Queue\PendingJob;
 
-function metrics(?\Tinvar\Observability\MetricsStore $store = null, float $flushEvery = 0.0): Metrics
+/** @param list<\Tinvar\Observability\MetricsStore> $readAlso */
+function metrics(?\Tinvar\Observability\MetricsStore $store = null, float $flushEvery = 0.0, array $readAlso = []): Metrics
 {
-    return new Metrics($store ?? new ArrayMetricsStore(), $flushEvery)
+    return new Metrics($store ?? new ArrayMetricsStore(), $flushEvery, $readAlso)
         ->counter('shop_orders_total', 'Orders placed.', ['channel'])
         ->histogram('shop_checkout_seconds', 'Seconds a checkout took.', ['channel'], [0.1, 0.5, 1.0]);
 }
@@ -134,6 +135,46 @@ it('adds what several processes counted in one SQLite file', function () {
             @unlink($file);
         }
     }
+});
+
+// The server counts in APCu, which its queue worker cannot reach; the
+// worker counts into a file, which the server reads beside its own.
+it('adds what other processes counted to its own at a scrape, and writes only its own store', function () {
+    $own = new ArrayMetricsStore();
+    $shared = new ArrayMetricsStore();
+    $worker = metrics($shared);
+    $worker->increment('shop_orders_total', ['channel' => 'web'], 2);
+    $worker->flush();
+    $before = $shared->all();
+
+    $server = metrics($own, readAlso: [$shared]);
+    $server->increment('shop_orders_total', ['channel' => 'web']);
+    $server->increment('shop_orders_total', ['channel' => 'app']);
+
+    $text = $server->exposition();
+    expect($text)->toContain('shop_orders_total{channel="web"} 3')
+        ->and($text)->toContain('shop_orders_total{channel="app"} 1')
+        ->and($shared->all())->toBe($before);
+});
+
+it('writes what it can read when one of the stores it reads fails', function () {
+    $failing = new class implements \Tinvar\Observability\MetricsStore {
+        public function add(array $deltas): void {}
+
+        public function all(): array
+        {
+            throw new \RuntimeException('unable to open database file');
+        }
+    };
+    $reported = [];
+    $metrics = metrics(new ArrayMetricsStore(), readAlso: [$failing]);
+    $metrics->reportTo(static function (\Throwable $e) use (&$reported): void {
+        $reported[] = $e->getMessage();
+    });
+    $metrics->increment('shop_orders_total', ['channel' => 'web']);
+
+    expect($metrics->exposition())->toContain('shop_orders_total{channel="web"} 1')
+        ->and($reported)->toBe(['unable to open database file']);
 });
 
 it('reports a store that fails, keeps the counts, and still writes the rest', function () {

@@ -11,7 +11,8 @@ namespace Tinvar\Observability;
  *
  * Not shared with another process: the queue worker and the scheduler run
  * as processes of their own, with an APCu of their own, if any. What they
- * would count needs a store every process opens, as SqliteMetricsStore is.
+ * count goes to a store every process opens, as SqliteMetricsStore is,
+ * which the server reads beside this one (Metrics' `readAlso`).
  */
 final class ApcuMetricsStore implements MetricsStore
 {

@@ -51,6 +51,11 @@ final class Telemetry implements Spans
     private const array PROBES = ['_health', '_ready', '_metrics'];
 
     public const string RENDER_BOUNDARY_FAILURES = 'tinvar_render_boundary_failures_total';
+    public const string JOBS = 'tinvar_jobs_total';
+    public const string JOB_DURATION = 'tinvar_job_duration_seconds';
+
+    /** A job's buckets, in seconds: a mail is milliseconds, an export minutes. */
+    public const array JOB_BUCKETS = [0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0, 900.0];
 
     /** The longest statement a span carries as `db.query.text`; the rest is cut. */
     public const int MAX_STATEMENT = 2048;
@@ -451,6 +456,22 @@ final class Telemetry implements Spans
         $this->logger->warning('render retried', ['kind' => $trace->kind, 'failure' => $failure, 'retry' => $retry]);
     }
 
+    /**
+     * One job a worker took off its queue, and how it went: counted by its
+     * queue, its class and its outcome, and timed by queue and class. The
+     * class is the one its signed payload names, so a label holds only the
+     * application's own jobs -- or `unreadable`, for a payload that would
+     * not open. Counted where it ran, and flushed as the job's trace ends
+     * (trace()), into whatever store this process writes: the queue
+     * worker's is one the server reads too.
+     */
+    public function jobFinished(string $queue, ?string $class, string $outcome, float $seconds): void
+    {
+        $job = $class ?? 'unreadable';
+        $this->metrics?->increment(self::JOBS, ['queue' => $queue, 'job' => $job, 'outcome' => $outcome]);
+        $this->metrics?->observe(self::JOB_DURATION, $seconds, ['queue' => $queue, 'job' => $job]);
+    }
+
     /** @return array<string, string> what every log line carries: the request's id */
     private function fields(): array
     {
@@ -472,6 +493,8 @@ final class Telemetry implements Spans
             ->histogram(self::QUERY_BATCH_DURATION, 'Seconds PHP took to answer one batch of query calls.', ['kind'], self::QUERY_BUCKETS)
             ->counter(self::QUERY_CALLS, 'Query calls renders sent.', ['kind'])
             ->counter(self::RENDER_RETRIES, 'Failed renders tried again by the retry hook, by kind and failure.', ['kind', 'failure'])
-            ->counter(self::RENDER_BOUNDARY_FAILURES, 'Subtrees rendered as an error row in a render that went on -- a Suspense boundary, a fragment -- by kind and failure.', ['kind', 'failure']);
+            ->counter(self::RENDER_BOUNDARY_FAILURES, 'Subtrees rendered as an error row in a render that went on -- a Suspense boundary, a fragment -- by kind and failure.', ['kind', 'failure'])
+            ->counter(self::JOBS, 'Jobs workers took off their queues, by queue, class and outcome: done, released, failed, paused, handed back, skipped or lost.', ['queue', 'job', 'outcome'])
+            ->histogram(self::JOB_DURATION, 'Seconds one try of a job took on its worker, by queue and class.', ['queue', 'job'], self::JOB_BUCKETS);
     }
 }

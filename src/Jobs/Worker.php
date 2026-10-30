@@ -421,6 +421,9 @@ final class Worker
             $outcome = 'skipped';
         }
         $span?->set('tinvar.job.outcome', $outcome);
+        // Counted as it ran, by the class its verified payload names: the
+        // trace's end flushes it to a store the server's scrape reads.
+        $this->telemetry?->jobFinished($job->queue, $envelope?->class, $outcome, (hrtime(true) - $began) / 1e9);
         if ($error !== null && $outcome !== 'paused') {
             $span?->set('error.type', $error::class)->fail($error::class);
         }

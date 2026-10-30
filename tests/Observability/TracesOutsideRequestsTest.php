@@ -190,6 +190,26 @@ describe('work outside a request', function () {
             ->and(json_encode($kept->spans))->not->toContain('ada@example.com');
     });
 
+    it('counts each job as it runs, by queue, class and outcome, into a store another process reads', function () {
+        $shared = new \Tinvar\Observability\ArrayMetricsStore();
+        $telemetry = new Telemetry(new Logger(new MemorySink()), new Metrics($shared));
+        $h = new Harness();
+        $h->worker = new Worker($h->queue, $h->runner, $h->scope, clock: fn (): int => $h->now, telemetry: $telemetry);
+        $h->dispatcher->dispatch(new RecordContext(note: 'ada@example.com'));
+        $h->dispatcher->dispatch(new RecordContext(note: 'grace@example.com'));
+
+        expect($h->work())->toBe(2, implode("\n", $h->log));
+
+        // The server's registry, reading the worker's store beside its own:
+        // flushed as each job's trace ended, with nothing left to flush.
+        $server = new Telemetry(new Logger(new MemorySink()), new Metrics(new \Tinvar\Observability\ArrayMetricsStore(), readAlso: [$shared]));
+        $text = (string) $server->metrics?->exposition();
+        $class = str_replace('\\', '\\\\', RecordContext::class);
+        expect($text)->toContain("tinvar_jobs_total{queue=\"default\",job=\"{$class}\",outcome=\"done\"} 2")
+            ->and($text)->toContain("tinvar_job_duration_seconds_count{queue=\"default\",job=\"{$class}\"} 2")
+            ->and($text)->not->toContain('ada@example.com');
+    });
+
     it('runs a scheduled task as a trace, with what it logs under the trace\'s id', function () {
         [$telemetry, $kept, $sink] = telemetry();
         $h = new Harness();

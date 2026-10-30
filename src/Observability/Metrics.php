@@ -15,6 +15,13 @@ namespace Tinvar\Observability;
  * store; a scrape reads the store, up to `flushEvery` seconds behind each
  * worker.
  *
+ * A process may read more stores than it writes to. The server's workers
+ * count in APCu, which no other process can reach; the queue worker and
+ * the scheduler, processes of their own, count into a file every process
+ * opens (SqliteMetricsStore). The server reads that file too, `readAlso`,
+ * and a scrape adds the two: a job counted on the worker is in the
+ * server's /_metrics a flush later.
+ *
  * Every metric is declared before it is used, with its labels: a label
  * nobody declared is a bug, and so is one left out. A label's values are
  * the caller's to keep few -- a route's name, never its path -- and as a
@@ -59,10 +66,13 @@ final class Metrics
     /**
      * @param float $flushEvery seconds between flushes to the store; 0 flushes after
      *        every request, which suits APCu, and a second suits a file
+     * @param list<MetricsStore> $readAlso stores other processes count into,
+     *        added to this one's at every scrape and never written to here
      */
     public function __construct(
         private readonly MetricsStore $store = new ArrayMetricsStore(),
         private readonly float $flushEvery = 0.0,
+        private readonly array $readAlso = [],
     ) {}
 
     /** @param list<string> $labels */
@@ -185,11 +195,19 @@ final class Metrics
     {
         $this->flush(true);
 
-        try {
-            $stored = $this->store->all();
-        } catch (\Throwable $e) {
-            $this->fail($e);
-            $stored = [];
+        // Each store on its own: one that fails is reported, and the rest
+        // are still written.
+        $stored = [];
+        foreach ([$this->store, ...$this->readAlso] as $store) {
+            try {
+                $values = $store->all();
+            } catch (\Throwable $e) {
+                $this->fail($e);
+                continue;
+            }
+            foreach ($values as $key => $value) {
+                $stored[$key] = ($stored[$key] ?? 0) + $value;
+            }
         }
 
         /** @var array<string, array<string, array<string, int>>> $byMetric metric => label set => suffix/le => value */
