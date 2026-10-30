@@ -273,4 +273,31 @@ describe('a shared store (ADR 0124)', function () {
 
         expect($second->sent)->toBe([])->and($third->sent)->toHaveCount(2);
     });
+
+    // The key set is kept under the URI as it was read, normalized; the
+    // document keeps the provider's spelling. forget() reaches both.
+    it('forgets the key set however the document spells its URI', function (string $spelled) {
+        $now = 1_800_000_000;
+        $store = new ArrayStore();
+        $http = new FakeOutboundHttp(static fn (OutboundRequest $request): OutboundResponse => new OutboundResponse(200, ['content-type' => ['application/json']], (string) json_encode(
+            str_ends_with($request->url, OidcDiscovery::PATH)
+                ? document(['jwks_uri' => $spelled])
+                : ['keys' => [['kty' => 'RSA', 'kid' => 'a', 'n' => 'xyz', 'e' => 'AQAB']]],
+        )));
+        $clock = static fn (): int => $now;
+        $one = new OidcDiscovery($http, $clock, $store);
+        $provider = $one->discover(ISSUER);
+        $one->keys($provider);
+        expect($store->get(OidcDiscovery::STORE_PREFIX . 'keys:' . hash('sha256', $provider->jwksUri))['hit'])->toBeTrue();
+
+        // Another worker, with nothing in its own memory, forgets.
+        new OidcDiscovery($http, $clock, $store)->forget(ISSUER);
+
+        expect($store->get(OidcDiscovery::STORE_PREFIX . 'keys:' . hash('sha256', $provider->jwksUri))['hit'])->toBeFalse()
+            ->and($store->get(OidcDiscovery::STORE_PREFIX . 'provider:' . hash('sha256', ISSUER))['hit'])->toBeFalse();
+    })->with([
+        'upper case' => ['https://KEYS.Accounts.Example/jwks'],
+        'the default port' => ['https://keys.accounts.example:443/jwks'],
+        'a trailing dot' => ['https://keys.accounts.example./jwks'],
+    ]);
 });

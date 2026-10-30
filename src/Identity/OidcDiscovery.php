@@ -230,13 +230,29 @@ final class OidcDiscovery
     /** Forgets what is kept for $issuer: its document and its keys, in this worker and in the shared store. */
     public function forget(string $issuer): void
     {
-        $jwksUri = $this->providers[$issuer][0]->jwksUri ?? null;
-        if ($jwksUri === null && $this->shared !== null) {
+        // Every spelling the key set could have been kept under: it was kept
+        // under the URI as the provider read it (normalized), so that is the
+        // one that matters; the raw one too, and the provider's in memory,
+        // so a document that no longer normalizes still forgets its keys.
+        $uris = [];
+        $kept = $this->providers[$issuer][0] ?? null;
+        if ($kept !== null) {
+            $uris[] = $kept->jwksUri;
+        }
+        if ($this->shared !== null) {
             $stored = $this->shared->get(self::storeKey('provider', $issuer));
             $document = $stored['hit'] && \is_array($stored['value']) ? ($stored['value']['document'] ?? null) : null;
-            $jwksUri = \is_array($document) && \is_string($document['jwks_uri'] ?? null) ? $document['jwks_uri'] : null;
+            $raw = \is_array($document) ? ($document['jwks_uri'] ?? null) : null;
+            if (\is_string($raw)) {
+                $uris[] = $raw;
+                try {
+                    $uris[] = Target::parse($raw)->serialized();
+                } catch (OutboundRefused) {
+                    // Never a URI a key set was fetched from, so never one kept under.
+                }
+            }
         }
-        if ($jwksUri !== null) {
+        foreach (array_unique($uris) as $jwksUri) {
             unset($this->keys[$jwksUri]);
             $this->shared?->forget(self::storeKey('keys', $jwksUri));
         }
