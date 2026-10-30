@@ -11,6 +11,7 @@ use Tinvar\Outbound\OutboundRefused;
 use Tinvar\Outbound\OutboundRequest;
 use Tinvar\Outbound\OutboundResponse;
 use Tinvar\Outbound\Target;
+use Tinvar\Storage\FileTypes;
 use Tinvar\Storage\ObjectStore;
 use Tinvar\Storage\PresignedUpload;
 use Tinvar\Storage\StorageException;
@@ -192,8 +193,25 @@ final readonly class S3Storage implements ObjectStore
         return new S3Writer($this, $key, $this->partBytes);
     }
 
+    /**
+     * Every presigned read names the type and disposition its response
+     * carries, whatever the store kept beside the object: application/
+     * octet-stream as an attachment unless the caller says otherwise, and
+     * inline only for an image type uploads take. So no object -- one a
+     * browser PUT with a type of its own choosing above all -- comes back as
+     * something a browser would run.
+     */
     public function presignedGet(string $key, int $ttl, array $responseHeaders = []): string
     {
+        $responseHeaders += ['content-type' => 'application/octet-stream', 'content-disposition' => 'attachment'];
+        $type = strtolower(trim(explode(';', $responseHeaders['content-type'], 2)[0]));
+        if ($type !== 'application/octet-stream' && !FileTypes::known($type)) {
+            throw new \InvalidArgumentException("A presigned read is not served as '{$type}': only as a type uploads take.");
+        }
+        if (strtolower(strtok($responseHeaders['content-disposition'], ';') ?: '') !== 'attachment' && !FileTypes::isImage($type)) {
+            throw new \InvalidArgumentException('A presigned read is shown inline only as an image; anything else is an attachment.');
+        }
+
         $query = [];
         foreach ($responseHeaders as $name => $value) {
             if (!\in_array($name, ['content-type', 'content-disposition', 'cache-control', 'content-language', 'expires', 'content-encoding'], true)) {
@@ -205,17 +223,29 @@ final readonly class S3Storage implements ObjectStore
         return $this->presigned('GET', $key, $query, [], $ttl);
     }
 
+    /**
+     * Signed with the length, and with the type and disposition the object
+     * is kept under: application/octet-stream, as an attachment. A browser
+     * sends the headers it is handed, and the store refuses a PUT whose
+     * Content-Type is anything else -- text/html above all -- so an object
+     * uploaded this way is never kept as a type a browser would run, should
+     * anything ever read it straight from the bucket. It is not: what comes
+     * in this way is sniffed and drawn again by PHP before it is kept
+     * anywhere an upload is served from (UploadEndpoint).
+     */
     public function presignedPut(string $key, int $size, int $ttl): PresignedUpload
     {
         if ($size < 1) {
             throw new \InvalidArgumentException('A presigned upload is for a file of at least a byte.');
         }
 
-        // The length signed: a browser cannot set it, and sends the file's
-        // own, which the store holds to this.
+        $headers = ['content-type' => 'application/octet-stream', 'content-disposition' => 'attachment'];
+
+        // The length signed too: a browser cannot set it, and sends the
+        // file's own, which the store holds to this.
         return new PresignedUpload(
-            $this->presigned('PUT', $key, [], ['content-length' => (string) $size], $ttl),
-            [],
+            $this->presigned('PUT', $key, [], ['content-length' => (string) $size, ...$headers], $ttl),
+            $headers,
             $this->now() + $ttl,
         );
     }

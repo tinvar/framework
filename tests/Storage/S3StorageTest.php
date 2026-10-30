@@ -194,7 +194,14 @@ describe('S3Storage', function () {
         $other = StorageKey::generate('receipts', 'pdf');
         expect($s3->browser('GET', str_replace($key, $other, $url))->status)->toBe(403)
             ->and($s3->browser('GET', str_replace('attachment', 'inline', $url))->status)->toBe(403)
-            ->and(fn () => $storage->presignedGet($key, 60, ['x-amz-meta-a' => 'b']))->toThrow(InvalidArgumentException::class);
+            ->and(fn () => $storage->presignedGet($key, 60, ['x-amz-meta-a' => 'b']))->toThrow(InvalidArgumentException::class)
+            ->and(fn () => $storage->presignedGet($key, 60, ['content-type' => 'text/html']))->toThrow(InvalidArgumentException::class)
+            ->and(fn () => $storage->presignedGet($key, 60, ['content-type' => 'application/pdf', 'content-disposition' => 'inline']))->toThrow(InvalidArgumentException::class);
+
+        // Named nothing, a read is an octet stream to save, whatever was kept.
+        $bare = $s3->browser('GET', $storage->presignedGet($key, 60));
+        expect($bare->header('content-type'))->toBe('application/octet-stream')
+            ->and($bare->header('content-disposition'))->toBe('attachment');
 
         $s3->now += 61;
         expect($s3->browser('GET', $url)->status)->toBe(403);
@@ -207,10 +214,14 @@ describe('S3Storage', function () {
 
         $put = $storage->presignedPut($key, 11, 300);
 
-        expect($s3->browser('PUT', $put->url, 'twelve byte')->status)->toBe(200)
+        expect($put->headers)->toBe(['content-type' => 'application/octet-stream', 'content-disposition' => 'attachment'])
+            ->and($s3->browser('PUT', $put->url, 'twelve byte', $put->headers)->status)->toBe(200)
             ->and($s3->objects[$key])->toBe('twelve byte')
-            ->and($s3->browser('PUT', $put->url, 'a much larger body than was signed')->status)->toBe(403)
-            ->and($s3->browser('PUT', str_replace('PUT', 'GET', $put->url), 'twelve byte')->status)->toBe(200)
+            ->and($s3->browser('PUT', $put->url, 'a much larger body than was signed', $put->headers)->status)->toBe(403)
+            // A page of its own type, to come back as one: refused.
+            ->and($s3->browser('PUT', $put->url, '<script>1</s', ['content-type' => 'text/html', 'content-disposition' => 'attachment'])->status)->toBe(403)
+            ->and($s3->browser('PUT', $put->url, 'twelve byte', ['content-type' => 'application/octet-stream', 'content-disposition' => 'inline'])->status)->toBe(403)
+            ->and($s3->browser('PUT', $put->url, 'twelve byte')->status)->toBe(403)
             ->and($s3->browser('GET', $put->url)->status)->toBe(403)
             ->and($put->expiresAt)->toBe($s3->now + 300)
             ->and(fn () => $storage->presignedPut($key, 0, 300))->toThrow(InvalidArgumentException::class);

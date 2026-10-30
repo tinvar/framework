@@ -62,14 +62,15 @@ function minio(): array
  *
  * @return array{int, array<string, string>, string}
  */
-function minioBrowser(string $method, string $url, ?string $body = null): array
+/** @param array<string, string> $send */
+function minioBrowser(string $method, string $url, ?string $body = null, array $send = []): array
 {
     $handle = curl_init($url);
     $headers = [];
     curl_setopt_array($handle, [
         CURLOPT_CUSTOMREQUEST => $method,
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_HTTPHEADER => ['Expect:', 'Content-Type:'],
+        CURLOPT_HTTPHEADER => ['Expect:', 'Content-Type:', ...array_map(static fn (string $n, string $v): string => "{$n}: {$v}", array_keys($send), $send)],
         CURLOPT_HEADERFUNCTION => static function ($h, string $line) use (&$headers): int {
             if (str_contains($line, ':')) {
                 [$name, $value] = explode(':', $line, 2);
@@ -173,10 +174,16 @@ describe('S3Storage against MinIO', function () {
         $key = StorageKey::generate('incoming', '');
 
         $put = $storage->presignedPut($key, 11, 60);
-        expect(minioBrowser('PUT', $put->url, 'not eleven bytes at all')[0])->toBe(403)
+        expect(minioBrowser('PUT', $put->url, 'not eleven bytes at all', $put->headers)[0])->toBe(403)
+            ->and(minioBrowser('PUT', $put->url, '<b>html</b>', ['content-type' => 'text/html', 'content-disposition' => 'attachment'])[0])->toBe(403)
             ->and($storage->exists($key))->toBeFalse()
-            ->and(minioBrowser('PUT', $put->url, 'eleven byte')[0])->toBe(200)
+            ->and(minioBrowser('PUT', $put->url, 'eleven byte', $put->headers)[0])->toBe(200)
             ->and(stream_get_contents($storage->read($key)))->toBe('eleven byte');
+
+        // Read back with no headers named, it is an octet stream to save.
+        [, $headers] = minioBrowser('GET', $storage->presignedGet($key, 60));
+        expect($headers['content-type'] ?? null)->toBe('application/octet-stream')
+            ->and($headers['content-disposition'] ?? null)->toBe('attachment');
 
         $storage->delete($key);
     });

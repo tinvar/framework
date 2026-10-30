@@ -29,6 +29,9 @@ interface ObjectStore extends Storage
      * A URL that fetches what is at $key until $ttl seconds from now, its
      * response carrying the headers given -- `content-type`,
      * `content-disposition`, `cache-control` -- whatever the store kept.
+     * Always a type and a disposition: application/octet-stream as an
+     * attachment unless given, a type uploads take, and inline only for an
+     * image.
      *
      * @param array<string, string> $responseHeaders lowercased name => value
      */
@@ -36,8 +39,8 @@ interface ObjectStore extends Storage
 
     /**
      * A URL a browser PUTs a file of exactly $size bytes to, at $key, until
-     * $ttl seconds from now: the size is signed, and the store refuses any
-     * other.
+     * $ttl seconds from now, with the headers PresignedUpload names: the
+     * size and those are signed, and the store refuses any other.
      */
     public function presignedPut(string $key, int $size, int $ttl): PresignedUpload;
 }
