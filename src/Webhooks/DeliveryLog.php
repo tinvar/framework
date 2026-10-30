@@ -17,4 +17,10 @@ interface DeliveryLog
 
     /** @return list<DeliveryAttempt> a tenant's latest tries, newest first */
     public function recent(string $tenant, int $limit = 50): array;
+
+    /**
+     * Forgets up to $limit tries made before $before, every tenant's; how
+     * many it forgot (PruneSentWebhooks).
+     */
+    public function prune(int $before, int $limit): int;
 }

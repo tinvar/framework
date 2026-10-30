@@ -44,6 +44,8 @@ final readonly class DatabaseDeliveryLog implements DeliveryLog
             $attempts->index(['delivery'], "{$table}_delivery");
             // What a tenant's deliveries page asks: theirs, newest first.
             $attempts->index(['tenant', 'attempted_at'], "{$table}_tenant_recent");
+            // What pruning asks: every tenant's, oldest first (prune()).
+            $attempts->index(['attempted_at'], "{$table}_attempted");
         }, $ifNotExists);
     }
 
@@ -81,6 +83,26 @@ final readonly class DatabaseDeliveryLog implements DeliveryLog
             "SELECT * FROM {$this->table} WHERE tenant = ? ORDER BY attempted_at DESC, id DESC LIMIT " . max(0, $limit),
             [$tenant],
         ));
+    }
+
+    public function prune(int $before, int $limit): int
+    {
+        // The ids read first, oldest first, as SentWebhooks prunes: MySQL
+        // refuses a LIMIT in a subquery naming the table it deletes from.
+        // On the `_attempted` index define() makes; a table made before it
+        // had one is read whole, a batch at a time, until a migration adds it.
+        $ids = array_map(
+            static fn (array $row): string => \is_scalar($row['id'] ?? null) ? (string) $row['id'] : '',
+            $this->connection->select("SELECT id FROM {$this->table} WHERE attempted_at < ? ORDER BY attempted_at LIMIT " . max(1, $limit), [$before]),
+        );
+        if ($ids === []) {
+            return 0;
+        }
+
+        return $this->connection->execute(
+            "DELETE FROM {$this->table} WHERE id IN (" . implode(', ', array_fill(0, \count($ids), '?')) . ')',
+            $ids,
+        );
     }
 
     /** @param array<string, mixed> $row */

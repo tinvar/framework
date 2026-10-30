@@ -26,4 +26,20 @@ final class ArrayDeliveryLog implements DeliveryLog
 
         return \array_slice(array_reverse($mine), 0, max(0, $limit));
     }
+
+    public function prune(int $before, int $limit): int
+    {
+        $pruned = 0;
+        $kept = [];
+        foreach ($this->recorded as $attempt) {
+            if ($pruned < $limit && $attempt->attemptedAt < $before) {
+                $pruned++;
+            } else {
+                $kept[] = $attempt;
+            }
+        }
+        $this->recorded = $kept;
+
+        return $pruned;
+    }
 }
