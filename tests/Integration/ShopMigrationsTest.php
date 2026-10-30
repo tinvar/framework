@@ -112,7 +112,12 @@ it('makes every table the shop uses, and leaves nothing the models describe for 
         '2026_10_30_000119_create_workflows_and_spent_tokens',
     ])
         ->and(tables($connection))->toBe(TABLES)
-        ->and(new MigrationGenerator($connection, new SqliteDialect())->generate([Product::class, Customer::class, Order::class, OrderLine::class, Receipt::class], '2026-10-24'))->toBeNull()
+        ->and(($generator = new MigrationGenerator($connection, new SqliteDialect()))->generate([Product::class, Customer::class, Order::class, OrderLine::class, Receipt::class], '2026-10-24'))->toBeNull()
+        // A line's and a receipt's keys cascade, as the models say (ADR 0122);
+        // the tables no model maps are named, and none is the models'.
+        ->and(implode("\n", $generator->warnings))->not->toContain('is deleted with')
+        ->and(implode("\n", $generator->warnings))->toContain('The database has tables no model maps: ')
+        ->and(implode("\n", $generator->warnings))->not->toContain(' order_lines,')
         // The rest of the schema's rules, which the models do not carry.
         ->and(fn () => $connection->execute("INSERT INTO products VALUES ('p', 's', 'n', 'x', 'y', 'c', 0, 1)"))->toThrow(\PDOException::class, 'CHECK constraint failed');
 });
