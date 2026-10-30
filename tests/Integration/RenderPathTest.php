@@ -202,27 +202,27 @@ it('includes the renderer message when debug is on', function () {
 // not on the catalog -- and its Link header stops at the cap whatever the
 // head lists.
 //
-// Each page is rendered twice, and the second render read. The first time
-// a renderer loads a client module, the hint to preload it is given while
-// the payload is decoded, before React DOM's render of the HTML has begun,
-// and React drops it (plugin-rsc's preloadDeps); every render after gives
-// it during the render. A cold renderer's first page preloads less, and
-// loads the rest as its payload names them.
-it('preloads the client components each page renders, and no others, under the cap', function () {
+// A cold renderer's first page preloads what every later one does: the
+// first time a renderer loaded a client module, the hint to preload it was
+// given while the payload was decoded, before React DOM's render of the
+// HTML had begun, and React dropped it (plugin-rsc's preloadDeps). The
+// renderer now loads every client module before it takes a render (the
+// entry's warm(), ADR 0109), so each page's first render is read here, and
+// its second must name the same modules.
+it('preloads the client components each page renders, and no others, under the cap, from a cold renderer', function () {
     [$kernel, $renderer] = shopKernel();
 
-    $page = static function (string $path) use ($kernel): RenderResult {
-        $kernel->render(Request::get($path, ['accept' => 'text/html']), static function (): void {});
-
-        return $kernel->render(Request::get($path, ['accept' => 'text/html']), static function (): void {});
-    };
+    $render = static fn (string $path): RenderResult => $kernel->render(Request::get($path, ['accept' => 'text/html']), static function (): void {});
 
     try {
-        $catalog = $page('/');
-        $signIn = $page('/sign-in');
+        $catalog = $render('/');
+        $signIn = $render('/sign-in');
+        $again = $render('/sign-in');
     } finally {
         $renderer->stop();
     }
+
+    expect(\Tinvar\Render\ModulePreload::modulesOf($signIn->meta))->toEqualCanonicalizing(\Tinvar\Render\ModulePreload::modulesOf($again->meta));
 
     $form = static fn (string $module): bool => preg_match('#^/assets/SignInForm-[\w-]+\.js$#', $module) === 1;
     expect(array_filter(\Tinvar\Render\ModulePreload::modulesOf($signIn->meta), $form))->toHaveCount(1)
