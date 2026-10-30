@@ -8,7 +8,8 @@ declare(strict_types=1);
  * under each response's nonce, it reads the session's requests through PHP
  * on the page's own origin, and shows the catalog's props, timings and
  * frames, and a client navigation's ticks under the visit. Then the same
- * through the DevTools extension, loaded unpacked (ADR 0072).
+ * through the DevTools extension, loaded unpacked (ADR 0072), and in Firefox
+ * where Playwright's Firefox is installed (ADR 0132).
  *
  * Against a copy of the shop's frontend, as ServeDevTest is: codegen writes
  * the copy's types, never the shop's own. Skipped without a FrankenPHP
@@ -99,6 +100,8 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
             ...array_diff_key(getenv(), ['TINVAR_APP_KEY' => true, 'NODE_ENV' => true, 'APP_ENV' => true, 'TINVAR_ENV' => true]),
             'SHOP_DATABASE' => Shop::database(),
             'TINVAR_APP_KEY_FILE' => "{$keyDir}/app.key",
+            // The toolbar links each file:line to this editor (ADR 0132).
+            'TINVAR_EDITOR' => 'vscode://file{file}:{line}',
         ],
     );
     stream_set_blocking($pipes[1], false);
@@ -121,6 +124,10 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
 
         $browsed = runWithTimeout(['node', "{$root}/examples/shop/e2e/dev-toolbar.mjs", $url], $root, 150);
         $extension = runWithTimeout(['node', "{$root}/examples/shop/e2e/devtools-extension.mjs", $url], $root, 150);
+        // Firefox, where Playwright's own build of it is installed.
+        $firefox = firefoxInstalled($root)
+            ? runWithTimeout(['node', "{$root}/examples/shop/e2e/devtools-extension-firefox.mjs", $url], $root, 150)
+            : null;
     } finally {
         $status = proc_get_status($process);
         if ($status['running']) {
@@ -158,6 +165,11 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
         ->and($result['styled'])->toBe('fixed');
 
     // The catalog, as the renderer was given it.
+    // Each file:line a link to the editor TINVAR_EDITOR names, and the
+    // catalog's fields with the lines of its loader that made them.
+    expect($result['catalog']['props'])->toContain('made at')
+        ->and($result['catalog']['links'])->toContain('vscode://file' . implode('/', array_map(rawurlencode(...), explode('/', "{$root}/examples/shop/app/Pages/Catalog.php"))) . ':' . lineOf("{$root}/examples/shop/app/Pages/Catalog.php", 'products: array_map('));
+
     expect($result['catalog']['selected'])->toBe('/')
         ->and($result['catalog']['props'])->toContain('Sent to the renderer · render')
         ->and($result['catalog']['props'])->toContain('"route": "shop/catalog"')
@@ -208,4 +220,46 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
     // token where no endpoint answers -- as in production -- reads nothing.
     expect($panel['elsewhere']['plain'])->toContain('not served by `tinvar dev`')
         ->and($panel['elsewhere']['forged'])->toContain('not a Tinvar dev server');
+
+    // Firefox, from the same src/: installed as a temporary add-on, which is
+    // where Firefox reads the manifest; its content script reads the
+    // endpoint through content.fetch, and the background relays it as a
+    // panel would be handed it -- the catalog's fields with the loader's
+    // lines -- and reads nothing elsewhere.
+    if ($firefox === null) {
+        return;
+    }
+    $fox = json_decode($firefox, true);
+    expect($fox)->toBeArray("the Firefox script failed:\n{$firefox}\n{$stderr}");
+    \assert(\is_array($fox));
+    $made = array_column($fox['catalog']['fields'], 'made', 'name');
+    expect($fox['errors'])->toBe([])
+        ->and($fox['manifest']['id'])->toBe('devtools@tinvar.dev')
+        ->and($fox['list']['ok'])->toBeTrue()
+        ->and($fox['list']['origin'])->toBe($url)
+        ->and($fox['list']['paths'])->toContain('/')
+        ->and($fox['catalog']['ok'])->toBeTrue()
+        ->and($fox['catalog']['loader'])->toBe('Shop\\Pages\\Catalog::__invoke')
+        ->and($made['products'][0] ?? '')->toEndWith('/examples/shop/app/Pages/Catalog.php:' . lineOf("{$root}/examples/shop/app/Pages/Catalog.php", 'products: array_map('))
+        ->and($fox['elsewhere'])->toBe(['plain' => 'no-toolbar', 'forged' => 'not-dev-server']);
 });
+
+/** Whether Playwright's own Firefox is installed (`npx playwright install firefox`). */
+function firefoxInstalled(string $root): bool
+{
+    $path = shell_exec('cd ' . escapeshellarg($root) . " && node -e \"process.stdout.write(require('playwright').firefox.executablePath())\" 2>/dev/null");
+
+    return \is_string($path) && $path !== '' && is_file($path);
+}
+
+/** The 1-based line of $file holding $text. */
+function lineOf(string $file, string $text): int
+{
+    foreach (file($file, FILE_IGNORE_NEW_LINES) ?: [] as $i => $line) {
+        if (str_contains($line, $text)) {
+            return $i + 1;
+        }
+    }
+
+    return 0;
+}
