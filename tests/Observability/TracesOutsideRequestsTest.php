@@ -269,6 +269,11 @@ describe('a statement\'s span', function () {
             ->and(StatementText::sanitize('SELECT /* a /* b */ hunter2 */ 1', 'postgresql'))->toBe('SELECT ?')
             ->and(StatementText::sanitize("SELECT \$\$ hunter2 \$\$, 'x', \$\$ more \$\$", 'postgresql'))->toBe('SELECT ?, ?, ?');
     });
+
+    it('takes out hex, binary and underscored numbers, and a fraction with no whole part', function () {
+        expect(StatementText::sanitize('SELECT 0xDEADBEEF, 0b1010, 1_000_000, .5, 1.5e3, $1, t1.x FROM t1', 'postgresql'))
+            ->toBe('SELECT ?, ?, ?, ?, ?, $1, t1.x FROM t1');
+    });
 });
 
 describe('a loader', function () {

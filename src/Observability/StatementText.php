@@ -58,8 +58,10 @@ final class StatementText
             $mysql ? "(?<![A-Za-z0-9_])[XxBbNn]?'(?:''|\\\\.|[^'\\\\])*+(?:'|\\z)" : "(?<![A-Za-z0-9_])[XxBbNn]?'(?:''|[^'])*+(?:'|\\z)",
             // MySQL's double-quoted string.
             $mysql ? '"(?:""|\\\\.|[^"\\\\])*+(?:"|\z)' : '(*FAIL)',
-            // A number standing alone: not a placeholder's ($1), not part of a name (t1).
-            '(?<![A-Za-z0-9_$.])-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?(?![A-Za-z0-9_])',
+            // A number standing alone -- not a placeholder's ($1), not part
+            // of a name (t1): decimal, perhaps with a fraction, an exponent
+            // or Postgres's underscores, or hex, binary or octal (0xCAFE).
+            '(?<![A-Za-z0-9_$.])-?(?:0[xX][0-9A-Fa-f_]+|0[bB][01_]+|0[oO][0-7_]+|(?:\d[\d_]*(?:\.[\d_]*)?|\.\d[\d_]*)(?:[eE][+-]?\d+)?)(?![A-Za-z0-9_])',
         ];
         [$block, $line] = $alternatives;
 
