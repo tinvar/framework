@@ -105,11 +105,14 @@ final class PdoThrottleStore implements ThrottleStore
                 . 'entry VARCHAR(100) PRIMARY KEY, hits BIGINT NOT NULL, expires_at BIGINT NOT NULL)',
                 "CREATE INDEX IF NOT EXISTS {$index} ON {$table} (expires_at)",
             ],
+            // MySQL names an index within its table, so the column's name
+            // is enough: one spelled after a schema-qualified table runs
+            // past MySQL's 64 characters.
             'mysql' => [
                 "CREATE TABLE IF NOT EXISTS {$table} ("
                 . 'entry VARCHAR(100) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY, '
                 . 'hits BIGINT NOT NULL, expires_at BIGINT NOT NULL, '
-                . "INDEX {$index} (expires_at)) ENGINE=InnoDB",
+                . 'INDEX expires_at (expires_at)) ENGINE=InnoDB',
             ],
             'sqlite' => [
                 "CREATE TABLE IF NOT EXISTS {$table} ("

@@ -73,9 +73,12 @@ final class PdoTagVersions implements TagVersions
                 "CREATE TABLE IF NOT EXISTS {$table} (tag CHAR(64) PRIMARY KEY, version BIGINT NOT NULL, bumped_at BIGINT NOT NULL)",
                 "CREATE INDEX IF NOT EXISTS {$index} ON {$table} (bumped_at)",
             ],
+            // MySQL names an index within its table, so the column's name
+            // is enough: one spelled after a schema-qualified table runs
+            // past MySQL's 64 characters.
             'mysql' => [
                 "CREATE TABLE IF NOT EXISTS {$table} (tag CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY, "
-                . "version BIGINT NOT NULL, bumped_at BIGINT NOT NULL, INDEX {$index} (bumped_at)) ENGINE=InnoDB",
+                . 'version BIGINT NOT NULL, bumped_at BIGINT NOT NULL, INDEX bumped_at (bumped_at)) ENGINE=InnoDB',
             ],
             'sqlite' => [
                 "CREATE TABLE IF NOT EXISTS {$table} (tag TEXT PRIMARY KEY, version INTEGER NOT NULL, bumped_at INTEGER NOT NULL) WITHOUT ROWID",

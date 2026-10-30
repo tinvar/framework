@@ -102,22 +102,24 @@ describe('a PDO tag version store', function () {
         });
     })->with(['sqlite', 'pgsql', 'mysql']);
 
-    it('keeps no tag nor tenant readable in its table', function () {
-        onDriver('sqlite', function (PdoTagVersions $store, \Closure $another, \PDO $pdo): void {
+    it('keeps no tag nor tenant readable in its table', function (string $driver) {
+        skipWithout($driver);
+        onDriver($driver, function (PdoTagVersions $store, \Closure $another, \PDO $pdo): void {
             $store->bump(TagNamespace::read(['customer:42'], 'acme', false));
 
             $rows = $pdo->query('SELECT tag FROM ' . PdoTagVersions::TABLE)?->fetchAll(\PDO::FETCH_COLUMN) ?: [];
             expect($rows)->toHaveCount(1)
                 ->and($rows[0])->toMatch('/^[0-9a-f]{64}$/');
         });
-    });
+    })->with(['sqlite', 'pgsql', 'mysql']);
 
-    it('lets a row go only once every hold minted before its last bump has expired', function () {
+    it('lets a row go only once every hold minted before its last bump has expired', function (string $driver) {
+        skipWithout($driver);
         $now = 1_800_000_000;
         $clock = static function () use (&$now): int {
             return $now;
         };
-        onDriver('sqlite', function (PdoTagVersions $store) use (&$now): void {
+        onDriver($driver, function (PdoTagVersions $store) use (&$now): void {
             $store->bump(["\0old"]);
             $now += PdoTagVersions::KEEP_SECONDS + 1;
             // Bump until a sweep runs.
@@ -128,16 +130,47 @@ describe('a PDO tag version store', function () {
             expect($store->versions(["\0old"]))->toBe(["\0old" => 0])
                 ->and($store->versions(["\0new"])["\0new"])->toBeGreaterThan(0);
         }, $clock);
-    });
+    })->with(['sqlite', 'pgsql', 'mysql']);
 
-    it('refuses a connection inside a transaction, where a bump would roll back with the write', function () {
-        onDriver('sqlite', function (PdoTagVersions $store, \Closure $another, \PDO $pdo): void {
+    it('refuses a connection inside a transaction, where a bump would roll back with the write', function (string $driver) {
+        skipWithout($driver);
+        onDriver($driver, function (PdoTagVersions $store, \Closure $another, \PDO $pdo): void {
             $pdo->beginTransaction();
 
-            expect(fn () => $store->bump(["\0orders"]))->toThrow(\LogicException::class, 'transaction open');
+            expect(fn () => $store->bump(["\0orders"]))->toThrow(\LogicException::class, 'transaction open')
+                ->and(fn () => $store->versions(["\0orders"]))->toThrow(\LogicException::class, 'transaction open');
             $pdo->rollBack();
         });
-    });
+    })->with(['sqlite', 'pgsql', 'mysql']);
+
+    it('counts every bump made at once by several workers on one tag, and keeps each version apart', function (string $driver) {
+        skipWithout($driver);
+        onDriver($driver, function (PdoTagVersions $store, \Closure $another): void {
+            $workers = [$store, $another(), $another()];
+            $seen = [];
+            for ($round = 0; $round < 20; $round++) {
+                $workers[$round % 3]->bump(["\0orders", "\0notes"]);
+                $seen[] = $workers[($round + 1) % 3]->versions(["\0orders"])["\0orders"];
+            }
+
+            // Every bump drew a version none before it had, seen by every worker.
+            expect(array_unique($seen))->toHaveCount(20)
+                ->and($seen)->not->toContain(0);
+        });
+    })->with(['sqlite', 'pgsql', 'mysql']);
+
+    it('makes its table and index in a schema whose name and its own are as long as it takes', function (string $driver) {
+        skipWithout($driver);
+        Databases::inScratchSchema($driver, function (\PDO $pdo, string $schema): void {
+            $table = "{$schema}." . str_repeat('t', 51);
+            $store = new PdoTagVersions($pdo, $table);
+            $store->install();
+            $store->install();
+            $store->bump(["\0orders"]);
+
+            expect($store->versions(["\0orders"])["\0orders"])->toBeGreaterThan(0);
+        });
+    })->with(['pgsql', 'mysql']);
 
     it('refuses a table name it would not put in SQL', function () {
         expect(fn () => new PdoTagVersions(new \PDO('sqlite::memory:'), 'tags; DROP TABLE x'))

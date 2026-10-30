@@ -136,15 +136,18 @@ final class PdoStore implements Store
                 . 'tag VARCHAR(100) PRIMARY KEY, version BIGINT NOT NULL, expires_at BIGINT NOT NULL)',
                 "CREATE INDEX IF NOT EXISTS {$tagsIndex} ON {$tags} (expires_at)",
             ],
+            // MySQL names an index within its table, so the column's name
+            // is enough: one spelled after a schema-qualified table runs
+            // past MySQL's 64 characters.
             'mysql' => [
                 "CREATE TABLE IF NOT EXISTS {$table} ("
                 . 'entry VARCHAR(100) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY, '
                 . 'payload LONGBLOB NOT NULL, expires_at BIGINT NOT NULL, '
-                . "INDEX {$entriesIndex} (expires_at)) ENGINE=InnoDB",
+                . 'INDEX expires_at (expires_at)) ENGINE=InnoDB',
                 "CREATE TABLE IF NOT EXISTS {$tags} ("
                 . 'tag VARCHAR(100) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY, '
                 . 'version BIGINT NOT NULL, expires_at BIGINT NOT NULL, '
-                . "INDEX {$tagsIndex} (expires_at)) ENGINE=InnoDB",
+                . 'INDEX expires_at (expires_at)) ENGINE=InnoDB',
             ],
             // The entries keep their rowid: a payload is often larger than
             // the share of a page a WITHOUT ROWID row is meant to fill.

@@ -260,6 +260,20 @@ it('makes its table only once, however often it is installed', function (string 
     });
 })->with(DRIVERS);
 
+it('makes its table and index in a schema whose name and its own are as long as it takes', function (string $driver) {
+    $missing = missing($driver);
+    if ($missing !== null) {
+        $this->markTestSkipped($missing);
+    }
+
+    Databases::inScratchSchema($driver, function (\PDO $pdo, string $schema): void {
+        $store = installed($pdo, "{$schema}." . str_repeat('t', 63));
+        $store->install();
+
+        expect($store->increment('k', 60)[0])->toBe(1);
+    });
+})->with(['pgsql' => ['pgsql'], 'mysql' => ['mysql']]);
+
 it('opens nothing until it counts', function () {
     $opened = 0;
     $store = new PdoThrottleStore(static function () use (&$opened): \PDO {

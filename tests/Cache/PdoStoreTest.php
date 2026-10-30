@@ -427,6 +427,21 @@ it('makes its tables only once, however often it is installed', function (string
     });
 })->with(DRIVERS);
 
+it('makes its tables and indexes in a schema whose name and its own are as long as it takes', function (string $driver) {
+    $missing = missing($driver);
+    if ($missing !== null) {
+        $this->markTestSkipped($missing);
+    }
+
+    Databases::inScratchSchema($driver, function (\PDO $pdo, string $schema): void {
+        $store = installed($pdo, "{$schema}." . str_repeat('t', 40));
+        $store->install();
+        $store->put('q:a', 'a', 60, ['racks']);
+
+        expect($store->get('q:a'))->toBe(['hit' => true, 'value' => 'a']);
+    });
+})->with(['pgsql' => ['pgsql'], 'mysql' => ['mysql']]);
+
 it('starts its clock on first use where it was installed without one', function () {
     $pdo = new \PDO('sqlite::memory:');
     foreach (PdoStore::schema('sqlite') as $statement) {
