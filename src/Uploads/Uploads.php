@@ -8,6 +8,7 @@ use Tinvar\Http\Request;
 use Tinvar\Render\TokenClaims;
 use Tinvar\Storage\Storage;
 use Tinvar\Storage\StorageException;
+use Tinvar\Storage\StorageKey;
 use Tinvar\Support\Signer;
 
 /**
@@ -59,6 +60,9 @@ final readonly class Uploads
      *        its limits; there is no keeping one as sent
      * @param FileDelivery $delivery how /_file sends a file kept in an object store: streamed
      *        through PHP, or by a redirect to a short presigned URL
+     * @param list<string> $publicPrefixes the key prefixes whose files may be served to anyone
+     *        by a signed public URL (FileUrls::publicUrl()); none unless named, and taking one
+     *        out ends every URL minted under it
      */
     public function __construct(
         public Storage $storage,
@@ -70,15 +74,38 @@ final readonly class Uploads
         public ?\Closure $clock = null,
         public ImageSanitizer $images = new ImageSanitizer(),
         public FileDelivery $delivery = FileDelivery::Stream,
+        public array $publicPrefixes = [],
     ) {
         if ($maxBytes < 1) {
             throw new \InvalidArgumentException('An upload ceiling is at least one byte.');
         }
+        foreach ($publicPrefixes as $prefix) {
+            if (!StorageKey::isValidPrefix($prefix)) {
+                throw new \InvalidArgumentException("'{$prefix}' is not a storage prefix to serve publicly.");
+            }
+        }
+    }
+
+    /**
+     * Whether the file at $key may be served to anyone: under a prefix the
+     * application named public, segment by segment -- `products/a.png` is
+     * under `products`, `products-private/a.png` is not.
+     */
+    public function isPublic(string $key): bool
+    {
+        foreach ($this->publicPrefixes as $prefix) {
+            if (str_starts_with($key, $prefix . '/')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
      * @param \Closure(Request): string $sessionId
      * @param (\Closure(): int)|null $clock
+     * @param list<string> $publicPrefixes
      */
     public static function fromKey(
         #[\SensitiveParameter]
@@ -90,6 +117,7 @@ final readonly class Uploads
         ?\Closure $clock = null,
         ImageSanitizer $images = new ImageSanitizer(),
         FileDelivery $delivery = FileDelivery::Stream,
+        array $publicPrefixes = [],
     ): self {
         return new self(
             $storage,
@@ -101,6 +129,7 @@ final readonly class Uploads
             $clock,
             $images,
             $delivery,
+            $publicPrefixes,
         );
     }
 

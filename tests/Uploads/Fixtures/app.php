@@ -207,6 +207,7 @@ final class App
         public readonly UploadStore $store = new ArrayUploadStore(),
         bool $tenancy = true,
         \Tinvar\Uploads\FileDelivery $delivery = \Tinvar\Uploads\FileDelivery::Stream,
+        array $publicPrefixes = [],
     ) {
         $connection = PdoConnection::sqlite(':memory:', 'test');
         $connection->execute('CREATE TABLE profiles (id TEXT PRIMARY KEY, owner TEXT NOT NULL, avatar_key TEXT NULL)');
@@ -235,6 +236,7 @@ final class App
             static fn (Request $r): string => $r->cookie(SESSION_COOKIE) ?? '',
             clock: fn (): int => $this->now,
             delivery: $delivery,
+            publicPrefixes: $publicPrefixes,
         );
 
         $this->kernel = new Kernel(

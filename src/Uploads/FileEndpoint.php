@@ -78,6 +78,9 @@ final readonly class FileEndpoint
     public function handle(Request $request): Response
     {
         self::assertMethod($request);
+        if (str_starts_with($request->path, FileUrls::PUBLIC_PREFIX)) {
+            return $this->handlePublic($request);
+        }
 
         $token = substr($request->path, \strlen(FileUrls::PREFIX));
         if ($token === '' || \strlen($token) > self::MAX_TOKEN_BYTES || str_contains($token, '/')) {
@@ -112,6 +115,38 @@ final readonly class FileEndpoint
         });
     }
 
+    /**
+     * A file anyone may fetch, by a URL FileUrls::publicUrl() minted: its
+     * signature, its expiry, and its key still under a prefix the
+     * application serves publicly. No session, tenant or panel is asked;
+     * every header that keeps a browser from reading the file as anything
+     * more still is.
+     */
+    private function handlePublic(Request $request): Response
+    {
+        $token = substr($request->path, \strlen(FileUrls::PUBLIC_PREFIX));
+        if ($token === '' || \strlen($token) > self::MAX_TOKEN_BYTES || str_contains($token, '/')) {
+            throw self::missing();
+        }
+
+        $now = $this->uploads->now();
+        try {
+            $public = PublicFileToken::decode($token, $this->uploads->fileSigner, $now);
+        } catch (TokenError) {
+            throw self::missing();
+        }
+        if (!$this->uploads->isPublic($public->key)) {
+            throw self::missing();
+        }
+
+        // Kept by caches for an hour at most, and never past the URL: a
+        // prefix taken out of the public list, or a file removed, stops
+        // being served within it.
+        $maxAge = max(0, min(3600, $public->expiresAt - $now));
+
+        return $this->send($request, new FileToken($public->key, $public->type, $public->name, '', '', $public->expiresAt, $public->issuedAt), $maxAge);
+    }
+
     /** The token agrees with where the request is, and who it comes from; it can put it nowhere. */
     private function assertBinding(Request $request, FileToken $file): void
     {
@@ -125,23 +160,26 @@ final readonly class FileEndpoint
         }
     }
 
-    private function send(Request $request, FileToken $file): Response
+    /** @param int|null $publicFor seconds a public file may be cached for; null for a private one */
+    private function send(Request $request, FileToken $file, ?int $publicFor = null): Response
     {
         $storage = $this->uploads->storage;
         $disposition = self::disposition($file);
+        $cache = $publicFor === null ? 'private, no-store' : "public, max-age={$publicFor}";
 
         if ($storage instanceof ObjectStore && $this->uploads->delivery === FileDelivery::Redirect) {
             if (!$storage->exists($file->key)) {
                 throw self::missing();
             }
 
-            return Response::location($storage->presignedGet($file->key, FileDelivery::REDIRECT_TTL, [
+            $redirect = Response::location($storage->presignedGet($file->key, FileDelivery::REDIRECT_TTL, [
                 'content-type' => $file->type,
                 'content-disposition' => $disposition,
-                'cache-control' => 'private, no-store',
+                'cache-control' => $cache,
             ]), 302)->withHeader('cache-control', 'private, no-store')
-                ->withHeader('referrer-policy', 'no-referrer')
-                ->withHeader('vary', 'Cookie');
+                ->withHeader('referrer-policy', 'no-referrer');
+
+            return $publicFor === null ? $redirect->withHeader('vary', 'Cookie') : $redirect;
         }
 
         $size = $storage->size($file->key);
@@ -155,13 +193,15 @@ final readonly class FileEndpoint
             'content-disposition' => $disposition,
             'x-content-type-options' => 'nosniff',
             'content-security-policy' => "default-src 'none'; sandbox",
-            'cross-origin-resource-policy' => 'same-origin',
-            // Kept by no cache, the browser's included, as every
-            // authenticated response is: client-held data is cleared on
-            // sign-out, and a browser's HTTP cache is nothing a sign-out
+            // A public file is one other sites may show; a private one is
+            // this origin's alone.
+            'cross-origin-resource-policy' => $publicFor === null ? 'same-origin' : 'cross-origin',
+            // A private file kept by no cache, the browser's included, as
+            // every authenticated response is: client-held data is cleared
+            // on sign-out, and a browser's HTTP cache is nothing a sign-out
             // can clear.
-            'cache-control' => 'private, no-store',
-            'vary' => 'Cookie',
+            'cache-control' => $cache,
+            ...($publicFor === null ? ['vary' => 'Cookie'] : []),
         ];
 
         if ($request->method === 'HEAD') {

@@ -260,3 +260,64 @@ describe('a file in an object store', function () {
         expect($app->fetch($app->fileUrl($key, 'application/pdf'))->status)->toBe(404);
     });
 });
+
+describe('a public file', function () {
+    /** @return array{App, string} an app serving `products` publicly, holding a PNG there */
+    function appWithPublicPng(): array
+    {
+        $app = new App($storage = new MemoryStorage(), publicPrefixes: ['products']);
+        $key = 'products/' . str_repeat('ab', 16) . '.png';
+        $stream = fopen('php://memory', 'w+b');
+        fwrite($stream, png());
+        rewind($stream);
+        $storage->put($key, $stream);
+
+        return [$app, $key];
+    }
+
+    it('is served to anyone, signed in or not, under every header that keeps it an image', function () {
+        [$app, $key] = appWithPublicPng();
+        $url = (string) $app->kernel->fileUrls?->publicUrl($key, 'image/png', 'Lamp.png');
+
+        expect($url)->toStartWith(FileUrls::PUBLIC_PREFIX);
+
+        $response = $app->kernel->handle(new Tinvar\Http\Request('GET', $url), static fn () => Tinvar\Http\Response::make(500));
+        expect($response->status)->toBe(200)
+            ->and($response->body())->toBe(png())
+            ->and($response->header('x-content-type-options'))->toBe('nosniff')
+            ->and($response->header('content-security-policy'))->toBe("default-src 'none'; sandbox")
+            ->and($response->header('content-disposition'))->toStartWith('inline; filename="Lamp.png"')
+            ->and($response->header('cache-control'))->toBe('public, max-age=3600')
+            ->and($response->header('cross-origin-resource-policy'))->toBe('cross-origin')
+            ->and($response->header('vary'))->toBeNull()
+            ->and($app->fetch($url, user: 'u-2', session: 'other')->status)->toBe(200);
+    });
+
+    it('is minted only under a prefix the application named public', function () {
+        [$app] = appWithPublicPng();
+
+        expect(fn () => $app->kernel->fileUrls?->publicUrl('avatars/' . str_repeat('ab', 16) . '.png', 'image/png'))->toThrow(LogicException::class)
+            ->and(fn () => $app->kernel->fileUrls?->publicUrl('products-private/' . str_repeat('ab', 16) . '.png', 'image/png'))->toThrow(LogicException::class)
+            ->and(fn () => $app->kernel->fileUrls?->publicUrl('products/' . str_repeat('ab', 16) . '.png', 'image/png', ttl: 60 * 86400))->toThrow(InvalidArgumentException::class);
+    });
+
+    it('stops being served once its prefix is no longer public, once it runs out, or once it is tampered with', function () {
+        [$app, $key] = appWithPublicPng();
+        $url = (string) $app->kernel->fileUrls?->publicUrl($key, 'image/png', ttl: 3600);
+
+        // The same key and token, under an application that no longer opts in.
+        $closed = new App($app->storage);
+        $closed->now = $app->now;
+        expect($closed->fetch($url)->status)->toBe(404);
+
+        // A session-bound file token is no public one, nor the other way round.
+        $private = $app->fileUrl($key, 'image/png');
+        $swapped = FileUrls::PUBLIC_PREFIX . substr($private, strlen(FileUrls::PREFIX));
+        $asPrivate = FileUrls::PREFIX . substr($url, strlen(FileUrls::PUBLIC_PREFIX));
+        expect($app->fetch($swapped)->status)->toBe(404)
+            ->and($app->fetch($asPrivate)->status)->toBe(404);
+
+        $app->now += 2 * 86400;
+        expect($app->fetch($url)->status)->toBe(404);
+    });
+});

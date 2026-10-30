@@ -33,6 +33,12 @@ final readonly class FileUrls
 {
     public const string PREFIX = '/_file/';
 
+    /** Where a public file's URL is: under PREFIX, and never a session token, which holds no slash. */
+    public const string PUBLIC_PREFIX = '/_file/public/';
+
+    /** The width of the window a public URL is minted for: a day. */
+    private const int PUBLIC_WINDOW = 86_400;
+
     /** The width of the window a URL is minted for, in seconds. */
     private const int WINDOW = 600;
 
@@ -89,5 +95,41 @@ final readonly class FileUrls
         $source = $request->attribute(RequestAttributes::TENANT_SOURCE);
 
         return \is_string($source) ? $source : '';
+    }
+
+    /**
+     * A URL anyone may fetch the file at $key by, until it runs out: for a
+     * file the application means to show the world -- a product's photo --
+     * and only under a prefix it named public (Uploads::$publicPrefixes).
+     * Not bound to a session, so it works in a mail, a feed or another
+     * site; and minted for windows of a day, so a page drawn again names
+     * the same URL and caches keep it.
+     *
+     * @param string $name what to offer a download as; the key's own name when ''
+     * @throws \LogicException for a key under no public prefix: a file the application did not opt in
+     */
+    public function publicUrl(string $key, string $type, string $name = '', int $ttl = PublicFileToken::DEFAULT_TTL): string
+    {
+        StorageKey::assertValid($key);
+        if (!FileTypes::known($type)) {
+            throw new \InvalidArgumentException("'{$type}' is not a type /_file serves.");
+        }
+        if (!$this->uploads->isPublic($key)) {
+            throw new \LogicException('A public URL is minted only for a file under a prefix Uploads names public; this one is under none.');
+        }
+        if ($ttl < 1 || $ttl > PublicFileToken::MAX_TTL - self::PUBLIC_WINDOW) {
+            throw new \InvalidArgumentException('A public file URL lives between a second and a month.');
+        }
+
+        $issuedAt = intdiv($this->uploads->now(), self::PUBLIC_WINDOW) * self::PUBLIC_WINDOW;
+        $token = new PublicFileToken(
+            key: $key,
+            type: $type,
+            name: UploadName::clean($name === '' ? basename($key) : $name),
+            expiresAt: $issuedAt + self::PUBLIC_WINDOW + $ttl,
+            issuedAt: $issuedAt,
+        );
+
+        return self::PUBLIC_PREFIX . $token->encode($this->uploads->fileSigner);
     }
 }
