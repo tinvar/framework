@@ -646,11 +646,10 @@ it('lets staff into the admin panel\'s orders, and refuses a customer', function
     expect($result['refused'])->toBe(['status' => 403, 'heading' => 'This page is not open to your account']);
 
     // The panel's StyleX rules in a sheet of its own (ADR 0109): applied on
-    // its page, and never fetched by a customer's -- who loads the shared
-    // sheet, whatever page refused them.
-    expect($result['admin']['sheets'])->toContain(['name' => 'styles-admin', 'applied' => true])
-        ->and($result['customerSheets'])->toContain('styles')
-        ->and($result['customerSheets'])->not->toContain('styles-admin');
+    // its page, and never fetched by a customer's -- who loads the document's
+    // stylesheet alone, with the shared rules, whatever page refused them.
+    expect($result['admin']['sheets'])->toBe([['name' => 'styles-admin', 'applied' => true]])
+        ->and(array_unique($result['customerSheets']))->toBe(['index']);
 });
 
 // "Uploaded files are referenced only by a server-issued upload ticket": the
