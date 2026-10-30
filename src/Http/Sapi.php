@@ -376,6 +376,10 @@ final class Sapi
         if (!\function_exists('headers_send') || headers_sent()) {
             return false;
         }
+        // The hint carries the Link header and nothing else PHP holds: a
+        // header set before it -- PHP's own X-Powered-By -- would go out
+        // ahead of the response, past anything the server strips from it.
+        header_remove();
         header("link: {$link}");
         headers_send(103);
         header_remove('link');

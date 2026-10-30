@@ -163,6 +163,7 @@ it('hints the first loads with their digests, and names each module with its own
         [$hint, $page] = heads($response) + [1 => [0, []]];
 
         expect($hint[0])->toBe(103)
+            ->and(array_diff(array_keys($hint[1]), ['link', 'server', 'date']))->toBe([])
             ->and($hint[1]['link'] ?? '')->toBe((string) $links->earlyHints())
             ->and($hint[1]['link'] ?? '')->toContain('rel=preload; as=style; crossorigin; integrity="sha384-')
             ->and($page[0])->toBe(200);
@@ -200,9 +201,11 @@ it('holds the stylesheet and the scripts to their digests in Chromium, and serve
                 ->and($page['errors'])->toBe([]);
         });
 
+        // The stylesheet and the client entry every page loads first.
         $assets = "{$copy}/client/assets";
-        $sheet = (string) (glob("{$assets}/index-*.css") ?: [''])[0];
-        $entry = (string) (glob("{$assets}/index-*.js") ?: [''])[0];
+        $first = AssetLinks::fromBuild(new BuiltAssets($copy));
+        $sheet = $assets . '/' . basename($first->styles[0] ?? '');
+        $entry = $assets . '/' . basename($first->modules[0] ?? '');
         file_put_contents($sheet, "\nbody{display:none}", FILE_APPEND);
         file_put_contents($entry, "\nconsole.log('changed');", FILE_APPEND);
         // What the build never wrote, beside what it did.
