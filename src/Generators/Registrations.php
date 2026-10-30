@@ -20,14 +20,14 @@ use Tinvar\Routing\RoutingException;
  *             'model' => [['file' => 'app/Kernel.php', 'constant' => 'MODELS']],
  *         ],
  *         routeTable: 'resources/entries/rsc.tsx',
- *         routes: Kernel::ROUTES,
+ *         routes: $routes, // the application's pages and layouts
  *     )
  *
  * Each edit is ClassList's or RouteTable's: made where the file reads as
  * the list or table it is meant to be, never twice, and refused otherwise.
- * A refusal registers nothing anywhere else's expense: each file is its
- * own edit, and the developer is told, file by file, what was registered
- * and what is left to do by hand and why. Nothing is written outside the
+ * Each file is its own edit, so one refused leaves the others made, and
+ * the developer is told, file by file, what was registered and what is
+ * left to do by hand, and why. Nothing is written outside the
  * application the layout names.
  *
  * A page's layouts in the route table are the ones PHP will run its

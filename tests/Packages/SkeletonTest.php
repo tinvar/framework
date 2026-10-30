@@ -116,6 +116,10 @@ it('serves PHP behind the shop\'s intercept block, which its check holds it to',
     expect($ours)->toContain('intercept {')
         ->and($ours)->toBe(str_replace('SHOP_STORAGE', 'APP_STORAGE', phpHandler('examples/shop/Caddyfile')))
         ->and(read('packages/skeleton/Caddyfile'))->toContain('write_idle 8s')
-        ->and(read('packages/skeleton/bin/tinvar'))->toContain("CaddyfileRules::check(APP_ROOT . '/Caddyfile')")
+        // Its check is the framework's application console's, which holds
+        // the app's own Caddyfile, as the workspace's console holds the shop's.
+        ->and(read('packages/skeleton/bin/tinvar'))->toContain('new AppConsole(')
+        ->and(read('packages/framework/src/Console/AppConsole.php'))->toContain('CaddyfileRules::check("{$this->root}/Caddyfile")')
+        ->and(read('bin/tinvar'))->toContain('new AppConsole(')
         ->and(read('packages/skeleton/.env.example'))->toContain('# APP_STORAGE=');
 });
