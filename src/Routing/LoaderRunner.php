@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Routing;
 
+use Tinvar\Features\FlagReads;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Auth\Checks;
 use Tinvar\Auth\Gate;
@@ -103,8 +104,22 @@ final class LoaderRunner
         // choosing `only` must not be able to choose which of those run.
         // What a partial reload leaves out is the rendering of the segments
         // it does not name, and their data; never a loader (ADR 0015).
+        // The segments whose loader read a feature flag: their #[Once]
+        // fields are shown and not kept, since a hold is believed until it
+        // expires whatever a flag does (ADR 0094), as a shared value's are.
+        $flagged = [];
+        $loading = function (CompiledRoute $route, string $segment) use ($binder, $chain, &$byType, $request, $provided, &$flagged): ?Data {
+            $reads = new FlagReads();
+            $data = $reads->span(fn (): ?Data => $this->invoke($route, $binder, $chain->parameters, $byType, $request, $segment, $provided));
+            if (!$reads->clean()) {
+                $flagged[$segment] = true;
+            }
+
+            return $data;
+        };
+
         foreach ($chain->layouts as $layout) {
-            $data = $this->invoke($layout, $binder, $chain->parameters, $byType, $request, $layout->layoutKey, $provided);
+            $data = $loading($layout, $layout->layoutKey);
             if ($data === null) {
                 continue;
             }
@@ -129,7 +144,7 @@ final class LoaderRunner
             }
         }
 
-        $page = $this->invoke($chain->page, $binder, $chain->parameters, $byType, $request, PartialReload::PAGE, $provided);
+        $page = $loading($chain->page, PartialReload::PAGE);
         if ($page !== null) {
             $partial = self::always($partial, $page, PartialReload::PAGE, $keys);
         }
@@ -152,6 +167,7 @@ final class LoaderRunner
                 only: $partial === null ? [] : $partial->only,
                 except: $partial === null ? [] : $partial->except,
             ),
+            flagged: $flagged,
         );
     }
 
