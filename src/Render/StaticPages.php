@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Render;
 
+use Tinvar\Orm\Orm;
+
 /**
  * Static pages kept fresh where they are served: revalidation.
  *
@@ -153,6 +155,39 @@ final class StaticPages
         }
 
         return $taken;
+    }
+
+    /**
+     * invalidate(), once the writes behind $tags commit -- for a write in
+     * one of $tenants -- and only where one of them is no tenant: a static
+     * page is rendered as no tenant's, and a tenant's tags name that
+     * tenant's rows, so one tenant's write is no reason to take everyone's
+     * pages down. After the commit, so no build in between reads the old
+     * rows and serves them as fresh.
+     *
+     * What every invalidation takes static pages down through -- an
+     * action's, an endpoint's, an import's (TagInvalidation) and a job's or
+     * a task's (Live\Invalidator), ADR 0106. A page that could not be taken
+     * down is logged, as a live update that could not be published is, and
+     * serves on until its next revalidation: the writes are committed and
+     * the answer is theirs.
+     *
+     * @param list<string> $tags
+     * @param list<string> $tenants every tenant the write ran as
+     */
+    public function invalidateAfterCommit(Orm $orm, array $tags, array $tenants): void
+    {
+        if ($tags === [] || !\in_array('', $tenants, true)) {
+            return;
+        }
+
+        $orm->afterCommit(function () use ($tags): void {
+            try {
+                $this->invalidate($tags);
+            } catch (\Throwable $e) {
+                error_log('[tinvar] a static page could not be taken out of service: ' . $e->getMessage());
+            }
+        });
     }
 
     /** Whether the page at $path was invalidated at $since or after. */

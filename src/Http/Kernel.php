@@ -303,6 +303,16 @@ final class Kernel
     public readonly ?SharedTags $sharedTags;
 
     /**
+     * Everything an action's tags do -- the query cache, the live clients,
+     * the once-shared holds and the static pages -- for a write that is not
+     * an action's: an endpoint's and an import's, which declare theirs, and
+     * a job's, a scheduled task's or a command's, which hand theirs to
+     * invalidate() (ADR 0075, 0106). An application puts it in its
+     * container for them.
+     */
+    public readonly TagInvalidation $invalidation;
+
+    /**
      * Each shared key's panel, worked out once from its declarations and
      * namespace: null for a key every page may read.
      *
@@ -867,7 +877,7 @@ final class Kernel
         // What the tags a write names do on the server, for the writes that
         // are not actions -- an endpoint's, an import's -- as ActionRunner
         // does for an action's (ADR 0075).
-        $invalidation = new TagInvalidation(
+        $invalidation = $this->invalidation = new TagInvalidation(
             $this->orm,
             $cache,
             $live?->invalidator($this->orm, $this->report(...)),

@@ -32,6 +32,9 @@ use Tinvar\Render\StaticPages;
  *   - the static pages showing them are taken out of service after the
  *     commit, outside a tenant.
  *
+ * And invalidate(), for the writes no declaration covers: a job's, a
+ * scheduled task's or a command's, which the container hands this to.
+ *
  * Each in every tenant the write ran as, the one it began in first, so a
  * write made as a child reaches its parents' reads across the subtree.
  */
@@ -74,6 +77,20 @@ final readonly class TagInvalidation
     }
 
     /**
+     * Invalidates the tags as written in $tenant -- the tenant the ORM runs
+     * as unless given -- everything an action's would do: for a job, a
+     * scheduled task or a command that wrote what a page shows (ADR 0106).
+     * A job runs in the tenant it was dispatched in, so a job's write
+     * reaches that tenant's pages, and a static page only from outside any.
+     *
+     * @param list<string> $tags as the application names them
+     */
+    public function invalidate(array $tags, ?string $tenant = null): void
+    {
+        $this->invalidateIn(array_values(array_unique(array_filter($tags, static fn (string $tag): bool => $tag !== ''))), [$tenant ?? $this->orm->tenant()]);
+    }
+
+    /**
      * Invalidates the tags, in each of the tenants a write ran as.
      *
      * @param list<string> $tags as the application names them
@@ -93,24 +110,9 @@ final readonly class TagInvalidation
 
         $this->sharedTags?->invalidateIn($tags, $tenants);
 
-        // Only outside a tenant: a static page is rendered as no tenant's,
-        // and a tenant's tags name that tenant's rows, so one tenant's write
-        // is no reason to take everyone's pages down. After the commit, so
-        // no build in between reads the old rows and serves them as fresh.
-        if ($this->static !== null && $this->orm->tenant() === '') {
-            $static = $this->static;
-            $this->orm->afterCommit(static function () use ($static, $tags): void {
-                // The writes are committed and the answer is the write's: a
-                // page that could not be taken down is logged, as a live
-                // update that could not be published is, and serves on until
-                // its next revalidation.
-                try {
-                    $static->invalidate($tags);
-                } catch (\Throwable $e) {
-                    error_log('[tinvar] a static page could not be taken out of service: ' . $e->getMessage());
-                }
-            });
-        }
+        // Only where the write ran as no tenant, and after the commit
+        // (StaticPages::invalidateAfterCommit()).
+        $this->static?->invalidateAfterCommit($this->orm, $tags, $tenants);
     }
 
     /**

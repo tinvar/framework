@@ -9,6 +9,7 @@ use Tinvar\Channels\Channels;
 use Tinvar\Channels\ChannelTopics;
 use Tinvar\Http\Request;
 use Tinvar\Orm\Orm;
+use Tinvar\Render\StaticPages;
 use Tinvar\Support\Signer;
 
 /**
@@ -51,10 +52,15 @@ final readonly class LiveUpdates
         );
     }
 
-    /** @param (\Closure(\Throwable, ?string): string)|null $report */
-    public function invalidator(Orm $orm, ?\Closure $report = null): Invalidator
+    /**
+     * @param (\Closure(\Throwable, ?string): string)|null $report
+     * @param StaticPages|null $static the built pages a tag written outside any
+     *        tenant takes out of service: for the invalidator a job or a task
+     *        is handed (ADR 0106)
+     */
+    public function invalidator(Orm $orm, ?\Closure $report = null, ?StaticPages $static = null): Invalidator
     {
-        return new Invalidator($this->hub, $this->topics, $orm, $report);
+        return new Invalidator($this->hub, $this->topics, $orm, $report, $static);
     }
 
     /**

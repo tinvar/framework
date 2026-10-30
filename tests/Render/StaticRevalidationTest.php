@@ -13,9 +13,13 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Render\StaticRevalidation {
     use Tinvar\Actions\ActionRegistry;
     use Tinvar\Actions\ActionRunner;
+    use Tinvar\Actions\TagInvalidation;
     use Tinvar\Attributes\StaticPage;
     use Tinvar\Auth\AllowAllGate;
     use Tinvar\Http\Request;
+    use Tinvar\Live\Invalidator;
+    use Tinvar\Live\MemoryHub;
+    use Tinvar\Live\Topics;
     use Tinvar\Orm\IdentityMap;
     use Tinvar\Orm\Orm;
     use Tinvar\Orm\PdoConnection;
@@ -25,6 +29,7 @@ namespace Tinvar\Tests\Render\StaticRevalidation {
     use Tinvar\Render\StaticMinter;
     use Tinvar\Render\StaticPages;
     use Tinvar\Routing\RouteRegistry;
+    use Tinvar\Support\Signer;
     use Tinvar\Tests\Render\StaticRevalidation\Fixtures\DocActions;
     use Tinvar\Tests\Render\StaticRevalidation\Fixtures\DocPage;
     use Tinvar\Tests\Render\StaticRevalidation\Fixtures\HomePage;
@@ -366,6 +371,80 @@ namespace Tinvar\Tests\Render\StaticRevalidation {
             [$runner, $orm, , $directory] = action();
 
             $orm->actAs('tenant-a', static fn () => $runner->run('docs.edit', []));
+
+            expect(is_file("{$directory}/docs/intro/index.html"))->toBeTrue();
+        });
+    });
+
+    // A job's or a task's write takes the pages showing it down as an
+    // action's does: through the TagInvalidation the container hands it, or
+    // the live Invalidator given the pages (ADR 0106). It did not, and the
+    // page served the old rows until the scheduler next rebuilt it.
+    describe('a job or a task invalidating a tag', function () {
+        /** @return array{Orm, StaticPages, string} */
+        function pages(): array
+        {
+            [$directory, $manifest] = built();
+            $orm = new Orm(PdoConnection::sqlite(':memory:', 'test'), new IdentityMap('test'));
+
+            return [$orm, new StaticPages(builder(), $directory, $manifest), $directory];
+        }
+
+        it('takes its pages out of service through TagInvalidation, once its writes commit', function () {
+            [$orm, $pages, $directory] = pages();
+            $tags = new TagInvalidation($orm, static: $pages);
+
+            $orm->transaction(function () use ($tags, $directory): void {
+                $tags->invalidate(['docs']);
+
+                expect(is_file("{$directory}/docs/intro/index.html"))->toBeTrue('not before the commit');
+            });
+
+            expect(is_file("{$directory}/docs/intro/index.html"))->toBeFalse()
+                ->and(is_file("{$directory}/docs/guide/index.html"))->toBeFalse()
+                ->and(is_file("{$directory}/home/index.html"))->toBeTrue('a page carrying no such tag stays');
+        });
+
+        it('takes its pages out of service through the live Invalidator given them', function () {
+            [$orm, $pages, $directory] = pages();
+            $hub = new MemoryHub();
+            $live = new Invalidator($hub, new Topics(new Signer('static-revalidation-test-key-0123456789', Topics::PURPOSE)), $orm, static: $pages);
+
+            $live->invalidate(['docs']);
+
+            expect(is_file("{$directory}/docs/intro/index.html"))->toBeFalse()
+                ->and(is_file("{$directory}/home/index.html"))->toBeTrue()
+                ->and($hub->published)->not->toBe([], 'and still tells the clients listening');
+        });
+
+        it('takes nothing down for writes that roll back', function () {
+            [$orm, $pages, $directory] = pages();
+            $tags = new TagInvalidation($orm, static: $pages);
+
+            try {
+                $orm->transaction(function () use ($tags): void {
+                    $tags->invalidate(['docs']);
+
+                    throw new \RuntimeException('the write failed');
+                });
+            } catch (\RuntimeException) {
+            }
+
+            expect(is_file("{$directory}/docs/intro/index.html"))->toBeTrue();
+        });
+
+        // A job runs in the tenant it was dispatched in, and a tenant's tags
+        // name its own rows: no static page, which is no tenant's, goes.
+        it('takes nothing down for a job running as a tenant', function () {
+            [$orm, $pages, $directory] = pages();
+            $tags = new TagInvalidation($orm, static: $pages);
+            $live = new Invalidator(new MemoryHub(), new Topics(new Signer('static-revalidation-test-key-0123456789', Topics::PURPOSE)), $orm, static: $pages);
+
+            $orm->actAs('tenant-a', static function () use ($tags, $live): void {
+                $tags->invalidate(['docs']);
+                $live->invalidate(['docs']);
+            });
+            $tags->invalidate(['docs'], 'tenant-b');
 
             expect(is_file("{$directory}/docs/intro/index.html"))->toBeTrue();
         });

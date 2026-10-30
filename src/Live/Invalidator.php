@@ -6,6 +6,7 @@ namespace Tinvar\Live;
 
 use Tinvar\Cache\TagNamespace;
 use Tinvar\Orm\Orm;
+use Tinvar\Render\StaticPages;
 
 /**
  * Tells the clients listening that tags were invalidated -- once the writes
@@ -13,7 +14,11 @@ use Tinvar\Orm\Orm;
  *
  * ActionRunner calls it for every tag an action's result names
  * (revalidateTags(), withTags(): the same tags its response lists in
- * X-Invalidated-Tags), and a job calls it for the tags it changes.
+ * X-Invalidated-Tags), and a job calls it for the tags it changes -- and,
+ * given the static pages, takes those carrying a tag written outside any
+ * tenant out of service too, as an action's would (ADR 0106). A job that
+ * wants everything an action's tags do -- the query cache and once-shared
+ * holds as well -- takes Actions\TagInvalidation instead.
  *
  * After the commit, never before (Orm::afterCommit). A client told first
  * asks for its page at once, reads the data as it was, and is not told
@@ -28,12 +33,20 @@ use Tinvar\Orm\Orm;
  */
 final readonly class Invalidator
 {
-    /** @param (\Closure(\Throwable, ?string): string)|null $report where a publish that failed is logged */
+    /**
+     * @param (\Closure(\Throwable, ?string): string)|null $report where a publish that failed is logged
+     * @param StaticPages|null $static the built pages to take out of service
+     *        for tags written outside any tenant, once the writes commit: a
+     *        job or a task that invalidates a tag a static page carries takes
+     *        the page down as an action does (ADR 0106). Left out where a
+     *        TagInvalidation, which takes them down itself, is what calls this.
+     */
     public function __construct(
         private Hub $hub,
         private Topics $topics,
         private Orm $orm,
         private ?\Closure $report = null,
+        private ?StaticPages $static = null,
     ) {}
 
     /**
@@ -61,6 +74,8 @@ final readonly class Invalidator
         if ($tags === []) {
             return;
         }
+
+        $this->static?->invalidateAfterCommit($this->orm, $tags, $tenants);
 
         // In every namespace the write reaches: the tenant's own, and the
         // subtree's of it and of each tenant above it, where the pages
