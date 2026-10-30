@@ -61,8 +61,10 @@ it("follows a call of the application's own function", function () {
     $messages = sharedViolations(G\ThroughFunction::class);
 
     // And the helper it calls, which names the user's context itself.
-    expect($messages[0] ?? '')->toContain('current_customer(), which calls \'auth()\'')
-        ->and(implode("\n", $messages))->toContain('\auth(), which calls \'AuthContext\'');
+    expect(implode("\n", $messages))->toContain('current_customer(), which calls \'auth()\'')
+        ->toContain('\auth(), which calls \'AuthContext\'')
+        // And, typed by what auth() returns, the context the call is made on.
+        ->toContain('calls a method of ' . Tinvar\Auth\AuthContext::class . ' at Tinvar\Tests\Auth\Fixtures\CallGraph\current_customer(), calling auth()->id()');
 });
 
 it('passes a graph that reads none of them, stopping at the framework', function () {

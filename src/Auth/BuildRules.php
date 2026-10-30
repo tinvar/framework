@@ -740,10 +740,10 @@ final class BuildRules
      *    through the calls CallGraph can name, with a call it cannot follow
      *    refused (checkSharedCallGraph()).
      *
-     * What is NOT checked: a call on a local variable, which the walk does
-     * not follow, reaching a read whose text the calling method does not
-     * itself contain; and the framework's own methods, where the walk stops
-     * and the call into them is what the text check reads.
+     * What is NOT checked: the framework's own methods, where the walk
+     * stops and the call into them is what the text check reads. A call on
+     * a local is followed by what the method gives the local, and one on a
+     * value the walk cannot type is refused (ADR 0104).
      *
      * @param class-string $class
      * @return list<Violation>
