@@ -27,8 +27,10 @@ final readonly class FragmentSupport
      *        renders one boundary's subtree. Its fifth argument is what the subtree may read
      *        with `shared()`, for the render channel beside the frame (ADR 0065); a closure
      *        taking four leaves every read refused.
-     * @param (\Closure(string): list<string>)|null $allowedQueries the originating
-     *        route's query allowlist, by route name. The ENDPOINT asks for
+     * @param (\Closure(string, string=): list<string>)|null $allowedQueries the originating
+     *        route's query allowlist, by route name -- and, given the component
+     *        a fragment renders, that component's own share of it
+     *        (FragmentManifest::queriesFor(), ADR 0104). The ENDPOINT asks for
      *        this and hands the answer to $render, rather than letting the
      *        render closure choose: "PHP rejects any other name on that
      *        route's socket" is only true while the list comes from the

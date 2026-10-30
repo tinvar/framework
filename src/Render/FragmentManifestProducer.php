@@ -27,8 +27,9 @@ use Tinvar\Routing\RouteRegistry;
  * Each route's query allowlist is joined the same way. The build writes the
  * query names each view's graph can call, and those each deferred component
  * the rsc entry registers can call; a route may call what its page and every
- * layout around it can, and what every component its renders may name can,
- * since that component's fragment renders under the route's allowlist. A
+ * layout around it can, and what every component its renders may name can;
+ * and each component's fragment may call only what that component's own
+ * graph can, of its route's (ADR 0104). A
  * hand-kept allowlist drifts as the boundaries did: one that kept a query
  * the page stopped calling let a compromised dependency call it on every
  * render of the route -- tinvar-spec.md, "PHP rejects any other name on that
@@ -66,6 +67,13 @@ final class FragmentManifestProducer
         ['views' => $views, 'queries' => $viewQueries, 'components' => $componentQueries, 'actions' => $viewActions, 'componentActions' => $componentActions] = self::read($deferredJson);
         $manifest = new FragmentManifest();
         $layouts = $routes->layouts();
+
+        // Each registered component's own list, which its fragment renders
+        // under (ADR 0104); a route's list still holds them all, since a
+        // route that may mint for a component may have it render.
+        foreach ($componentQueries as $component => $queries) {
+            $manifest->declareComponentQueries((string) $component, self::sorted(array_map('strval', $queries)));
+        }
 
         foreach ($routes->pages() as $page) {
             $rendered = [$page->view];

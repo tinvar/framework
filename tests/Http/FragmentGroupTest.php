@@ -48,12 +48,15 @@ final class Rendered
 
     /** @var list<string> the component each lone render was handed */
     public array $lone = [];
+
+    /** @var list<list<string>> the query allowlist each render was handed */
+    public array $allowed = [];
 }
 
 /**
  * @return array{FragmentEndpoint, Fixture, Signer, Rendered, AllowAllGate}
  */
-function endpoint(bool $groups = true): array
+function endpoint(bool $groups = true, ?\Closure $allowedQueries = null): array
 {
     $fixture = new Fixture(racks: 2, unitsPerRack: 1, sites: 1);
     $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat());
@@ -69,16 +72,19 @@ function endpoint(bool $groups = true): array
         orm: $orm,
         signer: $signer,
         builds: new BuildRegistry('build-2', ['build-1']),
-        render: static function (FragmentToken $token) use ($rendered): Response {
+        render: static function (FragmentToken $token, Request $request, array $models, array $allowed) use ($rendered): Response {
             $rendered->lone[] = $token->component;
+            $rendered->allowed[] = $allowed;
 
             return Response::make(200, 'ONE', ['content-type' => 'text/x-component']);
         },
         sessionId: static fn (Request $r): string => SESSION,
         middlewareResolver: static fn (string $class): Middleware => new $class(),
         panels: new PanelContext(),
-        renderGroup: $groups ? static function (array $tokens) use ($rendered): Response {
+        allowedQueries: $allowedQueries,
+        renderGroup: $groups ? static function (array $tokens, Request $request, array $models, array $allowed) use ($rendered): Response {
             $rendered->groups[] = array_map(static fn (FragmentToken $t): string => $t->component, $tokens);
+            $rendered->allowed[] = $allowed;
 
             return Response::make(200, 'MANY', ['content-type' => 'text/x-component']);
         } : null,
@@ -247,4 +253,22 @@ describe('what a group is charged', function () {
             ->and(FragmentEndpoint::tokenCount(new Request('GET', '/_fragment/' . str_repeat('a/', 40))))
             ->toBe(FragmentEndpoint::MAX_GROUP);
     });
+});
+
+it("renders each fragment under its own component's allowlist, and a group under its components'", function () {
+    $manifest = new \Tinvar\Render\FragmentManifest()
+        ->declareQueries('racks.show', ['racks.stats', 'units.history', 'audit.entries'])
+        ->declareComponentQueries('UnitHistory', ['units.history'])
+        ->declareComponentQueries('AuditLog', ['audit.entries']);
+    [$endpoint, $fixture, $signer, $rendered] = endpoint(allowedQueries: $manifest->queriesFor(...));
+
+    $endpoint->handle(group($signer, [token($signer, $fixture, ['component' => 'UnitHistory'])]));
+    $endpoint->handle(group($signer, [
+        token($signer, $fixture, ['component' => 'UnitHistory']),
+        token($signer, $fixture, ['component' => 'AuditLog']),
+    ]));
+    $endpoint->handle(group($signer, [token($signer, $fixture, ['component' => 'Unlisted'])]));
+
+    // Never the page's own racks.stats; nothing for a component no build listed.
+    expect($rendered->allowed)->toBe([['units.history'], ['units.history', 'audit.entries'], []]);
 });

@@ -36,7 +36,8 @@ namespace Tinvar\Render;
  * its boundaries name when the build could read them. FragmentManifestProducer
  * writes both from the renderer build; nothing is declared by hand.
  *
- * And the query names each route's renders may call: tinvar-spec.md, "At
+ * And the query names each route's renders may call, and each deferred
+ * component's fragment: tinvar-spec.md, "At
  * build, the server-component graph of each route gives the list of query
  * names it may call. PHP rejects any other name on that route's socket."
  * Here because it is made the same way -- the renderer build's graph, per
@@ -81,6 +82,16 @@ final class FragmentManifest
      * @var array<string, list<string>>
      */
     private array $queries = [];
+
+    /**
+     * The query names each deferred component's fragment may call, by the
+     * name the rsc entry registers it under, as the build found them in the
+     * component's own graph (ADR 0104) -- or null where the manifest was not
+     * made from a build that listed them, and a fragment may call nothing.
+     *
+     * @var array<string, list<string>>|null
+     */
+    private ?array $componentQueries = null;
 
     /**
      * The actions each route's page may call, by route name, as the build
@@ -248,8 +259,12 @@ final class FragmentManifest
         // route may then call nothing, which is the side to fail on.
         $queries = $data['queries'] ?? [];
         $actions = $data['actions'] ?? null;
+        // Absent from a manifest written before the build listed them: a
+        // fragment may then call nothing.
+        $owned = $data['components'] ?? null;
 
-        if ($data['format'] !== self::FORMAT || !\is_array($routes) || !\is_array($pages) || !\is_array($queries) || ($actions !== null && !\is_array($actions))) {
+        if ($data['format'] !== self::FORMAT || !\is_array($routes) || !\is_array($pages) || !\is_array($queries)
+            || ($actions !== null && !\is_array($actions)) || ($owned !== null && !\is_array($owned))) {
             throw new \RuntimeException("The fragment manifest at {$path} is not one this version of Tinvar reads.");
         }
 
@@ -283,6 +298,23 @@ final class FragmentManifest
                 $allowed[] = $name;
             }
             $manifest->declareQueries($route, $allowed);
+        }
+
+        foreach ($owned ?? [] as $component => $names) {
+            if (!\is_string($component) || $component === '' || !\is_array($names) || !array_is_list($names)) {
+                throw new \RuntimeException("The fragment manifest at {$path} lists a component's queries that are not a name with a list.");
+            }
+            $allowed = [];
+            foreach ($names as $name) {
+                if (!\is_string($name) || $name === '') {
+                    throw new \RuntimeException("The fragment manifest at {$path} allows a component a query that is not a name.");
+                }
+                $allowed[] = $name;
+            }
+            $manifest->declareComponentQueries($component, $allowed);
+        }
+        if ($owned !== null) {
+            $manifest->componentQueries ??= [];
         }
 
         foreach ($actions ?? [] as $route => $names) {
@@ -334,6 +366,7 @@ final class FragmentManifest
      *     routes: array<string, list<string>|null>,
      *     pages: array<string, list<array{id: string, component: string, props: array<string, mixed>, params: array<string, string>}>>,
      *     queries: array<string, list<string>>,
+     *     components?: array<string, list<string>>,
      *     actions?: array<string, list<string>>
      * }
      */
@@ -358,6 +391,11 @@ final class FragmentManifest
         ksort($pages);
 
         $array = ['format' => self::FORMAT, 'routes' => $routes, 'pages' => $pages, 'queries' => $queries];
+        if ($this->componentQueries !== null) {
+            $components = $this->componentQueries;
+            ksort($components);
+            $array['components'] = $components;
+        }
         if ($this->actions !== null) {
             $actions = $this->actions;
             ksort($actions);
@@ -521,11 +559,44 @@ final class FragmentManifest
      * it never saw, or an unnamed page's '' -- so a route the manifest does
      * not know is allowed nothing, never everything.
      *
+     * With a component, what that component's fragment may call: what its
+     * own graph calls, of what its route may (ADR 0104). The fragment
+     * renders the component alone, so the rest of the route's list -- its
+     * page's queries, its layouts', other components' -- is no business of
+     * it; a dependency the component loads is held to the component's
+     * calls. Empty for a component the build did not list.
+     *
      * @return list<string>
      */
-    public function queriesFor(string $route): array
+    public function queriesFor(string $route, ?string $component = null): array
     {
-        return $this->queries[$route] ?? [];
+        $route = $this->queries[$route] ?? [];
+        if ($component === null) {
+            return $route;
+        }
+
+        return array_values(array_intersect($route, $this->componentQueries[$component] ?? []));
+    }
+
+    /**
+     * The query names a deferred component's fragment may call, as the build
+     * found them in its own graph. Declared twice, it may call what either
+     * declaration lists.
+     *
+     * @param list<string> $queries
+     */
+    public function declareComponentQueries(string $component, array $queries): self
+    {
+        if ($component === '') {
+            throw new \InvalidArgumentException('A component\'s query allowlist belongs to a component, found by its name.');
+        }
+
+        $this->componentQueries ??= [];
+        $names = array_values(array_unique([...$this->componentQueries[$component] ?? [], ...$queries]));
+        sort($names, SORT_STRING);
+        $this->componentQueries[$component] = $names;
+
+        return $this;
     }
 
     /**

@@ -337,8 +337,17 @@ final class FragmentEndpoint
 
         // "PHP rejects any other name on that route's socket, so a
         // compromised dependency can't call queries the page never uses."
-        // Derived here, from the route the token names.
-        $allowed = $this->allowedQueries === null ? [] : ($this->allowedQueries)($token->route);
+        // Derived here, from the route the token names, and narrowed to the
+        // components the tokens render: a fragment renders its component
+        // alone, so it may call what that component's graph can, of the
+        // route's (ADR 0104). A group renders each of its components.
+        $allowed = [];
+        if ($this->allowedQueries !== null) {
+            foreach ($tokens as $each) {
+                array_push($allowed, ...($this->allowedQueries)($token->route, $each->component));
+            }
+            $allowed = array_values(array_unique($allowed));
+        }
 
         // And what it may read with shared(), made now: inside the route's
         // panel and tenant, behind its chain, for the user the token was

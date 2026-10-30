@@ -202,8 +202,9 @@ describe("each route's query allowlist", function () {
             ->and($manifest->queriesFor(''))->toBe([]);
     });
 
-    // A fragment renders under the allowlist of the route that minted its
-    // token, and its component is reachable from no view.
+    // A route's list holds what its components' fragments call, which are
+    // reachable from no view; each fragment renders under its own
+    // component's share of it (ADR 0104).
     it('adds what each deferred component the route may name can call', function () {
         $manifest = FragmentManifestProducer::produce(
             routes(),
@@ -226,6 +227,36 @@ describe("each route's query allowlist", function () {
         );
 
         expect($manifest->queriesFor('racks.show'))->toBe(['audit.entries', 'units.history']);
+    });
+
+    it("gives each component's fragment what its own graph calls, of its route's", function () {
+        $manifest = FragmentManifestProducer::produce(
+            routes(),
+            build([...QUIET, 'racks/show' => ['UnitHistory']], ['racks/show' => ['racks.stats']], [
+                'UnitHistory' => ['units.history'],
+                'AuditLog' => ['audit.entries'],
+            ]),
+        );
+
+        expect($manifest->queriesFor('racks.show', 'UnitHistory'))->toBe(['units.history'])
+            // Its page's query is not the fragment's to call.
+            ->and($manifest->queriesFor('racks.show', 'UnitHistory'))->not->toContain('racks.stats')
+            // Nor a component's the route cannot name, nor one no build listed.
+            ->and($manifest->queriesFor('racks.show', 'AuditLog'))->toBe([])
+            ->and($manifest->queriesFor('racks.show', 'Nowhere'))->toBe([])
+            ->and($manifest->queriesFor('health', 'UnitHistory'))->toBe([]);
+
+        $path = file();
+        $manifest->write($path);
+        expect(FragmentManifest::fromFile($path)->queriesFor('racks.show', 'UnitHistory'))->toBe(['units.history'])
+            ->and(FragmentManifest::fromFile($path)->toArray()['components'] ?? null)->toBe(['AuditLog' => ['audit.entries'], 'UnitHistory' => ['units.history']]);
+    });
+
+    it('allows a fragment nothing from a manifest that lists no component', function () {
+        $path = file(json_encode(['format' => 1, 'routes' => ['a' => ['X']], 'pages' => [], 'queries' => ['a' => ['q.one']]], JSON_THROW_ON_ERROR));
+
+        expect(FragmentManifest::fromFile($path)->queriesFor('a'))->toBe(['q.one'])
+            ->and(FragmentManifest::fromFile($path)->queriesFor('a', 'X'))->toBe([]);
     });
 
     it('refuses a route naming a component the registry does not have', function () {
