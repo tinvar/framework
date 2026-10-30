@@ -87,13 +87,18 @@ final class FakeApcu
             cas: $this->cas(),
             failClosed: $failClosed,
             wiped: $wiped,
+            expunges: fn (): int => $this->expunges,
         );
     }
+
+    /** How many times APCu has cleared itself to make room, as apcu_cache_info() counts. */
+    public int $expunges = 0;
 
     /** What APCu does once it is full of entries still live: every entry goes at once. */
     public function wipe(): void
     {
         $this->entries = [];
+        $this->expunges++;
     }
 }
 
@@ -208,6 +213,32 @@ it('pauses nobody when it starts, built to fail closed', function () {
     $apcu = new FakeApcu();
 
     expect($apcu->store(failClosed: true)->increment('k', 60)[0])->toBe(1);
+});
+
+// ADR 0125: the wipe a worker meets as it starts, before any count -- a
+// worker restarted into an APCu someone filled -- is a wipe, not the cache
+// starting: APCu counts the times it cleared itself.
+it('knows a wipe from the cache starting, for a worker starting after it', function () {
+    $apcu = new FakeApcu();
+    $apcu->now = 1_000_030;
+    $apcu->store(failClosed: true)->increment('k', 60);
+    $apcu->wipe();
+
+    $wipes = 0;
+    $restarted = $apcu->store(failClosed: true, wiped: static function () use (&$wipes): void {
+        $wipes++;
+    });
+
+    expect($restarted->increment('k', 60)[0])->toBeGreaterThan(ApcuThrottleStore::LOST)
+        ->and($wipes)->toBe(1)
+        // Every worker after it finds the wipe marked, and is not told again.
+        ->and($apcu->store(failClosed: true, wiped: static function () use (&$wipes): void {
+            $wipes++;
+        })->increment('other', 60)[0])->toBeGreaterThan(ApcuThrottleStore::LOST)
+        ->and($wipes)->toBe(1);
+
+    $apcu->now = 1_000_080;
+    expect($restarted->increment('k', 60)[0])->toBe(1);
 });
 
 it('treats a window under a second as one second', function () {

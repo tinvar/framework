@@ -36,8 +36,15 @@ namespace Tinvar\Http;
  * closed counts every window that began before the wipe as spent, until it
  * ends, rather than starting it again from nothing. That turns every wipe
  * into a pause for every caller, which a budget against load is better
- * without, so it is not the default. A wipe a worker starting meets before
- * any count reads as the cache starting: nothing marks the difference.
+ * without, so it is not the default.
+ *
+ * A worker starting into a cache that was wiped before any count -- the
+ * mark gone, and nothing yet to say it ever stood -- is told apart from the
+ * cache starting by APCu's own count of expunges (ADR 0125): a cache that
+ * has never had to clear itself to make room is new; one that has, was
+ * filled. That worker marks the wipe as any other worker finding one does.
+ * An `apcu_clear_cache()` the application calls itself is not an expunge,
+ * and still reads as a start: whoever can call it can do worse.
  */
 final class ApcuThrottleStore implements ThrottleStore
 {
@@ -68,6 +75,8 @@ final class ApcuThrottleStore implements ThrottleStore
      * @param (\Closure(string, int, int): bool)|null $cas for tests; defaults to apcu_cas()
      * @param bool $failClosed whether a window that began before a wipe counts as spent until it ends
      * @param (\Closure(): void)|null $wiped told when this store finds APCu has been cleared
+     * @param (\Closure(): int)|null $expunges for tests; how many times APCu has cleared itself
+     *        to make room since it started, from apcu_cache_info()
      */
     public function __construct(
         private readonly string $prefix = 'tinvar:throttle:',
@@ -78,6 +87,7 @@ final class ApcuThrottleStore implements ThrottleStore
         ?\Closure $cas = null,
         private readonly bool $failClosed = false,
         private readonly ?\Closure $wiped = null,
+        ?\Closure $expunges = null,
     ) {
         if (($add === null || $inc === null || $fetch === null || $cas === null) && !self::available()) {
             throw new \RuntimeException(
@@ -94,10 +104,21 @@ final class ApcuThrottleStore implements ThrottleStore
         $this->fetch = $fetch ?? static fn (string $key): mixed => apcu_fetch($key);
         $this->cas = $cas ?? static fn (string $key, int $old, int $new): bool => apcu_cas($key, $old, $new);
 
-        // From the first worker to start: nothing was counted before it, so
-        // nothing has been lost.
+        // From the first worker to start into a cache that has never cleared
+        // itself: nothing was counted before it, so nothing has been lost.
+        // Into one that has, the mark it finds missing was taken by a wipe,
+        // and is put back as any worker finding one puts it back.
         $this->mark = $prefix . 'counting-since';
-        ($this->add)($this->mark, 0, 0);
+        $expunges ??= static function (): int {
+            $info = \function_exists('apcu_cache_info') ? apcu_cache_info(true) : false;
+
+            return \is_array($info) && \is_int($info['expunges'] ?? null) ? $info['expunges'] : 0;
+        };
+        if ($expunges() === 0) {
+            ($this->add)($this->mark, 0, 0);
+        } else {
+            $this->countingSince();
+        }
     }
 
     /** Whether APCu is loaded and enabled in this SAPI. */
