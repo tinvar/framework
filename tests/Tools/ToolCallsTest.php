@@ -202,3 +202,43 @@ it('refuses to make a tool of an action that takes the Request', function () {
     expect(fn () => Operations::declaring(\Tinvar\Attributes\Tool::class, $h->actions, $h->queries, $h->entry))
         ->toThrow(\LogicException::class, 'takes the Request');
 });
+
+// ADR 0119: a model looping on a tool spends the user's own action budget.
+it('counts each call that fits its grant against the user\'s throttle:actions, and refuses past it', function () {
+    $h = new Harness();
+    $store = new \Tinvar\Http\ArrayThrottleStore();
+    $throttle = new \Tinvar\Http\Throttle($store, $h->auth, static fn (): string => '127.0.0.1');
+    $tools = new ToolCalls(
+        ToolCalls::discover($h->actions, $h->queries, $h->entry),
+        $h->runner,
+        ToolCalls::grants(KEY, $h->builds, fn (): int => $h->now),
+        $h->auth,
+        $h->orm,
+        $h->panels,
+        $h->staff,
+        $h->users,
+        $throttle,
+        actions: 2,
+    );
+
+    $results = $h->as('ada', function () use ($h, $tools): array {
+        $grant = $tools->grant(['show_rack']);
+        $forged = $tools->call('v1.forged.grant', 'show_rack', ['rack' => $h->rack()]);
+
+        return [$forged, ...array_map(static fn (): CallResult => $tools->call($grant, 'show_rack', ['rack' => $h->rack()]), range(1, 3))];
+    });
+
+    expect(array_map(static fn (CallResult $r): string => $r->status === CallResult::OK ? 'ok' : (string) ($r->toArray()['reason'] ?? $r->status), $results))
+        ->toBe(['grant', 'ok', 'ok', 'throttled'])
+        // The bucket a browser's action spends: the same user's, shared.
+        ->and($h->as('ada', fn () => $throttle->hitUser('actions', 2, 60))?->allowed)->toBeFalse()
+        ->and($h->as('bob', fn () => $throttle->hitUser('actions', 2, 60))?->allowed)->toBeTrue();
+});
+
+it('refuses a throttle that counts another context\'s user', function () {
+    $h = new Harness();
+    $other = new \Tinvar\Http\Throttle(new \Tinvar\Http\ArrayThrottleStore(), new \Tinvar\Auth\AuthContext(), static fn (): string => '');
+
+    expect(fn () => new ToolCalls([], $h->runner, ToolCalls::grants(KEY, $h->builds), $h->auth, $h->orm, throttle: $other))
+        ->toThrow(\InvalidArgumentException::class);
+});

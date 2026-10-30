@@ -21,6 +21,7 @@ use Tinvar\Http\BuildRegistry;
 use Tinvar\Http\EntryContext;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware\RequirePanelMembership;
+use Tinvar\Http\Throttle;
 use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Render\TokenError;
@@ -60,6 +61,14 @@ use Tinvar\Render\TokenError;
  * every call. It never runs across tenants, nor across a subtree a request's
  * panel granted. An auth epoch moved since the grant -- a role taken away,
  * impersonation ended -- refuses every call made with it after.
+ *
+ * **It is counted as an action is** (ADR 0119). Given the throttle the
+ * application's HTTP kernel counts with, every call that fits its grant
+ * spends one of the user's `throttle:actions` hits -- the same bucket a
+ * browser's action spends -- before it runs, and is refused ('throttled')
+ * once they are spent. A model looping on a tool spends the user's own
+ * budget, as a script posting their forms would; there is no address to
+ * count, the call coming from the application's own code.
  */
 final readonly class ToolCalls
 {
@@ -72,6 +81,9 @@ final readonly class ToolCalls
     /** And never more than an hour. */
     public const int MAX_TTL = 3600;
 
+    /** The throttle bucket a call spends: a browser's action's. */
+    public const string THROTTLE = 'actions';
+
     /** @var array<string, array{Operation, Tool}> by tool name */
     private array $tools;
 
@@ -80,6 +92,11 @@ final readonly class ToolCalls
      * @param ContextTokens $grants built by grants()
      * @param UserLookup|null $users finds the user again, so their epoch is read
      *        as it is now at every call, not as it was when the request or job began
+     * @param Throttle|null $throttle the HTTP kernel's: each call spends a hit of the
+     *        user's `throttle:actions`; none, and calls are not counted
+     * @param int $actions the hits `throttle:actions` allows a user in a window -- the
+     *        kernel's limit for it, which a call is held to as a browser's action is
+     * @param int $window the seconds that window lasts, as the kernel counts it
      */
     public function __construct(
         array $tools,
@@ -90,7 +107,18 @@ final readonly class ToolCalls
         private ?PanelContext $panels = null,
         private ?Memberships $memberships = null,
         private ?UserLookup $users = null,
+        private ?Throttle $throttle = null,
+        private int $actions = 60,
+        private int $window = 60,
     ) {
+        // Counted against whoever another context says is signed in, it
+        // would count no one: the per-user half reads its own context.
+        if ($throttle !== null && !$throttle->reads($auth)) {
+            throw new \InvalidArgumentException('The Throttle reads a different AuthContext than the tool calls do, so no call would be counted against its user.');
+        }
+        if ($window < 1) {
+            throw new \InvalidArgumentException('A throttle window lasts at least a second.');
+        }
         $byName = [];
         foreach ($tools as [$operation, $tool]) {
             $name = $tool->nameFor($operation->name);
@@ -197,6 +225,14 @@ final readonly class ToolCalls
         // holding one learns nothing about whose it is.
         if (!$this->fits($claims, $tool)) {
             return CallResult::refused('grant');
+        }
+
+        // Spent once the grant fits, as a browser's action spends its hit
+        // once the request reaches the action's stack: a call refused for
+        // its arguments or its policy has still been made.
+        if ($this->throttle !== null && $this->actions > 0
+            && $this->throttle->hitUser(self::THROTTLE, $this->actions, $this->window)?->allowed === false) {
+            return CallResult::refused('throttled');
         }
 
         $panel = $claims->panel;
