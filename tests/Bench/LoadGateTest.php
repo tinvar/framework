@@ -14,6 +14,7 @@ namespace Tinvar\Tests\Bench\LoadGate;
 use Tinvar\Bench\Load\Analysis;
 use Tinvar\Bench\Load\Gate;
 use Tinvar\Bench\Load\LoadCommand;
+use Tinvar\Bench\Load\Machine;
 use Tinvar\Bench\Load\Options;
 use Tinvar\Bench\Load\Sampler;
 use Tinvar\Bench\Load\Scaling;
@@ -337,5 +338,95 @@ describe('reading ps', function () {
         ]));
 
         expect($threads)->toBe([64539 => 98.5, 64540 => 41.2]);
+    });
+});
+
+// The VM runs' summaries filled the machine in by hand: Linux is read from
+// /proc, /sys and /etc/os-release now, its limits named as Linux names them.
+describe('reading Linux', function () {
+    it('names the machine from /proc, /sys and os-release', function () {
+        $files = [
+            '/proc/cpuinfo' => "processor\t: 0\nmodel name\t: AMD EPYC 7B13\nprocessor\t: 1\nmodel name\t: AMD EPYC 7B13\n",
+            '/sys/devices/cpu_core/cpus' => null,
+            '/proc/meminfo' => "MemTotal:       16384000 kB\nMemFree: 1 kB\n",
+            '/etc/os-release' => "NAME=\"Debian GNU/Linux\"\nPRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\n",
+            '/proc/self/limits' => "Limit                     Soft Limit           Hard Limit           Units\nMax open files            1024                 1048576              files\n",
+            '/proc/sys/net/core/somaxconn' => "4096\n",
+            '/proc/sys/net/ipv4/ip_local_port_range' => "32768\t60999\n",
+        ];
+        $facts = Machine::facts(
+            'Linux',
+            static fn (string $path): ?string => $files[$path] ?? null,
+            static fn (string $command): string => $command === 'uname -r' ? "6.12.0-amd64\n" : '',
+        );
+
+        expect($facts)->toBe([
+            'model' => 'AMD EPYC 7B13',
+            'cores' => 2,
+            'performance_cores' => 0,
+            'efficiency_cores' => 0,
+            'memory_gb' => 16,
+            'os' => 'Debian GNU/Linux 13 (trixie), Linux 6.12.0-amd64',
+            'somaxconn' => 4096,
+            'maxfilesperproc' => 1048576,
+            'ephemeral_ports' => '32768-60999',
+            'limit_names' => ['somaxconn' => 'net.core.somaxconn', 'files' => 'open files (hard limit)'],
+        ]);
+    });
+
+    it('counts a hybrid CPU\'s two kinds of core, and reads an Arm model from lscpu', function () {
+        $files = [
+            '/proc/cpuinfo' => "processor\t: 0\nprocessor\t: 1\nprocessor\t: 2\n",
+            '/sys/devices/cpu_core/cpus' => "0-7,16\n",
+            '/sys/devices/cpu_atom/cpus' => "8-15\n",
+        ];
+        $facts = Machine::facts(
+            'Linux',
+            static fn (string $path): ?string => $files[$path] ?? null,
+            static fn (string $command): string => $command === 'lscpu' ? "Architecture: aarch64\nModel name:   Neoverse-N1\n" : '',
+        );
+
+        expect($facts['model'])->toBe('Neoverse-N1')
+            ->and($facts['performance_cores'])->toBe(9)
+            ->and($facts['efficiency_cores'])->toBe(8)
+            ->and($facts['maxfilesperproc'])->toBe('')
+            ->and($facts['os'])->toBe('Linux');
+    });
+
+    it('counts the connections to the port and its deepest accept queue from /proc/net/tcp', function () {
+        $sockets = Sampler::linuxSockets(implode("\n", [
+            '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode',
+            '   0: 0100007F:189D 00000000:0000 0A 00000000:00000011 00:00000000 00000000  1000        0 1 1',
+            '   1: 0100007F:189D 0100007F:D431 01 00000000:00000000 00:00000000 00000000  1000        0 2 1',
+            '   2: 0100007F:D431 0100007F:189D 01 00000000:00000000 00:00000000 00000000  1000        0 3 1',
+            '   3: 00000000000000000000000001000000:189D 00000000000000000000000001000000:D432 01 00000000:00000000 00:00000000 00000000  1000 0 4 1',
+            '   4: 0100007F:1F90 0100007F:D433 01 00000000:00000000 00:00000000 00000000  1000        0 5 1',
+        ]), 0x189D);
+
+        expect($sockets)->toBe(['established' => 2, 'queue' => 17]);
+    });
+
+    it('reads the listen queue and its cap out of ss', function () {
+        $ss = implode("\n", [
+            'LISTEN 3      4096         127.0.0.1:6301       0.0.0.0:*',
+            'LISTEN 0      4096             [::1]:6301          [::]:*',
+            'LISTEN 9      511          127.0.0.1:8080       0.0.0.0:*',
+        ]);
+
+        expect(Sampler::ssListen($ss, 6301))->toBe(['queue' => 3, 'limit' => 4096])
+            ->and(Sampler::ssListen($ss, 7000))->toBeNull();
+    });
+
+    it('reads a thread\'s CPU from its stat line, and its share of a core since the last reading', function () {
+        $stat = '4242 (node (worker) x) R 1 4242 4242 0 -1 4194560 100 0 0 0 750 125 0 0 20 0 11 0 1 2 3';
+
+        expect(Sampler::threadTicks($stat))->toBe(875)
+            ->and(Sampler::threadTicks('garbage'))->toBeNull()
+            ->and(Sampler::busiestSince(
+                ['4242/4242' => 100, '4242/4250' => 0, '4300/4300' => 50],
+                ['4242/4242' => 590, '4242/4250' => 20, '4300/4300' => 75, '4300/4301' => 400],
+                5.0,
+                100,
+            ))->toBe([4242 => 98.0, 4300 => 5.0]);
     });
 });
