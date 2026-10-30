@@ -110,6 +110,12 @@ final readonly class ShellData extends Data
     public function __construct(public string $name, public BadgeData $badge) {}
 }
 
+final readonly class LazyShellData extends Data
+{
+    /** @param Lazy<BadgeData> $badge */
+    public function __construct(public Lazy $badge) {}
+}
+
 function page(): OrderPageData
 {
     Resolved::$count = [];
@@ -246,10 +252,29 @@ describe('an always field', function () {
             ->and((new Encoder())->encode(new BadgeData(3), segment: 'shop'))->toBe(['unread' => 3]);
     });
 
-    // A segment is chosen before anything is encoded, from the loader's own
-    // Data: deeper, the mark would be silently ignored.
-    it('is refused below a loader\'s own Data, where it could never take effect', function () {
-        expect(fn () => (new Encoder())->encode(new ShellData('Shop', new BadgeData(3)), segment: 'shop'))
-            ->toThrow(\LogicException::class, 'is met at $.badge and has an #[Always] field');
+    // A segment is chosen before anything is encoded, from the loader's
+    // Data and the Data it holds (ADR 0120): sent as any field is there.
+    it('is sent from Data a loader\'s own Data holds', function () {
+        expect((new Encoder())->encode(new ShellData('Shop', new BadgeData(3)), segment: 'shop'))
+            ->toBe(['name' => 'Shop', 'badge' => ['unread' => 3]])
+            ->and(DataShape::holdsAlways(new ShellData('Shop', new BadgeData(3))))->toBeTrue()
+            ->and(DataShape::holdsAlways([new BadgeData(1)]))->toBeTrue();
+    });
+
+    // Inside a Lazy it exists only once resolved, after the segments were
+    // chosen: the mark would be silently ignored, so it is refused -- and
+    // finding it is never what resolves the Lazy.
+    it('is refused inside a Lazy, where it could never take effect', function () {
+        $resolved = false;
+        $shell = new LazyShellData(Lazy::of(static function () use (&$resolved): BadgeData {
+            $resolved = true;
+
+            return new BadgeData(3);
+        }));
+
+        expect(DataShape::holdsAlways($shell))->toBeFalse()
+            ->and($resolved)->toBeFalse()
+            ->and(fn () => (new Encoder())->encode($shell, segment: 'shop'))
+            ->toThrow(\LogicException::class, 'is met at $.badge, inside a Lazy or a ProvidesData, and has an #[Always] field');
     });
 });

@@ -96,9 +96,9 @@ final class Encoder
             $value === null, \is_bool($value), \is_int($value), \is_float($value), \is_string($value) => $value,
             \is_array($value) => $this->walkArray($value, $path, $depth, $seen, $scope),
             $value instanceof Bin => $value,
-            $value instanceof Lazy => $this->walk($value->resolve(), $path, $depth, $seen, $scope),
+            $value instanceof Lazy => $this->deferred($scope, fn (): mixed => $this->walk($value->resolve(), $path, $depth, $seen, $scope)),
             $value instanceof Data => $this->walkData($value, $path, $depth, $seen, $scope),
-            $value instanceof ProvidesData => $this->walk($this->provided($value, $path, $scope), $path, $depth, $seen, $scope),
+            $value instanceof ProvidesData => $this->deferred($scope, fn (): mixed => $this->walk($this->provided($value, $path, $scope), $path, $depth, $seen, $scope)),
             $value instanceof Scroll => $this->walkScroll($value, $path, $depth, $seen, $scope),
             \is_object($value) => throw DataBoundaryException::notData($value, $path),
             default => throw DataBoundaryException::badResource($path, get_debug_type($value)),
@@ -155,13 +155,14 @@ final class Encoder
 
         // An #[Always] field decides which segments a partial reload renders,
         // and that is decided from the Data a loader returned, before any of
-        // it is encoded. Anywhere deeper the mark could never take effect, so
-        // it is refused rather than ignored.
-        if ($path !== '$' && DataShape::always($value::class) !== []) {
+        // it is encoded -- its own fields and the Data they hold. One met
+        // inside a Lazy or a ProvidesData was produced only now, too late to
+        // take effect, so it is refused rather than ignored (ADR 0120).
+        if ($scope->deferred > 0 && DataShape::always($value::class) !== []) {
             throw new \LogicException(
-                $value::class . " is met at {$path} and has an #[Always] field, which only the Data a layout's "
-                . "or page's loader returns may have: it is what says the loader's segment is rendered on every "
-                . 'partial reload. Move the field to that Data class.',
+                $value::class . " is met at {$path}, inside a Lazy or a ProvidesData, and has an #[Always] field. "
+                . "Which segments a partial reload renders is decided from the loaders' Data before any of it is "
+                . 'resolved, so the mark could never take effect there. Move the field out of the Lazy.',
             );
         }
 
@@ -414,7 +415,22 @@ final class Encoder
             return [self::RESCUED_KEY => $this->reported($e)];
         }
 
-        return $this->walk($value, $path, $depth, $seen, $scope);
+        return $this->deferred($scope, fn (): mixed => $this->walk($value, $path, $depth, $seen, $scope));
+    }
+
+    /**
+     * Runs $walk counted as inside a value produced only as it is encoded.
+     *
+     * @param \Closure(): mixed $walk
+     */
+    private function deferred(EncodeScope $scope, \Closure $walk): mixed
+    {
+        $scope->deferred++;
+        try {
+            return $walk();
+        } finally {
+            $scope->deferred--;
+        }
     }
 
     private function reported(\Throwable $e): string

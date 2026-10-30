@@ -313,9 +313,54 @@ final class DataShape
     }
 
     /**
+     * Whether a loader's value holds an #[Always] field anywhere the
+     * encoder will meet it without resolving anything first: in its own
+     * fields, or in a Data object, a list or a Scroll's items reached from
+     * them (ADR 0120). Not through a Lazy, a ProvidesData or a hooked
+     * property, whose values exist only once read -- reading one here would
+     * run what a partial reload leaving the segment out is there to skip.
+     * The encoder refuses an #[Always] field it meets past one of those.
+     */
+    public static function holdsAlways(mixed $value, int $depth = 0): bool
+    {
+        if ($depth > Encoder::MAX_DEPTH) {
+            return false;
+        }
+        if (\is_array($value)) {
+            foreach ($value as $item) {
+                if (self::holdsAlways($item, $depth + 1)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        if ($value instanceof Scroll) {
+            return self::holdsAlways($value->items, $depth + 1);
+        }
+        if (!$value instanceof Data) {
+            return false;
+        }
+        if (self::always($value::class) !== []) {
+            return true;
+        }
+        foreach (self::fieldsOf($value::class) as $property) {
+            if ($property->isVirtual() || $property->hasHooks() || !$property->isInitialized($value)) {
+                continue;
+            }
+            if (self::holdsAlways($property->getValue($value), $depth + 1)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * The fields marked #[Always], by name. A segment whose data has one is
      * re-rendered on every partial reload of its page (ADR 0045), so this is
-     * read off the Data class a loader returned, before anything renders.
+     * read off the Data a loader returned, before anything renders --
+     * holdsAlways() finds one anywhere in it.
      *
      * @param class-string $class
      * @return array<string, true>

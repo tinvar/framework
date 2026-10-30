@@ -12,6 +12,13 @@ namespace Tinvar\Data;
  */
 final class EncodeScope
 {
+    /**
+     * How many Lazy or ProvidesData values the walk is inside: what it met
+     * there was produced only as it was encoded, so a loader's segment could
+     * not have been chosen by it (an #[Always] field, ADR 0120).
+     */
+    public int $deferred = 0;
+
     /** The part of a default once key that names the page, worked out the first time one is needed. */
     private ?string $page = null;
 

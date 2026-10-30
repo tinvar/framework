@@ -172,15 +172,21 @@ final class LoaderRunner
     }
 
     /**
-     * The partial reload with $segment added when its data has an #[Always]
+     * The partial reload with $segment added when its data holds an #[Always]
      * field: "included even in partial requests", whether X-Only named it or
-     * X-Except left it out, as Inertia's always props are (ADR 0045).
+     * X-Except left it out, as Inertia's always props are (ADR 0045). On the
+     * loader's own Data, or any Data its fields hold that the encoder meets
+     * without resolving anything (ADR 0120).
      *
      * @param list<string> $keys the route's segments, outermost first
      */
     private static function always(?PartialReload $partial, Data $data, string $segment, array $keys): ?PartialReload
     {
-        return $partial === null || DataShape::always($data::class) === [] ? $partial : $partial->including($segment, $keys);
+        if ($partial === null || $partial->includes($segment) || !DataShape::holdsAlways($data)) {
+            return $partial;
+        }
+
+        return $partial->including($segment, $keys);
     }
 
     /**

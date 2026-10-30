@@ -70,6 +70,18 @@ final readonly class StampedPageData extends Data
     public function __construct(#[Always] public string $stamp) {}
 }
 
+/** The badge as Data of its own, held by the layout's: still its segment's (ADR 0120). */
+final readonly class BadgeData extends Data
+{
+    public function __construct(#[Always] public int $unread) {}
+}
+
+final readonly class DeskData extends Data
+{
+    /** @param list<BadgeData> $badges */
+    public function __construct(public string $name, public array $badges) {}
+}
+
 #[Layout('/', view: 'app/layout')]
 final class ShellLayout
 {
@@ -107,6 +119,24 @@ final class ThreadPage
     }
 }
 
+#[Layout('/desk', view: 'desk/layout')]
+final class DeskLayout
+{
+    public function __invoke(): DeskData
+    {
+        return new DeskData('Desk', [new BadgeData(2)]);
+    }
+}
+
+#[Page('/desk/today', view: 'desk/today', name: 'desk.today')]
+final class TodayPage
+{
+    public function __invoke(): StampedPageData
+    {
+        return new StampedPageData('today');
+    }
+}
+
 #[Page('/stamped', view: 'app/stamped', name: 'stamped')]
 final class StampedPage
 {
@@ -121,7 +151,7 @@ function router(): Router
     Ran::$events = [];
     $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
     $routes = new RouteRegistry();
-    $routes->registerAll([ShellLayout::class, InboxLayout::class, ThreadPage::class, StampedPage::class]);
+    $routes->registerAll([ShellLayout::class, InboxLayout::class, ThreadPage::class, StampedPage::class, DeskLayout::class, TodayPage::class]);
 
     return new Router(
         $routes,
@@ -154,6 +184,13 @@ function ask(string $path, array $headers): array
 const THREAD = ['RSC' => '1', 'X-Page' => 'inbox/thread'];
 
 describe('a segment with an #[Always] field', function () {
+    it('is rendered when the #[Always] field is in Data its loader\'s Data holds', function () {
+        [$loaded, $encoded] = ask('/desk/today', ['RSC' => '1', 'X-Page' => 'desk/today', 'X-Only' => 'page.stamp']);
+
+        expect($loaded->segments)->toBe(['desk', 'page'])
+            ->and($encoded['layouts']['desk'])->toBe(['name' => 'Desk', 'badges' => [['unread' => 2]]]);
+    });
+
     it('is rendered on a partial reload that names another, in its place in the chain', function () {
         [$loaded, $encoded] = ask('/inbox/thread', [...THREAD, 'X-Only' => 'page.subject']);
 

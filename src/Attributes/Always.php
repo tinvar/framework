@@ -15,10 +15,11 @@ namespace Tinvar\Attributes;
  * reload of its page, whether X-Only names it or X-Except leaves it out --
  * as Inertia sends an always prop whatever `only` and `except` say. ADR 0045.
  *
- * Read off the Data class a layout's or page's loader returns, since that
- * is what decides which segments are rendered, before anything is encoded.
- * The encoder refuses one met deeper in the data, where it could never
- * take effect.
+ * Read off the Data a layout's or page's loader returns, since that decides
+ * which segments are rendered, before anything is encoded: its own fields,
+ * and any Data, list or Scroll they hold (ADR 0120). The encoder refuses
+ * one met inside a Lazy or a ProvidesData, whose value exists only once
+ * encoding resolves it -- too late to take effect.
  */
 #[\Attribute(\Attribute::TARGET_PARAMETER | \Attribute::TARGET_PROPERTY)]
 final readonly class Always {}
