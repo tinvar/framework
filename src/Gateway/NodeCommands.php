@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Gateway;
 
+use Tinvar\Http\NonceStore;
 use Tinvar\Nodes\NodeIdentity;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\ReadOnlyViolation;
@@ -92,12 +93,16 @@ final readonly class NodeCommands
      * signature under PHP's public key and this purpose, the node and the
      * environment its own -- as its certificate names them (NodeIdentity)
      * -- and the command neither expired nor issued for longer than any is.
-     * Remembering ids until they expire, so each runs once, is the agent's.
+     * And, given where to remember it (ADR 0119), that it has not been run:
+     * its id is spent until it expires, so each runs once however often the
+     * bus relays it.
      *
      * @param string $publicKey the raw public key (SigningKey::$publicKey)
+     * @param NonceStore|null $spent where the node remembers the commands it has run;
+     *        without it, remembering is the caller's
      * @throws TokenError
      */
-    public static function open(string $sealed, string $publicKey, string $node, string $environment, ?int $now = null): NodeCommand
+    public static function open(string $sealed, string $publicKey, string $node, string $environment, ?int $now = null, ?NonceStore $spent = null): NodeCommand
     {
         $command = NodeCommand::fromMap(SignedEnvelope::decode($sealed, $publicKey, self::PURPOSE));
         $now ??= time();
@@ -114,6 +119,11 @@ final readonly class NodeCommands
         if ($command->issuedAt > $now + TokenClaims::CLOCK_SKEW || $command->expiresAt - $command->issuedAt > self::MAX_TTL) {
             throw new TokenError('issued for longer than any command is');
         }
+        // Spent last, every check passed: a command refused above is not
+        // remembered, so a bus's garbage spends nothing.
+        if ($spent !== null && !$spent->claim(self::PURPOSE . "\0" . $node, $command->id, $command->expiresAt, $now)) {
+            throw new TokenError('run already');
+        }
 
         return $command;
     }
@@ -124,9 +134,9 @@ final readonly class NodeCommands
      *
      * @throws TokenError
      */
-    public static function openFor(string $sealed, string $publicKey, NodeIdentity $node, ?int $now = null): NodeCommand
+    public static function openFor(string $sealed, string $publicKey, NodeIdentity $node, ?int $now = null, ?NonceStore $spent = null): NodeCommand
     {
-        return self::open($sealed, $publicKey, $node->id, $node->environment, $now);
+        return self::open($sealed, $publicKey, $node->id, $node->environment, $now, $spent);
     }
 
     private function now(): int

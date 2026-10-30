@@ -159,7 +159,10 @@ describe('node commands', function () {
         $entries = $outbox->since(NOW - 60);
         expect($entries)->toHaveCount(1)
             ->and($entries[0]->id)->toBe($kept->id)
-            ->and(NodeCommands::open($entries[0]->sealed, NodeCommands::key(APP_KEY, ENV)->publicKey, 'node-7', ENV, NOW)->command)->toBe('vm.start');
+            ->and(NodeCommands::open($entries[0]->sealed, NodeCommands::key(APP_KEY, ENV)->publicKey, 'node-7', ENV, NOW)->command)->toBe('vm.start')
+            // Found again by its id, as a result coming back names it (ADR 0119).
+            ->and($outbox->find($kept->id)?->sealed)->toBe($entries[0]->sealed)
+            ->and($outbox->find('missing'))->toBeNull();
     });
 });
 

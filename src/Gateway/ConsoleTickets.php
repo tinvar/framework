@@ -7,6 +7,7 @@ namespace Tinvar\Gateway;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Http\BuildRegistry;
+use Tinvar\Http\NonceStore;
 use Tinvar\Orm\Orm;
 use Tinvar\Render\TokenClaims;
 use Tinvar\Render\TokenError;
@@ -110,13 +111,17 @@ final readonly class ConsoleTickets
      * What the edge does with a ticket a browser presents, written once as
      * a reference: the signature under PHP's public key and this purpose,
      * the environment the edge's own, the console the one asked for, and
-     * neither expired nor issued for longer than any ticket is. Spending
-     * its id once is the edge's.
+     * neither expired nor issued for longer than any ticket is. And, given
+     * where to remember it (ADR 0119), that it has not been presented
+     * before: its id is spent until it expires, so a ticket opens one
+     * console once.
      *
      * @param string $publicKey the raw public key (SigningKey::$publicKey)
+     * @param NonceStore|null $spent where the edge remembers the tickets it has taken;
+     *        without it, remembering is the caller's
      * @throws TokenError
      */
-    public static function open(string $ticket, string $publicKey, string $target, string $environment, ?int $now = null): ConsoleTicket
+    public static function open(string $ticket, string $publicKey, string $target, string $environment, ?int $now = null, ?NonceStore $spent = null): ConsoleTicket
     {
         $claims = ConsoleTicket::fromMap(SignedEnvelope::decode($ticket, $publicKey, self::PURPOSE));
         $now ??= time();
@@ -132,6 +137,11 @@ final readonly class ConsoleTickets
         }
         if ($claims->issuedAt > $now + TokenClaims::CLOCK_SKEW || $claims->expiresAt - $claims->issuedAt > self::MAX_TTL) {
             throw new TokenError('issued for longer than any ticket is');
+        }
+        // Spent last, every check passed: a ticket refused above is not
+        // remembered.
+        if ($spent !== null && !$spent->claim(self::PURPOSE, $claims->id, $claims->expiresAt, $now)) {
+            throw new TokenError('presented already');
         }
 
         return $claims;

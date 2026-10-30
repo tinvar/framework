@@ -66,4 +66,11 @@ final readonly class DatabaseCommandOutbox implements CommandOutbox
             (int) $row['created_at'],
         ), $rows);
     }
+
+    public function find(string $id): ?OutboxEntry
+    {
+        $row = $this->connection->select("SELECT id, node, sealed, created_at FROM {$this->table} WHERE id = ?", [$id])[0] ?? null;
+
+        return $row === null ? null : new OutboxEntry((string) $row['id'], (string) $row['node'], (string) $row['sealed'], (int) $row['created_at']);
+    }
 }

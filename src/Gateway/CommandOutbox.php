@@ -28,4 +28,7 @@ interface CommandOutbox
      * @return list<OutboxEntry>
      */
     public function since(int $since, int $limit = 100): array;
+
+    /** The command appended as $id, if any: what a result coming back answers (CommandResults). */
+    public function find(string $id): ?OutboxEntry;
 }

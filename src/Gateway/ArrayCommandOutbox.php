@@ -22,4 +22,15 @@ final class ArrayCommandOutbox implements CommandOutbox
 
         return \array_slice($found, 0, max(1, $limit));
     }
+
+    public function find(string $id): ?OutboxEntry
+    {
+        foreach ($this->entries as $entry) {
+            if ($entry->id === $id) {
+                return $entry;
+            }
+        }
+
+        return null;
+    }
 }
