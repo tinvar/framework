@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Tinvar\Server;
 
+use Tinvar\Config\ConfigException;
+use Tinvar\Config\FrameworkConfig;
+
 /**
  * Where the FrankenPHP binary is.
  *
@@ -42,11 +45,17 @@ final class FrankenPhp
     /** @return array<string, string|null> */
     private static function candidates(string $projectRoot, ?string $explicit): array
     {
-        $env = getenv('TINVAR_FRANKENPHP');
+        // As the framework's config reads TINVAR_FRANKENPHP: a refusal of
+        // any of its variables is said here, before anything starts.
+        try {
+            $env = FrameworkConfig::load()->frankenphp;
+        } catch (ConfigException $e) {
+            throw new ServeException($e->getMessage(), 0, $e);
+        }
 
         return [
             'flag' => $explicit,
-            'env' => \is_string($env) ? $env : null,
+            'env' => $env,
             'project' => "{$projectRoot}/tools/frankenphp",
             'main checkout' => self::mainCheckout($projectRoot),
             'path' => self::onPath(),

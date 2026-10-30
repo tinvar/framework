@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Config;
 
 use Tinvar\Attributes\Config;
+use Tinvar\Support\AppKey;
 use Tinvar\Support\BuildProfile;
 use Tinvar\Support\DevMode;
 
@@ -14,7 +15,9 @@ use Tinvar\Support\DevMode;
  * value, the hub's keys as Secrets.
  *
  * Read where the framework uses them -- the server, the renderers' user,
- * the live hub, the queue worker's stop -- through load(), and listed by
+ * the live hub, the queue worker's stop, the node CA, staging's key for an
+ * import, the FrankenPHP binary `tinvar serve` runs -- through load(), and
+ * listed by
  * `tinvar config` beside the application's own classes when its Kernel
  * names this one in CONFIGS, as the shop's and the skeleton's do.
  *
@@ -47,6 +50,9 @@ final readonly class FrameworkConfig
      * @param string|null $liveAudience what the hub's tokens are for, where not the hub's default audience
      * @param string|null $liveHubUrl a hub run as a service of its own (HubUrl)
      * @param string|null $stopBudget a queue worker's seconds from SIGTERM to its kill (its stop budget)
+     * @param string|null $nodeCa the CA file this environment's nodes are issued by (NodeAuthority), absolute
+     * @param Secret|null $stagingAppKey staging's own key, for `staging:import` on production's side (ADR 0090)
+     * @param string|null $frankenphp the FrankenPHP binary `tinvar serve` runs, where --frankenphp names none
      */
     public function __construct(
         public ?string $dev = null,
@@ -59,6 +65,10 @@ final readonly class FrameworkConfig
         public ?string $liveAudience = null,
         public ?string $liveHubUrl = null,
         public ?string $stopBudget = null,
+        public ?string $nodeCa = null,
+        #[\SensitiveParameter]
+        public ?Secret $stagingAppKey = null,
+        public ?string $frankenphp = null,
     ) {
         $problems = [];
 
@@ -79,6 +89,16 @@ final readonly class FrameworkConfig
                 $problems[] = HubUrl::ENV . ' must be the hub\'s https URL ending in /.well-known/mercure, with no '
                     . 'credentials, query or fragment; plain HTTP only to this machine.';
             }
+        }
+
+        // A file named from wherever the reader happens to run would be a
+        // different file to each process that reads it.
+        if ($nodeCa !== null && !str_starts_with($nodeCa, '/')) {
+            $problems[] = 'TINVAR_NODE_CA must be an absolute path.';
+        }
+        // Its length, never its value: staging's key is a secret too.
+        if ($stagingAppKey !== null && \strlen(trim($stagingAppKey->reveal())) < AppKey::MIN_LENGTH) {
+            $problems[] = 'TINVAR_STAGING_APP_KEY must be at least ' . AppKey::MIN_LENGTH . ' bytes.';
         }
 
         if ($problems !== []) {

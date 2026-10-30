@@ -111,8 +111,10 @@ final readonly class NodeAuthority
     public static function fromEnvironment(?array $env = null, ?int $now = null): ?self
     {
         $own = $env === null;
-        $env ??= array_filter(getenv(), \is_string(...));
-        $file = $env[self::CA_ENV] ?? '';
+        // The process's own as the framework's config read it; a given
+        // environment, a test's, as it says.
+        $file = $own ? (FrameworkConfig::load()->nodeCa ?? '') : ($env[self::CA_ENV] ?? '');
+        $env ??= [];
         if ($file === '') {
             return null;
         }

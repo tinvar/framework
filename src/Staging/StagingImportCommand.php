@@ -130,7 +130,9 @@ final class StagingImportCommand
      */
     private function stagingKey(?string $file, array $env): string
     {
-        $given = trim($env[self::STAGING_KEY_ENV] ?? '');
+        // The process's own as the framework's config read it, a Secret
+        // until here; a given environment, a test's, as it says.
+        $given = trim($this->env === null ? (string) FrameworkConfig::load()->stagingAppKey?->reveal() : ($env[self::STAGING_KEY_ENV] ?? ''));
         if ($given !== '') {
             if (\strlen($given) < AppKey::MIN_LENGTH) {
                 throw new ImportRefused(self::STAGING_KEY_ENV . ' must be at least ' . AppKey::MIN_LENGTH . ' bytes.');

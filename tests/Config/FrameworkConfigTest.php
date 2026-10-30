@@ -138,3 +138,25 @@ it('is listed by the shop beside its own classes, none reading a variable anothe
     expect(\Shop\Kernel::CONFIGS)->toContain(FrameworkConfig::class)
         ->and(Configs::check(\Shop\Kernel::CONFIGS))->toBe([]);
 });
+
+// ADR 0111: the node CA, staging's key and the FrankenPHP binary, read as
+// the rest are -- once, by variable, staging's key a Secret.
+it('reads the node CA, staging\'s key and the FrankenPHP binary, refusing each by variable alone', function () {
+    $config = Configs::load(FrameworkConfig::class, [
+        'TINVAR_NODE_CA' => '/etc/tinvar/node-ca.pem',
+        'TINVAR_STAGING_APP_KEY' => str_repeat('k', 32),
+        'TINVAR_FRANKENPHP' => '/usr/local/bin/frankenphp',
+    ]);
+    $e = refusal(['TINVAR_NODE_CA' => 'relative/ca.pem', 'TINVAR_STAGING_APP_KEY' => 'short-staging-secret']);
+
+    expect($config->nodeCa)->toBe('/etc/tinvar/node-ca.pem')
+        ->and($config->stagingAppKey)->toBeInstanceOf(Secret::class)
+        ->and($config->stagingAppKey?->reveal())->toBe(str_repeat('k', 32))
+        ->and($config->frankenphp)->toBe('/usr/local/bin/frankenphp')
+        ->and($e->problems)->toBe([
+            'TINVAR_NODE_CA must be an absolute path.',
+            'TINVAR_STAGING_APP_KEY must be at least 32 bytes.',
+        ])
+        ->and($e->getMessage())->not->toContain('short-staging-secret')
+        ->and($e->getMessage())->not->toContain('relative');
+});
