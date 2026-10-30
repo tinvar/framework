@@ -253,7 +253,7 @@ describe('a statement\'s span', function () {
         expect(StatementText::summary(StatementText::sanitize('update "orders" set paid = 1')))->toBe('UPDATE orders')
             ->and(StatementText::summary('VACUUM'))->toBe('VACUUM')
             ->and(StatementText::summary('frobnicate the table'))->toBe('statement')
-            ->and(StatementText::sanitize('SELECT $1, t1.x FROM t1 WHERE a = $tag$ x $tag$ AND b = E\'it\\\'s\''))->toBe('SELECT $1, t1.x FROM t1 WHERE a = ? AND b = ?')
+            ->and(StatementText::sanitize('SELECT $1, t1.x FROM t1 WHERE a = $tag$ x $tag$ AND b = E\'it\\\'s\'', 'postgresql'))->toBe('SELECT $1, t1.x FROM t1 WHERE a = ? AND b = ?')
             ->and(StatementText::sanitize('SELECT "ada@example.com"', 'mysql'))->toBe('SELECT ?')
             // On Postgres a backslash ends nothing: 'x\\' is a whole string,
             // and the next one's value must not be left between them.
@@ -271,6 +271,11 @@ describe('a statement\'s span', function () {
             // it opens a string.
             ->and(StatementText::sanitize("SELECT /* a /* b */ 'c */ hunter2 ', 'x'", 'mysql'))->toBe('SELECT ?, ?')
             ->and(StatementText::sanitize("SELECT /* a /* b */ 'c */ hunter2 ', 'x'", 'sqlite'))->toBe('SELECT ?, ?')
+            // A $ inside a name is the name's, and opens no dollar quote --
+            // nor does one anywhere off Postgres.
+            ->and(StatementText::sanitize("SELECT a\$b\$, 'x' FROM t\$b\$", 'postgresql'))->toBe('SELECT a$b$, ? FROM t$b$')
+            ->and(StatementText::sanitize("SELECT a\$b\$, 'x' FROM t\$b\$", 'mysql'))->toBe('SELECT a$b$, ? FROM t$b$')
+            ->and(StatementText::sanitize("SELECT \$\$ it's \$\$, 'hunter2'", 'sqlite'))->toBe('?')
             ->and(StatementText::sanitize("SELECT \$\$ hunter2 \$\$, 'x', \$\$ more \$\$", 'postgresql'))->toBe('SELECT ?, ?, ?');
     });
 

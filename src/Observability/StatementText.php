@@ -49,8 +49,10 @@ final class StatementText
             $postgres ? '(?<block>/\*(?:(?&block)|[^*/]++|\*(?!/)|/(?!\*))*+(?:\*/|\z))' : '/\*.*?(?:\*/|\z)',
             // A line comment, and MySQL's # one.
             '--[^\n]*+' . ($mysql ? '|\#[^\n]*+' : ''),
-            // Postgres's dollar-quoted strings, $$...$$ or $tag$...$tag$.
-            '\$(?<tag>[A-Za-z_][A-Za-z0-9_]*|)\$.*?(?:\$\k<tag>\$|\z)',
+            // Postgres's dollar-quoted strings, $$...$$ or $tag$...$tag$:
+            // there alone, and never inside a name, where a `$` is the
+            // name's (a$b$ is a column, on Postgres and MySQL both).
+            $postgres ? '(?<![A-Za-z0-9_$])\$(?<tag>[A-Za-z_][A-Za-z0-9_]*|)\$.*?(?:\$\k<tag>\$|\z)' : '(*FAIL)',
             // An escape string, E'...', where a backslash escapes the quote.
             "(?<![A-Za-z0-9_])[Ee]'(?:''|\\\\.|[^'\\\\])*+(?:'|\\z)",
             // Any other quoted string and its prefix -- X'', B'', N''. A
