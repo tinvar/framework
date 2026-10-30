@@ -23,9 +23,14 @@ namespace Tinvar\Http;
  *
  * Fixed windows aligned to the clock, as the other stores keep them: a
  * window's counter is one row named for the window, so nothing has to reset
- * a count. A window follows the clock of the server counting in it; servers
- * kept in step by NTP agree to within milliseconds, and a hit in that sliver
- * at a boundary counts in the neighbouring window.
+ * a count. On Postgres and MySQL the clock is the database's (ADR 0125):
+ * each store asks the server for its time when it first counts and every
+ * CLOCK_EVERY seconds after, and counts by its own clock moved by the
+ * difference. Every application server then names the same window for the
+ * same moment, however far its own clock has drifted -- one out of step by
+ * a minute no longer counts a whole window apart from the rest -- to within
+ * the second the answer is rounded to and the drift between two asks.
+ * SQLite is on this host, and its clock is this host's.
  *
  * The connection must be the store's own. A count made inside the request's
  * transaction would roll back with it -- a failed sign-in counted, then
@@ -49,19 +54,31 @@ final class PdoThrottleStore implements ThrottleStore
      */
     public const int SWEEP_BATCH = 10;
 
+    /** Seconds between asking the database for its time. */
+    public const int CLOCK_EVERY = 300;
+
     private ?\PDO $pdo = null;
 
     private string $driver = '';
 
+    /** The database's clock less this server's, and when (by this server's) that was asked; null until it is. */
+    private ?int $offset = null;
+
+    private int $offsetAt = 0;
+
     /**
      * @param \PDO|(\Closure(): \PDO) $connection the store's own connection, or what opens it
      * @param string $table where the counts are kept; `schema.table` names one in another schema
-     * @param (\Closure(): int)|null $clock for tests; defaults to time()
+     * @param (\Closure(): int)|null $clock for tests: the time windows are counted by, taken as it is;
+     *        the database's clock otherwise
+     * @param (\Closure(): int)|null $hostClock for tests: this server's own clock, which the
+     *        database's is read against; time() unless given
      */
     public function __construct(
         private readonly \PDO|\Closure $connection,
         private readonly string $table = self::TABLE,
         private readonly ?\Closure $clock = null,
+        private readonly ?\Closure $hostClock = null,
     ) {
         self::assertIdentifier($table);
     }
@@ -266,8 +283,37 @@ final class PdoThrottleStore implements ThrottleStore
         }
     }
 
+    /**
+     * Now, by the database's clock where it has one of its own; see the
+     * class comment. A clock given for tests is taken as it is.
+     */
     private function now(): int
     {
-        return $this->clock === null ? time() : ($this->clock)();
+        if ($this->clock !== null) {
+            return ($this->clock)();
+        }
+
+        $pdo = $this->pdo();
+        $local = $this->hostClock === null ? time() : ($this->hostClock)();
+        if ($this->driver === 'sqlite') {
+            return $local;
+        }
+
+        if ($this->offset === null || $local - $this->offsetAt >= self::CLOCK_EVERY || $local < $this->offsetAt) {
+            $statement = $pdo->query($this->driver === 'mysql'
+                ? 'SELECT UNIX_TIMESTAMP()'
+                // clock_timestamp(), not now(): the moment of asking, not
+                // the start of a transaction the connection may be in.
+                : 'SELECT CAST(FLOOR(EXTRACT(EPOCH FROM clock_timestamp())) AS BIGINT)');
+            $remote = $statement === false ? false : $statement->fetchColumn();
+            // A throttle that cannot tell the time cannot count: closed.
+            if (!\is_int($remote) && !(\is_string($remote) && ctype_digit($remote))) {
+                throw new \RuntimeException('The database would not say what time it is.');
+            }
+            $this->offset = (int) $remote - $local;
+            $this->offsetAt = $local;
+        }
+
+        return $local + $this->offset;
     }
 }

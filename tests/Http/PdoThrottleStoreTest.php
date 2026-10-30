@@ -182,6 +182,32 @@ it('shares its counts with every store on the same table', function (string $dri
     });
 })->with(DRIVERS);
 
+// ADR 0125: two application servers whose clocks disagree by an hour still
+// count in one window, the database's -- not a window apart each.
+it('counts by the database\'s clock, whatever this server\'s says', function (string $driver) {
+    $missing = missing($driver);
+    if ($missing !== null) {
+        $this->markTestSkipped($missing);
+    }
+
+    onDriver($driver, function (\PDO $pdo, string $dsn, string $table) use ($driver): void {
+        installed($pdo, $table);
+        $behind = new PdoThrottleStore($pdo, $table, hostClock: static fn (): int => time() - 3600);
+        $ahead = new PdoThrottleStore(another($driver, $dsn), $table, hostClock: static fn (): int => time() + 3600);
+
+        [$first, $resetsAt] = $behind->increment('k', 600);
+        [$second, $resetsAgain] = $ahead->increment('k', 600);
+        $statement = $pdo->query($driver === 'mysql' ? 'SELECT UNIX_TIMESTAMP()' : 'SELECT CAST(FLOOR(EXTRACT(EPOCH FROM clock_timestamp())) AS BIGINT)');
+        $database = (int) ($statement === false ? 0 : $statement->fetchColumn());
+
+        expect($first)->toBe(1)
+            ->and($second)->toBe(2)
+            ->and($resetsAgain)->toBe($resetsAt)
+            ->and($resetsAt - $database)->toBeGreaterThan(-2)
+            ->and($resetsAt - $database)->toBeLessThanOrEqual(602);
+    });
+})->with(['pgsql' => ['pgsql'], 'mysql' => ['mysql']]);
+
 it('keeps the caller\'s key out of the table', function (string $driver) {
     $missing = missing($driver);
     if ($missing !== null) {
