@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Transfers;
 
+use Tinvar\Actions\TagInvalidation;
 use Tinvar\Cache\TagNamespace;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Export;

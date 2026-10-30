@@ -167,10 +167,10 @@ final class StaticPages
      *
      * What every invalidation takes static pages down through -- an
      * action's, an endpoint's, an import's (TagInvalidation) and a job's or
-     * a task's (Live\Invalidator), ADR 0106. A page that could not be taken
-     * down is logged, as a live update that could not be published is, and
-     * serves on until its next revalidation: the writes are committed and
-     * the answer is theirs.
+     * a task's (the live updates' invalidator), ADR 0106. A page that
+     * could not be taken down is logged, as a live update that could not be
+     * published is, and serves on until its next revalidation: the writes
+     * are committed and the answer is theirs.
      *
      * @param list<string> $tags
      * @param list<string> $tenants every tenant the write ran as
