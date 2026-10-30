@@ -144,3 +144,100 @@ it('refuses a Caddyfile it cannot read', function (string $contents, string $mes
 it('refuses a missing Caddyfile', function () {
     expect(CaddyfileRules::check('/nonexistent/Caddyfile'))->toBe(['/nonexistent/Caddyfile: no Caddyfile to read, so nothing says how PHP is served.']);
 });
+
+/**
+ * $files written into a directory of their own, the first checked.
+ *
+ * @param array<string, string> $files name => contents
+ * @return list<string>
+ */
+function checkedTree(array $files, bool $holdsResponses = true): array
+{
+    $directory = sys_get_temp_dir() . '/tinvar-caddyfile-' . bin2hex(random_bytes(4));
+    mkdir($directory);
+    try {
+        foreach ($files as $name => $contents) {
+            if (!is_dir(\dirname("{$directory}/{$name}"))) {
+                mkdir(\dirname("{$directory}/{$name}"), 0o755, true);
+            }
+            file_put_contents("{$directory}/{$name}", $contents);
+        }
+
+        return CaddyfileRules::check($directory . '/' . array_key_first($files), $holdsResponses);
+    } finally {
+        exec('rm -rf ' . escapeshellarg($directory));
+    }
+}
+
+// A write to a client that stopped reading stalls for write_idle, Caddy's
+// default a minute; where a worker still writes, every other worker's
+// response waits behind it (ADR 0053, 0105).
+it('refuses PHP served with no write_idle, or a longer one, in the global options', function (string $search, string $replace, string $message) {
+    expect(implode("\n", checked(skeleton($search, $replace))))->toContain($message);
+})->with([
+    'no servers block' => ["\tservers {\n\t\ttimeouts {\n\t\t\twrite_idle 8s\n\t\t}\n\t}\n", '', 'serves PHP with no `servers` block for every listener setting `write_idle`'],
+    'no write_idle' => ["\t\t\twrite_idle 8s\n", "\t\t\tread_body 10s\n", '`servers` sets no `write_idle`'],
+    'a minute' => ['write_idle 8s', 'write_idle 1m', '`write_idle 1m` is not a duration of at most 8s'],
+    'a placeholder' => ['write_idle 8s', 'write_idle {$IDLE:8s}', '`write_idle {$IDLE:8s}` is not a duration of at most 8s'],
+    'none at all' => ['write_idle 8s', 'write_idle 0s', '`write_idle 0s` is not a duration'],
+    'only for one listener' => ["\tservers {", "\tservers :9000 {", 'serves PHP with no `servers` block for every listener'],
+]);
+
+it('takes a shorter write_idle, one on a line, and a listener of its own held to it too', function () {
+    expect(checked(skeleton('write_idle 8s', 'write_idle 2500ms')))->toBe([])
+        ->and(checked(skeleton("\t\ttimeouts {\n\t\t\twrite_idle 8s\n\t\t}\n", "\t\ttimeouts { write_idle 5s }\n")))->toBe([])
+        ->and(implode("\n", checked(skeleton("\tservers {", "\tservers :9000 {\n\t\tprotocols h1\n\t}\n\tservers {"))))
+        ->toContain('`servers :9000` sets no `write_idle`');
+});
+
+it('asks no write_idle of a file that serves no PHP', function () {
+    expect(checked("http://:8080 {\n\trespond \"ok\" 200\n}\n"))->toBe([]);
+});
+
+it('holds the development Caddyfile to write_idle too', function () {
+    $dev = (string) file_get_contents(ROOT . '/packages/framework/resources/Caddyfile.dev');
+
+    expect(implode("\n", checkedTree(['Caddyfile.dev' => str_replace('write_idle 8s', 'write_idle 30s', $dev)], false)))
+        ->toContain('`write_idle 30s` is not a duration of at most 8s');
+});
+
+// What an import brings in is held to the rules where it lands.
+it('follows a snippet, a file and a glob, putting in their arguments', function () {
+    $site = skeleton();
+    $handle = (string) preg_replace('/^.*?(\n\thandle \{\n.*?\n\t\}\n).*$/s', '$1', $site);
+    $global = (string) preg_replace('/^.*?\n(\tservers \{\n.*?\n\t\}\n).*$/s', '$1', $site);
+    $withoutHandle = str_replace($handle, "\n\timport app {\$APP_STORAGE}\n", $site);
+    $bare = str_replace($global, "\timport limits/*.caddy\n", $withoutHandle);
+
+    // The handler from a snippet, its storage an argument; the limits from a glob.
+    $snippet = "(app) {\n" . str_replace(['{$APP_STORAGE:/nonexistent/tinvar-storage}', '"{$APP_STORAGE}"'], ['{args[0]}', '"{args[0]}"'], $handle) . "}\n";
+    $first = strpos($bare, "\n}\n") + 3;
+    $file = substr($bare, 0, $first) . "\n" . $snippet . substr($bare, $first);
+    expect(checkedTree(['Caddyfile' => $file, 'limits/write.caddy' => "servers {\n\ttimeouts {\n\t\twrite_idle 8s\n\t}\n}\n"]))->toBe([]);
+
+    // The same handler, missing its intercept, refused where it is written.
+    $broken = (string) preg_replace('/\n\t\tintercept \{.*?\n\t\t\}\n/s', "\n", $handle);
+    $violations = checkedTree([
+        'Caddyfile' => str_replace($handle, "\n\timport sites/app.caddy\n", $site),
+        'sites/app.caddy' => $broken,
+    ]);
+    expect($violations)->toHaveCount(1)
+        ->and($violations[0])->toMatch('/^sites\/app\.caddy:\d+: `php` is not wrapped in an `intercept` block/');
+
+    // And the global options' write_idle, missing from what a glob brings in.
+    expect(implode("\n", checkedTree(['Caddyfile' => str_replace($global, "\timport limits/*.caddy\n", $site), 'limits/none.caddy' => "servers {\n}\n"])))
+        ->toContain('`servers` sets no `write_idle`');
+});
+
+// What it cannot follow is not a pass.
+it('refuses an import it cannot read', function (array $files, string $message) {
+    expect(implode("\n", checkedTree($files)))->toContain($message);
+})->with([
+    'a file that is not there' => [['Caddyfile' => "import missing.caddy\n"], "Caddyfile:1: imports `missing.caddy`, which cannot be read"],
+    'a path named at runtime' => [['Caddyfile' => "import {\$SITES}/app.caddy\n"], 'which names its file at runtime'],
+    'an import of itself' => [['Caddyfile' => "import other.caddy\n", 'other.caddy' => "import Caddyfile\n"], 'which imports the file it is in'],
+    'a snippet inside itself' => [['Caddyfile' => "(loop) {\n\timport loop\n}\nimport loop\n"], 'imports the snippet (loop) inside itself'],
+    'a file it cannot parse' => [['Caddyfile' => "import broken.caddy\n", 'broken.caddy' => "http://:8080 {\n\tphp\n"], 'broken.caddy: a block is never closed.'],
+    'a snippet defined after it is imported, which Caddy reads as a file' => [['Caddyfile' => "import later\n(later) {\n}\n"], 'imports `later`, which cannot be read'],
+    'an import with a block' => [['Caddyfile' => "import app {\n\tx\n}\n"], 'has an `import` this check does not read'],
+]);

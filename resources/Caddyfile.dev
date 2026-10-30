@@ -24,6 +24,18 @@
 		php_ini post_max_size 11M
 	}
 
+	# A write to a client may stall for 8 s, not Caddy's default minute,
+	# before the connection is cut off. Here PHP writes every response to
+	# the client itself -- no `intercept` holds it -- and FrankenPHP's static
+	# binary holds one mutex around every write PHP makes, so a tab that
+	# stops reading would hold every other request's response behind it
+	# (ADR 0051, 0081). `tinvar check` holds an app's Caddyfile to the same.
+	servers {
+		timeouts {
+			write_idle 8s
+		}
+	}
+
 	# The Host check below goes ahead of everything, the hub and the dev
 	# server's modules included.
 	order respond first
