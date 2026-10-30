@@ -72,6 +72,12 @@ final readonly class SyncQueue implements Queue, Coordination
                 if ($release === null) {
                     break;
                 }
+                // A wait on a signal (a workflow's waitFor(), ADR 0119):
+                // nothing can send one while this process runs the job, so
+                // looking again here would spin until the deadline.
+                if (!$release['counted']) {
+                    throw new \LogicException("{$envelope->class} waits on a signal, which the sync queue, running it here and now, cannot wait for.");
+                }
                 if ($envelope->releases >= $this->runner->options($envelope)->releases) {
                     throw new JobRefused('releases', "{$envelope->class} paused more times than its #[Queue(releases:)] allows.");
                 }

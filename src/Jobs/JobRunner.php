@@ -95,10 +95,11 @@ final readonly class JobRunner
      * sealed again with the checkpoint it gave and one more pause counted.
      *
      * @param array<array-key, mixed>|null $checkpoint
+     * @param bool $counted whether the pause counts against #[Queue(releases:)]
      */
-    public function pause(Envelope $envelope, ?array $checkpoint): string
+    public function pause(Envelope $envelope, ?array $checkpoint, bool $counted = true): string
     {
-        return $envelope->paused($checkpoint)->seal($this->signer);
+        return $envelope->paused($checkpoint, $counted)->seal($this->signer);
     }
 
     /**
@@ -143,6 +144,8 @@ final readonly class JobRunner
     /**
      * Runs the job's failed() hook, if it has one, once its last try has
      * failed -- in the same context, so it reads what the job would have.
+     * The hook is given the error, and its services by type as handle() is,
+     * with a JobControl that answers for this job.
      */
     public function failed(Envelope $envelope, \Throwable $error): void
     {
@@ -151,10 +154,7 @@ final readonly class JobRunner
         }
 
         $this->within($envelope, function () use ($envelope, $error): void {
-            $failed = [$this->job($envelope), 'failed'];
-            if (\is_callable($failed)) {
-                $failed($error);
-            }
+            $this->call($this->job($envelope), 'failed', $this->control($envelope), error: $error);
         });
     }
 
@@ -316,7 +316,7 @@ final readonly class JobRunner
     }
 
     /** Calls a job's method with what its parameters ask for, built by the resolver. */
-    private function call(Job $job, string $method, ?JobControl $control = null, ?Refusal $refusal = null): void
+    private function call(Job $job, string $method, ?JobControl $control = null, ?Refusal $refusal = null, ?\Throwable $error = null): void
     {
         if (!method_exists($job, $method)) {
             throw new JobRefused('handle_missing', $job::class . " has no {$method}() to run.");
@@ -325,6 +325,13 @@ final readonly class JobRunner
         $arguments = [];
         foreach (new \ReflectionMethod($job, $method)->getParameters() as $parameter) {
             $type = $parameter->getType();
+            // failed()'s error: its first parameter as it always took it,
+            // typed as an error or not typed at all.
+            if ($error !== null && ($type === null || ($type instanceof \ReflectionNamedType && is_a($error, $type->getName())))) {
+                $arguments[] = $error;
+                $error = null;
+                continue;
+            }
             if (!$type instanceof \ReflectionNamedType || $type->isBuiltin()) {
                 throw new JobRefused(
                     'handle_unresolvable',
@@ -340,7 +347,7 @@ final readonly class JobRunner
                 continue;
             }
             if ($class === JobControl::class) {
-                $arguments[] = $control ?? throw new JobRefused('handle_unresolvable', $job::class . "::{$method}() takes a JobControl, which only handle() is given.");
+                $arguments[] = $control ?? throw new JobRefused('handle_unresolvable', $job::class . "::{$method}() takes a JobControl, which only handle() and failed() are given.");
                 continue;
             }
             $arguments[] = ($this->resolver)($class);

@@ -444,7 +444,7 @@ it('holds a checkpoint to plain data, and to its size', function () {
         ->and($control->released())->toBeNull();
 
     $control->release(5, ['ok' => [1, 'two', true, null, 1.5]]);
-    expect($control->released())->toBe(['delay' => 5, 'checkpoint' => ['ok' => [1, 'two', true, null, 1.5]]]);
+    expect($control->released())->toBe(['delay' => 5, 'checkpoint' => ['ok' => [1, 'two', true, null, 1.5]], 'counted' => true]);
 });
 
 it('gives each job its own idempotency key, keyed by the application', function () {

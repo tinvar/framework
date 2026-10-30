@@ -46,7 +46,7 @@ use Tinvar\Orm\Connection;
  * queue whose jobs can be evicted loses them. Needs ext-redis; opened on
  * first use when given as a closure.
  */
-final class RedisQueue implements Queue, Coordination
+final class RedisQueue implements Queue, Coordination, Wakes
 {
     /** How many times atomically() runs its work again after a conflicting write before it gives up. */
     public const int MAX_RETRIES = 32;
@@ -167,6 +167,27 @@ final class RedisQueue implements Queue, Coordination
             redis.call('HINCRBY', rate, 'used', -1)
         end
         return 0
+        LUA;
+
+    /**
+     * Makes a waiting job available now, if no worker holds it: ARGV
+     * prefix, id, now.
+     */
+    private const string WAKE = <<<'LUA'
+        local prefix, id, now = ARGV[1], ARGV[2], tonumber(ARGV[3])
+        local key = prefix .. 'job:' .. id
+        local fields = redis.call('HMGET', key, 'queue', 'member', 'available_at', 'token', 'reserved_until')
+        if not fields[1] or tonumber(fields[3]) <= now then
+            return 0
+        end
+        if fields[4] and fields[4] ~= '' and (tonumber(fields[5]) or 0) > now then
+            return 0
+        end
+        redis.call('HSET', key, 'available_at', now)
+        if redis.call('ZSCORE', prefix .. 'ready:' .. fields[1], fields[2]) then
+            redis.call('ZADD', prefix .. 'ready:' .. fields[1], now, fields[2])
+        end
+        return 1
         LUA;
 
     /** Forgets batches finished before ARGV[3] and locks lapsed by ARGV[2]: ARGV prefix first. */
@@ -328,6 +349,14 @@ final class RedisQueue implements Queue, Coordination
 
             return true;
         });
+    }
+
+    public function wake(string $id, int $now): bool
+    {
+        $this->outsideUnit('wake()');
+        self::assertName('job id', $id);
+
+        return (int) $this->script(self::WAKE, [$this->prefix, $id, (string) $now]) === 1;
     }
 
     public function enlistsIn(Connection $connection): bool

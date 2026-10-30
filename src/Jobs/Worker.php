@@ -468,7 +468,7 @@ final class Worker
     }
 
     /**
-     * @param array{delay: int, checkpoint: array<array-key, mixed>|null}|null $release what the job asked for through JobControl
+     * @param array{delay: int, checkpoint: array<array-key, mixed>|null, counted: bool}|null $release what the job asked for through JobControl
      * @return 'done'|'released'|'failed'|'lost'|'paused'|'handed back'
      */
     private function record(ReservedJob $job, ?Envelope $envelope, ?QueueOptions $options, ?\Throwable $error, ?array $release, bool $interrupted, bool $skipped = false): string
@@ -476,11 +476,13 @@ final class Worker
         // Each write is the holder's alone, and says whether it was: a
         // worker whose reservation another has taken over records nothing.
         if ($error === null && $release !== null && $envelope !== null && $options !== null) {
-            if ($envelope->releases < $options->releases) {
+            // A pause not counted -- a workflow's wait, bounded by the
+            // deadline its checkpoint seals -- is not held to the count.
+            if (!$release['counted'] || $envelope->releases < $options->releases) {
                 // Sealed again from the envelope that was opened and
                 // verified -- the same tenant, panel, user and epoch -- with
                 // the checkpoint the job gave, and its try given back.
-                return $this->queue->requeue($job, $this->now() + $release['delay'], $this->runner->pause($envelope, $release['checkpoint']))
+                return $this->queue->requeue($job, $this->now() + $release['delay'], $this->runner->pause($envelope, $release['checkpoint'], $release['counted']))
                     ? 'paused'
                     : 'lost';
             }

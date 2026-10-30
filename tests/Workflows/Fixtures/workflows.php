@@ -11,7 +11,10 @@ use Tinvar\Auth\PanelContext;
 use Tinvar\Orm\Orm;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Orm\Fixtures\Script;
+use Tinvar\Queue\Wakes;
+use Tinvar\Workflows\ArrayWorkflowStore;
 use Tinvar\Workflows\Steps;
+use Tinvar\Workflows\WorkflowStore;
 use Tinvar\Workflows\StepTaken;
 use Tinvar\Workflows\Workflow;
 use Tinvar\Workflows\Workflows;
@@ -200,12 +203,48 @@ final readonly class OnePerOrder implements Workflow, \Tinvar\Jobs\UniqueJob
     }
 }
 
-/** The jobs harness, with Workflows registered for the job to ask for. */
+/**
+ * Packs, waits for the warehouse to say it collected the order, and ships
+ * with what it said -- or, with no word in an hour, flags it.
+ */
+#[Queue(releases: 3)]
+final readonly class AwaitsCollection implements Workflow
+{
+    public function __construct(public string $order = 'o-1') {}
+
+    public function run(Steps $steps): void
+    {
+        $steps->step('pack', function (): string {
+            Seen::$steps[] = ['step' => 'pack', 'order' => $this->order];
+
+            return 'packed';
+        });
+        $collected = $steps->waitFor('collected', 3600, poll: 600);
+        $steps->step('ship', static function () use ($collected): null {
+            Seen::$steps[] = ['step' => $collected === null ? 'flag' : 'ship', 'collected' => $collected];
+
+            return null;
+        });
+    }
+}
+
+/** The jobs harness, with Workflows registered for the job to ask for, keeping progress and signals in memory. */
 function harness(): Harness
 {
     Seen::reset();
     $h = new Harness();
-    $h->container->instance(Workflows::class, new Workflows($h->dispatcher, $h->container->resolver()));
+    $store = new ArrayWorkflowStore();
+    $h->container->instance(WorkflowStore::class, $store);
+    $h->container->instance(Workflows::class, new Workflows(
+        $h->dispatcher,
+        $h->container->resolver(),
+        $store,
+        $h->orm,
+        $h->auth,
+        $h->panels,
+        $h->queue instanceof Wakes ? $h->queue : null,
+        static fn (): int => $h->now,
+    ));
 
     return $h;
 }

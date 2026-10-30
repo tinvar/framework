@@ -44,9 +44,23 @@ use Tinvar\Jobs\JobControl;
  * runs after the last. Every step and sleep is a pause of the job
  * (#[Queue(releases:)], 100 unless declared), so a workflow of more steps
  * than that declares more.
+ *
+ * **A wait is a step that a signal finishes** (waitFor(), ADR 0119): the
+ * workflow goes back on its queue until someone sends it the signal it
+ * names -- Workflows::signal(), in the tenant and panel it was started in --
+ * or its deadline passes, and the step returns the signal's data, or null.
+ * Its deadline is sealed in the checkpoint at the first look, so a replay
+ * never moves it. While it waits it looks again every so often, a pause
+ * not counted against #[Queue(releases:)]; a signal wakes it at once.
  */
 final class Steps
 {
+    /** The longest a workflow waits on a signal: thirty days. */
+    public const int MAX_WAIT = 2_592_000;
+
+    /** The largest signal's data, as JSON: a reply, not a document. */
+    public const int MAX_SIGNAL_BYTES = 8_192;
+
     /** The checkpoint's version, so a later layout is not misread as this one. */
     private const int VERSION = 1;
 
@@ -64,15 +78,33 @@ final class Steps
 
     private int $delay = 0;
 
+    /** @var array<string, int> each wait still open, by name: its deadline */
+    private array $waits;
+
+    /** Whether this run ended at a wait that goes on: a pause that is not counted. */
+    private bool $waiting = false;
+
+    /** What this run's end is, for the workflow's record: running, sleeping or waiting. */
+    private string $status = WorkflowRecord::RUNNING;
+
+    /** The step this run took, or the signal it waits on. */
+    private ?string $taken = null;
+
     /** The step whose work is running, so one asked for inside another is refused. */
     private ?string $inStep = null;
 
     /**
      * @param JobControl $job this run's, whose checkpoint holds what has finished
+     * @param (\Closure(string): ?array<array-key, mixed>)|null $signals the data of a signal
+     *        sent to this workflow, by name, or null for none yet; without it, a wait is refused
+     * @param int|null $now seconds since the epoch; time() unless given
      */
-    public function __construct(private readonly JobControl $job)
-    {
-        $this->done = self::read($job->checkpoint());
+    public function __construct(
+        private readonly JobControl $job,
+        private readonly ?\Closure $signals = null,
+        private readonly ?int $now = null,
+    ) {
+        [$this->done, $this->waits] = self::read($job->checkpoint());
     }
 
     /**
@@ -100,6 +132,7 @@ final class Steps
         }
         $this->done[$name] = $result;
         $this->ended = true;
+        $this->taken = $name;
 
         // The run ends here, so this step is recorded before the next runs:
         // thrown past the rest of run(), and run() returning after catching
@@ -126,6 +159,63 @@ final class Steps
         $this->done[$name] = ['slept' => $seconds];
         $this->delay = $seconds;
         $this->ended = true;
+        $this->taken = $name;
+        $this->status = $seconds > 0 ? WorkflowRecord::SLEEPING : WorkflowRecord::RUNNING;
+
+        throw new StepTaken($this);
+    }
+
+    /**
+     * Waits for the signal $name, for up to $timeout seconds, without
+     * holding a worker: returns the data it was sent with, or null if none
+     * came in time. On a replay, a wait already over returns what it
+     * returned.
+     *
+     * The data is what Workflows::signal() was given -- plain data, checked
+     * as a step's result is -- and is the sender's, not the workflow's:
+     * read it as input, as an action reads a form post.
+     *
+     * @param int $poll how often it looks again while it waits, in case a signal landed
+     *        while its last run was ending; a signal otherwise wakes it at once
+     * @return array<array-key, mixed>|null
+     */
+    public function waitFor(string $name, int $timeout, int $poll = 300): ?array
+    {
+        if ($timeout < 1 || $timeout > self::MAX_WAIT) {
+            throw new \InvalidArgumentException('A workflow waits for a signal from a second to ' . self::MAX_WAIT . ' seconds.');
+        }
+        if ($poll < 1) {
+            throw new \InvalidArgumentException('A wait looks again at least a second apart.');
+        }
+        $this->ask($name);
+        if (\array_key_exists($name, $this->done)) {
+            $over = $this->done[$name];
+            $data = \is_array($over) ? ($over['signal'] ?? null) : null;
+
+            return \is_array($data) ? $data : null;
+        }
+
+        $this->end();
+        $signals = $this->signals ?? throw new \LogicException("The workflow waits for '{$name}', and was given no store to receive signals in (WorkflowStore).");
+        $data = $signals($name);
+        $now = $this->now ?? time();
+        $deadline = $this->waits[$name] ?? $now + $timeout;
+        $this->ended = true;
+        $this->taken = $name;
+
+        if ($data !== null || $now >= $deadline) {
+            // Over: the signal, or the deadline. Recorded as a step, so the
+            // replay returns what this run saw.
+            unset($this->waits[$name]);
+            $this->done[$name] = ['signal' => $data];
+
+            throw new StepTaken($this);
+        }
+
+        $this->waits[$name] = $deadline;
+        $this->delay = max(1, min($poll, $deadline - $now));
+        $this->waiting = true;
+        $this->status = WorkflowRecord::WAITING;
 
         throw new StepTaken($this);
     }
@@ -162,11 +252,33 @@ final class Steps
      * checkpoint with every finished step.
      *
      * @internal Workflows::advance() asks
-     * @return array{delay: int, checkpoint: array{v: int, done: array<string, mixed>}}
+     * @return array{delay: int, checkpoint: array{v: int, done: array<string, mixed>, waits?: array<string, int>}, counted: bool, status: string, step: string|null, steps: int}
      */
     public function pause(): array
     {
-        return ['delay' => $this->delay, 'checkpoint' => ['v' => self::VERSION, 'done' => $this->done]];
+        $checkpoint = ['v' => self::VERSION, 'done' => $this->done];
+        if ($this->waits !== []) {
+            $checkpoint['waits'] = $this->waits;
+        }
+
+        return [
+            'delay' => $this->delay,
+            'checkpoint' => $checkpoint,
+            'counted' => !$this->waiting,
+            'status' => $this->status,
+            'step' => $this->taken,
+            'steps' => \count($this->done),
+        ];
+    }
+
+    /**
+     * How many steps have finished, for the workflow's record at its end.
+     *
+     * @internal Workflows::advance() asks
+     */
+    public function count(): int
+    {
+        return \count($this->done);
     }
 
     private function ask(string $name): void
@@ -204,14 +316,15 @@ final class Steps
      * than taken for no progress, which would run every step again.
      *
      * @param array<array-key, mixed>|null $checkpoint
-     * @return array<string, mixed>
+     * @return array{array<string, mixed>, array<string, int>} finished steps, and open waits' deadlines
      */
     private static function read(?array $checkpoint): array
     {
         if ($checkpoint === null) {
-            return [];
+            return [[], []];
         }
-        if (($checkpoint['v'] ?? null) !== self::VERSION || !\is_array($checkpoint['done'] ?? null)) {
+        if (($checkpoint['v'] ?? null) !== self::VERSION || !\is_array($checkpoint['done'] ?? null)
+            || !\is_array($checkpoint['waits'] ?? [])) {
             throw new \UnexpectedValueException('The workflow\'s checkpoint is not one this version wrote.');
         }
 
@@ -219,7 +332,14 @@ final class Steps
         foreach ($checkpoint['done'] as $name => $result) {
             $done[(string) $name] = $result;
         }
+        $waits = [];
+        foreach ($checkpoint['waits'] ?? [] as $name => $deadline) {
+            if (!\is_int($deadline)) {
+                throw new \UnexpectedValueException('The workflow\'s checkpoint is not one this version wrote.');
+            }
+            $waits[(string) $name] = $deadline;
+        }
 
-        return $done;
+        return [$done, $waits];
     }
 }

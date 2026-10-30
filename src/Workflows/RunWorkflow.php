@@ -8,6 +8,7 @@ use Tinvar\Jobs\DeclaredBy;
 use Tinvar\Jobs\Job;
 use Tinvar\Jobs\JobControl;
 use Tinvar\Jobs\Payload;
+use Tinvar\Jobs\Refusal;
 use Tinvar\Jobs\RunsAsStarter;
 use Tinvar\Jobs\UniqueJob;
 
@@ -52,12 +53,22 @@ final readonly class RunWorkflow implements Job, DeclaredBy, RunsAsStarter, Uniq
         $workflows->advance($this->workflow, $job);
     }
 
-    /** The workflow's own failed() hook, once a step has failed its last try. */
-    public function failed(\Throwable $error): void
+    /**
+     * Its record ended as failed (ADR 0119), and the workflow's own failed()
+     * hook, once a step has failed its last try.
+     */
+    public function failed(\Throwable $error, Workflows $workflows, JobControl $job): void
     {
+        $workflows->ended($job, $error);
         $failed = [$this->workflow, 'failed'];
         if (method_exists($this->workflow, 'failed') && \is_callable($failed)) {
             $failed($error);
         }
+    }
+
+    /** Its record ended as refused: its tenant, panel, starter or epoch no longer holds. */
+    public function refused(Refusal $refusal, Workflows $workflows, JobControl $job): void
+    {
+        $workflows->ended($job, $refusal);
     }
 }

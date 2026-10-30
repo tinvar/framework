@@ -32,7 +32,7 @@ use Tinvar\Orm\Schema\Table;
  * sliding window's starts are one more (defineSlidingRates()), for an
  * application that holds a rate over any $per seconds (ADR 0118).
  */
-final class DatabaseQueue implements Queue, Coordination
+final class DatabaseQueue implements Queue, Coordination, Wakes
 {
     /** The last enqueue time this process wrote, so its own pushes keep their order within a microsecond. */
     private static int $lastQueuedAt = 0;
@@ -300,6 +300,14 @@ final class DatabaseQueue implements Queue, Coordination
 
             return true;
         });
+    }
+
+    public function wake(string $id, int $now): bool
+    {
+        return $this->connection->execute(
+            "UPDATE {$this->table} SET available_at = ? WHERE id = ? AND available_at > ? AND (reserved_until IS NULL OR reserved_until <= ?)",
+            [$now, $id, $now, $now],
+        ) === 1;
     }
 
     public function enlistsIn(Connection $connection): bool

@@ -101,9 +101,12 @@ final readonly class Envelope
      * The same job, paused once more, with where it paused: the tenant,
      * panel, user, epoch and arguments it was dispatched with, unchanged.
      *
+     * A pause that is not counted -- a workflow's wait (JobControl::wait())
+     * -- keeps its count where it was.
+     *
      * @param array<array-key, mixed>|null $checkpoint
      */
-    public function paused(?array $checkpoint): self
+    public function paused(?array $checkpoint, bool $counted = true): self
     {
         return new self(
             id: $this->id,
@@ -116,7 +119,7 @@ final readonly class Envelope
             dispatchedAt: $this->dispatchedAt,
             declaredBy: $this->declaredBy,
             checkpoint: $checkpoint,
-            releases: $this->releases + 1,
+            releases: $this->releases + ($counted ? 1 : 0),
             batch: $this->batch,
             chain: $this->chain,
             unique: $this->unique,
@@ -201,9 +204,12 @@ final readonly class Envelope
             'by' => $this->declaredBy,
         ];
         // Only once a job has paused, so a payload sealed before pausing
-        // existed reads -- and verifies -- as it always did.
-        if ($this->releases > 0) {
+        // existed reads -- and verifies -- as it always did. A pause that
+        // was not counted carries its checkpoint all the same.
+        if ($this->releases > 0 || $this->checkpoint !== null) {
             $fields['cp'] = $this->checkpoint;
+        }
+        if ($this->releases > 0) {
             $fields['rel'] = $this->releases;
         }
         // Likewise only where there is one, so a payload sealed before

@@ -17,7 +17,7 @@ use Tinvar\Orm\Connection;
  * in-memory, and atomically() runs its work as it is: one process, one
  * thing at a time.
  */
-final class ArrayQueue implements Queue, Coordination
+final class ArrayQueue implements Queue, Coordination, Wakes
 {
     /** @var array<string, array{queue: string, payload: string, availableAt: int, attempts: int, reservedUntil: ?int, token: ?string}> */
     private array $jobs = [];
@@ -150,6 +150,17 @@ final class ArrayQueue implements Queue, Coordination
     public function reservedUntil(string $id): ?int
     {
         return $this->jobs[$id]['reservedUntil'] ?? null;
+    }
+
+    public function wake(string $id, int $now): bool
+    {
+        $job = $this->jobs[$id] ?? null;
+        if ($job === null || $job['availableAt'] <= $now || ($job['reservedUntil'] !== null && $job['reservedUntil'] > $now)) {
+            return false;
+        }
+        $this->jobs[$id]['availableAt'] = $now;
+
+        return true;
     }
 
     public function enlistsIn(Connection $connection): bool

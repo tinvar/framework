@@ -15,6 +15,7 @@ use Tinvar\Queue\BatchRecord;
 use Tinvar\Queue\Coordination;
 use Tinvar\Queue\PendingJob;
 use Tinvar\Queue\Queue;
+use Tinvar\Queue\Wakes;
 
 /** Queues, reserves, releases and fails as a queue must, $other as a second worker on the same store. */
 function behavesAsAQueue(Queue $queue, Queue $other): void
@@ -63,6 +64,22 @@ function behavesAsAQueue(Queue $queue, Queue $other): void
         ->and($queue->retry('a', 500))->toBeTrue()
         ->and($queue->retry('a', 500))->toBeFalse()
         ->and($queue->reserve(['default'], 500, 60)?->attempts)->toBe(1);
+
+    // Woken (ADR 0119): a job waiting for later made available now, and
+    // one a worker holds left as it is.
+    if ($queue instanceof Wakes) {
+        $queue->push(new PendingJob('w', 'later', 'payload-w', 1_000));
+        expect($queue->wake('w', 600))->toBeTrue()
+            ->and($queue->wake('w', 600))->toBeFalse('available already')
+            ->and($queue->wake('missing', 600))->toBeFalse();
+        $woken = $other->reserve(['later'], 600, 60);
+        expect($woken?->id)->toBe('w')
+            ->and($queue->wake('w', 610))->toBeFalse('held');
+        \assert($woken !== null);
+        $other->release($woken, 2_000);
+        expect($queue->wake('w', 620))->toBeTrue()
+            ->and($queue->reserve(['later'], 620, 60)?->id)->toBe('w');
+    }
 }
 
 /**

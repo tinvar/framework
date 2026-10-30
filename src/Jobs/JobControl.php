@@ -56,7 +56,7 @@ final class JobControl
     /** How deep a checkpoint may nest. */
     private const int MAX_DEPTH = 8;
 
-    /** @var array{delay: int, checkpoint: array<array-key, mixed>|null}|null */
+    /** @var array{delay: int, checkpoint: array<array-key, mixed>|null, counted: bool}|null */
     private ?array $release = null;
 
     /**
@@ -104,6 +104,15 @@ final class JobControl
         return $this->envelope->batch;
     }
 
+    /**
+     * The job's id: the same on every run of it, and what a workflow's
+     * progress and signals are kept under (ADR 0119). It grants nothing.
+     */
+    public function id(): string
+    {
+        return $this->envelope->id;
+    }
+
     /** How many times this job has paused before this run. */
     public function releases(): int
     {
@@ -121,6 +130,27 @@ final class JobControl
      */
     public function release(int $delay = 0, ?array $checkpoint = null): void
     {
+        $this->pauseFor($delay, $checkpoint, true);
+    }
+
+    /**
+     * A pause that is not counted against #[Queue(releases:)]: a workflow
+     * waiting on a signal, looking again until its deadline (ADR 0119).
+     * Bounded by that deadline, which its checkpoint seals, rather than by
+     * a count -- a wait of a day, looked at every few minutes, would spend
+     * any count a loop should be stopped by.
+     *
+     * @internal Workflows calls it; a job pauses with release()
+     * @param array<array-key, mixed> $checkpoint
+     */
+    public function wait(int $delay, array $checkpoint): void
+    {
+        $this->pauseFor(max(1, $delay), $checkpoint, false);
+    }
+
+    /** @param array<array-key, mixed>|null $checkpoint */
+    private function pauseFor(int $delay, ?array $checkpoint, bool $counted): void
+    {
         if ($delay < 0) {
             throw new \InvalidArgumentException('A job cannot pause for a negative number of seconds.');
         }
@@ -136,13 +166,14 @@ final class JobControl
             }
         }
 
-        $this->release = ['delay' => $delay, 'checkpoint' => $checkpoint];
+        $this->release = ['delay' => $delay, 'checkpoint' => $checkpoint, 'counted' => $counted];
     }
 
     /**
-     * What release() asked for, if it was called.
+     * What release() or wait() asked for, if either was called: `counted`
+     * says whether the pause counts against #[Queue(releases:)].
      *
-     * @return array{delay: int, checkpoint: array<array-key, mixed>|null}|null
+     * @return array{delay: int, checkpoint: array<array-key, mixed>|null, counted: bool}|null
      */
     public function released(): ?array
     {
