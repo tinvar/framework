@@ -6,6 +6,7 @@ namespace Tinvar\Mail;
 
 use Tinvar\Data\Encoder;
 use Tinvar\Jobs\Dispatcher;
+use Tinvar\Observability\Telemetry;
 
 /**
  * Sends the application's email: renders a Mailable's template through the
@@ -25,12 +26,26 @@ final readonly class Mailer
         private Address $from,
         private ?Dispatcher $jobs = null,
         private Encoder $encoder = new Encoder(),
+        private ?Telemetry $telemetry = null,
     ) {}
 
-    /** Renders and sends $mailable now, and returns what was sent. */
+    /**
+     * Renders and sends $mailable now, and returns what was sent: a span of
+     * the request or job sending it, or a trace of its own (ADR 0112),
+     * named by its template -- never its recipient or its subject.
+     */
     public function send(Mailable $mailable): Message
     {
         $email = $mailable->email();
+        if ($this->telemetry === null) {
+            return $this->deliver($email);
+        }
+
+        return $this->telemetry->trace("mail {$email->template}", ['tinvar.mail.template' => $email->template], fn (): Message => $this->deliver($email));
+    }
+
+    private function deliver(Email $email): Message
+    {
         $props = $this->encoder->encode($email->props);
         if (!\is_array($props)) {
             throw new MailRenderingException("The props of '{$email->template}' did not encode as a map.");

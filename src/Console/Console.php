@@ -12,6 +12,7 @@ use Tinvar\Http\RequestScope;
 use Tinvar\Jobs\DeclaredPanel;
 use Tinvar\Jobs\JobRunner;
 use Tinvar\Jobs\Worker;
+use Tinvar\Observability\Telemetry;
 use Tinvar\Jobs\WorkerOptions;
 use Tinvar\Orm\Orm;
 use Tinvar\Jobs\Rate;
@@ -70,6 +71,8 @@ final class Console
      *        refused here
      * @param array<string, Rate> $rates the rate-limited queues, by name: every worker
      *        queue:work starts holds to them (ADR 0100)
+     * @param Telemetry|null $telemetry where each command and each job queue:work runs is
+     *        a trace of its own (ADR 0112); the scheduler is given its own
      */
     public function __construct(
         array $commands,
@@ -86,6 +89,7 @@ final class Console
         private readonly ?\Closure $clock = null,
         private readonly array $queues = [\Tinvar\Attributes\Queue::DEFAULT],
         private readonly array $rates = [],
+        private readonly ?Telemetry $telemetry = null,
     ) {
         if ($tenants !== null && !$orm->hasTenancy()) {
             throw new \InvalidArgumentException(
@@ -204,7 +208,11 @@ final class Console
                 return $this->panels->within($panel->name, $run);
             };
 
-            return $this->orm->actAs($tenant, $inPanel);
+            // A command is a trace of its own, named by its name -- never
+            // its arguments, which may be an email address or a file.
+            return $this->telemetry === null
+                ? $this->orm->actAs($tenant, $inPanel)
+                : $this->telemetry->trace("command {$name}", ['tinvar.command' => $name], fn (): int => $this->orm->actAs($tenant, $inPanel));
         } catch (\Throwable $e) {
             $this->reportFailure($e);
             $output->error($e::class . ': ' . $e->getMessage());
@@ -228,6 +236,7 @@ final class Console
             log: static fn (string $line) => $output->error('[' . gmdate('Y-m-d H:i:s') . '] ' . $line),
             report: $this->report,
             held: self::heldPath(),
+            telemetry: $this->telemetry,
         );
         $output->error('Working ' . implode(', ', $options->queues) . ". Ctrl+C stops after the job in hand, or hands it back within {$options->stopBudget}s.");
         $this->worker->run($options);

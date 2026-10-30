@@ -643,6 +643,9 @@ final class Kernel
             $this->orm->flagLazyLoads($toolbar->lazyLoad(...));
             $this->orm->flagAcrossTenants($toolbar->acrossTenants(...));
         }
+        // Each statement a span of whatever sent it, where spans are kept
+        // (ADR 0112): its text, its literals out, never its bindings.
+        $telemetry?->observe($this->orm->statements());
         $this->events = $events;
 
         // A fake answers for a query or an action without its body, so it
@@ -817,11 +820,11 @@ final class Kernel
         // Every error page's layouts are known now; one it could not be
         // rendered in is refused here, not on the request that first fails.
         $this->routes->assertErrorPagesRenderable();
-        $this->errorLoaders = new LoaderRunner($this->orm, $resolver, $gate);
+        $this->errorLoaders = new LoaderRunner($this->orm, $resolver, $gate, telemetry: $this->telemetry);
 
         $this->router = new Router(
             $this->routes,
-            new LoaderRunner($this->orm, $resolver, $gate, $this->tagsRead),
+            new LoaderRunner($this->orm, $resolver, $gate, $this->tagsRead, $this->telemetry),
             self::middlewareFrom($resolver),
             $globalMiddleware,
             $partialReloads,
@@ -850,7 +853,10 @@ final class Kernel
                 routes: $this->routes,
                 // Telling the loaders' tags apart by segment, for the live
                 // token each re-render answers with.
-                loaders: new LoaderRunner($this->orm, $resolver, $gate, $this->tagsRead),
+                // And, under `tinvar dev`, each re-render's origins for the
+                // toolbar: an action's request badges its fields as a
+                // navigation's does.
+                loaders: new LoaderRunner($this->orm, $resolver, $gate, $this->tagsRead, $this->telemetry, $this->toolbar === null ? null : $this->toolbar->loaded(...)),
                 signer: $routeSigner,
                 orm: $this->orm,
                 render: $fragments->renderRoute,
@@ -1336,7 +1342,7 @@ final class Kernel
             auth: $this->auth,
             orm: $this->orm,
             routes: $this->routes,
-            loaders: new LoaderRunner($this->orm, $resolver, $gate),
+            loaders: new LoaderRunner($this->orm, $resolver, $gate, telemetry: $this->telemetry),
             entry: $entry,
             middlewareResolver: self::middlewareFrom($resolver),
             panels: $panels,

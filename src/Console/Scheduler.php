@@ -9,6 +9,8 @@ use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\PanelRegistry;
 use Tinvar\Http\RequestScope;
 use Tinvar\Jobs\DeclaredPanel;
+use Tinvar\Observability\Span;
+use Tinvar\Observability\Telemetry;
 use Tinvar\Orm\Orm;
 
 /**
@@ -36,6 +38,7 @@ final readonly class Scheduler
      * @param list<class-string> $tasks
      * @param \Closure(class-string): object $resolver
      * @param (\Closure(\Throwable): void)|null $report
+     * @param Telemetry|null $telemetry where each task's run is a trace of its own (ADR 0112)
      */
     public function __construct(
         private array $tasks,
@@ -46,6 +49,7 @@ final readonly class Scheduler
         private ?PanelContext $panels = null,
         private ?PanelRegistry $registry = null,
         private ?\Closure $report = null,
+        private ?Telemetry $telemetry = null,
     ) {
         foreach ($tasks as $task) {
             if (new \ReflectionClass($task)->getAttributes(Schedule::class) === []) {
@@ -147,6 +151,19 @@ final readonly class Scheduler
      */
     public function run(string $task): string
     {
+        if ($this->telemetry === null) {
+            return $this->runTraced($task, null);
+        }
+
+        return $this->telemetry->trace("task {$task}", ['code.namespace' => $task, 'code.function' => '__invoke'], fn (?Span $span): string => $this->runTraced($task, $span));
+    }
+
+    /**
+     * @param class-string $task
+     * @return 'ran'|'failed'
+     */
+    private function runTraced(string $task, ?Span $span): string
+    {
         $this->scope->reset();
         try {
             $panel = DeclaredPanel::of($task, $this->registry);
@@ -181,6 +198,7 @@ final readonly class Scheduler
 
             return 'ran';
         } catch (\Throwable $e) {
+            $span?->set('error.type', $e::class)->fail($e::class);
             if ($this->report !== null) {
                 ($this->report)($e);
             }

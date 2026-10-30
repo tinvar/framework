@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Tinvar\Observability;
 
 use Tinvar\Http\Request;
+use Tinvar\Orm\Connection;
+use Tinvar\Orm\NamesDriver;
+use Tinvar\Orm\ObservesStatements;
 use Tinvar\Http\Response;
 use Tinvar\Protocol\ProtocolException;
 use Tinvar\Render\RendererException;
@@ -47,8 +50,16 @@ final class Telemetry
     /** The routes Probes answers, logged at debug: a probe every few seconds is not traffic. */
     private const array PROBES = ['_health', '_ready', '_metrics'];
 
+    public const string RENDER_BOUNDARY_FAILURES = 'tinvar_render_boundary_failures_total';
+
+    /** The longest statement a span carries as `db.query.text`; the rest is cut. */
+    public const int MAX_STATEMENT = 2048;
+
     /** @var array{id: string, started: int, method: string, route: string, path: string, span: ?Span}|null */
     private ?array $current = null;
+
+    /** The trace id of work outside a request -- a job, a task -- while it runs; what its log lines carry. */
+    private ?string $background = null;
 
     /**
      * @param bool $trustIncoming believe a `traceparent` or an `X-Request-Id`
@@ -192,6 +203,141 @@ final class Telemetry
         return $this->current['id'] ?? null;
     }
 
+    /**
+     * Runs $work as a trace of its own when no request or other trace is in
+     * hand -- a job taken off the queue, a scheduled task, a mail render --
+     * and as a span of the one in hand when there is: a job run sync inside
+     * the request that dispatched it is part of that request.
+     *
+     * A trace of its own gets a fresh id, which every log line written
+     * while it runs carries as its `request_id`, as a request's lines do;
+     * its spans leave as a request's do, the moment it ends, each batch when
+     * its interval says. $work is handed its span to say how it ended, or
+     * null where nothing is traced. A throw marks the span failed, by its
+     * class -- never its message -- and goes on.
+     *
+     * @template T
+     * @param array<string, string|int|float|bool|array<array-key, mixed>> $attributes
+     * @param \Closure(?Span): T $work
+     * @return T
+     */
+    public function trace(string $name, array $attributes, \Closure $work, int $kind = Span::KIND_INTERNAL): mixed
+    {
+        if ($this->current !== null || $this->background !== null) {
+            return $this->span($name, $attributes, $work, $kind);
+        }
+
+        $id = RequestId::generate();
+        $this->background = $id;
+        $span = $this->tracer?->startRequest($id, null, $name, $attributes, $kind);
+        try {
+            return $work($span);
+        } catch (\Throwable $e) {
+            $span?->fail($e::class);
+
+            throw $e;
+        } finally {
+            $this->tracer?->endRequest();
+            $this->background = null;
+            $this->terminate();
+        }
+    }
+
+    /**
+     * Runs $work in a span of the trace in hand, the active one while it
+     * runs, so what it does inside is that span's children: a loader's
+     * statements, a job's calls out. Nothing is made outside a trace, or
+     * with no tracer; $work is handed null then.
+     *
+     * @template T
+     * @param array<string, string|int|float|bool|array<array-key, mixed>> $attributes
+     * @param \Closure(?Span): T $work
+     * @return T
+     */
+    public function span(string $name, array $attributes, \Closure $work, int $kind = Span::KIND_INTERNAL): mixed
+    {
+        $tracer = $this->tracer;
+        if ($tracer === null || $tracer->root() === null) {
+            return $work(null);
+        }
+
+        $span = $tracer->start($name, $attributes, kind: $kind);
+        $tracer->activate($span);
+        try {
+            return $work($span);
+        } catch (\Throwable $e) {
+            $span->fail($e::class);
+
+            throw $e;
+        } finally {
+            $tracer->deactivate($span);
+            $tracer->end($span);
+        }
+    }
+
+    /**
+     * The W3C `traceparent` a call out carries, naming $span -- the client
+     * span of that call -- as its parent: null outside a trace. Only the ids
+     * and the sampled flag: no state, no baggage, nothing the trace holds.
+     */
+    public function traceparent(?Span $span): ?string
+    {
+        $tracer = $this->tracer;
+        if ($span === null || $tracer === null || $tracer->root() === null) {
+            return null;
+        }
+
+        return "00-{$span->traceId}-{$span->spanId}-" . ($tracer->sampled() ? '01' : '00');
+    }
+
+    /**
+     * Has $connection report each statement it sends as a span (statement()),
+     * where there is a tracer to keep them and the connection can tell. The
+     * observer is handed no bindings, so no bound value reaches a span.
+     */
+    public function observe(Connection $connection): void
+    {
+        if ($this->tracer === null || !$connection instanceof ObservesStatements) {
+            return;
+        }
+
+        $system = match ($connection instanceof NamesDriver ? $connection->driver() : '') {
+            'pgsql' => 'postgresql',
+            'mysql' => 'mysql',
+            'sqlite' => 'sqlite',
+            default => 'other_sql',
+        };
+        $connection->observeStatements(function (string $sql, int $started, int $ended, ?\Throwable $failure) use ($system): void {
+            $this->statement($sql, $system, $started, $ended, $failure);
+        });
+    }
+
+    /**
+     * One statement the database was sent, as a client span of whatever is
+     * active: a loader, a query batch, a job. Its text is the statement's
+     * with every literal taken out (StatementText) -- its bound values were
+     * never handed over -- and cut to MAX_STATEMENT; its name is the
+     * operation and the first table it names, as OpenTelemetry's database
+     * conventions name one.
+     */
+    public function statement(string $sql, string $system, int $startedHr, int $endedHr, ?\Throwable $failure = null): void
+    {
+        $tracer = $this->tracer;
+        if ($tracer === null || $tracer->root() === null) {
+            return;
+        }
+
+        $text = StatementText::sanitize($sql, $system);
+        $span = $tracer->start(StatementText::summary($text), [
+            'db.system.name' => $system,
+            'db.query.text' => \strlen($text) > self::MAX_STATEMENT ? substr($text, 0, self::MAX_STATEMENT) . '...' : $text,
+        ], atHr: $startedHr, kind: Span::KIND_CLIENT);
+        if ($failure !== null) {
+            $span->set('error.type', $failure::class)->fail($failure::class);
+        }
+        $tracer->end($span, $endedHr);
+    }
+
     /** @param array<string, mixed> $frame a render, fragment or mail frame, as it is sent */
     public function renderStarted(array $frame): RenderTrace
     {
@@ -292,7 +438,9 @@ final class Telemetry
     /** @return array<string, string> what every log line carries: the request's id */
     private function fields(): array
     {
-        return $this->current === null ? [] : ['request_id' => $this->current['id']];
+        $id = $this->current['id'] ?? $this->background;
+
+        return $id === null ? [] : ['request_id' => $id];
     }
 
     /** The framework's own metrics, on whichever registry the application gave. */

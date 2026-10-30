@@ -5,8 +5,9 @@ declare(strict_types=1);
 namespace Tinvar\Observability;
 
 /**
- * One timed piece of a request -- the request itself, its render, a batch
- * of queries -- in OpenTelemetry's model: ids in its hex forms, times in
+ * One timed piece of a trace -- a request, a job, a scheduled task, a mail
+ * render, and inside them a render, a query batch, a loader, a statement, a
+ * call out -- in OpenTelemetry's model: ids in its hex forms, times in
  * nanoseconds since the epoch, a kind and a status as its enums number
  * them, so an exporter writes it as OTLP without translating anything.
  *
@@ -17,6 +18,10 @@ final class Span
 {
     public const int KIND_INTERNAL = 1;
     public const int KIND_SERVER = 2;
+    /** A request this process sent: an outbound call, a statement to the database. */
+    public const int KIND_CLIENT = 3;
+    /** Work taken off a queue: a job. */
+    public const int KIND_CONSUMER = 5;
 
     public const int STATUS_UNSET = 0;
     public const int STATUS_ERROR = 2;

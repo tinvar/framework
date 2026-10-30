@@ -6,6 +6,8 @@ namespace Tinvar\Jobs;
 
 use Tinvar\Attributes\Queue as QueueOptions;
 use Tinvar\Http\RequestScope;
+use Tinvar\Observability\Span;
+use Tinvar\Observability\Telemetry;
 use Tinvar\Queue\Coordination;
 use Tinvar\Queue\HeldJob;
 use Tinvar\Queue\Queue;
@@ -124,6 +126,9 @@ final class Worker
      * @param (\Closure(): int)|null $memory bytes the process holds; memory_get_usage(true) unless given
      * @param string|null $held where to write the job in hand for whatever stops this worker
      *        (HeldJob), so it can hand the job back if it has to kill the worker
+     * @param Telemetry|null $telemetry where each job is a trace of its own (ADR 0112): a
+     *        consumer span named by its class, its loaders, statements and calls out its
+     *        children, and every log line written while it runs under its trace id
      */
     public function __construct(
         private readonly Queue $queue,
@@ -136,6 +141,7 @@ final class Worker
         private readonly int $graceSeconds = self::GRACE_SECONDS,
         private readonly ?\Closure $memory = null,
         private readonly ?string $held = null,
+        private readonly ?Telemetry $telemetry = null,
     ) {
         if ($graceSeconds < 1 || $graceSeconds >= self::RESERVATION_MARGIN) {
             throw new \InvalidArgumentException(
@@ -307,6 +313,25 @@ final class Worker
      */
     public function process(ReservedJob $job): string
     {
+        if ($this->telemetry === null) {
+            return $this->processTraced($job, null);
+        }
+
+        // The queue's name and the job's id and try: what finds it again.
+        // Its class names the span once the payload is open; its arguments,
+        // a customer's records as often as not, are never on it.
+        return $this->telemetry->trace('job', [
+            'messaging.system' => 'tinvar',
+            'messaging.operation.type' => 'process',
+            'messaging.destination.name' => $job->queue,
+            'messaging.message.id' => $job->id,
+            'tinvar.job.attempt' => $job->attempts,
+        ], fn (?Span $span): string => $this->processTraced($job, $span), Span::KIND_CONSUMER);
+    }
+
+    /** @return 'done'|'released'|'failed'|'lost'|'paused'|'handed back'|'skipped' */
+    private function processTraced(ReservedJob $job, ?Span $span): string
+    {
         $began = hrtime(true);
         $envelope = null;
         $options = null;
@@ -317,6 +342,10 @@ final class Worker
 
         try {
             $envelope = $this->runner->open($job->payload);
+            if ($span !== null) {
+                $span->name = "job {$envelope->class}";
+                $span->set('code.namespace', $envelope->class);
+            }
             $options = $this->runner->options($envelope);
             if ($job->attempts > $options->tries) {
                 // Taken more times than it may be tried: a worker died or
@@ -390,6 +419,10 @@ final class Worker
         $outcome = $this->record($job, $envelope, $options, $error, $control?->released(), $interrupted);
         if ($skipped && $outcome === 'done') {
             $outcome = 'skipped';
+        }
+        $span?->set('tinvar.job.outcome', $outcome);
+        if ($error !== null && $outcome !== 'paused') {
+            $span?->set('error.type', $error::class)->fail($error::class);
         }
         if ($this->held !== null) {
             HeldJob::clear($this->held);

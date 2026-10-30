@@ -10,8 +10,16 @@ namespace Tinvar\Observability;
  *
  * A request's root span is a server span named `GET shop.catalog` (method
  * and route, as OpenTelemetry's HTTP conventions name one), its trace id the
- * request id; its children are the render and the query batches the render
- * asked for. A span outside any request is not kept: a job has no trace yet.
+ * request id; its children are its loaders, its render and the query batches
+ * the render asked for, and under those the statements sent to the database
+ * and the calls made out. Work outside a request -- a job, a scheduled task,
+ * a mail render on the queue -- is a trace of its own, begun the same way
+ * (Telemetry::trace()). A span outside any trace is not kept.
+ *
+ * Which span a new one is a child of is the active one: the innermost span
+ * opened with activate() and not yet closed, kept per fiber, since a
+ * render's fibers each run a query of their own and suspend inside it. A
+ * fiber with none of its own falls back to the main stack's, then the root.
  *
  * Sampled per request: a trusted caller's `traceparent` decides, and
  * otherwise `sampleRatio`. What is pending is capped, so an exporter that
@@ -25,6 +33,12 @@ final class Tracer
     private array $finished = [];
 
     private ?Span $root = null;
+
+    /** @var list<Span> spans activated outside any fiber, innermost last */
+    private array $active = [];
+
+    /** @var \WeakMap<object, list<Span>> each fiber's activated spans */
+    private \WeakMap $fiberActive;
 
     private bool $sampled = false;
 
@@ -64,6 +78,7 @@ final class Tracer
         $this->anchorHr = hrtime(true);
         // A worker's first spans wait for the interval like any others.
         $this->exportedAt = microtime(true);
+        $this->fiberActive = new \WeakMap();
     }
 
     /** @param \Closure(\Throwable): void $report where an exporter that fails is reported */
@@ -78,31 +93,85 @@ final class Tracer
      *
      * @param array<string, string|int|float|bool|array<array-key, mixed>> $attributes
      */
-    public function startRequest(string $traceId, ?TraceContext $parent, string $name, array $attributes = []): Span
+    public function startRequest(string $traceId, ?TraceContext $parent, string $name, array $attributes = [], int $kind = Span::KIND_SERVER): Span
     {
         $this->sampled = $parent !== null
             ? $parent->sampled
             : $this->sampleRatio >= 1.0 || ($this->sampleRatio > 0.0 && random_int(0, PHP_INT_MAX - 1) / PHP_INT_MAX < $this->sampleRatio);
+        $this->active = [];
+        $this->fiberActive = new \WeakMap();
 
-        return $this->root = new Span($traceId, self::spanId(), $parent?->parentSpanId, $name, Span::KIND_SERVER, $this->now(), $attributes);
+        return $this->root = new Span($traceId, self::spanId(), $parent?->parentSpanId, $name, $kind, $this->now(), $attributes);
+    }
+
+    /** Whether the trace in hand is kept: what an outbound `traceparent` says of it. */
+    public function sampled(): bool
+    {
+        return $this->root !== null && $this->sampled;
     }
 
     /**
-     * A span inside the request: a child of $parent, or of the request's
-     * root. Started now, or at $atHr, an hrtime(true) reading.
+     * The span a new one is a child of: the innermost activated on this
+     * fiber, else outside any fiber, else the trace's root.
+     */
+    public function active(): ?Span
+    {
+        $fiber = \Fiber::getCurrent();
+        $stack = $fiber === null ? $this->active : ($this->fiberActive[$fiber] ?? []);
+        if ($stack !== []) {
+            return $stack[\count($stack) - 1];
+        }
+
+        return $this->active === [] ? $this->root : $this->active[\count($this->active) - 1];
+    }
+
+    /** Makes $span the active one on this fiber, until deactivate() is given it. */
+    public function activate(Span $span): void
+    {
+        $fiber = \Fiber::getCurrent();
+        if ($fiber === null) {
+            $this->active[] = $span;
+
+            return;
+        }
+        $stack = $this->fiberActive[$fiber] ?? [];
+        $stack[] = $span;
+        $this->fiberActive[$fiber] = $stack;
+    }
+
+    /** Takes $span, and whatever was activated inside it and left, off this fiber's stack. */
+    public function deactivate(Span $span): void
+    {
+        $fiber = \Fiber::getCurrent();
+        $stack = $fiber === null ? $this->active : ($this->fiberActive[$fiber] ?? []);
+        $at = array_search($span, $stack, true);
+        if ($at === false) {
+            return;
+        }
+        $stack = \array_slice($stack, 0, $at);
+        if ($fiber === null) {
+            $this->active = $stack;
+        } else {
+            $this->fiberActive[$fiber] = $stack;
+        }
+    }
+
+    /**
+     * A span inside the trace: a child of $parent, or of the active span.
+     * Started now, or at $atHr, an hrtime(true) reading.
      *
      * @param array<string, string|int|float|bool|array<array-key, mixed>> $attributes
      */
-    public function start(string $name, array $attributes = [], ?Span $parent = null, ?int $atHr = null): Span
+    public function start(string $name, array $attributes = [], ?Span $parent = null, ?int $atHr = null, int $kind = Span::KIND_INTERNAL): Span
     {
-        $parent ??= $this->root;
+        $parent ??= $this->active();
 
         return new Span(
             $parent->traceId ?? RequestId::generate(),
             self::spanId(),
             $parent?->spanId,
             $name,
-            Span::KIND_INTERNAL,
+            $kind,
             $atHr === null ? $this->now() : $this->toNs($atHr),
             $attributes,
         );
@@ -138,6 +207,8 @@ final class Tracer
             $this->end($this->root);
         }
         $this->root = null;
+        $this->active = [];
+        $this->fiberActive = new \WeakMap();
     }
 
     /**

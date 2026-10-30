@@ -13,6 +13,7 @@ use Tinvar\Data\PayloadContext;
 use Tinvar\Http\ForbiddenException;
 use Tinvar\Http\Request;
 use Tinvar\Live\TagsRead;
+use Tinvar\Observability\Telemetry;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 
@@ -36,12 +37,19 @@ final class LoaderRunner
      * @param \Closure(class-string): object $resolver builds a page or layout class
      * @param TagsRead|null $tags told which segment each loader is, so the
      *        tags a loader reads are its segment's (see Tinvar\Live)
+     * @param Telemetry|null $telemetry where each loader is a span of the
+     *        request, its statements its children (ADR 0112)
+     * @param (\Closure(LoadedRoute): void)|null $loaded told of each route
+     *        once its loaders have run: the dev toolbar, which badges each
+     *        field with where it came from
      */
     public function __construct(
         private readonly Orm $orm,
         private readonly \Closure $resolver,
         private readonly Gate $gate,
         private readonly ?TagsRead $tags = null,
+        private readonly ?Telemetry $telemetry = null,
+        private readonly ?\Closure $loaded = null,
     ) {}
 
     /**
@@ -64,7 +72,12 @@ final class LoaderRunner
 
         // The chain's loaders share one read-only transaction rather than
         // opening one each; each is still a read-only scope in invoke().
-        return $this->orm->readOnly(fn (): LoadedRoute => $this->load($chain, $binder, $models, $request, $partial, $provided));
+        $loaded = $this->orm->readOnly(fn (): LoadedRoute => $this->load($chain, $binder, $models, $request, $partial, $provided));
+        if ($this->loaded !== null) {
+            ($this->loaded)($loaded);
+        }
+
+        return $loaded;
     }
 
     /**
@@ -271,7 +284,16 @@ final class LoaderRunner
         // hovering a link runs them." Prefetch-on-hover means this body runs
         // for a page nobody has decided to visit.
         $load = fn (): mixed => $this->orm->readOnly(static fn (): mixed => $instance(...$arguments));
-        $result = $this->tags === null || $segment === null ? $load() : $this->tags->within($segment, $load);
+        $run = fn (): mixed => $this->tags === null || $segment === null ? $load() : $this->tags->within($segment, $load);
+        // A span of its own, named by its class: what was slow, and which
+        // statements were whose. The class is the application's code; its
+        // arguments, which can be a customer's records, are not on it.
+        $short = substr((string) strrchr('\\' . $route->class, '\\'), 1);
+        $result = $this->telemetry === null ? $run() : $this->telemetry->span("loader {$short}", [
+            'code.namespace' => $route->class,
+            'code.function' => '__invoke',
+            ...($segment === null ? [] : ['tinvar.segment' => $segment]),
+        ], static fn (): mixed => $run());
 
         if ($result !== null && !$result instanceof Data) {
             throw new RoutingException(
