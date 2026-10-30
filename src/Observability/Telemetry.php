@@ -29,7 +29,7 @@ use Tinvar\Render\RenderResult;
  * else of this does: no exporter's credentials, no metrics, no log. The
  * renderer writes its own log lines under the same id.
  */
-final class Telemetry
+final class Telemetry implements Spans
 {
     public const string HTTP_REQUESTS = 'tinvar_http_requests_total';
     public const string HTTP_DURATION = 'tinvar_http_request_duration_seconds';

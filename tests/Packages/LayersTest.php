@@ -277,6 +277,7 @@ describe('the core', function () {
         'the query cache' => ['Tinvar\Cache\QueryCache', 'reads'],
         'the renderer\'s channel' => ['Tinvar\Render\RenderChannel', 'render'],
         'telemetry' => ['Tinvar\Observability\Telemetry', 'render'],
+        'where work runs as a span, which a loader and a call out are given' => ['Tinvar\Observability\Spans', 'data'],
         'the realms' => ['Tinvar\Identity\Realms', 'identity'],
         'the action runner' => ['Tinvar\Actions\ActionRunner', 'entry'],
         'the entry checks' => ['Tinvar\Http\EntryContext', 'entry'],

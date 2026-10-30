@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Outbound;
 
 use Tinvar\Observability\Span;
-use Tinvar\Observability\Telemetry;
+use Tinvar\Observability\Spans;
 
 /**
  * An OutboundHttp whose every call is a client span of the trace in hand,
@@ -43,7 +43,7 @@ final readonly class TracedHttp implements OutboundHttp
      */
     public function __construct(
         private OutboundHttp $inner,
-        private Telemetry $telemetry,
+        private Spans $telemetry,
         array $propagateTo = [],
     ) {
         $origins = [];

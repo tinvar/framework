@@ -50,12 +50,14 @@ $core = [
     // What is held and sent: config, Data and its encoder, the renderer's
     // wire format, storage, outbound HTTP, validation, the tag caches and
     // flags; the signed tokens every entry point mints; the route a loader
-    // is given; and the attributes whose checks are these.
+    // is given; a span, and where work runs as one; and the attributes
+    // whose checks are these.
     'data' => [
         'Tinvar\\Config\\', 'Tinvar\\Data\\', 'Tinvar\\Protocol\\', 'Tinvar\\Storage\\', 'Tinvar\\Outbound\\',
         'Tinvar\\Validation\\', 'Tinvar\\Cache\\', 'Tinvar\\Features\\',
         'Tinvar\\Render\\SignedToken', 'Tinvar\\Render\\TokenClaims', 'Tinvar\\Render\\TokenError', 'Tinvar\\Render\\TenantClaim',
         'Tinvar\\Routing\\CompiledRoute', 'Tinvar\\Routing\\RouteKind', 'Tinvar\\Routing\\RoutingException',
+        'Tinvar\\Observability\\Span', 'Tinvar\\Observability\\Spans',
         'Tinvar\\Attributes\\',
     ],
     // The reads: pages and their loaders, queries and their cache, and the
