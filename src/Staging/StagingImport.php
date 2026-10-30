@@ -63,8 +63,8 @@ final readonly class StagingImport
         }
         // Staging's database marked production's is production's, whatever
         // was passed as staging: the import empties every table it writes.
-        if ($to->has(ProductionMarker::TABLE)
-            && (int) $staging->query('SELECT COUNT(*) FROM ' . $to->quote(ProductionMarker::TABLE))->fetchColumn() > 0) {
+        $marks = $to->has(ProductionMarker::TABLE) ? $staging->query('SELECT COUNT(*) FROM ' . $to->quote(ProductionMarker::TABLE)) : false;
+        if ($marks !== false && (int) $marks->fetchColumn() > 0) {
             throw new ImportRefused('The database given as staging\'s is marked production\'s (' . ProductionMarker::TABLE . '); the import writes into it nothing.');
         }
         $this->check($from, $to, $tenant);

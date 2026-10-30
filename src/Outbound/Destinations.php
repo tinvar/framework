@@ -65,7 +65,7 @@ final readonly class Destinations
      */
     public static function hosts(array $hosts, array $ports = [443], bool $plainHttp = false): self
     {
-        return new self(array_values($hosts), array_values($ports), $plainHttp);
+        return new self($hosts, $ports, $plainHttp);
     }
 
     /** The one origin $url names: its host and port, its scheme's alone. */
