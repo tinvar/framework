@@ -1,27 +1,94 @@
 #!/bin/sh
-# The image's HEALTHCHECK: /_ready, asked from inside the container, over
-# loopback -- the database answers, and at least one renderer, held to the
-# renderers' user, answers PHP (ADR 0041). The renderers share that
-# loopback, so the image has ProbeAccess let it in only with the probe token
-# (TINVAR_PROBE_TRUST_LOOPBACK=0), and the entrypoint serves only with one.
-# This runs as nobody, with nothing of the container's environment, and the
-# token on its standard input -- printf is the shell's own, so the token is
-# on no command line the renderers could read.
+# The one container's checks, each process's on its own (ADR 0129):
 #
-# Only 200 is healthy. The probe is answered before any session or
-# throttle, and anything that is not let in gets a 404.
+#   healthcheck [php] [renderers] [ready]
+#
+#   php        /_health: the PHP workers answer.
+#   renderers  the renderers' supervisor runs, and one renderer answers a
+#              health frame -- its event loop turns -- as their own user,
+#              as renderer-probe.js asks it in the two-container shape.
+#   ready      /_ready: the database answers, and at least one renderer,
+#              held to the renderers' user, answers PHP (ADR 0041).
+#
+# With none named, all three, in that order: the image's HEALTHCHECK, whose
+# one answer Docker keeps, with a line a check that says which failed. A
+# platform that probes on its own -- Kubernetes' liveness and readiness --
+# names them apart: `php renderers` for liveness, which no database outage
+# fails, and `ready` for readiness. Each check is run whatever the one
+# before it answered, and the status is 1 if any failed.
+#
+# PHP's two are asked over loopback, as nobody, with nothing of the
+# container's environment, and the probe token on standard input -- printf
+# is the shell's own, so the token is on no command line the renderers
+# could read. The renderers share that loopback, so the image has
+# ProbeAccess let it in only with the token (TINVAR_PROBE_TRUST_LOOPBACK=0),
+# and the entrypoint serves only with one. Only 200 passes; a probe not let
+# in is answered 404.
+#
+# The renderers' check runs as their user, with PATH alone: it signals
+# their supervisor, which only that user can, and connects to their socket,
+# which only they and PHP can. Started as root, as Docker starts a
+# HEALTHCHECK, it drops to that user; started as that user already, it runs
+# as it is; started as anyone else, it cannot check them and fails.
 # shellcheck disable=SC2016 # PHP's variables, in PHP's code
-printf '%s' "${TINVAR_PROBE_TOKEN:-}" | exec setpriv --reuid=nobody --regid=nogroup --clear-groups --inh-caps=-all --no-new-privs -- \
-    env -i PATH=/usr/local/bin:/usr/bin:/bin XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
-    /usr/local/bin/php -n -r '
-        $token = trim((string) stream_get_contents(STDIN));
-        $headers = $token === "" ? "" : "Authorization: Bearer {$token}\r\n";
-        $context = stream_context_create(["http" => ["timeout" => 4, "ignore_errors" => true, "header" => $headers]]);
-        $body = @file_get_contents($argv[1], false, $context);
-        $status = http_get_last_response_headers()[0] ?? "no answer";
-        if (preg_match("#^HTTP/\S+ 200 #", $status) !== 1) {
-            fwrite(STDERR, "/_ready: {$status} " . substr((string) $body, 0, 300) . "\n");
-            exit(1);
-        }
-        echo "ready\n";
-    ' "http://127.0.0.1:${TINVAR_CONTAINER_PORT:-8080}/_ready"
+
+port=${TINVAR_CONTAINER_PORT:-8080}
+
+php_probe() {
+    printf '%s' "${TINVAR_PROBE_TOKEN:-}" | setpriv --reuid=nobody --regid=nogroup --clear-groups --inh-caps=-all --no-new-privs -- \
+        env -i PATH=/usr/local/bin:/usr/bin:/bin XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
+        /usr/local/bin/php -n -r '
+            $token = trim((string) stream_get_contents(STDIN));
+            $headers = $token === "" ? "" : "Authorization: Bearer {$token}\r\n";
+            $context = stream_context_create(["http" => ["timeout" => 4, "ignore_errors" => true, "header" => $headers]]);
+            $body = @file_get_contents($argv[1], false, $context);
+            $status = http_get_last_response_headers()[0] ?? "no answer";
+            if (preg_match("#^HTTP/\S+ 200 #", $status) !== 1) {
+                fwrite(STDERR, "{$argv[2]}: {$status} " . substr((string) $body, 0, 300) . "\n");
+                exit(1);
+            }
+            echo "{$argv[2]}: ok\n";
+        ' "http://127.0.0.1:${port}$1" "$2"
+}
+
+renderers_probe() {
+    user=${TINVAR_RENDERER_USER:-}
+    renderer=${TINVAR_CONTAINER_RENDERER:-}
+    if [ -z "$user" ] || [ -z "$renderer" ] || [ -z "${TINVAR_SOCKET:-}" ]; then
+        echo "renderers: TINVAR_RENDERER_USER, TINVAR_CONTAINER_RENDERER and TINVAR_SOCKET name them; one is unset" >&2
+        return 1
+    fi
+    probe="$(dirname "$renderer")/renderer-probe.js"
+    if [ "$(id -u)" = 0 ]; then
+        group=$(id -gn "$user") || return 1
+        set -- setpriv --reuid="$user" --regid="$group" --clear-groups --inh-caps=-all --no-new-privs --
+    elif [ "$(id -un)" = "$user" ]; then
+        set --
+    else
+        echo "renderers: run as root or as $user to check them; this is $(id -un)" >&2
+        return 1
+    fi
+    "$@" env -i PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/node "$probe" "$TINVAR_SOCKET" >/dev/null || return 1
+    echo "renderers: ok"
+}
+
+[ $# -eq 0 ] && set -- php renderers ready
+for check in "$@"; do
+    case $check in
+        php | renderers | ready) ;;
+        *)
+            echo "usage: healthcheck [php] [renderers] [ready]" >&2
+            exit 64
+            ;;
+    esac
+done
+
+failed=0
+for check in "$@"; do
+    case $check in
+        php) php_probe /_health php || failed=1 ;;
+        renderers) renderers_probe || failed=1 ;;
+        ready) php_probe /_ready ready || failed=1 ;;
+    esac
+done
+exit "$failed"
