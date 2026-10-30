@@ -4,7 +4,14 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Support\Fixtures;
 
+use Composer\InstalledVersions;
 use Tinvar\Support\PrivateDirectory;
+use Tinvar\Tests\Orm\Fixtures\Databases as Servers;
+
+// The database package's finder, through the path Composer installed
+// tinvar/database at -- the workspace's, a package run alone's, a mirror's
+// vendor/ -- never by a path out of this package (ADR 0115).
+require_once InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/databases.php';
 
 /**
  * The servers a test can reach, beside the SQLite every test has: Postgres,
@@ -14,66 +21,25 @@ use Tinvar\Support\PrivateDirectory;
  * it is not: the suite has to pass on a machine with PHP alone, and a test
  * that quietly passed without its server would be worse than a skipped one.
  *
- * The database package's suite keeps a copy of its own, without Redis
- * (packages/database/tests/Orm/Fixtures/databases.php), so it runs with
- * nothing of the framework's installed; a change to how a server is found
- * belongs in both.
+ * Postgres and MySQL are found by the database package's finder, which its
+ * own suite uses with nothing of the framework's installed; Redis, which
+ * only the framework's tests use, is found here.
  */
 final class Databases
 {
-    /** @var array<string, \PDO|string> by driver: a connection, or why there is none */
-    private static array $found = [];
-
-    /** @var array<string, string> by driver: where the server was found */
-    private static array $dsns = [];
-
     /** @var array{0: string, 1: int}|string|null */
     private static array|string|null $redis = null;
 
-    /**
-     * A Postgres connection, or why there is none.
-     *
-     * TINVAR_TEST_PGSQL_DSN names the server, as a PDO DSN with the user and
-     * password in it (`pgsql:host=…;dbname=…;user=…;password=…`). Without it,
-     * a server pg_isready finds on this machine is tried as PGUSER, or the
-     * postgres role, which is what a local install trusts.
-     */
+    /** A Postgres connection, or why there is none (the database package's finder). */
     public static function postgres(): \PDO|string
     {
-        return self::$found['pgsql'] ??= self::connect('pgsql', static function (): ?string {
-            $dsn = getenv('TINVAR_TEST_PGSQL_DSN');
-            if (\is_string($dsn) && $dsn !== '') {
-                return $dsn;
-            }
-
-            exec('pg_isready -q 2>/dev/null', $output, $status);
-            if ($status !== 0) {
-                return null;
-            }
-
-            return \sprintf(
-                'pgsql:host=%s;port=%s;dbname=%s;user=%s;connect_timeout=2',
-                self::env('PGHOST', 'localhost'),
-                self::env('PGPORT', '5432'),
-                self::env('PGDATABASE', 'postgres'),
-                self::env('PGUSER', 'postgres'),
-            );
-        }, 'Postgres: set TINVAR_TEST_PGSQL_DSN, or run a server pg_isready can find.');
+        return Servers::postgres();
     }
 
-    /**
-     * A MySQL connection, or why there is none. Only TINVAR_TEST_MYSQL_DSN
-     * names one (`mysql:host=…;dbname=…;user=…;password=…`): nothing like
-     * pg_isready says one is running, and guessing at a root password is
-     * not something a test suite should do.
-     */
+    /** A MySQL connection, or why there is none (the database package's finder). */
     public static function mysql(): \PDO|string
     {
-        return self::$found['mysql'] ??= self::connect('mysql', static function (): ?string {
-            $dsn = getenv('TINVAR_TEST_MYSQL_DSN');
-
-            return \is_string($dsn) && $dsn !== '' ? $dsn : null;
-        }, 'MySQL: set TINVAR_TEST_MYSQL_DSN.');
+        return Servers::mysql();
     }
 
     /**
@@ -116,17 +82,13 @@ final class Databases
     /** Why the Postgres tests are skipped, or null when they run. */
     public static function postgresMissing(): ?string
     {
-        $found = self::postgres();
-
-        return \is_string($found) ? $found : null;
+        return Servers::postgresMissing();
     }
 
     /** Why the MySQL tests are skipped, or null when they run. */
     public static function mysqlMissing(): ?string
     {
-        $found = self::mysql();
-
-        return \is_string($found) ? $found : null;
+        return Servers::mysqlMissing();
     }
 
     /**
@@ -135,82 +97,26 @@ final class Databases
      */
     public static function another(string $driver): \PDO
     {
-        $found = $driver === 'pgsql' ? self::postgres() : self::mysql();
-        if (\is_string($found)) {
-            throw new \LogicException($found);
-        }
-
-        return self::open(self::$dsns[$driver]);
+        return Servers::another($driver);
     }
 
-    /** The DSN the server was found at, to hand to a child process. */
+    /** The DSN the server for $driver was found at. */
     public static function dsn(string $driver): string
     {
-        $driver === 'pgsql' ? self::postgres() : self::mysql();
-
-        return self::$dsns[$driver] ?? throw new \LogicException("No {$driver} server was found.");
+        return Servers::dsn($driver);
     }
 
     /**
-     * A schema (Postgres) or database (MySQL) of the test's own, made now
-     * and dropped when $work returns, with the connection pointed at it --
-     * so a test never sees another's tables, nor leaves its own behind.
+     * Runs $work in a schema or database of its own on $driver's server,
+     * dropped after (the database package's finder).
      *
      * @template T
-     * @param \Closure(\PDO, string): T $work given the connection and the schema's name
+     * @param \Closure(\PDO, string): T $work
      * @return T
      */
     public static function inScratchSchema(string $driver, \Closure $work): mixed
     {
-        $pdo = $driver === 'pgsql' ? self::postgres() : self::mysql();
-        if (\is_string($pdo)) {
-            throw new \LogicException($pdo);
-        }
-
-        $schema = 'tinvar_test_' . bin2hex(random_bytes(6));
-        if ($driver === 'pgsql') {
-            $pdo->exec("CREATE SCHEMA {$schema}");
-            $pdo->exec("SET search_path TO {$schema}");
-        } else {
-            $pdo->exec("CREATE DATABASE {$schema}");
-            $pdo->exec("USE {$schema}");
-        }
-
-        try {
-            return $work($pdo, $schema);
-        } finally {
-            // Whatever the test left open goes first, or the drop waits on it.
-            if ($pdo->inTransaction()) {
-                $pdo->rollBack();
-            }
-            $pdo->exec($driver === 'pgsql' ? "DROP SCHEMA {$schema} CASCADE" : "DROP DATABASE {$schema}");
-            if ($driver === 'pgsql') {
-                $pdo->exec('SET search_path TO DEFAULT');
-            }
-        }
-    }
-
-    /** @param \Closure(): ?string $dsn */
-    private static function connect(string $driver, \Closure $dsn, string $missing): \PDO|string
-    {
-        if (!\extension_loaded("pdo_{$driver}")) {
-            return "pdo_{$driver} is not loaded.";
-        }
-
-        $found = $dsn();
-        if ($found === null) {
-            return $missing;
-        }
-
-        try {
-            $pdo = self::open($found);
-        } catch (\PDOException $e) {
-            return "{$missing} The server found refused a connection: {$e->getMessage()}";
-        }
-
-        self::$dsns[$driver] = $found;
-
-        return $pdo;
+        return Servers::inScratchSchema($driver, $work);
     }
 
     /** @return array{0: string, 1: int}|string */
@@ -279,20 +185,5 @@ final class Databases
         } catch (\RedisException) {
             return false;
         }
-    }
-
-    private static function open(string $dsn): \PDO
-    {
-        return new \PDO($dsn, null, null, [
-            \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
-            \PDO::ATTR_TIMEOUT => 2,
-        ]);
-    }
-
-    private static function env(string $name, string $default): string
-    {
-        $value = getenv($name);
-
-        return \is_string($value) && $value !== '' ? $value : $default;
     }
 }
