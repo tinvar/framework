@@ -223,8 +223,10 @@ final class Encoder
                 ? $this->rescue($field, $fieldPath, $depth + 1, $seen, $scope, $failed)
                 : $this->walk($field, $fieldPath, $depth + 1, $seen, $scope);
 
-            if (isset($merged[$name]) && \is_array($encoded)) {
-                $encoded = $this->merged($merged[$name], $encoded, $fieldPath, $scope);
+            // A rescued failure crosses as its marker, which is not a list
+            // to merge; and a field that may be null may be sent as null.
+            if (isset($merged[$name]) && !$failed && $encoded !== null) {
+                $encoded = $this->mergedField($merged[$name], $encoded, $fieldPath, $scope);
             }
 
             if (!isset($once[$name], $keys[$name])) {
@@ -286,23 +288,51 @@ final class Encoder
     }
 
     /**
-     * A #[Merge] field: its items, and what the browser needs to put them
+     * A #[Merge] field, encoded: the list it is, or -- marked with a path --
+     * the object it is with the list under that property merged and the
+     * rest of it sent as it is (ADR 0120). Checked here as much as in
+     * DataShape, since a Lazy's value is known only once resolved: a value
+     * that is not what the mark says is refused, never sent unmerged.
+     */
+    private function mergedField(\Tinvar\Attributes\Merge $merge, mixed $encoded, string $path, EncodeScope $scope): mixed
+    {
+        $into = $merge->path();
+        if ($into === null) {
+            if (!\is_array($encoded)) {
+                throw new \LogicException("The #[Merge] field at {$path} is not a list.");
+            }
+
+            return $this->merged($merge, array_values($encoded), $path, $scope, $scope->context->resets($scope->dotPath($path)));
+        }
+
+        if (!\is_array($encoded) || !\is_array($encoded[$into] ?? null)) {
+            throw new \LogicException("The #[Merge] field at {$path} merges into '{$into}', which it does not hold a list under.");
+        }
+        // X-Reset naming the field resets the list it merges, as Inertia's
+        // reset names the prop and not its path; naming the list itself
+        // does too.
+        $reset = $scope->context->resets($scope->dotPath($path)) || $scope->context->resets($scope->dotPath("{$path}.{$into}"));
+        $encoded[$into] = $this->merged($merge, array_values($encoded[$into]), "{$path}.{$into}", $scope, $reset);
+
+        return $encoded;
+    }
+
+    /**
+     * A merged list: its items, and what the browser needs to put them
      * with those it shows -- where, matched on what, and whether this
      * response replaces them instead.
      *
-     * @param array<array-key, mixed> $items already encoded
+     * @param list<mixed> $items already encoded
      * @return array<string, mixed>
      */
-    private function merged(\Tinvar\Attributes\Merge $merge, array $items, string $path, EncodeScope $scope): array
+    private function merged(\Tinvar\Attributes\Merge $merge, array $items, string $path, EncodeScope $scope, bool $reset): array
     {
-        $dot = $scope->dotPath($path);
-
         return [
-            self::MERGE_KEY => $dot,
-            'mode' => $merge->prepend ? 'prepend' : 'append',
-            'reset' => $scope->context->resets($dot),
+            self::MERGE_KEY => $scope->dotPath($path),
+            'mode' => $merge->prepends() ? 'prepend' : 'append',
+            'reset' => $reset,
             'matchOn' => self::matchOn($merge->matchOn, $path),
-            'items' => array_values($items),
+            'items' => $items,
         ];
     }
 

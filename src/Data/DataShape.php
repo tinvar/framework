@@ -215,7 +215,10 @@ final class DataShape
 
     /**
      * The fields marked #[Merge], by name. Only a list can be merged into
-     * one already shown, so a mark on anything else is refused here.
+     * one already shown, so the field is one, or a Lazy -- whose value the
+     * encoder checks as it resolves it -- or, given a path, a Data object
+     * whose property of that name is one (ADR 0120). A mark on anything else
+     * is refused here.
      *
      * @param class-string $class
      * @return array<string, Merge>
@@ -233,15 +236,34 @@ final class DataShape
                 continue;
             }
 
+            $where = "{$class}::\${$property->getName()}";
+            $merge = $attribute->newInstance();
             $type = $property->getType();
-            if (!$type instanceof \ReflectionNamedType || $type->getName() !== 'array') {
+            $name = $type instanceof \ReflectionNamedType ? $type->getName() : null;
+            $lazy = $name !== null && is_a($name, Lazy::class, true);
+            $path = $merge->path();
+
+            if ($path === null && $name !== 'array' && !$lazy) {
                 throw new \LogicException(
-                    "{$class}::\${$property->getName()} is #[Merge], which only a list field can be. "
+                    "{$where} is #[Merge], which only a list field can be, or a Lazy of one. "
                     . 'A paginated list is a Scroll, which merges by page without it.',
                 );
             }
+            if ($path !== null && !$lazy) {
+                // Read here, not when the field is first sent: a path no
+                // value of the field could have would otherwise surface as
+                // a render that fails only once one is.
+                $holds = $name !== null && is_subclass_of($name, Data::class) && property_exists($name, $path)
+                    ? (new \ReflectionProperty($name, $path))->getType() : null;
+                if (!$holds instanceof \ReflectionNamedType || $holds->getName() !== 'array') {
+                    throw new \LogicException(
+                        "{$where} is #[Merge] into '{$path}', so it must be a Data object -- or a Lazy of one -- "
+                        . "whose '{$path}' property is a list.",
+                    );
+                }
+            }
 
-            $merged[$property->getName()] = $attribute->newInstance();
+            $merged[$property->getName()] = $merge;
         }
 
         return self::$merged[$class] = $merged;
