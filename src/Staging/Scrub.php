@@ -103,12 +103,28 @@ final readonly class Scrub
      * column's `table.column` unless $context says. A value that does not
      * open under production's key stops the import: it is not known to be
      * what the column says it is.
+     *
+     * Staging can open what this writes, so it copies production's value
+     * as surely as keep() does, in a new envelope. A column named like a
+     * secret -- a TOTP seed, an API token sealed at rest -- needs $because,
+     * as keep() does: a credential is dropped or made afresh, not carried
+     * into staging under its key.
      */
-    public static function reencrypt(?string $context = null): self
+    public static function reencrypt(?string $context = null, ?string $because = null): self
     {
+        if ($because !== null && trim($because) === '') {
+            throw new \InvalidArgumentException('Scrub::reencrypt() was given an empty reason.');
+        }
+
         return new self('reencrypt', static fn (mixed $value, ScrubContext $scrub): mixed => $value === null
             ? null
-            : $scrub->reencrypt((string) $value, $context));
+            : $scrub->reencrypt((string) $value, $context), $because);
+    }
+
+    /** Whether this rule writes production's value, or one staging can open to it. */
+    public function copiesValue(): bool
+    {
+        return $this->kind === 'keep' || $this->kind === 'reencrypt';
     }
 
     /**

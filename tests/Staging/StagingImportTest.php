@@ -215,6 +215,7 @@ it('refuses a plan that copies a credential table, or keeps a secret, without sa
     'a session table' => [static fn () => ScrubPlan::create()->table('user_sessions', ['id' => Scrub::keep()]), 'named like a credential'],
     'a secret kept' => [static fn () => ScrubPlan::create()->table('customers', ['api_token' => Scrub::keep()]), 'named like a secret'],
     'a password kept' => [static fn () => ScrubPlan::create()->table('customers', ['password_hash' => Scrub::keep()]), 'named like a secret'],
+    'a secret re-encrypted' => [static fn () => ScrubPlan::create()->table('customers', ['totp_secret' => Scrub::reencrypt()]), 'named like a secret'],
     'a table twice' => [static fn () => ScrubPlan::create()->drop('migrations')->ignore('migrations', because: 'x'), 'twice'],
     'a name SQL would need quoting for' => [static fn () => ScrubPlan::create()->drop('x"; DROP TABLE y; --'), 'not a table name'],
     'a tenant column scrubbed' => [static fn () => ScrubPlan::create()->table('customers', ['tenant_id' => Scrub::null()], tenant: 'tenant_id'), 'must be one it keeps'],
@@ -222,7 +223,11 @@ it('refuses a plan that copies a credential table, or keeps a secret, without sa
 
 it('keeps a secret-looking column, or copies a credential-looking table, that says why it is safe', function () {
     $plan = ScrubPlan::create()
-        ->table('token_types', ['id' => Scrub::keep(), 'token_count' => Scrub::keep(because: 'a count, not a token')], because: 'kinds of token, none held');
+        ->table('token_types', [
+            'id' => Scrub::keep(),
+            'token_count' => Scrub::keep(because: 'a count, not a token'),
+            'token_note' => Scrub::reencrypt(because: 'a note about the kind, sealed for its PII'),
+        ], because: 'kinds of token, none held');
 
     expect(array_keys($plan->tables()))->toBe(['token_types']);
 });

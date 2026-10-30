@@ -177,10 +177,10 @@ final class ScrubPlan
             if (!$rule instanceof Scrub) {
                 throw new \InvalidArgumentException("{$name}.{$column} has no Scrub rule.");
             }
-            if ($rule->kind === 'keep' && $rule->because === null && preg_match(Scrub::SECRET_NAMES, (string) $column) === 1) {
+            if ($rule->copiesValue() && $rule->because === null && preg_match(Scrub::SECRET_NAMES, (string) $column) === 1) {
                 throw new \InvalidArgumentException(
-                    "{$name}.{$column} is named like a secret, and is kept as it is. Scrub it, or say why it is safe: "
-                    . "Scrub::keep(because: '...').",
+                    "{$name}.{$column} is named like a secret, and is copied to staging by {$rule->kind}(). Scrub it, "
+                    . "or say why it is safe: Scrub::{$rule->kind}(because: '...').",
                 );
             }
             $rules[(string) $column] = $rule;
