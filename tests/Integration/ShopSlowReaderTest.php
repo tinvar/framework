@@ -132,6 +132,8 @@ function fetch(string $host, int $port, string $path, int $timeout): ?array
     $timedOut = stream_get_meta_data($stream)['timed_out'];
     fclose($stream);
 
+    // The response, past a 103 Early Hint ahead of it (ADR 0108).
+    $response = (string) preg_replace('#^(?:HTTP/1\.1 1\d\d[^\r]*\r\n.*?\r\n\r\n)+#s', '', $response);
     if ($timedOut || preg_match('#^HTTP/1\.1 (\d{3})#', $response, $m) !== 1) {
         return null;
     }

@@ -63,8 +63,8 @@ final readonly class BuiltAssets
      * The same names, as the path a Caddyfile's asset route matches
      * (`@assets path_regexp ...`): under PATH, one segment, and only the
      * extensions above, so the route serves what this would and nothing
-     * else under client/ (ADR 0108). Held to it by `tinvar check`
-     * (Tinvar\Server\AssetRouteRules).
+     * else under client/ (ADR 0108). `tinvar check` holds an app's
+     * Caddyfile to it.
      */
     public static function routePattern(): string
     {
