@@ -88,6 +88,15 @@ final class RenderChannel
          * caller says may be repeated. Without one, none is.
          */
         private readonly ?RenderRetry $retry = null,
+        /**
+         * Told of each subtree the renderer reports it rendered as an error
+         * row -- a Suspense boundary's, a fragment's -- in a render that
+         * went on (ADR 0112): the Kernel's boundaryFailed(), which raises
+         * RenderFailed for it. Beside $report, which logs it.
+         *
+         * @var (\Closure(RendererException): void)|null
+         */
+        private readonly ?\Closure $boundaryFailed = null,
     ) {}
 
     /**
@@ -381,7 +390,14 @@ final class RenderChannel
                         // are the renderer's to choose, so they are kept
                         // only under debug, as an error frame's are.
                         if (++$reports <= self::MAX_REPORTS) {
-                            $this->reportRendered(RendererException::fromReport(Frame::readReport($message), $this->debug));
+                            $failed = RendererException::fromReport(Frame::readReport($message), $this->debug);
+                            $this->reportRendered($failed);
+                            if ($trace !== null) {
+                                $this->telemetry?->boundaryFailed($trace, $failed->failure()->value);
+                            }
+                            if ($this->boundaryFailed !== null) {
+                                ($this->boundaryFailed)($failed);
+                            }
                         }
                     } elseif ($type === Frame::DONE) {
                         $done = true;

@@ -358,7 +358,7 @@ describe('a render', function () {
      * @param list<array<string, mixed>> $ending
      * @return array{Telemetry, Exported, ?\Throwable}
      */
-    function rendered(array $ending): array
+    function rendered(array $ending, ?\Closure $boundaryFailed = null): array
     {
         if (!\function_exists('pcntl_fork')) {
             test()->markTestSkipped('pcntl is not available.');
@@ -370,7 +370,9 @@ describe('a render', function () {
             $path,
             new QueryRunner(new QueryRegistry(), new Orm(new Fixture(racks: 0, unitsPerRack: 0, sites: 0)->connection, new IdentityMap('test')), new AllowAllGate()),
             deadlineSeconds: 5.0,
+            report: static fn (\Throwable $e, ?string $digest): string => (string) $digest,
             telemetry: $telemetry,
+            boundaryFailed: $boundaryFailed,
         );
 
         $request = $telemetry->begin(get('/catalog'));
@@ -416,6 +418,28 @@ describe('a render', function () {
             ->and($render->attributes)->toMatchArray(['tinvar.view' => 'catalog', 'tinvar.render.bytes' => 13, 'tinvar.render.query_calls' => 2])
             // A name the route may not call is not repeated from the renderer.
             ->and($batch->attributes['tinvar.query.names'])->toBe(['availability', '_refused']);
+    });
+
+    it('counts a boundary rendered as an error row, hands it on, and leaves the render ok (ADR 0112)', function () {
+        $heard = [];
+        [$telemetry, $exported, $failure] = rendered([
+            ['t' => Frame::REPORT, 'code' => 'query_failed', 'digest' => 'b0undary1', 'message' => 'the stock query threw'],
+            Frame::chunk('<html></html>'),
+            ['t' => Frame::DONE],
+        ], static function (RendererException $e) use (&$heard): void {
+            $heard[] = $e;
+        });
+
+        expect($failure)->toBeNull()
+            ->and($heard)->toHaveCount(1)
+            ->and($heard[0]->digest)->toBe('b0undary1')
+            ->and($heard[0]->failure()->value)->toBe('query_failed')
+            ->and($telemetry->metrics?->exposition())->toContain('tinvar_render_boundary_failures_total{kind="document",failure="query_failed"} 1')
+            ->and($telemetry->metrics?->exposition())->toContain('tinvar_renders_total{kind="document",outcome="ok"} 1');
+
+        $render = array_values(array_filter($exported->spans, static fn (Span $s): bool => $s->name === 'render document'))[0];
+        expect($render->status)->toBe(Span::STATUS_UNSET)
+            ->and($render->attributes['tinvar.render.boundary_failures'])->toBe(1);
     });
 
     it('is counted by how it failed', function () {

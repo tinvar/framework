@@ -423,6 +423,22 @@ final class Telemetry
     }
 
     /**
+     * A subtree the renderer rendered as an error row -- a Suspense
+     * boundary's in a page, or a fragment's -- in a render that went on:
+     * counted by kind and by how it was classified, and an event on the
+     * render's span, which stays OK. The response is still a 200; this is
+     * how a dashboard sees the boundaries that were not.
+     */
+    public function boundaryFailed(RenderTrace $trace, string $failure): void
+    {
+        $this->metrics?->increment(self::RENDER_BOUNDARY_FAILURES, ['kind' => $trace->kind, 'failure' => $failure]);
+        if ($trace->span !== null) {
+            $failed = $trace->span->attributes['tinvar.render.boundary_failures'] ?? 0;
+            $trace->span->set('tinvar.render.boundary_failures', (\is_int($failed) ? $failed : 0) + 1);
+        }
+    }
+
+    /**
      * A failed render the retry hook is trying again (ADR 0093): counted by
      * how it failed, and said in the log, at warning -- a renderer that
      * crashes or cannot be reached is worth a look even when the next try
@@ -455,6 +471,7 @@ final class Telemetry
             ->histogram(self::RENDER_QUERY_TIME, 'Seconds one render spent answering its query calls.', ['kind'])
             ->histogram(self::QUERY_BATCH_DURATION, 'Seconds PHP took to answer one batch of query calls.', ['kind'], self::QUERY_BUCKETS)
             ->counter(self::QUERY_CALLS, 'Query calls renders sent.', ['kind'])
-            ->counter(self::RENDER_RETRIES, 'Failed renders tried again by the retry hook, by kind and failure.', ['kind', 'failure']);
+            ->counter(self::RENDER_RETRIES, 'Failed renders tried again by the retry hook, by kind and failure.', ['kind', 'failure'])
+            ->counter(self::RENDER_BOUNDARY_FAILURES, 'Subtrees rendered as an error row in a render that went on -- a Suspense boundary, a fragment -- by kind and failure.', ['kind', 'failure']);
     }
 }

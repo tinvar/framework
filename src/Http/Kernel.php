@@ -282,6 +282,9 @@ final class Kernel
     /** The dev toolbar, under `tinvar dev` only; never on a Kernel not built for dev. */
     private readonly ?DevToolbar $toolbar;
 
+    /** The request handle() is answering: what a failed boundary's RenderFailed names. */
+    private ?Request $handling = null;
+
     /** Whether a failed render escapes handle() rather than becoming an error page. */
     private readonly bool $throwOnRenderError;
 
@@ -1410,6 +1413,7 @@ final class Kernel
         $request = $this->telemetry?->begin($request) ?? $request;
         $request = $this->withPreviousUrl($request);
         $this->toolbar?->begin($request);
+        $this->handling = $request;
         $failure = null;
         $ended = false;
 
@@ -1435,6 +1439,7 @@ final class Kernel
                 $this->telemetry?->end(null, $failure);
             }
             $this->toolbar?->end();
+            $this->handling = null;
             $this->scope->reset();
         }
     }
@@ -2075,7 +2080,38 @@ final class Kernel
             return;
         }
 
-        $event = new RenderFailed($e, $failure, $request, ExceptionHandler::digest($e));
+        $this->notifyRenderFailed(new RenderFailed($e, $failure, $request, ExceptionHandler::digest($e)));
+
+        if ($this->throwOnRenderError) {
+            throw $e;
+        }
+    }
+
+    /**
+     * A subtree the renderer rendered as an error row, in a render that went
+     * on -- a Suspense boundary's in a page, a fragment's -- raised as a
+     * RenderFailed marked `boundary` (ADR 0112): to the toolbar, the
+     * closures and the event bus, as a failed render is. What the
+     * application's RenderChannel is given as `boundaryFailed`.
+     *
+     * Not under throw_on_error: the response is the page, already part
+     * written to the renderer's stream, and its boundary's error state is
+     * what the visitor sees. A test asserts on the event. Nor outside
+     * handle() -- a mail render on a worker -- where there is no request to
+     * name; its log line and its count are all there is.
+     */
+    public function boundaryFailed(RendererException $e): void
+    {
+        if ($this->handling === null) {
+            return;
+        }
+
+        $this->notifyRenderFailed(new RenderFailed($e, $e->failure(), $this->handling, $e->digest ?? ExceptionHandler::digest($e), boundary: true));
+    }
+
+    /** The toolbar, the closures, then the bus; a listener that throws is reported, and the rest still run. */
+    private function notifyRenderFailed(RenderFailed $event): void
+    {
         $this->toolbar?->failed($event);
         foreach ($this->renderFailed as $listener) {
             try {
@@ -2094,10 +2130,6 @@ final class Kernel
             } catch (\Throwable $thrown) {
                 $this->report($thrown);
             }
-        }
-
-        if ($this->throwOnRenderError) {
-            throw $e;
         }
     }
 

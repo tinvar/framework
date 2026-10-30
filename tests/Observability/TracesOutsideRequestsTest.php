@@ -48,6 +48,8 @@ use Tinvar\Outbound\FakeOutboundHttp;
 use Tinvar\Outbound\OutboundRequest;
 use Tinvar\Outbound\TracedHttp;
 use Tinvar\Query\QueryRegistry;
+use Tinvar\Render\RendererException;
+use Tinvar\Render\RenderFailed;
 use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
@@ -286,6 +288,43 @@ describe('a loader', function () {
             ->and($loader->attributes)->toMatchArray(['code.namespace' => ShelfPage::class, 'tinvar.segment' => 'page'])
             ->and($statement->parentSpanId)->toBe($loader->spanId)
             ->and($statement->attributes['db.query.text'])->toBe('SELECT ? AS label');
+    });
+});
+
+describe('a failed boundary', function () {
+    it('is a RenderFailed marked boundary while a request is handled, and nothing outside one', function () {
+        $heard = [];
+        $routes = new RouteRegistry();
+        $routes->register(ShelfPage::class);
+        $kernel = new Kernel(
+            orm: new Orm(new Fixture(racks: 0, unitsPerRack: 0, sites: 0)->connection, new IdentityMap('test')),
+            routes: $routes,
+            queries: new QueryRegistry(),
+            actions: new ActionRegistry(),
+            auth: new AuthContext(),
+            policies: new PolicyRegistry(),
+            resolver: static fn (string $class): object => new $class(),
+            allowedQueries: static fn (Request $r): array => [],
+            renderFailed: [static function (RenderFailed $event) use (&$heard): void {
+                $heard[] = $event;
+            }],
+            throwOnRenderError: true,
+        );
+        $boundary = new RendererException('the stock query threw', 'query_failed', 'b0undary1', reported: true);
+
+        $kernel->boundaryFailed($boundary);
+        $response = $kernel->handle(new Request('GET', '/shelf', ['accept' => 'text/html']), static function () use ($kernel, $boundary): Response {
+            $kernel->boundaryFailed($boundary);
+
+            return Response::make(200, 'the page, its boundary in its error state');
+        });
+
+        // The page went out: throw_on_error is for a render that failed whole.
+        expect($response->status)->toBe(200)
+            ->and($heard)->toHaveCount(1)
+            ->and($heard[0]->boundary)->toBeTrue()
+            ->and($heard[0]->digest)->toBe('b0undary1')
+            ->and($heard[0]->request->path)->toBe('/shelf');
     });
 });
 
