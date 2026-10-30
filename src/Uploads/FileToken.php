@@ -6,6 +6,7 @@ namespace Tinvar\Uploads;
 
 use Tinvar\Render\SignedToken;
 use Tinvar\Render\TokenError;
+use Tinvar\Storage\FileTypes;
 use Tinvar\Storage\StorageKey;
 use Tinvar\Support\Signer;
 

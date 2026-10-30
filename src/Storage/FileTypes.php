@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Tinvar\Uploads;
+namespace Tinvar\Storage;
 
 /**
  * What an uploaded file is, from its bytes -- never from its name or from

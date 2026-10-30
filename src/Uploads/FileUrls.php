@@ -6,6 +6,7 @@ namespace Tinvar\Uploads;
 
 use Tinvar\Auth\AuthContext;
 use Tinvar\Http\Request;
+use Tinvar\Storage\FileTypes;
 use Tinvar\Storage\StorageKey;
 
 /**

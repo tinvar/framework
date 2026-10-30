@@ -19,7 +19,7 @@ use Tinvar\Http\Request;
 use Tinvar\Orm\Model;
 use Tinvar\Storage\StorageKey;
 use Tinvar\Support\Str;
-use Tinvar\Uploads\FileTypes;
+use Tinvar\Storage\FileTypes;
 use Tinvar\Uploads\Upload;
 use Tinvar\Validation\FormRequest;
 use Tinvar\Support\KnownAttributes;

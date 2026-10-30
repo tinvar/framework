@@ -4,15 +4,18 @@ declare(strict_types=1);
 
 /**
  * The names the queue's worker, the user lookup and the nonce stores had
- * before the framework was held apart into modules, kept for one release
- * (ADR 0077).
+ * before the framework was held apart into modules (ADR 0077), and the file
+ * types and head tags had before its core was held apart into layers (ADR
+ * 0114), kept for one release.
  *
  * @deprecated since 0.4: use the names below. Removed in 0.5.
  *
  * The worker and the sync queue run jobs, so they are the jobs module's,
  * and the queue's storage stands on the database alone; the user lookup
  * and the nonce stores are asked by the cross-host handoff as well as by
- * jobs and webhooks, so they are the core's.
+ * jobs and webhooks, so they are the core's. Outbound HTTP sniffs a fetched
+ * image as uploads sniff a file, so the file types are storage's; and a head
+ * tag is what a renderer's frame carries, so it is the protocol's.
  *
  * As tinvar/database's are, an old name is aliased when something first
  * asks for it, not when this file loads, and is reported once per process
@@ -32,6 +35,8 @@ $renamed = [
     'tinvar\\webhooks\\noncestore' => Tinvar\Http\NonceStore::class,
     'tinvar\\webhooks\\arraynoncestore' => Tinvar\Http\ArrayNonceStore::class,
     'tinvar\\webhooks\\databasenoncestore' => Tinvar\Http\DatabaseNonceStore::class,
+    'tinvar\\uploads\\filetypes' => Tinvar\Storage\FileTypes::class,
+    'tinvar\\render\\headtag' => Tinvar\Protocol\HeadTag::class,
 ];
 
 // Recorded as the database's are, so whatever reports an old name can say

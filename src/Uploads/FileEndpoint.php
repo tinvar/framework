@@ -9,6 +9,7 @@ use Tinvar\Http\HttpException;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Render\TokenError;
+use Tinvar\Storage\FileTypes;
 use Tinvar\Storage\LocalStorage;
 
 /**

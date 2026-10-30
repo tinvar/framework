@@ -6,7 +6,7 @@ namespace Tinvar\Outbound;
 
 use Tinvar\Storage\Storage;
 use Tinvar\Storage\StorageKey;
-use Tinvar\Uploads\FileTypes;
+use Tinvar\Storage\FileTypes;
 
 /**
  * Images fetched from a URL someone gave the application -- an avatar, a

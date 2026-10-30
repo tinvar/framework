@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Tinvar\Protocol;
 
 use Tinvar\Codec\Bin;
-use Tinvar\Render\HeadTag;
 
 /**
  * The socket protocol's frame table (tinvar-spec.md, "Socket protocol").
@@ -346,7 +345,7 @@ final class Frame
      * The code, digest and message of a report frame, and where it
      * happened. Anything not of the shape this side expects is dropped
      * rather than logged; what is kept of the message and the place is
-     * RendererException::fromReport()'s to decide, under debug only.
+     * the renderer exception's to decide, under debug only.
      *
      * @param array<string, mixed> $frame
      * @return array{code: string, digest: string|null, message: string|null, stack: string|null, file: string|null, line: int|null}

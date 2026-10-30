@@ -11,7 +11,7 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Render\HeadTag;
 
 use Tinvar\Protocol\Frame;
-use Tinvar\Render\HeadTag;
+use Tinvar\Protocol\HeadTag;
 
 it('rides in the render frame, only when there are any', function () {
     $frame = Frame::render('shop/catalog', [], ['page' => null], 'r', 'n', [], head: [

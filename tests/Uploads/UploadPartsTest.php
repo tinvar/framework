@@ -23,7 +23,7 @@ use Tinvar\Support\Signer;
 use Tinvar\Tests\Uploads\Fixtures\Profile;
 use Tinvar\Uploads\ArrayUploadStore;
 use Tinvar\Uploads\DatabaseUploadStore;
-use Tinvar\Uploads\FileTypes;
+use Tinvar\Storage\FileTypes;
 use Tinvar\Uploads\PendingUpload;
 use Tinvar\Uploads\Upload;
 use Tinvar\Uploads\UploadName;

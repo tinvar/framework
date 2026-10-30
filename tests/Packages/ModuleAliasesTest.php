@@ -5,7 +5,9 @@ declare(strict_types=1);
 /**
  * The classes holding the framework apart into modules moved (ADR 0077):
  * the worker and the sync queue into jobs, the user lookup and the nonce
- * stores into the core. Each old name is the moved class itself, for one
+ * stores into the core; and holding the core apart into layers moved the
+ * file types into storage and the head tag into the protocol (ADR 0114).
+ * Each old name is the moved class itself, for one
  * release, with a deprecation, and is recorded so a refusal can say what
  * it became.
  */
@@ -20,6 +22,8 @@ use Tinvar\Http\NonceStore;
 use Tinvar\Jobs\SyncQueue;
 use Tinvar\Jobs\Worker;
 use Tinvar\Jobs\WorkerOptions;
+use Tinvar\Protocol\HeadTag;
+use Tinvar\Storage\FileTypes;
 use Tinvar\Support\RenamedClasses;
 
 /** Whether $old names a class or interface, its deprecation heard and set aside. */
@@ -46,6 +50,8 @@ it('makes each old name the class it became', function (string $old, string $cur
     'the nonce store' => ['Tinvar\Webhooks\NonceStore', NonceStore::class],
     'its array store' => ['Tinvar\Webhooks\ArrayNonceStore', ArrayNonceStore::class],
     'its database store' => ['Tinvar\Webhooks\DatabaseNonceStore', DatabaseNonceStore::class],
+    'the file types' => ['Tinvar\Uploads\FileTypes', FileTypes::class],
+    'a head tag' => ['Tinvar\Render\HeadTag', HeadTag::class],
 ]);
 
 it('takes an application\'s lookup written against the old name as the one interface there is', function () {

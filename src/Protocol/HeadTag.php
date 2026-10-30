@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Tinvar\Render;
+namespace Tinvar\Protocol;
 
 /**
  * A title or meta tag PHP puts in a document's head for a component's to

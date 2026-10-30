@@ -19,6 +19,7 @@ use Tinvar\Http\UploadedFile;
 use Tinvar\Orm\Orm;
 use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenError;
+use Tinvar\Storage\FileTypes;
 use Tinvar\Storage\StorageKey;
 
 /**
