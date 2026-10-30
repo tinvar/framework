@@ -261,6 +261,14 @@ describe('a statement\'s span', function () {
             ->and(StatementText::sanitize("SELECT * FROM t WHERE a = 'it\\'s' AND b = 'hunter2'", 'mysql'))->toBe('SELECT * FROM t WHERE a = ? AND b = ?')
             ->and(StatementText::sanitize('SELECT "orders"."id" FROM "orders"', 'postgresql'))->toBe('SELECT "orders"."id" FROM "orders"');
     });
+
+    it('reads a comment opener inside a string as the string, so no value is left between two', function () {
+        expect(StatementText::sanitize("SELECT * FROM t WHERE a = 'x--y'\nAND b = 'hunter2'", 'postgresql'))->toBe('SELECT * FROM t WHERE a = ? AND b = ?')
+            ->and(StatementText::sanitize("SELECT * FROM t WHERE a = 'x/*y' AND b = 'hunter2' AND c = '*/'", 'postgresql'))->toBe('SELECT * FROM t WHERE a = ? AND b = ? AND c = ?')
+            ->and(StatementText::sanitize("SELECT 1 # it's\n, 'hunter2'", 'mysql'))->toBe('SELECT ? , ?')
+            ->and(StatementText::sanitize('SELECT /* a /* b */ hunter2 */ 1', 'postgresql'))->toBe('SELECT ?')
+            ->and(StatementText::sanitize("SELECT \$\$ hunter2 \$\$, 'x', \$\$ more \$\$", 'postgresql'))->toBe('SELECT ?, ?, ?');
+    });
 });
 
 describe('a loader', function () {

@@ -31,31 +31,44 @@ final class StatementText
     /** $sql with its comments, quoted strings and numbers replaced by `?`. */
     public static function sanitize(string $sql, string $system = ''): string
     {
-        // Comments first, to nothing: what is in one is anyone's.
-        $sql = preg_replace(['~/\*.*?(\*/|\z)~s', '~--[^\n]*~'], ' ', $sql);
-        if (!\is_string($sql)) {
-            return '?';
-        }
         $mysql = $system === 'mysql' || $system === 'mariadb';
-        $patterns = [
+
+        // One pattern, every comment and literal an alternative of it, read
+        // left to right: whichever begins first is taken whole, as the
+        // database's own lexer takes it. Taken kind by kind instead --
+        // comments, then strings -- a `--` or `/*` inside a string reads as
+        // a comment, eats that string's closing quote, and pairs the next
+        // string's opening quote with a closing one, leaving the value
+        // between them in the text.
+        $alternatives = [
+            // A block comment. They nest, as Postgres has them; on MySQL,
+            // whose do not, reading them as nested only takes out more.
+            '(?<block>/\*(?:(?&block)|[^*/]++|\*(?!/)|/(?!\*))*+(?:\*/|\z))',
+            // A line comment, and MySQL's # one.
+            '--[^\n]*+' . ($mysql ? '|\#[^\n]*+' : ''),
             // Postgres's dollar-quoted strings, $$...$$ or $tag$...$tag$.
-            '~\$([A-Za-z_][A-Za-z0-9_]*)?\$.*?(\$\1\$|\z)~s',
+            '\$(?<tag>[A-Za-z_][A-Za-z0-9_]*|)\$.*?(?:\$\k<tag>\$|\z)',
             // An escape string, E'...', where a backslash escapes the quote.
-            "~(?<![A-Za-z0-9_])[Ee]'(?:''|\\\\.|[^'\\\\])*('|\\z)~s",
+            "(?<![A-Za-z0-9_])[Ee]'(?:''|\\\\.|[^'\\\\])*+(?:'|\\z)",
             // Any other quoted string and its prefix -- X'', B'', N''. A
             // backslash escapes a quote on MySQL alone: elsewhere 'a\' is a
             // whole string, and reading it as escaped would end the literal
             // at the next string's opening quote and leave that one's value
             // in the text.
-            $mysql ? "~(?<![A-Za-z0-9_])[XxBbNn]?'(?:''|\\\\.|[^'\\\\])*('|\\z)~s" : "~(?<![A-Za-z0-9_])[XxBbNn]?'(?:''|[^'])*('|\\z)~s",
+            $mysql ? "(?<![A-Za-z0-9_])[XxBbNn]?'(?:''|\\\\.|[^'\\\\])*+(?:'|\\z)" : "(?<![A-Za-z0-9_])[XxBbNn]?'(?:''|[^'])*+(?:'|\\z)",
+            // MySQL's double-quoted string.
+            $mysql ? '"(?:""|\\\\.|[^"\\\\])*+(?:"|\z)' : '(*FAIL)',
+            // A number standing alone: not a placeholder's ($1), not part of a name (t1).
+            '(?<![A-Za-z0-9_$.])-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?(?![A-Za-z0-9_])',
         ];
-        if ($mysql) {
-            $patterns[] = '~"(?:""|\\\\.|[^"\\\\])*("|\z)~s';
-        }
-        // A number standing alone: not a placeholder's ($1), not part of a name (t1).
-        $patterns[] = '~(?<![A-Za-z0-9_$.])-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?(?![A-Za-z0-9_])~';
+        [$block, $line] = $alternatives;
 
-        $out = preg_replace($patterns, '?', $sql);
+        $out = preg_replace_callback(
+            '~(?<comment>' . $block . '|' . $line . ')|' . implode('|', \array_slice($alternatives, 2)) . '~s',
+            // A comment to a space, everything else to a placeholder.
+            static fn (array $m): string => ($m['comment'] ?? '') !== '' ? ' ' : '?',
+            $sql,
+        );
         // PCRE gave up on it, or a quote is left that no pattern closed:
         // nothing of it is kept, rather than a value.
         if (!\is_string($out) || str_contains($out, "'") || ($mysql && str_contains($out, '"'))) {
