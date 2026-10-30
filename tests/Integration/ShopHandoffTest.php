@@ -271,7 +271,7 @@ it('keeps each session to its host: neither host\'s cookie signs anyone in on th
         ->and($swapped->get(ADMIN . '/admin/orders')->header('location'))->toBe('/_handoff/start?return=%2Fadmin%2Forders');
 });
 
-it('redeems a code once, across every worker the database is shared by', function () {
+it('redeems a code once, across every worker the database is shared by, and ends the session it made when it comes back', function () {
     $database = database();
     $browser = new Browser(kernel($database));
     $browser->signIn(StaffAccount::EMAIL, StaffAccount::PASSWORD);
@@ -287,8 +287,14 @@ it('redeems a code once, across every worker the database is shared by', functio
     $replay->jar['admin.shop.test'] = $arrivedWith;
     $refused = $replay->get($callback);
 
+    $sessions = "SELECT COUNT(*) AS n FROM sessions WHERE realm = 'admin.shop.test'";
     expect($refused->status)->toBe(403)
-        ->and(orm($database)->connection()->select("SELECT COUNT(*) AS n FROM sessions WHERE realm = 'admin.shop.test'"))->toBe([['n' => 1]]);
+        // The code was copied, so the session its redemption made is ended:
+        // the browser that redeemed it is sent to hand off again.
+        ->and(orm($database)->connection()->select($sessions))->toBe([['n' => 0]])
+        ->and($browser->get(ADMIN . '/admin/orders')->header('location'))->toBe('/_handoff/start?return=%2Fadmin%2Forders')
+        // And no other: the shop's host still knows them.
+        ->and(orm($database)->connection()->select("SELECT COUNT(*) AS n FROM sessions WHERE realm = 'shop.test'"))->toBe([['n' => 1]]);
 });
 
 it('stays on one host, with nothing mounted, unless SHOP_ADMIN_URL names the admin host', function () {
