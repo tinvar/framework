@@ -8,39 +8,54 @@ use Tinvar\Support\Signer;
 
 /**
  * Whether an ID token is the provider's, for this client, for this sign-in
- * (OpenID Connect Core 1.0, 3.1.3.7).
+ * (OpenID Connect Core 1.0, 3.1.3.7) -- or, from a refresh, for the sign-in
+ * it renews (12.2).
  *
  * In this order, each failure an IdTokenRefused:
  *
  *  - a compact JWS of three parts, under MAX_BYTES -- never an encrypted
  *    token, never a header with `crit`, whose extensions nothing here
  *    knows;
- *  - its `alg` one this verifier takes (ALGORITHMS: RSA and ECDSA with
- *    SHA-2) *and* one the provider's discovery document offers. `none` is
- *    in neither, nor is any `HS` algorithm: an HMAC keyed with what the
- *    provider published as a public key is a token anyone can forge, the
- *    oldest confusion of JWT libraries;
+ *  - its `alg` one this verifier takes (ALGORITHMS: RSA with SHA-2 in
+ *    PKCS#1 v1.5 or PSS, ECDSA with SHA-2, and EdDSA over Ed25519) *and*
+ *    one the provider's discovery document offers. `none` is in neither,
+ *    nor is any `HS` algorithm: an HMAC keyed with what the provider
+ *    published as a public key is a token anyone can forge, the oldest
+ *    confusion of JWT libraries;
  *  - its key from the provider's own key set (OidcDiscovery::keys()), by
- *    `kid`, of the type the algorithm takes -- and if no key matches, the
- *    set asked for once more, as a provider that rotated would need. A key
- *    named in the token's own header (`jwk`, `jku`, `x5u`, `x5c`) is never
- *    read: the token does not get to say what verifies it;
- *  - its signature, by that key;
+ *    `kid`, of the type the algorithm takes, and naming that algorithm if
+ *    it names one -- and if no key matches, the set asked for once more,
+ *    as a provider that rotated would need. A key named in the token's own
+ *    header (`jwk`, `jku`, `x5u`, `x5c`) is never read: the token does not
+ *    get to say what verifies it;
+ *  - its signature, by that key, with the padding the algorithm names: a
+ *    PS256 token is never checked as RS256, nor the other way about;
  *  - `iss` exactly the provider's issuer; `aud` naming this client, with
  *    `azp` naming it too where `aud` names anyone else; `exp` in the
- *    future and `iat` and `nbf` not, each within LEEWAY; a `sub`; and
- *    `nonce` the one this sign-in sent, compared in constant time.
+ *    future and `iat` and `nbf` not, each within LEEWAY; then, at a
+ *    sign-in, `nonce` the one this sign-in sent, compared in constant
+ *    time, and a `sub` -- or, from a refresh, the sign-in's own `sub`, its
+ *    `nonce` and `auth_time` if either is there.
  */
 final readonly class IdTokenVerifier
 {
-    /** Each algorithm taken: the key type, the curve for ECDSA, the digest. */
+    /**
+     * Each algorithm taken: the key type, the curve, the digest, and the
+     * padding for RSA. EdDSA and Ed25519 are the same algorithm under its
+     * old name and its new (RFC 9864); neither is Ed448.
+     */
     public const array ALGORITHMS = [
-        'RS256' => ['RSA', null, OPENSSL_ALGO_SHA256],
-        'RS384' => ['RSA', null, OPENSSL_ALGO_SHA384],
-        'RS512' => ['RSA', null, OPENSSL_ALGO_SHA512],
-        'ES256' => ['EC', 'P-256', OPENSSL_ALGO_SHA256],
-        'ES384' => ['EC', 'P-384', OPENSSL_ALGO_SHA384],
-        'ES512' => ['EC', 'P-521', OPENSSL_ALGO_SHA512],
+        'RS256' => ['RSA', null, OPENSSL_ALGO_SHA256, OPENSSL_PKCS1_PADDING],
+        'RS384' => ['RSA', null, OPENSSL_ALGO_SHA384, OPENSSL_PKCS1_PADDING],
+        'RS512' => ['RSA', null, OPENSSL_ALGO_SHA512, OPENSSL_PKCS1_PADDING],
+        'PS256' => ['RSA', null, OPENSSL_ALGO_SHA256, OPENSSL_PKCS1_PSS_PADDING],
+        'PS384' => ['RSA', null, OPENSSL_ALGO_SHA384, OPENSSL_PKCS1_PSS_PADDING],
+        'PS512' => ['RSA', null, OPENSSL_ALGO_SHA512, OPENSSL_PKCS1_PSS_PADDING],
+        'ES256' => ['EC', 'P-256', OPENSSL_ALGO_SHA256, 0],
+        'ES384' => ['EC', 'P-384', OPENSSL_ALGO_SHA384, 0],
+        'ES512' => ['EC', 'P-521', OPENSSL_ALGO_SHA512, 0],
+        'EdDSA' => ['OKP', 'Ed25519', 0, 0],
+        'Ed25519' => ['OKP', 'Ed25519', 0, 0],
     ];
 
     /** The largest token read. */
@@ -62,6 +77,8 @@ final readonly class IdTokenVerifier
     }
 
     /**
+     * An ID token from a sign-in: for the nonce that sign-in sent.
+     *
      * @param \Closure(bool): list<array<string, mixed>> $keys the provider's key set, asked again when given true
      * @throws IdTokenRefused
      */
@@ -75,6 +92,70 @@ final readonly class IdTokenVerifier
         string $nonce,
         int $now,
     ): IdToken {
+        $claims = $this->claims($token, $provider, $keys, $clientId, $now);
+
+        $sent = $claims['nonce'] ?? null;
+        if (!\is_string($sent) || $nonce === '' || !hash_equals($nonce, $sent)) {
+            throw new IdTokenRefused(IdTokenRefused::NONCE, 'The ID token is not for this sign-in: its nonce is another\'s.');
+        }
+
+        $sub = $claims['sub'] ?? null;
+        if (!\is_string($sub) || $sub === '' || \strlen($sub) > 255) {
+            throw new IdTokenRefused(IdTokenRefused::SUBJECT, 'The ID token names no subject.');
+        }
+
+        return new IdToken($provider->issuer, $sub, $claims);
+    }
+
+    /**
+     * An ID token a refresh answered with: the same person, signed in the
+     * same time, as $signedIn (Core 1.0, 12.2). Its `sub` is the sign-in's;
+     * a `nonce` or an `auth_time`, if it carries one, is the sign-in's too.
+     * Issuer, audience and the rest are held as at a sign-in.
+     *
+     * @param \Closure(bool): list<array<string, mixed>> $keys the provider's key set, asked again when given true
+     * @throws IdTokenRefused
+     */
+    public function verifyRefreshed(
+        #[\SensitiveParameter]
+        string $token,
+        OidcProvider $provider,
+        \Closure $keys,
+        string $clientId,
+        IdToken $signedIn,
+        int $now,
+    ): IdToken {
+        if ($signedIn->issuer !== $provider->issuer) {
+            throw new IdTokenRefused(IdTokenRefused::ISSUER, 'The sign-in being renewed was another provider\'s.');
+        }
+        $claims = $this->claims($token, $provider, $keys, $clientId, $now);
+
+        if (\array_key_exists('nonce', $claims) && $claims['nonce'] !== ($signedIn->claims['nonce'] ?? null)) {
+            throw new IdTokenRefused(IdTokenRefused::NONCE, 'The renewed ID token carries another sign-in\'s nonce.');
+        }
+        if (\array_key_exists('auth_time', $claims) && \array_key_exists('auth_time', $signedIn->claims)
+            && $claims['auth_time'] !== $signedIn->claims['auth_time']) {
+            throw new IdTokenRefused(IdTokenRefused::SUBJECT, 'The renewed ID token says the person signed in at another time.');
+        }
+
+        $sub = $claims['sub'] ?? null;
+        if (!\is_string($sub) || !hash_equals($signedIn->subject, $sub)) {
+            throw new IdTokenRefused(IdTokenRefused::SUBJECT, 'The renewed ID token names another subject.');
+        }
+
+        return new IdToken($provider->issuer, $sub, $claims);
+    }
+
+    /**
+     * The token's claims, once its form, algorithm, key, signature, issuer,
+     * audience and times hold.
+     *
+     * @param \Closure(bool): list<array<string, mixed>> $keys
+     * @return array<string, mixed>
+     * @throws IdTokenRefused
+     */
+    private function claims(#[\SensitiveParameter] string $token, OidcProvider $provider, \Closure $keys, string $clientId, int $now): array
+    {
         if (\strlen($token) > self::MAX_BYTES) {
             throw new IdTokenRefused(IdTokenRefused::MALFORMED, 'The ID token is larger than one is.');
         }
@@ -99,7 +180,7 @@ final readonly class IdTokenVerifier
         if (!\is_string($alg) || !isset(self::ALGORITHMS[$alg]) || !\in_array($alg, $allowed, true)) {
             throw new IdTokenRefused(IdTokenRefused::ALGORITHM, 'The ID token is signed with an algorithm not allowed for this provider.');
         }
-        [$kty, $curve, $digest] = self::ALGORITHMS[$alg];
+        [$kty, $curve, $digest, $padding] = self::ALGORITHMS[$alg];
 
         $kid = $header['kid'] ?? null;
         if ($kid !== null && !\is_string($kid)) {
@@ -112,7 +193,10 @@ final readonly class IdTokenVerifier
             $signature = Jwk::ecdsaSignature($signature, (string) $curve)
                 ?? throw new IdTokenRefused(IdTokenRefused::SIGNATURE, 'The ID token\'s signature is not its curve\'s size.');
         }
-        $verified = openssl_verify("{$encodedHeader}.{$encodedClaims}", $signature, Jwk::publicKey($jwk, $kty, $curve), $digest);
+        if ($kty === 'OKP' && \strlen($signature) !== 64) {
+            throw new IdTokenRefused(IdTokenRefused::SIGNATURE, 'The ID token\'s signature is not an Ed25519 signature\'s size.');
+        }
+        $verified = openssl_verify("{$encodedHeader}.{$encodedClaims}", $signature, Jwk::publicKey($jwk, $kty, $curve), $digest, $padding);
         if ($verified !== 1) {
             while (openssl_error_string() !== false) {
                 // Drained: OpenSSL's queue is the process's, and the next caller's.
@@ -150,17 +234,7 @@ final readonly class IdTokenVerifier
             throw new IdTokenRefused(IdTokenRefused::NOT_YET, 'The ID token is not valid yet.');
         }
 
-        $sent = $claims['nonce'] ?? null;
-        if (!\is_string($sent) || $nonce === '' || !hash_equals($nonce, $sent)) {
-            throw new IdTokenRefused(IdTokenRefused::NONCE, 'The ID token is not for this sign-in: its nonce is another\'s.');
-        }
-
-        $sub = $claims['sub'] ?? null;
-        if (!\is_string($sub) || $sub === '' || \strlen($sub) > 255) {
-            throw new IdTokenRefused(IdTokenRefused::SUBJECT, 'The ID token names no subject.');
-        }
-
-        return new IdToken($provider->issuer, $sub, $claims);
+        return $claims;
     }
 
     /**

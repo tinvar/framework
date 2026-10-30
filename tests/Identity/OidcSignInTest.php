@@ -282,6 +282,50 @@ describe('the ID token', function () {
             ->and($refused(static fn (array $h, array $c): array => [$h, array_diff_key($c, ['nonce' => true])]))->toBe('id_token:nonce');
     });
 
+    it('is believed signed with PS256 by the provider\'s RSA key, and EdDSA by its Ed25519 key', function (string $alg, string $kid) use ($refused) {
+        expect($refused(
+            static fn (array $header, array $claims): array => [['alg' => $alg, 'kid' => $kid], $claims, $kid],
+            static function (FakeOidcProvider $idp) use ($alg): void {
+                $idp->document = ['id_token_signing_alg_values_supported' => ['RS256', $alg]];
+                $idp->published = ['rsa-1', 'ed-1'];
+            },
+        ))->toBe('signed in');
+    })->with([
+        'PS256' => ['PS256', 'rsa-1'],
+        'PS384' => ['PS384', 'rsa-1'],
+        'PS512' => ['PS512', 'rsa-1'],
+        'EdDSA' => ['EdDSA', 'ed-1'],
+        'Ed25519' => ['Ed25519', 'ed-1'],
+    ]);
+
+    // One RSA key verifies both paddings, so the header's alg must be the
+    // padding the signature was made with: a PKCS#1 v1.5 signature under a
+    // PS256 header, or the other way about, is not believed.
+    it('is refused with a padding other than its algorithm names', function () use ($refused) {
+        $both = static function (FakeOidcProvider $idp): void {
+            $idp->document = ['id_token_signing_alg_values_supported' => ['RS256', 'PS256']];
+        };
+        $swapped = static fn (string $signedAs, string $claimed): \Closure => static function (array $header, array $claims) use ($signedAs, $claimed): array {
+            [, $body, $signature] = explode('.', FakeOidcProvider::sign(['alg' => $signedAs, 'kid' => 'rsa-1'], $claims, 'rsa-1'));
+
+            return [$header, $claims, 'rsa-1', Signer::encode((string) json_encode(['alg' => $claimed, 'kid' => 'rsa-1'])) . ".{$body}.{$signature}"];
+        };
+
+        expect($refused($swapped('RS256', 'PS256'), $both))->toBe('id_token:signature')
+            ->and($refused($swapped('PS256', 'RS256'), $both))->toBe('id_token:signature');
+    });
+
+    it('is refused as EdDSA by a key that is not Ed25519, or a key whose alg names another', function () use ($refused) {
+        $offers = static function (FakeOidcProvider $idp): void {
+            $idp->document = ['id_token_signing_alg_values_supported' => ['RS256', 'EdDSA']];
+            $idp->published = ['rsa-1', 'ed-1'];
+        };
+        // An RSA key named as the EdDSA key: not of the algorithm's type.
+        expect($refused(static fn (array $h, array $c): array => [['alg' => 'EdDSA', 'kid' => 'rsa-1'], $c, 'ed-1'], $offers))->toBe('id_token:key')
+            // RS256 signed by an Ed25519 key, which an RS256 header cannot name.
+            ->and($refused(static fn (array $h, array $c): array => [['alg' => 'RS256', 'kid' => 'ed-1'], $c, 'rsa-1'], $offers))->toBe('id_token:key');
+    });
+
     it('is refused malformed, critical, or larger than one is', function () use ($refused) {
         expect($refused(static fn (array $h, array $c): array => [$h, $c, 'rsa-1', 'a.b']))->toBe('id_token:malformed')
             ->and($refused(static fn (array $h, array $c): array => [[...$h, 'crit' => ['exp']], $c]))->toBe('id_token:malformed')
@@ -298,4 +342,183 @@ it('sends the code nowhere but the token endpoint\'s origin', function () {
     $request = $idp->tokenRequests[0];
     expect(fn () => $idp->http->send(new \Tinvar\Outbound\OutboundRequest('POST', 'https://elsewhere.example/token', destinations: $request->destinations)))
         ->toThrow(OutboundRefused::class);
+});
+
+it('hands back the tokens granted, as secrets nothing dumps', function () {
+    $idp = new FakeOidcProvider();
+    $client = client($idp);
+    $signIn = $client->finish(SESSION, $idp->authorize($client->start(SESSION)));
+
+    expect($idp->accessTokens)->toHaveKey($signIn->tokens->accessToken->reveal())
+        ->and($signIn->tokens->refreshToken?->reveal())->toStartWith('rt-')
+        ->and($signIn->tokens->expiresAt)->toBe($idp->now + 300)
+        ->and(print_r($signIn, true))->not->toContain($signIn->tokens->accessToken->reveal())
+        ->and((string) json_encode($signIn))->not->toContain('rt-');
+});
+
+it('refuses a redirect URI on plain http anywhere but this machine', function (string $uri) {
+    expect(fn () => new OidcClient(
+        new OidcDiscovery(new FakeOidcProvider()->http),
+        new FakeOidcProvider()->http,
+        new Signer('an-application-key-of-at-least-thirty-two-bytes', OidcClient::STATE_PURPOSE),
+        new ArrayNonceStore(),
+        FakeOidcProvider::ISSUER,
+        FakeOidcProvider::CLIENT,
+        $uri,
+    ))->toThrow(\InvalidArgumentException::class);
+})->with(['http://localhost.evil.example/cb', 'http://127.0.0.1.evil.example/cb', 'http://shop.example/cb']);
+
+describe('userinfo (ADR 0124)', function () {
+    it('answers the person\'s claims for their access token, held to the endpoint\'s origin', function () {
+        $idp = new FakeOidcProvider();
+        $client = client($idp);
+        $signIn = $client->finish(SESSION, $idp->authorize($client->start(SESSION)));
+
+        $claims = $client->userinfo($signIn->tokens->accessToken, $signIn->idToken);
+
+        $request = $idp->userinfoRequests[0];
+        expect($claims)->toMatchArray(['sub' => 'person-42', 'email' => 'ada@example.com'])
+            ->and($request->headers['authorization'])->toBe('Bearer ' . $signIn->tokens->accessToken->reveal())
+            ->and(fn () => $idp->http->send(new \Tinvar\Outbound\OutboundRequest('GET', 'https://elsewhere.example/userinfo', destinations: $request->destinations)))
+            ->toThrow(OutboundRefused::class);
+    });
+
+    // Core 1.0, 5.3.4: an answer for anyone but the ID token's subject is
+    // a substituted access token's.
+    it('is refused about another person than the ID token names', function () {
+        $idp = new FakeOidcProvider();
+        $client = client($idp);
+        $signIn = $client->finish(SESSION, $idp->authorize($client->start(SESSION)));
+        $idp->userinfo = ['sub' => 'person-7'];
+
+        expect(failure(fn () => $client->userinfo($signIn->tokens->accessToken, $signIn->idToken)))->toBe('userinfo');
+    });
+
+    it('is refused signed, rejected, or for a provider with no endpoint', function () {
+        $idp = new FakeOidcProvider();
+        $client = client($idp);
+        $signIn = $client->finish(SESSION, $idp->authorize($client->start(SESSION)));
+
+        $idp->userinfoType = 'application/jwt';
+        expect(failure(fn () => $client->userinfo($signIn->tokens->accessToken, $signIn->idToken)))->toBe('userinfo');
+        $idp->userinfoType = 'application/json';
+        expect(failure(fn () => $client->userinfo(new Secret('not-a-token'), $signIn->idToken)))->toBe('userinfo');
+
+        $bare = new FakeOidcProvider();
+        $bare->document = ['userinfo_endpoint' => null];
+        $other = client($bare);
+        expect(failure(fn () => $other->userinfo($signIn->tokens->accessToken, $signIn->idToken)))->toBe('provider');
+    });
+});
+
+describe('a refresh (ADR 0124)', function () {
+    it('trades the refresh token for new ones, the ID token verified as the same person\'s', function () {
+        $idp = new FakeOidcProvider();
+        $client = client($idp);
+        $signIn = $client->finish(SESSION, $idp->authorize($client->start(SESSION)));
+        $idp->now += 600;
+
+        $refreshed = $client->refresh($signIn->tokens->refreshToken ?? throw new \LogicException(), $signIn->idToken);
+
+        parse_str(end($idp->tokenRequests)->body, $form);
+        expect($refreshed->idToken->subject)->toBe('person-42')
+            ->and($refreshed->idToken->claims['iat'])->toBe($idp->now)
+            ->and($refreshed->tokens->accessToken->reveal())->not->toBe($signIn->tokens->accessToken->reveal())
+            // Rotated: the new one replaces the spent one.
+            ->and($refreshed->tokens->refreshToken?->reveal())->not->toBe($signIn->tokens->refreshToken->reveal())
+            ->and($form)->toMatchArray(['grant_type' => 'refresh_token', 'client_id' => FakeOidcProvider::CLIENT])
+            // Spent: the provider takes it once.
+            ->and(failure(fn () => $client->refresh($signIn->tokens->refreshToken, $signIn->idToken)))->toBe('refresh');
+    });
+
+    it('keeps the sign-in\'s person, and the refresh token, where the provider answers with neither', function () {
+        $idp = new FakeOidcProvider();
+        $client = client($idp);
+        $signIn = $client->finish(SESSION, $idp->authorize($client->start(SESSION)));
+        $idp->refreshIdToken = false;
+
+        $refreshed = $client->refresh($signIn->tokens->refreshToken ?? throw new \LogicException(), $signIn->idToken);
+
+        expect($refreshed->idToken)->toBe($signIn->idToken)
+            ->and($refreshed->tokens->idToken)->toBeNull();
+    });
+
+    it('is refused when the renewed ID token names another person, issuer, audience or sign-in', function (array $changed, string $why) {
+        $idp = new FakeOidcProvider();
+        $client = client($idp);
+        $signIn = $client->finish(SESSION, $idp->authorize($client->start(SESSION)));
+        $idp->refreshShape = static fn (array $header, array $claims): array => [$header, [...$claims, ...$changed]];
+
+        expect(failure(fn () => $client->refresh($signIn->tokens->refreshToken ?? throw new \LogicException(), $signIn->idToken)))->toBe($why);
+    })->with([
+        'another subject' => [['sub' => 'person-7'], 'refresh:subject'],
+        'another issuer' => [['iss' => 'https://idp.example/'], 'refresh:issuer'],
+        'another audience' => [['aud' => 'someone-else'], 'refresh:audience'],
+        'another sign-in\'s nonce' => [['nonce' => 'another'], 'refresh:nonce'],
+        'expired' => [['exp' => 1_700_000_000], 'refresh:expired'],
+    ]);
+
+    it('is refused saying the person signed in at another time than the sign-in did', function () {
+        $idp = new FakeOidcProvider();
+        $idp->shape = static fn (array $header, array $claims): array => [$header, [...$claims, 'auth_time' => $claims['iat'] - 10]];
+        $client = client($idp);
+        $signIn = $client->finish(SESSION, $idp->authorize($client->start(SESSION)));
+        $idp->refreshShape = static fn (array $header, array $claims): array => [$header, [...$claims, 'auth_time' => $claims['iat']]];
+
+        expect(failure(fn () => $client->refresh($signIn->tokens->refreshToken ?? throw new \LogicException(), $signIn->idToken)))->toBe('refresh:subject');
+    });
+
+    it('is refused as HS256, however the provider\'s document reads', function () {
+        $idp = new FakeOidcProvider();
+        $idp->document = ['id_token_signing_alg_values_supported' => ['RS256', 'HS256']];
+        $client = client($idp);
+        $signIn = $client->finish(SESSION, $idp->authorize($client->start(SESSION)));
+        $idp->refreshShape = static function (array $header, array $claims): array {
+            $public = (string) openssl_pkey_get_details(FakeOidcProvider::key('rsa-1'))['key'];
+            $signing = Signer::encode((string) json_encode(['alg' => 'HS256', 'kid' => 'rsa-1'])) . '.' . Signer::encode((string) json_encode([...$claims, 'sub' => 'person-42']));
+
+            return [$header, $claims, 'rsa-1', $signing . '.' . Signer::encode(hash_hmac('sha256', $signing, $public, true))];
+        };
+
+        expect(failure(fn () => $client->refresh($signIn->tokens->refreshToken ?? throw new \LogicException(), $signIn->idToken)))->toBe('refresh:algorithm');
+    });
+});
+
+describe('logout (ADR 0124)', function () {
+    it('sends the browser to the end-session endpoint with the hint, the client and the way back', function () {
+        $idp = new FakeOidcProvider();
+        $client = new OidcClient(
+            new OidcDiscovery($idp->http),
+            $idp->http,
+            new Signer('an-application-key-of-at-least-thirty-two-bytes', OidcClient::STATE_PURPOSE),
+            new ArrayNonceStore(),
+            FakeOidcProvider::ISSUER,
+            FakeOidcProvider::CLIENT,
+            REDIRECT,
+            postLogoutRedirectUri: 'https://shop.example/signed-out',
+        );
+
+        $url = $client->logoutUrl(new Secret('the.id.token'));
+        parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+
+        expect($url)->toStartWith(FakeOidcProvider::ISSUER . '/logout?')
+            ->and($query)->toBe(['client_id' => FakeOidcProvider::CLIENT, 'id_token_hint' => 'the.id.token', 'post_logout_redirect_uri' => 'https://shop.example/signed-out'])
+            ->and(fn () => new OidcClient(
+                new OidcDiscovery($idp->http),
+                $idp->http,
+                new Signer('an-application-key-of-at-least-thirty-two-bytes', OidcClient::STATE_PURPOSE),
+                new ArrayNonceStore(),
+                FakeOidcProvider::ISSUER,
+                FakeOidcProvider::CLIENT,
+                REDIRECT,
+                postLogoutRedirectUri: 'http://shop.example/signed-out',
+            ))->toThrow(\InvalidArgumentException::class);
+    });
+
+    it('is refused for a provider that names no end-session endpoint', function () {
+        $idp = new FakeOidcProvider();
+        $idp->document = ['end_session_endpoint' => null];
+
+        expect(failure(fn () => client($idp)->logoutUrl()))->toBe('provider');
+    });
 });

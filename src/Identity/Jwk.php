@@ -15,6 +15,9 @@ use Tinvar\Support\Signer;
  * drops such keys before they get here, and this reads only `n` and `e`,
  * or `crv`, `x` and `y`. An RSA modulus is 2048 bits at least; an EC point
  * is on the curve its algorithm names, which OpenSSL checks as it loads it.
+ * An OKP key (RFC 8037) is Ed25519 alone, its `x` the 32 bytes of the
+ * point: Ed448 is not taken, and an X25519 key, which agrees keys rather
+ * than signing, is not one of these.
  */
 final class Jwk
 {
@@ -30,6 +33,7 @@ final class Jwk
 
     private const string RSA_OID = "\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01";
     private const string EC_OID = "\x06\x07\x2a\x86\x48\xce\x3d\x02\x01";
+    private const string ED25519_OID = "\x06\x03\x2b\x65\x70";
 
     /**
      * The key's PEM, for an algorithm of $kty, on $curve for EC.
@@ -43,7 +47,11 @@ final class Jwk
             throw new IdTokenRefused(IdTokenRefused::KEY, "The key is not an {$kty} key.");
         }
 
-        $der = $kty === 'RSA' ? self::rsa($jwk) : self::ec($jwk, (string) $curve);
+        $der = match ($kty) {
+            'RSA' => self::rsa($jwk),
+            'OKP' => self::okp($jwk, (string) $curve),
+            default => self::ec($jwk, (string) $curve),
+        };
         $pem = "-----BEGIN PUBLIC KEY-----\n" . chunk_split(base64_encode($der), 64, "\n") . "-----END PUBLIC KEY-----\n";
         $key = openssl_pkey_get_public($pem);
         if ($key === false) {
@@ -82,6 +90,20 @@ final class Jwk
         }
 
         return self::der(0x30, self::der(0x30, self::EC_OID . $oid) . self::der(0x03, "\x00\x04" . $x . $y));
+    }
+
+    /** @param array<string, mixed> $jwk */
+    private static function okp(array $jwk, string $curve): string
+    {
+        if ($curve !== 'Ed25519' || ($jwk['crv'] ?? null) !== 'Ed25519') {
+            throw new IdTokenRefused(IdTokenRefused::KEY, 'The OKP key is not an Ed25519 key.');
+        }
+        $x = self::bytes($jwk, 'x');
+        if (\strlen($x) !== 32) {
+            throw new IdTokenRefused(IdTokenRefused::KEY, "The Ed25519 key's point is not 32 bytes.");
+        }
+
+        return self::der(0x30, self::der(0x30, self::ED25519_OID) . self::der(0x03, "\x00" . $x));
     }
 
     /**
