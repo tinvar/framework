@@ -29,6 +29,14 @@ final class StatementText
     /** The systems whose SQL is read here; any other's text is not kept. */
     private const array SYSTEMS = ['postgresql', 'mysql', 'mariadb', 'sqlite'];
 
+    /**
+     * What a name may hold past its first character, on every system read
+     * here -- a `$` on Postgres and MySQL, and any byte of a multibyte
+     * character, as each takes one -- for the lookbehinds that keep a
+     * literal or a dollar quote from beginning inside a name: `é$x$` is one.
+     */
+    private const string NAME_BYTES = 'A-Za-z0-9_$\x80-\xff';
+
     private const array OPERATIONS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'WITH', 'UPSERT', 'REPLACE', 'MERGE', 'CREATE', 'ALTER', 'DROP', 'BEGIN', 'COMMIT', 'ROLLBACK', 'SAVEPOINT', 'RELEASE', 'SET', 'PRAGMA', 'VACUUM', 'TRUNCATE', 'SHOW', 'EXPLAIN'];
 
     /**
@@ -63,21 +71,21 @@ final class StatementText
             // Postgres's dollar-quoted strings, $$...$$ or $tag$...$tag$:
             // there alone, and never inside a name, where a `$` is the
             // name's (a$b$ is a column, on Postgres and MySQL both).
-            $postgres ? '(?<![A-Za-z0-9_$])\$(?<tag>[A-Za-z_][A-Za-z0-9_]*|)\$.*?(?:\$\k<tag>\$|\z)' : '(*FAIL)',
+            $postgres ? '(?<![' . self::NAME_BYTES . '])\$(?<tag>[A-Za-z_\x80-\xff][A-Za-z0-9_\x80-\xff]*|)\$.*?(?:\$\k<tag>\$|\z)' : '(*FAIL)',
             // An escape string, E'...', where a backslash escapes the quote.
-            "(?<![A-Za-z0-9_])[Ee]'(?:''|\\\\.|[^'\\\\])*+(?:'|\\z)",
+            '(?<![' . self::NAME_BYTES . "])[Ee]'(?:''|\\\\.|[^'\\\\])*+(?:'|\\z)",
             // Any other quoted string and its prefix -- X'', B'', N''. A
             // backslash escapes a quote on MySQL alone: elsewhere 'a\' is a
             // whole string, and reading it as escaped would end the literal
             // at the next string's opening quote and leave that one's value
             // in the text.
-            $mysql ? "(?<![A-Za-z0-9_])[XxBbNn]?'(?:''|\\\\.|[^'\\\\])*+(?:'|\\z)" : "(?<![A-Za-z0-9_])[XxBbNn]?'(?:''|[^'])*+(?:'|\\z)",
+            '(?<![' . self::NAME_BYTES . '])' . ($mysql ? "[XxBbNn]?'(?:''|\\\\.|[^'\\\\])*+(?:'|\\z)" : "[XxBbNn]?'(?:''|[^'])*+(?:'|\\z)"),
             // MySQL's double-quoted string.
             $mysql ? '"(?:""|\\\\.|[^"\\\\])*+(?:"|\z)' : '(*FAIL)',
             // A number standing alone -- not a placeholder's ($1), not part
             // of a name (t1): decimal, perhaps with a fraction, an exponent
             // or Postgres's underscores, or hex, binary or octal (0xCAFE).
-            '(?<![A-Za-z0-9_$.])-?(?:0[xX][0-9A-Fa-f_]+|0[bB][01_]+|0[oO][0-7_]+|(?:\d[\d_]*(?:\.[\d_]*)?|\.\d[\d_]*)(?:[eE][+-]?\d+)?)(?![A-Za-z0-9_])',
+            '(?<![.' . self::NAME_BYTES . '])-?(?:0[xX][0-9A-Fa-f_]+|0[bB][01_]+|0[oO][0-7_]+|(?:\d[\d_]*(?:\.[\d_]*)?|\.\d[\d_]*)(?:[eE][+-]?\d+)?)(?![A-Za-z0-9_])',
         ];
         [$block, $line] = $alternatives;
 

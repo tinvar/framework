@@ -279,6 +279,10 @@ describe('a statement\'s span', function () {
             ->and(StatementText::sanitize("SELECT a\$b\$, 'x' FROM t\$b\$", 'postgresql'))->toBe('SELECT a$b$, ? FROM t$b$')
             ->and(StatementText::sanitize("SELECT a\$b\$, 'x' FROM t\$b\$", 'mysql'))->toBe('SELECT a$b$, ? FROM t$b$')
             ->and(StatementText::sanitize("SELECT \$\$ it's \$\$, 'hunter2'", 'sqlite'))->toBe('?')
+            // A multibyte character is a name's too: é$x$ is a column, é1
+            // one, and éb'' no bit string.
+            ->and(StatementText::sanitize("SELECT é\$x\$, é1, 'v' FROM t\$x\$", 'postgresql'))->toBe('SELECT é$x$, é1, ? FROM t$x$')
+            ->and(StatementText::sanitize("SELECT éb'x', 'hunter2', 'y'", 'mysql'))->toBe('?')
             ->and(StatementText::sanitize("SELECT \$\$ hunter2 \$\$, 'x', \$\$ more \$\$", 'postgresql'))->toBe('SELECT ?, ?, ?');
     });
 
