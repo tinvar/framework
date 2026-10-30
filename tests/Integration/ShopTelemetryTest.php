@@ -22,7 +22,11 @@ use Tinvar\Observability\Logger;
 use Tinvar\Observability\MemorySink;
 use Tinvar\Observability\Metrics;
 use Tinvar\Observability\RequestId;
+use Tinvar\Console\Output;
+use Tinvar\Observability\Span;
+use Tinvar\Observability\SpanExporter;
 use Tinvar\Observability\Telemetry;
+use Tinvar\Observability\Tracer;
 
 const KEY = 'shop-telemetry-test-key-32-bytes!!!!';
 
@@ -180,6 +184,50 @@ it('takes a test\'s telemetry, and logs to it under the id the response carries'
     $access = array_values(array_filter($sink->records(), static fn (array $r): bool => $r['message'] === 'request'));
     expect($access)->toHaveCount(1)
         ->and($access[0])->toMatchArray(['route' => 'shop.catalog', 'status' => 200, 'request_id' => $response->header('x-request-id')]);
+});
+
+// ADR 0112: a page's loaders and statements are spans of its request, and
+// a command run outside any request a trace of its own, with nothing a
+// bound value or a literal put on any of them.
+it('traces a page\'s loaders and statements, and a command as a trace of its own', function () {
+    $renderer = Renderer::start('msgpack', 'telemetry-traces');
+    $kept = new class implements SpanExporter {
+        /** @var list<Span> */
+        public array $spans = [];
+
+        public function export(array $spans): void
+        {
+            array_push($this->spans, ...$spans);
+        }
+    };
+    try {
+        $telemetry = new Telemetry(new Logger(new MemorySink()), new Metrics(), new Tracer($kept, exportEvery: 0.0));
+        $kernel = Kernel::fromEnvironment($renderer->socketPath, key: KEY, database: Shop::database(customers: 17), telemetry: $telemetry);
+        $response = $kernel->handle(from('/'));
+        $kernel->terminate();
+        $telemetry->tracer?->export(true);
+        $kernel->console->run('orders:advance', [], new Output(static function (): void {}, static function (): void {}));
+        $telemetry->tracer?->export(true);
+    } finally {
+        $renderer->stop();
+    }
+
+    $request = array_values(array_filter($kept->spans, static fn (Span $s): bool => $s->traceId === $response->header('x-request-id')));
+    $names = array_map(static fn (Span $s): string => $s->name, $request);
+    $root = array_values(array_filter($request, static fn (Span $s): bool => $s->name === 'GET shop.catalog'))[0];
+    $loaders = array_values(array_filter($request, static fn (Span $s): bool => str_starts_with($s->name, 'loader ')));
+    $statements = array_values(array_filter($request, static fn (Span $s): bool => $s->kind === Span::KIND_CLIENT));
+    $command = array_values(array_filter($kept->spans, static fn (Span $s): bool => $s->name === 'command orders:advance'))[0] ?? null;
+
+    expect($names)->toContain('render document')
+        ->and($loaders)->not->toBeEmpty()
+        ->and($loaders[0]->parentSpanId)->toBe($root->spanId)
+        ->and($statements)->not->toBeEmpty()
+        ->and($statements[0]->attributes['db.system.name'])->toBe('sqlite')
+        ->and($command)->not->toBeNull()
+        ->and($command?->traceId)->not->toBe($root->traceId)
+        // No customer's address, from a binding or a literal, on any span.
+        ->and(json_encode($kept->spans))->not->toMatch('/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}/');
 });
 
 // What the client entry's reporter does as a page is left: the route name
