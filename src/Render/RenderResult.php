@@ -19,6 +19,9 @@ final readonly class RenderResult
      *        client can re-fetch just the boundaries an action invalidated
      * @param float $streamingMs time spent handing output to the sink -- the
      *        browser, or a buffer -- which the deadline leaves out
+     * @param list<array{name: string, start: float, end: float}> $phases what
+     *        the renderer timed of its own work, in milliseconds from when it
+     *        was handed the render (Frame::readPhases()), checked for shape
      */
     public function __construct(
         public array $meta,
@@ -32,5 +35,6 @@ final readonly class RenderResult
         public float $waitingOnRendererMs,
         public array $tagsRead = [],
         public float $streamingMs = 0.0,
+        public array $phases = [],
     ) {}
 }

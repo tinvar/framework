@@ -219,7 +219,13 @@ it('traces a page\'s loaders and statements, and a command as a trace of its own
     $statements = array_values(array_filter($request, static fn (Span $s): bool => $s->kind === Span::KIND_CLIENT));
     $command = array_values(array_filter($kept->spans, static fn (Span $s): bool => $s->name === 'command orders:advance'))[0] ?? null;
 
+    // The renderer's own phases, which it timed and PHP drew (ADR 0128).
+    $render = array_values(array_filter($request, static fn (Span $s): bool => $s->name === 'render document'))[0];
+    $phases = array_values(array_filter($request, static fn (Span $s): bool => str_starts_with($s->name, 'renderer ')));
+
     expect($names)->toContain('render document')
+        ->and(array_map(static fn (Span $s): string => $s->name, $phases))->toContain('renderer shell', 'renderer flight', 'renderer ssr')
+        ->and(array_unique(array_map(static fn (Span $s): ?string => $s->parentSpanId, $phases)))->toBe([$render->spanId])
         ->and($loaders)->not->toBeEmpty()
         ->and($loaders[0]->parentSpanId)->toBe($root->spanId)
         ->and($statements)->not->toBeEmpty()

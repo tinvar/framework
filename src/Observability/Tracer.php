@@ -264,6 +264,12 @@ final class Tracer
         return $this->anchorNs + ($hr - $this->anchorHr);
     }
 
+    /** Nanoseconds since the epoch, as the hrtime(true) reading toNs() reads them from. */
+    public function toHr(int $ns): int
+    {
+        return $this->anchorHr + ($ns - $this->anchorNs);
+    }
+
     /**
      * The span with what is in it passed through the Redactor, as a log
      * line's context is: an attribute named like a secret is replaced

@@ -442,6 +442,49 @@ describe('a render', function () {
             ->and($render->attributes['tinvar.render.boundary_failures'])->toBe(1);
     });
 
+    it('draws the phases the renderer timed as child spans of the render\'s, within it (ADR 0128)', function () {
+        [, $exported, $failure] = rendered([
+            Frame::chunk('<html></html>'),
+            ['t' => Frame::DONE, 'ph' => [['n' => 'shell', 's' => 0, 'e' => 0.002], ['n' => 'flight', 's' => 0, 'e' => 0.003], ['n' => 'ssr', 's' => 0.002, 'e' => 900_000]]],
+        ]);
+
+        expect($failure)->toBeNull();
+        $byName = [];
+        foreach ($exported->spans as $span) {
+            $byName[$span->name] = $span;
+        }
+        $render = $byName['render document'];
+        $shell = $byName['renderer shell'];
+        $flight = $byName['renderer flight'];
+        $ssr = $byName['renderer ssr'];
+        expect($shell->parentSpanId)->toBe($render->spanId)
+            ->and($flight->parentSpanId)->toBe($render->spanId)
+            ->and($shell->startNs)->toBe($render->startNs)
+            ->and($shell->endNs)->toBe($render->startNs + 2_000)
+            ->and($flight->endNs)->toBe($render->startNs + 3_000)
+            ->and($ssr->startNs)->toBe($render->startNs + 2_000)
+            ->and($shell->attributes)->toBe(['tinvar.renderer.phase' => 'shell'])
+            // Fifteen minutes, by the renderer's word: held within the render.
+            ->and($ssr->endNs)->toBeLessThanOrEqual((int) $render->endNs);
+    });
+
+    it('refuses a done frame whose phases are not what it may say', function (array $phases) {
+        [$telemetry, , $failure] = rendered([Frame::chunk('<html></html>'), ['t' => Frame::DONE, 'ph' => $phases]]);
+
+        expect($failure)->toBeInstanceOf(\Tinvar\Protocol\ProtocolException::class)
+            ->and($telemetry->metrics?->exposition())->toContain('tinvar_renders_total{kind="document",outcome="protocol_violation"} 1');
+    })->with([
+        'a name of its own' => [[['n' => 'db', 's' => 0, 'e' => 1]]],
+        'twice' => [[['n' => 'shell', 's' => 0, 'e' => 1], ['n' => 'shell', 's' => 0, 'e' => 2]]],
+        'ending before it starts' => [[['n' => 'shell', 's' => 2, 'e' => 1]]],
+        'negative' => [[['n' => 'shell', 's' => -1, 'e' => 1]]],
+        'past any deadline' => [[['n' => 'shell', 's' => 0, 'e' => 3_600_001]]],
+        'a string' => [[['n' => 'shell', 's' => '0', 'e' => 1]]],
+        'more fields' => [[['n' => 'shell', 's' => 0, 'e' => 1, 'user' => 'ada@example.com']]],
+        'not a list' => [['shell' => ['s' => 0, 'e' => 1]]],
+        'too many' => [array_fill(0, 5, ['n' => 'shell', 's' => 0, 'e' => 1])],
+    ]);
+
     it('is counted by how it failed', function () {
         [$telemetry, $exported, $failure] = rendered([['t' => Frame::ERROR, 'code' => 'browser_api_on_server', 'digest' => 'abc']]);
 

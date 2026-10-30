@@ -264,6 +264,7 @@ final class RenderChannel
         $waitNs = 0;
         $sinkNs = 0;
         $firstByteNs = null;
+        $phases = [];
 
         $buffer = '';
         $offset = 0;
@@ -424,6 +425,9 @@ final class RenderChannel
                             }
                         }
                     } elseif ($type === Frame::DONE) {
+                        // What the renderer timed of its own work, drawn
+                        // as spans of this render's (ADR 0128).
+                        $phases = Frame::readPhases($message);
                         $done = true;
                     } elseif ($type === Frame::ERROR) {
                         throw RendererException::fromErrorFrame($message, $this->debug);
@@ -475,6 +479,7 @@ final class RenderChannel
             waitingOnRendererMs: $waitNs / 1e6,
             tagsRead: $this->runner->tagsRead(),
             streamingMs: $sinkNs / 1e6,
+            phases: $phases,
         );
         $this->tap?->rendered($result);
 

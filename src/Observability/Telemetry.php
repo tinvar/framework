@@ -412,6 +412,7 @@ final class Telemetry implements Spans
         $this->metrics?->observe(self::RENDER_QUERY_TIME, $result->queryMs / 1000, $labels);
 
         if ($trace->span !== null) {
+            $this->rendererPhases($trace->span, $result->phases);
             $trace->span->set('tinvar.render.bytes', $result->bytes)
                 ->set('tinvar.render.chunks', $result->chunks)
                 ->set('tinvar.render.query_calls', $result->queryCalls)
@@ -419,6 +420,36 @@ final class Telemetry implements Spans
                 ->set('tinvar.render.first_byte_ms', round($result->timeToFirstByteMs, 3))
                 ->set('tinvar.render.renderer_wait_ms', round($result->waitingOnRendererMs, 3));
             $this->tracer?->end($trace->span);
+        }
+    }
+
+    /**
+     * What the renderer timed of its own work (ADR 0128) -- its Flight
+     * payload, its HTML shell, the HTML after it, an email -- drawn as
+     * child spans of the render's, named `renderer flight` and so on.
+     *
+     * The renderer reports offsets from when it was handed the frame, on
+     * its own clock, and this process places them from when it started the
+     * render, a connect and a write earlier: each phase is drawn that much
+     * early, and held within the render's span, which ends now. Only the
+     * name, from a fixed list, and the two times cross: the renderer sends
+     * nothing else of telemetry, and holds nothing to send it with.
+     *
+     * @param list<array{name: string, start: float, end: float}> $phases
+     */
+    private function rendererPhases(Span $render, array $phases): void
+    {
+        $tracer = $this->tracer;
+        if ($tracer === null || $phases === []) {
+            return;
+        }
+
+        $now = $tracer->now();
+        foreach ($phases as $phase) {
+            $to = min($render->startNs + (int) round($phase['end'] * 1e6), $now);
+            $from = min($render->startNs + (int) round($phase['start'] * 1e6), $to);
+            $span = $tracer->start("renderer {$phase['name']}", ['tinvar.renderer.phase' => $phase['name']], $render, $tracer->toHr($from));
+            $tracer->end($span, $tracer->toHr($to));
         }
     }
 

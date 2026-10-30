@@ -370,6 +370,70 @@ final class Frame
     }
 
     /**
+     * The phases a renderer may say it timed, on its `done` frame (ADR
+     * 0128): when its Flight payload was written, when its HTML shell was
+     * ready, the HTML after the shell, and an email's render. A fixed list,
+     * since each becomes the name of a span: a renderer cannot name one.
+     */
+    public const array PHASES = ['flight', 'shell', 'ssr', 'mail'];
+
+    /**
+     * The longest a phase may say it took, in milliseconds: past any
+     * render's deadline, so a phase claiming more is not a measurement.
+     */
+    public const float MAX_PHASE_MS = 3_600_000.0;
+
+    /**
+     * The phases a `done` frame carries in `ph`, each `{n, s, e}`: a name
+     * from PHASES, and its start and end in milliseconds from the moment
+     * the renderer was handed the render. None when it carries none.
+     *
+     * The renderer's numbers, so held to their shape -- each name at most
+     * once, a finite start no later than its end, both within MAX_PHASE_MS
+     * -- and a frame that breaks it is a protocol violation, as any
+     * malformed frame is. They are only ever drawn as spans, within the
+     * render's own (Telemetry::renderFinished()).
+     *
+     * @param array<string, mixed> $frame
+     * @return list<array{name: string, start: float, end: float}>
+     */
+    public static function readPhases(array $frame): array
+    {
+        if (!\array_key_exists('ph', $frame)) {
+            return [];
+        }
+
+        $phases = $frame['ph'];
+        if (!\is_array($phases) || !array_is_list($phases) || \count($phases) > \count(self::PHASES)) {
+            throw ProtocolException::malformed(self::DONE, "'ph' must be a list of at most " . \count(self::PHASES) . ' phases');
+        }
+
+        $out = [];
+        $seen = [];
+        foreach ($phases as $phase) {
+            if (!\is_array($phase) || array_diff_key($phase, ['n' => 0, 's' => 0, 'e' => 0]) !== []) {
+                throw ProtocolException::malformed(self::DONE, 'each phase must be a map of n, s and e');
+            }
+            $name = $phase['n'] ?? null;
+            $start = $phase['s'] ?? null;
+            $end = $phase['e'] ?? null;
+            if (!\is_string($name) || !\in_array($name, self::PHASES, true) || isset($seen[$name])) {
+                throw ProtocolException::malformed(self::DONE, "a phase's name must be one of " . implode(', ', self::PHASES) . ', each once');
+            }
+            $seen[$name] = true;
+            if (!\is_int($start) && !\is_float($start) || !\is_int($end) && !\is_float($end)
+                || !is_finite((float) $start) || !is_finite((float) $end)
+                || $start < 0 || $start > $end || $end > self::MAX_PHASE_MS) {
+                throw ProtocolException::malformed(self::DONE, "a phase's start and end must be milliseconds, the start no later than the end");
+            }
+
+            $out[] = ['name' => $name, 'start' => (float) $start, 'end' => (float) $end];
+        }
+
+        return $out;
+    }
+
+    /**
      * Rejects any frame the renderer is not allowed to originate.
      *
      * @param array<string, mixed> $frame
