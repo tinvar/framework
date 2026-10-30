@@ -333,39 +333,49 @@ describe('a failed boundary', function () {
 });
 
 describe('a call out', function () {
-    it('is a client span carrying its traceparent, and says nothing of its path or query', function () {
+    it('is a client span, and carries its traceparent only to an origin the application owns', function () {
         [$telemetry, $kept] = telemetry();
         $fake = new FakeOutboundHttp();
-        $http = new TracedHttp($fake, $telemetry);
+        $http = new TracedHttp($fake, $telemetry, propagateTo: ['https://collector.internal', 'http://api.example.com:8080']);
 
         $telemetry->trace('job DeliverWebhook', [], static function () use ($http): void {
-            $http->send(OutboundRequest::post('https://hooks.example.com/in/ada@example.com?token=abc', '{}'));
+            $http->send(OutboundRequest::post('https://collector.internal/v1/in?token=abc', '{}'));
+            $http->send(OutboundRequest::get('http://api.example.com:8080/orders'));
+            // Another port, scheme or host is someone else's.
+            $http->send(OutboundRequest::get('http://api.example.com/orders'));
+            $http->send(OutboundRequest::get('http://collector.internal/'));
+            $http->send(OutboundRequest::post('https://hooks.example.com/in/ada@example.com', '{}'));
         });
 
-        $call = $kept->named('POST');
-        $header = $fake->sent[0]->headers['traceparent'] ?? null;
-        $context = TraceContext::parse($header);
-        expect($call->kind)->toBe(Span::KIND_CLIENT)
-            ->and($context?->traceId)->toBe($call->traceId)
-            ->and($context?->parentSpanId)->toBe($call->spanId)
+        $context = TraceContext::parse($fake->sent[0]->headers['traceparent'] ?? null);
+        $calls = array_values(array_filter($kept->spans, static fn (Span $s): bool => $s->kind === Span::KIND_CLIENT));
+        expect($context?->traceId)->toBe($calls[0]->traceId)
+            ->and($context?->parentSpanId)->toBe($calls[0]->spanId)
             ->and($context?->sampled)->toBeTrue()
-            ->and($call->attributes)->toBe(['http.request.method' => 'POST', 'url.scheme' => 'https', 'server.address' => 'hooks.example.com', 'server.port' => 443, 'http.response.status_code' => 200])
+            ->and($fake->sent[1]->headers)->toHaveKey('traceparent')
+            ->and($fake->sent[2]->headers)->not->toHaveKey('traceparent')
+            ->and($fake->sent[3]->headers)->not->toHaveKey('traceparent')
+            ->and($fake->sent[4]->headers)->not->toHaveKey('traceparent')
+            // Every call is a span, propagated or not, naming no path or query.
+            ->and($calls)->toHaveCount(5)
+            ->and($calls[4]->attributes)->toBe(['http.request.method' => 'POST', 'url.scheme' => 'https', 'server.address' => 'hooks.example.com', 'server.port' => 443, 'http.response.status_code' => 200])
             ->and(json_encode($kept->spans))->not->toContain('ada@')->not->toContain('token');
     });
 
-    it('carries nothing outside a trace, leaves a caller\'s own traceparent, and propagates nothing when told not to', function () {
+    it('propagates to nothing by default, nor outside a trace, and leaves a caller\'s own traceparent', function () {
         [$telemetry] = telemetry();
         $fake = new FakeOutboundHttp();
 
-        new TracedHttp($fake, $telemetry)->send(OutboundRequest::get('https://example.com/'));
+        new TracedHttp($fake, $telemetry, ['https://example.com'])->send(OutboundRequest::get('https://example.com/'));
         $telemetry->trace('job', [], static function () use ($fake, $telemetry): void {
-            new TracedHttp($fake, $telemetry)->send(OutboundRequest::get('https://example.com/', ['traceparent' => 'mine']));
-            new TracedHttp($fake, $telemetry, propagate: false)->send(OutboundRequest::get('https://example.com/'));
+            new TracedHttp($fake, $telemetry)->send(OutboundRequest::get('https://example.com/'));
+            new TracedHttp($fake, $telemetry, ['https://example.com'])->send(OutboundRequest::get('https://example.com/', ['traceparent' => 'mine']));
         });
 
         expect($fake->sent[0]->headers)->not->toHaveKey('traceparent')
-            ->and($fake->sent[1]->headers['traceparent'])->toBe('mine')
-            ->and($fake->sent[2]->headers)->not->toHaveKey('traceparent');
+            ->and($fake->sent[1]->headers)->not->toHaveKey('traceparent')
+            ->and($fake->sent[2]->headers['traceparent'])->toBe('mine')
+            ->and(fn () => new TracedHttp($fake, $telemetry, ['https://example.com/hooks']))->toThrow(\InvalidArgumentException::class, 'not an origin');
     });
 });
 

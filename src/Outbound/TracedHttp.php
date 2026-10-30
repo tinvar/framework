@@ -20,20 +20,42 @@ use Tinvar\Observability\Telemetry;
  *
  * What the span says is the method, the scheme, the host and port, and the
  * status: never the path or the query, which carry ids and tokens, and
- * never a header or a body. What the header says is two ids and whether
- * the trace is sampled -- the request's id, which its own response already
- * carries as X-Request-Id -- and nothing the trace holds. A destination
- * that should not learn even that is sent through a client without this,
- * or this with `propagate` off. A `traceparent` the caller set is left as
- * it is.
+ * never a header or a body.
+ *
+ * The header goes only to an origin the application names as its own, in
+ * `propagateTo` -- its collector, its own services -- and to nothing by
+ * default. It holds two ids and whether the trace is sampled, and the trace
+ * id is the request's: a third party handed it could tie the calls it
+ * receives to one visitor's request. A webhook's endpoint, an image's host,
+ * an OIDC provider are someone else's, and get the span on this side alone.
+ * A `traceparent` the caller set is left as it is.
  */
 final readonly class TracedHttp implements OutboundHttp
 {
+    /** @var list<string> the origins a traceparent goes to, as Target::origin() writes them */
+    private array $propagateTo;
+
+    /**
+     * @param list<string> $propagateTo origins the application owns -- `https://collector.internal`,
+     *        `https://api.example.com:8443` -- the only ones a call to carries its traceparent.
+     *        Matched by scheme, host and port exactly; a URL's path is not part of it. None by default
+     * @throws \InvalidArgumentException when one is not an origin
+     */
     public function __construct(
         private OutboundHttp $inner,
         private Telemetry $telemetry,
-        private bool $propagate = true,
-    ) {}
+        array $propagateTo = [],
+    ) {
+        $origins = [];
+        foreach ($propagateTo as $origin) {
+            $target = Target::parse($origin);
+            if ($target->requestTarget() !== '/' && $target->requestTarget() !== '') {
+                throw new \InvalidArgumentException("'{$origin}' is not an origin: name the scheme, host and port alone.");
+            }
+            $origins[] = $target->origin();
+        }
+        $this->propagateTo = $origins;
+    }
 
     public function send(OutboundRequest $request): OutboundResponse
     {
@@ -59,8 +81,11 @@ final readonly class TracedHttp implements OutboundHttp
     /** $request with the span's `traceparent` added, where there is one to add. */
     private function carrying(OutboundRequest $request, ?Span $span): OutboundRequest
     {
-        $header = $this->propagate ? $this->telemetry->traceparent($span) : null;
-        if ($header === null || isset($request->headers['traceparent'])) {
+        if (isset($request->headers['traceparent']) || !$this->owns($request)) {
+            return $request;
+        }
+        $header = $this->telemetry->traceparent($span);
+        if ($header === null) {
             return $request;
         }
 
@@ -75,5 +100,18 @@ final readonly class TracedHttp implements OutboundHttp
             $request->maxRedirects,
             $request->sink,
         );
+    }
+
+    /** Whether the request goes to an origin the application named as its own. */
+    private function owns(OutboundRequest $request): bool
+    {
+        if ($this->propagateTo === []) {
+            return false;
+        }
+        try {
+            return \in_array(Target::parse($request->url)->origin(), $this->propagateTo, true);
+        } catch (\Throwable) {
+            return false;
+        }
     }
 }
