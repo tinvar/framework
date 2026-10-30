@@ -20,6 +20,8 @@ use Tinvar\Orm\Orm;
 use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenError;
 use Tinvar\Storage\FileTypes;
+use Tinvar\Storage\ObjectStore;
+use Tinvar\Storage\StorageException;
 use Tinvar\Storage\StorageKey;
 
 /**
@@ -66,6 +68,26 @@ final class UploadEndpoint
      */
     public const string REFRESH_PATH = '/_upload/refresh';
 
+    /**
+     * Where a browser asks to send a file straight to the object store:
+     * under its ticket, for a size it names, answered with a URL presigned
+     * for that size and a few minutes, and an intent to complete it by.
+     */
+    public const string DIRECT_PATH = '/_upload/direct';
+
+    /**
+     * Where it says the file is there: the file is fetched back from the
+     * store, and kept exactly as one sent to /_upload is -- sniffed, drawn
+     * again, scanned -- or refused.
+     */
+    public const string COMPLETE_PATH = '/_upload/complete';
+
+    /** The prefix a file sent straight to the store waits under, never one an action declares. */
+    public const string INCOMING_PREFIX = 'tinvar-incoming';
+
+    /** Seconds a presigned upload, and the intent behind it, are good for. */
+    public const int DIRECT_TTL = 600;
+
     /** The multipart fields: the ticket, and the file. */
     public const string TICKET_FIELD = 'ticket';
     public const string FILE_FIELD = 'file';
@@ -102,7 +124,7 @@ final class UploadEndpoint
 
     public function matches(Request $request): bool
     {
-        return $request->path === self::PATH || $request->path === self::REFRESH_PATH;
+        return \in_array($request->path, [self::PATH, self::REFRESH_PATH, self::DIRECT_PATH, self::COMPLETE_PATH], true);
     }
 
     public static function assertMethod(Request $request): void
@@ -117,6 +139,9 @@ final class UploadEndpoint
         self::assertMethod($request);
         if ($request->path === self::REFRESH_PATH) {
             return $this->refresh($request, $rawBody);
+        }
+        if ($request->path === self::DIRECT_PATH || $request->path === self::COMPLETE_PATH) {
+            return $this->direct($request, $rawBody);
         }
 
         $type = strtolower(trim(explode(';', $request->header('content-type') ?? '', 2)[0]));
@@ -222,6 +247,211 @@ final class UploadEndpoint
     }
 
     /**
+     * A file sent straight to the object store, in two steps, each behind
+     * the stack /_upload is, inside the action's own context, held to the
+     * ticket's binding:
+     *
+     *   - /_upload/direct: the size the file is, within the declared limit,
+     *     the cap and the quota, which an intent is recorded for -- counted
+     *     against both as an upload waiting is, and pruned with them -- and a
+     *     URL presigned to PUT exactly that many bytes at a key under
+     *     INCOMING_PREFIX, as application/octet-stream, for DIRECT_TTL.
+     *   - /_upload/complete: the intent, this ticket's, this session's and
+     *     this user's, claimed once; the file fetched back, no larger than
+     *     named, and removed from the store with the intent; then kept as a
+     *     file sent to /_upload is, or refused as one would be.
+     *
+     * So nothing a browser sent to the store is ever served, attached or
+     * kept as it was sent: what is kept is what PHP sniffed, drew again and
+     * scanned. What goes past PHP is the slow part -- the client's upload --
+     * and not the check.
+     */
+    private function direct(Request $request, string $rawBody): Response
+    {
+        $storage = $this->uploads->storage;
+        if (!$storage instanceof ObjectStore) {
+            throw new HttpException(404, 'Files here are sent to /_upload.', 'not_found');
+        }
+
+        $body = self::jsonBody($request, $rawBody);
+        $raw = $body[self::TICKET_FIELD] ?? null;
+        if (!\is_string($raw) || $raw === '' || \strlen($raw) > self::MAX_TICKET_BYTES) {
+            throw new HttpException(400, 'Send the upload ticket in the `ticket` field.', 'bad_request');
+        }
+        try {
+            $ticket = UploadTicket::decode($raw, $this->uploads->ticketSigner, $this->uploads->now());
+        } catch (TokenError $e) {
+            throw self::refused($e->getMessage());
+        }
+        [$action, $declared] = $this->declarationFor($ticket);
+
+        $panels = $this->entry->panelFor($action->panels, $action->class);
+        $stack = [
+            ...$this->entry->stackFor($action->tenantFrom, $panels),
+            ...array_map(
+                fn (string $class): Middleware => ($this->middlewareResolver)($class),
+                array_values(array_diff($action->middleware, $this->globalMiddleware)),
+            ),
+        ];
+
+        return new Pipeline($stack)->run($request, function (Request $inner) use ($storage, $body, $ticket, $declared): Response {
+            $this->assertBinding($inner, $ticket);
+
+            return $inner->path === self::DIRECT_PATH
+                ? $this->begin($storage, $body, $ticket)
+                : $this->complete($storage, $body, $ticket, $declared);
+        });
+    }
+
+    /** @param array<mixed> $body */
+    private function begin(ObjectStore $storage, array $body, UploadTicket $ticket): Response
+    {
+        [, $declared] = $this->declarationFor($ticket);
+        $size = $body['size'] ?? null;
+        if (!\is_int($size) || $size < 0) {
+            throw new HttpException(400, 'Send the size of the file in bytes, as `size`.', 'bad_request');
+        }
+        if ($size === 0) {
+            throw new HttpException(422, 'The file is empty.', 'upload_empty');
+        }
+        if ($size > min($declared->maxBytes, $this->uploads->maxBytes)) {
+            throw self::tooLarge();
+        }
+        $name = \is_string($body['name'] ?? null) ? $body['name'] : '';
+
+        $user = (string) $this->auth->id();
+        $now = $this->uploads->now();
+        $owner = $this->uploads->ownerHash($user);
+        $quota = $this->uploads->quota?->bytesFor($user);
+
+        $intent = new PendingUpload(
+            id: bin2hex(random_bytes(16)),
+            key: StorageKey::generate(self::INCOMING_PREFIX, ''),
+            action: $ticket->action,
+            field: $ticket->field,
+            targetClass: $ticket->targetClass,
+            targetId: $ticket->targetId,
+            prefix: $ticket->prefix,
+            tenant: $ticket->tenant,
+            panel: $ticket->panel,
+            sessionHash: $ticket->sessionHash,
+            authHash: $ticket->authHash,
+            name: UploadName::clean($name),
+            // No type until PHP has sniffed it: an intent is never one an
+            // action could be handed (UploadBinder).
+            type: '',
+            size: $size,
+            createdAt: $now,
+            expiresAt: $now + self::DIRECT_TTL,
+            ownerHash: $owner,
+        );
+        if (!$this->uploads->store->addWithin($intent, self::MAX_PENDING, $now, $quota)) {
+            throw $quota !== null && $this->uploads->store->bytesHeld($owner, $now) + $size > $quota
+                ? self::overQuota()
+                : self::tooManyPending();
+        }
+
+        $put = $storage->presignedPut($intent->key, $size, self::DIRECT_TTL);
+
+        return Response::make(201, json_encode([
+            'intent' => $intent->id,
+            ...$put->jsonSerialize(),
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES), [
+            'content-type' => 'application/json',
+            'cache-control' => 'private, no-store',
+            'vary' => 'Cookie',
+        ]);
+    }
+
+    /** @param array<mixed> $body */
+    private function complete(ObjectStore $storage, array $body, UploadTicket $ticket, Uploaded $declared): Response
+    {
+        $id = $body['intent'] ?? null;
+        if (!\is_string($id) || preg_match(UploadBinder::REFERENCE, $id) !== 1) {
+            throw new HttpException(400, 'Send the intent /_upload/direct answered with, as `intent`.', 'bad_request');
+        }
+
+        $now = $this->uploads->now();
+        $intent = $this->uploads->store->find($id);
+        if ($intent === null || $intent->type !== '' || !str_starts_with($intent->key, self::INCOMING_PREFIX . '/')
+            || $intent->claimedAt !== null || $intent->expiresAt <= $now
+            || $intent->action !== $ticket->action || $intent->field !== $ticket->field
+            || $intent->targetClass !== $ticket->targetClass || $intent->targetId !== $ticket->targetId
+            || $intent->prefix !== $ticket->prefix || $intent->tenant !== $ticket->tenant || $intent->panel !== $ticket->panel
+            || !hash_equals($intent->sessionHash, $ticket->sessionHash) || !hash_equals($intent->authHash, $ticket->authHash)
+            // Once: of two completions, one goes on.
+            || !$this->uploads->store->claim($intent->id, $now)) {
+            throw self::refused('names no upload this ticket began');
+        }
+
+        $path = tempnam(sys_get_temp_dir(), 'tinvar-direct-');
+        if ($path === false) {
+            throw new \RuntimeException('No temporary file to fetch an upload into.');
+        }
+
+        try {
+            try {
+                $out = fopen($path, 'wb');
+                if ($out === false) {
+                    throw new \RuntimeException('No temporary file to fetch an upload into.');
+                }
+                $bytes = 0;
+                try {
+                    // No more than was named: the store held the PUT to it,
+                    // and this holds the read to it too.
+                    $found = $storage->readTo($intent->key, static function (string $chunk) use ($out, $intent, &$bytes): void {
+                        $bytes += \strlen($chunk);
+                        if ($bytes > $intent->size) {
+                            throw self::tooLarge();
+                        }
+                        fwrite($out, $chunk);
+                    });
+                } finally {
+                    fclose($out);
+                }
+            } finally {
+                // Gone from the store whatever comes of it: a file sent there
+                // is fetched once, and never kept as it was sent.
+                try {
+                    $storage->delete($intent->key);
+                } catch (StorageException) {
+                    // Left for the bucket's lifecycle rule on the prefix.
+                }
+                $this->uploads->store->forget($intent->id);
+            }
+            if (!$found || $bytes !== $intent->size) {
+                throw new HttpException(422, 'The file did not arrive.', 'upload_missing');
+            }
+
+            return $this->keep($ticket, $declared, $path, $intent->name);
+        } finally {
+            @unlink($path);
+        }
+    }
+
+    /**
+     * A small JSON body's fields -- or a form's, as PHP parsed it.
+     *
+     * @return array<mixed>
+     */
+    private static function jsonBody(Request $request, string $rawBody): array
+    {
+        if ($rawBody === '') {
+            return $request->body;
+        }
+        if (\strlen($rawBody) > self::MAX_TICKET_BYTES + 1024) {
+            throw new HttpException(413, 'The body is larger than this takes.', 'body_too_large');
+        }
+        try {
+            $json = json_decode($rawBody, true, 4, JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            throw new HttpException(400, 'Send the body as a JSON object.', 'bad_json');
+        }
+
+        return \is_array($json) ? $json : [];
+    }
+
+    /**
      * The action and the declaration a ticket names, as they stand now: a
      * ticket minted before a deploy that renamed the action, retargeted the
      * parameter or moved its prefix names something this server no longer
@@ -252,10 +482,22 @@ final class UploadEndpoint
     private function store(Request $request, UploadTicket $ticket, Uploaded $declared): Response
     {
         $this->assertBinding($request, $ticket);
-        $user = (string) $this->auth->id();
-
         $file = $this->receivedFile($request);
-        $size = filesize($file->path);
+
+        return $this->keep($ticket, $declared, $file->path, $file->clientName);
+    }
+
+    /**
+     * Steps 5 and 6 for a file on this machine at $path, received under
+     * $ticket -- sent to /_upload, or fetched back from the store it was
+     * sent to directly: measured, sniffed, drawn again, scanned, counted
+     * against the cap and the quota, stored under a key of the server's
+     * making and recorded. $path is the caller's to remove.
+     */
+    private function keep(UploadTicket $ticket, Uploaded $declared, string $path, string $clientName): Response
+    {
+        $user = (string) $this->auth->id();
+        $size = filesize($path);
         if ($size === false) {
             throw new \RuntimeException('A received upload cannot be measured.');
         }
@@ -267,7 +509,7 @@ final class UploadEndpoint
         }
 
         // The bytes say what it is; the client's name and type are not asked.
-        $type = FileTypes::sniffFile($file->path);
+        $type = FileTypes::sniffFile($path);
         if ($type === null || !\in_array($type, $declared->types, true)) {
             throw new HttpException(415, 'The file is not of a type this upload takes.', 'upload_type');
         }
@@ -287,9 +529,9 @@ final class UploadEndpoint
         // An image is kept as drawn again from its pixels, never as sent:
         // its metadata -- a photo's GPS position among it -- and anything
         // after its pixels go (ImageSanitizer).
-        $kept = $file->path;
+        $kept = $path;
         if (FileTypes::isImage($type)) {
-            $kept = $this->uploads->images->sanitize($file->path, $type);
+            $kept = $this->uploads->images->sanitize($path, $type);
             $size = filesize($kept);
             if ($size === false || $size > min($declared->maxBytes, $this->uploads->maxBytes)) {
                 @unlink($kept);
@@ -306,7 +548,7 @@ final class UploadEndpoint
                 $found = $e;
             }
             if ($found !== null) {
-                if ($kept !== $file->path) {
+                if ($kept !== $path) {
                     @unlink($kept);
                 }
 
@@ -328,7 +570,7 @@ final class UploadEndpoint
                 fclose($stream);
             }
         } finally {
-            if ($kept !== $file->path) {
+            if ($kept !== $path) {
                 @unlink($kept);
             }
         }
@@ -345,7 +587,7 @@ final class UploadEndpoint
             panel: $ticket->panel,
             sessionHash: $ticket->sessionHash,
             authHash: $ticket->authHash,
-            name: UploadName::clean($file->clientName),
+            name: UploadName::clean($clientName),
             type: $type,
             size: $size,
             createdAt: $now,

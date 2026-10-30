@@ -187,4 +187,49 @@ describe('S3Storage against MinIO', function () {
 
         $storage->delete($key);
     });
+
+    it('takes an upload sent straight to it under a ticket, and keeps it only once PHP has drawn it again', function () {
+        [$storage] = minio();
+        require_once __DIR__ . '/../Uploads/Fixtures/app.php';
+        $app = new Tinvar\Tests\Uploads\Fixtures\App($storage);
+        $app->now = time();
+        $post = static fn (string $path, array $body): Tinvar\Http\Response => $app->kernel->handle(
+            new Tinvar\Http\Request('POST', $path, [
+                'content-type' => 'application/json',
+                'x-xsrf-token' => Tinvar\Tests\Uploads\Fixtures\CSRF,
+                'x-test-user' => 'u-1',
+                'x-test-epoch' => 'e1',
+            ], cookies: [Tinvar\Tests\Uploads\Fixtures\SESSION_COOKIE => 'session-a', Tinvar\Http\Middleware\VerifyCsrfToken::COOKIE => Tinvar\Tests\Uploads\Fixtures\CSRF]),
+            static fn () => Tinvar\Http\Response::make(500),
+            json_encode($body, JSON_THROW_ON_ERROR),
+        );
+        $png = Tinvar\Tests\Uploads\Fixtures\png();
+        $ticket = $app->ticket($app->profile(Tinvar\Tests\Uploads\Fixtures\P1));
+
+        $begun = $post(Tinvar\Uploads\UploadEndpoint::DIRECT_PATH, ['ticket' => $ticket, 'size' => strlen($png)]);
+        $intent = Tinvar\Tests\Uploads\Fixtures\json($begun);
+        expect($begun->status)->toBe(201)
+            ->and(minioBrowser('PUT', (string) $intent['url'], str_pad('<b>a page</b>', strlen($png)), ['content-type' => 'text/html', 'content-disposition' => 'attachment'])[0])->toBe(403)
+            ->and(minioBrowser('PUT', (string) $intent['url'], $png, $intent['headers'])[0])->toBe(200);
+
+        $done = $post(Tinvar\Uploads\UploadEndpoint::COMPLETE_PATH, ['ticket' => $ticket, 'intent' => $intent['intent']]);
+        $kept = $app->store->find((string) Tinvar\Tests\Uploads\Fixtures\json($done)['upload']);
+
+        expect($done->status)->toBe(201)
+            ->and($kept?->type)->toBe('image/png')
+            ->and($storage->exists((string) $kept?->key))->toBeTrue()
+            ->and(minioSniffed($storage, (string) $kept?->key))->toBe('image/png');
+        $storage->delete((string) $kept?->key);
+    });
 });
+
+function minioSniffed(S3Storage $storage, string $key): ?string
+{
+    $path = (string) tempnam(sys_get_temp_dir(), 'tinvar-minio-');
+    file_put_contents($path, (string) stream_get_contents($storage->read($key)));
+    try {
+        return Tinvar\Storage\FileTypes::sniffFile($path);
+    } finally {
+        @unlink($path);
+    }
+}
