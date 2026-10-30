@@ -99,6 +99,9 @@ final readonly class TracedHttp implements OutboundHttp
             $request->readBody,
             $request->maxRedirects,
             $request->sink,
+            // The request is held to where it may go with the header as
+            // without it.
+            $request->destinations,
         );
     }
 

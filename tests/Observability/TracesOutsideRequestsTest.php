@@ -44,6 +44,7 @@ use Tinvar\Observability\Tracer;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
+use Tinvar\Outbound\Destinations;
 use Tinvar\Outbound\FakeOutboundHttp;
 use Tinvar\Outbound\OutboundRequest;
 use Tinvar\Outbound\TracedHttp;
@@ -400,6 +401,19 @@ describe('a call out', function () {
             ->and($fake->sent[1]->headers)->not->toHaveKey('traceparent')
             ->and($fake->sent[2]->headers['traceparent'])->toBe('mine')
             ->and(fn () => new TracedHttp($fake, $telemetry, ['https://example.com/hooks']))->toThrow(\InvalidArgumentException::class, 'not an origin');
+    });
+
+    it('keeps a request held to its destinations when it carries the traceparent', function () {
+        [$telemetry] = telemetry();
+        $fake = new FakeOutboundHttp();
+        $destinations = Destinations::originOf('https://example.com');
+
+        $telemetry->trace('job', [], static function () use ($fake, $telemetry, $destinations): void {
+            new TracedHttp($fake, $telemetry, ['https://example.com'])->send(new OutboundRequest('GET', 'https://example.com/', destinations: $destinations));
+        });
+
+        expect($fake->sent[0]->headers)->toHaveKey('traceparent')
+            ->and($fake->sent[0]->destinations)->toBe($destinations);
     });
 });
 
