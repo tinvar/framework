@@ -328,7 +328,7 @@ final class Telemetry implements Spans
         }
 
         $text = StatementText::sanitize($sql, $system);
-        $span = $tracer->start(StatementText::summary($text), [
+        $span = $tracer->start(StatementText::name($sql, $system), [
             'db.system.name' => $system,
             'db.query.text' => \strlen($text) > self::MAX_STATEMENT ? substr($text, 0, self::MAX_STATEMENT) . '...' : $text,
         ], atHr: $startedHr, kind: Span::KIND_CLIENT);

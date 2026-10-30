@@ -251,7 +251,14 @@ describe('a statement\'s span', function () {
     });
 
     it('is named by its operation and first table, and sanitizes what a driver quotes as a string', function () {
-        expect(StatementText::summary(StatementText::sanitize('update "orders" set paid = 1', 'sqlite')))->toBe('UPDATE orders')
+        expect(StatementText::name('update "orders" set paid = 1', 'sqlite'))->toBe('UPDATE orders')
+            // SQLite reads "x" as a string where no column is named x, so
+            // the text keeps no double-quoted token; the name, which reads
+            // only the table after FROM, INTO or UPDATE, still has it.
+            ->and(StatementText::sanitize('SELECT * FROM "orders" WHERE note = "hunter2"', 'sqlite'))->toBe('SELECT * FROM ? WHERE note = ?')
+            ->and(StatementText::name('SELECT * FROM "orders" WHERE note = "hunter2"', 'sqlite'))->toBe('SELECT orders')
+            ->and(StatementText::sanitize('SELECT "a""b", "hunter2', 'sqlite'))->toBe('SELECT ?, ?')
+            ->and(StatementText::sanitize('SELECT "orders"."id" FROM "orders"', 'postgresql'))->toBe('SELECT "orders"."id" FROM "orders"')
             // A system whose lexer is not read here keeps nothing of its text.
             ->and(StatementText::sanitize("SELECT 'hunter2'", 'other_sql'))->toBe('?')
             ->and(StatementText::summary('VACUUM'))->toBe('VACUUM')

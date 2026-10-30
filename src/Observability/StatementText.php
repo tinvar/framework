@@ -43,15 +43,38 @@ final class StatementText
      * $sql with its comments, quoted strings and numbers replaced by `?`;
      * only `?` for a system not read here, whose lexer this cannot follow.
      *
+     * On SQLite a double-quoted token is taken out too: SQLite reads `"x"`
+     * as a string wherever no column is named x, so the text cannot tell a
+     * quoted name from a value, and keeps neither.
+     *
      * @param string $system OpenTelemetry's db.system.name: postgresql, mysql, mariadb or sqlite
      */
     public static function sanitize(string $sql, string $system): string
+    {
+        return self::scrub($sql, $system, quotedNames: false);
+    }
+
+    /**
+     * The span's name for $sql: summary() of its text with SQLite's
+     * double-quoted tokens left in, so a quoted table is named. Only the
+     * operation and the identifier after FROM, INTO or UPDATE reach the
+     * name, and a value cannot stand there.
+     */
+    public static function name(string $sql, string $system): string
+    {
+        return self::summary(self::scrub($sql, $system, quotedNames: true));
+    }
+
+    private static function scrub(string $sql, string $system, bool $quotedNames): string
     {
         if (!\in_array($system, self::SYSTEMS, true)) {
             return '?';
         }
         $mysql = $system === 'mysql' || $system === 'mariadb';
         $postgres = $system === 'postgresql';
+        // Which double-quoted tokens are taken out as strings: MySQL's,
+        // which are strings, and SQLite's, which may be.
+        $doubleQuoted = $mysql || ($system === 'sqlite' && !$quotedNames);
 
         // One pattern, every comment and literal an alternative of it, read
         // left to right: whichever begins first is taken whole, as the
@@ -80,8 +103,9 @@ final class StatementText
             // at the next string's opening quote and leave that one's value
             // in the text.
             '(?<![' . self::NAME_BYTES . '])' . ($mysql ? "[XxBbNn]?'(?:''|\\\\.|[^'\\\\])*+(?:'|\\z)" : "[XxBbNn]?'(?:''|[^'])*+(?:'|\\z)"),
-            // MySQL's double-quoted string.
-            $mysql ? '"(?:""|\\\\.|[^"\\\\])*+(?:"|\z)' : '(*FAIL)',
+            // A double-quoted string: MySQL's, where a backslash escapes,
+            // and SQLite's, where only a doubled quote does.
+            $doubleQuoted ? ($mysql ? '"(?:""|\\\\.|[^"\\\\])*+(?:"|\z)' : '"(?:""|[^"])*+(?:"|\z)') : '(*FAIL)',
             // A number standing alone -- not a placeholder's ($1), not part
             // of a name (t1): decimal, perhaps with a fraction, an exponent
             // or Postgres's underscores, or hex, binary or octal (0xCAFE).
@@ -97,7 +121,7 @@ final class StatementText
         );
         // PCRE gave up on it, or a quote is left that no pattern closed:
         // nothing of it is kept, rather than a value.
-        if (!\is_string($out) || str_contains($out, "'") || ($mysql && str_contains($out, '"'))) {
+        if (!\is_string($out) || str_contains($out, "'") || ($doubleQuoted && str_contains($out, '"'))) {
             return '?';
         }
 
