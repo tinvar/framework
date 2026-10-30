@@ -29,6 +29,13 @@ use Tinvar\Support\Signer;
  *
  * Signed, not encrypted: the subscriber is readable by anyone who has the
  * email. Name them by an opaque id, never an address.
+ *
+ * And bound to the address it was sent to, where one is given (ADR 0116):
+ * a keyed hash of it, which says nothing of the address to whoever reads
+ * the token. A reader whose address has changed since -- the mailbox given
+ * up, or someone else's now -- has every link sent to the old one revoked
+ * at once: isFor() is false for any address but that one, and for a token
+ * that named none.
  */
 final readonly class PreferenceLinks
 {
@@ -55,8 +62,11 @@ final readonly class PreferenceLinks
         return new self(new Signer($appKey, self::PURPOSE), $clock);
     }
 
-    /** The token that opens $subscriber's preferences in $tenant, for LIFETIME from now. */
-    public function token(string $subscriber, string $tenant = ''): string
+    /**
+     * The token that opens $subscriber's preferences in $tenant, for
+     * LIFETIME from now, while their address is still $address.
+     */
+    public function token(string $subscriber, string $tenant = '', ?string $address = null): string
     {
         self::assertClaims($subscriber, $tenant);
         $now = ($this->clock)();
@@ -64,9 +74,29 @@ final readonly class PreferenceLinks
         return SignedToken::encode($this->signer, self::PURPOSE, [
             'p' => $subscriber,
             'y' => $tenant,
+            'a' => $address === null ? '' : $this->addressHash($address),
             'i' => $now,
             'e' => $now + self::LIFETIME,
         ]);
+    }
+
+    /**
+     * Whether the claims verify() read were made for $address, the
+     * subscriber's address now: false for any other, and for a token made
+     * for none -- an application that binds its links checks this, and a
+     * link from before it did opens nothing.
+     *
+     * @param array{subscriber: string, tenant: string, address: string} $claims
+     */
+    public function isFor(array $claims, string $address): bool
+    {
+        return $claims['address'] !== '' && hash_equals($claims['address'], $this->addressHash($address));
+    }
+
+    /** The address as the token carries it: a keyed hash, case and spaces aside. */
+    private function addressHash(string $address): string
+    {
+        return bin2hex(substr($this->signer->sign('address:' . strtolower(trim($address))), 0, 16));
     }
 
     /**
@@ -74,7 +104,8 @@ final readonly class PreferenceLinks
      * application did not make for this, has expired, or is not a token at
      * all -- the same answer for every reason.
      *
-     * @return array{subscriber: string, tenant: string}|null
+     * @return array{subscriber: string, tenant: string, address: string}|null the address
+     *         as a keyed hash, '' for a token made for none (isFor())
      */
     public function verify(string $token): ?array
     {
@@ -90,9 +121,10 @@ final readonly class PreferenceLinks
 
         $subscriber = $claims['p'] ?? null;
         $tenant = $claims['y'] ?? null;
+        $address = $claims['a'] ?? '';
         $issued = $claims['i'] ?? null;
         $expires = $claims['e'] ?? null;
-        if (!\is_string($subscriber) || !\is_string($tenant) || !\is_int($issued) || !\is_int($expires)) {
+        if (!\is_string($subscriber) || !\is_string($tenant) || !\is_string($address) || !\is_int($issued) || !\is_int($expires)) {
             return null;
         }
 
@@ -107,7 +139,7 @@ final readonly class PreferenceLinks
             return null;
         }
 
-        return ['subscriber' => $subscriber, 'tenant' => $tenant];
+        return ['subscriber' => $subscriber, 'tenant' => $tenant, 'address' => $address];
     }
 
     private static function assertClaims(string $subscriber, string $tenant): void

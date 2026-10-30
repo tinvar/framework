@@ -24,8 +24,24 @@ function links(int $now = NOW, string $key = KEY): PreferenceLinks
 }
 
 it('names its subscriber and tenant back', function () {
-    expect(links()->verify(links()->token('c-1', 'acme')))->toBe(['subscriber' => 'c-1', 'tenant' => 'acme'])
-        ->and(links()->verify(links()->token('c-1')))->toBe(['subscriber' => 'c-1', 'tenant' => '']);
+    expect(links()->verify(links()->token('c-1', 'acme')))->toBe(['subscriber' => 'c-1', 'tenant' => 'acme', 'address' => ''])
+        ->and(links()->verify(links()->token('c-1')))->toBe(['subscriber' => 'c-1', 'tenant' => '', 'address' => '']);
+});
+
+// ADR 0116: a reader whose address changes has every link to the old one revoked.
+it('opens only for the address it was sent to, and says nothing of it', function () {
+    $token = links()->token('c-1', '', 'Ada@Example.test');
+    $claims = links()->verify($token);
+    \assert($claims !== null);
+    [, $payload] = explode('.', $token);
+
+    expect(links()->isFor($claims, 'ada@example.test'))->toBeTrue()
+        ->and(links()->isFor($claims, ' ADA@example.test '))->toBeTrue()
+        ->and(links()->isFor($claims, 'ada@elsewhere.test'))->toBeFalse()
+        ->and(links(key: KEY . '-other')->isFor($claims, 'ada@example.test'))->toBeFalse()
+        ->and((string) Signer::decode($payload))->not->toContain('ada')
+        // Made for no address, it opens for none.
+        ->and(links()->isFor(['subscriber' => 'c-1', 'tenant' => '', 'address' => ''], 'ada@example.test'))->toBeFalse();
 });
 
 it('is good for its lifetime, and not a second after', function () {
