@@ -196,10 +196,19 @@ final class Arrivals implements HandoffSessions
     /** @var array<string, string> redemption => the session it started */
     public array $redemptions = [];
 
+    /** Run once, as arrive() begins: a test's seam between the code's claim and the session. */
+    public ?\Closure $beforeArrive = null;
+
     public function __construct(private readonly SessionStore $store, public bool $keepId = false) {}
 
     public function arrive(Request $request, Arrival $arrival): string
     {
+        $before = $this->beforeArrive;
+        $this->beforeArrive = null;
+        if ($before !== null) {
+            $before();
+        }
+
         $box = $request->attribute(SessionBox::class);
         \assert($box instanceof SessionBox);
         $row = ['user' => $arrival->user->authIdentifier(), 'realm' => $arrival->realm->host, 'tenant' => $arrival->tenant];

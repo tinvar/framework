@@ -223,6 +223,28 @@ describe('the code', function () {
             ->and(json($browser->get('https://acme.example/whoami')))->not->toBe(['user' => 'alice']);
     });
 
+    // A replay landing after the first redemption claimed the code and
+    // before it made its session found nothing to end, and the session
+    // made after it survived.
+    it('ends the session its first redemption starts even when the replay lands before it is made', function () {
+        $app = new App();
+        $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
+        $callback = codeFor($browser, 'https://acme.example');
+        $replayed = null;
+        $app->arrivals->beforeArrive = function () use ($app, $callback, &$replayed): void {
+            $replayed = $app->get($callback);
+        };
+
+        $first = $browser->get($callback);
+
+        expect($replayed?->status)->toBe(403)
+            ->and($first->status)->toBe(403)
+            ->and(errorCode($first))->toBe('handoff_refused')
+            ->and($app->arrivals->redemptions)->toHaveCount(1)
+            ->and($app->sessions->sessions)->not->toHaveKey((string) array_values($app->arrivals->redemptions)[0])
+            ->and(json($browser->get('https://acme.example/whoami')))->not->toBe(['user' => 'alice']);
+    });
+
     it('is refused at any origin but the one it was minted for: another domain of the tenant, another tenant\'s, the platform\'s', function () {
         $app = new App();
         $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');

@@ -89,6 +89,20 @@ final class HandoffEndpoint
     /** The NonceStore scope a redeemed code's id is claimed under. */
     public const string NONCE_SCOPE = 'handoff-code';
 
+    /**
+     * The NonceStore scope a redemption is marked under once its session is
+     * made, and a replay's tombstone is claimed under: whichever comes
+     * first, the other finds it taken (callback()).
+     */
+    public const string REVOKED_SCOPE = 'handoff-revoked';
+
+    /**
+     * How long past the code's expiry its mark is kept: longer than a
+     * redemption under way when the code expired could take to make its
+     * session.
+     */
+    public const int TOMBSTONE_SECONDS = 300;
+
     /** The NonceStore scope an answered consent ticket's id is claimed under. */
     public const string CONSENT_SCOPE = 'handoff-consent';
 
@@ -457,6 +471,12 @@ final class HandoffEndpoint
         // That session ends (HandoffSessions::revoke()). Before the session
         // is made, so two at once cannot both get one.
         if (!$this->nonces->claim(self::NONCE_SCOPE, $code->id, $code->expiresAt, $now)) {
+            // A tombstone first, then the revocation: the first redemption
+            // may have claimed the code and not yet made its session, and
+            // finds the tombstone once it has (below). Whatever this claim
+            // answers -- the first redemption's own mark, or another
+            // replay's tombstone -- the session is ended.
+            $this->nonces->claim(self::REVOKED_SCOPE, Arrival::redemptionOf($code), $code->expiresAt + self::TOMBSTONE_SECONDS, $now);
             $this->sessions->revoke(Arrival::redemptionOf($code));
 
             throw self::refused('it has been redeemed before; the session it started is ended');
@@ -493,7 +513,20 @@ final class HandoffEndpoint
             throw $e;
         }
 
-        $fresh = $this->sessions->arrive($request, new Arrival($user, $epoch, $realm, $code->returnTo, $tenant, Arrival::redemptionOf($code)));
+        $redemption = Arrival::redemptionOf($code);
+        $fresh = $this->sessions->arrive($request, new Arrival($user, $epoch, $realm, $code->returnTo, $tenant, $redemption));
+
+        // Checked once the session is made, never before: a replay landing
+        // between the code's claim and the session found nothing to end.
+        // The same claim a replay makes, so one of the two takes it and the
+        // other sees it taken: a replay after this one ends the session
+        // itself; one before it left a tombstone, and the session ends here.
+        if (!$this->nonces->claim(self::REVOKED_SCOPE, $redemption, $code->expiresAt + self::TOMBSTONE_SECONDS, $this->now())) {
+            $this->sessions->revoke($redemption);
+
+            throw self::refused('it was replayed while it was being redeemed; the session it started is ended');
+        }
+
         if ($fresh === '' || hash_equals($session, $fresh)) {
             // The one thing the application must not get wrong here: a
             // session the browser arrived with may be one an attacker
