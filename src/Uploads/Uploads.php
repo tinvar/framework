@@ -63,6 +63,7 @@ final readonly class Uploads
      * @param list<string> $publicPrefixes the key prefixes whose files may be served to anyone
      *        by a signed public URL (FileUrls::publicUrl()); none unless named, and taking one
      *        out ends every URL minted under it
+     * @param UploadQuota|null $quota the bytes each user may hold; none unless given
      */
     public function __construct(
         public Storage $storage,
@@ -75,6 +76,7 @@ final readonly class Uploads
         public ImageSanitizer $images = new ImageSanitizer(),
         public FileDelivery $delivery = FileDelivery::Stream,
         public array $publicPrefixes = [],
+        public ?UploadQuota $quota = null,
     ) {
         if ($maxBytes < 1) {
             throw new \InvalidArgumentException('An upload ceiling is at least one byte.');
@@ -118,6 +120,7 @@ final readonly class Uploads
         ImageSanitizer $images = new ImageSanitizer(),
         FileDelivery $delivery = FileDelivery::Stream,
         array $publicPrefixes = [],
+        ?UploadQuota $quota = null,
     ): self {
         return new self(
             $storage,
@@ -130,6 +133,7 @@ final readonly class Uploads
             $images,
             $delivery,
             $publicPrefixes,
+            $quota,
         );
     }
 
@@ -171,8 +175,10 @@ final readonly class Uploads
      * Removes what nobody claimed in time: each expired, unclaimed upload's
      * file, then its record -- in that order, so a file is never left with
      * no record to find it by. A claimed upload's file is never touched:
-     * it is a record's now, and only the record's code may remove it.
-     * Claims older than CLAIM_RETENTION are forgotten, files kept.
+     * it is a record's now, and only the record's code may remove it
+     * (discard()). Claims older than CLAIM_RETENTION are forgotten, files
+     * kept -- unless there is a quota, which counts them for as long as
+     * their files are kept.
      *
      * @return int how many unclaimed uploads were removed
      */
@@ -193,8 +199,28 @@ final readonly class Uploads
             $removed++;
         }
 
-        $this->store->forgetClaimedBefore($now - self::CLAIM_RETENTION);
+        if ($this->quota === null) {
+            $this->store->forgetClaimedBefore($now - self::CLAIM_RETENTION);
+        }
 
         return $removed;
+    }
+
+    /**
+     * Removes a stored file an action kept -- a receipt deleted, an avatar
+     * replaced -- and forgets its upload's record, giving its bytes back to
+     * its owner's quota. The file first: a record forgotten with its file
+     * still there would leave the file with nothing to find it by.
+     *
+     * Call it once the write that let go of the key has committed
+     * (Orm::afterCommit()), so a rollback never leaves a record naming a
+     * file that is gone.
+     *
+     * @throws StorageException when the file could not be removed; the record is kept
+     */
+    public function discard(string $key): void
+    {
+        $this->storage->delete($key);
+        $this->store->forgetKey($key);
     }
 }

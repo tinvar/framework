@@ -321,6 +321,39 @@ describe('/_upload', function () {
         $theirs = $app->ticket($app->profile(P3), user: 'u-2');
         expect($app->upload($theirs, png(), user: 'u-2')->status)->toBe(201);
     });
+
+    it('holds a user to their quota of bytes -- the files they keep and the ones waiting -- until one is discarded', function () {
+        $size = strlen(png());
+        $app = new App(new MemoryStorage(), quota: Tinvar\Uploads\UploadQuota::by(static fn (string $user): ?int => $user === 'u-1' ? 2 * $size : null));
+
+        // One kept by its action, one waiting: the quota is full.
+        $kept = uploadedPng($app);
+        expect($app->call('profiles.avatar', ['profile' => P1, 'avatar' => $kept])->status)->toBe(200);
+        uploadedPng($app);
+        $refused = $app->upload($app->ticket($app->profile(P1)), png());
+        expect($refused->status)->toBe(507)
+            ->and(json($refused)['error']['code'])->toBe('upload_quota');
+
+        // Kept a day and more, the claimed one still counts: pruning keeps
+        // a claim's record while there is a quota to count it.
+        $app->now += Uploads::CLAIM_RETENTION + Uploads::PENDING_TTL + Uploads::PRUNE_GRACE;
+        $app->uploads->prune();
+        $keptKey = (string) $app->store->find($kept)?->key;
+        expect($keptKey)->not->toBe('');
+        uploadedPng($app);
+        expect($app->upload($app->ticket($app->profile(P1)), png())->status)->toBe(507);
+
+        // Its file discarded, its bytes are given back.
+        $app->uploads->discard($keptKey);
+        expect($app->storage->exists($keptKey))->toBeFalse()
+            ->and($app->store->find($kept))->toBeNull()
+            ->and($app->upload($app->ticket($app->profile(P1)), png())->status)->toBe(201);
+
+        // No quota for another user, none counted.
+        $theirs = $app->ticket($app->profile(P3), user: 'u-2');
+        expect($app->upload($theirs, png(), user: 'u-2')->status)->toBe(201)
+            ->and(fn () => Tinvar\Uploads\UploadQuota::perUser(0))->toThrow(InvalidArgumentException::class);
+    });
 });
 
 describe('an action taking an upload', function () {
@@ -437,9 +470,19 @@ describe('an action taking an upload', function () {
                 $this->inner?->add($upload);
             }
 
-            public function addWithin(PendingUpload $upload, int $max, int $now): bool
+            public function addWithin(PendingUpload $upload, int $max, int $now, ?int $quotaBytes = null): bool
             {
-                return $this->inner?->addWithin($upload, $max, $now) === true;
+                return $this->inner?->addWithin($upload, $max, $now, $quotaBytes) === true;
+            }
+
+            public function bytesHeld(string $ownerHash, int $now): int
+            {
+                return $this->inner?->bytesHeld($ownerHash, $now) ?? 0;
+            }
+
+            public function forgetKey(string $key): void
+            {
+                $this->inner?->forgetKey($key);
             }
 
             public function find(string $id): ?PendingUpload

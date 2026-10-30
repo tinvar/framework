@@ -313,6 +313,26 @@ describe('an upload store', function () {
             ->and($store->addWithin(pendingUpload(str_repeat('d', 32), 4000), 2, 3000))->toBeTrue();
     })->with('upload stores');
 
+    it('holds an owner to a quota of bytes, claimed and waiting, and forgets a file by its key', function (\Closure $make) {
+        /** @var UploadStore $store */
+        $store = $make();
+        // 3 bytes each: one waiting, one claimed, one expired, one someone else's.
+        $store->add(pendingUpload(str_repeat('a', 32), 3000));
+        $store->add(pendingUpload(str_repeat('b', 32), 3000));
+        $store->claim(str_repeat('b', 32), 1000);
+        $store->add(pendingUpload(str_repeat('c', 32), 1200));
+        $store->add(pendingUpload(str_repeat('d', 32), 3000, owner: 'someone else'));
+
+        expect($store->bytesHeld('u', 1500))->toBe(6)
+            ->and($store->addWithin(pendingUpload(str_repeat('e', 32), 3000), 20, 1500, quotaBytes: 8))->toBeFalse()
+            ->and($store->addWithin(pendingUpload(str_repeat('e', 32), 3000), 20, 1500, quotaBytes: 9))->toBeTrue()
+            ->and($store->bytesHeld('u', 1500))->toBe(9);
+
+        $store->forgetKey('avatars/' . str_repeat('b', 32) . '.png');
+        expect($store->find(str_repeat('b', 32)))->toBeNull()
+            ->and($store->bytesHeld('u', 1500))->toBe(6);
+    })->with('upload stores');
+
     // Counted and added apart, uploads sent at once each found room and were
     // all kept. Processes of their own, each with its own connection to one
     // file, as workers are.

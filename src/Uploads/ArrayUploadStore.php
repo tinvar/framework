@@ -19,10 +19,11 @@ final class ArrayUploadStore implements UploadStore
         $this->uploads[$upload->id] = $upload;
     }
 
-    public function addWithin(PendingUpload $upload, int $max, int $now): bool
+    public function addWithin(PendingUpload $upload, int $max, int $now, ?int $quotaBytes = null): bool
     {
         // One process's memory, so nothing runs between the count and the add.
-        if ($this->pendingCount($upload->ownerHash, $now) >= $max) {
+        if ($this->pendingCount($upload->ownerHash, $now) >= $max
+            || ($quotaBytes !== null && $this->bytesHeld($upload->ownerHash, $now) + $upload->size > $quotaBytes)) {
             return false;
         }
         $this->add($upload);
@@ -41,6 +42,27 @@ final class ArrayUploadStore implements UploadStore
             $this->uploads,
             static fn (PendingUpload $u): bool => $u->ownerHash === $ownerHash && $u->claimedAt === null && $u->expiresAt > $now,
         ));
+    }
+
+    public function bytesHeld(string $ownerHash, int $now): int
+    {
+        $held = 0;
+        foreach ($this->uploads as $upload) {
+            if ($upload->ownerHash === $ownerHash && ($upload->claimedAt !== null || $upload->expiresAt > $now)) {
+                $held += $upload->size;
+            }
+        }
+
+        return $held;
+    }
+
+    public function forgetKey(string $key): void
+    {
+        foreach ($this->uploads as $id => $upload) {
+            if ($upload->key === $key) {
+                unset($this->uploads[$id]);
+            }
+        }
     }
 
     public function claim(string $id, int $now): bool

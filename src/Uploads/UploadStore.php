@@ -17,12 +17,24 @@ interface UploadStore
 
     /**
      * Adds an upload only if its owner has fewer than $max unclaimed,
-     * unexpired uploads, counted and added as one write: of uploads sent at
-     * once, no more are kept than the cap allows, however they race.
+     * unexpired uploads -- and, given a quota, holds no more than
+     * $quotaBytes with this one (bytesHeld()) -- counted and added as one
+     * write: of uploads sent at once, no more are kept than the cap and the
+     * quota allow, however they race.
      *
-     * @return bool whether it was added; false when the owner is at the cap
+     * @return bool whether it was added; false when the owner is at the cap or the quota
      */
-    public function addWithin(PendingUpload $upload, int $max, int $now): bool;
+    public function addWithin(PendingUpload $upload, int $max, int $now, ?int $quotaBytes = null): bool;
+
+    /**
+     * The bytes the user $ownerHash names holds: every upload of theirs
+     * claimed and not yet given up (Uploads::discard()), and every one
+     * waiting unexpired. What a quota counts.
+     */
+    public function bytesHeld(string $ownerHash, int $now): int;
+
+    /** Forgets the upload whose file is at $key, claimed or not: its file is gone. */
+    public function forgetKey(string $key): void;
 
     public function find(string $id): ?PendingUpload;
 

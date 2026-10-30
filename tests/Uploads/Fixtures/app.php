@@ -208,6 +208,7 @@ final class App
         bool $tenancy = true,
         \Tinvar\Uploads\FileDelivery $delivery = \Tinvar\Uploads\FileDelivery::Stream,
         array $publicPrefixes = [],
+        ?\Tinvar\Uploads\UploadQuota $quota = null,
     ) {
         $connection = PdoConnection::sqlite(':memory:', 'test');
         $connection->execute('CREATE TABLE profiles (id TEXT PRIMARY KEY, owner TEXT NOT NULL, avatar_key TEXT NULL)');
@@ -237,6 +238,7 @@ final class App
             clock: fn (): int => $this->now,
             delivery: $delivery,
             publicPrefixes: $publicPrefixes,
+            quota: $quota,
         );
 
         $this->kernel = new Kernel(

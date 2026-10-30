@@ -267,10 +267,14 @@ final class UploadEndpoint
 
         $now = $this->uploads->now();
         $owner = $this->uploads->ownerHash($user);
+        $quota = $this->uploads->quota?->bytesFor($user);
         // Asked here to spare storing a file that would be refused; the
         // count that holds is addWithin()'s, below, made with the add.
         if ($this->uploads->store->pendingCount($owner, $now) >= self::MAX_PENDING) {
             throw self::tooManyPending();
+        }
+        if ($quota !== null && $this->uploads->store->bytesHeld($owner, $now) + $size > $quota) {
+            throw self::overQuota();
         }
 
         // An image is kept as drawn again from its pixels, never as sent:
@@ -324,7 +328,7 @@ final class UploadEndpoint
         );
 
         try {
-            $added = $this->uploads->store->addWithin($pending, self::MAX_PENDING, $now);
+            $added = $this->uploads->store->addWithin($pending, self::MAX_PENDING, $now, $quota);
         } catch (\Throwable $e) {
             // A file with no record is one nothing would ever prune.
             $this->uploads->storage->delete($key);
@@ -332,11 +336,13 @@ final class UploadEndpoint
             throw $e;
         }
         if (!$added) {
-            // Another upload of the user's took the last place while this
-            // one was being stored.
+            // Another upload of the user's took the last place, or the last
+            // of their quota, while this one was being stored.
             $this->uploads->storage->delete($key);
 
-            throw self::tooManyPending();
+            throw $quota !== null && $this->uploads->store->bytesHeld($owner, $now) + $size > $quota
+                ? self::overQuota()
+                : self::tooManyPending();
         }
 
         return Response::make(201, json_encode([
@@ -394,6 +400,16 @@ final class UploadEndpoint
             || !hash_equals($ticket->authHash, $this->uploads->authHash($this->auth->id(), $this->auth->epoch()))) {
             throw self::refused('was issued to another session, user, tenant or panel');
         }
+    }
+
+    /**
+     * 507, Insufficient Storage: the file is fine, and the user's quota has
+     * no room for it -- not a 413, which says the file is too large for the
+     * field, and would send them looking for a smaller one.
+     */
+    private static function overQuota(): HttpException
+    {
+        return new HttpException(507, 'Your files take up all the space your account has.', 'upload_quota');
     }
 
     private static function tooManyPending(): HttpException

@@ -65,7 +65,22 @@ final readonly class DatabaseUploadStore implements UploadStore
             // What pruning asks, and what the per-user cap counts.
             $uploads->index(['claimed_at', 'expires_at'], "{$table}_unclaimed");
             $uploads->index(['owner_hash'], "{$table}_owner");
+            // What removing a file by its key looks up (Uploads::discard()).
+            $uploads->index(['storage_key'], "{$table}_key");
         }, $ifNotExists);
+    }
+
+    /**
+     * The index removing a file by its key looks up, for a table define()
+     * made before Uploads::discard() did: an application's migration calls
+     * this once.
+     */
+    public static function indexKeys(Schema $schema, string $table = 'uploads'): void
+    {
+        new self($schema->connection(), $table);
+        $schema->table($table, static function (Table $uploads) use ($table): void {
+            $uploads->index(['storage_key'], "{$table}_key");
+        });
     }
 
     /**
@@ -133,16 +148,17 @@ final readonly class DatabaseUploadStore implements UploadStore
      * A lock not had in five seconds refuses the upload by throwing, rather
      * than count without it.
      */
-    public function addWithin(PendingUpload $upload, int $max, int $now): bool
+    public function addWithin(PendingUpload $upload, int $max, int $now, ?int $quotaBytes = null): bool
     {
         $driver = $this->connection instanceof NamesDriver ? $this->connection->driver() : 'sqlite';
         $lock = 'tinvar-upload:' . hash('sha256', $this->table . "\0" . $upload->ownerHash);
 
-        $work = function () use ($upload, $max, $now, $driver, $lock): bool {
+        $work = function () use ($upload, $max, $now, $driver, $lock, $quotaBytes): bool {
             if ($driver === 'pgsql') {
                 $this->connection->select('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [$lock]);
             }
-            if ($this->pendingCount($upload->ownerHash, $now) >= $max) {
+            if ($this->pendingCount($upload->ownerHash, $now) >= $max
+                || ($quotaBytes !== null && $this->bytesHeld($upload->ownerHash, $now) + $upload->size > $quotaBytes)) {
                 return false;
             }
             $this->add($upload);
@@ -180,6 +196,21 @@ final readonly class DatabaseUploadStore implements UploadStore
         )[0] ?? [];
 
         return self::int($row['n'] ?? 0);
+    }
+
+    public function bytesHeld(string $ownerHash, int $now): int
+    {
+        $row = $this->connection->select(
+            "SELECT COALESCE(SUM(size), 0) AS n FROM {$this->table} WHERE owner_hash = ? AND (claimed_at IS NOT NULL OR expires_at > ?)",
+            [$ownerHash, $now],
+        )[0] ?? [];
+
+        return self::int($row['n'] ?? 0);
+    }
+
+    public function forgetKey(string $key): void
+    {
+        $this->connection->execute("DELETE FROM {$this->table} WHERE storage_key = ?", [$key]);
     }
 
     public function claim(string $id, int $now): bool
