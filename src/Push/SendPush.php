@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Push;
 
 use Tinvar\Attributes\Queue;
+use Tinvar\Auth\UserLookup;
 use Tinvar\Jobs\Job;
 use Tinvar\Jobs\JobRefused;
 use Tinvar\Orm\Orm;
@@ -16,8 +17,12 @@ use Tinvar\Outbound\OutboundRefused;
  *
  * The subscription is found when the try runs, in that tenant: one removed
  * since -- the user unsubscribed, or signed out of that browser -- is sent
- * nothing. Its keys never travel in the payload; the message does, as
- * plaintext in the queue's row until it is sent, as a webhook's body does.
+ * nothing. So is one whose user is gone, or has moved to another auth
+ * epoch since they subscribed (ADR 0124), and it is removed: the epoch is
+ * read again here, not trusted from when the push was queued, so a
+ * sign-out between the two stops it. Its keys never travel in the payload;
+ * the message does, as plaintext in the queue's row until it is sent, as a
+ * webhook's body does.
  *
  * A 2xx is delivered. A 404 or 410 is the push service saying the
  * subscription is gone, and it is removed; so is one whose endpoint is
@@ -38,11 +43,17 @@ final readonly class SendPush implements Job
         public ?string $topic = null,
     ) {}
 
-    public function handle(WebPush $push, PushSubscriptions $subscriptions, Orm $orm): void
+    public function handle(WebPush $push, PushSubscriptions $subscriptions, Orm $orm, UserLookup $users): void
     {
         $tenant = $orm->tenant();
         $subscription = $subscriptions->find($tenant, $this->subscription);
         if ($subscription === null) {
+            return;
+        }
+        $user = $users->find($subscription->user);
+        if ($user === null || !hash_equals($users->epoch($user), $subscription->epoch)) {
+            $subscriptions->remove($tenant, $subscription->id);
+
             return;
         }
 

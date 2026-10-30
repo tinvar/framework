@@ -9,7 +9,8 @@ use Tinvar\Outbound\Target;
 use Tinvar\Support\Signer;
 
 /**
- * One browser's push subscription, held by one user in one tenant.
+ * One browser's push subscription, held by one user in one tenant, at the
+ * auth epoch they were on when they made it (ADR 0124).
  *
  * What the browser's PushSubscription.toJSON() gives -- its endpoint, an
  * https URL at its push service, and its keys, p256dh and auth, base64url --
@@ -30,6 +31,8 @@ final readonly class PushSubscription
         public string $id,
         public string $tenant,
         public string $user,
+        /** The user's auth epoch when they subscribed: a push is sent only while they are still on it. */
+        public string $epoch,
         public string $endpoint,
         /** The browser's public key, base64url. */
         public string $p256dh,
@@ -86,6 +89,7 @@ final readonly class PushSubscription
             'id' => $this->id,
             'tenant' => $this->tenant,
             'user' => $this->user,
+            'epoch' => $this->epoch,
             'endpoint' => Target::parse($this->endpoint)->origin() . '/[redacted]',
             'p256dh' => '[redacted]',
             'auth' => '[redacted]',

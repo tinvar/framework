@@ -12,6 +12,7 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Push\WebPush;
 
 use Tinvar\Attributes\OutboundPolicy;
+use Tinvar\Auth\UserLookup;
 use Tinvar\Config\ConfigException;
 use Tinvar\Config\Configs;
 use Tinvar\Data\Data;
@@ -199,7 +200,7 @@ describe('subscriptions', function () {
         DatabasePushSubscriptions::define(schemaOf($harness->fixture->connection));
         $store = new DatabasePushSubscriptions($harness->fixture->connection);
         $browser = new Browser();
-        $held = $store->subscribe('acme', 'u-1', ENDPOINT, $browser->p256dh(), $browser->authSecret());
+        $held = $store->subscribe('acme', 'u-1', 'e1', ENDPOINT, $browser->p256dh(), $browser->authSecret());
 
         expect($store->forUser('acme', 'u-1'))->toEqual([$held])
             ->and($store->forUser('acme', 'u-2'))->toBe([])
@@ -212,7 +213,7 @@ describe('subscriptions', function () {
 
         // The same browser subscribed again by whoever is signed in on it
         // now is theirs alone.
-        $store->subscribe('acme', 'u-2', ENDPOINT, $browser->p256dh(), $browser->authSecret());
+        $store->subscribe('acme', 'u-2', 'e1', ENDPOINT, $browser->p256dh(), $browser->authSecret());
 
         expect($store->forUser('acme', 'u-1'))->toBe([])
             ->and($store->forUser('acme', 'u-2'))->toHaveCount(1)
@@ -223,7 +224,7 @@ describe('subscriptions', function () {
     it('refuse an endpoint at no named push service, over http, or keys that are not a browser\'s', function (string $endpoint, ?string $p256dh, ?string $auth) {
         $browser = new Browser();
 
-        expect(fn () => new ArrayPushSubscriptions()->subscribe('acme', 'u-1', $endpoint, $p256dh ?? $browser->p256dh(), $auth ?? $browser->authSecret()))
+        expect(fn () => new ArrayPushSubscriptions()->subscribe('acme', 'u-1', 'e1', $endpoint, $p256dh ?? $browser->p256dh(), $auth ?? $browser->authSecret()))
             ->toThrow(\InvalidArgumentException::class);
     })->with([
         'a host of the subscriber\'s choosing' => ['https://attacker.example/collect', null, null],
@@ -236,7 +237,7 @@ describe('subscriptions', function () {
 
     it('show a push endpoint\'s origin alone in a dump', function () {
         $browser = new Browser();
-        $held = new ArrayPushSubscriptions()->subscribe('acme', 'u-1', ENDPOINT, $browser->p256dh(), $browser->authSecret());
+        $held = new ArrayPushSubscriptions()->subscribe('acme', 'u-1', 'e1', ENDPOINT, $browser->p256dh(), $browser->authSecret());
 
         expect(print_r($held, true))->not->toContain('abc123')->not->toContain($browser->authSecret());
     });
@@ -268,8 +269,11 @@ final class Sender
         $this->h->container
             ->instance(OutboundHttp::class, $this->http)
             ->instance(PushSubscriptions::class, $this->subscriptions)
-            ->instance(WebPush::class, new WebPush($this->http, keys(), clock: fn (): int => $this->h->now));
-        $this->push = new PushNotifications($this->h->dispatcher, $this->subscriptions, $this->h->orm);
+            ->instance(WebPush::class, new WebPush($this->http, keys(), clock: fn (): int => $this->h->now))
+            ->instance(UserLookup::class, $this->h->users);
+        // u-1 and u-2 are on the epoch the tests subscribe them at.
+        $this->h->users->epochs = ['u-1' => 'e1', 'u-2' => 'e1'];
+        $this->push = new PushNotifications($this->h->dispatcher, $this->subscriptions, $this->h->orm, $this->h->users);
     }
 
     public function work(): int
@@ -289,8 +293,8 @@ describe('sending', function () {
     it('encrypts each message for its browser, signs it for its service, and queues it as the tenant', function () {
         $s = new Sender();
         $browser = new Browser();
-        $s->subscriptions->subscribe('acme', 'u-1', ENDPOINT, $browser->p256dh(), $browser->authSecret());
-        $s->subscriptions->subscribe('globex', 'u-1', 'https://updates.push.services.mozilla.com/wpush/v2/x', $browser->p256dh(), $browser->authSecret());
+        $s->subscriptions->subscribe('acme', 'u-1', 'e1', ENDPOINT, $browser->p256dh(), $browser->authSecret());
+        $s->subscriptions->subscribe('globex', 'u-1', 'e1', 'https://updates.push.services.mozilla.com/wpush/v2/x', $browser->p256dh(), $browser->authSecret());
 
         $queued = $s->h->orm->actAs('acme', fn (): int => $s->push->send(new User('u-1'), new ShippedPush('Shipped', 'A-100'), topic: 'order-A-100'));
         $payload = $s->queue()->pushed()[0]->payload;
@@ -318,7 +322,7 @@ describe('sending', function () {
             return new OutboundResponse(array_shift($answers) ?? 410);
         });
         $browser = new Browser();
-        $held = $s->subscriptions->subscribe('acme', 'u-1', ENDPOINT, $browser->p256dh(), $browser->authSecret());
+        $held = $s->subscriptions->subscribe('acme', 'u-1', 'e1', ENDPOINT, $browser->p256dh(), $browser->authSecret());
         $s->h->orm->actAs('acme', fn (): int => $s->push->send(new User('u-1'), ['n' => 1]));
         $s->work();
         $s->h->now += 30;
@@ -337,7 +341,7 @@ describe('sending', function () {
     it('refuses a model, and a message too large, before anything is queued', function () {
         $s = new Sender();
         $browser = new Browser();
-        $s->subscriptions->subscribe('acme', 'u-1', ENDPOINT, $browser->p256dh(), $browser->authSecret());
+        $s->subscriptions->subscribe('acme', 'u-1', 'e1', ENDPOINT, $browser->p256dh(), $browser->authSecret());
 
         expect(fn () => $s->h->orm->actAs('acme', fn (): int => $s->push->send(new User('u-1'), ['script' => new Script()])))->toThrow(DataBoundaryException::class)
             ->and(fn () => $s->h->orm->actAs('acme', fn (): int => $s->push->send(new User('u-1'), ['x' => str_repeat('y', 4000)])))->toThrow(\InvalidArgumentException::class)
@@ -348,12 +352,70 @@ describe('sending', function () {
         $http = new FakeOutboundHttp(null, new OutboundPolicy(), new StaticResolver(['fcm.googleapis.com' => ['10.0.0.9']]));
         $s = new Sender(http: $http);
         $browser = new Browser();
-        $held = $s->subscriptions->subscribe('acme', 'u-1', ENDPOINT, $browser->p256dh(), $browser->authSecret());
+        $held = $s->subscriptions->subscribe('acme', 'u-1', 'e1', ENDPOINT, $browser->p256dh(), $browser->authSecret());
         $s->h->orm->actAs('acme', fn (): int => $s->push->send(new User('u-1'), ['n' => 1]));
         $s->work();
 
         expect($http->sent)->toBe([])
             ->and($s->queue()->failed())->toHaveCount(1)
             ->and($s->subscriptions->find('acme', $held->id))->toBeNull();
+    });
+});
+
+describe('the auth epoch (ADR 0124)', function () {
+    it('queues nothing for a subscription made before the user\'s epoch moved, and removes it', function () {
+        $s = new Sender();
+        $browser = new Browser();
+        $old = $s->subscriptions->subscribe('acme', 'u-1', 'e1', ENDPOINT, $browser->p256dh(), $browser->authSecret());
+        $phone = new Browser();
+        $s->subscriptions->subscribe('acme', 'u-1', 'e2', 'https://updates.push.services.mozilla.com/wpush/v2/phone', $phone->p256dh(), $phone->authSecret());
+        // Signed out, or signed out everywhere: the epoch moved on.
+        $s->h->users->epochs['u-1'] = 'e2';
+
+        $queued = $s->h->orm->actAs('acme', fn (): int => $s->push->send(new User('u-1'), ['n' => 1]));
+        $s->work();
+
+        expect($queued)->toBe(1)
+            ->and($s->http->sent)->toHaveCount(1)
+            ->and($s->http->sent[0]->url)->toBe('https://updates.push.services.mozilla.com/wpush/v2/phone')
+            ->and($s->subscriptions->find('acme', $old->id))->toBeNull();
+    });
+
+    // Queued at one epoch, sent at another: the epoch is read again when
+    // the push is sent, so a sign-out between the two stops it.
+    it('sends nothing when the epoch moves between queueing and sending', function () {
+        $s = new Sender();
+        $browser = new Browser();
+        $held = $s->subscriptions->subscribe('acme', 'u-1', 'e1', ENDPOINT, $browser->p256dh(), $browser->authSecret());
+        $s->h->orm->actAs('acme', fn (): int => $s->push->send(new User('u-1'), ['n' => 1]));
+        $s->h->users->epochs['u-1'] = 'e2';
+        $s->work();
+
+        expect($s->http->sent)->toBe([])
+            ->and($s->queue()->failed())->toBe([])
+            ->and($s->subscriptions->find('acme', $held->id))->toBeNull();
+    });
+
+    it('sends nothing to a user who is gone', function () {
+        $s = new Sender();
+        $browser = new Browser();
+        $held = $s->subscriptions->subscribe('acme', 'u-1', 'e1', ENDPOINT, $browser->p256dh(), $browser->authSecret());
+        $s->h->orm->actAs('acme', fn (): int => $s->push->send(new User('u-1'), ['n' => 1]));
+        unset($s->h->users->epochs['u-1']);
+        $s->work();
+
+        expect($s->http->sent)->toBe([])
+            ->and($s->subscriptions->find('acme', $held->id))->toBeNull();
+    });
+
+    it('is kept with the subscription in the database', function () {
+        $harness = new Harness();
+        DatabasePushSubscriptions::define(schemaOf($harness->fixture->connection));
+        $store = new DatabasePushSubscriptions($harness->fixture->connection);
+        $browser = new Browser();
+        $held = $store->subscribe('acme', 'u-1', 'epoch-7', ENDPOINT, $browser->p256dh(), $browser->authSecret());
+
+        expect($store->find('acme', $held->id)?->epoch)->toBe('epoch-7')
+            ->and($store->forUser('acme', 'u-1')[0]->epoch)->toBe('epoch-7');
     });
 });

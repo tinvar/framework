@@ -15,6 +15,12 @@ use Tinvar\Support\Uuid;
  *
  * Every statement names the tenant, whatever else it names: a
  * subscription's id from a job or a form finds nothing in another tenant.
+ *
+ * Each row carries the auth epoch its user subscribed at (`auth_epoch`,
+ * ADR 0124). A table made by define() before it had that column needs it
+ * added -- a string, '' for the rows already there, which then match no
+ * epoch but a user's who has never had one, and are removed at their next
+ * push otherwise.
  */
 final readonly class DatabasePushSubscriptions implements PushSubscriptions
 {
@@ -39,6 +45,7 @@ final readonly class DatabasePushSubscriptions implements PushSubscriptions
             $subscriptions->string('id')->primary();
             $subscriptions->string('tenant');
             $subscriptions->string('user_id');
+            $subscriptions->string('auth_epoch');
             $subscriptions->string('endpoint_hash', 64);
             $subscriptions->text('endpoint');
             $subscriptions->string('p256dh', 128);
@@ -49,7 +56,7 @@ final readonly class DatabasePushSubscriptions implements PushSubscriptions
         }, $ifNotExists);
     }
 
-    public function subscribe(string $tenant, string $user, string $endpoint, string $p256dh, string $auth): PushSubscription
+    public function subscribe(string $tenant, string $user, string $epoch, string $endpoint, string $p256dh, string $auth): PushSubscription
     {
         if ($user === '') {
             throw new \InvalidArgumentException('A push subscription is held by a user.');
@@ -57,14 +64,14 @@ final readonly class DatabasePushSubscriptions implements PushSubscriptions
         if (!$this->services->allows($endpoint)) {
             throw new \InvalidArgumentException('A push endpoint is at a push service the application names.');
         }
-        $subscription = new PushSubscription(Uuid::v7(), $tenant, $user, $endpoint, $p256dh, $auth, $this->now());
+        $subscription = new PushSubscription(Uuid::v7(), $tenant, $user, $epoch, $endpoint, $p256dh, $auth, $this->now());
 
         // Whoever held this browser in this tenant before holds it no more.
         $this->connection->transaction(function () use ($subscription): void {
             $this->connection->execute("DELETE FROM {$this->table} WHERE tenant = ? AND endpoint_hash = ?", [$subscription->tenant, self::hash($subscription->endpoint)]);
             $this->connection->execute(
-                "INSERT INTO {$this->table} (id, tenant, user_id, endpoint_hash, endpoint, p256dh, auth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                [$subscription->id, $subscription->tenant, $subscription->user, self::hash($subscription->endpoint), $subscription->endpoint, $subscription->p256dh, $subscription->auth, $subscription->createdAt],
+                "INSERT INTO {$this->table} (id, tenant, user_id, auth_epoch, endpoint_hash, endpoint, p256dh, auth, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [$subscription->id, $subscription->tenant, $subscription->user, $subscription->epoch, self::hash($subscription->endpoint), $subscription->endpoint, $subscription->p256dh, $subscription->auth, $subscription->createdAt],
             );
         });
 
@@ -118,6 +125,7 @@ final readonly class DatabasePushSubscriptions implements PushSubscriptions
             id: $string($row['id'] ?? ''),
             tenant: $string($row['tenant'] ?? ''),
             user: $string($row['user_id'] ?? ''),
+            epoch: $string($row['auth_epoch'] ?? ''),
             endpoint: $string($row['endpoint'] ?? ''),
             p256dh: $string($row['p256dh'] ?? ''),
             auth: $string($row['auth'] ?? ''),

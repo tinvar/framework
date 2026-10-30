@@ -14,7 +14,7 @@ final class ArrayPushSubscriptions implements PushSubscriptions
 
     public function __construct(private readonly PushServices $services = new PushServices()) {}
 
-    public function subscribe(string $tenant, string $user, string $endpoint, string $p256dh, string $auth): PushSubscription
+    public function subscribe(string $tenant, string $user, string $epoch, string $endpoint, string $p256dh, string $auth): PushSubscription
     {
         if ($user === '') {
             throw new \InvalidArgumentException('A push subscription is held by a user.');
@@ -22,7 +22,7 @@ final class ArrayPushSubscriptions implements PushSubscriptions
         if (!$this->services->allows($endpoint)) {
             throw new \InvalidArgumentException('A push endpoint is at a push service the application names.');
         }
-        $subscription = new PushSubscription(Uuid::v7(), $tenant, $user, $endpoint, $p256dh, $auth, time());
+        $subscription = new PushSubscription(Uuid::v7(), $tenant, $user, $epoch, $endpoint, $p256dh, $auth, time());
         foreach ($this->subscriptions as $id => $held) {
             if ($held->tenant === $tenant && $held->endpoint === $endpoint) {
                 unset($this->subscriptions[$id]);

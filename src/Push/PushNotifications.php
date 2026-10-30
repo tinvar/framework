@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Push;
 
 use Tinvar\Auth\Authenticatable;
+use Tinvar\Auth\UserLookup;
 use Tinvar\Data\Data;
 use Tinvar\Data\Encoder;
 use Tinvar\Jobs\Dispatcher;
@@ -22,6 +23,11 @@ use Tinvar\Orm\Orm;
  * fields and a model is refused here rather than pushed with every column.
  * It is checked against the size one push carries before anything is
  * queued.
+ *
+ * Only a subscription made at the auth epoch the user is on now is queued
+ * for (ADR 0124); one made at any other epoch -- before a sign-out, a role
+ * change, "sign out everywhere" -- is removed instead, and SendPush asks
+ * again when it runs.
  */
 final readonly class PushNotifications
 {
@@ -29,6 +35,7 @@ final readonly class PushNotifications
         private Dispatcher $jobs,
         private PushSubscriptions $subscriptions,
         private Orm $orm,
+        private UserLookup $users,
         private Encoder $encoder = new Encoder(),
     ) {}
 
@@ -47,7 +54,14 @@ final readonly class PushNotifications
         }
 
         $queued = 0;
-        foreach ($this->subscriptions->forUser($this->orm->tenant(), $user->authIdentifier()) as $subscription) {
+        $tenant = $this->orm->tenant();
+        $epoch = $this->users->epoch($user);
+        foreach ($this->subscriptions->forUser($tenant, $user->authIdentifier()) as $subscription) {
+            if (!hash_equals($epoch, $subscription->epoch)) {
+                $this->subscriptions->remove($tenant, $subscription->id);
+
+                continue;
+            }
             $this->jobs->dispatch(new SendPush($subscription->id, $payload, $ttl, $urgency, $topic));
             $queued++;
         }
