@@ -250,7 +250,9 @@ describe('a statement\'s span', function () {
     });
 
     it('is named by its operation and first table, and sanitizes what a driver quotes as a string', function () {
-        expect(StatementText::summary(StatementText::sanitize('update "orders" set paid = 1')))->toBe('UPDATE orders')
+        expect(StatementText::summary(StatementText::sanitize('update "orders" set paid = 1', 'sqlite')))->toBe('UPDATE orders')
+            // A system whose lexer is not read here keeps nothing of its text.
+            ->and(StatementText::sanitize("SELECT 'hunter2'", 'other_sql'))->toBe('?')
             ->and(StatementText::summary('VACUUM'))->toBe('VACUUM')
             ->and(StatementText::summary('frobnicate the table'))->toBe('statement')
             ->and(StatementText::sanitize('SELECT $1, t1.x FROM t1 WHERE a = $tag$ x $tag$ AND b = E\'it\\\'s\'', 'postgresql'))->toBe('SELECT $1, t1.x FROM t1 WHERE a = ? AND b = ?')

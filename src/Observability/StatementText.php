@@ -26,11 +26,22 @@ final class StatementText
     /** Longest name a statement's span is given. */
     private const int MAX_NAME = 64;
 
+    /** The systems whose SQL is read here; any other's text is not kept. */
+    private const array SYSTEMS = ['postgresql', 'mysql', 'mariadb', 'sqlite'];
+
     private const array OPERATIONS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'WITH', 'UPSERT', 'REPLACE', 'MERGE', 'CREATE', 'ALTER', 'DROP', 'BEGIN', 'COMMIT', 'ROLLBACK', 'SAVEPOINT', 'RELEASE', 'SET', 'PRAGMA', 'VACUUM', 'TRUNCATE', 'SHOW', 'EXPLAIN'];
 
-    /** $sql with its comments, quoted strings and numbers replaced by `?`. */
-    public static function sanitize(string $sql, string $system = ''): string
+    /**
+     * $sql with its comments, quoted strings and numbers replaced by `?`;
+     * only `?` for a system not read here, whose lexer this cannot follow.
+     *
+     * @param string $system OpenTelemetry's db.system.name: postgresql, mysql, mariadb or sqlite
+     */
+    public static function sanitize(string $sql, string $system): string
     {
+        if (!\in_array($system, self::SYSTEMS, true)) {
+            return '?';
+        }
         $mysql = $system === 'mysql' || $system === 'mariadb';
         $postgres = $system === 'postgresql';
 
