@@ -346,6 +346,38 @@ it('renders a template over the renderer\'s socket: HTML as chunks, the text par
         ->and($frame['links'])->toBe(['origin' => 'https://shop.test', 'images' => ['https://cdn.shop.test'], 'tracking' => [], 'inline' => [], 'attachments' => []]);
 });
 
+// The renderer files its lines about the render under the frame's id: the
+// mail's trace's, so one query finds both sides of it.
+it('names the trace in hand as the mail frame\'s request id, and a fresh one outside any', function () {
+    if (!\function_exists('pcntl_fork')) {
+        test()->markTestSkipped('pcntl is not available.');
+    }
+
+    $telemetry = new \Tinvar\Observability\Telemetry(new \Tinvar\Observability\Logger(new \Tinvar\Observability\MemorySink()));
+    $frames = [Frame::chunk('<p>Hi</p>'), ['t' => Frame::META, 'mail' => ['text' => 'Hi']], ['t' => Frame::DONE]];
+    $runner = new QueryRunner(new QueryRegistry(), new Harness()->orm, new \Tinvar\Auth\AllowAllGate());
+
+    [$path, $pid, $received] = fakeRenderer($frames);
+    $templates = new RendererTemplates(new RenderChannel($path, $runner), telemetry: $telemetry);
+    $trace = $telemetry->trace('mail receipt', [], function () use ($telemetry, $templates): ?string {
+        $templates->render('receipt', []);
+
+        return $telemetry->traceId();
+    });
+    pcntl_waitpid($pid, $status);
+    $inside = json_decode((string) file_get_contents($received), true);
+
+    [$path, $pid, $received] = fakeRenderer($frames);
+    new RendererTemplates(new RenderChannel($path, $runner), telemetry: $telemetry)->render('receipt', []);
+    pcntl_waitpid($pid, $status);
+    $outside = json_decode((string) file_get_contents($received), true);
+
+    expect(\Tinvar\Observability\RequestId::isValid((string) $trace))->toBeTrue()
+        ->and($inside['rid'])->toBe($trace)
+        ->and(\Tinvar\Observability\RequestId::isValid($outside['rid']))->toBeTrue()
+        ->and($outside['rid'])->not->toBe($trace);
+});
+
 it('refuses a render that brings back no text part', function () {
     if (!\function_exists('pcntl_fork')) {
         test()->markTestSkipped('pcntl is not available.');

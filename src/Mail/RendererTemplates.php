@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Mail;
 
+use Tinvar\Observability\RequestId;
+use Tinvar\Observability\Telemetry;
 use Tinvar\Protocol\Frame;
 use Tinvar\Render\RenderChannel;
 
@@ -36,9 +38,16 @@ final readonly class RendererTemplates implements MailRenderer
      */
     public const int MAX_HTML_BYTES = 1_048_576;
 
+    /**
+     * @param Telemetry|null $telemetry whose trace in hand -- the mail's own,
+     *        on a worker (Mailer), or the request's -- the frame names as its
+     *        `rid`, so the renderer's lines about the render are filed under
+     *        the trace's id. Without one, or outside any trace, a fresh id.
+     */
     public function __construct(
         private RenderChannel $channel,
         private int $maxHtmlBytes = self::MAX_HTML_BYTES,
+        private ?Telemetry $telemetry = null,
     ) {}
 
     public function render(string $template, array $props, ?LinkPolicy $links = null): RenderedMail
@@ -46,7 +55,7 @@ final readonly class RendererTemplates implements MailRenderer
         $html = '';
         $max = $this->maxHtmlBytes;
         $result = $this->channel->render(
-            Frame::mail($template, $props, bin2hex(random_bytes(8)), ($links ?? new LinkPolicy())->toFrame()),
+            Frame::mail($template, $props, $this->telemetry?->traceId() ?? RequestId::generate(), ($links ?? new LinkPolicy())->toFrame()),
             [],
             // Checked before the bytes are kept, and thrown out of the
             // render, which hangs up on the renderer.

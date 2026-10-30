@@ -209,6 +209,17 @@ final class Telemetry implements Spans
     }
 
     /**
+     * The id of the trace in hand: the request's, or that of the work
+     * outside one that trace() is running -- a job, a mail. What a render
+     * frame that is not a request's carries as its `rid`, so the
+     * renderer's lines about it are filed under the same id as PHP's.
+     */
+    public function traceId(): ?string
+    {
+        return $this->current['id'] ?? $this->background;
+    }
+
+    /**
      * Runs $work as a trace of its own when no request or other trace is in
      * hand -- a job taken off the queue, a scheduled task, a mail render --
      * and as a span of the one in hand when there is: a job run sync inside
