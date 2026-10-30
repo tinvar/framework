@@ -37,19 +37,33 @@ final readonly class PageMetadata
          * not.
          */
         public ?string $historyKey = null,
+        /**
+         * What the page's own reports -- its vitals, its errors -- are
+         * filed under (ADR 0129): its route's name, or the view of a page
+         * with none. A route token carries the name too, but a page with
+         * no session has no token -- a static page -- and an unnamed page
+         * has no name. Nothing new is said by it: the name is in the token
+         * a session's page is given, and the view is the page's own, which
+         * a payload's X-Page names.
+         */
+        public ?string $route = null,
     ) {}
 
     /**
-     * Absent rather than null, the history key: a page with nothing to
-     * encrypt sends what it always sent.
+     * Absent rather than null, the history key and the route: a page with
+     * nothing to encrypt and nothing to file its reports under sends what
+     * it always sent.
      *
-     * @return array{url: string, version: string, routeToken: string|null, view: string|null, historyKey?: string}
+     * @return array{url: string, version: string, routeToken: string|null, view: string|null, historyKey?: string, route?: string}
      */
     public function toArray(): array
     {
         $page = ['url' => $this->url, 'version' => $this->version, 'routeToken' => $this->routeToken, 'view' => $this->view];
         if ($this->historyKey !== null) {
             $page['historyKey'] = $this->historyKey;
+        }
+        if ($this->route !== null) {
+            $page['route'] = $this->route;
         }
 
         return $page;

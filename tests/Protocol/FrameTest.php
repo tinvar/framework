@@ -37,6 +37,13 @@ it('carries the page metadata for a document render, and none otherwise', functi
         ->and(Frame::render(...$args))->not->toHaveKey('page');
 });
 
+// ADR 0129: what a page's reports are filed under, for a page with no token.
+it('carries the route a page\'s reports are filed under when it is given one', function () {
+    $page = new Tinvar\Protocol\PageMetadata('/', 'b3', null, null, route: 'shop.catalog');
+
+    expect($page->toArray())->toBe(['url' => '/', 'version' => 'b3', 'routeToken' => null, 'view' => null, 'route' => 'shop.catalog']);
+});
+
 // ADR 0015: a partial reload renders the segments it recomputed, alone.
 it('names the segments a partial render renders, and none for a whole page', function () {
     $args = [
