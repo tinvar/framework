@@ -27,6 +27,9 @@ use Tinvar\Render\TokenError;
  *     is carried so the user can be found again and their epoch checked.
  *   - `build`: the build that issued it, which must still be one this
  *     server answers for.
+ *   - `singleUse`: whether its id is spent at its first call (ADR 0119);
+ *     null in a token issued before tokens said, which a service call
+ *     refuses rather than guess.
  */
 final readonly class ContextToken
 {
@@ -47,6 +50,7 @@ final readonly class ContextToken
         public string $build,
         public int $issuedAt,
         public int $expiresAt,
+        public ?bool $singleUse = false,
     ) {}
 
     /** Whether it names $operation. */
@@ -69,6 +73,7 @@ final readonly class ContextToken
             'b' => $this->build,
             'i' => $this->issuedAt,
             'e' => $this->expiresAt,
+            's' => $this->singleUse ?? false,
         ];
     }
 
@@ -102,6 +107,7 @@ final readonly class ContextToken
             build: self::string($map, 'b'),
             issuedAt: self::int($map, 'i'),
             expiresAt: self::int($map, 'e'),
+            singleUse: \array_key_exists('s', $map) ? (\is_bool($map['s']) ? $map['s'] : throw new TokenError("field 's' is not a boolean")) : null,
         );
     }
 

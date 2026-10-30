@@ -23,7 +23,7 @@ require_once __DIR__ . '/../Calls/Fixtures/warehouse.php';
 
 it('runs a service\'s call in the context its token was issued for, through the action\'s own validation and policy', function () {
     $h = new Harness();
-    $token = $h->services->context('warehouse', ['racks.rename']);
+    $token = $h->services->context('warehouse', ['racks.rename'], reusable: true);
 
     $result = $h->asWarehouse(fn () => $h->services->call($token, 'racks.rename', ['rack' => $h->rack(), 'name' => 'W-1']));
 
@@ -127,3 +127,50 @@ it('refuses a tool grant presented as a service context token', function () {
 
     expect($h->asWarehouse(fn () => $h->services->call($grant, 'racks.show', ['rack' => $h->rack()]))->reason)->toBe('context');
 })->group('wired');
+
+// ADR 0119: a token stands for one answer, unless it was issued reusable.
+it('spends a token at its first call that passes its checks, and refuses it after', function () {
+    $h = new Harness();
+    $token = $h->orm->actAs('acme', fn () => $h->services->context('warehouse', ['racks.rename']));
+    $call = fn (string $name): CallResult => $h->asWarehouse(fn () => $h->services->call($token, 'racks.rename', ['rack' => $h->rack(), 'name' => $name]));
+
+    // Refused before its checks passed -- presented in another tenant --
+    // it is not spent; its first call that fits is the one.
+    expect($h->asWarehouse(fn () => $h->orm->actAs('globex', fn () => $h->services->call($token, 'racks.rename', ['rack' => $h->rack(), 'name' => 'X'])))->reason)->toBe('context')
+        ->and($call('S-1')->status)->toBe(CallResult::OK)
+        ->and($call('S-2')->reason)->toBe('spent')
+        ->and($h->rackName())->toBe('S-1');
+});
+
+it('lets a token issued reusable be called with until it expires', function () {
+    $h = new Harness();
+    $token = $h->services->context('warehouse', ['racks.rename'], reusable: true);
+    $call = fn (string $name): CallResult => $h->asWarehouse(fn () => $h->services->call($token, 'racks.rename', ['rack' => $h->rack(), 'name' => $name]));
+
+    expect($call('R-1')->status)->toBe(CallResult::OK)
+        ->and($call('R-2')->status)->toBe(CallResult::OK);
+});
+
+it('refuses a single-use token where nothing could spend it, and one that does not say whether it is', function () {
+    $h = new Harness();
+    $unspendable = new ServiceCalls(
+        ServiceCalls::discover($h->actions, $h->queries, $h->entry),
+        $h->runner,
+        ServiceCalls::tokens(\Tinvar\Tests\Calls\Fixtures\KEY, $h->builds, fn (): int => $h->now),
+        $h->auth,
+        $h->orm,
+        $h->panels,
+        $h->staff,
+        $h->users,
+    );
+    $token = $unspendable->context('warehouse', ['racks.show']);
+    expect($h->asWarehouse(fn () => $unspendable->call($token, 'racks.show', ['rack' => $h->rack()]))->reason)->toBe('context');
+
+    // A token from before tokens said, signed as one: no 's' claim.
+    $claims = [
+        'j' => 'old', 'a' => 'warehouse', 'o' => ['racks.show'], 'y' => '', 'n' => '', 'w' => '', 'u' => '',
+        'b' => 'build-1', 'i' => $h->now, 'e' => $h->now + 60,
+    ];
+    $old = \Tinvar\Render\SignedToken::encode(new \Tinvar\Support\Signer(\Tinvar\Tests\Calls\Fixtures\KEY, ServiceCalls::PURPOSE), ServiceCalls::PURPOSE, $claims);
+    expect($h->asWarehouse(fn () => $h->services->call($old, 'racks.show', ['rack' => $h->rack()]))->reason)->toBe('context');
+});

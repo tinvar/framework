@@ -21,6 +21,7 @@ use Tinvar\Http\BuildRegistry;
 use Tinvar\Http\EntryContext;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware\RequirePanelMembership;
+use Tinvar\Http\NonceStore;
 use Tinvar\Http\Request;
 use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
@@ -58,6 +59,13 @@ use Tinvar\Render\TokenError;
  * Then the operation runs in the token's tenant and panel, never across
  * tenants or a subtree, through the runner a browser's call goes through
  * (CallRunner), with the service as the user its #[Authorize] decides for.
+ *
+ * **A token is spent at its first call** (ADR 0119) unless it was issued
+ * reusable: its id claimed in a store every server shares (NonceStore),
+ * once every check above has passed and before the operation runs, until
+ * the token would have expired. A second call with it is refused
+ * ('spent') -- the one before was made, whatever it answered. Without a
+ * store, a single-use token is refused rather than honoured more than once.
  */
 final readonly class ServiceCalls
 {
@@ -73,6 +81,9 @@ final readonly class ServiceCalls
     /** The header a token travels in. */
     public const string HEADER = 'x-service-context';
 
+    /** The scope a spent token's id is claimed under. */
+    public const string SPENT = 'service-context-spent';
+
     /** @var array<string, array{Operation, ServiceCall}> by operation name */
     private array $operations;
 
@@ -81,6 +92,9 @@ final readonly class ServiceCalls
      * @param ContextTokens $tokens built by tokens()
      * @param UserLookup|null $users finds a token's user again; without it, a
      *        token issued for a user is refused
+     * @param NonceStore|null $spent where single-use tokens' ids are claimed, shared by every
+     *        server -- a durable DatabaseNonceStore; without it, a single-use token is refused
+     * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
      */
     public function __construct(
         array $operations,
@@ -91,6 +105,8 @@ final readonly class ServiceCalls
         private ?PanelContext $panels = null,
         private ?Memberships $memberships = null,
         private ?UserLookup $users = null,
+        private ?NonceStore $spent = null,
+        private ?\Closure $clock = null,
     ) {
         $byName = [];
         foreach ($operations as [$operation, $declaration]) {
@@ -121,8 +137,10 @@ final readonly class ServiceCalls
      *
      * @param list<string> $operations each marked #[ServiceCall] for $service, and in this panel
      * @param int|null $ttl seconds; TTL unless given, never past MAX_TTL
+     * @param bool $reusable whether it may be called with more than once, until it expires;
+     *        spent at its first call unless so
      */
-    public function context(string $service, array $operations, ?int $ttl = null): string
+    public function context(string $service, array $operations, ?int $ttl = null, bool $reusable = false): string
     {
         $user = $this->auth->user();
         if ($user instanceof Service) {
@@ -146,7 +164,7 @@ final readonly class ServiceCalls
             }
         }
 
-        return $this->tokens->issue($service, $operations, $this->orm->tenant(), $panel, $user?->authIdentifier(), $this->auth->epoch(), $ttl);
+        return $this->tokens->issue($service, $operations, $this->orm->tenant(), $panel, $user?->authIdentifier(), $this->auth->epoch(), $ttl, singleUse: !$reusable);
     }
 
     /** The token a request carries, in HEADER; '' for none. */
@@ -181,7 +199,9 @@ final readonly class ServiceCalls
         } catch (TokenError) {
             return CallResult::refused('context');
         }
-        if (!$this->fits($claims, $service, $operation)) {
+        // A token that does not say whether it is spent was issued before
+        // tokens said: refused, rather than taken as reusable.
+        if ($claims->singleUse === null || !$this->fits($claims, $service, $operation)) {
             return CallResult::refused('context');
         }
         if (($declared->panel->name ?? '') !== $claims->panel || ($claims->panel !== '' && $this->panels === null)) {
@@ -192,6 +212,18 @@ final readonly class ServiceCalls
             $member = $this->member($claims, $declared);
             if ($member instanceof CallResult) {
                 return $member;
+            }
+
+            // Spent here, every check passed, before the operation runs:
+            // a call refused above leaves the token for the call that fits.
+            if ($claims->singleUse === true) {
+                if ($this->spent === null) {
+                    return CallResult::refused('context');
+                }
+                $now = $this->clock === null ? time() : ($this->clock)();
+                if (!$this->spent->claim(self::SPENT, $claims->id, $claims->expiresAt, $now)) {
+                    return CallResult::refused('spent');
+                }
             }
 
             $run = fn (): CallResult => $this->runner->run($declared, $arguments);

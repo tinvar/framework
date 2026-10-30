@@ -248,12 +248,18 @@ final class Harness
             $this->panels,
             $this->staff,
             $this->users,
+            $this->spent,
+            fn (): int => $this->now,
         );
     }
     public int $now = 1_800_000_000;
 
+    /** Where single-use service context tokens are spent (ADR 0119). */
+    public \Tinvar\Http\ArrayNonceStore $spent;
+
     public function __construct(?BuildRegistry $builds = null)
     {
+        $this->spent = new \Tinvar\Http\ArrayNonceStore();
         Ran::$bodies = [];
         Ran::$tenants = [];
         $this->fixture = new Fixture(racks: 2, unitsPerRack: 1, sites: 1);
