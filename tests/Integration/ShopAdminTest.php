@@ -121,13 +121,13 @@ it('lists every customer\'s newest orders, with whose each is', function () {
         ->assertOk()
         ->assertPage(Orders::class, fn (AssertablePage $page) => $page
             ->where('total', $total)
-            ->has('orders', min($total, Orders::LIMIT), fn (AssertablePage $order) => $order
+            ->has('orders.items', min($total, Orders::LIMIT), fn (AssertablePage $order) => $order
                 ->where('number', $newest['number'])
                 ->where('customerEmail', $newest['email'])
                 ->where('placedAt', fn (string $at): bool => $at !== '')
                 ->etc())
-            ->where('orders', fn (array $orders): bool => \count(array_unique(array_column($orders, 'customerEmail'))) > 1)
-            ->where('orders', function (array $orders): bool {
+            ->where('orders.items', fn (array $orders): bool => \count(array_unique(array_column($orders, 'customerEmail'))) > 1)
+            ->where('orders.items', function (array $orders): bool {
                 $placed = array_column($orders, 'placedAt');
                 $sorted = $placed;
                 rsort($sorted);
@@ -194,26 +194,33 @@ it('pages back through every order by cursor, for the session the cursors were s
     }
     $total = (int) $orm->connection()->select('SELECT COUNT(*) AS n FROM orders')[0]['n'];
 
-    $numbers = static fn ($response): array => array_column($response->recorded()->encoded['page']['orders'], 'number');
+    $numbers = static fn ($response): array => array_column($response->recorded()->encoded['page']['orders']['items'], 'number');
     $first = actingAs(shopper(StaffAccount::EMAIL))->get('/admin/orders');
-    $page = $first->recorded()->encoded['page'];
-    expect($page['newer'])->toBeNull()->and($page['older'])->toBeString();
+    $page = $first->recorded()->encoded['page']['orders'];
+    expect($page['previous'])->toBeNull()
+        ->and($page['cursor'])->toBeNull()
+        ->and($page['next'])->toBeString();
 
     $seen = $numbers($first);
     $client = $first->then();
-    $older = $page['older'];
+    $older = $page['next'];
     while ($older !== null) {
         $next = $client->get('/admin/orders?cursor=' . rawurlencode($older));
+        // Each page says the cursor it was read at: what the browser places it by.
+        expect($next->recorded()->encoded['page']['orders']['cursor'])->toBe($older);
         $seen = [...$seen, ...$numbers($next)];
-        $older = $next->recorded()->encoded['page']['older'];
+        $older = $next->recorded()->encoded['page']['orders']['next'];
         $client = $next->then();
     }
 
     expect($seen)->toHaveCount($total)->and(array_unique($seen))->toHaveCount($total);
 
-    $elsewhere = actingAs(shopper(StaffAccount::EMAIL))->get('/admin/orders?cursor=' . rawurlencode($page['older']));
-    $tampered = $first->then()->get('/admin/orders?cursor=' . rawurlencode('x' . substr($page['older'], 1)));
+    $elsewhere = actingAs(shopper(StaffAccount::EMAIL))->get('/admin/orders?cursor=' . rawurlencode($page['next']));
+    $tampered = $first->then()->get('/admin/orders?cursor=' . rawurlencode('x' . substr($page['next'], 1)));
 
+    // The newest page, read at no cursor: never the one it was handed.
     expect($numbers($elsewhere))->toBe($numbers($first))
-        ->and($numbers($tampered))->toBe($numbers($first));
+        ->and($elsewhere->recorded()->encoded['page']['orders']['cursor'])->toBeNull()
+        ->and($numbers($tampered))->toBe($numbers($first))
+        ->and($tampered->recorded()->encoded['page']['orders']['cursor'])->toBeNull();
 });

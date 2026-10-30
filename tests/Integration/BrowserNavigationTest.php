@@ -645,6 +645,19 @@ it('lets staff into the admin panel\'s orders, and refuses a customer', function
         ->and(array_unique($result['admin']['panel']))->toBe(['admin'])
         ->and(array_unique($result['catalogPanel']))->toBe(['']);
 
+    // The next fifty, loaded as the end of the table came into view: a
+    // partial reload of the list alone at the cursor the first page handed
+    // out, each row shown once, and the bar on the page in view, by the
+    // cursor it was read at (ADR 0120).
+    expect($result['scrolled']['sameDocument'])->toBeTrue()
+        ->and($result['scrolled']['loaded'])->toBeTrue()
+        ->and($result['scrolled']['followed'])->toBeTrue()
+        ->and($result['scrolled']['rows'])->toBeGreaterThan(\Shop\Pages\Admin\Orders::LIMIT)
+        ->and($result['scrolled']['numbers'])->toBe($result['scrolled']['rows'])
+        ->and($result['scrolled']['partials'][0]['only'] ?? null)->toBe('page.orders')
+        ->and($result['scrolled']['partials'][0]['cursor'] ?? '')->not->toBe('')
+        ->and($result['scrolled']['bar'])->toBe($result['scrolled']['partials'][0]['cursor']);
+
     // A customer holds no membership of the panel: the shop's own 403 page.
     expect($result['refused'])->toBe(['status' => 403, 'heading' => 'This page is not open to your account']);
 
