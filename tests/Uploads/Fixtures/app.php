@@ -21,6 +21,9 @@ use Tinvar\Orm\Attributes\Table;
 use Tinvar\Attributes\Uploaded;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\Authenticatable;
+use Tinvar\Auth\PanelContext;
+use Tinvar\Auth\PanelDefinition;
+use Tinvar\Auth\PanelRegistry;
 use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Container\Container;
 use Tinvar\Http\Kernel;
@@ -197,11 +200,13 @@ final class App
     public readonly AuthContext $auth;
     public readonly Uploads $uploads;
     public readonly Container $container;
+    public readonly PanelContext $panels;
 
     public function __construct(
         public readonly Storage $storage,
         public readonly UploadStore $store = new ArrayUploadStore(),
         bool $tenancy = true,
+        \Tinvar\Uploads\FileDelivery $delivery = \Tinvar\Uploads\FileDelivery::Stream,
     ) {
         $connection = PdoConnection::sqlite(':memory:', 'test');
         $connection->execute('CREATE TABLE profiles (id TEXT PRIMARY KEY, owner TEXT NOT NULL, avatar_key TEXT NULL)');
@@ -229,6 +234,7 @@ final class App
             $store,
             static fn (Request $r): string => $r->cookie(SESSION_COOKIE) ?? '',
             clock: fn (): int => $this->now,
+            delivery: $delivery,
         );
 
         $this->kernel = new Kernel(
@@ -243,6 +249,8 @@ final class App
             globalMiddleware: [SignIn::class],
             container: $this->container,
             uploads: $this->uploads,
+            panels: $this->panels = new PanelContext(),
+            panelRegistry: new PanelRegistry(new PanelDefinition('staff')),
         );
     }
 
@@ -380,20 +388,26 @@ final class App
     }
 
     /** GETs a /_file URL as the browser showing the page does. */
-    public function fetch(string $url, string $user = 'u-1', string $session = 'session-a', string $epoch = 'e1'): Response
+    public function fetch(string $url, string $user = 'u-1', string $session = 'session-a', string $epoch = 'e1', ?string $tenant = null): Response
     {
         return $this->kernel->handle(
-            new Request('GET', $url, ['x-test-user' => $user, 'x-test-epoch' => $epoch], cookies: [SESSION_COOKIE => $session]),
+            new Request('GET', $url, [
+                'x-test-user' => $user,
+                'x-test-epoch' => $epoch,
+                ...($tenant === null ? [] : ['x-test-tenant' => $tenant]),
+            ], cookies: [SESSION_COOKIE => $session]),
             self::noPage(...),
         );
     }
 
-    /** A file URL, minted as a loader mints one for the signed-in viewer. */
-    public function fileUrl(string $key, string $type, string $user = 'u-1', string $session = 'session-a'): string
+    /** A file URL, minted as a loader mints one for the signed-in viewer -- in a tenant and a panel, given them. */
+    public function fileUrl(string $key, string $type, string $user = 'u-1', string $session = 'session-a', string $tenant = '', ?string $panel = null): string
     {
         $this->auth->login(new User($user), 'e1');
         try {
-            return (string) $this->kernel->fileUrls?->url(new Request('GET', '/', cookies: [SESSION_COOKIE => $session]), $key, $type);
+            $mint = fn (): string => (string) $this->kernel->fileUrls?->url(new Request('GET', '/', cookies: [SESSION_COOKIE => $session]), $key, $type);
+
+            return $this->orm->actAs($tenant, fn (): string => $panel === null ? $mint() : $this->panels->within($panel, $mint));
         } finally {
             $this->auth->login(null);
         }

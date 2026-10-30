@@ -138,6 +138,18 @@ final readonly class EntryContext
     }
 
     /**
+     * The panel named $name, with what its definition requires of every
+     * membership of it: for a path that knows a panel only by the name a
+     * token carries (/_file).
+     *
+     * @throws \LogicException for a name no panel is defined by
+     */
+    public function panelNamed(string $name): PanelBinding
+    {
+        return new PanelBinding($name)->within($this->registry?->definition($name) ?? throw self::undefined($name));
+    }
+
+    /**
      * The stack for a route chain: its tenant, then its panel's.
      *
      * @return list<Middleware>

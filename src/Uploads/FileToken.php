@@ -17,14 +17,18 @@ use Tinvar\Support\Signer;
  * Minted by a loader that has already decided the viewer may see the file
  * -- the record it belongs to passed the page's #[Authorize] -- and bound
  * to that decision's viewer as every token is: the session and the user
- * with their auth epoch, as keyed hashes. Another session, a sign-out, a
- * role change, and the expiry each end it.
+ * with their auth epoch, as keyed hashes; the tenant the page ran as, by
+ * the claim every token carries (TenantClaim); and the panel it was in.
+ * Another session, a sign-out, a role change, another tenant or panel, and
+ * the expiry each end it.
  *
- * Not bound to a tenant or a panel, as a ticket is: /_file is no entry
- * point, so nothing on it resolves either for a token to be compared with,
- * and a token may never set one. What it vouches for is narrower than a
- * ticket -- these bytes, to this viewer, who was shown them -- and a
- * membership taken away moves the user's auth epoch, which ends it.
+ * A token never sets a tenant or a panel; /_file puts the request in them
+ * as the page was put in them, and holds the token to where that lands.
+ * So it carries the #[TenantFrom] source the page's tenant was read by --
+ * '' when the application's own middleware set it, or there is none -- for
+ * /_file to read it by again: signed, it names a source this application
+ * minted it under, and the source still has to place the request in the
+ * very tenant the token names (ADR 0127).
  *
  * It carries the type the file was sniffed as, so the response names that
  * type and no other, and the name to offer a download under.
@@ -46,6 +50,9 @@ final readonly class FileToken
         public string $authHash,
         public int $expiresAt,
         public int $issuedAt,
+        public string $tenant = '',
+        public string $panel = '',
+        public string $tenantSource = '',
     ) {}
 
     public function encode(Signer $signer): string
@@ -58,6 +65,9 @@ final readonly class FileToken
             'u' => $this->authHash,
             'e' => $this->expiresAt,
             'i' => $this->issuedAt,
+            'y' => $this->tenant,
+            'n' => $this->panel,
+            'r' => $this->tenantSource,
         ]);
     }
 
@@ -76,6 +86,19 @@ final readonly class FileToken
             $strings[$field] = $value;
         }
 
+        // Each may be '' -- no panel, no source -- but each is there: a
+        // token minted before /_file was bound to them names neither, and
+        // is refused rather than read as bound to nothing.
+        foreach (['y', 'n', 'r'] as $field) {
+            if (!\is_string($decoded[$field] ?? null)) {
+                throw new TokenError("field '{$field}' is missing or not a string");
+            }
+            $strings[$field] = $decoded[$field];
+        }
+        if ($strings['r'] !== '' && preg_match('/^[A-Za-z_][A-Za-z0-9_\\\\]*\z/', $strings['r']) !== 1) {
+            throw new TokenError('names a tenant source that is no class name');
+        }
+
         $claims = new self(
             key: $strings['k'],
             type: $strings['t'],
@@ -84,6 +107,9 @@ final readonly class FileToken
             authHash: $strings['u'],
             expiresAt: \is_int($decoded['e'] ?? null) ? $decoded['e'] : 0,
             issuedAt: \is_int($decoded['i'] ?? null) ? $decoded['i'] : 0,
+            tenant: $strings['y'],
+            panel: $strings['n'],
+            tenantSource: $strings['r'],
         );
 
         if (!StorageKey::isValid($claims->key) || !FileTypes::known($claims->type)) {

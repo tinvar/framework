@@ -1175,9 +1175,9 @@ final class Kernel
             panels: $panels,
             globalMiddleware: $globalMiddleware,
         );
-        $this->files_ = $uploads === null ? null : new FileEndpoint($uploads, $this->auth);
+        $this->files_ = $uploads === null ? null : new FileEndpoint($uploads, $this->auth, $entry, $this->orm, $panels);
         $this->uploadTickets = $uploads === null ? null : new UploadTickets($this->actions, $entry, $this->auth, $uploads);
-        $this->fileUrls = $uploads === null ? null : new FileUrls($uploads, $this->auth);
+        $this->fileUrls = $uploads === null ? null : new FileUrls($uploads, $this->auth, $this->orm, $panels);
         if ($this->uploadTickets !== null && $this->fileUrls !== null) {
             $container?->instance(UploadTickets::class, $this->uploadTickets)
                 ->instance(FileUrls::class, $this->fileUrls);

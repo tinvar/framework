@@ -57,6 +57,8 @@ final readonly class Uploads
      * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
      * @param ImageSanitizer $images draws every uploaded image again before it is kept, within
      *        its limits; there is no keeping one as sent
+     * @param FileDelivery $delivery how /_file sends a file kept in an object store: streamed
+     *        through PHP, or by a redirect to a short presigned URL
      */
     public function __construct(
         public Storage $storage,
@@ -67,6 +69,7 @@ final readonly class Uploads
         public int $maxBytes = self::DEFAULT_MAX_BYTES,
         public ?\Closure $clock = null,
         public ImageSanitizer $images = new ImageSanitizer(),
+        public FileDelivery $delivery = FileDelivery::Stream,
     ) {
         if ($maxBytes < 1) {
             throw new \InvalidArgumentException('An upload ceiling is at least one byte.');
@@ -86,6 +89,7 @@ final readonly class Uploads
         int $maxBytes = self::DEFAULT_MAX_BYTES,
         ?\Closure $clock = null,
         ImageSanitizer $images = new ImageSanitizer(),
+        FileDelivery $delivery = FileDelivery::Stream,
     ): self {
         return new self(
             $storage,
@@ -96,6 +100,7 @@ final readonly class Uploads
             $maxBytes,
             $clock,
             $images,
+            $delivery,
         );
     }
 

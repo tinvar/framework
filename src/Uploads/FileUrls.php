@@ -5,7 +5,11 @@ declare(strict_types=1);
 namespace Tinvar\Uploads;
 
 use Tinvar\Auth\AuthContext;
+use Tinvar\Auth\PanelContext;
 use Tinvar\Http\Request;
+use Tinvar\Http\RequestAttributes;
+use Tinvar\Orm\Orm;
+use Tinvar\Render\TenantClaim;
 use Tinvar\Storage\FileTypes;
 use Tinvar\Storage\StorageKey;
 
@@ -14,8 +18,10 @@ use Tinvar\Storage\StorageKey;
  * a receipt.
  *
  * The loader that calls this has decided the viewer may see the file; the
- * URL carries that decision to /_file for this session alone (FileToken).
- * It is not a public link, and a copy of it in another browser is a 404.
+ * URL carries that decision to /_file for this session alone, as this user
+ * at this auth epoch, in the tenant and the panel the page ran in
+ * (FileToken). It is not a public link, and a copy of it in another
+ * browser, tenant or panel is a 404.
  *
  * Minted for windows of ten minutes, not for the second: the same file
  * shown to the same viewer within one window gets the same URL, so a page
@@ -33,6 +39,8 @@ final readonly class FileUrls
     public function __construct(
         private Uploads $uploads,
         private AuthContext $auth,
+        private ?Orm $orm = null,
+        private ?PanelContext $panels = null,
     ) {}
 
     /**
@@ -67,8 +75,19 @@ final readonly class FileUrls
             authHash: $this->uploads->authHash($this->auth->id(), $this->auth->epoch()),
             expiresAt: $issuedAt + self::WINDOW + $ttl,
             issuedAt: $issuedAt,
+            tenant: $this->orm === null ? TenantClaim::NONE : TenantClaim::current($this->orm),
+            panel: $this->panels?->currentOrNull() ?? '',
+            tenantSource: self::source($request),
         );
 
         return self::PREFIX . $token->encode($this->uploads->fileSigner);
+    }
+
+    /** The #[TenantFrom] source that placed the page, or '' for none (EnterTenant). */
+    private static function source(Request $request): string
+    {
+        $source = $request->attribute(RequestAttributes::TENANT_SOURCE);
+
+        return \is_string($source) ? $source : '';
     }
 }

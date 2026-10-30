@@ -7,6 +7,7 @@ namespace Tinvar\Http\Middleware;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Request;
+use Tinvar\Http\RequestAttributes;
 use Tinvar\Http\Response;
 use Tinvar\Http\TenantResolver;
 use Tinvar\Orm\Orm;
@@ -42,7 +43,11 @@ final readonly class EnterTenant implements Middleware
     {
         $tenant = self::resolve($this->orm, $this->tenants, $this->source, $request);
 
-        return $this->orm->actAs($tenant, static fn (): Response => $next($request));
+        // Named on the request for what mints inside it -- a file URL's
+        // binding (FileUrls) -- never read back as a tenant.
+        $inner = $request->withAttribute(RequestAttributes::TENANT_SOURCE, $this->source);
+
+        return $this->orm->actAs($tenant, static fn (): Response => $next($inner));
     }
 
     /**

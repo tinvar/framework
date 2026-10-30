@@ -77,4 +77,12 @@ final class RequestAttributes
      * same: its render is never repeated behind the action (RenderRetry).
      */
     public const string ACTION_RERENDER = 'tinvar.action_rerender';
+
+    /**
+     * The #[TenantFrom] source the entry point's tenant was read by, set by
+     * EnterTenant for what runs inside it: a file URL minted there names it,
+     * so /_file can put the request in the tenant the same way before
+     * holding the URL to it (ADR 0127). Absent when no source placed it.
+     */
+    public const string TENANT_SOURCE = 'tinvar.tenant_source';
 }

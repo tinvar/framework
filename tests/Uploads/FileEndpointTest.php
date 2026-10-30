@@ -163,3 +163,100 @@ it('answers HEAD without the body, and refuses a POST', function () {
     $post = $app->kernel->handle(new Tinvar\Http\Request('POST', $url), static fn () => Tinvar\Http\Response::make(500));
     expect($post->status)->toBe(405);
 });
+
+describe('the tenant and the panel', function () {
+    it('serves a URL only in the tenant the page that minted it ran in', function () {
+        [$app, , $key] = appWithStoredPng();
+        $url = $app->fileUrl($key, 'image/png', tenant: 'acme');
+
+        expect($app->fetch($url, tenant: 'acme')->status)->toBe(200)
+            ->and($app->fetch($url, tenant: 'globex')->status)->toBe(404)
+            ->and($app->fetch($url)->status)->toBe(404)
+            // And one minted in no tenant is not served in one.
+            ->and($app->fetch($app->fileUrl($key, 'image/png'), tenant: 'acme')->status)->toBe(404);
+    });
+
+    it('puts the request in the panel the URL names, and serves it there alone', function () {
+        [$app, , $key] = appWithStoredPng();
+        $staff = $app->fileUrl($key, 'image/png', panel: 'staff');
+        $none = $app->fileUrl($key, 'image/png');
+
+        expect($app->fetch($staff)->status)->toBe(200)
+            ->and($app->fetch($none)->status)->toBe(200)
+            ->and($staff)->not->toBe($none);
+    });
+
+    it('refuses a token naming a panel or source the application does not have, or minted before either was bound', function () {
+        [$app, , $key] = appWithStoredPng();
+        $now = $app->now;
+        $sign = static fn (array $claims): string => FileUrls::PREFIX . Tinvar\Render\SignedToken::encode($app->uploads->fileSigner, FileToken::PURPOSE, $claims);
+        $base = [
+            'k' => $key,
+            't' => 'image/png',
+            'd' => 'a.png',
+            's' => $app->uploads->sessionHash('session-a'),
+            'u' => $app->uploads->authHash('u-1', 'e1'),
+            'e' => $now + 600,
+            'i' => $now,
+        ];
+
+        expect($app->fetch($sign([...$base, 'y' => '', 'n' => '', 'r' => '']))->status)->toBe(200)
+            ->and($app->fetch($sign($base))->status)->toBe(404)
+            ->and($app->fetch($sign([...$base, 'y' => '', 'n' => 'ghost', 'r' => '']))->status)->toBe(404)
+            ->and($app->fetch($sign([...$base, 'y' => '', 'n' => '', 'r' => 'No\\Such\\Source']))->status)->toBe(404)
+            ->and($app->fetch($sign([...$base, 'y' => '', 'n' => '', 'r' => '../x']))->status)->toBe(404);
+    });
+});
+
+/** @return array{App, Tinvar\Tests\Storage\Fixtures\FakeS3, string} */
+function appWithS3Pdf(Tinvar\Uploads\FileDelivery $delivery): array
+{
+    require_once __DIR__ . '/../Storage/Fixtures/s3.php';
+    $s3 = new Tinvar\Tests\Storage\Fixtures\FakeS3();
+    $app = new App($s3->storage(), delivery: $delivery);
+    $s3->now = $app->now;
+    $key = 'receipts/' . str_repeat('cd', 16) . '.pdf';
+    $stream = fopen('php://memory', 'w+b');
+    fwrite($stream, pdf());
+    rewind($stream);
+    $app->storage->put($key, $stream);
+
+    return [$app, $s3, $key];
+}
+
+describe('a file in an object store', function () {
+    it('is streamed from the store under every header /_file sets', function () {
+        [$app, , $key] = appWithS3Pdf(Tinvar\Uploads\FileDelivery::Stream);
+        $response = $app->fetch($app->fileUrl($key, 'application/pdf'));
+
+        expect($response->status)->toBe(200)
+            ->and($response->body())->toBe(pdf())
+            ->and($response->header('content-type'))->toBe('application/pdf')
+            ->and($response->header('x-content-type-options'))->toBe('nosniff')
+            ->and($response->header('content-security-policy'))->toBe("default-src 'none'; sandbox")
+            ->and($response->header('content-disposition'))->toStartWith('attachment;');
+    });
+
+    it('is sent to the store by a minute\'s presigned URL naming its type and disposition, when asked', function () {
+        [$app, $s3, $key] = appWithS3Pdf(Tinvar\Uploads\FileDelivery::Redirect);
+        $response = $app->fetch($app->fileUrl($key, 'application/pdf'));
+        $location = (string) $response->header('location');
+
+        expect($response->status)->toBe(302)
+            ->and($location)->toStartWith('https://s3.store.example/uploads/' . $key . '?')
+            ->and($location)->toContain('X-Amz-Expires=60')
+            ->and($response->header('cache-control'))->toBe('private, no-store')
+            ->and($response->header('referrer-policy'))->toBe('no-referrer');
+
+        $fetched = $s3->browser('GET', $location);
+        expect($fetched->status)->toBe(200)
+            ->and($fetched->header('content-type'))->toBe('application/pdf')
+            ->and($fetched->header('content-disposition'))->toStartWith('attachment;')
+            ->and($fetched->header('cache-control'))->toBe('private, no-store');
+
+        // Still the session's alone: another is redirected nowhere.
+        expect($app->fetch($app->fileUrl($key, 'application/pdf'), session: 'session-b')->status)->toBe(404);
+        $app->storage->delete($key);
+        expect($app->fetch($app->fileUrl($key, 'application/pdf'))->status)->toBe(404);
+    });
+});

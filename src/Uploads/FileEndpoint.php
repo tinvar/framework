@@ -5,22 +5,32 @@ declare(strict_types=1);
 namespace Tinvar\Uploads;
 
 use Tinvar\Auth\AuthContext;
+use Tinvar\Auth\PanelContext;
+use Tinvar\Http\EntryContext;
 use Tinvar\Http\HttpException;
+use Tinvar\Http\Pipeline;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
+use Tinvar\Orm\Orm;
+use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenError;
 use Tinvar\Storage\FileTypes;
 use Tinvar\Storage\LocalStorage;
+use Tinvar\Storage\ObjectStore;
 
 /**
  * GET /_file/{token}
  *
  * Sends one stored file to the session a page minted its URL for
  * (FileUrls). The token is verified before anything is read: its
- * signature, its expiry, then the session and the user with their auth
- * epoch, each against this request. Any failure is a 404, the same for
- * every reason -- a URL copied into another browser, or kept past a
- * sign-out, is a file that is not there for its holder.
+ * signature and its expiry. Then the request is put where the page was --
+ * the tenant, by the #[TenantFrom] source the token names, and the panel,
+ * with its guard, membership check and stack, as EntryContext puts any
+ * entry point there -- and the token held to it: the tenant claim, the
+ * panel, the session and the user with their auth epoch. Any failure is a
+ * 404, the same for every reason -- a URL copied into another browser, kept
+ * past a sign-out, or opened in another tenant or panel is a file that is
+ * not there for its holder.
  *
  * The file goes out as the type it was sniffed as and nothing else, with
  * what keeps a browser from reading it as anything more: `nosniff`, a
@@ -28,6 +38,10 @@ use Tinvar\Storage\LocalStorage;
  * image inline or anything else as a download. A file that is both a valid
  * image and something a browser could run -- a polyglot -- is still only
  * ever an image here.
+ *
+ * A file in an object store is streamed from it, chunk by chunk, under the
+ * same headers -- or, where Uploads says FileDelivery::Redirect, sent there
+ * by a URL presigned for a minute that names the type and disposition.
  *
  * Behind the global stack, for the session, and the `files` throttle. Not
  * behind authentication: the token's user binding is exact, signed-out
@@ -44,6 +58,9 @@ final readonly class FileEndpoint
     public function __construct(
         private Uploads $uploads,
         private AuthContext $auth,
+        private ?EntryContext $entry = null,
+        private ?Orm $orm = null,
+        private ?PanelContext $panels = null,
     ) {}
 
     public function matches(Request $request): bool
@@ -73,26 +90,69 @@ final readonly class FileEndpoint
             throw self::missing();
         }
 
+        // Where the page was: its tenant by the source it was read by, its
+        // panel with everything the panel puts in front of its pages.
+        $stack = [];
+        if ($this->entry !== null) {
+            try {
+                $stack = $this->entry->stackFor(
+                    $file->tenantSource === '' ? null : $file->tenantSource,
+                    $file->panel === '' ? null : $this->entry->panelNamed($file->panel),
+                );
+            } catch (\LogicException) {
+                // A source or a panel this application no longer has.
+                throw self::missing();
+            }
+        }
+
+        return new Pipeline($stack)->run($request, function (Request $inner) use ($file): Response {
+            $this->assertBinding($inner, $file);
+
+            return $this->send($inner, $file);
+        });
+    }
+
+    /** The token agrees with where the request is, and who it comes from; it can put it nowhere. */
+    private function assertBinding(Request $request, FileToken $file): void
+    {
         $session = $this->uploads->sessionOf($request);
         if ($session === ''
+            || ($this->orm === null ? TenantClaim::NONE : TenantClaim::current($this->orm)) !== $file->tenant
+            || ($this->panels?->currentOrNull() ?? '') !== $file->panel
             || !hash_equals($file->sessionHash, $this->uploads->sessionHash($session))
             || !hash_equals($file->authHash, $this->uploads->authHash($this->auth->id(), $this->auth->epoch()))) {
             throw self::missing();
         }
+    }
 
-        $size = $this->uploads->storage->size($file->key);
-        if ($size === null) {
-            throw self::missing();
+    private function send(Request $request, FileToken $file): Response
+    {
+        $storage = $this->uploads->storage;
+        $disposition = self::disposition($file);
+
+        if ($storage instanceof ObjectStore && $this->uploads->delivery === FileDelivery::Redirect) {
+            if (!$storage->exists($file->key)) {
+                throw self::missing();
+            }
+
+            return Response::location($storage->presignedGet($file->key, FileDelivery::REDIRECT_TTL, [
+                'content-type' => $file->type,
+                'content-disposition' => $disposition,
+                'cache-control' => 'private, no-store',
+            ]), 302)->withHeader('cache-control', 'private, no-store')
+                ->withHeader('referrer-policy', 'no-referrer')
+                ->withHeader('vary', 'Cookie');
         }
-        $stream = $this->uploads->storage->read($file->key);
-        if ($stream === null) {
+
+        $size = $storage->size($file->key);
+        if ($size === null) {
             throw self::missing();
         }
 
         $headers = [
             'content-type' => $file->type,
             'content-length' => (string) $size,
-            'content-disposition' => self::disposition($file),
+            'content-disposition' => $disposition,
             'x-content-type-options' => 'nosniff',
             'content-security-policy' => "default-src 'none'; sandbox",
             'cross-origin-resource-policy' => 'same-origin',
@@ -105,9 +165,22 @@ final readonly class FileEndpoint
         ];
 
         if ($request->method === 'HEAD') {
-            fclose($stream);
-
             return Response::make(200, '', $headers);
+        }
+
+        // From an object store, each chunk handed on as it arrives: nothing
+        // gathered in memory or in the temporary directory first.
+        if ($storage instanceof ObjectStore) {
+            $key = $file->key;
+
+            return Response::stream(static function (\Closure $sink) use ($storage, $key): void {
+                $storage->readTo($key, $sink);
+            }, 200, $headers);
+        }
+
+        $stream = $storage->read($file->key);
+        if ($stream === null) {
+            throw self::missing();
         }
 
         $response = Response::stream(static function (\Closure $sink) use ($stream): void {
@@ -129,7 +202,6 @@ final readonly class FileEndpoint
         // A file on this machine's disk is one the server can send itself,
         // with no worker writing it to a client that may stop reading
         // (Sapi::forServer()). The stream above is what goes otherwise.
-        $storage = $this->uploads->storage;
         $path = $storage instanceof LocalStorage ? $storage->path($file->key) : null;
 
         return $path === null ? $response : $response->withFile($path);
