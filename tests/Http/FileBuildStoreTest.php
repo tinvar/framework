@@ -162,3 +162,70 @@ it('refuses to change a file it cannot read', function () {
 it('refuses a relative path', function () {
     expect(fn () => new FileBuildStore('builds.json'))->toThrow(\InvalidArgumentException::class, 'absolute');
 });
+
+// ADR 0050: a revocation is on the disk before update() returns. Through
+// the sync seam: the history's bytes synced under their private name while
+// the old history still holds the path, then the directory synced once the
+// rename has put the new one there.
+it('syncs the written history before the rename, and the directory after it', function () {
+    $path = path();
+    new FileBuildStore($path)->update(static fn (BuildHistory $h): BuildHistory => $h->released('b1', 1));
+    $seen = [];
+
+    $store = new FileBuildStore($path, static function ($handle, string $what) use ($path, &$seen): bool {
+        $synced = (string) stream_get_meta_data($handle)['uri'];
+        $seen[] = [
+            $what,
+            // What is synced: the new history under its private name, or the directory.
+            $what === 'file' ? \dirname($synced) === \dirname($path) && $synced !== $path : $synced === \dirname($path),
+            // Whether the path holds the revocation yet.
+            new FileBuildStore($path)->read()->isRevoked('b1'),
+        ];
+
+        return fsync($handle);
+    });
+    $store->update(static fn (BuildHistory $h): BuildHistory => $h->revoking('b1'));
+
+    expect($seen)->toBe([
+        ['file', true, false],
+        ['directory', true, true],
+    ])
+        ->and(new FileBuildStore($path)->read()->isRevoked('b1'))->toBeTrue();
+});
+
+// A sync that fails is a write that may not survive a crash: refused, and
+// the history on the disk left as it was, with nothing beside it.
+it('refuses a change whose bytes could not be synced, and keeps the history it had', function () {
+    $path = path();
+    new FileBuildStore($path)->update(static fn (BuildHistory $h): BuildHistory => $h->released('b1', 1));
+
+    $failing = new FileBuildStore($path, static fn ($handle, string $what): bool => $what !== 'file');
+
+    expect(fn () => $failing->update(static fn (BuildHistory $h): BuildHistory => $h->revoking('b1')))
+        ->toThrow(\RuntimeException::class, 'Cannot write the build history')
+        ->and(new FileBuildStore($path)->read()->isRevoked('b1'))->toBeFalse()
+        ->and(array_map(basename(...), glob(\dirname($path) . '/{,.}*', GLOB_BRACE) ?: []))
+        ->toEqualCanonicalizing(['.', '..', 'builds.json', 'builds.json.lock']);
+});
+
+// A crash of the process the moment update() returns: the revocation is
+// the file's already, for the next process to read. (An OS crash or a
+// power cut is the syncs' to survive, which the tests above hold to their
+// places; no test pulls the power.)
+it('keeps a revocation made by a process killed the moment it returned', function () {
+    if (!\function_exists('pcntl_fork')) {
+        test()->markTestSkipped('pcntl is not available.');
+    }
+    $path = path();
+    new FileBuildStore($path)->update(static fn (BuildHistory $h): BuildHistory => $h->released('b1', 1));
+
+    $pid = pcntl_fork();
+    if ($pid === 0) {
+        new FileBuildStore($path)->update(static fn (BuildHistory $h): BuildHistory => $h->revoking('b1'));
+        posix_kill(getmypid(), SIGKILL);
+    }
+    pcntl_waitpid($pid, $status);
+
+    expect(pcntl_wifsignaled($status))->toBeTrue()
+        ->and(new FileBuildStore($path)->read()->isRevoked('b1'))->toBeTrue();
+});

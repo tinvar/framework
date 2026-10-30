@@ -34,8 +34,19 @@ final class FileBuildStore implements BuildStore
     /** One empty history for a missing file, so its identity is stable too. */
     private ?BuildHistory $empty = null;
 
-    public function __construct(public readonly string $path)
+    /** @var \Closure(resource, string): bool */
+    private readonly \Closure $sync;
+
+    /**
+     * @param (\Closure(resource, string): bool)|null $sync syncs an open file to the disk --
+     *        'file', the history written under its private name, or 'directory', the rename --
+     *        and says whether it could: fsync() unless given. A test's seam, to see each sync
+     *        made where write() says and a failed one refused.
+     */
+    public function __construct(public readonly string $path, ?\Closure $sync = null)
     {
+        $this->sync = $sync ?? static fn ($handle, string $what): bool => @fsync($handle);
+
         // Absolute: the CLI and the workers start in different directories,
         // and a relative path would have each keep a history of its own.
         if (!str_starts_with($path, '/') && preg_match('/^[A-Za-z]:[\\\\\/]/', $path) !== 1) {
@@ -152,7 +163,7 @@ final class FileBuildStore implements BuildStore
             throw new \RuntimeException("Cannot write the build history beside {$this->path}.");
         }
         try {
-            $written = @fwrite($handle, $json) === \strlen($json) && @fsync($handle);
+            $written = @fwrite($handle, $json) === \strlen($json) && ($this->sync)($handle, 'file');
         } finally {
             fclose($handle);
         }
@@ -175,7 +186,7 @@ final class FileBuildStore implements BuildStore
         // change -- only one less certain to outlive a crash.
         $listing = @fopen($directory, 'r');
         if ($listing !== false) {
-            @fsync($listing);
+            ($this->sync)($listing, 'directory');
             fclose($listing);
         }
     }

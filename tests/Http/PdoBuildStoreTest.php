@@ -390,3 +390,43 @@ describe('PdoBuildStore', function () {
         });
     })->with(DRIVERS);
 });
+
+// A change that throws still puts the connection back: left at FULL, every
+// later commit of the application's on it would pay for a sync it chose
+// not to, and left there only by luck.
+it('puts a NORMAL connection back after a change that fails', function () {
+    onDriver('sqlite', function (\PDO $pdo, string $dsn, string $table): void {
+        $pdo->exec('PRAGMA synchronous = NORMAL');
+        $store = installed($pdo, $table);
+
+        expect(fn () => $store->update(static function (BuildHistory $history): BuildHistory {
+            throw new \RuntimeException('the change failed');
+        }))->toThrow(\RuntimeException::class)
+            ->and((int) $pdo->query('PRAGMA synchronous')->fetchColumn())->toBe(1);
+    });
+});
+
+// The process killed the moment update() returned: the revocation is the
+// database's, for every other server to read. (An OS crash is FULL's to
+// survive, which the test above it holds the commit to.)
+it('keeps a revocation made by a process killed the moment it returned', function () {
+    if (!\function_exists('pcntl_fork')) {
+        test()->markTestSkipped('pcntl is not available.');
+    }
+    onDriver('sqlite', function (\PDO $pdo, string $dsn, string $table): void {
+        $store = installed($pdo, $table);
+        $store->update(static fn (BuildHistory $h): BuildHistory => $h->released('b1', 1));
+
+        $pid = pcntl_fork();
+        if ($pid === 0) {
+            $child = new \PDO($dsn);
+            $child->exec('PRAGMA synchronous = NORMAL');
+            new PdoBuildStore($child, $table)->update(static fn (BuildHistory $h): BuildHistory => $h->revoking('b1'));
+            posix_kill(getmypid(), SIGKILL);
+        }
+        pcntl_waitpid($pid, $status);
+
+        expect(pcntl_wifsignaled($status))->toBeTrue()
+            ->and(new PdoBuildStore(new \PDO($dsn), $table)->read()->isRevoked('b1'))->toBeTrue();
+    });
+});
