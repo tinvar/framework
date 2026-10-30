@@ -97,16 +97,6 @@ final class HandoffEndpoint
     public const string REVOKED_SCOPE = 'handoff-revoked';
 
     /**
-     * The NonceStore scope a redemption is marked under once its session
-     * exists -- or by a repeat from the handoff's first session that came
-     * before it did, which is given nothing.
-     */
-    public const string MADE_SCOPE = 'handoff-made';
-
-    /** The NonceStore scope the session a redemption made is recorded under, hashed with it. */
-    public const string ARRIVED_SCOPE = 'handoff-arrived';
-
-    /**
      * How long past the code's expiry its mark is kept: longer than a
      * redemption under way when the code expired could take to make its
      * session.
@@ -481,34 +471,16 @@ final class HandoffEndpoint
         // That session ends (HandoffSessions::revoke()). Before the session
         // is made, so two at once cannot both get one.
         if (!$this->nonces->claim(self::NONCE_SCOPE, $code->id, $code->expiresAt, $now)) {
-            // The browser the redemption signed in, again -- a reload, a
-            // redirect followed twice -- presents the session the redemption
-            // made: issued by this server, never fixable by anyone. Answered
-            // as the first was, nothing made and nothing ended.
-            $session = ($this->sessionId)($request);
-            $redemption = Arrival::redemptionOf($code);
-            if ($session !== '' && $this->arrivedAs($redemption, $session, $code, $now)) {
-                return self::private(Response::redirect($code->returnTo, 303));
-            }
-
-            // The session the handoff started from -- a double click, both
-            // requests carrying it -- matches the challenge too. But that
-            // cookie is the one a fixation would plant, so it is believed
-            // only while the first redemption has made nothing: it takes
-            // the redemption's MADE mark, which that redemption claims once
-            // its session exists, and gets a redirect carrying nothing.
-            // Once the session exists the mark is taken, and the repeat is
-            // a copy like any other.
-            if ($session !== '' && Pkce::matches($this->signer, $session, $code->state, $code->challenge)
-                && $this->nonces->claim(self::MADE_SCOPE, $redemption, $code->expiresAt + self::TOMBSTONE_SECONDS, $now)) {
-                return self::private(Response::redirect($code->returnTo, 303));
-            }
-
-            // A tombstone first, then the revocation: the first redemption
-            // may have claimed the code and not yet made its session, and
-            // finds the tombstone once it has (below). Whatever this claim
-            // answers -- the first redemption's own mark, or another
-            // replay's tombstone -- the session is ended.
+            // Any second presentation, from anyone -- the browser that
+            // redeemed it included -- is a copy: nothing tells a double
+            // submit from a replay without a cookie someone could have
+            // planted, so none is believed (ADR 0102). A tombstone first,
+            // then the revocation: the first redemption may have claimed
+            // the code and not yet made its session, and finds the tombstone
+            // once it has (below). Whatever this claim answers -- the first
+            // redemption's own mark, or another replay's tombstone -- the
+            // session is ended, nothing is made, and the person hands off
+            // again.
             $this->nonces->claim(self::REVOKED_SCOPE, Arrival::redemptionOf($code), $code->expiresAt + self::TOMBSTONE_SECONDS, $now);
             $this->sessions->revoke(Arrival::redemptionOf($code));
 
@@ -548,6 +520,12 @@ final class HandoffEndpoint
 
         $redemption = Arrival::redemptionOf($code);
         $fresh = $this->sessions->arrive($request, new Arrival($user, $epoch, $realm, $code->returnTo, $tenant, $redemption));
+        if ($fresh === '' || hash_equals($session, $fresh)) {
+            // The one thing the application must not get wrong here: a
+            // session the browser arrived with may be one an attacker
+            // planted, and signing it in hands them the account.
+            throw new \LogicException('HandoffSessions::arrive() must start a new session, under a new id; it kept the one the request carried.');
+        }
 
         // Checked once the session is made, never before: a replay landing
         // between the code's claim and the session found nothing to end.
@@ -558,21 +536,6 @@ final class HandoffEndpoint
             $this->sessions->revoke($redemption);
 
             throw self::refused('it was replayed while it was being redeemed; the session it started is ended');
-        }
-        // The session exists: a repeat with the handoff's first cookie is a
-        // copy from here on. Taken already only by such a repeat that came
-        // while this one was in flight, which was given nothing.
-        $this->nonces->claim(self::MADE_SCOPE, $redemption, $code->expiresAt + self::TOMBSTONE_SECONDS, $this->now());
-        // Which session the redemption made, so the same browser coming
-        // back with it is known for itself (arrivedAs()). Its hash, never
-        // the id.
-        $this->nonces->claim(self::ARRIVED_SCOPE, self::arrival($redemption, $fresh), $code->expiresAt + self::TOMBSTONE_SECONDS, $this->now());
-
-        if ($fresh === '' || hash_equals($session, $fresh)) {
-            // The one thing the application must not get wrong here: a
-            // session the browser arrived with may be one an attacker
-            // planted, and signing it in hands them the account.
-            throw new \LogicException('HandoffSessions::arrive() must start a new session, under a new id; it kept the one the request carried.');
         }
 
         return self::private(Response::redirect($code->returnTo, 303));
@@ -623,28 +586,6 @@ final class HandoffEndpoint
      * same-origin by Response's own rules, so the two cannot drift; and
      * never a handoff step, which would only go round again.
      */
-    /**
-     * Whether $session is the one the redemption made: asked of the store
-     * by a claim, given back at once when it was not there, since a
-     * NonceStore says only whether a claim is new.
-     */
-    private function arrivedAs(string $redemption, string $session, HandoffCode $code, int $now): bool
-    {
-        $key = self::arrival($redemption, $session);
-        if ($this->nonces->claim(self::ARRIVED_SCOPE, $key, $code->expiresAt + self::TOMBSTONE_SECONDS, $now)) {
-            $this->nonces->release(self::ARRIVED_SCOPE, $key);
-
-            return false;
-        }
-
-        return true;
-    }
-
-    private static function arrival(string $redemption, string $session): string
-    {
-        return hash('sha256', "handoff-arrival\0{$redemption}\0{$session}");
-    }
-
     private static function returnPath(mixed $value): ?string
     {
         if (!\is_string($value) || $value === '' || \strlen($value) > self::MAX_RETURN

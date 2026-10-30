@@ -174,25 +174,23 @@ describe('a handoff', function () {
 });
 
 describe('the code', function () {
-    // A reload, a redirect followed twice: the browser the redemption
-    // signed in presents the session it made, which nobody else can hold,
-    // and gets the first answer again -- no new session, nothing ended.
-    it('answers the browser it signed in again as it did, with nothing made or ended', function () {
+    // Nothing tells a double submit from a replay without a cookie someone
+    // could have planted, so none is believed: the browser that redeemed
+    // the code, showing it again, ends its own session and hands off again.
+    it('ends the session when the browser that redeemed it shows it again', function () {
         $app = new App();
         $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
         $callback = codeFor($browser, 'https://acme.example');
 
         expect($browser->get($callback)->status)->toBe(303);
         $arrived = $browser->sessionAt('acme.example');
-        $sessions = $app->sessions->sessions;
 
         $again = $browser->get($callback);
 
-        expect($again->status)->toBe(303)
-            ->and($again->header('location'))->toBe('/whoami')
-            ->and($app->sessions->sessions)->toBe($sessions)
-            ->and($browser->sessionAt('acme.example'))->toBe($arrived)
-            ->and(json($browser->get('https://acme.example/whoami')))->toBe(['user' => 'alice']);
+        expect($again->status)->toBe(403)
+            ->and(errorCode($again))->toBe('handoff_refused')
+            ->and($app->sessions->sessions)->not->toHaveKey($arrived)
+            ->and(json($browser->get('https://acme.example/whoami')))->not->toBe(['user' => 'alice']);
     });
 
     // The handoff's first cookie is the one a fixation plants: once the
@@ -215,14 +213,14 @@ describe('the code', function () {
     });
 
     // A double click: both requests carry the handoff's first cookie, and
-    // the second lands while the first is making its session. It is given
-    // nothing -- no session of its own -- and ends nothing; and someone
-    // who fixed that cookie gains nothing by sending it then either.
-    it('gives a double submit with the handoff\'s first cookie nothing, and leaves the session the first makes', function () {
+    // the second lands while the first is making its session. Fail closed:
+    // the second makes nothing, and the session the first makes is ended.
+    it('leaves a double submit with no live session, and two sessions never', function () {
         $app = new App();
         $browser = new Browser($app)->signedInAt('id.platform.test', 'alice');
         $callback = codeFor($browser, 'https://acme.example');
         $startedWith = $browser->sessionAt('acme.example');
+        $before = \count($app->sessions->sessions);
         $second = null;
         $app->arrivals->beforeArrive = function () use ($app, $callback, $startedWith, &$second): void {
             $second = $app->get($callback, ['__Host-sid' => $startedWith]);
@@ -230,19 +228,12 @@ describe('the code', function () {
 
         $first = $browser->get($callback);
 
-        expect($second?->status)->toBe(303)
-            ->and($second?->cookies())->not->toHaveKey('__Host-sid')
-            ->and($first->status)->toBe(303)
+        expect($second?->status)->toBe(403)
+            ->and($first->status)->toBe(403)
             ->and($app->arrivals->redemptions)->toHaveCount(1)
-            ->and($app->sessions->sessions)->toHaveCount(2)
-            ->and($app->sessions->sessions)->toHaveKey($browser->sessionAt('acme.example'))
-            ->and(json($browser->get('https://acme.example/whoami')))->toBe(['user' => 'alice'])
-            // The cookie itself signs nobody in on the realm.
-            ->and(json($app->get('https://acme.example/whoami', ['__Host-sid' => $startedWith])))->not->toBe(['user' => 'alice']);
-
-        // And once the session exists, the same cookie again is a copy.
-        expect($app->get($callback, ['__Host-sid' => $startedWith])->status)->toBe(403)
-            ->and($app->sessions->sessions)->not->toHaveKey($browser->sessionAt('acme.example'));
+            ->and(\count($app->sessions->sessions))->toBe($before)
+            ->and(array_filter($app->sessions->sessions, fn (array $row): bool => $row['realm'] === 'acme.example'))->toBe([])
+            ->and(json($browser->get('https://acme.example/whoami')))->not->toBe(['user' => 'alice']);
     });
 
     // RFC 6749, 4.1.2: a code used twice was copied, and the session its

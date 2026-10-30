@@ -281,15 +281,12 @@ it('redeems a code once, across every worker the database is shared by, and ends
 
     expect($browser->get($callback)->status)->toBe(303);
 
-    // The browser it signed in, again: answered as before, nothing made or
-    // ended.
     $sessions = "SELECT COUNT(*) AS n FROM sessions WHERE realm = 'admin.shop.test'";
-    expect($browser->get($callback)->status)->toBe(303)
-        ->and(orm($database)->connection()->select($sessions))->toBe([['n' => 1]]);
+    expect(orm($database)->connection()->select($sessions))->toBe([['n' => 1]]);
 
     // Another worker -- another Kernel over the same database -- with the
     // cookie the browser arrived with, which the code's challenge is for:
-    // the cookie a fixation plants, so once the session exists it is a copy.
+    // a second presentation, from anyone, is a copy.
     $replay = new Browser(kernel($database));
     $replay->jar['admin.shop.test'] = $arrivedWith;
     $refused = $replay->get($callback);
