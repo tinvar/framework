@@ -325,12 +325,20 @@ final readonly class JobRunner
         $arguments = [];
         foreach (new \ReflectionMethod($job, $method)->getParameters() as $parameter) {
             $type = $parameter->getType();
-            // failed()'s error: its first parameter as it always took it,
-            // typed as an error or not typed at all.
-            if ($error !== null && ($type === null || ($type instanceof \ReflectionNamedType && is_a($error, $type->getName())))) {
+            // failed()'s error: the parameter typed as an error, or not
+            // typed at all, as it always took it. One typed for an error of
+            // another kind than this is refused, not handed something built.
+            $erroneous = $type instanceof \ReflectionNamedType && !$type->isBuiltin() && is_a($type->getName(), \Throwable::class, true);
+            if ($error !== null && ($type === null || $erroneous)) {
+                if ($type instanceof \ReflectionNamedType && !is_a($error, $type->getName())) {
+                    throw new JobRefused('handle_unresolvable', $job::class . "::{$method}() takes {$type->getName()}, and the error was " . $error::class . '.');
+                }
                 $arguments[] = $error;
                 $error = null;
                 continue;
+            }
+            if ($erroneous) {
+                throw new JobRefused('handle_unresolvable', $job::class . "::{$method}() takes an error, which only failed() is given, once.");
             }
             if (!$type instanceof \ReflectionNamedType || $type->isBuiltin()) {
                 throw new JobRefused(
