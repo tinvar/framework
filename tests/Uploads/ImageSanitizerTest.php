@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * Uploaded images drawn again from their pixels (ADR 0102): metadata and
+ * Uploaded images drawn again from their pixels (ADR 0103): metadata and
  * anything after the pixels gone, a JPEG turned upright first, and an image
  * whose header declares too many pixels refused before one is decoded.
  */

@@ -6,7 +6,7 @@ declare(strict_types=1);
  * Several files for one parameter (an UploadList), each held to its
  * ticket's binding as one upload is, and a ticket issued again for a page
  * that has outlived it -- for its own binding, a day from its first issue
- * at most (ADR 0102, ADR 0037).
+ * at most (ADR 0103, ADR 0037).
  */
 
 use Tinvar\Storage\MemoryStorage;

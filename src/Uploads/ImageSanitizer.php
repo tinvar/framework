@@ -8,7 +8,7 @@ use Tinvar\Http\HttpException;
 
 /**
  * Every uploaded image drawn again from its pixels, and nothing else of the
- * file kept (ADR 0102).
+ * file kept (ADR 0103).
  *
  * A photo carries what its camera wrote beside it -- where it was taken, to
  * the metre, in its EXIF GPS block; the device and its serial number; a
