@@ -64,6 +64,8 @@ final readonly class Uploads
      *        by a signed public URL (FileUrls::publicUrl()); none unless named, and taking one
      *        out ends every URL minted under it
      * @param UploadQuota|null $quota the bytes each user may hold; none unless given
+     * @param FileScanner|null $scanner looks inside every file for malware before it is kept;
+     *        a file it finds something in, or cannot scan, is refused
      */
     public function __construct(
         public Storage $storage,
@@ -77,6 +79,7 @@ final readonly class Uploads
         public FileDelivery $delivery = FileDelivery::Stream,
         public array $publicPrefixes = [],
         public ?UploadQuota $quota = null,
+        public ?FileScanner $scanner = null,
     ) {
         if ($maxBytes < 1) {
             throw new \InvalidArgumentException('An upload ceiling is at least one byte.');
@@ -121,6 +124,7 @@ final readonly class Uploads
         FileDelivery $delivery = FileDelivery::Stream,
         array $publicPrefixes = [],
         ?UploadQuota $quota = null,
+        ?FileScanner $scanner = null,
     ): self {
         return new self(
             $storage,
@@ -134,6 +138,7 @@ final readonly class Uploads
             $delivery,
             $publicPrefixes,
             $quota,
+            $scanner,
         );
     }
 

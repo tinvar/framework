@@ -48,8 +48,10 @@ use Tinvar\Storage\StorageKey;
  *      403, so a refusal says nothing about why.
  *   5. The file: received whole, within the declared size (413), sniffed
  *      as one of the declared types (415) -- the client's name and type for
- *      it play no part -- and the user under the cap on uploads nobody has
- *      claimed yet (429).
+ *      it play no part -- the user under the cap on uploads nobody has
+ *      claimed yet (429) and under their quota (507), an image drawn again,
+ *      and what would be kept scanned for malware where Uploads has a
+ *      scanner (422 for a find, 503 for a scanner that could not answer).
  *   6. Stored under `<prefix>/<random>.<extension of the sniffed type>`, and
  *      recorded with the ticket's binding for the action to be held to.
  */
@@ -287,6 +289,25 @@ final class UploadEndpoint
             if ($size === false || $size > min($declared->maxBytes, $this->uploads->maxBytes)) {
                 @unlink($kept);
                 throw self::tooLarge();
+            }
+        }
+
+        // What would be kept, scanned before it is: refused if anything is
+        // found, and refused if it cannot be scanned -- never kept unscanned.
+        if ($this->uploads->scanner !== null) {
+            try {
+                $found = $this->uploads->scanner->scan($kept);
+            } catch (ScanFailed $e) {
+                $found = $e;
+            }
+            if ($found !== null) {
+                if ($kept !== $file->path) {
+                    @unlink($kept);
+                }
+
+                throw $found instanceof ScanFailed
+                    ? new HttpException(503, 'The file could not be checked for malware, so it was not kept.', 'upload_scan_failed', ['retry-after' => '60'])
+                    : new HttpException(422, 'The file carries malware, so it was not kept.', 'upload_infected');
             }
         }
 

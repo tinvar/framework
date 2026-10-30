@@ -209,6 +209,7 @@ final class App
         \Tinvar\Uploads\FileDelivery $delivery = \Tinvar\Uploads\FileDelivery::Stream,
         array $publicPrefixes = [],
         ?\Tinvar\Uploads\UploadQuota $quota = null,
+        ?\Tinvar\Uploads\FileScanner $scanner = null,
     ) {
         $connection = PdoConnection::sqlite(':memory:', 'test');
         $connection->execute('CREATE TABLE profiles (id TEXT PRIMARY KEY, owner TEXT NOT NULL, avatar_key TEXT NULL)');
@@ -239,6 +240,7 @@ final class App
             delivery: $delivery,
             publicPrefixes: $publicPrefixes,
             quota: $quota,
+            scanner: $scanner,
         );
 
         $this->kernel = new Kernel(
