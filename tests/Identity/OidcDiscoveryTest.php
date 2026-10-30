@@ -11,6 +11,8 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Identity\OidcDiscovery;
 
 use Tinvar\Attributes\OutboundPolicy;
+use Tinvar\Cache\ArrayStore;
+use Tinvar\Cache\Store;
 use Tinvar\Identity\OidcDiscovery;
 use Tinvar\Identity\OidcDiscoveryFailed;
 use Tinvar\Outbound\FakeOutboundHttp;
@@ -168,4 +170,107 @@ it('asks for the key set again at most once a minute, however many unknown keys 
     $discovery->keys($provider, refresh: true);
 
     expect(array_filter($http->sent, static fn (OutboundRequest $r): bool => str_ends_with($r->url, '/jwks')))->toHaveCount(2);
+});
+
+/** @return array<string, array<array-key, mixed>> */
+function sharedBodies(): array
+{
+    return [
+        ISSUER . OidcDiscovery::PATH => document(),
+        'https://keys.accounts.example/jwks' => ['keys' => [['kty' => 'RSA', 'kid' => 'a', 'n' => 'xyz', 'e' => 'AQAB']]],
+    ];
+}
+
+/**
+ * One worker's discovery over a store every worker shares.
+ *
+ * @return array{FakeOutboundHttp, OidcDiscovery}
+ */
+function worker(Store $store, int &$now): array
+{
+    $bodies = sharedBodies();
+    $http = new FakeOutboundHttp(static function (OutboundRequest $request) use ($bodies): OutboundResponse {
+        $body = $bodies[$request->url] ?? null;
+
+        return $body === null ? new OutboundResponse(404) : new OutboundResponse(200, ['content-type' => ['application/json']], (string) json_encode($body));
+    });
+
+    return [$http, new OidcDiscovery($http, static function () use (&$now): int {
+        return $now;
+    }, $store)];
+}
+
+describe('a shared store (ADR 0124)', function () {
+    it('keeps a provider and its keys for every worker, so the second asks the provider nothing', function () {
+        $now = 1_800_000_000;
+        $store = new ArrayStore();
+        [$first, $one] = worker($store, $now);
+        [$second, $two] = worker($store, $now);
+
+        $one->keys($one->discover(ISSUER));
+        $keys = $two->keys($two->discover(ISSUER));
+
+        expect($first->sent)->toHaveCount(2)
+            ->and($second->sent)->toBe([])
+            ->and(array_column($keys, 'kid'))->toBe(['a']);
+    });
+
+    it('asks for the key set again once a minute across every worker, not once each', function () {
+        $now = 1_800_000_000;
+        $store = new ArrayStore();
+        $workers = [worker($store, $now), worker($store, $now), worker($store, $now)];
+        $workers[0][1]->keys($workers[0][1]->discover(ISSUER));
+        $now += OidcDiscovery::REFRESH_INTERVAL + 1;
+        foreach ($workers as [, $discovery]) {
+            for ($i = 0; $i < 5; $i++) {
+                $discovery->keys($discovery->discover(ISSUER), refresh: true);
+            }
+        }
+
+        $fetches = array_sum(array_map(static fn (array $w): int => \count(array_filter($w[0]->sent, static fn (OutboundRequest $r): bool => str_ends_with($r->url, '/jwks'))), $workers));
+        expect($fetches)->toBe(2);
+    });
+
+    // The store is not the provider: whatever is written into it is held
+    // to the rules again as it is read.
+    it('holds what it reads back to the rules again: no symmetric key, no none, the issuer exactly', function () {
+        $now = 1_800_000_000;
+        $store = new ArrayStore();
+        [$http, $discovery] = worker($store, $now);
+        $provider = $discovery->discover(ISSUER);
+        $discovery->keys($provider);
+
+        $store->put(OidcDiscovery::STORE_PREFIX . 'keys:' . hash('sha256', $provider->jwksUri), ['until' => $now + 60, 'fetched' => $now, 'keys' => [
+            ['kty' => 'oct', 'kid' => 'forged', 'k' => 'c2VjcmV0'],
+            ['kty' => 'RSA', 'kid' => 'a', 'n' => 'xyz', 'e' => 'AQAB', 'd' => 'private'],
+        ]]);
+        expect($discovery->keys($provider))->toBe([]);
+
+        $store->put(OidcDiscovery::STORE_PREFIX . 'provider:' . hash('sha256', ISSUER), ['until' => $now + 60, 'document' => document([
+            'id_token_signing_alg_values_supported' => ['none'],
+        ])]);
+        $before = \count($http->sent);
+        expect($discovery->discover(ISSUER)->signingAlgorithms)->toBe(['RS256'])
+            ->and($http->sent)->toHaveCount($before + 1);
+
+        $store->put(OidcDiscovery::STORE_PREFIX . 'provider:' . hash('sha256', ISSUER), ['until' => $now + 60, 'document' => document([
+            'issuer' => 'https://evil.example',
+            'token_endpoint' => 'https://evil.example/token',
+        ])]);
+        expect($discovery->discover(ISSUER)->tokenEndpoint)->toBe('https://accounts.example/token');
+    });
+
+    it('forgets an issuer for every worker', function () {
+        $now = 1_800_000_000;
+        $store = new ArrayStore();
+        [, $one] = worker($store, $now);
+        [$second, $two] = worker($store, $now);
+        $one->keys($one->discover(ISSUER));
+
+        $two->forget(ISSUER);
+        [$third, $three] = worker($store, $now);
+        $three->keys($three->discover(ISSUER));
+
+        expect($second->sent)->toBe([])->and($third->sent)->toHaveCount(2);
+    });
 });

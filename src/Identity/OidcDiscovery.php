@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Identity;
 
+use Tinvar\Cache\Store;
 use Tinvar\Outbound\OutboundHttp;
 use Tinvar\Outbound\OutboundRefused;
 use Tinvar\Outbound\OutboundRequest;
@@ -38,16 +39,29 @@ use Tinvar\Outbound\Target;
  * symmetric key by the provider's own endpoint is a verifier an `HS256`
  * token can be forged against.
  *
- * Both are kept in memory for an hour (Cache-Control is not read: a
- * provider that rotates keys publishes the next beside the current one).
- * A token signed by a key not in the set asks for the set again through
- * keys(refresh: true), which goes to the provider at most once a minute
- * per issuer, so a stream of tokens naming invented key ids cannot turn
- * this into a request to the provider each. At most MAX_KEPT of each are
- * kept, so issuers tenants name cannot grow a worker without bound.
- * Nothing kept is any request's:
- * an issuer's document and keys are public and the same for every tenant
- * that names it.
+ * Both are kept for an hour (Cache-Control is not read: a provider that
+ * rotates keys publishes the next beside the current one). A token signed
+ * by a key not in the set asks for the set again through keys(refresh:
+ * true), which goes to the provider at most once a minute per issuer, so a
+ * stream of tokens naming invented key ids cannot turn this into a request
+ * to the provider each. Nothing kept is any request's: an issuer's document
+ * and keys are public and the same for every tenant that names it.
+ *
+ * Without a shared store they are kept in this worker's memory, at most
+ * MAX_KEPT of each, so issuers tenants name cannot grow a worker without
+ * bound. Given one -- APCu for the threads of one process, PdoStore for
+ * every server -- they are kept there instead (ADR 0124), with when the
+ * keys were last fetched: a rotation one worker learns of is every
+ * worker's at once, and the minute between fetches is one minute for all
+ * of them rather than one per worker. The store is not the provider,
+ * though, and whoever can write it could hand back a document or a key of
+ * their own. So what is kept is the provider's answer as it came, and it
+ * is held to every rule above again each time it is read -- the issuer
+ * exactly, every endpoint https, `none` struck, private and symmetric keys
+ * dropped -- and a kept answer that fails one is a miss, asked of the
+ * provider again. Someone who can write the cache can name keys, as someone
+ * who can write the database can name users; what they cannot do through
+ * it is have a `none` or an HMAC token believed.
  */
 final class OidcDiscovery
 {
@@ -65,11 +79,21 @@ final class OidcDiscovery
     /** Seconds between key sets fetched again for a key not found. */
     public const int REFRESH_INTERVAL = 60;
 
-    /** Issuers and key sets kept at once; the oldest is forgotten past it. */
+    /** Issuers and key sets kept at once in a worker's memory; the oldest is forgotten past it. */
     public const int MAX_KEPT = 256;
+
+    /** A shared store's keys begin with this; then what is kept and the URL's digest. */
+    public const string STORE_PREFIX = 'tinvar:oidc:';
 
     /** A key's members that are never public. */
     private const array PRIVATE_MEMBERS = ['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k'];
+
+    /** A document's members a provider is read from: all that is kept in a shared store. */
+    private const array DOCUMENT_MEMBERS = [
+        'issuer', 'authorization_endpoint', 'token_endpoint', 'jwks_uri', 'userinfo_endpoint', 'end_session_endpoint',
+        'response_types_supported', 'id_token_signing_alg_values_supported', 'code_challenge_methods_supported',
+        'scopes_supported', 'subject_types_supported',
+    ];
 
     /** @var array<string, array{OidcProvider, int}> issuer => provider, when it expires */
     private array $providers = [];
@@ -80,9 +104,15 @@ final class OidcDiscovery
     /** @var \Closure(): int */
     private \Closure $clock;
 
-    /** @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given */
-    public function __construct(private readonly OutboundHttp $http, ?\Closure $clock = null)
-    {
+    /**
+     * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
+     * @param Store|null $shared where documents and key sets are kept for every worker; this worker's memory when null
+     */
+    public function __construct(
+        private readonly OutboundHttp $http,
+        ?\Closure $clock = null,
+        private readonly ?Store $shared = null,
+    ) {
         $this->clock = $clock ?? time(...);
     }
 
@@ -114,7 +144,7 @@ final class OidcDiscovery
     }
 
     /**
-     * The provider at $issuer, from memory or its discovery document.
+     * The provider at $issuer, from what is kept or its discovery document.
      *
      * @throws \InvalidArgumentException for an issuer that is not one
      * @throws OidcDiscoveryFailed for a document that is not taken
@@ -124,13 +154,148 @@ final class OidcDiscovery
     {
         $issuer = self::issuer($issuer);
         $now = ($this->clock)();
-        $kept = $this->providers[$issuer] ?? null;
-        if ($kept !== null && $kept[1] > $now) {
-            return $kept[0];
+
+        if ($this->shared === null) {
+            $kept = $this->providers[$issuer] ?? null;
+            if ($kept !== null && $kept[1] > $now) {
+                return $kept[0];
+            }
+        } else {
+            $kept = $this->sharedProvider($issuer, $now);
+            if ($kept !== null) {
+                return $kept;
+            }
         }
 
         $document = $this->fetch(rtrim($issuer, '/') . self::PATH, $issuer);
+        $provider = self::provider($document, $issuer);
 
+        if ($this->shared !== null) {
+            $this->shared->put(self::storeKey('provider', $issuer), [
+                'until' => $now + self::TTL,
+                'document' => array_intersect_key($document, array_flip(self::DOCUMENT_MEMBERS)),
+            ], self::TTL);
+
+            return $provider;
+        }
+
+        unset($this->providers[$issuer]);
+        $this->providers[$issuer] = [$provider, $now + self::TTL];
+        if (\count($this->providers) > self::MAX_KEPT) {
+            array_shift($this->providers);
+        }
+
+        return $provider;
+    }
+
+    /**
+     * The provider's public signing keys, each a JWK as an array.
+     *
+     * $refresh asks the provider again -- for a token signed by a key not
+     * in the set -- unless it was asked within the last minute.
+     *
+     * @return list<array<string, mixed>>
+     * @throws OidcDiscoveryFailed|OutboundRefused|\Tinvar\Outbound\OutboundFailed
+     */
+    public function keys(OidcProvider $provider, bool $refresh = false): array
+    {
+        $now = ($this->clock)();
+        $kept = $this->shared === null ? ($this->keys[$provider->jwksUri] ?? null) : $this->sharedKeys($provider);
+        if ($kept !== null && ($kept[1] > $now && (!$refresh || $kept[2] > $now - self::REFRESH_INTERVAL))) {
+            return $kept[0];
+        }
+
+        $set = $this->fetch($provider->jwksUri, $provider->issuer);
+        $listed = $set['keys'] ?? null;
+        if (!\is_array($listed) || !array_is_list($listed)) {
+            throw new OidcDiscoveryFailed(OidcDiscoveryFailed::DOCUMENT, "The key set of {$provider->issuer} has no list of keys.");
+        }
+        $keys = self::publicKeys($listed);
+
+        if ($this->shared !== null) {
+            $this->shared->put(self::storeKey('keys', $provider->jwksUri), ['until' => $now + self::TTL, 'fetched' => $now, 'keys' => $keys], self::TTL);
+
+            return $keys;
+        }
+
+        unset($this->keys[$provider->jwksUri]);
+        $this->keys[$provider->jwksUri] = [$keys, $now + self::TTL, $now];
+        if (\count($this->keys) > self::MAX_KEPT) {
+            array_shift($this->keys);
+        }
+
+        return $keys;
+    }
+
+    /** Forgets what is kept for $issuer: its document and its keys, in this worker and in the shared store. */
+    public function forget(string $issuer): void
+    {
+        $jwksUri = $this->providers[$issuer][0]->jwksUri ?? null;
+        if ($jwksUri === null && $this->shared !== null) {
+            $stored = $this->shared->get(self::storeKey('provider', $issuer));
+            $document = $stored['hit'] && \is_array($stored['value']) ? ($stored['value']['document'] ?? null) : null;
+            $jwksUri = \is_array($document) && \is_string($document['jwks_uri'] ?? null) ? $document['jwks_uri'] : null;
+        }
+        if ($jwksUri !== null) {
+            unset($this->keys[$jwksUri]);
+            $this->shared?->forget(self::storeKey('keys', $jwksUri));
+        }
+        unset($this->providers[$issuer]);
+        $this->shared?->forget(self::storeKey('provider', $issuer));
+    }
+
+    /**
+     * The provider the shared store keeps for $issuer, its document held to
+     * every rule again: null when there is none, it has expired, or it is
+     * not what a provider's answer taken here could have been.
+     */
+    private function sharedProvider(string $issuer, int $now): ?OidcProvider
+    {
+        \assert($this->shared !== null);
+        $stored = $this->shared->get(self::storeKey('provider', $issuer));
+        $value = $stored['hit'] ? $stored['value'] : null;
+        if (!\is_array($value) || !\is_int($value['until'] ?? null) || $value['until'] <= $now
+            || !\is_array($value['document'] ?? null) || ($value['document'] !== [] && array_is_list($value['document']))) {
+            return null;
+        }
+
+        try {
+            /** @var array<string, mixed> $document */
+            $document = $value['document'];
+
+            return self::provider($document, $issuer);
+        } catch (OidcDiscoveryFailed) {
+            return null;
+        }
+    }
+
+    /**
+     * The keys the shared store keeps for $provider, held to the public
+     * keys again: null when there are none.
+     *
+     * @return array{list<array<string, mixed>>, int, int}|null
+     */
+    private function sharedKeys(OidcProvider $provider): ?array
+    {
+        \assert($this->shared !== null);
+        $stored = $this->shared->get(self::storeKey('keys', $provider->jwksUri));
+        $value = $stored['hit'] ? $stored['value'] : null;
+        if (!\is_array($value) || !\is_int($value['until'] ?? null) || !\is_int($value['fetched'] ?? null)
+            || !\is_array($value['keys'] ?? null) || !array_is_list($value['keys'])) {
+            return null;
+        }
+
+        return [self::publicKeys($value['keys']), $value['until'], $value['fetched']];
+    }
+
+    /**
+     * The provider a discovery document describes, if it is one for $issuer.
+     *
+     * @param array<string, mixed> $document
+     * @throws OidcDiscoveryFailed
+     */
+    private static function provider(array $document, string $issuer): OidcProvider
+    {
         // Exactly: not trimmed, not case-folded, not with or without a slash.
         if (($document['issuer'] ?? null) !== $issuer) {
             throw new OidcDiscoveryFailed(OidcDiscoveryFailed::ISSUER, "The discovery document at {$issuer} names another issuer; it is not taken.");
@@ -155,38 +320,18 @@ final class OidcDiscovery
         );
         self::strings($document, 'subject_types_supported', $issuer);
 
-        unset($this->providers[$issuer]);
-        $this->providers[$issuer] = [$provider, $now + self::TTL];
-        if (\count($this->providers) > self::MAX_KEPT) {
-            array_shift($this->providers);
-        }
-
         return $provider;
     }
 
     /**
-     * The provider's public signing keys, each a JWK as an array.
+     * The keys of a set that are public: each an object with a `kty`, none
+     * carrying a private or symmetric member.
      *
-     * $refresh asks the provider again -- for a token signed by a key not
-     * in the set -- unless it was asked within the last minute.
-     *
+     * @param list<mixed> $listed
      * @return list<array<string, mixed>>
-     * @throws OidcDiscoveryFailed|OutboundRefused|\Tinvar\Outbound\OutboundFailed
      */
-    public function keys(OidcProvider $provider, bool $refresh = false): array
+    private static function publicKeys(array $listed): array
     {
-        $now = ($this->clock)();
-        $kept = $this->keys[$provider->jwksUri] ?? null;
-        if ($kept !== null && ($kept[1] > $now && (!$refresh || $kept[2] > $now - self::REFRESH_INTERVAL))) {
-            return $kept[0];
-        }
-
-        $set = $this->fetch($provider->jwksUri, $provider->issuer);
-        $listed = $set['keys'] ?? null;
-        if (!\is_array($listed) || !array_is_list($listed)) {
-            throw new OidcDiscoveryFailed(OidcDiscoveryFailed::DOCUMENT, "The key set of {$provider->issuer} has no list of keys.");
-        }
-
         $keys = [];
         foreach ($listed as $key) {
             if (!\is_array($key) || !\is_string($key['kty'] ?? null)) {
@@ -199,23 +344,13 @@ final class OidcDiscovery
             $keys[] = $key;
         }
 
-        unset($this->keys[$provider->jwksUri]);
-        $this->keys[$provider->jwksUri] = [$keys, $now + self::TTL, $now];
-        if (\count($this->keys) > self::MAX_KEPT) {
-            array_shift($this->keys);
-        }
-
         return $keys;
     }
 
-    /** Forgets what is kept for $issuer: its document and its keys. */
-    public function forget(string $issuer): void
+    /** A shared store's key: the URL's digest, never the URL, whose length a store may limit. */
+    private static function storeKey(string $what, string $url): string
     {
-        $provider = $this->providers[$issuer][0] ?? null;
-        if ($provider !== null) {
-            unset($this->keys[$provider->jwksUri]);
-        }
-        unset($this->providers[$issuer]);
+        return self::STORE_PREFIX . $what . ':' . hash('sha256', $url);
     }
 
     /**
