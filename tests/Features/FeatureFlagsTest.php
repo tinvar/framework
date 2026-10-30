@@ -42,6 +42,7 @@ use Tinvar\Routing\RouteRegistry;
 use Tinvar\Tests\Data\Fixtures\Shared\OnceShared;
 use Tinvar\Tests\Data\Fixtures\Shared\PageWithGreetingData;
 use Tinvar\Tests\Data\Fixtures\Shared\Reads;
+use Tinvar\Tests\Features\Fixtures\FlaggedLazyRack;
 use Tinvar\Tests\Features\Fixtures\FlaggedRack;
 use Tinvar\Tests\Features\Fixtures\FlaggedStaticPage;
 use Tinvar\Tests\Features\Fixtures\FlagReadElsewhere;
@@ -93,7 +94,7 @@ final class MutableFlagValues implements FlagValues
 function flaggedRunner(Features $features, AuthContext $auth, Orm $orm, Fixture $fixture, ArrayStore $store, bool $cacheReadsFlags = true): array
 {
     $registry = new QueryRegistry(static fn (string $class): object => $class === PlainRack::class ? new $class() : new $class($features->reader()));
-    $registry->registerAll([FlaggedRack::class, PlainRack::class, FlagReadElsewhere::class]);
+    $registry->registerAll([FlaggedRack::class, FlaggedLazyRack::class, PlainRack::class, FlagReadElsewhere::class]);
     $cache = new QueryCache($store, $auth, features: $cacheReadsFlags ? $features : null);
 
     return [new QueryRunner($registry, $orm, new AllowAllGate(), cache: $cache), $fixture, $auth];
@@ -117,6 +118,7 @@ function runFlagged(QueryRunner $runner, Fixture $fixture, array $queries): arra
 
 beforeEach(function () {
     FlaggedRack::$runs = 0;
+    FlaggedLazyRack::$runs = 0;
     PlainRack::$runs = 0;
     FlagReadElsewhere::$runs = 0;
     FlagReads::closeAll();
@@ -252,6 +254,21 @@ describe('the query cache', function () {
             ->and($alsoOff)->toBe($off)
             ->and($again)->toBe($on)
             ->and(FlaggedRack::$runs)->toBe(3, 'the marker, then one run for each value of the flag');
+    });
+
+    it('keys an answer by a flag its Lazy field read, after the body returned', function () use ($setup) {
+        [$as] = $setup();
+
+        $on = $as('u1', ['racks.flaggedLazily']);
+        $off = $as('u2', ['racks.flaggedLazily']);
+        $alsoOn = $as('u3', ['racks.flaggedLazily']);
+        $alsoOff = $as('u4', ['racks.flaggedLazily']);
+
+        expect($on[0]['units'])->toBe(3)
+            ->and($off[0]['units'])->toBe(0, 'not u1\'s answer: the flag was read as the result was encoded')
+            ->and($alsoOn)->toBe($on)
+            ->and($alsoOff)->toBe($off)
+            ->and(FlaggedLazyRack::$runs)->toBe(3, 'the marker, then one run for each value of the flag');
     });
 
     it('runs the body again when a flag the answer read has changed', function () use ($setup) {

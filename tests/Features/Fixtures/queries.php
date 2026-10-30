@@ -8,9 +8,11 @@ use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Page;
 use Tinvar\Attributes\Query;
 use Tinvar\Attributes\StaticPage;
+use Tinvar\Data\Data;
 use Tinvar\Features\Features;
 use Tinvar\Features\FlagReader;
 use Tinvar\Features\FlagScope;
+use Tinvar\Support\Lazy;
 use Tinvar\Tests\Orm\Fixtures\Rack;
 use Tinvar\Tests\Query\Fixtures\RackSummaryData;
 
@@ -38,6 +40,32 @@ final class FlaggedRack
         self::$runs++;
 
         return new RackSummaryData($rack->name, $this->features->active(Flags::Units) ? $rack->units->count() : 0);
+    }
+}
+
+final readonly class LazyRackSummaryData extends Data
+{
+    /** @param Lazy<int> $units */
+    public function __construct(public string $name, public Lazy $units) {}
+}
+
+/**
+ * The same answer as FlaggedRack, with the flag read in a Lazy field: after
+ * the body has returned, when the result is encoded.
+ */
+#[Query(name: 'racks.flaggedLazily', cache: '5m', shared: true), NoAuthorization(reason: 'fixture: exercises flags in the query cache')]
+final class FlaggedLazyRack
+{
+    public static int $runs = 0;
+
+    public function __construct(private readonly FlagReader $features) {}
+
+    public function __invoke(Rack $rack): LazyRackSummaryData
+    {
+        self::$runs++;
+        $features = $this->features;
+
+        return new LazyRackSummaryData($rack->name, Lazy::of(static fn (): int => $features->active(Flags::Units) ? $rack->units->count() : 0));
     }
 }
 

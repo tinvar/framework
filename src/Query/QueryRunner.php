@@ -685,11 +685,9 @@ final class QueryRunner
                 // As it is kept: a once key's value as its once field -- held
                 // by the browser only where it read no feature flag, since a
                 // hold is believed until it expires whatever a flag does.
-                $sharedOutcomes[self::SHARED_TASK . $key] = $shared->remember(
-                    $key,
-                    $this->settleShared($key, $raw[self::SHARED_TASK . $key] ?? null, $shared),
-                    keepable: $reads[self::SHARED_TASK . $key]->clean(),
-                );
+                $recorder = $reads[self::SHARED_TASK . $key];
+                $settled = $recorder->task(fn (): array => $this->settleShared($key, $raw[self::SHARED_TASK . $key] ?? null, $shared));
+                $sharedOutcomes[self::SHARED_TASK . $key] = $shared->remember($key, $settled, keepable: $recorder->clean());
             }
         }
 
@@ -700,7 +698,10 @@ final class QueryRunner
             }
 
             $this->tell($group['name'], $group['args'], $raw[$key] ?? null);
-            $outcomes[$key] = $this->settle($raw[$key] ?? null);
+            // Encoded under the task's recorder: a Lazy field resolved now is
+            // the body's work deferred, and a flag it reads keys the answer
+            // as one the body read would (ADR 0094).
+            $outcomes[$key] = $reads[$key]->task(fn (): array => $this->settle($raw[$key] ?? null));
             if (!isset($faked[$key])) {
                 $this->remember($group['name'], $group['args'], $outcomes[$key], $reads[$key]);
             }
@@ -738,7 +739,7 @@ final class QueryRunner
 
             foreach ($keys as $index => $key) {
                 $this->tell($name, $groups[$key]['args'], $batch[$index]);
-                $outcomes[$key] = $this->settle($batch[$index]);
+                $outcomes[$key] = $reads['batch:' . $name]->task(fn (): array => $this->settle($batch[$index]));
                 $this->remember($name, $groups[$key]['args'], $outcomes[$key], $reads['batch:' . $name]);
             }
         }
