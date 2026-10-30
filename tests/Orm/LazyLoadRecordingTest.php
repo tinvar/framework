@@ -76,7 +76,34 @@ it('counts a relation read on the one row a statement returned as in a batch, as
         ->and($rack->site->code)->toBe('LAX0');
 
     assertNoLazyLoadsOutsideBatch($orm);
-    expect(described($loads))->toBe([Rack::class . '::units result set 1', Rack::class . '::site result set 1']);
+    expect(described($loads))->toBe([Rack::class . '::units one row 1', Rack::class . '::site one row 1']);
+});
+
+// ADR 0122: each find() is a result set of one, batched as far as it can be
+// by itself -- and N of them in a loop are N statements for the relation,
+// where whereIn() and one load would be two statements in all.
+it('fails a relation read on the one row of each find() in a loop', function () {
+    $fixture = new Fixture(racks: 3, unitsPerRack: 2);
+    [$orm, $loads] = recording($fixture);
+
+    foreach ($fixture->ids['racks'] as $id) {
+        $rack = $orm->find(Rack::class, $id);
+        \assert($rack instanceof Rack);
+        $rack->units->count();
+    }
+
+    expect(described($loads))->toBe(array_fill(0, 3, Rack::class . '::units one row 1'))
+        ->and(\count($loads->outsideBatch()))->toBe(3)
+        ->and(fn () => assertNoLazyLoadsOutsideBatch($orm))
+        ->toThrow(AssertionFailedError::class, Rack::class . '::units (3 times), each on the one row a statement read: a loop over find()?');
+
+    // The same rows read in one query: one load for all of them.
+    $orm->flush();
+    $mark = $loads->count();
+    foreach ($orm->whereIn(Rack::class, 'id', $fixture->ids['racks']) as $rack) {
+        $rack->units->count();
+    }
+    expect($loads->outsideBatch($mark))->toBe([]);
 });
 
 // The #[BelongsTo] itself is one load for every rack, but each site it
