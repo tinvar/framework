@@ -14,6 +14,11 @@ namespace Tinvar\Mail;
  * sent in the clear is a password sent to the network. A server that does
  * not answer within the timeout fails the send -- inside a job, that is a
  * failed try, retried with the job's backoff.
+ *
+ * The envelope names every reader once, To, Cc and Bcc (ADR 0116): Bcc is
+ * nowhere else. Given a DkimSigner, each message is signed for its From's
+ * domain as it is written; the key stays in this process, and is never the
+ * renderer's.
  */
 final readonly class SmtpTransport implements Transport
 {
@@ -33,6 +38,7 @@ final readonly class SmtpTransport implements Transport
         private string $encryption = self::STARTTLS,
         private float $timeout = 10.0,
         private string $localDomain = 'localhost',
+        private ?DkimSigner $dkim = null,
     ) {
         if (!\in_array($encryption, [self::NONE, self::STARTTLS, self::TLS], true)) {
             throw new \InvalidArgumentException("'{$encryption}' is not an SMTP encryption: none, starttls or tls.");
@@ -68,12 +74,12 @@ final readonly class SmtpTransport implements Transport
             }
 
             $this->command($socket, "MAIL FROM:<{$message->from->email}>", [250]);
-            foreach ($message->to as $recipient) {
-                $this->command($socket, "RCPT TO:<{$recipient->email}>", [250, 251]);
+            foreach ($message->envelope() as $recipient) {
+                $this->command($socket, "RCPT TO:<{$recipient}>", [250, 251]);
             }
             $this->command($socket, 'DATA', [354]);
 
-            $data = MimeMessage::build($message, $this->localDomain);
+            $data = MimeMessage::build($message, $this->localDomain, dkim: $this->dkim);
             // A line that starts with a dot is doubled, so it is not read as
             // the end of the message.
             $data = (string) preg_replace('/^\./m', '..', $data);

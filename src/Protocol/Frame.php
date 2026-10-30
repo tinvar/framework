@@ -196,8 +196,8 @@ final class Frame
 
     /**
      * @param array<string, mixed> $props already encoded: Data objects, scalars, lists and maps
-     * @param array{origin: string|null, images: list<string>} $links the message's
-     *        LinkPolicy: what @tinvar/mail holds its links and images to
+     * @param array<string, mixed> $links the message's LinkPolicy (toFrame()): what
+     *        @tinvar/mail holds its links and images to, and the attachments it may list
      * @return array<string, mixed>
      */
     public static function mail(string $template, array $props, string $requestId, array $links = ['origin' => null, 'images' => []]): array

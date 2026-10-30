@@ -11,6 +11,10 @@ namespace Tinvar\Mail;
  *
  * Appended under an exclusive lock, so two workers' messages never
  * interleave inside a line, to a file only its owner can read (open()).
+ *
+ * Its readers, Bcc too, since a test asks who a message went to; and each
+ * attachment's name, type, size and digest, never its bytes, which would
+ * swell a log a test reads whole (ADR 0116).
  */
 final readonly class LogTransport implements Transport
 {
@@ -21,12 +25,19 @@ final readonly class LogTransport implements Transport
         $line = json_encode([
             'from' => $message->from->toHeader(),
             'to' => array_map(static fn (Address $a): string => $a->toHeader(), $message->to),
+            'cc' => array_map(static fn (Address $a): string => $a->toHeader(), $message->cc),
+            'bcc' => array_map(static fn (Address $a): string => $a->toHeader(), $message->bcc),
             'replyTo' => $message->replyTo?->toHeader(),
             'listUnsubscribe' => $message->unsubscribe?->headers()['List-Unsubscribe'] ?? null,
             'listUnsubscribePost' => $message->unsubscribe?->headers()['List-Unsubscribe-Post'] ?? null,
             'subject' => $message->subject,
             'html' => $message->html,
             'text' => $message->text,
+            'attachments' => array_map(static fn (Attachment $a): array => [
+                ...$a->describe(),
+                'contentId' => $a->contentId,
+                'sha256' => hash('sha256', $a->content),
+            ], $message->attachments),
             'at' => gmdate('Y-m-d\TH:i:s\Z'),
         ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 

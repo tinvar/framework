@@ -231,7 +231,7 @@ describe('the HTML of an email', function () {
 
         $renderer = new Draws('<p>x</p>');
         new Mailer(new ArrayTransport(), $renderer, new Address('mail@acme.test'))->send(new Note('https://globex.test'));
-        expect($renderer->links?->toFrame())->toBe(['origin' => 'https://globex.test', 'images' => []]);
+        expect($renderer->links?->toFrame())->toBe(['origin' => 'https://globex.test', 'images' => [], 'tracking' => [], 'inline' => [], 'attachments' => []]);
     });
 });
 

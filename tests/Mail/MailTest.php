@@ -14,6 +14,8 @@ use Tinvar\Codec\MessagePackCodec;
 use Tinvar\Data\Data;
 use Tinvar\Mail\Address;
 use Tinvar\Mail\ArrayTransport;
+use Tinvar\Mail\DkimKey;
+use Tinvar\Mail\DkimSigner;
 use Tinvar\Mail\Email;
 use Tinvar\Mail\LogTransport;
 use Tinvar\Mail\Mailable;
@@ -341,7 +343,7 @@ it('renders a template over the renderer\'s socket: HTML as chunks, the text par
         ->and($frame['template'])->toBe('receipt')
         ->and($frame['props'])->toBe(['name' => 'x'])
         // The message's policy, which the renderer's kit holds its links to.
-        ->and($frame['links'])->toBe(['origin' => 'https://shop.test', 'images' => ['https://cdn.shop.test']]);
+        ->and($frame['links'])->toBe(['origin' => 'https://shop.test', 'images' => ['https://cdn.shop.test'], 'tracking' => [], 'inline' => [], 'attachments' => []]);
 });
 
 it('refuses a render that brings back no text part', function () {
@@ -581,4 +583,32 @@ it('gives a reply its timeout as a whole, however it trickles in', function () {
 
     expect($thrown)->toContain('did not answer within 1s')
         ->and(microtime(true) - $started)->toBeLessThan(2.5);
+});
+
+it('names Cc and Bcc readers on the envelope once each, writes no Bcc header, and signs with DKIM when given a key', function () {
+    if (!\function_exists('pcntl_fork')) {
+        test()->markTestSkipped('pcntl is not available.');
+    }
+
+    [$port, $pid, $log] = smtpServer();
+    $signer = new DkimSigner('shop.test', 'mail', DkimKey::parse(base64_encode(random_bytes(32))));
+    $transport = new SmtpTransport('127.0.0.1', $port, encryption: SmtpTransport::NONE, timeout: 5, dkim: $signer);
+    $transport->send(new Message(
+        new Address('orders@shop.test'),
+        [new Address('ada@example.test')],
+        'Order PW-1 placed',
+        '<p>Placed</p>',
+        'Placed',
+        cc: [new Address('Ada@Example.test'), new Address('grace@example.test')],
+        bcc: [new Address('archive@shop.test')],
+    ));
+    pcntl_waitpid($pid, $status);
+    $conversation = (string) file_get_contents($log);
+    unlink($log);
+
+    expect(substr_count(strtolower($conversation), 'rcpt to:<ada@example.test>'))->toBe(1)
+        ->and($conversation)->toContain("RCPT TO:<grace@example.test>\r\n")
+        ->toContain("RCPT TO:<archive@shop.test>\r\n")
+        ->toContain("\r\nDKIM-Signature: v=1; a=ed25519-sha256;")
+        ->and(substr($conversation, (int) strpos($conversation, "DATA\r\n")))->not->toContain('archive@shop.test');
 });

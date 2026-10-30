@@ -21,9 +21,19 @@ namespace Tinvar\Mail;
  * checked against its own origin and no other's. Plain http is an origin
  * only on this machine, for an application `tinvar serve` serves in dev.
  *
+ * Two kinds of image are allowed only by name (ADR 0116). An image the
+ * message carries inline is `cid:` one of the content ids its attachments
+ * declare, and no other. And a tracking image -- one whose URL does say
+ * who is reading -- loads only from an origin named in $tracking: there,
+ * and only there, an image may carry a query. Allowing one is a choice the
+ * application makes in its Email, where a review sees it, never something
+ * an image origin allows by being named for the logo.
+ *
  * The renderer's kit holds its components to the same rules as it draws
  * (@tinvar/mail); SafeMailHtml holds the HTML that comes back to them again,
- * since the renderer is not trusted to have.
+ * since the renderer is not trusted to have. The attachments' names, types
+ * and sizes go to the kit with the policy, so a template can list what the
+ * message carries; their bytes never do.
  */
 final readonly class LinkPolicy
 {
@@ -37,15 +47,34 @@ final readonly class LinkPolicy
     /**
      * @param string|null $origin the canonical origin the message's links are built on
      * @param list<string> $images further https origins images may be loaded from
+     * @param list<string> $tracking https origins a tracking image may load from, its query and all
+     * @param list<string> $inline the content ids of the images the message carries inline
+     * @param list<array{name: string, type: string, bytes: int}> $attachments what the
+     *        message carries to be opened, as Attachment::describe() says it
      */
-    public function __construct(public ?string $origin = null, public array $images = [])
-    {
+    public function __construct(
+        public ?string $origin = null,
+        public array $images = [],
+        public array $tracking = [],
+        public array $inline = [],
+        public array $attachments = [],
+    ) {
         if ($origin !== null && preg_match(self::HTTPS_ORIGIN, $origin) !== 1 && preg_match(self::LOOPBACK_ORIGIN, $origin) !== 1) {
             throw new \InvalidArgumentException("'{$origin}' is not an origin an email's links are on: https://host[:port], or http on loopback.");
         }
         foreach ($this->images as $image) {
             if (preg_match(self::HTTPS_ORIGIN, $image) !== 1) {
                 throw new \InvalidArgumentException("'{$image}' is not an origin images may come from: https://host[:port].");
+            }
+        }
+        foreach ($this->tracking as $tracker) {
+            if (preg_match(self::HTTPS_ORIGIN, $tracker) !== 1) {
+                throw new \InvalidArgumentException("'{$tracker}' is not an origin a tracking image may come from: https://host[:port].");
+            }
+        }
+        foreach ($this->inline as $id) {
+            if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z/', $id) !== 1) {
+                throw new \InvalidArgumentException("'{$id}' is not a content id.");
             }
         }
     }
@@ -69,7 +98,24 @@ final readonly class LinkPolicy
     /** Whether a mail client may load an image from $src. */
     public function allowsImage(string $src): bool
     {
-        if ($src === '' || preg_match(self::UNSAFE, $src) === 1 || strpbrk($src, '?#') !== false) {
+        if ($src === '' || preg_match(self::UNSAFE, $src) === 1) {
+            return false;
+        }
+        // One the message carries, by the content id it declared: compared
+        // whole, so `cid:logo` names `logo` and never `logo.evil`.
+        if (preg_match('/^cid:/i', $src) === 1) {
+            return \in_array(substr($src, 4), $this->inline, true);
+        }
+        // A tracker, from an origin named for it alone: the query is what it
+        // is for. Never a fragment, which no image needs.
+        if (!str_contains($src, '#')) {
+            foreach ($this->tracking as $origin) {
+                if (\strlen($src) > \strlen($origin) && self::isOn($src, $origin) && self::hasNoUser($src)) {
+                    return true;
+                }
+            }
+        }
+        if (strpbrk($src, '?#') !== false) {
             return false;
         }
         foreach ([...($this->origin === null ? [] : [$this->origin]), ...$this->images] as $origin) {
@@ -85,11 +131,17 @@ final readonly class LinkPolicy
      * As the mail frame carries it to the renderer, whose kit holds its
      * components to it as they draw.
      *
-     * @return array{origin: string|null, images: list<string>}
+     * @return array{origin: string|null, images: list<string>, tracking: list<string>, inline: list<string>, attachments: list<array{name: string, type: string, bytes: int}>}
      */
     public function toFrame(): array
     {
-        return ['origin' => $this->origin, 'images' => $this->images];
+        return [
+            'origin' => $this->origin,
+            'images' => $this->images,
+            'tracking' => $this->tracking,
+            'inline' => $this->inline,
+            'attachments' => $this->attachments,
+        ];
     }
 
     /**

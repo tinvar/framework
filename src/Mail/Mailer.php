@@ -57,7 +57,18 @@ final readonly class Mailer
         // with what reaches a reader, and what is sent is the document the
         // check read, written out again (ADR 0086).
         $html = SafeMailHtml::clean($rendered->html, $email->links);
-        $message = new Message($this->from, $email->to, $email->subject, $html, $rendered->text, $email->replyTo, $email->unsubscribe);
+        $message = new Message(
+            $this->from,
+            $email->to,
+            $email->subject,
+            $html,
+            $rendered->text,
+            $email->replyTo,
+            $email->unsubscribe,
+            $email->cc,
+            $email->bcc,
+            $email->attachments,
+        );
         $this->transport->send($message);
 
         return $message;
