@@ -32,18 +32,31 @@ interface Coordination
     public function unlock(string $key, string $job): bool;
 
     /**
-     * Takes one of $runs starts allowed on $queue in the window of $per
-     * seconds $now falls in, across every worker: false when the window's
-     * are spent.
+     * Takes one of $runs starts allowed for $key in $per seconds, across
+     * every worker: 0 when it took one, or else how many seconds until one
+     * may be free -- at least 1.
+     *
+     * $key is what the rate counts: a queue's name, or a digest of a queue
+     * and a tenant for a rate held per tenant. In fixed windows, the window
+     * of $per seconds $now falls in, so up to twice $runs can start across
+     * a window's edge; $sliding, the $per seconds before $now, so no $per
+     * seconds anywhere hold more than $runs.
      */
-    public function slot(string $queue, int $runs, int $per, int $now): bool;
+    public function slot(string $key, int $runs, int $per, int $now, bool $sliding = false): int;
 
-    /** Gives back a start slot() took, when no job was there to start. */
-    public function unslot(string $queue, int $per, int $now): void;
+    /** Gives back a start slot() took at $now, when no job was there to start. */
+    public function unslot(string $key, int $per, int $now, bool $sliding = false): void;
 
     public function addBatch(BatchRecord $batch): void;
 
     public function batch(string $id): ?BatchRecord;
+
+    /**
+     * $jobs more to count in batch $id, pushed in the same transaction:
+     * true when it took them, false when the batch is gone, has finished
+     * or was cancelled -- a batch counted to its end is not started again.
+     */
+    public function addToBatch(string $id, int $jobs): bool;
 
     /**
      * The batch's job $job is done -- or skipped, the batch being cancelled:

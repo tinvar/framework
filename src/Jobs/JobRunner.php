@@ -115,6 +115,18 @@ final readonly class JobRunner
     }
 
     /**
+     * The envelope's chain's catch, sealed to queue now as Envelope::caught()
+     * says; null where the chain has none. For Continuation, once a job of
+     * the chain has failed for good.
+     */
+    public function caught(Envelope $envelope, int $now): ?PendingJob
+    {
+        $catch = $envelope->caught(Uuid::v7(), $now);
+
+        return $catch === null ? null : new PendingJob($catch->id, QueueOptions::of($catch->declarations())->name, $catch->seal($this->signer), $now);
+    }
+
+    /**
      * Runs the job's handle().
      *
      * @throws JobRefused when its context no longer holds

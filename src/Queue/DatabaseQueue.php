@@ -28,7 +28,9 @@ use Tinvar\Orm\Schema\Table;
  * Unique jobs' locks, rate-limited queues' windows and batches' counts
  * (Coordination, ADR 0100) are three more tables beside them, made by
  * defineCoordination(): written on the same connection, so each moves in
- * the transaction that pushes, deletes or fails the job it is about.
+ * the transaction that pushes, deletes or fails the job it is about. A
+ * sliding window's starts are one more (defineSlidingRates()), for an
+ * application that holds a rate over any $per seconds (ADR 0118).
  */
 final class DatabaseQueue implements Queue, Coordination
 {
@@ -43,8 +45,9 @@ final class DatabaseQueue implements Queue, Coordination
         private readonly string $batchesTable = 'job_batches',
         private readonly string $ratesTable = 'job_rates',
         private readonly string $endsTable = 'job_batch_ends',
+        private readonly string $startsTable = 'job_rate_starts',
     ) {
-        foreach ([$table, $failedTable, $locksTable, $batchesTable, $ratesTable, $endsTable] as $name) {
+        foreach ([$table, $failedTable, $locksTable, $batchesTable, $ratesTable, $endsTable, $startsTable] as $name) {
             if (preg_match('/^[a-z_][a-z0-9_]{0,62}\z/', $name) !== 1) {
                 throw new \InvalidArgumentException("'{$name}' is not a table name this queue will write.");
             }
@@ -133,6 +136,26 @@ final class DatabaseQueue implements Queue, Coordination
             $ends->string('batch_id');
             $ends->string('job_id');
             $ends->primary(['batch_id', 'job_id']);
+        }, $ifNotExists);
+    }
+
+    /**
+     * The table a sliding window's starts are kept in, one row a start for
+     * as long as it is inside its window: for an application whose rates
+     * hold over any $per seconds rather than the clock's windows (ADR
+     * 0118). A rate's row in the windows' table is still what each start
+     * is taken under, so two workers counting the same starts take turns.
+     */
+    public static function defineSlidingRates(Schema $schema, string $startsTable = 'job_rate_starts', bool $ifNotExists = false): void
+    {
+        new self($schema->connection(), startsTable: $startsTable);
+
+        $schema->create($startsTable, static function (Table $starts) use ($startsTable): void {
+            $starts->string('rate_key', 64);
+            $starts->string('id', 32);
+            $starts->bigInteger('started_at');
+            $starts->primary(['rate_key', 'id']);
+            $starts->index(['rate_key', 'started_at'], "{$startsTable}_window");
         }, $ifNotExists);
     }
 
@@ -349,39 +372,100 @@ final class DatabaseQueue implements Queue, Coordination
         return $this->connection->execute("DELETE FROM {$this->locksTable} WHERE lock_key = ? AND job_id = ?", [$key, $job]) === 1;
     }
 
-    public function slot(string $queue, int $runs, int $per, int $now): bool
+    public function slot(string $key, int $runs, int $per, int $now, bool $sliding = false): int
     {
+        if ($sliding) {
+            return $this->slide($key, $runs, $per, $now);
+        }
+
         $window = $now - $now % $per;
         for ($try = 0; $try < 2; $try++) {
             // This window's, while it has some left.
             if ($this->connection->execute(
                 "UPDATE {$this->ratesTable} SET used = used + 1 WHERE queue = ? AND window_start = ? AND used < ?",
-                [$queue, $window, $runs],
+                [$key, $window, $runs],
             ) === 1) {
-                return true;
+                return 0;
             }
             // A window gone by: this one starts, with this start in it.
             if ($this->connection->execute(
                 "UPDATE {$this->ratesTable} SET window_start = ?, used = 1 WHERE queue = ? AND window_start < ?",
-                [$window, $queue, $window],
+                [$window, $key, $window],
             ) === 1) {
-                return true;
+                return 0;
             }
-            // The queue's first.
-            if ($this->insertIgnoring($this->ratesTable, ['queue', 'window_start', 'used'], [$queue, $window, 1])) {
-                return true;
+            // The key's first.
+            if ($this->insertIgnoring($this->ratesTable, ['queue', 'window_start', 'used'], [$key, $window, 1])) {
+                return 0;
             }
         }
 
-        return false;
+        return max(1, $window + $per - $now);
     }
 
-    public function unslot(string $queue, int $per, int $now): void
+    public function unslot(string $key, int $per, int $now, bool $sliding = false): void
     {
+        if ($sliding) {
+            $this->atomically(function () use ($key, $now): void {
+                $last = $this->connection->select(
+                    "SELECT id FROM {$this->startsTable} WHERE rate_key = ? AND started_at = ? ORDER BY id DESC LIMIT 1",
+                    [$key, $now],
+                )[0]['id'] ?? null;
+                if (\is_string($last)) {
+                    $this->connection->execute("DELETE FROM {$this->startsTable} WHERE rate_key = ? AND id = ?", [$key, $last]);
+                }
+            });
+
+            return;
+        }
+
         $this->connection->execute(
             "UPDATE {$this->ratesTable} SET used = used - 1 WHERE queue = ? AND window_start = ? AND used > 0",
-            [$queue, $now - $now % $per],
+            [$key, $now - $now % $per],
         );
+    }
+
+    /**
+     * A sliding window's start: the starts in the $per seconds before $now
+     * counted, and one added while they are fewer than $runs.
+     *
+     * Counted under the rate's row in the windows' table, written first so
+     * the transaction holds it -- Postgres's and MySQL's row lock, SQLite's
+     * write lock -- until it ends: two workers that both counted $runs - 1
+     * would otherwise both add one. Starts that have left the window are
+     * forgotten as it goes, so a key keeps at most $runs rows.
+     */
+    private function slide(string $key, int $runs, int $per, int $now): int
+    {
+        return $this->atomically(function () use ($key, $runs, $per, $now): int {
+            $this->insertIgnoring($this->ratesTable, ['queue', 'window_start', 'used'], [$key, 0, 0]);
+            $this->connection->execute("UPDATE {$this->ratesTable} SET used = used WHERE queue = ?", [$key]);
+            $this->connection->execute("DELETE FROM {$this->startsTable} WHERE rate_key = ? AND started_at <= ?", [$key, $now - $per]);
+
+            $row = $this->connection->select(
+                "SELECT COUNT(*) AS n, MIN(started_at) AS oldest FROM {$this->startsTable} WHERE rate_key = ?",
+                [$key],
+            )[0] ?? [];
+            if (self::number($row['n'] ?? 0) < $runs) {
+                $this->connection->execute(
+                    "INSERT INTO {$this->startsTable} (rate_key, id, started_at) VALUES (?, ?, ?)",
+                    [$key, self::startId($now), $now],
+                );
+
+                return 0;
+            }
+
+            return max(1, self::number($row['oldest'] ?? $now) + $per - $now);
+        });
+    }
+
+    /**
+     * A start's id: ordered by its time, then by when this process took it,
+     * so unslot() gives back the latest start of its second.
+     */
+    private static function startId(int $now): string
+    {
+        return \sprintf('%010x%012x%s', $now, self::queuedAt() & 0xFFFFFFFFFFFF, bin2hex(random_bytes(5)));
     }
 
     public function addBatch(BatchRecord $batch): void
@@ -418,6 +502,18 @@ final class DatabaseQueue implements Queue, Coordination
             finishedAt: $row['finished_at'] === null ? null : self::number($row['finished_at']),
             callbacks: BatchRecord::callbacksFrom($row['callbacks']),
         );
+    }
+
+    public function addToBatch(string $id, int $jobs): bool
+    {
+        // Conditional on the batch still running: of an add and the end of
+        // its last job, whichever writes the row first wins, and the other
+        // sees what it did.
+        return $jobs > 0 && $this->connection->execute(
+            "UPDATE {$this->batchesTable} SET total = total + ?, pending = pending + ?
+              WHERE id = ? AND finished_at IS NULL AND cancelled_at IS NULL AND pending > 0",
+            [$jobs, $jobs, $id],
+        ) === 1;
     }
 
     public function batchJobDone(string $id, string $job, int $now): ?BatchStep

@@ -27,6 +27,10 @@ use Tinvar\Orm\Orm;
 use Tinvar\Queue\ArrayQueue;
 use Tinvar\Queue\Coordination;
 use Tinvar\Queue\DatabaseQueue;
+use Tinvar\Tests\Support\Fixtures\Databases;
+use Tinvar\Jobs\Chain;
+use Tinvar\Jobs\Dispatcher;
+use Tinvar\Jobs\JobControl;
 use Tinvar\Queue\Queue as JobQueue;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\Journal;
@@ -37,6 +41,7 @@ use function Tinvar\Tests\Jobs\Fixtures\databaseQueue;
 use function Tinvar\Tests\Jobs\Fixtures\schemaOf;
 
 require_once __DIR__ . '/Fixtures/jobs.php';
+require_once __DIR__ . '/../Support/Fixtures/databases.php';
 
 /** Notes that it ran, as whom and where. */
 final readonly class Step implements Job
@@ -111,6 +116,27 @@ final readonly class UniqueBreaks implements Job
     }
 }
 
+/** Unique by its arguments, as a unique job is unless it says otherwise (ADR 0118). */
+#[Queue(unique: 600)]
+final readonly class Reindex implements Job
+{
+    public function __construct(public string $account) {}
+
+    public function handle(Journal $journal): void
+    {
+        $journal->entries[] = ['reindexed' => $this->account];
+    }
+}
+
+/** A job of a batch that adds another to it, proven a member by its run's control. */
+final readonly class Grows implements Job
+{
+    public function handle(Journal $journal, Dispatcher $jobs, JobControl $job): void
+    {
+        $journal->entries[] = ['step' => 'grows', 'added' => $jobs->addToBatch($job, new Step('grown'))];
+    }
+}
+
 /** Unique per user, running as them. */
 #[Queue(unique: 600, asUser: true)]
 final readonly class UniquePerUser implements Job
@@ -125,6 +151,7 @@ function queues(): array
         'SQLite' => [static function (TenantFixture $f): JobQueue {
             $queue = databaseQueue($f->connection);
             DatabaseQueue::defineCoordination(schemaOf($f->connection));
+            DatabaseQueue::defineSlidingRates(schemaOf($f->connection));
 
             return $queue;
         }],
@@ -519,4 +546,175 @@ it('refuses chains, batches and unique jobs on a queue that keeps none of them',
 
     $worker = new Worker($plain, $h->runner, $h->scope);
     expect(fn () => $worker->run(new WorkerOptions(stopWhenEmpty: true, signals: false, rates: ['default' => new Rate(1)])))->toThrow(\LogicException::class, 'Coordination');
+});
+
+describe('a unique job with no uniqueId() of its own', function () {
+    // ADR 0118: one per class held the place of every other account's.
+    it('is unique by its arguments: the same job once, another account\'s beside it', function (\Closure $make) {
+        $h = harness($make);
+        $first = $h->dispatcher->dispatch(new Reindex('a-1'));
+        expect($h->dispatcher->dispatch(new Reindex('a-1')))->toBe($first)
+            ->and($h->dispatcher->dispatch(new Reindex('a-2')))->not->toBe($first);
+
+        $h->work();
+        expect(array_column($h->journal()->entries, 'reindexed'))->toBe(['a-1', 'a-2']);
+    })->with(queues());
+});
+
+describe('a chain\'s catch', function () {
+    it('runs when a job of the chain fails for good, in the chain\'s tenant, and the rest never do', function (\Closure $make) {
+        $h = harness($make);
+        $h->orm->actAs('acme', fn () => $h->dispatcher->chain(Chain::of(new Step('a'), new Breaks('b'), new Step('c'))->catch(new Step('caught'))));
+        for ($round = 0; $round < 4; $round++) {
+            $h->work();
+        }
+
+        expect(steps($h))->toBe(['a', 'b', 'caught'])
+            ->and($h->journal()->entries[2]['tenant'])->toBe('acme');
+    })->with(queues());
+
+    it('does not run when the chain finishes', function (\Closure $make) {
+        $h = harness($make);
+        $h->dispatcher->chain(Chain::of(new Step('a'), new Step('b'))->catch(new Step('caught')));
+        for ($round = 0; $round < 3; $round++) {
+            $h->work();
+        }
+
+        expect(steps($h))->toBe(['a', 'b']);
+    })->with(queues());
+
+    it('is refused when edited into a payload: its catch is under the MAC', function () {
+        $h = new Harness();
+        $h->dispatcher->chain(Chain::of(new Step('a'))->catch(new Step('caught')));
+        $payload = $h->queue instanceof \Tinvar\Queue\ArrayQueue ? $h->queue->pushed()[0]->payload : '';
+        $edited = str_replace('caught', 'CAUGHT', $payload);
+
+        expect(static fn () => $h->runner->open($edited))->toThrow(\Tinvar\Jobs\JobRefused::class);
+    });
+
+    it('holds one catch a chain', function () {
+        expect(static fn () => Chain::of(new Step('a'))->catch(new Step('x'))->catch(new Step('y')))->toThrow(\LogicException::class);
+    });
+});
+
+describe('a chain inside a batch', function () {
+    it('is counted once, at its end, and the batch\'s then waits for it', function (\Closure $make) {
+        $h = harness($make);
+        $id = $h->dispatcher->batch(Batch::of(Chain::of(new Step('c1'), new Step('c2'), new Step('c3')), new Step('alone'))->then(new Step('then')));
+        expect($h->dispatcher->batchProgress($id)?->total)->toBe(2);
+        for ($round = 0; $round < 5; $round++) {
+            $h->work();
+        }
+
+        $steps = steps($h);
+        expect($steps)->toContain('c1', 'c2', 'c3', 'alone', 'then')
+            ->and(array_search('then', $steps, true))->toBeGreaterThan(array_search('c3', $steps, true))
+            ->and($h->dispatcher->batchProgress($id)?->finished)->toBeTrue()
+            ->and($h->dispatcher->batchProgress($id)?->pending)->toBe(0);
+    })->with(queues());
+
+    it('fails the batch at a job that fails for good, and runs the chain\'s catch and the batch\'s', function (\Closure $make) {
+        $h = harness($make);
+        $id = $h->dispatcher->batch(Batch::of(Chain::of(new Step('c1'), new Breaks('c2'), new Step('c3'))->catch(new Step('chain caught')))->catch(new Step('batch caught'))->finally(new Step('finally')));
+        for ($round = 0; $round < 5; $round++) {
+            $h->work();
+        }
+
+        expect(steps($h))->toContain('c1', 'c2', 'chain caught', 'batch caught', 'finally')
+            ->and(steps($h))->not->toContain('c3')
+            ->and($h->dispatcher->batchProgress($id)?->failed)->toBe(1);
+    })->with(queues());
+
+    it('stops where its batch was cancelled: the job in hand counted, the rest never queued', function (\Closure $make) {
+        $h = harness($make);
+        $id = $h->dispatcher->batch(Batch::of(new Breaks('first'), Chain::of(new Step('c1'), new Step('c2'))));
+        for ($round = 0; $round < 4; $round++) {
+            $h->work();
+        }
+
+        expect(steps($h))->toBe(['first'])
+            ->and($h->dispatcher->batchProgress($id)?->finished)->toBeTrue()
+            ->and($h->queue->size('default'))->toBe(0);
+    })->with(queues());
+});
+
+describe('adding to a batch after dispatch', function () {
+    it('adds jobs to a batch still running, where it was dispatched, and its then waits for them', function (\Closure $make) {
+        $h = harness($make);
+        $id = $h->dispatcher->batch(Batch::of(new Step('one'))->then(new Step('then')));
+        expect($h->dispatcher->addToBatch($id, new Step('two')))->toBeTrue()
+            ->and($h->dispatcher->batchProgress($id)?->total)->toBe(2);
+        for ($round = 0; $round < 3; $round++) {
+            $h->work();
+        }
+
+        expect(steps($h))->toBe(['one', 'two', 'then']);
+    })->with(queues());
+
+    it('lets a job of the batch add to it, proven by its own verified run', function (\Closure $make) {
+        $h = harness($make);
+        $h->container->instance(Dispatcher::class, $h->dispatcher);
+        $id = $h->orm->actAs('acme', fn () => $h->dispatcher->batch(Batch::of(new Grows())->then(new Step('then'))));
+        for ($round = 0; $round < 3; $round++) {
+            $h->work();
+        }
+
+        expect(steps($h))->toBe(['grows', 'grown', 'then'])
+            ->and($h->journal()->entries[0]['added'])->toBeTrue()
+            ->and($h->orm->actAs('acme', fn () => $h->dispatcher->batchProgress($id)?->total))->toBe(2);
+    })->with(queues());
+
+    it('refuses another tenant\'s or user\'s batch, and one that has finished', function (\Closure $make) {
+        $h = harness($make);
+        $id = $h->orm->actAs('acme', fn () => $h->dispatcher->batch(Batch::of(new Step('one'))));
+
+        expect($h->orm->actAs('globex', fn () => $h->dispatcher->addToBatch($id, new Step('theirs'))))->toBeFalse()
+            ->and($h->dispatcher->addToBatch($id, new Step('no tenant')))->toBeFalse()
+            ->and($h->auth->actingAs(new User('u-2'), fn () => $h->orm->actAs('acme', fn () => $h->dispatcher->addToBatch($id, new Step('not mine')))))->toBeFalse();
+        $h->work();
+        expect($h->orm->actAs('acme', fn () => $h->dispatcher->addToBatch($id, new Step('late'))))->toBeFalse()
+            ->and(steps($h))->toBe(['one']);
+    })->with(queues());
+});
+
+describe('a rate per tenant', function () {
+    it('holds each tenant to its own starts: one tenant\'s flood waits on itself, never another\'s', function (\Closure $make) {
+        $h = harness($make);
+        for ($i = 0; $i < 3; $i++) {
+            $h->orm->actAs('acme', fn () => $h->dispatcher->dispatch(new Step("acme-{$i}")));
+        }
+        $h->orm->actAs('globex', fn () => $h->dispatcher->dispatch(new Step('globex')));
+        $options = new WorkerOptions(stopWhenEmpty: true, signals: false, rates: ['default' => Rate::perTenant(1, 60)]);
+        $h->now = 1_800_000_040;
+
+        $h->worker->run($options);
+        expect(steps($h))->toBe(['acme-0', 'globex'])
+            ->and(array_filter($h->log, static fn (string $line): bool => str_contains($line, 'throttled')))->not->toBeEmpty();
+
+        $h->now += 20;
+        $h->worker->run($options);
+        expect(steps($h))->toBe(['acme-0', 'globex', 'acme-1']);
+        $h->now += 60;
+        $h->worker->run($options);
+        expect(steps($h))->toBe(['acme-0', 'globex', 'acme-1', 'acme-2']);
+    })->with(queues());
+});
+
+describe('a sliding rate', function () {
+    it('lets no more than its runs start in any window, across a window\'s edge', function (\Closure $make) {
+        $h = harness($make);
+        for ($i = 0; $i < 4; $i++) {
+            $h->dispatcher->dispatch(new Step("s{$i}"));
+        }
+        $options = new WorkerOptions(stopWhenEmpty: true, signals: false, rates: ['default' => new Rate(2, 60, sliding: true)]);
+        $h->now = 1_800_000_050;
+
+        expect($h->worker->run($options))->toBe(2);
+        // The clock's minute has turned; the last 60 seconds have not.
+        $h->now = 1_800_000_065;
+        expect($h->worker->run($options))->toBe(0);
+        $h->now = 1_800_000_111;
+        expect($h->worker->run($options))->toBe(2)
+            ->and(steps($h))->toBe(['s0', 's1', 's2', 's3']);
+    })->with(queues());
 });

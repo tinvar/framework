@@ -94,6 +94,16 @@ final class JobControl
         return $this->envelope->checkpoint;
     }
 
+    /**
+     * The batch this job counts in, if any: what Dispatcher::addToBatch()
+     * takes this control for, to add to the batch the running job is part
+     * of, proven by its verified payload.
+     */
+    public function batch(): ?string
+    {
+        return $this->envelope->batch;
+    }
+
     /** How many times this job has paused before this run. */
     public function releases(): int
     {

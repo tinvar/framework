@@ -35,6 +35,9 @@ use Tinvar\Support\Signer;
  * job of a chain is sealed by the worker from this envelope once it has
  * verified -- the same tenant, user and epoch, the panel the chain sealed
  * for that job at dispatch -- never from anything the queue's rows say.
+ * Likewise its chain's catch (ADR 0118), sealed by the worker from this
+ * envelope when a job of the chain fails for good; and, for a chain inside
+ * a batch, the id the batch counts the whole chain by, its first job's.
  */
 final readonly class Envelope
 {
@@ -63,6 +66,11 @@ final readonly class Envelope
      *                                         the jobs to run after it, in order, each with its arguments
      *                                         (encoded, see Payload) and the panel it was sealed for
      * @param string|null          $unique its unique lock's key, if it holds one
+     * @param array{job: class-string<Job>, args: array<string, mixed>, by: class-string|null, panel: string|null}|null $catch
+     *                                         the job to run if this one, or any after it in its chain,
+     *                                         fails for good
+     * @param string|null          $member what its batch counts it as: its chain's first job's id,
+     *                                         for a later job of a chain inside a batch; its own otherwise
      */
     public function __construct(
         public string $id,
@@ -79,7 +87,15 @@ final readonly class Envelope
         public ?string $batch = null,
         public array $chain = [],
         public ?string $unique = null,
+        public ?array $catch = null,
+        public ?string $member = null,
     ) {}
+
+    /** What its batch counts it as: the chain it is part of, by the chain's first job, or itself. */
+    public function batchMember(): string
+    {
+        return $this->member ?? $this->id;
+    }
 
     /**
      * The same job, paused once more, with where it paused: the tenant,
@@ -104,6 +120,8 @@ final readonly class Envelope
             batch: $this->batch,
             chain: $this->chain,
             unique: $this->unique,
+            catch: $this->catch,
+            member: $this->member,
         );
     }
 
@@ -129,7 +147,35 @@ final readonly class Envelope
             epoch: $this->epoch,
             dispatchedAt: $now,
             declaredBy: $next['by'],
+            batch: $this->batch,
             chain: \array_slice($this->chain, 1),
+            catch: $this->catch,
+            member: $this->batch === null ? null : $this->batchMember(),
+        );
+    }
+
+    /**
+     * Its chain's catch, as id $id dispatched at $now: this job's tenant,
+     * user and epoch, the panel the chain sealed for it, and nothing after
+     * it -- a catch is no part of the chain or batch it answers for. Null
+     * where the chain has none.
+     */
+    public function caught(string $id, int $now): ?self
+    {
+        if ($this->catch === null) {
+            return null;
+        }
+
+        return new self(
+            id: $id,
+            class: $this->catch['job'],
+            arguments: $this->catch['args'],
+            tenant: $this->tenant,
+            panel: $this->catch['panel'],
+            user: $this->user,
+            epoch: $this->epoch,
+            dispatchedAt: $now,
+            declaredBy: $this->catch['by'],
         );
     }
 
@@ -171,6 +217,12 @@ final readonly class Envelope
         if ($this->unique !== null) {
             $fields['uq'] = $this->unique;
         }
+        if ($this->catch !== null) {
+            $fields['catch'] = $this->catch;
+        }
+        if ($this->member !== null) {
+            $fields['bm'] = $this->member;
+        }
         $json = json_encode($fields, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION);
 
         return Signer::encode($signer->sign($json)) . '.' . $json;
@@ -209,6 +261,8 @@ final readonly class Envelope
             || !(!\array_key_exists('rel', $data) || (\is_int($data['rel']) && $data['rel'] > 0))
             || !(!\array_key_exists('batch', $data) || \is_string($data['batch']))
             || !(!\array_key_exists('uq', $data) || \is_string($data['uq']))
+            || !(!\array_key_exists('bm', $data) || \is_string($data['bm']))
+            || !(!\array_key_exists('catch', $data) || \is_array($data['catch']))
             || !(!\array_key_exists('chain', $data) || \is_array($data['chain']))) {
             throw new JobRefused('payload_unsigned', 'The job\'s payload is not an envelope this version wrote.');
         }
@@ -230,6 +284,8 @@ final readonly class Envelope
         $batch = $data['batch'] ?? null;
         $unique = $data['uq'] ?? null;
         $chain = self::chainFrom($data['chain'] ?? []);
+        $catch = \array_key_exists('catch', $data) ? self::chainFrom([$data['catch']])[0] : null;
+        $member = $data['bm'] ?? null;
 
         return new self(
             id: $data['id'],
@@ -246,6 +302,8 @@ final readonly class Envelope
             batch: $batch,
             chain: $chain,
             unique: $unique,
+            catch: $catch,
+            member: $member,
         );
     }
 

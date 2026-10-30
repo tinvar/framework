@@ -7,6 +7,7 @@ namespace Tinvar\Workflows;
 use Tinvar\Jobs\DeclaredBy;
 use Tinvar\Jobs\Job;
 use Tinvar\Jobs\JobControl;
+use Tinvar\Jobs\Payload;
 use Tinvar\Jobs\RunsAsStarter;
 use Tinvar\Jobs\UniqueJob;
 
@@ -22,8 +23,9 @@ use Tinvar\Jobs\UniqueJob;
  * stop and refused as any job is.
  *
  * Unique as the workflow says: its #[Queue(unique:)], scoped by its own
- * uniqueId() where it implements UniqueJob -- so one order's workflow
- * holds no lock another order's waits behind.
+ * uniqueId() where it implements UniqueJob, and else by its arguments, as
+ * any unique job is (ADR 0118) -- so one order's workflow holds no lock
+ * another order's waits behind.
  */
 final readonly class RunWorkflow implements Job, DeclaredBy, RunsAsStarter, UniqueJob
 {
@@ -36,7 +38,13 @@ final readonly class RunWorkflow implements Job, DeclaredBy, RunsAsStarter, Uniq
 
     public function uniqueId(): string
     {
-        return $this->workflow instanceof UniqueJob ? $this->workflow->uniqueId() : '';
+        if ($this->workflow instanceof UniqueJob) {
+            return $this->workflow->uniqueId();
+        }
+
+        // Its arguments, digested: the key is a digest of this in turn, and
+        // nothing of a workflow's data is written beside it.
+        return hash('sha256', json_encode(Payload::encodeArguments($this->workflow), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION));
     }
 
     public function handle(JobControl $job, Workflows $workflows): void

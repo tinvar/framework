@@ -59,7 +59,7 @@ final readonly class SyncQueue implements Queue, Coordination
 
         // A job of a batch an earlier failure cancelled: counted, not run.
         if ($envelope->batch !== null && $this->kept->batch($envelope->batch)?->cancelledAt !== null) {
-            $continuation->done($envelope, time());
+            $continuation->done($envelope, time(), skipped: true);
 
             return;
         }
@@ -100,14 +100,14 @@ final readonly class SyncQueue implements Queue, Coordination
         return $this->kept->unlock($key, $job);
     }
 
-    public function slot(string $queue, int $runs, int $per, int $now): bool
+    public function slot(string $key, int $runs, int $per, int $now, bool $sliding = false): int
     {
-        return $this->kept->slot($queue, $runs, $per, $now);
+        return $this->kept->slot($key, $runs, $per, $now, $sliding);
     }
 
-    public function unslot(string $queue, int $per, int $now): void
+    public function unslot(string $key, int $per, int $now, bool $sliding = false): void
     {
-        $this->kept->unslot($queue, $per, $now);
+        $this->kept->unslot($key, $per, $now, $sliding);
     }
 
     public function addBatch(BatchRecord $batch): void
@@ -118,6 +118,11 @@ final readonly class SyncQueue implements Queue, Coordination
     public function batch(string $id): ?BatchRecord
     {
         return $this->kept->batch($id);
+    }
+
+    public function addToBatch(string $id, int $jobs): bool
+    {
+        return $this->kept->addToBatch($id, $jobs);
     }
 
     public function batchJobDone(string $id, string $job, int $now): ?BatchStep

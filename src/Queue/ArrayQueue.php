@@ -34,6 +34,9 @@ final class ArrayQueue implements Queue, Coordination
     /** @var array<string, array{window: int, used: int}> */
     private array $rates = [];
 
+    /** @var array<string, list<int>> a sliding window's starts, by key, oldest first */
+    private array $starts = [];
+
     /** @var array<string, BatchRecord> */
     private array $batches = [];
 
@@ -221,26 +224,50 @@ final class ArrayQueue implements Queue, Coordination
         return $this->locks[$key] ?? null;
     }
 
-    public function slot(string $queue, int $runs, int $per, int $now): bool
+    public function slot(string $key, int $runs, int $per, int $now, bool $sliding = false): int
     {
+        if ($sliding) {
+            $starts = array_values(array_filter($this->starts[$key] ?? [], static fn (int $at): bool => $at > $now - $per));
+            if (\count($starts) >= $runs) {
+                $this->starts[$key] = $starts;
+
+                return max(1, $starts[0] + $per - $now);
+            }
+            $starts[] = $now;
+            $this->starts[$key] = $starts;
+
+            return 0;
+        }
+
         $window = $now - $now % $per;
-        $rate = $this->rates[$queue] ?? null;
+        $rate = $this->rates[$key] ?? null;
         if ($rate === null || $rate['window'] < $window) {
             $rate = ['window' => $window, 'used' => 0];
         }
         if ($rate['used'] >= $runs) {
-            return false;
+            return max(1, $window + $per - $now);
         }
-        $this->rates[$queue] = ['window' => $window, 'used' => $rate['used'] + 1];
+        $this->rates[$key] = ['window' => $window, 'used' => $rate['used'] + 1];
 
-        return true;
+        return 0;
     }
 
-    public function unslot(string $queue, int $per, int $now): void
+    public function unslot(string $key, int $per, int $now, bool $sliding = false): void
     {
-        $rate = $this->rates[$queue] ?? null;
+        if ($sliding) {
+            $starts = $this->starts[$key] ?? [];
+            $at = array_search($now, array_reverse($starts, true), true);
+            if ($at !== false) {
+                unset($starts[$at]);
+                $this->starts[$key] = array_values($starts);
+            }
+
+            return;
+        }
+
+        $rate = $this->rates[$key] ?? null;
         if ($rate !== null && $rate['window'] === $now - $now % $per && $rate['used'] > 0) {
-            $this->rates[$queue] = ['window' => $rate['window'], 'used' => $rate['used'] - 1];
+            $this->rates[$key] = ['window' => $rate['window'], 'used' => $rate['used'] - 1];
         }
     }
 
@@ -252,6 +279,17 @@ final class ArrayQueue implements Queue, Coordination
     public function batch(string $id): ?BatchRecord
     {
         return $this->batches[$id] ?? null;
+    }
+
+    public function addToBatch(string $id, int $jobs): bool
+    {
+        $batch = $this->batches[$id] ?? null;
+        if ($jobs < 1 || $batch === null || $batch->finishedAt !== null || $batch->cancelledAt !== null || $batch->pending === 0) {
+            return false;
+        }
+        $this->batches[$id] = $batch->with(['total' => $batch->total + $jobs, 'pending' => $batch->pending + $jobs]);
+
+        return true;
     }
 
     public function batchJobDone(string $id, string $job, int $now): ?BatchStep

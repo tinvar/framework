@@ -74,6 +74,10 @@ use Tinvar\Queue\ReservedJob;
  * rate-limited queue (WorkerOptions::$rates) is taken from only while its
  * window has starts left, counted across every worker on the store; one
  * whose window is spent is passed over for the next queue in the list.
+ * A rate held per tenant (Rate::perTenant(), ADR 0118) is taken once the
+ * payload has been opened and its tenant is known: a job whose tenant has
+ * no start left goes back on its queue, its try given back, until one may
+ * be free -- 'throttled'.
  */
 final class Worker
 {
@@ -113,6 +117,9 @@ final class Worker
 
     /** What the alarm armed now is for: the job's timeout, the stop's interrupt, or the hand-back. */
     private string $alarmFor = 'timeout';
+
+    /** @var array<string, Rate> the rates run() was given, by queue: what process() holds a tenant's jobs to */
+    private array $rates = [];
 
     /** Whether the job in hand was stopped by the stop (WorkerStopping). */
     private bool $interrupted = false;
@@ -183,6 +190,7 @@ final class Worker
         $this->stopAskedAt = null;
         $this->stopBudget = $options->stopBudget;
         $this->reservedFor = $options->timeout;
+        $this->rates = $options->rates;
         $started = $this->now();
         $ran = 0;
         if ($options->signals) {
@@ -266,8 +274,11 @@ final class Worker
         \assert($this->queue instanceof Coordination);
         foreach ($options->queues as $queue) {
             $now = $this->now();
+            // A rate per tenant is taken once the payload names its tenant
+            // (process()); here only a rate per queue is.
             $rate = $options->rates[$queue] ?? null;
-            if ($rate !== null && !$this->queue->slot($queue, $rate->runs, $rate->per, $now)) {
+            $rate = $rate?->perTenant === true ? null : $rate;
+            if ($rate !== null && $this->queue->slot($rate->key($queue), $rate->runs, $rate->per, $now, $rate->sliding) !== 0) {
                 continue;
             }
             $job = $this->queue->reserve([$queue], $now, $reserveFor);
@@ -275,7 +286,7 @@ final class Worker
                 return $job;
             }
             if ($rate !== null) {
-                $this->queue->unslot($queue, $rate->per, $now);
+                $this->queue->unslot($rate->key($queue), $rate->per, $now, $rate->sliding);
             }
         }
 
@@ -309,7 +320,7 @@ final class Worker
     /**
      * Runs one reserved job and records how it went.
      *
-     * @return 'done'|'released'|'failed'|'lost'|'paused'|'handed back'|'skipped'
+     * @return 'done'|'released'|'failed'|'lost'|'paused'|'handed back'|'skipped'|'throttled'
      */
     public function process(ReservedJob $job): string
     {
@@ -329,7 +340,7 @@ final class Worker
         ], fn (?Span $span): string => $this->processTraced($job, $span), Span::KIND_CONSUMER);
     }
 
-    /** @return 'done'|'released'|'failed'|'lost'|'paused'|'handed back'|'skipped' */
+    /** @return 'done'|'released'|'failed'|'lost'|'paused'|'handed back'|'skipped'|'throttled' */
     private function processTraced(ReservedJob $job, ?Span $span): string
     {
         $began = hrtime(true);
@@ -382,6 +393,19 @@ final class Worker
                 $skipped = $batch->cancelledAt !== null;
             }
 
+            // Its tenant's start, where the queue's rate is per tenant: the
+            // tenant the verified payload seals, never one the queue says.
+            // None left: back on its queue until one may be, its try given
+            // back -- a wait, not a failure.
+            $wait = $skipped ? 0 : $this->tenantStart($job, $envelope);
+            if ($wait > 0) {
+                $outcome = $this->queue->requeue($job, $this->now() + $wait) ? 'throttled' : 'lost';
+                $span?->set('tinvar.job.outcome', $outcome);
+                $this->say("{$envelope->class} {$job->id} {$outcome} (its tenant's starts are spent for {$wait}s)");
+
+                return $outcome;
+            }
+
             if (!$skipped) {
                 $control = $this->runner->control($envelope, fn (): bool => $this->stopRequested());
                 $this->holding = $job;
@@ -416,7 +440,7 @@ final class Worker
         // inside it -- and lost with it.
         $this->resetScope();
 
-        $outcome = $this->record($job, $envelope, $options, $error, $control?->released(), $interrupted);
+        $outcome = $this->record($job, $envelope, $options, $error, $control?->released(), $interrupted, $skipped);
         if ($skipped && $outcome === 'done') {
             $outcome = 'skipped';
         }
@@ -447,7 +471,7 @@ final class Worker
      * @param array{delay: int, checkpoint: array<array-key, mixed>|null}|null $release what the job asked for through JobControl
      * @return 'done'|'released'|'failed'|'lost'|'paused'|'handed back'
      */
-    private function record(ReservedJob $job, ?Envelope $envelope, ?QueueOptions $options, ?\Throwable $error, ?array $release, bool $interrupted): string
+    private function record(ReservedJob $job, ?Envelope $envelope, ?QueueOptions $options, ?\Throwable $error, ?array $release, bool $interrupted, bool $skipped = false): string
     {
         // Each write is the holder's alone, and says whether it was: a
         // worker whose reservation another has taken over records nothing.
@@ -473,7 +497,7 @@ final class Worker
         }
 
         if ($error === null) {
-            return $this->settle($envelope, true, fn (): bool => $this->queue->delete($job)) ? 'done' : 'lost';
+            return $this->settle($envelope, true, fn (): bool => $this->queue->delete($job), $skipped) ? 'done' : 'lost';
         }
 
         if (!$error instanceof JobRefused || $error->reason !== 'releases') {
@@ -523,7 +547,7 @@ final class Worker
      *
      * @param \Closure(): bool $write
      */
-    private function settle(?Envelope $envelope, bool $done, \Closure $write): bool
+    private function settle(?Envelope $envelope, bool $done, \Closure $write, bool $skipped = false): bool
     {
         if ($envelope === null || !Continuation::follows($envelope) || !$this->queue instanceof Coordination) {
             return $write();
@@ -532,14 +556,29 @@ final class Worker
         $queue = $this->queue;
         $continuation = new Continuation($queue, $this->runner);
 
-        return $queue->atomically(function () use ($envelope, $done, $write, $continuation): bool {
+        return $queue->atomically(function () use ($envelope, $done, $write, $continuation, $skipped): bool {
             if (!$write()) {
                 return false;
             }
-            $done ? $continuation->done($envelope, $this->now()) : $continuation->failed($envelope, $this->now());
+            $done ? $continuation->done($envelope, $this->now(), $skipped) : $continuation->failed($envelope, $this->now());
 
             return true;
         });
+    }
+
+    /**
+     * Takes a start for the job's tenant where its queue's rate is held per
+     * tenant: 0 when it took one, or there is no such rate; else the
+     * seconds until one may be free.
+     */
+    private function tenantStart(ReservedJob $job, Envelope $envelope): int
+    {
+        $rate = $this->rates[$job->queue] ?? null;
+        if ($rate === null || !$rate->perTenant || !$this->queue instanceof Coordination) {
+            return 0;
+        }
+
+        return $this->queue->slot($rate->key($job->queue, $envelope->tenant), $rate->runs, $rate->per, $this->now(), $rate->sliding);
     }
 
     private function resetScope(): void

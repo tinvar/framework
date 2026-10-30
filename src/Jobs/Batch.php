@@ -21,6 +21,10 @@ namespace Tinvar\Jobs;
  * waiting are counted as ended, not run. Each callback is a job of its own,
  * sealed at dispatch with the batch's tenant, panel, user and epoch, and
  * checked again when it runs as every job is.
+ *
+ * A job of a batch may be a Chain (ADR 0118): counted once, when its last
+ * job is done or any of its jobs fails for good. A batch still running is
+ * added to with Dispatcher::addToBatch().
  */
 final readonly class Batch
 {
@@ -28,7 +32,7 @@ final readonly class Batch
     public const int MAX_JOBS = 1_000;
 
     /**
-     * @param list<Job> $jobs
+     * @param list<Job|Chain> $jobs
      * @param list<Job> $then
      * @param list<Job> $catch
      * @param list<Job> $finally
@@ -48,7 +52,7 @@ final readonly class Batch
         }
     }
 
-    public static function of(Job ...$jobs): self
+    public static function of(Job|Chain ...$jobs): self
     {
         return new self(array_values($jobs));
     }
