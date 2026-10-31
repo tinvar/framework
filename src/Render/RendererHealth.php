@@ -31,10 +31,15 @@ final class RendererHealth
      * Every renderer at $path -- one socket, or each in a pool's directory --
      * with its answer, or why there was none.
      *
+     * @param float|null $within seconds the whole check may take: each renderer
+     *        is asked with what is left of it, at most the timeout, and one
+     *        reached after it has run out is reported unasked. Null asks each
+     *        for the whole timeout, however many there are.
      * @return array<string, array{pid: int, inFlight: int, served: int}|string> by socket path
      */
-    public function checkAll(string $path): array
+    public function checkAll(string $path, ?float $within = null): array
     {
+        $deadline = $within === null ? null : microtime(true) + $within;
         $sockets = new RendererSockets($path);
         $pool = $sockets->isPool();
         if ($pool) {
@@ -46,8 +51,14 @@ final class RendererHealth
 
         $answers = [];
         foreach ($candidates as $socket) {
+            $left = $deadline === null ? $this->timeoutSeconds : min($this->timeoutSeconds, $deadline - microtime(true));
+            if ($left <= 0.0) {
+                $answers[$socket] = \sprintf('not asked: the check had used its %.1fs', (float) $within);
+
+                continue;
+            }
             try {
-                $answers[$socket] = $this->check($socket);
+                $answers[$socket] = $this->check($socket, $left);
             } catch (RendererException|ProtocolException $e) {
                 $answers[$socket] = $e->getMessage();
             }
@@ -61,17 +72,19 @@ final class RendererHealth
      *
      * @return array{pid: int, inFlight: int, served: int}
      * @throws RendererException when it cannot be reached or does not answer in time
+     * @param float|null $timeoutSeconds how long it may take; the checker's timeout unless given
      * @throws ProtocolException when what it answers is not an answer
      */
-    public function check(string $socketPath): array
+    public function check(string $socketPath, ?float $timeoutSeconds = null): array
     {
+        $timeout = $timeoutSeconds ?? $this->timeoutSeconds;
         if (!$this->trust->assertSocket($socketPath)) {
             throw RendererException::cannotConnect($socketPath, 'no socket at that path');
         }
 
         set_error_handler(static fn (): bool => true);
         try {
-            $socket = stream_socket_client('unix://' . $socketPath, $errno, $error, $this->timeoutSeconds);
+            $socket = stream_socket_client('unix://' . $socketPath, $errno, $error, $timeout);
         } finally {
             restore_error_handler();
         }
@@ -80,7 +93,7 @@ final class RendererHealth
             throw RendererException::cannotConnect($socketPath, $reason !== '' ? $reason : "errno {$errno}");
         }
         try {
-            $this->trust->assertPeer($socket, $socketPath, $this->codec, $this->timeoutSeconds);
+            $this->trust->assertPeer($socket, $socketPath, $this->codec, $timeout);
         } catch (RendererException $e) {
             fclose($socket);
 
@@ -90,11 +103,11 @@ final class RendererHealth
         // The timeout is for the whole answer. Set once on the stream, it
         // bounded each read, and an answer sent a byte at a time, each in
         // time, could hold this command for as long as the renderer liked.
-        $deadline = microtime(true) + $this->timeoutSeconds;
-        $late = fn (): RendererException => RendererException::cannotConnect($socketPath, sprintf('no answer within %.1fs', $this->timeoutSeconds));
+        $deadline = microtime(true) + $timeout;
+        $late = fn (): RendererException => RendererException::cannotConnect($socketPath, sprintf('no answer within %.1fs', $timeout));
 
         try {
-            stream_set_timeout($socket, (int) $this->timeoutSeconds, (int) (fmod($this->timeoutSeconds, 1.0) * 1e6));
+            stream_set_timeout($socket, (int) $timeout, (int) (fmod($timeout, 1.0) * 1e6));
             fwrite($socket, $this->codec->encodeFrame(Frame::health()));
 
             $buffer = '';

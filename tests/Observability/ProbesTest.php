@@ -344,6 +344,35 @@ describe('the checks', function () {
             ->and($text)->toContain("# TYPE tinvar_renderer_renders_total counter\ntinvar_renderer_renders_total{slot=\"0\"} 40\ntinvar_renderer_renders_total{slot=\"1\"} 9");
     });
 
+    // Each renderer is asked in turn, a timeout each: a pool of stuck ones
+    // held a probe -- /_ready, a scrape -- for the timeout times the pool.
+    // The probe's time is capped as a whole, and what it had no time to ask
+    // is reported down.
+    it('asks no longer than its time in all, however many renderers are stuck', function () {
+        $directory = pool();
+        $servers = [];
+        foreach ([0, 1, 2, 3] as $slot) {
+            // Listening, and never answering: the connection is accepted by
+            // the kernel and the health frame waits for an answer.
+            $servers[] = stream_socket_server("unix://{$directory}/renderer-{$slot}-1.sock");
+        }
+        try {
+            $started = microtime(true);
+            $text = new Metrics()->collect(new RendererCheck($directory, new RendererHealth(timeoutSeconds: 0.4), within: 0.6))->exposition();
+            $took = microtime(true) - $started;
+        } finally {
+            foreach ($servers as $server) {
+                fclose($server);
+            }
+            stop([], $directory);
+        }
+
+        expect($took)->toBeLessThan(1.2)
+            ->and($text)->toContain("tinvar_renderers 4\n")
+            ->and($text)->toContain("tinvar_renderers_answering 0\n")
+            ->and($text)->toContain('tinvar_renderer_up{slot="3"} 0');
+    });
+
     // During a rolling restart a slot has two sockets -- the renderer
     // draining and its replacement (pool.js #replace()) -- and two series
     // with one label set is an exposition a scraper refuses. The newest is

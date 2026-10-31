@@ -40,11 +40,16 @@ final class RendererCheck implements HealthCheck, Collector
      * @param RendererHealth|null $health asks each renderer; built with the
      *        application's codec, and a timeout short enough that a stuck
      *        renderer does not hold a probe for long
+     * @param float $within seconds the whole check may take, every renderer
+     *        together: asked in turn, a pool of stuck ones otherwise held a
+     *        probe for the timeout times the pool. One it has no time left
+     *        to ask is reported down.
      */
     public function __construct(
         private readonly string $path,
         ?RendererHealth $health = null,
         private readonly string $name = 'renderer',
+        private readonly float $within = 2.0,
     ) {
         $this->health = $health ?? new RendererHealth(timeoutSeconds: 1.0);
     }
@@ -56,7 +61,7 @@ final class RendererCheck implements HealthCheck, Collector
 
     public function check(): void
     {
-        $answers = $this->health->checkAll($this->path);
+        $answers = $this->health->checkAll($this->path, $this->within);
         if ($answers === []) {
             throw new \RuntimeException("No renderer is listening at {$this->path}.");
         }
@@ -75,7 +80,7 @@ final class RendererCheck implements HealthCheck, Collector
     public function collect(): array
     {
         try {
-            $answers = $this->health->checkAll($this->path);
+            $answers = $this->health->checkAll($this->path, $this->within);
         } catch (\Throwable) {
             // A pool directory that fails its trust check, say: nothing in
             // it is asked, and nothing in it is answering.
