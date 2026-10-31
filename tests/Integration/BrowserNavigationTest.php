@@ -634,7 +634,6 @@ it('lets staff into the admin panel\'s orders, and refuses a customer', function
 
     expect($result['errors'])->toBe([])
         ->and($result['redirected'])->toBe(['path' => '/sign-in', 'next' => '/admin/orders']);
-    file_put_contents('/private/tmp/claude-501/-Volumes-Disk-Development-Personal-tinvar/15f03d40-971d-4d45-93df-39c610e14b10/scratchpad/admin.json', $output);
 
     // Every customer's orders, the newest fifty of them, in the admin panel;
     // the catalog after it, in none.
