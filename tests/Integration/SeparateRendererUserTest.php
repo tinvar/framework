@@ -340,8 +340,12 @@ describe('a pool run as another user', function () use ($root) {
         }
 
         try {
+            // Until the pool says it listens: a socket is made 0600 and
+            // only then given to the group, so one counted as it appears
+            // may not be 0660 yet.
             $deadline = microtime(true) + 20;
-            while (\count(socketsIn($pool)) < 2 && microtime(true) < $deadline) {
+            while ((\count(socketsIn($pool)) < 2 || !str_contains((string) @file_get_contents("{$dir}/pool.log"), 'a pool of 2 listening'))
+                && microtime(true) < $deadline) {
                 usleep(50_000);
             }
             $sockets = array_map(
