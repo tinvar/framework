@@ -13,7 +13,6 @@ use Tinvar\Http\Endpoints\Limits;
 use Tinvar\Http\EntryContext;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
-use Tinvar\Http\Pipeline;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Orm\NoTenantContext;
@@ -306,16 +305,10 @@ final class SubscribeEndpoint
             return false;
         }
 
-        $pipeline = new Pipeline([
-            // The tenant, resolved from this request, and the panel's guard,
-            // membership check and stack -- what decides whether the session
-            // still belongs where the token says it was.
-            ...$this->entry->stackForChain($chain),
-            ...array_map(
-                fn (string $class): Middleware => ($this->middlewareResolver)($class),
-                array_values(array_diff($chain->middleware(), $this->globalMiddleware)),
-            ),
-        ]);
+        // The tenant, resolved from this request, and the panel's guard,
+        // membership check and stack -- what decides whether the session
+        // still belongs where the token says it was.
+        $pipeline = EntryContext::routePipeline($this->entry, $chain, $this->globalMiddleware, $this->middlewareResolver);
 
         $run = fn (): Response => $pipeline->run($request, function (Request $inner) use ($chain, $claims): Response {
             // Checked, never applied: a token agrees with where the request

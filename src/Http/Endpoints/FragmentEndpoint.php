@@ -255,24 +255,16 @@ final class FragmentEndpoint
     private function throughRoute(RouteChain $chain, Request $passed, array $tokens): Response
     {
         $token = $tokens[0];
-        $routeOnly = array_values(array_diff($chain->middleware(), $this->globalMiddleware));
-        $pipeline = new Pipeline([
-            // Inner middleware first: the per-user throttle belongs here,
-            // after the global stack has established a session and before
-            // the route's own work. Fragments had only the address pass,
-            // and they are the most expensive endpoint to leave without
-            // an account ceiling -- one request is a full subtree render.
-            ...$this->extraInner,
-            // Then the route's tenant, as a page render resolves it -- from
-            // the request, never from the token, which the check below holds
-            // to it -- and its panel's stack: "the originating route's full
-            // middleware" includes the guard, MFA and allowlist in front of it.
-            ...($this->entry?->stackForChain($chain) ?? []),
-            ...array_map(
-                fn (string $class): Middleware => ($this->middlewareResolver)($class),
-                $routeOnly,
-            ),
-        ]);
+        // Inner middleware first: the per-user throttle belongs here, after
+        // the global stack has established a session and before the route's
+        // own work. Fragments had only the address pass, and they are the
+        // most expensive endpoint to leave without an account ceiling -- one
+        // request is a full subtree render. Then the route's tenant, as a
+        // page render resolves it -- from the request, never from the token,
+        // which the check below holds to it -- and its panel's stack: "the
+        // originating route's full middleware" includes the guard, MFA and
+        // allowlist in front of it.
+        $pipeline = EntryContext::routePipeline($this->entry, $chain, $this->globalMiddleware, $this->middlewareResolver, $this->extraInner);
 
         return $pipeline->run($passed, function (Request $inner) use ($chain, $token, $tokens): Response {
             // And still the token's panel once the route's middleware

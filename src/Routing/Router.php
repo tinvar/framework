@@ -98,14 +98,7 @@ final class Router
             // and its tenant and panel ahead of it, so the middleware, the
             // model binding and every loader run as the tenant the chain
             // names, inside its panel and behind the panel's stack.
-            $routeMiddleware = array_values(array_diff($chain->middleware(), $this->globalMiddleware));
-            $pipeline = new Pipeline([
-                ...($this->entry?->stackForChain($chain) ?? []),
-                ...array_map(
-                    fn (string $class): Middleware => ($this->middlewareResolver)($class),
-                    $routeMiddleware,
-                ),
-            ]);
+            $pipeline = EntryContext::routePipeline($this->entry, $chain, $this->globalMiddleware, $this->middlewareResolver);
 
             return $pipeline->run($passed, function (Request $inner) use ($chain, $respond): Response {
                 // Inside the route's middleware, like everything else that

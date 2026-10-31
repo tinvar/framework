@@ -342,17 +342,10 @@ final class Revalidator
             // The global stack is excluded: the action request is already
             // inside it, and running it twice would double every counter
             // and every side effect it has.
-            $routeOnly = array_values(array_diff($chain->middleware(), $this->globalMiddleware));
-
+            //
             // The route's tenant and panel stack ahead of its middleware, as
             // on navigation.
-            $pipeline = new Pipeline([
-                ...($this->entry?->stackForChain($chain) ?? []),
-                ...array_map(
-                    fn (string $class): Middleware => ($this->middlewareResolver)($class),
-                    $routeOnly,
-                ),
-            ]);
+            $pipeline = EntryContext::routePipeline($this->entry, $chain, $this->globalMiddleware, $this->middlewareResolver);
 
             // A GET for the ROUTE, not the action's POST.
             //

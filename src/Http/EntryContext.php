@@ -159,6 +159,34 @@ final readonly class EntryContext
         return $this->stackFor($chain->tenantSource(), $this->panelForChain($chain));
     }
 
+    /**
+     * What a route chain runs through once the global stack has: $before,
+     * then its tenant and its panel's stack (stackForChain()), then the
+     * chain's own middleware, the global middleware left out -- the request
+     * is inside that already, and running it twice doubles every counter
+     * and side effect it has.
+     *
+     * The one builder for every path that runs a route: a page, a
+     * re-render after an action, a fragment, a live subscription's trade.
+     * Built four times, the four could drift; any one of them weaker than
+     * navigation was a way round what a route enforces in middleware.
+     *
+     * @param list<string> $globalMiddleware
+     * @param \Closure(class-string): Middleware $middlewareResolver
+     * @param list<Middleware> $before
+     */
+    public static function routePipeline(?self $entry, RouteChain $chain, array $globalMiddleware, \Closure $middlewareResolver, array $before = []): Pipeline
+    {
+        return new Pipeline([
+            ...$before,
+            ...($entry?->stackForChain($chain) ?? []),
+            ...array_map(
+                static fn (string $class): Middleware => $middlewareResolver($class),
+                array_values(array_diff($chain->middleware(), $globalMiddleware)),
+            ),
+        ]);
+    }
+
     /** A route chain's panel: its page's and layouts' declarations, or its page's namespace. */
     public function panelForChain(RouteChain $chain): ?PanelBinding
     {
