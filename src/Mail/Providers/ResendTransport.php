@@ -13,7 +13,7 @@ use Tinvar\Outbound\OutboundHttp;
 
 /**
  * Sends through Resend's API: `POST https://api.resend.com/emails`, the key
- * as a bearer token (ADR 0146).
+ * as a bearer token (ADR 0147).
  *
  * Resend takes JSON alone, never MIME of ours, so the message is mapped
  * field by field: from, to, cc, bcc, reply_to, subject, html, text; the

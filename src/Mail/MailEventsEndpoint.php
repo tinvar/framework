@@ -15,7 +15,7 @@ use Tinvar\Http\Response;
  * The providers' webhooks: bounces, complaints and deliveries, each POSTed
  * by the provider's server and proven by its own scheme before anything it
  * says is read (MailWebhook) -- Resend's Svix signature, Postmark's basic
- * auth, SES's SNS signature, Mailgun's HMAC, SendGrid's ECDSA (ADR 0146).
+ * auth, SES's SNS signature, Mailgun's HMAC, SendGrid's ECDSA (ADR 0147).
  *
  * In order, nothing of the next done until the last held:
  *

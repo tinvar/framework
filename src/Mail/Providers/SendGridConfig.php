@@ -10,7 +10,7 @@ use Tinvar\Config\ConfigException;
 use Tinvar\Config\Secret;
 
 /**
- * SendGrid's settings (ADR 0146): TINVAR_SENDGRID_KEY -- or _KEY_FILE -- the
+ * SendGrid's settings (ADR 0147): TINVAR_SENDGRID_KEY -- or _KEY_FILE -- the
  * API key, and TINVAR_SENDGRID_REGION, `global` (the default) or `eu`.
  *
  * TINVAR_SENDGRID_WEBHOOK_PUBLIC_KEY is the verification key SendGrid shows

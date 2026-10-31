@@ -15,7 +15,7 @@ use Tinvar\Mail\MailWebhook;
 use Tinvar\Mail\MailWebhookDelivery;
 
 /**
- * Mailgun's webhook (ADR 0146): each event POSTed as JSON with a
+ * Mailgun's webhook (ADR 0147): each event POSTed as JSON with a
  * `signature` of a timestamp, a random token and the HMAC-SHA256 of the
  * two, keyed with the HTTP webhook signing key. The HMAC is checked in
  * constant time, the timestamp held to fifteen minutes of now, and the

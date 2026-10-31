@@ -10,7 +10,7 @@ use Tinvar\Config\ConfigException;
 use Tinvar\Config\Configs;
 
 /**
- * Where the application's mail goes (ADR 0146): TINVAR_MAIL_PROVIDER, one
+ * Where the application's mail goes (ADR 0147): TINVAR_MAIL_PROVIDER, one
  * of `smtp`, `ses`, `postmark`, `mailgun`, `resend`, `sendgrid`, `log` or
  * `array` -- or several, comma-separated, tried in that order
  * (`ses,postmark`), or spread round robin where TINVAR_MAIL_STRATEGY is

@@ -15,7 +15,7 @@ use Tinvar\Outbound\OutboundResponse;
 /**
  * Sends through Postmark's API: `POST https://api.postmarkapp.com/email`,
  * the server token in `X-Postmark-Server-Token`, into a message stream --
- * `outbound` unless told, `broadcast` for marketing (ADR 0146).
+ * `outbound` unless told, `broadcast` for marketing (ADR 0147).
  *
  * Postmark takes JSON alone, so the message is mapped field by field:
  * From, To, Cc, Bcc, ReplyTo, Subject, HtmlBody, TextBody; the

@@ -10,7 +10,7 @@ use Tinvar\Config\ConfigException;
 use Tinvar\Config\Secret;
 
 /**
- * Resend's settings (ADR 0146): TINVAR_RESEND_KEY -- or _KEY_FILE -- the API
+ * Resend's settings (ADR 0147): TINVAR_RESEND_KEY -- or _KEY_FILE -- the API
  * key, and TINVAR_RESEND_WEBHOOK_SECRET, the webhook's `whsec_...` signing
  * secret, which its Svix signatures are made with.
  */

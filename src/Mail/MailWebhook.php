@@ -9,7 +9,7 @@ use Tinvar\Http\Request;
 
 /**
  * One provider's webhook: how its deliveries prove themselves, and what
- * they report (ADR 0146). ResendWebhook, PostmarkWebhook, SesWebhook,
+ * they report (ADR 0147). ResendWebhook, PostmarkWebhook, SesWebhook,
  * MailgunWebhook and SendGridWebhook, mounted by MailEventsEndpoint at
  * `/_mail/events/{name}`.
  *

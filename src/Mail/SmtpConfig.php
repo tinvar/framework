@@ -10,7 +10,7 @@ use Tinvar\Config\ConfigException;
 use Tinvar\Config\Secret;
 
 /**
- * The SMTP provider's settings (ADR 0146): TINVAR_SMTP_HOST, _PORT (587),
+ * The SMTP provider's settings (ADR 0147): TINVAR_SMTP_HOST, _PORT (587),
  * _USERNAME, _PASSWORD -- or _PASSWORD_FILE -- and _ENCRYPTION: `starttls`
  * (the default), `tls` for implicit TLS, or `none` for a relay on this
  * machine, which SmtpTransport holds credentials back from. _LOCAL_DOMAIN

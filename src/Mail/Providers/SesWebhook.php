@@ -19,7 +19,7 @@ use Tinvar\Outbound\OutboundRefused;
 use Tinvar\Outbound\OutboundRequest;
 
 /**
- * SES's events, as SNS delivers them to an HTTPS subscription (ADR 0146).
+ * SES's events, as SNS delivers them to an HTTPS subscription (ADR 0147).
  *
  * Every message is signed by SNS: an RSA signature -- SHA1 for
  * SignatureVersion 1, SHA256 for 2 -- over the message's fields in SNS's

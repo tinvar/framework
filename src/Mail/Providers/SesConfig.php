@@ -11,7 +11,7 @@ use Tinvar\Config\ConfigException;
 use Tinvar\Config\Secret;
 
 /**
- * Amazon SES's settings (ADR 0146): TINVAR_SES_REGION, TINVAR_SES_KEY (the
+ * Amazon SES's settings (ADR 0147): TINVAR_SES_REGION, TINVAR_SES_KEY (the
  * access key id), TINVAR_SES_SECRET -- or _SECRET_FILE -- and, for a
  * temporary credential, TINVAR_SES_SESSION_TOKEN; TINVAR_SES_CONFIGURATION_SET
  * names the configuration set SES publishes the message's events from.

@@ -25,7 +25,7 @@ use Tinvar\Mail\Providers\SesWebhook;
 use Tinvar\Outbound\OutboundHttp;
 
 /**
- * The transport -- and the webhooks -- the environment names (ADR 0146):
+ * The transport -- and the webhooks -- the environment names (ADR 0147):
  * TINVAR_MAIL_PROVIDER and each named provider's own variables (MailConfig).
  *
  *     $transport = new MailTransports($outbound, DkimConfig::load()->signer(), $logPath)->transport();

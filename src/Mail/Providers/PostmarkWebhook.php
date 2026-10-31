@@ -14,7 +14,7 @@ use Tinvar\Mail\MailWebhook;
 use Tinvar\Mail\MailWebhookDelivery;
 
 /**
- * Postmark's webhook (ADR 0146). Postmark signs nothing: what it documents
+ * Postmark's webhook (ADR 0147). Postmark signs nothing: what it documents
  * is HTTP basic auth, the credentials in the webhook URL it is given --
  * `https://user:password@host/_mail/events/postmark` -- which it sends as
  * an Authorization header, over TLS. Both are compared in constant time,

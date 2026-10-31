@@ -6,7 +6,7 @@ namespace Tinvar\Mail;
 
 /**
  * The addresses mail is not sent to: those that hard-bounced, those whose
- * readers complained, and those suppressed by hand (ADR 0146).
+ * readers complained, and those suppressed by hand (ADR 0147).
  *
  * Fed by MailEventsEndpoint from the providers' webhooks, and read by the
  * Mailer before every send: a reader the list blocks for the message's

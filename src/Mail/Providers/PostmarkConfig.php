@@ -10,7 +10,7 @@ use Tinvar\Config\ConfigException;
 use Tinvar\Config\Secret;
 
 /**
- * Postmark's settings (ADR 0146): TINVAR_POSTMARK_TOKEN -- or _TOKEN_FILE --
+ * Postmark's settings (ADR 0147): TINVAR_POSTMARK_TOKEN -- or _TOKEN_FILE --
  * the server's API token, and TINVAR_POSTMARK_STREAM, the message stream
  * (`outbound` unless set).
  *

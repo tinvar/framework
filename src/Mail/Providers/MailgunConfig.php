@@ -10,7 +10,7 @@ use Tinvar\Config\ConfigException;
 use Tinvar\Config\Secret;
 
 /**
- * Mailgun's settings (ADR 0146): TINVAR_MAILGUN_KEY -- or _KEY_FILE -- the
+ * Mailgun's settings (ADR 0147): TINVAR_MAILGUN_KEY -- or _KEY_FILE -- the
  * sending domain's API key, TINVAR_MAILGUN_DOMAIN, and TINVAR_MAILGUN_REGION,
  * `us` (the default) or `eu`, where the domain was created.
  *

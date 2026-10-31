@@ -13,7 +13,7 @@ use Tinvar\Mail\MailWebhook;
 use Tinvar\Mail\MailWebhookDelivery;
 
 /**
- * SendGrid's signed Event Webhook (ADR 0146): an ECDSA P-256 signature,
+ * SendGrid's signed Event Webhook (ADR 0147): an ECDSA P-256 signature,
  * SHA-256, DER and base64, over the timestamp header followed by the raw
  * body, checked with ext-openssl against the verification key SendGrid
  * shows -- a public key, so nothing secret is kept here at all.

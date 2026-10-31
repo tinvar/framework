@@ -19,7 +19,7 @@ use Tinvar\Observability\Telemetry;
  * Queued inside a transaction, it is sent only once the transaction
  * commits, so a rolled-back order sends no confirmation.
  *
- * Given a suppression list, it asks it before every send (ADR 0146): a
+ * Given a suppression list, it asks it before every send (ADR 0147): a
  * reader the list holds for a reason that blocks the message's category
  * (MailCategory) is left off, and a message with no To reader left is not
  * sent at all. What became of the send -- the provider's message id, the

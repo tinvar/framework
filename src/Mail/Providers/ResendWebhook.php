@@ -15,7 +15,7 @@ use Tinvar\Mail\MailWebhookDelivery;
 
 /**
  * Resend's webhook: Svix-signed deliveries (SvixSignature), each within
- * five minutes of now, its `svix-id` its nonce (ADR 0146).
+ * five minutes of now, its `svix-id` its nonce (ADR 0147).
  *
  * `email.bounced` is a hard bounce -- Resend sends it when the reader's
  * server refused the message for good -- unless its `bounce.type` says

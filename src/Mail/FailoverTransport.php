@@ -6,7 +6,7 @@ namespace Tinvar\Mail;
 
 /**
  * Sends through the first of its transports that takes the message: SES,
- * say, and Postmark when SES will not (ADR 0146).
+ * say, and Postmark when SES will not (ADR 0147).
  *
  * The next is tried only on a retryable failure -- the transport's trouble:
  * down, slow, throttled, its key refused. A refusal of the message itself

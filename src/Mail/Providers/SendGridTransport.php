@@ -15,7 +15,7 @@ use Tinvar\Outbound\OutboundHttp;
 /**
  * Sends through SendGrid's v3 API: `POST /v3/mail/send` at
  * `api.sendgrid.com`, or `api.eu.sendgrid.com` for an EU account, the key
- * as a bearer token (ADR 0146).
+ * as a bearer token (ADR 0147).
  *
  * SendGrid takes JSON alone, so the message is mapped field by field: one
  * personalization of To, Cc and Bcc -- each address once, as SendGrid

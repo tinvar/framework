@@ -17,7 +17,7 @@ use Tinvar\Outbound\OutboundResponse;
  * Sends through Mailgun's API: `POST /v3/{domain}/messages.mime`, at
  * `api.mailgun.net` in the US region or `api.eu.mailgun.net` in the EU --
  * a domain lives in one, and its key answers there alone -- with HTTP basic
- * auth as `api` and the key (ADR 0146).
+ * auth as `api` and the key (ADR 0147).
  *
  * The message goes as raw MIME, the bytes MimeMessage writes, as the
  * `message` file of a multipart form: the List-Unsubscribe headers, the

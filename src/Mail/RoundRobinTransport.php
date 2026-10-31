@@ -8,7 +8,7 @@ namespace Tinvar\Mail;
  * Spreads messages across its transports, each message starting at the
  * next -- two providers' quotas, say, or two SES regions -- and failing
  * over from there as FailoverTransport does: on a retryable failure to the
- * transport after it, on a refusal of the message not at all (ADR 0146).
+ * transport after it, on a refusal of the message not at all (ADR 0147).
  *
  * Each worker starts at a random transport, so a fleet of workers just
  * started does not send its first messages all through the first.

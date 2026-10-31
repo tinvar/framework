@@ -7,7 +7,7 @@ namespace Tinvar\Mail;
 /**
  * Which messages the application sent, through which provider, to whom:
  * the provider's message id and each reader, recorded by the Mailer as the
- * provider hands the id back (ADR 0146).
+ * provider hands the id back (ADR 0147).
  *
  * What a webhook's event is checked against before anything is done about
  * it (MailEventsEndpoint). A provider's signature proves a delivery came

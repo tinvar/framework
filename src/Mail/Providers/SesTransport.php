@@ -18,7 +18,7 @@ use Tinvar\Outbound\OutboundResponse;
 /**
  * Sends through Amazon SES's v2 API: `POST /v2/email/outbound-emails` at
  * `email.{region}.amazonaws.com`, signed with SigV4 for the `ses` service
- * by the signer S3 uses (Tinvar\Aws) (ADR 0146).
+ * by the signer S3 uses (Tinvar\Aws) (ADR 0147).
  *
  * The message goes as raw MIME -- the bytes MimeMessage writes, base64'd as
  * `Content.Raw.Data` -- so what SMTP would send is what SES sends: the
