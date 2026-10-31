@@ -15,6 +15,7 @@ use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Page;
 use Tinvar\Attributes\Query;
 use Tinvar\Orm\Attributes\TenantScoped;
+use Tinvar\Orm\MappingException;
 use Tinvar\Support\KnownAttributes;
 use Tinvar\Data\Data;
 use Tinvar\Data\DataFields;
@@ -1300,10 +1301,22 @@ final class BuildRules
         return $top === false ? '' : $top;
     }
 
-    /** @param class-string $class */
+    /**
+     * Whether $class is #[TenantScoped], written on it, an ancestor or a
+     * trait -- read as the ORM compiles it. One whose declarations cannot be
+     * read (a Tinvar attribute naming no class, two tenant columns) counts
+     * as scoped: its bare ids are flagged, and the attribute rule or the
+     * ORM's compile says what is wrong with it.
+     *
+     * @param class-string $class
+     */
     private static function isTenantScoped(string $class): bool
     {
-        return (new \ReflectionClass($class))->getAttributes(TenantScoped::class, \ReflectionAttribute::IS_INSTANCEOF) !== [];
+        try {
+            return TenantScoped::on($class) !== null;
+        } catch (\LogicException|MappingException) {
+            return true;
+        }
     }
 
     /**

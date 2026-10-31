@@ -19,6 +19,7 @@ use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\Router;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Tests\Auth\Fixtures as A;
+use Tinvar\Tests\Auth\Fixtures\Inherited;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
 use Tinvar\Tests\Orm\Fixtures\Rack;
 use Tinvar\Tests\Orm\Fixtures\Script;
@@ -29,6 +30,7 @@ require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/
 require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/schema.php';
 require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenant.php';
 require_once __DIR__ . '/Fixtures/policies.php';
+require_once __DIR__ . '/Fixtures/inherited.php';
 
 function gateFor(?A\User $user): array
 {
@@ -314,6 +316,19 @@ describe('build rules', function () {
             expect($violations)->toHaveCount(1)
                 ->and($violations[0]->where)->toBe(A\BadIdRequest::class . '::$scriptId')
                 ->and($violations[0]->message)->toContain('naming ' . Tinvar\Tests\Orm\Fixtures\Script::class);
+        });
+
+        // PHP does not inherit class attributes; the build rules read the
+        // hierarchy the way the ORM compiles it, or an id to a model scoped
+        // by its base class or a trait would pass unflagged.
+        it('fails a bare id naming a model scoped by its parent class or a trait', function () {
+            $violations = (new BuildRules([Inherited\Ledger::class, Inherited\Invoice::class]))
+                ->check([], [Inherited\InheritedIdsRequest::class]);
+
+            expect(array_map(static fn ($v): string => $v->where, $violations))->toBe([
+                Inherited\InheritedIdsRequest::class . '::$ledgerId',
+                Inherited\InheritedIdsRequest::class . '::$invoiceId',
+            ]);
         });
 
         it('recurses into a nested Data object', function () use ($rules) {
