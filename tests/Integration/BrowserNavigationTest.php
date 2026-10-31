@@ -217,12 +217,15 @@ it('navigates from the catalog to a product and back, through the RSC payload', 
     // One document load; then the product page prefetched while the pointer
     // rested on its card -- the payload, for the build the page metadata
     // named, said to be a prefetch -- and the click answered from it, with
-    // no request of its own; then back.
-    expect($result['requests'])->toBe([
-        ['path' => '/', 'rsc' => null, 'version' => null, 'purpose' => null],
-        ['path' => $result['path'], 'rsc' => '1', 'version' => 'dev', 'purpose' => 'prefetch'],
-        ['path' => '/', 'rsc' => '1', 'version' => 'dev', 'purpose' => null],
-    ]);
+    // no request of its own; then back. Each page the visit left sent its
+    // vitals as it went (ADR 0129): the document, then the product page.
+    $pages = array_values(array_filter($result['requests'], static fn (array $r): bool => $r['path'] !== '/_vitals'));
+    expect(\count($result['requests']) - \count($pages))->toBe(2)
+        ->and($pages)->toBe([
+            ['path' => '/', 'rsc' => null, 'version' => null, 'purpose' => null],
+            ['path' => $result['path'], 'rsc' => '1', 'version' => 'dev', 'purpose' => 'prefetch'],
+            ['path' => '/', 'rsc' => '1', 'version' => 'dev', 'purpose' => null],
+        ]);
 
     // The page ran under its Content-Security-Policy -- hydrated, and
     // navigated -- with nothing blocked, and every script carried the nonce.
