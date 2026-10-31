@@ -16,12 +16,15 @@ interface UploadStore
     public function add(PendingUpload $upload): void;
 
     /**
-     * Adds an upload only if its owner has fewer than $max unclaimed,
-     * unexpired uploads -- and, given a quota, holds no more than
-     * $quotaBytes with this one (bytesHeld()) -- counted and added as one
-     * write: of uploads sent at once, no more are kept than the cap and the
-     * quota allow, however they race.
+     * Adds an upload only if its owner has fewer than $max unclaimed uploads
+     * not yet pruned, past their expiry or not (pendingCount()) -- and,
+     * given a quota, holds no more than $quotaBytes with this one
+     * (bytesHeld()) -- counted and added as one write: of uploads sent at
+     * once, no more are kept than the cap and the quota allow, however they
+     * race.
      *
+     * @param int $now when it is added; neither count reads it, since an
+     *        upload past its expiry counts until pruning removes its file
      * @return bool whether it was added; false when the owner is at the cap or the quota
      */
     public function addWithin(PendingUpload $upload, int $max, int $now, ?int $quotaBytes = null): bool;

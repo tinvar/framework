@@ -98,8 +98,9 @@ final readonly class ClamdScanner implements FileScanner
             $this->within($socket, $deadline);
             $written = @fwrite($socket, $bytes);
             if ($written === false || $written === 0) {
-                // clamd closes the socket on a stream past its limit; what it
-                // said is read as the answer, if anything.
+                // clamd closes the socket on a stream past its StreamMaxLength,
+                // or when it fails: the file was not scanned, so it is refused
+                // as one that could not be. What clamd said is not read.
                 throw new ScanFailed('clamd stopped taking the file.');
             }
             $bytes = substr($bytes, $written);
