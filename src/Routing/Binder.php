@@ -296,17 +296,28 @@ final class Binder
     }
 
     /**
+     * A loader's parameters, read once a worker: a class does not change
+     * while the worker runs, and each request reflected it again -- three
+     * times for one route (binding, then each of its layouts). Nothing of a
+     * request is kept, only what the class declares.
+     *
      * @param class-string $class
      * @return list<\ReflectionParameter>
      */
     public static function loaderParameters(string $class): array
     {
+        if (isset(self::$loaderParameters[$class])) {
+            return self::$loaderParameters[$class];
+        }
         $reflection = new \ReflectionClass($class);
 
-        return $reflection->hasMethod('__invoke')
+        return self::$loaderParameters[$class] = $reflection->hasMethod('__invoke')
             ? $reflection->getMethod('__invoke')->getParameters()
             : [];
     }
+
+    /** @var array<class-string, list<\ReflectionParameter>> loaderParameters(), by class */
+    private static array $loaderParameters = [];
 
     /** @return class-string|null */
     private static function classTypeOf(\ReflectionParameter $parameter): ?string

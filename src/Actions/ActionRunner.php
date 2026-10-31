@@ -17,6 +17,7 @@ use Tinvar\Live\Invalidator;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 use Tinvar\Render\StaticPages;
+use Tinvar\Support\Reflected;
 use Tinvar\Uploads\Upload;
 use Tinvar\Uploads\UploadBinder;
 use Tinvar\Uploads\UploadList;
@@ -260,7 +261,7 @@ final class ActionRunner
         $declared = false;
         $errors = [];
         foreach ($action->formRequests as $class) {
-            foreach ((new \ReflectionClass($class))->getConstructor()?->getParameters() ?? [] as $parameter) {
+            foreach (Reflected::constructorParameters($class) as $parameter) {
                 if ($parameter->getName() === $field) {
                     $declared = true;
                     $errors = self::mergeErrors($errors, [
@@ -540,7 +541,7 @@ final class ActionRunner
     private static function scalarParameters(CompiledAction $action): array
     {
         $scalars = [];
-        foreach ((new \ReflectionMethod($action->class, $action->method))->getParameters() as $parameter) {
+        foreach (Reflected::methodParameters($action->class, $action->method) as $parameter) {
             $name = $parameter->getName();
             $type = $parameter->getType();
 
@@ -657,7 +658,7 @@ final class ActionRunner
         $errors = [];
         foreach ($fields as $field) {
             foreach ($action->formRequests as $class) {
-                foreach ((new \ReflectionClass($class))->getConstructor()?->getParameters() ?? [] as $parameter) {
+                foreach (Reflected::constructorParameters($class) as $parameter) {
                     if ($parameter->getName() === $field) {
                         $errors = self::mergeErrors($errors, [
                             $field => $validator->errorsFor($class, $input, $field, $subject, $models, $models, $unsupplied),
@@ -681,7 +682,7 @@ final class ActionRunner
             return true;
         }
         foreach ($action->formRequests as $class) {
-            foreach ((new \ReflectionClass($class))->getConstructor()?->getParameters() ?? [] as $parameter) {
+            foreach (Reflected::constructorParameters($class) as $parameter) {
                 if ($parameter->getName() === $field) {
                     return true;
                 }
@@ -764,7 +765,7 @@ final class ActionRunner
     ): array {
         $arguments = [];
 
-        foreach ((new \ReflectionMethod($action->class, $action->method))->getParameters() as $parameter) {
+        foreach (Reflected::methodParameters($action->class, $action->method) as $parameter) {
             $name = $parameter->getName();
             $type = $parameter->getType();
 

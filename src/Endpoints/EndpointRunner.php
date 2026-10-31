@@ -19,6 +19,7 @@ use Tinvar\Http\Response;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 use Tinvar\Routing\Binder;
+use Tinvar\Support\Reflected;
 use Tinvar\Validation\FormRequest;
 use Tinvar\Validation\ValidationException;
 use Tinvar\Validation\Validator;
@@ -200,7 +201,7 @@ final class EndpointRunner
             foreach ($only as $field) {
                 $declared = false;
                 foreach ($endpoint->formRequests as $class) {
-                    foreach ((new \ReflectionClass($class))->getConstructor()?->getParameters() ?? [] as $parameter) {
+                    foreach (Reflected::constructorParameters($class) as $parameter) {
                         if ($parameter->getName() !== $field) {
                             continue;
                         }
@@ -288,7 +289,7 @@ final class EndpointRunner
         $errors = [];
         foreach ($fields as $field) {
             foreach ($endpoint->formRequests as $class) {
-                foreach ((new \ReflectionClass($class))->getConstructor()?->getParameters() ?? [] as $parameter) {
+                foreach (Reflected::constructorParameters($class) as $parameter) {
                     if ($parameter->getName() === $field) {
                         $found = $validator->errorsFor($class, $input, $field, $subject, $models, $models, $unsupplied);
                         $errors[$field] = array_values(array_unique([...$errors[$field] ?? [], ...$found]));
@@ -308,7 +309,7 @@ final class EndpointRunner
     private function declares(CompiledEndpoint $endpoint, string $field): bool
     {
         foreach ($endpoint->formRequests as $class) {
-            foreach ((new \ReflectionClass($class))->getConstructor()?->getParameters() ?? [] as $parameter) {
+            foreach (Reflected::constructorParameters($class) as $parameter) {
                 if ($parameter->getName() === $field) {
                     return true;
                 }
@@ -447,7 +448,7 @@ final class EndpointRunner
     private function bind(CompiledEndpoint $endpoint, array $path, array $models, array $requests, Request $request): array
     {
         $arguments = [];
-        foreach ((new \ReflectionMethod($endpoint->class, $endpoint->method))->getParameters() as $parameter) {
+        foreach (Reflected::methodParameters($endpoint->class, $endpoint->method) as $parameter) {
             $name = $parameter->getName();
 
             $arguments[$name] = match (true) {
