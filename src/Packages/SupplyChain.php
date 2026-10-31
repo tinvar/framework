@@ -452,6 +452,9 @@ final class SupplyChain
                                 $at = "{$name} jobs.{$id}.steps[{$index}]";
                                 $violations = [...$violations, ...self::unpinned($at, $uses), ...$this->localAction($at, $uses, $seen)];
                             }
+                            foreach (self::field($step, 'run') as $run) {
+                                $violations = [...$violations, ...self::npmScripts("{$name} jobs.{$id}.steps[{$index}]", \is_string($run) ? $run : '')];
+                            }
                         }
                     }
                 }
@@ -599,6 +602,11 @@ final class SupplyChain
             }
             $words = preg_split('/\s+/', trim($rest), -1, PREG_SPLIT_NO_EMPTY) ?: [];
 
+            // A RUN's command, or a line of a heredoc it runs.
+            if ($body || $keyword === 'RUN') {
+                $violations = [...$violations, ...self::npmScripts($name, $body ? $instruction : $rest)];
+            }
+
             if ($keyword === 'FROM') {
                 $image = $words[0] ?? '';
                 if (!self::stageOrPinned($image, $stages)) {
@@ -652,6 +660,33 @@ final class SupplyChain
                         $violations[] = $violation;
                     }
                 }
+            }
+        }
+
+        return $violations;
+    }
+
+    /**
+     * Each npm install in $script that runs lifecycle scripts: `npm ci`,
+     * `install` (and its aliases and npm's own misspellings of it), `add`,
+     * `update`, and `install-test` and its kin, without `--ignore-scripts`.
+     * CI and an image build run `tinvar check` after their install, so an
+     * install script would run before the check held it to
+     * PackagePolicy::$installScripts. `npm rebuild`, which runs a named
+     * package's scripts on purpose, and `npm run`, the project's own, are
+     * left alone. Read command by command, split at `&&`, `||`, `;`, `|`
+     * and line ends -- stricter than a shell where one of those is quoted.
+     *
+     * @return list<string>
+     */
+    private static function npmScripts(string $at, string $script): array
+    {
+        $violations = [];
+        foreach (preg_split('/&&|\|\||[;|\n]/', $script) ?: [] as $command) {
+            $command = trim($command);
+            if (preg_match('/(?:^|\s)npm(?:\s+-\S+)*\s+(?:ci|clean-install|install|i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|add|update|up|upgrade|udpate|install-test|it|install-ci-test|cit|clean-install-test|sit)(?:\s|$)/', $command) === 1
+                && preg_match('/(?:^|\s)--ignore-scripts(?:=true)?(?:\s|$)/', $command) !== 1) {
+                $violations[] = "{$at} runs `{$command}`, which runs every package's install scripts before tinvar check holds them to PackagePolicy::\$installScripts: add --ignore-scripts.";
             }
         }
 

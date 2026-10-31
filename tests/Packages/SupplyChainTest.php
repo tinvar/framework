@@ -343,6 +343,35 @@ describe('install scripts and plugins', function () {
         ])->and(violations($this->workspace, new PackagePolicy(installScripts: ['native' => 'Builds its binding.'])))->toBe([]);
     });
 
+    // The allowlist above is read by `tinvar check`, which CI and an image
+    // build run after their install: an npm install that runs lifecycle
+    // scripts has run every one of them before anything held them to it.
+    it('refuses an npm install in a workflow or a Dockerfile that runs install scripts', function () {
+        $digest = '@sha256:' . str_repeat('ab', 32);
+        $this->workspace->workflows['ci.yml'] = <<<'YAML'
+        on: [push]
+        jobs:
+          test:
+            steps:
+              - run: composer install && npm ci --no-audit --no-fund
+              - run: npm ci --ignore-scripts --no-audit
+              - run: |
+                  npm install --ignore-scripts=false
+                  npm run build && npm i -D left-pad
+              - run: npm rebuild fsevents && npm run lint
+        YAML;
+        $this->workspace->file('Dockerfile', "FROM debian{$digest}\nRUN composer install \\\n    && npm ci --omit=dev\nRUN npm ci --ignore-scripts && npm prune --omit=dev\nRUN <<EOF\nnpm update\nEOF\n");
+
+        $because = 'which runs every package\'s install scripts before tinvar check holds them to PackagePolicy::$installScripts: add --ignore-scripts.';
+        expect(violations($this->workspace))->toBe([
+            ".github/workflows/ci.yml jobs.test.steps[0] runs `npm ci --no-audit --no-fund`, {$because}",
+            ".github/workflows/ci.yml jobs.test.steps[2] runs `npm install --ignore-scripts=false`, {$because}",
+            ".github/workflows/ci.yml jobs.test.steps[2] runs `npm i -D left-pad`, {$because}",
+            "Dockerfile runs `npm ci --omit=dev`, {$because}",
+            "Dockerfile runs `npm update`, {$because}",
+        ]);
+    });
+
     it('asks why an install script is allowed', function () {
         new PackagePolicy(installScripts: ['native' => ' ']);
     })->throws(\InvalidArgumentException::class, 'Say why native may run an install script');
