@@ -242,7 +242,7 @@ final class RendererCommand
             // container beside the renderers' -- the pid is someone else's
             // here, or no one's, and the renderers' answers below are the
             // pool's state.
-            $command = $pid > 0 ? trim((string) shell_exec("ps -ww -o args= -p {$pid} 2>/dev/null")) : '';
+            $command = self::commandLine($pid);
             ($this->out)(\sprintf('supervisor  pid %d  %s', $pid, match (true) {
                 self::running($pid) && self::isSupervisor($command) => 'running',
                 self::running($pid) => 'not seen: another process has that pid here (the pool in another pid namespace, or gone)',
@@ -345,8 +345,7 @@ final class RendererCommand
 
         $text = trim((string) file_get_contents($pidFile));
         $pid = preg_match('/^[1-9][0-9]{0,9}\z/', $text) === 1 ? (int) $text : 0;
-        // -ww: the whole command line, however long its paths.
-        $command = $pid > 0 ? trim((string) shell_exec("ps -ww -o args= -p {$pid} 2>/dev/null")) : '';
+        $command = self::commandLine($pid);
         if ($pid === 0 || !self::running($pid) || !self::isSupervisor($command)) {
             ($this->err)("The renderer pool in {$directory} is not running" . ($pid > 0 ? " (pid {$pid} is not its supervisor)." : '.'));
 
@@ -416,6 +415,25 @@ final class RendererCommand
      * Whether a command line is a pool supervisor's: renderer.js run with
      * --processes, as renderer:start and serve both run it.
      */
+    /**
+     * The command line of $pid, its arguments a space apart: from /proc
+     * where there is one -- an image may have no ps -- and from ps
+     * otherwise, -ww for the whole of it, however long its paths.
+     */
+    private static function commandLine(int $pid): string
+    {
+        if ($pid <= 0) {
+            return '';
+        }
+        if (is_dir('/proc/self')) {
+            $read = @file_get_contents("/proc/{$pid}/cmdline");
+
+            return \is_string($read) ? trim(str_replace("\0", ' ', $read)) : '';
+        }
+
+        return trim((string) shell_exec("ps -ww -o args= -p {$pid} 2>/dev/null"));
+    }
+
     private static function isSupervisor(string $command): bool
     {
         return preg_match('#(^|[\s/])renderer\.js\s#', $command) === 1
