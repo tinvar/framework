@@ -304,6 +304,31 @@ describe('a body too large to hold', function () {
             ->and(fileperms("{$files}/tinvar-spool") & 0o777)->toBe(0o700);
     });
 
+    // A body past the limit is not sent at all; its producer went on
+    // rendering every chunk after, into a sink that dropped them.
+    it('stops the producer once the spool has failed, and answers 500 with nothing left on disk', function () use ($root) {
+        $files = $root();
+        $produced = 0;
+        $response = Response::stream(static function (Closure $sink) use (&$produced): void {
+            for ($i = 0; $i < 100; $i++) {
+                $produced++;
+                $sink('xxxx');
+            }
+        }, 200, ['content-type' => 'text/csv']);
+
+        $log = ini_set('error_log', '/dev/null');
+        try {
+            $handed = Sapi::forServer($response, $files, spoolMaxBytes: 10);
+        } finally {
+            ini_set('error_log', (string) $log);
+        }
+
+        expect($handed->status)->toBe(500)
+            ->and($handed->header(Sapi::FILE_HEADER))->toBeNull()
+            ->and($produced)->toBe(3)
+            ->and(glob("{$files}/tinvar-spool/*"))->toBe([]);
+    });
+
     it('takes a stream of no known length, run once', function () use ($root, $spooled) {
         $files = $root();
         $runs = 0;

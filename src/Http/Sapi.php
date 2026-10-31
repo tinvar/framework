@@ -188,8 +188,11 @@ final class Sapi
      * it. Neither header reaches the client: the Caddyfile removes both. An
      * application's own value for either is dropped here first, so the only
      * file the server is ever told to send is one a response was built from.
+     *
+     * @param int $spoolMaxBytes the most a spooled body may be: SPOOL_MAX_BYTES, unless a
+     *        disk that holds less, or a test, says otherwise
      */
-    public static function forServer(Response $response, ?string $fileRoot): Response
+    public static function forServer(Response $response, ?string $fileRoot, int $spoolMaxBytes = self::SPOOL_MAX_BYTES): Response
     {
         $response = $response->withoutHeader(self::FILE_HEADER)->withoutHeader(self::STREAM_HEADER);
 
@@ -207,7 +210,7 @@ final class Sapi
             return $response;
         }
 
-        $spooled = $fileRoot === null || $fileRoot === '' ? null : self::spool($response, $fileRoot, $known);
+        $spooled = $fileRoot === null || $fileRoot === '' ? null : self::spool($response, $fileRoot, $known, $spoolMaxBytes);
 
         return $spooled ?? $response->withHeader(self::STREAM_HEADER, 'no');
     }
@@ -223,11 +226,11 @@ final class Sapi
      * written whole is not sent at all, rather than sent cut short. Files
      * older than SPOOL_KEPT_SECONDS go as the next one is written.
      */
-    private static function spool(Response $response, string $fileRoot, ?int $length): ?Response
+    private static function spool(Response $response, string $fileRoot, ?int $length, int $max): ?Response
     {
         $type = strtolower((string) $response->header('content-type'));
         if ($response->status !== 200 || str_starts_with($type, 'text/event-stream')
-            || ($length !== null && $length > self::SPOOL_MAX_BYTES)) {
+            || ($length !== null && $length > $max)) {
             return null;
         }
 
@@ -253,29 +256,38 @@ final class Sapi
         }
         chmod($path, 0o600);
 
+        // Once a write fails the body is not sent at all, so the sink stops
+        // the producer there rather than let it render the rest into
+        // nothing: it throws, every time it is called after, and the throw
+        // is told apart from the producer's own by being this one.
         $written = 0;
         $failed = false;
+        $stop = new \RuntimeException('The response body could not be spooled whole.');
         try {
-            $response->sendBody(static function (string $chunk) use ($file, &$written, &$failed): void {
+            $response->sendBody(static function (string $chunk) use ($file, $max, $stop, &$written, &$failed): void {
                 if ($failed) {
-                    return;
+                    throw $stop;
                 }
                 $written += \strlen($chunk);
-                if ($written > self::SPOOL_MAX_BYTES || fwrite($file, $chunk) !== \strlen($chunk)) {
+                if ($written > $max || fwrite($file, $chunk) !== \strlen($chunk)) {
                     $failed = true;
+
+                    throw $stop;
                 }
             });
         } catch (\Throwable $e) {
-            fclose($file);
-            @unlink($path);
+            if (!$failed) {
+                fclose($file);
+                @unlink($path);
 
-            throw $e;
+                throw $e;
+            }
         }
         fclose($file);
 
         if ($failed) {
             @unlink($path);
-            error_log("tinvar: a response body could not be spooled whole ({$written} bytes, at most " . self::SPOOL_MAX_BYTES . '); answered 500.');
+            error_log("tinvar: a response body could not be spooled whole ({$written} bytes, at most {$max}); answered 500.");
 
             return Response::make(500, 'The response could not be sent.', ['content-type' => 'text/plain; charset=utf-8', 'cache-control' => 'no-store']);
         }
