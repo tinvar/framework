@@ -164,6 +164,45 @@ describe('node commands', function () {
             ->and($outbox->find($kept->id)?->sealed)->toBe($entries[0]->sealed)
             ->and($outbox->find('missing'))->toBeNull();
     });
+
+    // Review: more commands in one second than a page held stalled a reader
+    // asking from that second, and nothing ever removed a command.
+    it('pages past a second holding more commands than a page, and prunes what no agent will run', function (\Closure $make) {
+        $now = NOW;
+        [$outbox, $orm] = $make();
+        $commands = new NodeCommands(NodeCommands::key(APP_KEY, ENV), $outbox, $orm, static function () use (&$now): int {
+            return $now;
+        });
+        for ($i = 0; $i < 7; $i++) {
+            $commands->issue('node-7', 'vm.ping');
+        }
+        $now += 10;
+        $late = $commands->issue('node-7', 'vm.ping');
+
+        $first = $outbox->since(NOW, 5);
+        $last = end($first);
+        \assert($last !== false);
+        $rest = $outbox->since($last->createdAt, 5, $last->id);
+        $ids = [...array_map(static fn ($e): string => $e->id, $first), ...array_map(static fn ($e): string => $e->id, $rest)];
+        expect($first)->toHaveCount(5)
+            ->and($rest)->toHaveCount(3)
+            ->and(array_unique($ids))->toHaveCount(8)
+            ->and(end($rest)->id ?? null)->toBe($late->id);
+
+        expect($outbox->prune(NOW + 5))->toBe(7)
+            ->and(array_map(static fn ($e): string => $e->id, $outbox->since(0)))->toBe([$late->id])
+            // The scheduled task keeps a day.
+            ->and(\Tinvar\Gateway\PruneCommandOutbox::prune($outbox, NOW + 10 + \Tinvar\Gateway\PruneCommandOutbox::KEEP))->toBe(0)
+            ->and(\Tinvar\Gateway\PruneCommandOutbox::prune($outbox, NOW + 11 + \Tinvar\Gateway\PruneCommandOutbox::KEEP))->toBe(1);
+    })->with([
+        'in memory' => [static fn (): array => [new ArrayCommandOutbox(), orm()]],
+        'in a table' => [static function (): array {
+            $connection = PdoConnection::sqlite(':memory:');
+            DatabaseCommandOutbox::define(new Schema($connection, Dialect::for($connection)));
+
+            return [new DatabaseCommandOutbox($connection), new Orm($connection, new IdentityMap('gateway-test'))];
+        }],
+    ]);
 });
 
 describe('console tickets', function () {

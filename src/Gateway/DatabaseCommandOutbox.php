@@ -52,11 +52,15 @@ final readonly class DatabaseCommandOutbox implements CommandOutbox
         );
     }
 
-    public function since(int $since, int $limit = 100): array
+    public function since(int $since, int $limit = 100, string $afterId = ''): array
     {
+        // Keyset on (created_at, id), the index's own order.
+        [$where, $bindings] = $afterId === ''
+            ? ['created_at >= ?', [$since]]
+            : ['(created_at > ? OR (created_at = ? AND id > ?))', [$since, $since, $afterId]];
         $rows = $this->connection->select(
-            "SELECT id, node, sealed, created_at FROM {$this->table} WHERE created_at >= ? ORDER BY created_at, id LIMIT " . max(1, min($limit, 1000)),
-            [$since],
+            "SELECT id, node, sealed, created_at FROM {$this->table} WHERE {$where} ORDER BY created_at, id LIMIT " . max(1, min($limit, 1000)),
+            $bindings,
         );
 
         return array_map(static fn (array $row): OutboxEntry => new OutboxEntry(
@@ -65,6 +69,11 @@ final readonly class DatabaseCommandOutbox implements CommandOutbox
             (string) $row['sealed'],
             (int) $row['created_at'],
         ), $rows);
+    }
+
+    public function prune(int $before): int
+    {
+        return $this->connection->execute("DELETE FROM {$this->table} WHERE created_at < ?", [$before]);
     }
 
     public function find(string $id): ?OutboxEntry

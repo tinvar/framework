@@ -15,12 +15,26 @@ final class ArrayCommandOutbox implements CommandOutbox
         $this->entries[] = new OutboxEntry($command->id, $command->node, $sealed, $command->issuedAt);
     }
 
-    public function since(int $since, int $limit = 100): array
+    public function since(int $since, int $limit = 100, string $afterId = ''): array
     {
-        $found = array_values(array_filter($this->entries, static fn (OutboxEntry $entry): bool => $entry->createdAt >= $since));
+        $found = array_values(array_filter(
+            $this->entries,
+            static fn (OutboxEntry $entry): bool => $afterId === ''
+                ? $entry->createdAt >= $since
+                : $entry->createdAt > $since || ($entry->createdAt === $since && strcmp($entry->id, $afterId) > 0),
+        ));
         usort($found, static fn (OutboxEntry $a, OutboxEntry $b): int => [$a->createdAt, $a->id] <=> [$b->createdAt, $b->id]);
 
         return \array_slice($found, 0, max(1, $limit));
+    }
+
+    public function prune(int $before): int
+    {
+        $kept = array_values(array_filter($this->entries, static fn (OutboxEntry $entry): bool => $entry->createdAt >= $before));
+        $forgotten = \count($this->entries) - \count($kept);
+        $this->entries = $kept;
+
+        return $forgotten;
     }
 
     public function find(string $id): ?OutboxEntry

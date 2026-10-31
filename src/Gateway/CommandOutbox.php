@@ -21,13 +21,27 @@ interface CommandOutbox
     public function append(NodeCommand $command, string $sealed): void;
 
     /**
-     * Commands appended at or after $since, oldest first: what a reader asks
-     * for. Commits can land out of order, so a reader asks again from a
-     * little before the last it read, and drops the ids it has relayed.
+     * Commands appended at or after $since, oldest first by when and then by
+     * id: what a reader asks for. Commits can land out of order, so a reader
+     * asks again from a little before the last it read, and drops the ids it
+     * has relayed.
+     *
+     * Given $afterId, the page goes on after the entry ($since, $afterId):
+     * only those later, or as late with a greater id. So a second holding
+     * more commands than a page is read through, page by page, rather than
+     * its first page read again for ever.
      *
      * @return list<OutboxEntry>
      */
-    public function since(int $since, int $limit = 100): array;
+    public function since(int $since, int $limit = 100, string $afterId = ''): array;
+
+    /**
+     * Forgets every command appended before $before; returns how many. A
+     * command lives an hour at most (NodeCommands::MAX_TTL), and an agent
+     * refuses it after, so one well past that is relayed and answered for
+     * no one (PruneCommandOutbox).
+     */
+    public function prune(int $before): int;
 
     /** The command appended as $id, if any: what a result coming back answers (CommandResults). */
     public function find(string $id): ?OutboxEntry;
