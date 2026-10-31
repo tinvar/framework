@@ -181,3 +181,41 @@ it('caps a relayed line\'s level by its stream, and nests its fields under rende
         ->and($c['level'])->toBe('warning')
         ->and($sink->lines)->toHaveCount(3);
 });
+
+// A line too long to relay whole -- a failure's stack -- is cut, and each
+// piece of it is still the request's: without the id, the log could not put
+// the failure beside the request it was.
+it('keeps the request id on every piece of a line it cuts', function () {
+    $sink = new MemorySink();
+    $lines = new RendererLines($sink);
+    $line = json_encode(['level' => 'error', 'message' => 'render failed', 'request_id' => ID, 'stack' => str_repeat('at frame (file.js:1:1) ', 900)]);
+
+    $lines->feed('1', substr($line, 0, 10_000), true);
+    $lines->feed('1', substr($line, 10_000) . "\n", true);
+    $lines->feed('1', "{\"level\":\"info\",\"message\":\"next\"}\n", false);
+
+    $records = $sink->records();
+    expect($records)->toHaveCount(3)
+        ->and([$records[0]['request_id'] ?? null, $records[1]['request_id'] ?? null])->toBe([ID, ID])
+        ->and($records[0]['truncated'] ?? null)->toBeTrue()
+        ->and($records[2])->not->toHaveKey('request_id');
+});
+
+// A stream's end says what its last second dropped, and forgets its budget:
+// a renderer replaced takes a stream name of its own, and the old one's
+// count was otherwise never said, and its budget kept for good.
+it('says what a closed stream dropped, and keeps no budget for it', function () {
+    $sink = new MemorySink();
+    $now = 1_000.0;
+    $lines = new RendererLines($sink, clock: static function () use (&$now): float {
+        return $now;
+    });
+
+    $lines->feed('7', str_repeat("boom\n", RendererLines::MAX_PER_SECOND + 100), true);
+    $lines->close('7', true);
+
+    $dropped = array_values(array_filter($sink->records(), static fn (array $record): bool => $record['message'] === 'renderer lines dropped'));
+    expect($dropped)->toHaveCount(1)
+        ->and($dropped[0]['dropped'])->toBe(100)
+        ->and((new \ReflectionProperty($lines, 'budgets'))->getValue($lines))->toBe([]);
+});

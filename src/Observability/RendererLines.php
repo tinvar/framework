@@ -69,6 +69,9 @@ final class RendererLines
     /** @var array<string, array{second: int, lines: int, bytes: int, dropped: int}> each stream's budget */
     private array $budgets = [];
 
+    /** @var array<string, string|null> each stream mid-way through a line cut for its length: the request id it named */
+    private array $continued = [];
+
     /** @var \Closure(): float */
     private readonly \Closure $clock;
 
@@ -94,32 +97,101 @@ final class RendererLines
     {
         $buffer = ($this->partial[$stream] ?? '') . $bytes;
         while (($end = strpos($buffer, "\n")) !== false) {
-            $this->line(substr($buffer, 0, $end), $error, $stream);
+            $this->piece(substr($buffer, 0, $end), $error, $stream, false);
             $buffer = substr($buffer, $end + 1);
         }
-        // A line that never ends is not held without end.
+        // A line that never ends is not held without end: written in pieces,
+        // each under the request id its first named.
         if (\strlen($buffer) > self::MAX_LINE) {
-            $this->line($buffer, $error, $stream);
+            $this->piece($buffer, $error, $stream, true);
             $buffer = '';
         }
         $this->partial[$stream] = $buffer;
     }
 
-    /** The end of a stream: what it left without a newline, written. */
+    /**
+     * The end of a stream: what it left without a newline, written; what
+     * its last second dropped, said; and its budget forgotten -- a renderer
+     * replaced writes on streams of its own, and the old one's would
+     * otherwise be kept, and their count never said.
+     */
     public function close(string $stream, bool $error): void
     {
         $rest = $this->partial[$stream] ?? '';
         unset($this->partial[$stream]);
         if ($rest !== '') {
-            $this->line($rest, $error, $stream);
+            $this->piece($rest, $error, $stream, false);
+        }
+        unset($this->continued[$stream]);
+
+        $dropped = $this->budgets[$stream]['dropped'] ?? 0;
+        unset($this->budgets[$stream]);
+        if ($dropped > 0) {
+            $this->dropped($dropped);
         }
     }
 
     /** One line, rebuilt and written; see the class. */
     public function line(string $line, bool $error, string $stream = ''): void
     {
-        $cut = \strlen($line) > self::MAX_LINE;
-        $line = trim($cut ? substr($line, 0, self::MAX_LINE) : $line);
+        $this->rebuild($line, $error, $stream, null);
+    }
+
+    private function dropped(int $dropped): void
+    {
+        $this->logger->log('warning', 'renderer lines dropped', [
+            'dropped' => $dropped,
+            'per_second' => self::MAX_PER_SECOND,
+            'bytes_per_second' => self::MAX_BYTES_PER_SECOND,
+        ]);
+    }
+
+    /**
+     * A piece of a stream: a whole line, or -- $more -- the first part of
+     * one cut for its length, whose request id the rest of it is written
+     * under too.
+     */
+    private function piece(string $line, bool $error, string $stream, bool $more): void
+    {
+        $continuing = \array_key_exists($stream, $this->continued);
+        $carried = $this->continued[$stream] ?? null;
+        if ($more && !$continuing) {
+            $carried = self::idIn($line);
+        }
+        if ($more) {
+            $this->continued[$stream] = $carried;
+        } else {
+            unset($this->continued[$stream]);
+        }
+
+        $this->rebuild($line, $error, $stream, $carried, $more || $continuing);
+    }
+
+    /**
+     * The request id a line too long to read as JSON names, as PHP's
+     * Logger and the renderer write one: read from its text, and only in
+     * the one shape PHP gives an id.
+     */
+    private static function idIn(string $line): ?string
+    {
+        if (preg_match('/"request_id"\s*:\s*"([^"\\\\]{1,64})"/', substr($line, 0, self::MAX_LINE), $m) !== 1) {
+            return null;
+        }
+
+        return RequestId::isValid($m[1]) ? $m[1] : null;
+    }
+
+    /**
+     * @param string|null $carried the request id of the line this is a piece of
+     * @param bool $piece whether it is a piece of a line cut for its length
+     */
+    private function rebuild(string $line, bool $error, string $stream, ?string $carried, bool $piece = false): void
+    {
+        $cut = $piece || \strlen($line) > self::MAX_LINE;
+        if ($cut && !$piece) {
+            $carried = self::idIn($line);
+        }
+        $line = trim(\strlen($line) > self::MAX_LINE ? substr($line, 0, self::MAX_LINE) : $line);
         if ($line === '' || !$this->spend($stream, \strlen($line))) {
             return;
         }
@@ -128,7 +200,7 @@ final class RendererLines
         $fallback = $error ? 'error' : 'info';
         $decoded = $cut ? null : json_decode($line, true, self::MAX_DEPTH);
         if (!\is_array($decoded) || array_is_list($decoded) || !\is_string($decoded['message'] ?? null)) {
-            $this->write($fallback, $line, $cut ? ['truncated' => true] : [], null);
+            $this->write($fallback, $line, $cut ? ['truncated' => true] : [], $carried);
 
             return;
         }
@@ -158,11 +230,7 @@ final class RendererLines
         $budget = $this->budgets[$stream] ?? ['second' => $second, 'lines' => 0, 'bytes' => 0, 'dropped' => 0];
         if ($budget['second'] !== $second) {
             if ($budget['dropped'] > 0) {
-                $this->logger->log('warning', 'renderer lines dropped', [
-                    'dropped' => $budget['dropped'],
-                    'per_second' => self::MAX_PER_SECOND,
-                    'bytes_per_second' => self::MAX_BYTES_PER_SECOND,
-                ]);
+                $this->dropped($budget['dropped']);
             }
             $budget = ['second' => $second, 'lines' => 0, 'bytes' => 0, 'dropped' => 0];
         }
