@@ -12,7 +12,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopFulfilment;
 
-use Shop\Actions\FulfilmentActions;
+use Shop\Http\Actions\Fulfilment\FulfilmentActions;
 use Shop\Auth\AuthEpochs;
 use Shop\Auth\StaffMemberships;
 use Shop\Auth\StaffPermission;
@@ -21,7 +21,7 @@ use Shop\Kernel;
 use Shop\Models\Customer;
 use Shop\Models\Order;
 use Shop\Models\OrderStatus;
-use Shop\Pages\Admin\Orders as AdminOrders;
+use Shop\Http\Pages\Admin\Orders as AdminOrders;
 use Shop\StaffAccount;
 use Tinvar\Bench\Shop;
 use Tinvar\Calls\CallResult;

@@ -160,8 +160,8 @@ it('draws the toolbar into a dev page, and hands back what the renderer was give
         // file:line (ADR 0062): the page's loader -- the shop's layout loads
         // nothing, and reads what it shows as shared data, in the ticks.
         expect(array_map(static fn (array $o): string => "{$o['kind']} {$o['slot']} {$o['loader']} {$o['data']}", $detail['origins']))
-            ->toBe(['page page Shop\Pages\ProductPage::__invoke Shop\Data\ProductPageData'])
-            ->and($detail['origins'][0]['site'])->toMatch('#/examples/shop/app/Pages/ProductPage\.php:\d+$#')
+            ->toBe(['page page Shop\Http\Pages\Catalog\ProductPage::__invoke Shop\Http\Data\Catalog\ProductPageData'])
+            ->and($detail['origins'][0]['site'])->toMatch('#/examples/shop/app/Http/Pages/Catalog/ProductPage\.php:\d+$#')
             ->and($detail['lazyLoads'])->toBeArray()
             ->and($detail['acrossTenants'])->toBeArray()
             ->and($developer->toolbar(DevToolbar::PATH, $token)['protocol'])->toBe(DevToolbar::PROTOCOL);

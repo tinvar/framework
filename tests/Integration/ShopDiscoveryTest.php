@@ -48,13 +48,13 @@ function build(): string
 it('discovers every class its Kernel listed by hand, and adds the framework\'s own', function () {
     $classes = Kernel::classes();
 
-    expect($classes->routes)->toHaveCount(22)->toContain(\Shop\Pages\Layout::class, \Shop\Pages\Admin\Orders::class, \Shop\Pages\Errors\SystemError::class)
-        ->and($classes->queries)->toBe([\Shop\Queries\Availability::class, \Shop\Queries\ShippingUpdates::class])
+    expect($classes->routes)->toHaveCount(22)->toContain(\Shop\Http\Pages\Shell\Layout::class, \Shop\Http\Pages\Admin\Orders::class, \Shop\Http\Pages\Shell\SystemError::class)
+        ->and($classes->queries)->toBe([\Shop\Http\Queries\Catalog\Availability::class, \Shop\Http\Queries\Orders\ShippingUpdates::class])
         ->and($classes->actions)->toHaveCount(7)
-        ->and($classes->endpoints)->toBe([\Shop\Endpoints\OrderReceipt::class, \Shop\Endpoints\ProductStock::class, \Shop\Endpoints\WarehouseCalls::class, \Shop\Endpoints\WarehouseStock::class])
-        ->and($classes->channels)->toBe([\Shop\Channels\OrderUpdates::class])
-        ->and($classes->transfers)->toBe([\Shop\Transfers\OrdersExport::class, \Shop\Transfers\StockImport::class])
-        ->and($classes->shared)->toBe([\Shop\Shared\ShopShared::class])
+        ->and($classes->endpoints)->toBe([\Shop\Http\Endpoints\Catalog\ProductStock::class, \Shop\Http\Endpoints\Orders\OrderReceipt::class, \Shop\Http\Endpoints\Warehouse\WarehouseCalls::class, \Shop\Http\Endpoints\Warehouse\WarehouseStock::class])
+        ->and($classes->channels)->toBe([\Shop\Http\Channels\Orders\OrderUpdates::class])
+        ->and($classes->transfers)->toBe([\Shop\Http\Transfers\Catalog\StockImport::class, \Shop\Http\Transfers\Orders\OrdersExport::class])
+        ->and($classes->shared)->toBe([\Shop\Http\Shared\ShopShared::class])
         ->and($classes->policies)->toBe([
             \Shop\Models\Customer::class => \Shop\Policies\CustomerPolicy::class,
             \Shop\Models\Order::class => \Shop\Policies\OrderPolicy::class,
@@ -66,10 +66,10 @@ it('discovers every class its Kernel listed by hand, and adds the framework\'s o
         ->and($classes->tasks)->toContain(\Shop\Tasks\AdvanceShipments::class, \Shop\Tasks\ScheduleNewsletter::class, \Tinvar\Jobs\PruneQueue::class)
         ->and($classes->configs)->toContain(\Shop\Config\ShopConfig::class, \Shop\Config\ServerConfig::class, \Tinvar\Config\FrameworkConfig::class, \Tinvar\Mail\DkimConfig::class)
         ->and($classes->scenarios)->toBe([\Shop\Database\Scenarios\DemoCustomer::class, \Shop\Database\Scenarios\LoadCustomers::class, \Shop\Database\Scenarios\NewCustomer::class])
-        ->and($classes->fieldEnums)->toBe([\Shop\Data\CatalogSort::class])
-        ->and($classes->payloads)->toContain(\Shop\Data\OrderConfirmationData::class, \Shop\Data\OrderExportRow::class)
-        ->and($classes->tools)->toBe([\Shop\Queries\ShippingUpdates::class])
-        ->and($classes->services)->toBe([\Shop\Actions\FulfilmentActions::class])
+        ->and($classes->fieldEnums)->toBe([\Shop\Http\Data\Catalog\CatalogSort::class])
+        ->and($classes->payloads)->toContain(\Shop\Http\Data\Orders\OrderConfirmationData::class, \Shop\Http\Data\Orders\OrderExportRow::class)
+        ->and($classes->tools)->toBe([\Shop\Http\Queries\Orders\ShippingUpdates::class])
+        ->and($classes->services)->toBe([\Shop\Http\Actions\Fulfilment\FulfilmentActions::class])
         ->and($classes->all())->not->toContain(Kernel::class);
 });
 
@@ -90,10 +90,10 @@ it('boots in production from the manifest alone', function () {
         $written = Discovery::of(Kernel::class, $build)->write();
         // What production reads is the manifest, not a scan: one without
         // the catalog boots without the catalog.
-        Manifest::write("{$build}/discovery.php", 'Shop', $written->without(\Shop\Pages\Catalog::class));
+        Manifest::write("{$build}/discovery.php", 'Shop', $written->without(\Shop\Http\Pages\Catalog\Catalog::class));
 
         withEnvironment(['TINVAR_ENV' => 'production', 'TINVAR_BUILD_DIR' => $build], static function (): void {
-            expect(Kernel::classes()->routes)->not->toContain(\Shop\Pages\Catalog::class)
+            expect(Kernel::classes()->routes)->not->toContain(\Shop\Http\Pages\Catalog\Catalog::class)
                 ->and(Kernel::classes()->tasks)->toContain(\Tinvar\Jobs\PruneQueue::class);
 
             $connection = PdoConnection::sqlite(':memory:', 'shop');
@@ -101,7 +101,7 @@ it('boots in production from the manifest alone', function () {
             $kernel = new Kernel($connection, '/tmp/tinvar-discovery-none.sock', str_repeat('k', 32));
 
             expect($kernel->routes->named('shop.product')->template)->toBe('/products/{product}')
-                ->and(array_map(static fn ($route): string => $route->class, $kernel->routes->pages()))->not->toContain(\Shop\Pages\Catalog::class);
+                ->and(array_map(static fn ($route): string => $route->class, $kernel->routes->pages()))->not->toContain(\Shop\Http\Pages\Catalog\Catalog::class);
         });
     } finally {
         exec('rm -rf ' . escapeshellarg($build));

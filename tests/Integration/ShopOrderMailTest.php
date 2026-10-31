@@ -19,7 +19,7 @@ use Shop\Mail\Links;
 use Shop\Mail\OrderConfirmation;
 use Shop\Mail\SendOrderConfirmation;
 use Shop\Models\Order;
-use Shop\OrderChanges;
+use Shop\Http\Channels\Orders\OrderChanges;
 use Shop\Tasks\AdvanceShipments;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;

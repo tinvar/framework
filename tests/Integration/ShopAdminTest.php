@@ -11,7 +11,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopAdmin;
 
-use Shop\Actions\OrderActions;
+use Shop\Http\Actions\Orders\OrderActions;
 use Shop\Auth\StaffMemberships;
 use Shop\Auth\StaffPermission;
 use Shop\Database\Migrations;
@@ -20,7 +20,7 @@ use Shop\Kernel;
 use Shop\Models\Customer;
 use Shop\Models\Order;
 use Shop\Models\OrderStatus;
-use Shop\Pages\Admin\Orders;
+use Shop\Http\Pages\Admin\Orders;
 use Shop\StaffAccount;
 use Tinvar\Bench\Shop;
 use Tinvar\Auth\AuthContext;
@@ -69,8 +69,8 @@ it('puts the admin pages in the admin panel by their namespace, behind the custo
     $panels = Kernel::panels();
 
     expect($panels->panelOf(Orders::class))->toBe(StaffMemberships::PANEL)
-        ->and($panels->definition(StaffMemberships::PANEL)?->guard)->toBe(\Shop\Auth\RequireCustomer::class)
-        ->and($panels->panelOf(\Shop\Pages\Orders::class))->toBeNull();
+        ->and($panels->definition(StaffMemberships::PANEL)?->guard)->toBe(\Shop\Http\Middleware\RequireCustomer::class)
+        ->and($panels->panelOf(\Shop\Http\Pages\Orders\Orders::class))->toBeNull();
 });
 
 it('sends a visitor who is not signed in to sign in, and back', function () {

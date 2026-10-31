@@ -18,7 +18,7 @@ namespace Tinvar\Tests\Integration\ShopStaticPage;
 
 use Shop\DemoAccount;
 use Shop\Kernel;
-use Shop\Queries\Availability;
+use Shop\Http\Queries\Catalog\Availability;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;
 use Tinvar\Http\CsrfTokens;

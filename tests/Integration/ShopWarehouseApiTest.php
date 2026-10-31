@@ -14,7 +14,7 @@ namespace Tinvar\Tests\Integration\ShopWarehouseApi;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Models\Customer;
-use Shop\Queries\Availability;
+use Shop\Http\Queries\Catalog\Availability;
 use Tinvar\Bench\Shop;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
@@ -163,12 +163,12 @@ it('issues no session to a preflight for it', function () {
 it('refuses to start with a token set shorter than 32 characters', function () {
     putenv('SHOP_WAREHOUSE_TOKEN=' . str_repeat('t', 31));
     try {
-        expect(fn () => \Shop\Auth\WarehouseToken::fromEnvironment())
+        expect(fn () => \Shop\Http\Middleware\WarehouseToken::fromEnvironment())
             ->toThrow(\RuntimeException::class, 'SHOP_WAREHOUSE_TOKEN must be 32 characters or more');
         putenv('SHOP_WAREHOUSE_TOKEN=' . str_repeat('t', 32));
-        expect(\Shop\Auth\WarehouseToken::fromEnvironment())->toBe(str_repeat('t', 32));
+        expect(\Shop\Http\Middleware\WarehouseToken::fromEnvironment())->toBe(str_repeat('t', 32));
         putenv('SHOP_WAREHOUSE_TOKEN=');
-        expect(\Shop\Auth\WarehouseToken::fromEnvironment())->toBeNull();
+        expect(\Shop\Http\Middleware\WarehouseToken::fromEnvironment())->toBeNull();
     } finally {
         putenv('SHOP_WAREHOUSE_TOKEN');
     }

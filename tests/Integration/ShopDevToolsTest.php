@@ -205,7 +205,7 @@ it('serves MCP: the declarations, the log redacted, a page, and no value or secr
         ->and(array_column($replies[2]['result']['tools'], 'name'))->toBe(['routes', 'queries', 'actions', 'schema', 'config', 'logs', 'render_dump'])
         ->and($text(3))->toContain('"path": "/orders"')
         ->and($text(4))->toContain('products.availability')
-        ->and($text(5))->toContain('"class": "Shop\\\\Actions\\\\OrderActions"')
+        ->and($text(5))->toContain('"class": "Shop\\\\Http\\\\Actions\\\\Orders\\\\OrderActions"')
         ->and($text(6))->toContain('"table": "customers"')
         ->and($text(7))->toContain('SHOP_WAREHOUSE_TOKEN')->not->toContain($warehouse)->not->toContain('"value"')
         ->and($text(8))->toContain('failed for')->not->toContain('s3cr3t-pass')->not->toContain('ada@example.test')

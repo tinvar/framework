@@ -13,7 +13,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopCancelOrder;
 
-use Shop\Actions\OrderActions;
+use Shop\Http\Actions\Orders\OrderActions;
 use Shop\Auth\AuthEpochs;
 use Shop\DemoAccount;
 use Shop\Kernel;

@@ -14,7 +14,7 @@ namespace Tinvar\Tests\Integration\ShopQueryBuilder;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Models\Customer;
-use Shop\Pages\Orders;
+use Shop\Http\Pages\Orders\Orders;
 use Tinvar\Bench\Shop;
 use Tinvar\Testing\Testing;
 

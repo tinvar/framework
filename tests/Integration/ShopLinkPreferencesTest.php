@@ -13,14 +13,14 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopLinkPreferences;
 
-use Shop\Actions\MarketingLinkActions;
+use Shop\Http\Actions\Marketing\MarketingLinkActions;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Mail\Links;
 use Shop\Mail\MarketingList;
 use Shop\Mail\Unsubscribes;
 use Shop\Models\Customer;
-use Shop\Pages\LinkPreferences;
+use Shop\Http\Pages\Marketing\LinkPreferences;
 use Tinvar\Bench\Shop;
 use Tinvar\Jobs\Envelope;
 use Tinvar\Mail\PreferenceLinks;

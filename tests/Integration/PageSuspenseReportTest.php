@@ -21,8 +21,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\PageSuspenseReport;
 
-use Shop\Data\CustomerData;
-use Shop\Data\OpenOrdersData;
+use Shop\Http\Data\Account\CustomerData;
+use Shop\Http\Data\Orders\OpenOrdersData;
 use Tinvar\Attributes\Shared;
 use Tinvar\Auth\AllowAllGate;
 use Tinvar\Auth\AuthContext;

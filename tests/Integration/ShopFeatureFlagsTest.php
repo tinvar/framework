@@ -10,13 +10,13 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopFeatureFlags;
 
-use Shop\Data\ShippingUpdatesData;
+use Shop\Http\Data\Orders\ShippingUpdatesData;
 use Shop\DemoAccount;
 use Shop\Flags;
 use Shop\Kernel;
 use Shop\Models\Customer;
 use Shop\Models\Order;
-use Shop\Queries\ShippingUpdates;
+use Shop\Http\Queries\Orders\ShippingUpdates;
 use Tinvar\Bench\Shop;
 use Tinvar\Features\FlagRules;
 use Tinvar\Testing\Testing;

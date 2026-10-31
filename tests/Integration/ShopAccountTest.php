@@ -10,8 +10,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopAccount;
 
-use Shop\Actions\AccountActions;
-use Shop\Actions\OrderActions;
+use Shop\Http\Actions\Account\AccountActions;
+use Shop\Http\Actions\Orders\OrderActions;
 use Shop\Auth\NextPath;
 use Shop\Auth\Passwords;
 use Shop\Auth\Sessions;
@@ -20,7 +20,7 @@ use Shop\Database\Seeder;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Models\Customer;
-use Shop\Pages\SignIn;
+use Shop\Http\Pages\Account\SignIn;
 use Tinvar\Http\ApcuThrottleStore;
 use Tinvar\Http\CsrfTokens;
 use Tinvar\Http\Request;

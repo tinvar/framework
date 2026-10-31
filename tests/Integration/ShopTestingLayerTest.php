@@ -14,9 +14,9 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Integration\ShopTestingLayer;
 
 use PHPUnit\Framework\AssertionFailedError;
-use Shop\Actions\OrderActions;
-use Shop\Data\AvailabilityData;
-use Shop\Data\ShippingUpdatesData;
+use Shop\Http\Actions\Orders\OrderActions;
+use Shop\Http\Data\Catalog\AvailabilityData;
+use Shop\Http\Data\Orders\ShippingUpdatesData;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Mail\OrderConfirmation;
@@ -25,12 +25,12 @@ use Shop\Models\Customer;
 use Shop\Models\Order;
 use Shop\Models\OrderLine;
 use Shop\Models\Product;
-use Shop\Pages\Catalog;
-use Shop\Pages\Errors\ShopError;
-use Shop\Pages\Orders;
-use Shop\Pages\SignIn;
-use Shop\Queries\Availability;
-use Shop\Queries\ShippingUpdates;
+use Shop\Http\Pages\Catalog\Catalog;
+use Shop\Http\Pages\Shell\ShopError;
+use Shop\Http\Pages\Orders\Orders;
+use Shop\Http\Pages\Account\SignIn;
+use Shop\Http\Queries\Catalog\Availability;
+use Shop\Http\Queries\Orders\ShippingUpdates;
 use Tinvar\Bench\Shop;
 use Tinvar\Console\Output;
 use Tinvar\Data\Encoder;
@@ -192,7 +192,7 @@ it('shares the open orders count once, and reads it as held while the browser ha
 
     // ADR 0074: an order moving on by itself -- no response announces it --
     // stops the hold being believed, and the count is drawn again.
-    new \Shop\OrderChanges(holds: testing()->app->kernel()->sharedTags)->moved([['id' => 'any', 'customer' => customer()->id]]);
+    new \Shop\Http\Channels\Orders\OrderChanges(holds: testing()->app->kernel()->sharedTags)->moved([['id' => 'any', 'customer' => customer()->id]]);
     $first->then()->withHeaders([...$payload, 'x-have-shared' => $sent['hold']])->get('/')
         ->assertOk()
         ->assertPage(Catalog::class, fn (AssertablePage $page) => $page->etc()

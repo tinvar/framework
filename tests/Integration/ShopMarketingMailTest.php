@@ -16,7 +16,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopMarketingMail;
 
-use Shop\Actions\MarketingLinkActions;
+use Shop\Http\Actions\Marketing\MarketingLinkActions;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Mail\ConfirmSubscription;
@@ -34,8 +34,8 @@ use Shop\Mail\SendProductAnnouncement;
 use Shop\Mail\Unsubscribes;
 use Shop\Models\Customer;
 use Shop\Models\Product;
-use Shop\Pages\ConfirmMarketing;
-use Shop\Pages\OneClickUnsubscribe;
+use Shop\Http\Pages\Marketing\ConfirmMarketing;
+use Shop\Http\Pages\Marketing\OneClickUnsubscribe;
 use Shop\Tasks\ScheduleNewsletter;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;

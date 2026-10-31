@@ -16,8 +16,8 @@ namespace Tinvar\Tests\Integration\ShopOrderWebhook;
 
 use Shop\DemoAccount;
 use Shop\Kernel;
-use Shop\OrderEvent;
-use Shop\OrderWebhook;
+use Shop\Http\Webhooks\Warehouse\OrderEvent;
+use Shop\Http\Webhooks\Warehouse\OrderWebhook;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;
 use Tinvar\Console\Output;

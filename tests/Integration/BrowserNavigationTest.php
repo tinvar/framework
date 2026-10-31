@@ -291,7 +291,7 @@ it('signs in, reads orders and an order, places an order and signs out', functio
 
     expect($result['errors'])->toBe([])
         ->and($result['redirected'])->toBe(['path' => '/sign-in', 'next' => '/orders'])
-        ->and($result['wrong'])->toBe(\Shop\Actions\AccountActions::NO_MATCH);
+        ->and($result['wrong'])->toBe(\Shop\Http\Actions\Account\AccountActions::NO_MATCH);
 
     // The email checked on blur against the action's own rules, which refuse
     // an address at an IP that the form's own check lets through -- and
@@ -305,7 +305,7 @@ it('signs in, reads orders and an order, places an order and signs out', functio
     // and on to the orders once it is right.
     expect($result['withoutScript'])->toBe([
         'back' => '/sign-in?next=%2Forders',
-        'error' => \Shop\Actions\AccountActions::NO_MATCH,
+        'error' => \Shop\Http\Actions\Account\AccountActions::NO_MATCH,
         'email' => DemoAccount::EMAIL,
         'password' => '',
         'signedIn' => '/orders',
@@ -641,7 +641,7 @@ it('lets staff into the admin panel\'s orders, and refuses a customer', function
     // Every customer's orders, the newest fifty of them, in the admin panel;
     // the catalog after it, in none.
     expect($result['admin']['heading'])->toBe('All orders')
-        ->and($result['admin']['rows'])->toBe(\Shop\Pages\Admin\Orders::LIMIT)
+        ->and($result['admin']['rows'])->toBe(\Shop\Http\Pages\Admin\Orders::LIMIT)
         ->and($result['admin']['customers'])->toBeGreaterThan(1)
         ->and($result['admin']['panel'])->not->toBe([])
         ->and(array_unique($result['admin']['panel']))->toBe(['admin'])
@@ -654,7 +654,7 @@ it('lets staff into the admin panel\'s orders, and refuses a customer', function
     expect($result['scrolled']['sameDocument'])->toBeTrue()
         ->and($result['scrolled']['loaded'])->toBeTrue()
         ->and($result['scrolled']['followed'])->toBeTrue()
-        ->and($result['scrolled']['rows'])->toBeGreaterThan(\Shop\Pages\Admin\Orders::LIMIT)
+        ->and($result['scrolled']['rows'])->toBeGreaterThan(\Shop\Http\Pages\Admin\Orders::LIMIT)
         ->and($result['scrolled']['numbers'])->toBe($result['scrolled']['rows'])
         ->and($result['scrolled']['partials'][0]['only'] ?? null)->toBe('page.orders')
         ->and($result['scrolled']['partials'][0]['cursor'] ?? '')->not->toBe('')
@@ -798,7 +798,7 @@ it('asks for a customer\'s orders of a product only when they press the button f
     $product = (string) $latest->fetchColumn();
     $orders = $pdo->prepare(
         'SELECT o.number FROM orders o JOIN order_lines l ON l.order_id = o.id WHERE o.customer_id = ? AND l.product_id = ? '
-        . 'GROUP BY o.id ORDER BY o.placed_at DESC, o.id DESC LIMIT ' . \Shop\Pages\ProductPage::YOUR_ORDERS,
+        . 'GROUP BY o.id ORDER BY o.placed_at DESC, o.id DESC LIMIT ' . \Shop\Http\Pages\Catalog\ProductPage::YOUR_ORDERS,
     );
     $orders->execute([$customer, $product]);
     $expected = $orders->fetchAll(\PDO::FETCH_COLUMN);

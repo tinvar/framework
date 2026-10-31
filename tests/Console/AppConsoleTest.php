@@ -120,7 +120,7 @@ it('writes the discovery manifest into the build, and refuses a stale one in dis
 
         // A manifest from before a page was added.
         $scan = Manifest::read("{$build}/discovery.php", 'Shop');
-        Manifest::write("{$build}/discovery.php", 'Shop', $scan->without(\Shop\Pages\Catalog::class));
+        Manifest::write("{$build}/discovery.php", 'Shop', $scan->without(\Shop\Http\Pages\Catalog\Catalog::class));
 
         expect(ran($console, 'discover', '--check')[0])->toBe(1);
 

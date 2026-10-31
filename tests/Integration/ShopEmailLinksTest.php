@@ -16,7 +16,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopEmailLinks;
 
-use Shop\Actions\EmailLinkActions;
+use Shop\Http\Actions\Account\EmailLinkActions;
 use Shop\Auth\StaffMemberships;
 use Shop\Auth\StaffPermission;
 use Shop\Auth\StaffRole;

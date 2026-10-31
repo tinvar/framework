@@ -8,7 +8,7 @@ declare(strict_types=1);
  * every variable and no value, and a secret can come from a mounted file.
  */
 
-use Shop\Auth\WarehouseToken;
+use Shop\Http\Middleware\WarehouseToken;
 use Shop\Config\BuildsIn;
 use Shop\Kernel;
 use Tinvar\Config\ConfigException;

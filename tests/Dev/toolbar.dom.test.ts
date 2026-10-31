@@ -487,7 +487,7 @@ describe('what the render did, and where', () => {
       {
         slot: 'page',
         kind: 'page',
-        loader: 'Shop\\Pages\\Catalog::__invoke',
+        loader: 'Shop\\Http\\Pages\\Catalog\\Catalog::__invoke',
         data: 'Shop\\Data\\CatalogData',
         site: '/app/Pages/Catalog.php:48',
       },

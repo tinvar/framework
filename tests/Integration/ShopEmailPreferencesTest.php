@@ -17,7 +17,7 @@ use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Mail\MarketingList;
 use Shop\Models\Customer;
-use Shop\Pages\EmailPreferences;
+use Shop\Http\Pages\Marketing\EmailPreferences;
 use Tinvar\Bench\Shop;
 use Tinvar\Jobs\Envelope;
 use Tinvar\Orm\Orm;

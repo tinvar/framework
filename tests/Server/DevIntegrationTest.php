@@ -213,7 +213,7 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
     // Each file:line a link to the editor TINVAR_EDITOR names, and the
     // catalog's fields with the lines of its loader that made them.
     expect($result['catalog']['props'])->toContain('made at')
-        ->and($result['catalog']['links'])->toContain('vscode://file' . implode('/', array_map(rawurlencode(...), explode('/', "{$root}/examples/shop/app/Pages/Catalog.php"))) . ':' . lineOf("{$root}/examples/shop/app/Pages/Catalog.php", 'products: array_map('));
+        ->and($result['catalog']['links'])->toContain('vscode://file' . implode('/', array_map(rawurlencode(...), explode('/', "{$root}/examples/shop/app/Http/Pages/Catalog/Catalog.php"))) . ':' . lineOf("{$root}/examples/shop/app/Http/Pages/Catalog/Catalog.php", 'products: array_map('));
 
     expect($result['catalog']['selected'])->toBe('/')
         ->and($result['catalog']['props'])->toContain('Sent to the renderer · render')
@@ -284,8 +284,8 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
         ->and($fox['list']['origin'])->toBe($url)
         ->and($fox['list']['paths'])->toContain('/')
         ->and($fox['catalog']['ok'])->toBeTrue()
-        ->and($fox['catalog']['loader'])->toBe('Shop\\Pages\\Catalog::__invoke')
-        ->and($made['products'][0] ?? '')->toEndWith('/examples/shop/app/Pages/Catalog.php:' . lineOf("{$root}/examples/shop/app/Pages/Catalog.php", 'products: array_map('))
+        ->and($fox['catalog']['loader'])->toBe('Shop\\Http\\Pages\\Catalog\\Catalog::__invoke')
+        ->and($made['products'][0] ?? '')->toEndWith('/examples/shop/app/Http/Pages/Catalog/Catalog.php:' . lineOf("{$root}/examples/shop/app/Http/Pages/Catalog/Catalog.php", 'products: array_map('))
         ->and($fox['elsewhere'])->toBe(['plain' => 'no-toolbar', 'forged' => 'not-dev-server']);
 });
 

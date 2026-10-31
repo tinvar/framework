@@ -13,17 +13,17 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopFakes;
 
-use Shop\Actions\OrderActions;
-use Shop\Data\AvailabilityData;
-use Shop\Data\ShippingUpdatesData;
+use Shop\Http\Actions\Orders\OrderActions;
+use Shop\Http\Data\Catalog\AvailabilityData;
+use Shop\Http\Data\Orders\ShippingUpdatesData;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Models\Customer;
 use Shop\Models\Order;
 use Shop\Models\Product;
-use Shop\Queries\Availability;
-use Shop\Queries\ShippingUpdates;
-use Shop\Requests\PlaceOrderRequest;
+use Shop\Http\Queries\Catalog\Availability;
+use Shop\Http\Queries\Orders\ShippingUpdates;
+use Shop\Http\Requests\Orders\PlaceOrderRequest;
 use Tinvar\Actions\ActionException;
 use Tinvar\Actions\ActionResult;
 use Tinvar\Bench\Shop;

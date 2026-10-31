@@ -13,7 +13,7 @@ namespace Tinvar\Tests\Integration\ShopAuthEpoch;
 
 use Shop\Auth\AuthEpochs;
 use Shop\Auth\Sessions;
-use Shop\Auth\StartSession;
+use Shop\Http\Middleware\StartSession;
 use Shop\Database\Migrations;
 use Shop\Database\Seeder;
 use Shop\DemoAccount;
