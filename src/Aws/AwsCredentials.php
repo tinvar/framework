@@ -48,6 +48,16 @@ final readonly class AwsCredentials
         return $this->sessionToken;
     }
 
+    /**
+     * $text with the secret and the session token cut out: for an error a
+     * service wrote, which should never quote either, and is read as if it
+     * might.
+     */
+    public function redact(string $text): string
+    {
+        return str_replace(array_values(array_filter([$this->secretKey, $this->sessionToken], static fn (?string $s): bool => $s !== null && $s !== '')), '[redacted]', $text);
+    }
+
     /** @return array<string, string> */
     public function __debugInfo(): array
     {
