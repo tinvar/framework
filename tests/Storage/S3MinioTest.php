@@ -256,6 +256,49 @@ describe('S3Storage against MinIO', function () {
             ->and($storage->exists($other))->toBeFalse();
     });
 
+    // ADR 0143 end to end: a resumable upload under a ticket, its parts sent
+    // to MinIO at the URLs PHP presigned, the rest asked for after a pause,
+    // and the whole kept only once PHP has sniffed it.
+    it('takes a resumable upload in parts, goes on from what it holds, and keeps it as /_upload would', function () {
+        [$storage] = minio();
+        require_once __DIR__ . '/../Uploads/Fixtures/app.php';
+        $app = new Tinvar\Tests\Uploads\Fixtures\App($storage);
+        $app->now = time();
+        $post = static fn (string $path, array $body): Tinvar\Http\Response => $app->kernel->handle(
+            new Tinvar\Http\Request('POST', $path, [
+                'content-type' => 'application/json',
+                'x-xsrf-token' => Tinvar\Tests\Uploads\Fixtures\CSRF,
+                'x-test-user' => 'u-1',
+                'x-test-epoch' => 'e1',
+            ], cookies: [Tinvar\Tests\Uploads\Fixtures\SESSION_COOKIE => 'session-a', Tinvar\Http\Middleware\VerifyCsrfToken::COOKIE => Tinvar\Tests\Uploads\Fixtures\CSRF]),
+            static fn () => Tinvar\Http\Response::make(500),
+            json_encode($body, JSON_THROW_ON_ERROR),
+        );
+        $file = str_pad(Tinvar\Tests\Uploads\Fixtures\pdf(), S3Storage::MIN_PART_BYTES + 1000, "\n% filler\n");
+        $ticket = $app->ticket($app->profile(Tinvar\Tests\Uploads\Fixtures\P1), action: 'profiles.archive', field: 'archive');
+
+        $begun = Tinvar\Tests\Uploads\Fixtures\json($post(Tinvar\Uploads\UploadEndpoint::SESSION_PATH, ['ticket' => $ticket, 'size' => strlen($file), 'name' => 'a.pdf', 'direct' => true]));
+        $session = (string) $begun['session'];
+        $parts = Tinvar\Tests\Uploads\Fixtures\json($post(Tinvar\Uploads\UploadEndpoint::SESSION_PARTS_PATH, ['session' => $session]))['parts'];
+        expect(minioBrowser('PUT', $parts[0]['url'], substr($file, 0, S3Storage::MIN_PART_BYTES - 1))[0])->toBe(403)
+            ->and(minioBrowser('PUT', $parts[0]['url'], substr($file, 0, S3Storage::MIN_PART_BYTES))[0])->toBe(200);
+
+        // Back again: MinIO says what it holds, and only the rest is asked for.
+        $resumed = Tinvar\Tests\Uploads\Fixtures\json($post(Tinvar\Uploads\UploadEndpoint::SESSION_PARTS_PATH, ['session' => $session]));
+        expect($resumed['offset'])->toBe(S3Storage::MIN_PART_BYTES)
+            ->and(array_column($resumed['parts'], 'number'))->toBe([2])
+            ->and(minioBrowser('PUT', $resumed['parts'][0]['url'], substr($file, S3Storage::MIN_PART_BYTES))[0])->toBe(200);
+
+        $done = $post(Tinvar\Uploads\UploadEndpoint::SESSION_COMPLETE_PATH, ['session' => $session]);
+        $kept = $app->store->find((string) Tinvar\Tests\Uploads\Fixtures\json($done)['upload']);
+        expect($done->status)->toBe(201)
+            ->and($kept?->type)->toBe('application/pdf')
+            ->and($storage->size((string) $kept?->key))->toBe(strlen($file))
+            ->and($storage->multipartUploadsUnder(Tinvar\Uploads\UploadEndpoint::PARTIAL_PREFIX . '/', 100))->toBe([])
+            ->and($storage->keysUnder(Tinvar\Uploads\UploadEndpoint::PARTIAL_PREFIX, 100))->toBe([]);
+        $storage->delete((string) $kept?->key);
+    });
+
     it('lists the keys under a prefix, page by page, with when each was written', function () {
         [$storage] = minio();
         $prefix = 'listed-' . bin2hex(random_bytes(4));

@@ -30,6 +30,7 @@ interface AppendableStorage extends Storage
      * @return int the length now there
      * @throws OffsetMismatch when what is there is not $offset bytes long
      * @throws StorageException when it could not be written
+     * @throws \RuntimeException whatever $guard throws
      */
     public function append(string $key, int $offset, string $bytes, ?\Closure $guard = null): int;
 }

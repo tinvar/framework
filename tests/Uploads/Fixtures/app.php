@@ -189,6 +189,18 @@ final class ProfileActions
         return ActionResult::ok(['attached' => $document !== null]);
     }
 
+    /** A file large enough to go to an object store in several parts (ADR 0143). */
+    #[Action(name: 'profiles.archive'), Authorize('update', 'profile')]
+    public function archive(
+        Profile $profile,
+        #[Uploaded(to: 'profile', prefix: 'documents', types: ['application/pdf'], maxBytes: 10_485_760)]
+        Upload $archive,
+    ): ActionResult {
+        self::$received = $archive;
+
+        return ActionResult::ok();
+    }
+
     /** What the last list body was handed. */
     public static ?UploadList $photos = null;
 

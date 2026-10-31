@@ -7,6 +7,7 @@ namespace Tinvar\Uploads;
 use Tinvar\Http\Request;
 use Tinvar\Render\TokenClaims;
 use Tinvar\Storage\ListsKeys;
+use Tinvar\Storage\MultipartStore;
 use Tinvar\Storage\Storage;
 use Tinvar\Storage\StorageException;
 use Tinvar\Storage\StorageKey;
@@ -186,6 +187,10 @@ final readonly class Uploads
      * kept -- unless there is a quota, which counts them for as long as
      * their files are kept.
      *
+     * A resumable upload that ran out (ADR 0143) is pruned the same way: its
+     * partial bytes, and -- in an object store -- the multipart upload begun
+     * at its key, aborted so the store drops its parts, then its record.
+     *
      * @return int how many unclaimed uploads were removed
      */
     public function prune(?int $now = null, int $limit = 500): int
@@ -195,6 +200,13 @@ final readonly class Uploads
 
         foreach ($this->store->expired($now - self::PRUNE_GRACE, $limit) as $upload) {
             try {
+                if ($this->storage instanceof MultipartStore && str_starts_with($upload->key, UploadEndpoint::PARTIAL_PREFIX . '/')) {
+                    foreach ($this->storage->multipartUploadsUnder($upload->key, 100) as $begun) {
+                        if ($begun['key'] === $upload->key) {
+                            $this->storage->abortMultipart($begun['key'], $begun['uploadId']);
+                        }
+                    }
+                }
                 $this->storage->delete($upload->key);
             } catch (StorageException) {
                 // Kept, record and all, for the next run: forgetting the
@@ -209,7 +221,64 @@ final readonly class Uploads
             $this->store->forgetClaimedBefore($now - self::CLAIM_RETENTION);
         }
 
-        return $removed + $this->sweepIncoming($now, $limit);
+        return $removed + $this->sweepIncoming($now, $limit) + $this->sweepPartial($now, $limit);
+    }
+
+    /**
+     * Removes what lies under the prefix resumable uploads wait at, older
+     * than any session could still want: a partial file or an object last
+     * written, and a multipart upload begun, longer ago than a session lives
+     * and the grace. A session's bytes are written only while it is open, so
+     * such bytes are past every session's expiry -- left by a process killed
+     * between claiming a session and removing them, or by a record lost.
+     *
+     * A store that cannot list is left to the records above and to the
+     * bucket's lifecycle rule, which aborts incomplete multipart uploads.
+     */
+    private function sweepPartial(int $now, int $limit): int
+    {
+        $before = $now - UploadEndpoint::SESSION_TTL - self::PRUNE_GRACE;
+        $removed = 0;
+
+        if ($this->storage instanceof ListsKeys) {
+            try {
+                $keys = $this->storage->keysUnder(UploadEndpoint::PARTIAL_PREFIX, $limit);
+            } catch (StorageException) {
+                $keys = [];
+            }
+            foreach ($keys as $key => $written) {
+                if ($written > $before) {
+                    continue;
+                }
+                try {
+                    $this->storage->delete($key);
+                    $removed++;
+                } catch (StorageException) {
+                    // Found again on the next run.
+                }
+            }
+        }
+
+        if ($this->storage instanceof MultipartStore) {
+            try {
+                $begun = $this->storage->multipartUploadsUnder(UploadEndpoint::PARTIAL_PREFIX . '/', $limit);
+            } catch (StorageException) {
+                $begun = [];
+            }
+            foreach ($begun as $upload) {
+                if ($upload['initiated'] > $before) {
+                    continue;
+                }
+                try {
+                    $this->storage->abortMultipart($upload['key'], $upload['uploadId']);
+                    $removed++;
+                } catch (StorageException) {
+                    // Found again on the next run.
+                }
+            }
+        }
+
+        return $removed;
     }
 
     /**

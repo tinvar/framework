@@ -98,6 +98,68 @@ final class UploadEndpoint
      */
     public const int INCOMING_GRACE = 3600;
 
+    /**
+     * Where a resumable upload begins (ADR 0143): under its ticket, for the
+     * size, name and type declared up front, answered with a session the
+     * browser keeps -- and, for a file sent straight to an object store, a
+     * multipart upload begun there.
+     */
+    public const string SESSION_PATH = '/_upload/session';
+
+    /** Where a browser asks how much of a resumable upload is in: before it goes on, every time. */
+    public const string SESSION_OFFSET_PATH = '/_upload/session/offset';
+
+    /** Where a chunk is appended, at the offset it names, which must be the one held. */
+    public const string SESSION_CHUNK_PATH = '/_upload/session/chunk';
+
+    /** Where a browser sending parts to the store is told where to go on, and handed their URLs. */
+    public const string SESSION_PARTS_PATH = '/_upload/session/parts';
+
+    /** Where an upload sent in parts is completed, and kept -- or refused -- as /_upload would. */
+    public const string SESSION_COMPLETE_PATH = '/_upload/session/complete';
+
+    /** Where a resumable upload is given up: its bytes removed, its room given back. */
+    public const string SESSION_ABORT_PATH = '/_upload/session/abort';
+
+    /**
+     * The prefix a resumable upload's bytes wait under until it is whole --
+     * appended to through PHP, or a multipart upload in the store -- never
+     * one an action declares, and never the direct uploads' prefix, which is
+     * swept on a clock of minutes rather than a day.
+     */
+    public const string PARTIAL_PREFIX = 'tinvar-partial';
+
+    /**
+     * How long a resumable upload may take, from when it began: a day, the
+     * longest any ticket lives. Long enough to go on the next morning after
+     * a laptop was shut, or after a crash; short enough that the room it
+     * holds against its owner's quota and the cap comes back the same day.
+     */
+    public const int SESSION_TTL = 86400;
+
+    /** The chunk size a browser is asked to send through PHP: a lost one costs a second or two to send again. */
+    public const int CHUNK_BYTES = 1_048_576;
+
+    /** The largest chunk taken, well inside PHP's default post_max_size of 8 MB. */
+    public const int MAX_CHUNK_BYTES = 4_194_304;
+
+    /**
+     * The smallest chunk taken but the last: a file of the largest size
+     * any upload takes is a few dozen appends, never a million.
+     */
+    public const int MIN_CHUNK_BYTES = 262_144;
+
+    /** Seconds a URL for one part is good for: minutes, enough to send it on a slow line. */
+    public const int PART_TTL = 300;
+
+    /** How many parts' URLs one question hands out: the next few, never the whole file's. */
+    public const int PARTS_AHEAD = 4;
+
+    /** The headers a chunk carries: its session, the offset it is for, and optionally its digest. */
+    public const string SESSION_HEADER = 'upload-session';
+    public const string OFFSET_HEADER = 'upload-offset';
+    public const string CHECKSUM_HEADER = 'upload-checksum';
+
     /** Where a form posted without script carries each file's ticket: `_upload_tickets[<name>]`. */
     public const string INLINE_TICKETS = '_upload_tickets';
 
@@ -137,7 +199,17 @@ final class UploadEndpoint
 
     public function matches(Request $request): bool
     {
-        return \in_array($request->path, [self::PATH, self::REFRESH_PATH, self::DIRECT_PATH, self::COMPLETE_PATH], true);
+        return \in_array($request->path, [
+            self::PATH, self::REFRESH_PATH, self::DIRECT_PATH, self::COMPLETE_PATH,
+            self::SESSION_PATH, self::SESSION_OFFSET_PATH, self::SESSION_CHUNK_PATH,
+            self::SESSION_PARTS_PATH, self::SESSION_COMPLETE_PATH, self::SESSION_ABORT_PATH,
+        ], true);
+    }
+
+    /** Whether $request is a chunk of a resumable upload, which the Kernel throttles by a budget of its own. */
+    public static function isChunk(Request $request): bool
+    {
+        return $request->path === self::SESSION_CHUNK_PATH;
     }
 
     public static function assertMethod(Request $request): void
@@ -155,6 +227,9 @@ final class UploadEndpoint
         }
         if ($request->path === self::DIRECT_PATH || $request->path === self::COMPLETE_PATH) {
             return $this->direct($request, $rawBody);
+        }
+        if (str_starts_with($request->path, self::SESSION_PATH)) {
+            return new ResumableUploads($this, $this->uploads, $this->auth)->handle($request, $rawBody);
         }
 
         $type = strtolower(trim(explode(';', $request->header('content-type') ?? '', 2)[0]));
@@ -182,8 +257,19 @@ final class UploadEndpoint
 
         [$action, $declared] = $this->declarationFor($ticket);
 
-        // The action's tenant and panel stack, then its own middleware, as
-        // ActionEndpoint puts them around a call.
+        return $this->within($action, $request, fn (Request $inner): Response => $this->store($inner, $ticket, $declared));
+    }
+
+    /**
+     * Runs $then inside the action's own context: its tenant and panel
+     * stack, then its own middleware, as ActionEndpoint puts them around a
+     * call.
+     *
+     * @internal for ResumableUploads
+     * @param \Closure(Request): Response $then
+     */
+    public function within(CompiledAction $action, Request $request, \Closure $then): Response
+    {
         $panels = $this->entry->panelFor($action->panels, $action->class);
         $stack = [
             ...$this->entry->stackFor($action->tenantFrom, $panels),
@@ -193,7 +279,7 @@ final class UploadEndpoint
             ),
         ];
 
-        return new Pipeline($stack)->run($request, fn (Request $inner): Response => $this->store($inner, $ticket, $declared));
+        return new Pipeline($stack)->run($request, $then);
     }
 
     /**
@@ -449,9 +535,10 @@ final class UploadEndpoint
     /**
      * A small JSON body's fields -- or a form's, as PHP parsed it.
      *
+     * @internal for ResumableUploads
      * @return array<mixed>
      */
-    private static function jsonBody(Request $request, string $rawBody): array
+    public static function jsonBody(Request $request, string $rawBody): array
     {
         if ($rawBody === '') {
             return $request->body;
@@ -474,9 +561,10 @@ final class UploadEndpoint
      * parameter or moved its prefix names something this server no longer
      * declares, and is refused.
      *
+     * @internal for ResumableUploads
      * @return array{CompiledAction, Uploaded}
      */
-    private function declarationFor(UploadTicket $ticket): array
+    public function declarationFor(UploadTicket $ticket): array
     {
         if (!$this->actions->has($ticket->action)) {
             throw self::refused('names no registered action');
@@ -513,8 +601,17 @@ final class UploadEndpoint
      */
     private function keep(UploadTicket $ticket, Uploaded $declared, string $path, string $clientName): Response
     {
-        $pending = $this->keepFile($ticket, $declared, $path, $clientName);
+        return self::kept($this->keepFile($ticket, $declared, $path, $clientName));
+    }
 
+    /**
+     * The answer for an upload kept: its reference, and the file as the
+     * server saw it.
+     *
+     * @internal for ResumableUploads
+     */
+    public static function kept(PendingUpload $pending): Response
+    {
         return Response::make(201, json_encode([
             'upload' => $pending->id,
             'name' => $pending->name,
@@ -527,8 +624,14 @@ final class UploadEndpoint
         ]);
     }
 
-    /** keep(), answering with the upload recorded rather than a response. */
-    private function keepFile(UploadTicket $ticket, Uploaded $declared, string $path, string $clientName): PendingUpload
+    /**
+     * keep(), answering with the upload recorded rather than a response --
+     * under $id, given one: a resumable upload's, drawn from its session so
+     * a completion asked about again finds it (ResumableUploads).
+     *
+     * @internal for ResumableUploads
+     */
+    public function keepFile(UploadTicket $ticket, Uploaded $declared, string $path, string $clientName, ?string $id = null): PendingUpload
     {
         $user = (string) $this->auth->id();
         $size = filesize($path);
@@ -610,7 +713,7 @@ final class UploadEndpoint
         }
 
         $pending = new PendingUpload(
-            id: bin2hex(random_bytes(16)),
+            id: $id ?? bin2hex(random_bytes(16)),
             key: $key,
             action: $ticket->action,
             field: $ticket->field,
@@ -738,13 +841,18 @@ final class UploadEndpoint
         };
     }
 
-    private static function tooLarge(): HttpException
+    /** @internal for ResumableUploads */
+    public static function tooLarge(): HttpException
     {
         return new HttpException(413, 'The file is larger than this upload takes.', 'upload_too_large');
     }
 
-    /** Every reason a ticket is refused, alike to the client; the reason goes to the log. */
-    private static function refused(string $why): HttpException
+    /**
+     * Every reason a ticket is refused, alike to the client; the reason goes to the log.
+     *
+     * @internal for ResumableUploads
+     */
+    public static function refused(string $why): HttpException
     {
         return new HttpException(403, "The upload ticket is refused ({$why}).", 'upload_refused');
     }
@@ -752,8 +860,10 @@ final class UploadEndpoint
     /**
      * Checked, never applied: the ticket agrees with where the request is,
      * and can put it nowhere.
+     *
+     * @internal for ResumableUploads
      */
-    private function assertBinding(Request $request, UploadTicket $ticket): void
+    public function assertBinding(Request $request, UploadTicket $ticket): void
     {
         $session = $this->uploads->sessionOf($request);
         if (TenantClaim::current($this->orm) !== $ticket->tenant
@@ -771,12 +881,14 @@ final class UploadEndpoint
      * no room for it -- not a 413, which says the file is too large for the
      * field, and would send them looking for a smaller one.
      */
-    private static function overQuota(): HttpException
+    /** @internal for ResumableUploads */
+    public static function overQuota(): HttpException
     {
         return new HttpException(507, 'Your files take up all the space your account has.', 'upload_quota');
     }
 
-    private static function tooManyPending(): HttpException
+    /** @internal for ResumableUploads */
+    public static function tooManyPending(): HttpException
     {
         return new HttpException(429, 'Too many uploads are waiting to be saved.', 'upload_pending', [
             'retry-after' => (string) Uploads::PENDING_TTL,
