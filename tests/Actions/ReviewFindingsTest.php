@@ -203,7 +203,7 @@ describe('Precognition', function () {
         [$runner] = runnerOf(A\TwoRequestActions::class);
 
         expect(fn () => $runner->validateField('TwoRequestActions.both', [], 'gamma'))
-            ->toThrow(LogicException::class, 'no form-request field named');
+            ->toThrow(\Tinvar\Endpoints\UnknownField::class, 'no form-request field named');
     });
 });
 

@@ -9,6 +9,7 @@ use Tinvar\Auth\Gate;
 use Tinvar\Cache\QueryCache;
 use Tinvar\Data\Encoder;
 use Tinvar\Data\SharedTags;
+use Tinvar\Endpoints\UnknownField;
 use Tinvar\Http\ForbiddenException;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Http\Request;
@@ -245,7 +246,7 @@ final class ActionRunner
                 return $this->requiredOnly($action, $input, [$field], $subject, $models)[$field];
             }
             if (!$this->declares($action, $field)) {
-                throw new \LogicException(
+                throw new UnknownField(
                     "Action '{$name}' has no form-request field named '{$field}', nor a parameter of that name.",
                 );
             }
@@ -304,7 +305,7 @@ final class ActionRunner
         // A typo would otherwise return [] and read as "this field is fine",
         // which is the hazard Validator::errorsFor refuses one layer down.
         if (!$declared) {
-            throw new \LogicException(
+            throw new UnknownField(
                 "Action '{$name}' has no form-request field named '{$field}', nor a parameter of that name.",
             );
         }

@@ -7,6 +7,7 @@ namespace Tinvar\Http\Endpoints;
 use Tinvar\Actions\ActionResult;
 use Tinvar\Actions\ActionRunner;
 use Tinvar\Actions\Revalidator;
+use Tinvar\Endpoints\UnknownField;
 use Tinvar\Http\EntryContext;
 use Tinvar\Http\ExternalOrigins;
 use Tinvar\Http\Flash;
@@ -230,7 +231,7 @@ final class ActionEndpoint
 
                     try {
                         $found = $this->runner->validateField($name, $input, $field, $request);
-                    } catch (\LogicException) {
+                    } catch (UnknownField) {
                         // validateField() refuses an unknown field rather than
                         // returning [], which would read as "this field is
                         // fine" -- right for an author typo, wrong for a name

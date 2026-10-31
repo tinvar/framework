@@ -372,8 +372,8 @@ describe('endpoint hardening', function () {
             ->toThrow(HttpException::class, 'must be a JSON object');
     });
 
-    // The field name is client-supplied; validateField() throws a
-    // LogicException quoting it, and only ValidationException was caught.
+    // The field name is client-supplied; validateField() throws an
+    // UnknownField quoting it, and only ValidationException was caught.
     it('answers 422 for a Precognition field the action does not have', function () {
         [$endpoint, $fixture] = actionEndpoint();
 
@@ -392,6 +392,24 @@ describe('endpoint hardening', function () {
         expect($response?->status)->toBe(422)
             ->and($response?->body())->not->toContain('<script>', 'no client text echoed back')
             ->and($response?->body())->not->toContain('alert');
+    });
+
+    // Only the unknown field is the client's doing. A rule the author
+    // misconfigured is a bug, and answering it as "no such field" hid it.
+    it('lets a misconfigured rule out of Precognition as the bug it is, not as an unknown field', function () {
+        $fixture = new Fixture(racks: 0, unitsPerRack: 0, sites: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $registry = new ActionRegistry();
+        $registry->register(PrecognitionMisconfiguredActions::class);
+        $endpoint = new ActionEndpoint(new ActionRunner($registry, $orm, new AllowAllGate(), new Validator($orm)));
+
+        $request = Request::post('/_action/PrecognitionMisconfiguredActions.save', headers: [
+            'Precognition' => 'true',
+            'Precognition-Validate-Only' => 'code',
+        ]);
+
+        expect(fn () => $endpoint->handle($request, json_encode(['code' => 'X'])))
+            ->toThrow(LogicException::class, 'set to ignore the subject');
     });
 
     it('bounds how many fields one Precognition header may name', function () {
@@ -541,3 +559,18 @@ describe('error responses are negotiated', function () {
         expect($response->header('content-type'))->toBe('application/json');
     });
 });
+
+final readonly class PrecognitionMisconfiguredRequest extends Tinvar\Validation\FormRequest
+{
+    // ignoreSubject on an action that resolves no model: the author's bug.
+    public function __construct(#[Tinvar\Validation\Rules\Unique(Tinvar\Tests\Orm\Fixtures\Site::class, 'code', ignoreSubject: true)] public string $code) {}
+}
+
+final class PrecognitionMisconfiguredActions
+{
+    #[Tinvar\Attributes\Action, Tinvar\Attributes\NoAuthorization(reason: 'a fixture')]
+    public function save(PrecognitionMisconfiguredRequest $request): Tinvar\Actions\ActionResult
+    {
+        return Tinvar\Actions\ActionResult::ok();
+    }
+}

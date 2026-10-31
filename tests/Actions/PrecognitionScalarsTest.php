@@ -108,7 +108,7 @@ it('still refuses a field the action does not take', function () {
     [$runner, $rack] = runner();
 
     expect(fn () => $runner->validateField('RackActions.resize', ['rack' => $rack], 'height'))
-        ->toThrow(\LogicException::class, "no form-request field named 'height'");
+        ->toThrow(\Tinvar\Endpoints\UnknownField::class, "no form-request field named 'height'");
 });
 
 it('hands the body the coerced value', function () {
