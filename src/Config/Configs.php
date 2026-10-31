@@ -535,10 +535,14 @@ final class Configs
         $variables = [];
         foreach ($constructor->getParameters() as $parameter) {
             $key = self::compileKey($class, $prefix, $parameter);
-            if (isset($variables[$key->variable])) {
-                throw new \LogicException("{$class}::\${$key->parameter} reads {$key->variable}, as \${$variables[$key->variable]} does.");
+            // Its _FILE variable too, as check() holds it: one key's own
+            // variable spelled as another's file would be read as both.
+            foreach (array_filter([$key->variable, $key->fileVariable()]) as $variable) {
+                if (isset($variables[$variable])) {
+                    throw new \LogicException("{$class}::\${$key->parameter} reads {$variable}, as \${$variables[$variable]} does.");
+                }
+                $variables[$variable] = $key->parameter;
             }
-            $variables[$key->variable] = $key->parameter;
             $keys[] = $key;
         }
 

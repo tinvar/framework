@@ -59,6 +59,17 @@ final readonly class AppConfig
     }
 }
 
+/** One key's _FILE variable is another key's own. */
+#[Config]
+final readonly class FileVariableTwice
+{
+    public function __construct(
+        #[\SensitiveParameter, Env(file: true)]
+        public ?Secret $token = null,
+        public ?string $tokenFile = null,
+    ) {}
+}
+
 #[Config]
 final readonly class RequiredSecret
 {
@@ -487,4 +498,11 @@ it('lists a list or map with its type and default', function (): void {
         ['list<' . Shade::class . '>', null],
         ['?map<bool>', null],
     ]);
+});
+
+// compile() held each key's variable to once and not its _FILE variable,
+// which only check() did: a boot read one variable as two keys.
+it('refuses, as it compiles, a key whose variable is another key\'s _FILE variable', function (): void {
+    expect(fn () => Configs::keys(FileVariableTwice::class))
+        ->toThrow(\LogicException::class, 'TOKEN_FILE');
 });
