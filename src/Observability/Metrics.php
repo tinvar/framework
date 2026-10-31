@@ -218,6 +218,11 @@ final class Metrics
                 continue;
             }
             [$name, $suffix, $set, $le] = $parts;
+            // A store another process writes is read, not trusted: only a
+            // key of the shape this class writes is written out.
+            if (!$this->wellFormed($this->definitions[$name], $suffix, $set, $le)) {
+                continue;
+            }
             $byMetric[$name][$set][$suffix . self::SEPARATOR . $le] = $value;
         }
 
@@ -244,6 +249,41 @@ final class Metrics
         }
 
         return implode("\n", [...$lines, ...$this->collected()]) . "\n";
+    }
+
+    /**
+     * Whether a series key read from a store is one this class would have
+     * written for the metric: its suffix and bucket bound of its type, and a
+     * label set of exactly its labels, in order, each value escaped as
+     * labels() escapes one and holding no control character -- so nothing
+     * read can end a line, or open a series of its own, in the text format.
+     *
+     * @param array{type: 'counter'|'histogram', help: string, labels: list<string>, buckets: list<float>} $definition
+     */
+    private function wellFormed(array $definition, string $suffix, string $set, string $le): bool
+    {
+        if ($definition['type'] === 'counter') {
+            if ($suffix !== '' || $le !== '') {
+                return false;
+            }
+        } elseif ($suffix === 'bucket') {
+            if (!\in_array($le, [...array_map(self::number(...), $definition['buckets']), '+Inf'], true)) {
+                return false;
+            }
+        } elseif (!\in_array($suffix, ['sum', 'count'], true) || $le !== '') {
+            return false;
+        }
+
+        if ($set === '') {
+            return $definition['labels'] === [];
+        }
+        if (preg_match_all('/\G(?:^|,)([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\\\\x00-\x1f\x7f]|\\\\[\\\\"n])*)"/', $set, $matches) === false) {
+            return false;
+        }
+
+        // Matched from the start, each pair right after the last: whole only
+        // when the pairs are all there is.
+        return implode('', $matches[0]) === $set && $matches[1] === $definition['labels'];
     }
 
     /** @return list<string> */

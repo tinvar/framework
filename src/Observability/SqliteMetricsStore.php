@@ -73,6 +73,27 @@ final class SqliteMetricsStore implements MetricsStore
             return $this->pdo;
         }
 
+        // Its series are read by the server and written out at /_metrics:
+        // made by this user alone, and refused where anyone else may write
+        // to it. Created under a umask that denies everyone else, as the log
+        // is (StreamSink), so it is never wider for a moment.
+        if ($this->path !== ':memory:') {
+            $previous = umask();
+            umask($previous | 0o077);
+            try {
+                if (!file_exists($this->path)) {
+                    @touch($this->path);
+                }
+            } finally {
+                umask($previous);
+            }
+            clearstatcache(true, $this->path);
+            $mode = @fileperms($this->path);
+            if ($mode !== false && ($mode & 0o022) !== 0) {
+                throw new \RuntimeException("The metrics file {$this->path} is writable by its group or by anyone; it must be its owner's alone.");
+            }
+        }
+
         $pdo = new \Pdo\Sqlite("sqlite:{$this->path}");
         $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
         $pdo->exec('PRAGMA busy_timeout = ' . max(0, $this->busyTimeoutMs));

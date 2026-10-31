@@ -157,6 +157,60 @@ it('adds what other processes counted to its own at a scrape, and writes only it
         ->and($shared->all())->toBe($before);
 });
 
+// The file other processes count into is read, not trusted: a series key
+// that is not one Metrics writes -- a label set that would break the text
+// format, or forge a line in it -- is skipped.
+it('skips a series key read from a store that is not one it would write', function () {
+    $shared = new class implements \Tinvar\Observability\MetricsStore {
+        public function add(array $deltas): void {}
+
+        public function all(): array
+        {
+            $s = "\x1f";
+
+            return [
+                "shop_orders_total{$s}{$s}channel=\"web\"{$s}" => 1_000_000,
+                "shop_orders_total{$s}{$s}channel=\"web\"}\nshop_orders_total{channel=\"forged\"{$s}" => 9_000_000,
+                "shop_orders_total{$s}{$s}channel=\"a\rb\"{$s}" => 1_000_000,
+                "shop_orders_total{$s}{$s}other=\"web\"{$s}" => 1_000_000,
+                "shop_orders_total{$s}{$s}channel=\"x\" ,y=\"z\"{$s}" => 1_000_000,
+                "shop_orders_total{$s}bucket{$s}channel=\"web\"{$s}" => 1_000_000,
+                "shop_checkout_seconds{$s}bucket{$s}channel=\"web\"{$s}nope" => 1_000_000,
+                "shop_checkout_seconds{$s}count{$s}channel=\"web\"{$s}" => 2_000_000,
+            ];
+        }
+    };
+
+    $text = metrics(new ArrayMetricsStore(), readAlso: [$shared])->exposition();
+
+    expect($text)->toContain('shop_orders_total{channel="web"} 1' . "\n")
+        ->and($text)->toContain('shop_checkout_seconds_count{channel="web"} 2')
+        ->and($text)->not->toContain('forged')
+        ->and($text)->not->toContain("\r")
+        ->and($text)->not->toContain('other=')
+        ->and($text)->not->toContain('y="z"')
+        ->and($text)->not->toContain('nope');
+});
+
+it('creates its file readable and writable by its owner alone, and refuses one others may write', function () {
+    $directory = sys_get_temp_dir() . '/tinvar-metrics-' . bin2hex(random_bytes(4));
+    mkdir($directory, 0700);
+    try {
+        $own = new SqliteMetricsStore("{$directory}/own.sqlite");
+        $own->add(['k' => 1]);
+        clearstatcache();
+        $mode = fileperms("{$directory}/own.sqlite") & 0o777;
+
+        touch("{$directory}/open.sqlite");
+        chmod("{$directory}/open.sqlite", 0o666);
+
+        expect($mode)->toBe(0o600)
+            ->and(static fn () => new SqliteMetricsStore("{$directory}/open.sqlite")->all())->toThrow(\RuntimeException::class, 'writable');
+    } finally {
+        exec('rm -rf ' . escapeshellarg($directory));
+    }
+});
+
 it('writes what it can read when one of the stores it reads fails', function () {
     $failing = new class implements \Tinvar\Observability\MetricsStore {
         public function add(array $deltas): void {}
