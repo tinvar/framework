@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Uploads;
 
 use Tinvar\Actions\ActionRegistry;
+use Tinvar\Actions\ActionRunner;
 use Tinvar\Actions\CompiledAction;
 use Tinvar\Attributes\Uploaded;
 use Tinvar\Auth\AuthContext;
@@ -23,6 +24,7 @@ use Tinvar\Storage\FileTypes;
 use Tinvar\Storage\ObjectStore;
 use Tinvar\Storage\StorageException;
 use Tinvar\Storage\StorageKey;
+use Tinvar\Validation\ValidationException;
 
 /**
  * POST /_upload
@@ -87,6 +89,9 @@ final class UploadEndpoint
 
     /** Seconds a presigned upload, and the intent behind it, are good for. */
     public const int DIRECT_TTL = 600;
+
+    /** Where a form posted without script carries each file's ticket: `_upload_tickets[<name>]`. */
+    public const string INLINE_TICKETS = '_upload_tickets';
 
     /** The multipart fields: the ticket, and the file. */
     public const string TICKET_FIELD = 'ticket';
@@ -496,6 +501,23 @@ final class UploadEndpoint
      */
     private function keep(UploadTicket $ticket, Uploaded $declared, string $path, string $clientName): Response
     {
+        $pending = $this->keepFile($ticket, $declared, $path, $clientName);
+
+        return Response::make(201, json_encode([
+            'upload' => $pending->id,
+            'name' => $pending->name,
+            'size' => $pending->size,
+            'type' => $pending->type,
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), [
+            'content-type' => 'application/json',
+            'cache-control' => 'private, no-store',
+            'vary' => 'Cookie',
+        ]);
+    }
+
+    /** keep(), answering with the upload recorded rather than a response. */
+    private function keepFile(UploadTicket $ticket, Uploaded $declared, string $path, string $clientName): PendingUpload
+    {
         $user = (string) $this->auth->id();
         $size = filesize($path);
         if ($size === false) {
@@ -613,22 +635,84 @@ final class UploadEndpoint
                 : self::tooManyPending();
         }
 
-        return Response::make(201, json_encode([
-            'upload' => $pending->id,
-            'name' => $pending->name,
-            'size' => $pending->size,
-            'type' => $pending->type,
-        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), [
-            'content-type' => 'application/json',
-            'cache-control' => 'private, no-store',
-            'vary' => 'Cookie',
-        ]);
+        return $pending;
+    }
+
+    /**
+     * The files a form posted without script carries straight to its
+     * action, taken as /_upload would take each, and the action's input
+     * with each file's reference in its place (ADR 0127).
+     *
+     * A browser with no script has nothing to send a file to /_upload with
+     * first, so the form posts it -- multipart, under the parameter's own
+     * name -- with the ticket the page rendered beside it, in
+     * `_upload_tickets[<name>]`. Called by the action endpoint inside the
+     * action's own context -- its tenant, its panel's stack, its middleware
+     * -- which is the context /_upload runs, and each file is held to
+     * exactly what /_upload holds one to: a ticket for this action and this
+     * parameter, bound to this session, this user at their epoch, this
+     * tenant and panel; the declared size and types; the cap and the quota;
+     * drawn again and scanned; stored under a key of the server's. What is
+     * refused is said on the field, as a form's errors are, for the page
+     * the post is sent back to.
+     *
+     * Only an `Upload`: PHP gives a field of several files a nested shape
+     * the request keeps none of (UploadedFile::fromGlobals()).
+     *
+     * @param array<mixed> $input
+     * @return array<mixed>
+     * @throws ValidationException naming each field whose file was refused
+     */
+    public function takeInline(Request $request, string $name, array $input): array
+    {
+        $tickets = $input[self::INLINE_TICKETS] ?? [];
+        unset($input[self::INLINE_TICKETS]);
+        if ($request->files === [] || !$this->actions->has($name)) {
+            return $input;
+        }
+        $action = $this->actions->get($name);
+
+        $errors = [];
+        foreach ($request->files as $field => $file) {
+            $declared = $action->uploads[$field] ?? null;
+            if ($declared === null || $declared->maxFiles !== 1 || $file->error === UPLOAD_ERR_NO_FILE) {
+                continue;
+            }
+
+            try {
+                $raw = \is_array($tickets) ? ($tickets[$field] ?? null) : null;
+                if (!\is_string($raw) || $raw === '' || \strlen($raw) > self::MAX_TICKET_BYTES) {
+                    throw self::refused('no ticket was posted beside the file');
+                }
+                try {
+                    $ticket = UploadTicket::decode($raw, $this->uploads->ticketSigner, $this->uploads->now());
+                } catch (TokenError $e) {
+                    throw self::refused($e->getMessage());
+                }
+                if ($ticket->action !== $name || $ticket->field !== $field) {
+                    throw self::refused('was issued for another action or parameter');
+                }
+                [, $declared] = $this->declarationFor($ticket);
+                $this->assertBinding($request, $ticket);
+
+                $received = $this->receivedFile($request, $field);
+                $input[$field] = $this->keepFile($ticket, $declared, $received->path, $received->clientName)->id;
+            } catch (HttpException $e) {
+                $errors[$field] = [$e->status === 403 ? ActionRunner::UPLOAD_REFUSED : $e->getMessage()];
+            }
+        }
+
+        if ($errors !== []) {
+            throw new ValidationException($errors);
+        }
+
+        return $input;
     }
 
     /** The one file the request carried, received whole, or the refusal that says why not. */
-    private function receivedFile(Request $request): UploadedFile
+    private function receivedFile(Request $request, string $field = self::FILE_FIELD): UploadedFile
     {
-        $file = $request->files[self::FILE_FIELD] ?? null;
+        $file = $request->files[$field] ?? null;
         if ($file === null || $file->error === UPLOAD_ERR_NO_FILE) {
             throw new HttpException(422, 'Send the file in the `file` field.', 'upload_missing');
         }

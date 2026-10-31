@@ -905,6 +905,10 @@ final class Kernel
             $this->sharedTags,
         );
 
+        // The upload endpoint, once it is made below, for the action endpoint to take a
+        // no-script form's files with.
+        /** @var UploadEndpoint|null $inlineUploads */
+        $inlineUploads = null;
         $this->actions_ = new ActionEndpoint(
             $this->actionRunner = new ActionRunner(
                 $this->actions,
@@ -928,6 +932,12 @@ final class Kernel
             entry: $entry,
             maxJsonDepth: $maxJsonDepth,
             externalOrigins: new ExternalOrigins(...$redirectOrigins),
+            // A form posted without script carries its files to the action
+            // itself, each taken as /_upload takes one (ADR 0127). Read when
+            // called: the upload endpoint is made below.
+            inlineUploads: $uploads === null ? null : static function (Request $request, string $name, array $input) use (&$inlineUploads): array {
+                return $inlineUploads instanceof UploadEndpoint ? $inlineUploads->takeInline($request, $name, $input) : $input;
+            },
         );
 
         $queryRunner = new QueryRunner(
@@ -1175,6 +1185,7 @@ final class Kernel
             panels: $panels,
             globalMiddleware: $globalMiddleware,
         );
+        $inlineUploads = $this->uploads_;
         $this->files_ = $uploads === null ? null : new FileEndpoint($uploads, $this->auth, $entry, $this->orm, $panels);
         $this->uploadTickets = $uploads === null ? null : new UploadTickets($this->actions, $entry, $this->auth, $uploads);
         $this->fileUrls = $uploads === null ? null : new FileUrls($uploads, $this->auth, $this->orm, $panels);

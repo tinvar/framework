@@ -54,6 +54,9 @@ final class ActionEndpoint
      * @param int $maxJsonDepth the nesting limit, up to Limits::MAX_JSON_DEPTH_CEILING
      * @param ExternalOrigins|null $externalOrigins where ActionResult::location() may
      *        send a browser; without them, nowhere
+     * @param (\Closure(Request, string, array<mixed>): array<mixed>)|null $inlineUploads takes the
+     *        files a form posted without script carries, under the tickets beside them, and
+     *        answers with the input their references stand in (UploadEndpoint::takeInline())
      */
     public function __construct(
         private readonly ActionRunner $runner,
@@ -66,6 +69,7 @@ final class ActionEndpoint
         private readonly ?EntryContext $entry = null,
         private readonly int $maxJsonDepth = Limits::MAX_JSON_DEPTH,
         private readonly ?ExternalOrigins $externalOrigins = null,
+        private readonly ?\Closure $inlineUploads = null,
     ) {
         Limits::assertConfigurable($maxBodyBytes, $maxJsonDepth);
     }
@@ -260,6 +264,13 @@ final class ActionEndpoint
             // So is the hidden CSRF field a form posted without script
             // carries: VerifyCsrfToken has read it from the body already.
             unset($input['_token']);
+
+            // And the upload tickets one carries beside its files, which
+            // are taken here -- inside the action's own context -- as
+            // /_upload would take them, their references put in their place.
+            $input = $this->inlineUploads === null
+                ? array_diff_key($input, ['_upload_tickets' => true])
+                : ($this->inlineUploads)($request, $name, $input);
 
             $result = $this->runner->run($name, $input, $precognitive, $request, $this->answerable(...));
         } catch (ValidationException $e) {
