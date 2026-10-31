@@ -137,3 +137,18 @@ it('keeps when a record last beat, and adds the column to a table made before it
         ->and(transferRecord('t-2', createdAt: 1_000)->isStale(1_000 + Tinvar\Transfers\Transfers::STALE_AFTER + 1))->toBeTrue()
         ->and(transferRecord('t-2', createdAt: 1_000)->with(['updatedAt' => 5_000])->isStale(1_000 + Tinvar\Transfers\Transfers::STALE_AFTER + 1))->toBeFalse();
 });
+
+// Review: fromKey() took no keepFiles, so an application made that way kept
+// every export's file the default week.
+it('keeps an export\'s file as long as fromKey() is told', function () {
+    $transfers = Tinvar\Transfers\Transfers::fromKey(
+        str_repeat('k', 32),
+        new Tinvar\Transfers\TransferRegistry(),
+        new ArrayTransferStore(),
+        new Tinvar\Storage\MemoryStorage(),
+        static fn (): string => 'job',
+        keepFiles: 2 * 86_400,
+    );
+
+    expect($transfers->keepFiles)->toBe(2 * 86_400);
+});

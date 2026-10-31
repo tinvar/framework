@@ -96,6 +96,7 @@ final readonly class Transfers
         CanonicalOrigins|\Closure|null $canonicalOrigin = null,
         int $linkTtl = DownloadToken::DEFAULT_TTL,
         ?\Closure $clock = null,
+        int $keepFiles = self::KEEP_FILES,
     ): self {
         return new self(
             $registry,
@@ -106,7 +107,8 @@ final readonly class Transfers
             $notifier,
             $canonicalOrigin,
             $linkTtl,
-            clock: $clock,
+            $keepFiles,
+            $clock,
         );
     }
 
