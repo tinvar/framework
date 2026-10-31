@@ -1203,7 +1203,7 @@ final class Kernel
 
         $this->endpoints_ = $endpoints === null ? null : new EndpointHandler(
             registry: $endpoints,
-            runner: new EndpointRunner($resolver, $this->orm, $gate, new Validator($this->orm), $encoder, $invalidation),
+            runner: new EndpointRunner($resolver, $this->orm, $gate, new Validator($this->orm), $encoder, $invalidation, $this->auth, $panels),
             auth: $this->auth,
             middlewareResolver: self::middlewareFrom($resolver),
             globalMiddleware: $globalMiddleware,
@@ -1543,7 +1543,7 @@ final class Kernel
             $response = $this->telemetry?->end($response, $failure) ?? $response;
             $ended = true;
 
-            return $response;
+            return $handling === null ? $this->resetAfterStream($response) : $response;
         } finally {
             // A failure that escaped -- throw_on_error's, say -- is still a
             // request that was answered, with a 500 by whoever caught it.
@@ -1554,6 +1554,33 @@ final class Kernel
             $this->handling = $handling;
             $this->scope->reset();
         }
+    }
+
+    /**
+     * A streamed response, the scope reset again once its producer has run.
+     *
+     * The producer runs as the response is sent, after handle()'s own reset;
+     * what it puts in place to run -- an endpoint's tenant, caller and panel
+     * (EndpointRunner) -- it leaves as it found it, but what it loads stays
+     * in the identity map and the statement log, for the next request on
+     * this worker to inherit. Not for a nested handle(): its producer runs
+     * inside the request around it, whose scope is not over.
+     */
+    private function resetAfterStream(Response $response): Response
+    {
+        if (!$response->isStreaming()) {
+            return $response;
+        }
+
+        $scope = $this->scope;
+
+        return $response->aroundBody(static function (\Closure $produce, \Closure $sink) use ($scope): void {
+            try {
+                $produce($sink);
+            } finally {
+                $scope->reset();
+            }
+        });
     }
 
     /**

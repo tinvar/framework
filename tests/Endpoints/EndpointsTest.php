@@ -303,6 +303,38 @@ final class ScannerEndpoints
     }
 }
 
+/**
+ * A streamed body that reads what its request put in place: the caller,
+ * the tenant, the read-only guard, a model by its id.
+ */
+final class StreamProbe
+{
+    /** @var array<string, mixed> */
+    public static array $seen = [];
+
+    public static ?AuthContext $auth = null;
+
+    public static ?Orm $orm = null;
+
+    #[Get('/api/scripts/{script}/stream', name: 'scripts.stream'), Authorize('view', 'script')]
+    public function stream(Script $script): Response
+    {
+        $auth = self::$auth;
+        $orm = self::$orm;
+        $id = $script->id;
+
+        return Response::stream(static function (\Closure $sink) use ($auth, $orm, $id): void {
+            StreamProbe::$seen = [
+                'user' => $auth?->id(),
+                'tenant' => $orm?->tenant(),
+                'readOnly' => $orm?->isReadOnly(),
+                'found' => $orm?->find(Script::class, $id)?->id,
+            ];
+            $sink('streamed');
+        });
+    }
+}
+
 final class ScriptEndpoints
 {
     #[Get('/api/scripts/{script}', name: 'scripts.show'), Authorize('view', 'script')]
@@ -410,10 +442,10 @@ final class ShadowsAPage
 }
 
 /** @param list<class-string> $endpoints */
-function kernel(array $endpoints, ?Orm $orm = null, ?string $tenant = null, ?WebhookEndpoint $webhooks = null): Kernel
+function kernel(array $endpoints, ?Orm $orm = null, ?string $tenant = null, ?WebhookEndpoint $webhooks = null, ?AuthContext $auth = null): Kernel
 {
     $orm ??= new Orm(new Fixture(racks: 2, unitsPerRack: 2)->connection, new IdentityMap('test'));
-    $auth = new AuthContext();
+    $auth ??= new AuthContext();
     $routes = new RouteRegistry();
     $routes->register(RackPage::class);
     $registry = new EndpointRegistry();
@@ -737,6 +769,30 @@ describe('a #[WithoutSession] endpoint', function () {
 
         expect(call($kernel, 'POST', "/api/scanner/racks/{$fixture->ids['racks'][1]}", ['authorization' => 'Bearer scanner-token'], signedIn: false, csrf: false)->status)->toBe(403);
     });
+});
+
+it('produces a streamed body after handle() as the request it answers: its caller, its tenant, read-only -- and leaves nothing behind', function () {
+    $tenants = new TenantFixture();
+    $orm = new Orm($tenants->connection, new IdentityMap('test'), Tenancy::flat());
+    $auth = new AuthContext();
+    StreamProbe::$auth = $auth;
+    StreamProbe::$orm = $orm;
+    StreamProbe::$seen = [];
+    $kernel = kernel([StreamProbe::class], $orm, 'acme', auth: $auth);
+    $script = $tenants->scripts['acme'][0];
+    $before = $orm->tenant();
+
+    $response = call($kernel, 'GET', "/api/scripts/{$script}/stream", csrf: false);
+
+    // handle() has returned, and reset the scope: the body is sent now.
+    expect($response->status)->toBe(200)
+        ->and(StreamProbe::$seen)->toBe([])
+        ->and($response->body())->toBe('streamed')
+        ->and(StreamProbe::$seen)->toBe(['user' => 'owner', 'tenant' => 'acme', 'readOnly' => true, 'found' => $script])
+        // And afterwards, nothing of it is left for the next request.
+        ->and($auth->id())->toBeNull()
+        ->and($orm->tenant())->toBe($before)
+        ->and($orm->isReadOnly())->toBeFalse();
 });
 
 it('resolves a model in the request\'s tenant: another tenant\'s is a 404', function () {

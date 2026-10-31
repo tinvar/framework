@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Tinvar\Endpoints;
 
 use Tinvar\Actions\TagInvalidation;
+use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\Checks;
 use Tinvar\Auth\Gate;
+use Tinvar\Auth\PanelContext;
 use Tinvar\Data\Data;
 use Tinvar\Data\Encoder;
 use Tinvar\Http\ForbiddenException;
@@ -54,6 +56,10 @@ final class EndpointRunner
         // What the tags an endpoint declares do once a call that may write
         // has run (ADR 0075); none, and they do nothing.
         private readonly ?TagInvalidation $invalidation = null,
+        // Who the call is, and the panel it is in: put back around a
+        // streamed body, which is produced after both have been reset.
+        private readonly ?AuthContext $auth = null,
+        private readonly ?PanelContext $panels = null,
     ) {}
 
     /**
@@ -112,7 +118,7 @@ final class EndpointRunner
         // 5. Answer.
         $response = match ($endpoint->returns) {
             CompiledEndpoint::RETURNS_RESPONSE => $result instanceof Response
-                ? ($safe ? $this->streamedReadOnly($result) : self::seeOther($request->method, $result))
+                ? $this->streamedInScope($safe ? $result : self::seeOther($request->method, $result), $safe)
                 : throw new \LogicException("{$endpoint->where()} returned " . get_debug_type($result) . ', not a Response.'),
             CompiledEndpoint::RETURNS_DATA => $this->json($endpoint, $result),
             default => Response::make(204),
@@ -342,27 +348,28 @@ final class EndpointRunner
     }
 
     /**
-     * A GET's streamed Response, its producer run read-only too: it runs
-     * after the body has returned, as the response is sent, and a producer
-     * that wrote would be a write a page on another site could cause.
+     * A streamed Response, its producer run as the call it answers. It runs
+     * after the body has returned, as the response is sent -- after the
+     * tenant and the panel have been left and the Kernel has reset the
+     * request's scope -- so what was in place here is put back around it:
+     * the tenant, the caller, the panel and the membership it was granted.
+     * And a GET's read-only too, since a producer that wrote would be a
+     * write a page on another site could cause. The file withFile() named
+     * and the cookies are kept.
      */
-    private function streamedReadOnly(Response $response): Response
+    private function streamedInScope(Response $response, bool $readOnly): Response
     {
         if (!$response->isStreaming()) {
             return $response;
         }
 
-        $orm = $this->orm;
+        $scope = EnteredScope::capture($this->orm, $this->auth, $this->panels, $readOnly);
 
-        return Response::stream(
-            static function (\Closure $sink) use ($orm, $response): void {
-                $orm->readOnly(static function () use ($response, $sink): void {
-                    $response->sendBody($sink);
-                });
-            },
-            $response->status,
-            $response->headers(),
-        )->withCookiesOf($response);
+        return $response->aroundBody(static function (\Closure $produce, \Closure $sink) use ($scope): void {
+            $scope->run(static function () use ($produce, $sink): void {
+                $produce($sink);
+            });
+        });
     }
 
     /**

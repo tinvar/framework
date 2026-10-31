@@ -362,6 +362,24 @@ final class Response
     }
 
     /**
+     * The same streamed response -- status, headers, cookies and the file
+     * withFile() named, all kept -- its producer run inside $around, which
+     * is handed the producer and the sink and calls the one with the other
+     * when it is ready. For what a body produced later, as the response is
+     * sent, must run inside: the read-only guard, the request's scope.
+     *
+     * @param \Closure(\Closure(\Closure(string): void): void, \Closure(string): void): void $around
+     */
+    public function aroundBody(\Closure $around): self
+    {
+        $producer = $this->producer ?? throw new \LogicException('Only a streamed response has a producer to run around.');
+
+        return clone($this, ['producer' => static function (\Closure $sink) use ($around, $producer): void {
+            $around($producer, $sink);
+        }]);
+    }
+
+    /**
      * The same streamed response, saying its body is the file at $path from
      * start to end. The producer still sends it wherever nothing else will
      * -- a test, a server with no way to send a file -- so the two must be
