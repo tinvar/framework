@@ -184,6 +184,22 @@ describe('appending', function () {
             $root === null || removeStorageTestRoot($root);
         }
     })->with('stores');
+
+    // Review: a guard that threw on a first append left an empty file there.
+    it('leaves no file behind when its guard throws on the first append', function (Closure $make) {
+        /** @var Tinvar\Storage\AppendableStorage $storage */
+        [$storage, $root] = $make();
+        $key = StorageKey::generate('tinvar-partial', '');
+
+        try {
+            expect(fn () => $storage->append($key, 0, 'abc', static fn () => throw new RuntimeException('closed')))
+                ->toThrow(RuntimeException::class, 'closed')
+                ->and($storage->exists($key))->toBeFalse()
+                ->and($storage->append($key, 0, 'abc'))->toBe(3);
+        } finally {
+            $root === null || removeStorageTestRoot($root);
+        }
+    })->with('stores');
 });
 
 describe('LocalStorage, appending and listing', function () {

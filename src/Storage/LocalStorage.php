@@ -104,10 +104,33 @@ final readonly class LocalStorage implements AppendableStorage, ListsKeys
         if (is_link($path)) {
             throw new StorageException('A stored file resolves outside the storage root.');
         }
+        // A file a waiting append's lock was taken on can be gone by then --
+        // removed by an append before it whose guard refused a first chunk
+        // -- and the append goes again, on the file at the path now.
+        for ($attempt = 0; ; $attempt++) {
+            $appended = $this->appendOnce($path, $offset, $bytes, $guard);
+            if ($appended !== null) {
+                return $appended;
+            }
+            if ($attempt >= 2) {
+                throw new StorageException('A stored file kept changing under an append.');
+            }
+        }
+    }
+
+    /**
+     * One try at append(): the length it then holds, or null when the file
+     * it locked is no longer the one at the path.
+     *
+     * @param int<0, max> $offset
+     */
+    private function appendOnce(string $path, int $offset, string $bytes, ?\Closure $guard): ?int
+    {
         // Nothing there is empty, and only an append at 0 begins a file:
         // one ahead of it is refused without leaving an empty file behind.
         clearstatcache(true, $path);
-        if ($offset !== 0 && !is_file($path)) {
+        $existed = is_file($path);
+        if ($offset !== 0 && !$existed) {
             throw new OffsetMismatch(0);
         }
 
@@ -130,30 +153,53 @@ final readonly class LocalStorage implements AppendableStorage, ListsKeys
             }
             try {
                 clearstatcache(true, $path);
+                $still = @lstat($path);
+                if ($still === false || $still['ino'] !== $opened['ino'] || $still['dev'] !== $opened['dev']) {
+                    return null;
+                }
                 $size = fstat($out)['size'] ?? -1;
                 if ($size !== $offset) {
                     throw new OffsetMismatch(max(0, $size));
                 }
                 if ($guard !== null) {
-                    $guard();
+                    try {
+                        $guard();
+                    } catch (\Throwable $e) {
+                        // A first chunk refused leaves no empty file to
+                        // say a session began, under the lock that would
+                        // have written it.
+                        if (!$existed && $size === 0) {
+                            @unlink($path);
+                        }
+
+                        throw $e;
+                    }
                 }
                 if (fseek($out, $offset) !== 0) {
                     throw new StorageException('A stored file cannot be appended to.');
                 }
-                $written = 0;
-                $length = \strlen($bytes);
-                while ($written < $length) {
-                    $wrote = fwrite($out, substr($bytes, $written, 1_048_576));
-                    if ($wrote === false || $wrote === 0) {
-                        // Cut back to where it began: half a chunk is no chunk.
-                        ftruncate($out, $offset);
+                try {
+                    $written = 0;
+                    $length = \strlen($bytes);
+                    while ($written < $length) {
+                        $wrote = @fwrite($out, substr($bytes, $written, 1_048_576));
+                        if ($wrote === false || $wrote === 0) {
+                            throw new StorageException('A stored file could not be appended to the end.');
+                        }
+                        $written += $wrote;
+                    }
+                    if (!@fflush($out)) {
                         throw new StorageException('A stored file could not be appended to the end.');
                     }
-                    $written += $wrote;
-                }
-                if (!fflush($out)) {
-                    ftruncate($out, $offset);
-                    throw new StorageException('A stored file could not be appended to the end.');
+                } catch (\Throwable $e) {
+                    // Cut back to where it began, whatever threw -- an
+                    // error handler's exception from a write among it:
+                    // half a chunk is no chunk.
+                    if (!@ftruncate($out, $offset)) {
+                        throw new StorageException('A stored file could not be appended to the end, nor cut back to where the append began.', 0, $e);
+                    }
+
+                    throw $e instanceof StorageException ? $e : new StorageException('A stored file could not be appended to the end.', 0, $e);
                 }
 
                 return $offset + $length;
