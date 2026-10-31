@@ -113,6 +113,11 @@ final readonly class ServiceCalls
     ) {
         $byName = [];
         foreach ($operations as [$operation, $declaration]) {
+            // As tool calls do: a second of one name would replace the
+            // first without a word, and a token naming it reach either.
+            if (isset($byName[$operation->name])) {
+                throw new \LogicException("Two service calls are named '{$operation->name}'.");
+            }
             $byName[$operation->name] = [$operation, $declaration];
         }
         $this->operations = $byName;

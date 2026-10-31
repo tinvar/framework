@@ -193,3 +193,18 @@ it('refuses a single-use token where nothing could spend it, and one that does n
     $old = \Tinvar\Render\SignedToken::encode(new \Tinvar\Support\Signer(\Tinvar\Tests\Calls\Fixtures\KEY, ServiceCalls::PURPOSE), ServiceCalls::PURPOSE, $claims);
     expect($h->asWarehouse(fn () => $h->services->call($old, 'racks.show', ['rack' => $h->rack()]))->reason)->toBe('context');
 });
+
+// Review: a second operation of one name replaced the first without a word,
+// where tool calls refuse it.
+it('refuses two operations of one name', function () {
+    $h = new Harness();
+    $operations = ServiceCalls::discover($h->actions, $h->queries, $h->entry);
+
+    expect(fn () => new ServiceCalls(
+        [...$operations, $operations[0]],
+        $h->runner,
+        ServiceCalls::tokens(\Tinvar\Tests\Calls\Fixtures\KEY, $h->builds, fn (): int => $h->now),
+        $h->auth,
+        $h->orm,
+    ))->toThrow(\LogicException::class, 'Two service calls are named');
+});
