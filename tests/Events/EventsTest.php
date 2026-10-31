@@ -268,6 +268,17 @@ it('queues a listener whose class has #[Queue], under that class\'s queue, tries
     expect($h->journal()->entries)->toBe([['queued' => 'PW-4', 'tenant' => 'acme', 'panel' => 'admin']]);
 });
 
+// Review: a listener class a deploy removed threw a ReflectionException,
+// and a method whose event a deploy retyped a TypeError -- each retried as
+// if the next try could differ.
+it('refuses a queued call to a listener class that is gone, or a method that no longer takes the event', function () {
+    $h = new Harness();
+    $call = static fn (string $class, string $method): \Closure => static fn () => new \Tinvar\Events\CallQueuedListener($class, $method, new OrderPlaced('PW-5'))->handle($h->container);
+
+    expect($call('Tinvar\\Tests\\Events\\Events\\RemovedListeners', 'onWorker'))->toThrow(\Tinvar\Jobs\JobRefused::class)
+        ->and($call(QueuedWithBadEvent::class, 'on'))->toThrow(\Tinvar\Jobs\JobRefused::class);
+});
+
 it('refuses event dispatch inside a read-only scope, before any listener runs', function () {
     $h = new Harness();
     $events = events($h, [Listeners::class]);
