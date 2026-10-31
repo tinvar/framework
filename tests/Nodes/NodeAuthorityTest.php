@@ -128,6 +128,15 @@ it('refuses a node certificate that has expired', function () {
     NodeAuthority::fromPem($ca[0], 'staging')->verify(node($ca, 'staging'), now: time() + 31 * 86_400);
 })->throws(NodeRefused::class, 'not valid now');
 
+// Review: the CA's own validity was checked once, when the authority was
+// made -- a long-lived worker went on believing nodes past the CA's expiry.
+it('refuses a node once its CA has expired, though the authority was made while it was current', function () {
+    $ca = ca('staging');
+    $authority = NodeAuthority::fromPem($ca[0], 'staging');
+
+    $authority->verify(node($ca, 'staging', days: 90), now: time() + 60 * 86_400);
+})->throws(NodeRefused::class, 'The node CA certificate is not valid now');
+
 it('reads the CA TINVAR_NODE_CA names, for the profile served, and none where it names none', function () {
     $ca = ca('staging');
     $file = tempnam(sys_get_temp_dir(), 'tinvar-node-ca-pem');

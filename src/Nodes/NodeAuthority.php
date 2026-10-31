@@ -48,6 +48,9 @@ final readonly class NodeAuthority
     /** @var array<string, string|list<string>> */
     private array $subject;
 
+    /** @var array<string, mixed> the CA certificate as OpenSSL read it: its validity, checked at every use */
+    private array $parsed;
+
     /** The CA certificate's SHA-256 fingerprint, hex. */
     public string $fingerprint;
 
@@ -84,6 +87,7 @@ final readonly class NodeAuthority
         /** @var array<string, string|list<string>> $subject */
         $subject = $parsed['subject'] ?? [];
         $this->subject = $subject;
+        $this->parsed = $parsed;
         $this->fingerprint = $fingerprint;
     }
 
@@ -133,6 +137,10 @@ final readonly class NodeAuthority
      */
     public function verify(string $pem, ?int $now = null): NodeIdentity
     {
+        $now ??= time();
+        // The CA's own validity, at every use and not only when this was
+        // made: a worker that lives past the CA's expiry believes nothing.
+        self::assertCurrent($this->parsed, 'The node CA certificate', $now);
         $parsed = self::parse($pem, 'The node certificate');
         if (self::isCa($parsed)) {
             throw new NodeRefused('A CA certificate is not a node\'s.');
@@ -140,7 +148,7 @@ final readonly class NodeAuthority
         if (($parsed['issuer'] ?? null) !== $this->subject || openssl_x509_verify($pem, $this->publicKey) !== 1) {
             throw new NodeRefused("The node certificate was not issued by {$this->profile}'s node CA.");
         }
-        self::assertCurrent($parsed, 'The node certificate', $now ?? time());
+        self::assertCurrent($parsed, 'The node certificate', $now);
 
         $uris = SubjectAltNames::uris($pem, 'The node certificate');
         $environment = self::environmentOf($uris, 'The node certificate');
