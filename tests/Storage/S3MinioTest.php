@@ -221,6 +221,28 @@ describe('S3Storage against MinIO', function () {
             ->and(minioSniffed($storage, (string) $kept?->key))->toBe('image/png');
         $storage->delete((string) $kept?->key);
     });
+
+    it('lists the keys under a prefix, page by page, with when each was written', function () {
+        [$storage] = minio();
+        $prefix = 'listed-' . bin2hex(random_bytes(4));
+        $keys = [];
+        for ($i = 0; $i < 3; $i++) {
+            $keys[] = $key = StorageKey::generate($prefix, '');
+            $storage->put($key, minioStream('x'));
+        }
+        sort($keys);
+
+        try {
+            $listed = $storage->keysUnder($prefix, 10);
+            expect(array_keys($listed))->toBe($keys)
+                ->and(min($listed))->toBeGreaterThan(time() - 300)
+                ->and($storage->keysUnder($prefix, 2))->toHaveCount(2);
+        } finally {
+            foreach ($keys as $key) {
+                $storage->delete($key);
+            }
+        }
+    });
 });
 
 function minioSniffed(S3Storage $storage, string $key): ?string

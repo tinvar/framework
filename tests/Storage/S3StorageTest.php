@@ -266,4 +266,27 @@ describe('S3Storage', function () {
         expect($sent[0]->url)->toBe("https://uploads.s3.store.example/{$key}")
             ->and($sent[0]->destinations?->hosts)->toBe(['uploads.s3.store.example']);
     });
+
+    it('lists the keys under a prefix below its root, page by page, leaving out what is not a key it makes', function () {
+        $s3 = new FakeS3();
+        $storage = $s3->storage(root: 'app');
+        $keys = [];
+        for ($i = 0; $i < 1203; $i++) {
+            $keys[] = $key = StorageKey::generate('incoming', '');
+            $s3->objects["app/{$key}"] = 'x';
+            $s3->modified["app/{$key}"] = 1_700_000_000 + $i;
+        }
+        sort($keys);
+        $s3->objects['app/incoming/../not-a-key'] = 'x';
+        $s3->objects['other/incoming/' . str_repeat('a', 32)] = 'x';
+
+        $listed = $storage->keysUnder('incoming', 5000);
+        expect(array_keys($listed))->toBe($keys)
+            ->and(\count(array_filter($s3->log, static fn (string $line): bool => str_contains($line, 'list-type'))))->toBe(2)
+            ->and($storage->keysUnder('incoming', 1001))->toHaveCount(1001)
+            ->and(fn () => $storage->keysUnder('../incoming', 1))->toThrow(\InvalidArgumentException::class);
+
+        $s3->listing = false;
+        expect(fn () => $storage->keysUnder('incoming', 1))->toThrow(StorageException::class, 'AccessDenied');
+    });
 });

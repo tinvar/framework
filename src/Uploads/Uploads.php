@@ -6,6 +6,7 @@ namespace Tinvar\Uploads;
 
 use Tinvar\Http\Request;
 use Tinvar\Render\TokenClaims;
+use Tinvar\Storage\ListsKeys;
 use Tinvar\Storage\Storage;
 use Tinvar\Storage\StorageException;
 use Tinvar\Storage\StorageKey;
@@ -206,6 +207,45 @@ final readonly class Uploads
 
         if ($this->quota === null) {
             $this->store->forgetClaimedBefore($now - self::CLAIM_RETENTION);
+        }
+
+        return $removed + $this->sweepIncoming($now, $limit);
+    }
+
+    /**
+     * Removes what lies under the prefix direct uploads arrive at, last
+     * written longer ago than any intent could still want it -- its URL's
+     * life and the grace -- where the store can list it: a file a record no
+     * longer names, put there by a PUT that arrived after its record was
+     * pruned, or left by a process killed mid-completion. An intent began
+     * before its file was written, so one written that long ago is past
+     * every intent's expiry, and no completion is still reading it.
+     *
+     * A store that cannot list, or whose credentials may not, is left to
+     * the records above and to the bucket's lifecycle rule on the prefix.
+     */
+    private function sweepIncoming(int $now, int $limit): int
+    {
+        if (!$this->storage instanceof ListsKeys) {
+            return 0;
+        }
+        try {
+            $keys = $this->storage->keysUnder(UploadEndpoint::INCOMING_PREFIX, $limit);
+        } catch (StorageException) {
+            return 0;
+        }
+
+        $removed = 0;
+        foreach ($keys as $key => $written) {
+            if ($written > $now - UploadEndpoint::DIRECT_TTL - self::PRUNE_GRACE) {
+                continue;
+            }
+            try {
+                $this->storage->delete($key);
+                $removed++;
+            } catch (StorageException) {
+                // Found again on the next run.
+            }
         }
 
         return $removed;

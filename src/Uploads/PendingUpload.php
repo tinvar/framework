@@ -44,6 +44,39 @@ final readonly class PendingUpload
         return clone($this, ['claimedAt' => $at]);
     }
 
+    /**
+     * What is left of a direct upload's intent once completed: its key, to
+     * be pruned $grace seconds after its URL runs out, and nothing else.
+     *
+     * A record of its own, under an ID no client was given, bound to no
+     * session, user, action or record, of no type and no size, owned by no
+     * one: so nothing completes it again or is handed it, and it counts
+     * against no cap or quota -- the file kept from it is counted already.
+     * Unclaimed, it is pruned as any expired upload is (Uploads::prune()):
+     * its key removed, then the record.
+     */
+    public function consumed(int $now, int $grace): self
+    {
+        return new self(
+            id: bin2hex(random_bytes(16)),
+            key: $this->key,
+            action: '',
+            field: '',
+            targetClass: '',
+            targetId: '',
+            prefix: '',
+            tenant: '',
+            panel: '',
+            sessionHash: '',
+            authHash: '',
+            name: '',
+            type: '',
+            size: 0,
+            createdAt: $now,
+            expiresAt: $this->expiresAt + $grace,
+        );
+    }
+
     /** What an action is handed for it. */
     public function upload(): Upload
     {

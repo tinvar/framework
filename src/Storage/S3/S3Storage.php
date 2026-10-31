@@ -12,6 +12,7 @@ use Tinvar\Outbound\OutboundRequest;
 use Tinvar\Outbound\OutboundResponse;
 use Tinvar\Outbound\Target;
 use Tinvar\Storage\FileTypes;
+use Tinvar\Storage\ListsKeys;
 use Tinvar\Storage\ObjectStore;
 use Tinvar\Storage\PresignedUpload;
 use Tinvar\Storage\StorageException;
@@ -49,7 +50,7 @@ use Tinvar\Storage\StorageWriter;
  * memory as it is filled -- so nothing is gathered in the temporary
  * directory -- and completed only on commit, or aborted.
  */
-final readonly class S3Storage implements ObjectStore
+final readonly class S3Storage implements ObjectStore, ListsKeys
 {
     /** 8 MiB: S3 takes parts of 5 MiB and more, but for the last. */
     public const int PART_BYTES = 8_388_608;
@@ -273,6 +274,78 @@ final readonly class S3Storage implements ObjectStore
     ): OutboundResponse {
         StorageKey::assertValid($key);
         [$url, $path, $host] = $this->location($key, $query);
+
+        return $this->dispatch($method, $url, $path, $host, $query, $body, $timeout, $sink, $maxBytes);
+    }
+
+    /**
+     * The keys under $prefix, by ListObjectsV2, a page of up to 1000 at a
+     * time until $limit. Needs `s3:ListBucket` on the bucket, which a policy
+     * granting only objects' reads and writes leaves out: the store's 403
+     * is a StorageException then.
+     */
+    public function keysUnder(string $prefix, int $limit): array
+    {
+        if (!StorageKey::isValidPrefix($prefix)) {
+            throw new \InvalidArgumentException("'{$prefix}' is not a storage prefix to list.");
+        }
+        $root = $this->root === '' ? '' : $this->root . '/';
+        $keys = [];
+        $token = null;
+        while (\count($keys) < $limit) {
+            $query = ['list-type' => '2', 'prefix' => $root . $prefix . '/', 'max-keys' => (string) min(1000, $limit - \count($keys))];
+            if ($token !== null) {
+                $query['continuation-token'] = $token;
+            }
+            [$url, $path, $host] = $this->bucketLocation($query);
+            $response = $this->dispatch('GET', $url, $path, $host, $query, '', null, null, null);
+            self::assertOk($response, 'listed');
+
+            $previous = libxml_use_internal_errors(true);
+            try {
+                $list = simplexml_load_string($response->body, options: LIBXML_NONET);
+            } finally {
+                libxml_use_internal_errors($previous);
+            }
+            if ($list === false) {
+                throw new StorageException('The object store\'s list of files could not be read.');
+            }
+            foreach ($list->Contents as $object) {
+                $key = (string) $object->Key;
+                $at = \DateTimeImmutable::createFromFormat('Y-m-d\TH:i:s.vP', (string) $object->LastModified)
+                    ?: \DateTimeImmutable::createFromFormat('Y-m-d\TH:i:sP', (string) $object->LastModified);
+                if (!str_starts_with($key, $root) || $at === false) {
+                    continue;
+                }
+                $key = substr($key, \strlen($root));
+                if (StorageKey::isValid($key) && \count($keys) < $limit) {
+                    $keys[$key] = $at->getTimestamp();
+                }
+            }
+            $token = (string) $list->IsTruncated === 'true' ? (string) $list->NextContinuationToken : '';
+            if ($token === '') {
+                break;
+            }
+        }
+
+        return $keys;
+    }
+
+    /**
+     * @param array<string, string> $query
+     * @param (\Closure(string): void)|null $sink
+     */
+    private function dispatch(
+        string $method,
+        string $url,
+        string $path,
+        string $host,
+        array $query,
+        string $body,
+        ?float $timeout,
+        ?\Closure $sink,
+        ?int $maxBytes,
+    ): OutboundResponse {
         $headers = $this->signer->sign(
             $method,
             $path,
@@ -341,7 +414,27 @@ final readonly class S3Storage implements ObjectStore
      */
     private function location(string $key, array $query): array
     {
-        $object = ($this->root === '' ? '' : $this->root . '/') . $key;
+        return $this->address(($this->root === '' ? '' : $this->root . '/') . $key, $query);
+    }
+
+    /**
+     * The bucket's own URL, for a request about the bucket rather than one
+     * key: a listing.
+     *
+     * @param array<string, string> $query
+     * @return array{string, string, string}
+     */
+    private function bucketLocation(array $query): array
+    {
+        return $this->address('', $query);
+    }
+
+    /**
+     * @param array<string, string> $query
+     * @return array{string, string, string}
+     */
+    private function address(string $object, array $query): array
+    {
         $port = $this->endpoint->port === ($this->endpoint->scheme === 'https' ? 443 : 80) ? '' : ':' . $this->endpoint->port;
         $endpointHost = $this->endpoint->literal !== null && str_contains($this->endpoint->literal, ':')
             ? "[{$this->endpoint->literal}]"

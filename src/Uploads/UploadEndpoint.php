@@ -90,6 +90,14 @@ final class UploadEndpoint
     /** Seconds a presigned upload, and the intent behind it, are good for. */
     public const int DIRECT_TTL = 600;
 
+    /**
+     * How long past its URL's expiry a completed intent's key is kept in
+     * mind, to be removed then. Completing an upload does not end the URL:
+     * a PUT replayed after it puts the file there again, and a PUT a store
+     * took before the URL ran out may still be arriving after.
+     */
+    public const int INCOMING_GRACE = 3600;
+
     /** Where a form posted without script carries each file's ticket: `_upload_tickets[<name>]`. */
     public const string INLINE_TICKETS = '_upload_tickets';
 
@@ -420,8 +428,12 @@ final class UploadEndpoint
                 try {
                     $storage->delete($intent->key);
                 } catch (StorageException) {
-                    // Left for the bucket's lifecycle rule on the prefix.
+                    // Removed by pruning, below, or the bucket's lifecycle rule.
                 }
+                // The URL is good until it runs out, and a PUT replayed
+                // under it puts the file there again: the intent is kept,
+                // consumed, and pruning removes its key once the URL is dead.
+                $this->uploads->store->add($intent->consumed($now, self::INCOMING_GRACE));
                 $this->uploads->store->forget($intent->id);
             }
             if (!$found || $bytes !== $intent->size) {

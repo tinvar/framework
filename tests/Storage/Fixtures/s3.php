@@ -32,6 +32,12 @@ final class FakeS3
     /** @var array<string, array<int, string>> upload id => part number => bytes */
     public array $uploads = [];
 
+    /** @var array<string, int> object key => when it was last written */
+    public array $modified = [];
+
+    /** Whether the credentials may list the bucket: s3:ListBucket, which a policy may leave out. */
+    public bool $listing = true;
+
     /** @var list<string> each request, as "METHOD /path?query" */
     public array $log = [];
 
@@ -93,6 +99,9 @@ final class FakeS3
         }
         $key = substr($path, \strlen(S3_BUCKET) + 2);
 
+        if ($method === 'GET' && $key === '' && ($query['list-type'] ?? '') === '2') {
+            return $this->list($query);
+        }
         if ($method === 'POST' && \array_key_exists('uploads', $query)) {
             $id = bin2hex(random_bytes(8));
             $this->uploads[$id] = [];
@@ -114,6 +123,7 @@ final class FakeS3
             }
             ksort($parts);
             $this->objects[$key] = implode('', $parts);
+            $this->modified[$key] = $this->now;
             unset($this->uploads[$query['uploadId']]);
 
             return new OutboundResponse(200, [], '<CompleteMultipartUploadResult/>');
@@ -140,15 +150,51 @@ final class FakeS3
     private function put(string $key, string $body): OutboundResponse
     {
         $this->objects[$key] = $body;
+        $this->modified[$key] = $this->now;
 
         return new OutboundResponse(200, ['etag' => ['"' . md5($body) . '"']]);
     }
 
     private function delete(string $key): OutboundResponse
     {
-        unset($this->objects[$key]);
+        unset($this->objects[$key], $this->modified[$key]);
 
         return new OutboundResponse(204);
+    }
+
+    /**
+     * ListObjectsV2: the keys under `prefix`, in order, `max-keys` a page,
+     * a page past the first found by the token the one before it gave.
+     *
+     * @param array<string, string> $query
+     */
+    private function list(array $query): OutboundResponse
+    {
+        if (!$this->listing) {
+            return new OutboundResponse(403, [], '<Error><Code>AccessDenied</Code></Error>');
+        }
+        $prefix = $query['prefix'] ?? '';
+        $keys = array_values(array_filter(array_keys($this->objects), static fn (string $key): bool => str_starts_with($key, $prefix)));
+        sort($keys);
+        $start = (int) ($query['continuation-token'] ?? 0);
+        $max = min(1000, (int) ($query['max-keys'] ?? 1000));
+        $page = \array_slice($keys, $start, $max);
+        $truncated = $start + $max < \count($keys);
+
+        $xml = '<?xml version="1.0" encoding="UTF-8"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            . '<Name>' . S3_BUCKET . '</Name><Prefix>' . htmlspecialchars($prefix, ENT_XML1) . '</Prefix>'
+            . '<KeyCount>' . \count($page) . '</KeyCount><MaxKeys>' . $max . '</MaxKeys>'
+            . '<IsTruncated>' . ($truncated ? 'true' : 'false') . '</IsTruncated>';
+        foreach ($page as $key) {
+            $xml .= '<Contents><Key>' . htmlspecialchars($key, ENT_XML1) . '</Key>'
+                . '<LastModified>' . gmdate('Y-m-d\TH:i:s.000\Z', $this->modified[$key] ?? $this->now) . '</LastModified>'
+                . '<Size>' . \strlen($this->objects[$key]) . '</Size></Contents>';
+        }
+        if ($truncated) {
+            $xml .= '<NextContinuationToken>' . ($start + $max) . '</NextContinuationToken>';
+        }
+
+        return new OutboundResponse(200, ['content-type' => ['application/xml']], $xml . '</ListBucketResult>');
     }
 
     /**

@@ -192,6 +192,83 @@ it('scans what it keeps, as /_upload does', function () {
         ->and($s3->objects)->toBe([]);
 });
 
+/** The keys in the fake bucket under the incoming prefix. */
+function incoming(FakeS3 $s3): array
+{
+    return array_values(array_filter(array_keys($s3->objects), static fn (string $key): bool => str_starts_with($key, UploadEndpoint::INCOMING_PREFIX . '/')));
+}
+
+// The URL /_upload/direct presigned is good for ten minutes, and completing
+// the upload does not end it: a PUT replayed after /complete left an object
+// no record named, outside the quota, the cap and pruning. The intent is
+// kept, consumed, until the URL is dead and then some, and pruning removes
+// what was put under it.
+it('removes what a presigned PUT replayed after /complete leaves, once the URL is dead', function () {
+    [$app, $s3] = directApp(quota: Tinvar\Uploads\UploadQuota::perUser(10_000));
+    $s3->listing = false;
+    $bytes = png();
+    [$ticket, $intent] = begun($app, strlen($bytes));
+    $s3->browser('PUT', $intent['url'], $bytes, $intent['headers']);
+    expect(postDirect($app, UploadEndpoint::COMPLETE_PATH, ['ticket' => $ticket, 'intent' => $intent['intent']])->status)->toBe(201)
+        ->and(incoming($s3))->toBe([]);
+
+    // Replayed: the store takes it, and a second completion does not.
+    expect($s3->browser('PUT', $intent['url'], $bytes, $intent['headers'])->status)->toBe(200)
+        ->and(incoming($s3))->toHaveCount(1)
+        ->and(postDirect($app, UploadEndpoint::COMPLETE_PATH, ['ticket' => $ticket, 'intent' => $intent['intent']])->status)->toBe(403);
+
+    // Not before the URL is dead and a PUT begun before then has had time to arrive.
+    $app->now += UploadEndpoint::DIRECT_TTL + Uploads::PRUNE_GRACE + 1;
+    $s3->now = $app->now;
+    $app->uploads->prune();
+    expect(incoming($s3))->toHaveCount(1);
+
+    $app->now += UploadEndpoint::INCOMING_GRACE;
+    $s3->now = $app->now;
+    // The consumed intent, and the upload kept from it, never claimed by its action in the hour.
+    expect($app->uploads->prune())->toBe(2)
+        ->and(incoming($s3))->toBe([])
+        ->and($s3->objects)->toBe([])
+        ->and($app->uploads->prune())->toBe(0);
+});
+
+it('completes a file as large as the quota, the consumed intent counting for nothing', function () {
+    $bytes = png();
+    [$app, $s3] = directApp(quota: Tinvar\Uploads\UploadQuota::perUser(strlen($bytes) + 200));
+    [$ticket, $intent] = begun($app, strlen($bytes));
+    $s3->browser('PUT', $intent['url'], $bytes, $intent['headers']);
+
+    expect(postDirect($app, UploadEndpoint::COMPLETE_PATH, ['ticket' => $ticket, 'intent' => $intent['intent']])->status)->toBe(201)
+        ->and($app->store->pendingCount($app->uploads->ownerHash('u-1'), $app->now))->toBe(1);
+});
+
+// Where the store lists what is in it, pruning also removes whatever lies
+// under the incoming prefix older than any intent could still want: what
+// no record names -- a PUT that arrived after its record was pruned, a
+// process killed mid-completion.
+it('sweeps the incoming prefix of what is older than any intent could still want, where the store lists', function () {
+    [$app, $s3] = directApp();
+    $old = UploadEndpoint::INCOMING_PREFIX . '/' . str_repeat('a', 32);
+    $young = UploadEndpoint::INCOMING_PREFIX . '/' . str_repeat('b', 32);
+    $kept = 'avatars/' . str_repeat('c', 32) . '.png';
+    $s3->objects = [$old => 'x', $young => 'y', $kept => 'z'];
+    $s3->modified = [
+        $old => $app->now - UploadEndpoint::DIRECT_TTL - Uploads::PRUNE_GRACE - 1,
+        $young => $app->now - UploadEndpoint::DIRECT_TTL,
+        $kept => 0,
+    ];
+    $s3->now = $app->now;
+
+    expect($app->uploads->prune())->toBe(1)
+        ->and(array_keys($s3->objects))->toBe([$young, $kept]);
+
+    // A store that refuses to list is pruned by its records alone.
+    $s3->listing = false;
+    $s3->objects[$old] = 'x';
+    expect($app->uploads->prune())->toBe(0)
+        ->and($s3->objects)->toHaveKey($old);
+});
+
 it('is not there where files are kept on disk or in memory', function () {
     $app = new App(new MemoryStorage());
 
