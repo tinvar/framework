@@ -185,6 +185,11 @@ final class Metrics
             $this->store->add($this->pending);
             $this->pending = [];
             $this->flushedAt = microtime(true);
+        } catch (MetricsNotStored $e) {
+            // Counted in part: only the rest is the next flush's, or what
+            // the store took would be counted twice.
+            $this->pending = $e->unwritten;
+            $this->fail($e);
         } catch (\Throwable $e) {
             $this->fail($e);
         }

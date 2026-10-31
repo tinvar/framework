@@ -28,16 +28,27 @@ final class ApcuMetricsStore implements MetricsStore
         return \function_exists('apcu_enabled') && apcu_enabled();
     }
 
+    /** @throws MetricsNotStored naming the series APCu would not count, the rest counted */
     public function add(array $deltas): void
     {
+        $unwritten = [];
         foreach ($deltas as $key => $delta) {
             $entry = $this->prefix . $key;
             apcu_inc($entry, $delta, $success);
             // A series not yet there: added, unless another thread added it
-            // first, in which case it is there to add to now.
+            // first, in which case it is there to add to now. Still refused
+            // -- APCu full, or the entry no integer -- it is not counted, and
+            // says so, rather than the count going in silence.
             if (!$success && !apcu_add($entry, $delta)) {
-                apcu_inc($entry, $delta);
+                apcu_inc($entry, $delta, $success);
+                if (!$success) {
+                    $unwritten[$key] = $delta;
+                }
             }
+        }
+
+        if ($unwritten !== []) {
+            throw new MetricsNotStored(\sprintf('APCu would not count %d metric series, kept for the next flush.', \count($unwritten)), $unwritten);
         }
     }
 
