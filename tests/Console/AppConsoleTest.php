@@ -13,6 +13,9 @@ use Tinvar\Console\AppConsole;
 use Tinvar\Console\Prompts;
 use Tinvar\Console\Prompts\Cancelled;
 use Tinvar\Console\Prompts\Key;
+use Tinvar\Discovery\DiscoveredClasses;
+use Tinvar\Discovery\DiscoveryFailed;
+use Tinvar\Discovery\Manifest;
 use Tinvar\Http\FileBuildStore;
 use Tinvar\Packages\PackagePolicy;
 
@@ -23,11 +26,11 @@ function console(array $overrides = []): AppConsole
         'root' => __DIR__ . '/../../../../examples/shop',
         'console' => __FILE__,
         'namespace' => 'Shop',
-        'routes' => \Shop\Kernel::ROUTES,
-        'queries' => \Shop\Kernel::QUERIES,
-        'actions' => \Shop\Kernel::ACTIONS,
-        'models' => [],
-        'configs' => [],
+        'classes' => static fn (): DiscoveredClasses => new DiscoveredClasses(
+            routes: \Shop\Kernel::classes()->routes,
+            queries: \Shop\Kernel::classes()->queries,
+            actions: \Shop\Kernel::classes()->actions,
+        ),
         'packages' => static fn (): PackagePolicy => \Shop\Kernel::packages(),
         'buildStore' => static fn (): FileBuildStore => new FileBuildStore(sys_get_temp_dir() . '/unused-builds.json'),
         'database' => static fn (): string => ':memory:',
@@ -48,7 +51,7 @@ function ran(AppConsole $console, string ...$argv): array
 
 it('has every command an application has, and lists them', function () {
     $console = console();
-    foreach (['check', 'config', 'codegen', 'serve', 'dev', 'build', 'build:fragments', 'build:current', 'build:revoke', 'renderer:start', 'migrate', 'migrate:fresh', 'make:migration', 'make:page', 'make:model', 'packages:lock', 'audit'] as $command) {
+    foreach (['check', 'config', 'codegen', 'serve', 'dev', 'build', 'build:fragments', 'discover', 'build:current', 'build:revoke', 'renderer:start', 'migrate', 'migrate:fresh', 'make:migration', 'make:page', 'make:model', 'packages:lock', 'audit'] as $command) {
         expect($console->has($command))->toBeTrue($command);
     }
     [$status, $help] = ran($console, 'help');
@@ -82,10 +85,10 @@ it('fails the check on an application\'s own check, naming it', function () {
 // The registry's own check -- an endpoint that does not compile, a path a
 // page also matches (ADR 0067) -- ran only where an application wired it in.
 it('holds the endpoints among its entry points to the registry\'s check', function () {
-    $clashes = console(['entryPoints' => [ApartFromEveryPage::class, ClashesWithAPage::class]]);
+    $clashes = console(['classes' => static fn (): DiscoveredClasses => new DiscoveredClasses(routes: \Shop\Kernel::classes()->routes, endpoints: [ApartFromEveryPage::class, ClashesWithAPage::class])]);
 
-    expect(AppConsole::endpointViolations([ApartFromEveryPage::class], \Shop\Kernel::ROUTES, []))->toBe([])
-        ->and(implode("\n", array_map('strval', AppConsole::endpointViolations([ClashesWithAPage::class], \Shop\Kernel::ROUTES, []))))
+    expect(AppConsole::endpointViolations([ApartFromEveryPage::class], \Shop\Kernel::classes()->routes, []))->toBe([])
+        ->and(implode("\n", array_map('strval', AppConsole::endpointViolations([ClashesWithAPage::class], \Shop\Kernel::classes()->routes, []))))
         ->toContain('/orders/{order}')
         ->and(ran($clashes, 'check')[0])->toBe(1);
 });
@@ -94,11 +97,46 @@ it('refuses --worker where the application has no queue to run', function () {
     expect(ran(console(), 'serve', '--worker')[0])->toBe(64);
 });
 
-it('registers what the generators write in the Kernel\'s own lists by default', function () {
-    $registrations = console(['kernel' => \Shop\Kernel::class])->registrations();
+it('registers no class for the generators, which discovery finds, and a page\'s view in the route table', function () {
+    expect(console(['kernel' => \Shop\Kernel::class])->registrations()->none())->toBeFalse(); // the route table alone
+});
 
-    expect($registrations->none())->toBeFalse()
-        ->and(console()->registrations()->none())->toBeFalse(); // the route table alone
+// Discovery (ADR 0146): `discover` writes the manifest production boots
+// from, `discover --check` and `check` fail on one a scan disagrees with,
+// and a scan refused stops every command that needs the classes.
+it('writes the discovery manifest into the build, and refuses a stale one in discover --check and check', function () {
+    $build = sys_get_temp_dir() . '/tinvar-discover-' . bin2hex(random_bytes(4));
+    mkdir($build);
+    $before = getenv('TINVAR_BUILD_DIR');
+    putenv("TINVAR_BUILD_DIR={$build}");
+    try {
+        $console = console(['kernel' => \Shop\Kernel::class, 'classes' => \Shop\Kernel::classes(...)]);
+
+        [$status, $out] = ran($console, 'discover');
+        expect($status)->toBe(0)
+            ->and($out)->toContain("wrote {$build}/discovery.php")
+            ->and(Manifest::read("{$build}/discovery.php", 'Shop')->routes)->toBe(\Shop\Kernel::classes()->routes)
+            ->and(ran($console, 'discover', '--check')[0])->toBe(0);
+
+        // A manifest from before a page was added.
+        $scan = Manifest::read("{$build}/discovery.php", 'Shop');
+        Manifest::write("{$build}/discovery.php", 'Shop', $scan->without(\Shop\Pages\Catalog::class));
+
+        expect(ran($console, 'discover', '--check')[0])->toBe(1);
+
+        expect(ran($console, 'discover', '--nope')[0])->toBe(64);
+    } finally {
+        putenv($before === false ? 'TINVAR_BUILD_DIR' : "TINVAR_BUILD_DIR={$before}");
+        exec('rm -rf ' . escapeshellarg($build));
+    }
+});
+
+it('stops a command that needs the classes where discovery refuses them, saying why', function () {
+    $console = console(['classes' => static fn (): DiscoveredClasses => throw new DiscoveryFailed(['Broken.php does not parse'])]);
+
+    expect(ran($console, 'config')[0])->toBe(1)
+        ->and(ran($console, 'check')[0])->toBe(1)
+        ->and(ran($console, 'help')[0])->toBe(0);
 });
 
 final class ApartFromEveryPage

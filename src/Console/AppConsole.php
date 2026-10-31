@@ -7,11 +7,15 @@ namespace Tinvar\Console;
 use Tinvar\Auth\ApplicationClasses;
 use Tinvar\Auth\BuildRules;
 use Tinvar\Auth\Violation;
+use Tinvar\Channels\ChannelRegistry;
 use Tinvar\Config\Configs;
 use Tinvar\Endpoints\EndpointRegistry;
 use Tinvar\Console\Prompts\Cancelled;
 use Tinvar\Console\Prompts\CannotPrompt;
 use Tinvar\Console\Prompts\Progress;
+use Tinvar\Discovery\DiscoveredClasses;
+use Tinvar\Discovery\Discovery;
+use Tinvar\Discovery\DiscoveryFailed;
 use Tinvar\Gateway\GatewayKeys;
 use Tinvar\Generators\AppLayout;
 use Tinvar\Generators\GenerationRefused;
@@ -39,6 +43,8 @@ use Tinvar\Server\PhpCommand;
 use Tinvar\Server\ProfileBuildCommand;
 use Tinvar\Server\RendererCommand;
 use Tinvar\Server\ServeCommand;
+use Tinvar\Support\BuildProfile;
+use Tinvar\Transfers\TransferRegistry;
 
 /**
  * An application's command line: the framework's commands, pointed at one
@@ -49,20 +55,24 @@ use Tinvar\Server\ServeCommand;
  *         root: __DIR__ . '/..',
  *         console: __FILE__,
  *         namespace: 'App',
- *         routes: Kernel::ROUTES, queries: Kernel::QUERIES, actions: Kernel::ACTIONS,
- *         models: Kernel::MODELS, configs: Kernel::CONFIGS,
+ *         classes: Kernel::classes(...),
  *         packages: Kernel::packages(...), buildStore: Kernel::buildStore(...),
  *         database: Kernel::databasePath(...), migrations: Migrations::PATH,
+ *         kernel: Kernel::class,
  *     )->run($argv));
  *
  * It owns the commands every application has, each the framework's own
- * class handed the application's declarations: check, config, codegen,
- * serve, dev, build and the build history, build:fragments, the renderer
- * pool, the migrations, the generators (which register what they write:
- * the Kernel's lists and the route table, ADR 0110), packages:lock and
- * audit. An application adds its own with command() -- a command of the
- * same name takes the built-in's place -- and its own checks with
- * withCheck().
+ * class handed the application's declarations -- the classes its Kernel
+ * registers, discovered under its namespace (ADR 0146): check, config,
+ * codegen, serve, dev, build and the build history, build:fragments,
+ * discover, the renderer pool, the migrations, the generators (which write
+ * classes discovery finds, and add a page's view to the route table, ADR
+ * 0110), packages:lock and audit. An application adds its own with
+ * command() -- a command of the same name takes the built-in's place --
+ * and its own checks with withCheck().
+ *
+ * A scan discovery refuses stops every command that needs the classes,
+ * saying each problem, and `check` names them under their own heading.
  *
  * Codegen is tinvar/codegen's, a dev dependency the framework does not
  * name: the application hands its command in, and where a production
@@ -90,24 +100,18 @@ final class AppConsole
      * @param string $root the application: its Caddyfile, resources/ and dist/
      * @param string $console the script this runs as, which dev and serve run again
      * @param string $namespace the application's root namespace, which the generators write under
-     * @param list<class-string> $routes the pages and layouts
-     * @param list<class-string> $queries
-     * @param list<class-string> $actions
-     * @param list<class-string<\Tinvar\Orm\Model>> $models
-     * @param list<class-string> $configs the #[Config] classes
+     * @param \Closure(): DiscoveredClasses $classes what the application registers -- its Kernel's
+     *        classes(): discovered, with what it adds by hand -- asked when a command needs them
      * @param \Closure(): PackagePolicy $packages
      * @param \Closure(): BuildStore $buildStore
      * @param \Closure(): string $database the SQLite database the migrations run against
      * @param string $migrations the migrations' directory
      * @param string|null $projectRoot where composer.json and the lockfiles are; the application's root by default
-     * @param list<class-string> $payloads Data classes nothing routable reaches
-     * @param list<class-string> $entryPoints entry points beside the routes, queries and actions:
-     *        endpoints, channels, transfers, held to the build rules
      * @param (\Closure(list<string>): int)|null $codegen tinvar/codegen's command, where it is installed
-     * @param Registrations|null $registrations where the generators register what they write; by
-     *        default the lists of $kernel's file and the route table in resources/entries/rsc.tsx
-     * @param class-string|null $kernel the application's Kernel, whose ROUTES, QUERIES, ACTIONS and
-     *        MODELS the generators add to
+     * @param Registrations|null $registrations where a page's view is registered; by default the
+     *        route table in resources/entries/rsc.tsx
+     * @param class-string|null $kernel the application's Kernel: discovery reads the classes under its
+     *        namespace, and `discover`, `build` and `check` its manifest in the build (ADR 0146)
      * @param (\Closure(): array<string, string>)|null $serverEnvironment what serve hands FrankenPHP alone
      * @param bool $workers whether serve may run this console's queue:work and schedule:work beside it
      * @param DatabaseSeeder|null $seeder db:seed's, where the application seeds
@@ -119,18 +123,12 @@ final class AppConsole
         string $root,
         private readonly string $console,
         private readonly string $namespace,
-        private readonly array $routes,
-        private readonly array $queries,
-        private readonly array $actions,
-        private readonly array $models,
-        private readonly array $configs,
+        private readonly \Closure $classes,
         private readonly \Closure $packages,
         private readonly \Closure $buildStore,
         private readonly \Closure $database,
         private readonly string $migrations,
         ?string $projectRoot = null,
-        private readonly array $payloads = [],
-        private readonly array $entryPoints = [],
         private readonly ?\Closure $codegen = null,
         private ?Registrations $registrations = null,
         private readonly ?string $kernel = null,
@@ -217,7 +215,39 @@ final class AppConsole
             fwrite(STDERR, $e->getMessage() . "\n");
 
             return 64;
+        } catch (DiscoveryFailed $e) {
+            fwrite(STDERR, $e->getMessage() . "\n");
+
+            return 1;
         }
+    }
+
+    /**
+     * What the application registers: its Kernel's classes(), discovered
+     * under its namespace with what it adds by hand.
+     *
+     * @throws DiscoveryFailed
+     */
+    public function classes(): DiscoveredClasses
+    {
+        return ($this->classes)();
+    }
+
+    /**
+     * Discovery of the application's classes, and its manifest in $build
+     * -- the build directory by default; none without a Kernel to read the
+     * namespace of.
+     */
+    public function discovery(?string $build = null): ?Discovery
+    {
+        if ($this->kernel === null) {
+            return null;
+        }
+
+        /** @var class-string $kernel */
+        $kernel = $this->kernel;
+
+        return Discovery::of($kernel, $build ?? BuildProfile::buildDirectory($this->root));
     }
 
     /** Whether $name is a command here. */
@@ -270,15 +300,31 @@ final class AppConsole
     }
 
     /**
-     * The build rules over every entry point and payload, the config
-     * classes, the supply chain and the Caddyfile, and the application's
-     * own checks; every failure named, under its heading.
+     * Discovery and its manifest, the build rules over every entry point
+     * and payload, the config classes, the supply chain and the Caddyfile,
+     * and the application's own checks; every failure named, under its
+     * heading.
      */
     public function check(): int
     {
-        $entryPoints = [...$this->routes, ...$this->queries, ...$this->actions, ...$this->entryPoints];
-        $payloads = array_values(array_unique([...$this->payloads, ...BuildRules::payloadsTakenBy($entryPoints)]));
+        // First what everything else is read from: the application's
+        // classes, which a refused scan leaves nothing to check by.
+        try {
+            $classes = $this->classes();
+            $stale = $this->staleManifest();
+        } catch (DiscoveryFailed $e) {
+            fwrite(STDERR, "Discovery failed (ADR 0146):\n  " . implode("\n  ", $e->problems) . "\n");
+
+            return 1;
+        }
+
+        $entryPoints = [...$classes->routes, ...$classes->queries, ...$classes->actions, ...$classes->endpoints, ...$classes->channels, ...$classes->transfers];
+        $payloads = array_values(array_unique([...$classes->payloads, ...BuildRules::payloadsTakenBy($entryPoints)]));
         $results = [
+            // A manifest in the build that a scan now disagrees with: what
+            // production would boot from, missing a class or holding one
+            // since gone.
+            ['Discovery manifest stale (ADR 0146):', $stale, [$this->kernel === null ? 'ok: no Kernel to discover the classes of' : 'ok: ' . \count($classes->all()) . ' classes discovered, and the build\'s manifest, where there is one, lists the same']],
             // The pages and layouts, registered as the Kernel registers
             // them; the build rules over every entry point and every Data
             // object and form request one takes; and the config classes,
@@ -286,19 +332,25 @@ final class AppConsole
             ['Build rules failed:', [
                 // Given the models, as the Kernel's registry is, so it
                 // refuses a bare id to a tenant's model too (ADR 0105).
-                ...RouteRegistry::check($this->routes, new RouteRegistry($this->models)),
-                ...new BuildRules($this->models)->check($entryPoints, $payloads),
+                ...RouteRegistry::check($classes->routes, new RouteRegistry($classes->models)),
+                ...new BuildRules($classes->models)->check($entryPoints, $payloads),
                 // The endpoints among them, compiled as the Kernel's registry
                 // compiles them and each path held apart from every page's
                 // (ADR 0067).
-                ...self::endpointViolations($this->entryPoints, $this->routes, $this->models),
+                ...self::endpointViolations($classes->endpoints, $classes->routes, $classes->models),
+                // Sort and filter field enums held to their Data (ADR 0057);
+                // who may subscribe to a channel (ADR 0069); a transfer's row
+                // and body (ADR 0070).
+                ...BuildRules::checkFieldEnums($classes->fieldEnums),
+                ...ChannelRegistry::check($classes->channels),
+                ...TransferRegistry::check($classes->transfers),
                 // The autoload map the rule finds an unlisted model in, read
                 // whole -- or a failure saying where it stopped (ADR 0122).
                 ...ApplicationClasses::fromComposer()->check(),
-                ...Configs::check($this->configs),
+                ...Configs::check($classes->configs),
             ], [
                 \sprintf('ok: %d entry points, %d payloads, no violations', \count($entryPoints), \count($payloads)),
-                \sprintf('ok: %d config classes, every secret a Secret', \count($this->configs)),
+                \sprintf('ok: %d config classes, every secret a Secret', \count($classes->configs)),
             ]],
             ['Supply chain failed:', new SupplyChain($this->projectRoot, ($this->packages)())->check(), [\sprintf('ok: %s and %s pinned, no undeclared packages', Lockfiles::COMPOSER, Lockfiles::NPM)]],
             // Read through its imports: every PHP response held whole, the
@@ -325,6 +377,101 @@ final class AppConsole
         }
 
         return 0;
+    }
+
+    /**
+     * How the build's discovery manifest differs from a scan now, each
+     * difference saying how to bring it up to date; none where there is no
+     * Kernel, or no manifest in the build to differ.
+     *
+     * @return list<string>
+     * @throws DiscoveryFailed where the scan is refused
+     */
+    private function staleManifest(): array
+    {
+        $discovery = $this->discovery();
+        if ($discovery === null) {
+            return [];
+        }
+        if (!is_file($discovery->manifest)) {
+            $discovery->scan();
+
+            return [];
+        }
+
+        return array_map(
+            fn (string $difference): string => "{$difference}: `{$this->name} discover` writes it again, as `{$this->name} build` does",
+            $discovery->stale(),
+        );
+    }
+
+    /**
+     * `discover`: a scan of the application's classes written to the
+     * build's manifest, which production boots from (ADR 0146); with
+     * --check, nothing written, and 1 where the manifest is missing or
+     * differs from the scan.
+     *
+     * @param list<string> $arguments
+     */
+    private function discover(array $arguments): int
+    {
+        $check = false;
+        $build = null;
+        foreach ($arguments as $argument) {
+            if ($argument === '--check') {
+                $check = true;
+            } elseif (str_starts_with($argument, '--build=') && \strlen($argument) > 8) {
+                $build = rtrim(substr($argument, 8), '/');
+            } else {
+                return $this->usage('discover');
+            }
+        }
+        $discovery = $this->discovery($build);
+        if ($discovery === null) {
+            fwrite(STDERR, "{$this->name} has no Kernel to discover the classes of.\n");
+
+            return 1;
+        }
+        if ($check) {
+            $stale = $discovery->stale();
+            if ($stale !== []) {
+                fwrite(STDERR, "{$discovery->manifest} is not what a scan finds now:\n  " . implode("\n  ", $stale) . "\n");
+
+                return 1;
+            }
+            echo "ok: {$discovery->manifest} lists every class a scan finds\n";
+
+            return 0;
+        }
+        $classes = $discovery->write();
+        printf("wrote %s: %d classes under %s\\\n", $discovery->manifest, \count($classes->all()), $discovery->namespace);
+
+        return 0;
+    }
+
+    /**
+     * `build`: Vite's build for a profile, then -- for this application --
+     * the discovery manifest beside it, which production boots from.
+     *
+     * @param list<string> $arguments
+     */
+    private function build(array $arguments): int
+    {
+        $command = new ProfileBuildCommand($this->projectRoot === $this->root ? $this->root : (string) getcwd());
+        $status = $command->run($arguments);
+        if ($status !== 0 || $this->kernel === null) {
+            return $status;
+        }
+        try {
+            [, $app, $env] = $command->plan($arguments);
+        } catch (\InvalidArgumentException|\RuntimeException) {
+            return $status;
+        }
+        if ((realpath($app) ?: $app) !== $this->root) {
+            return $status; // Another application's build: its own console discovers it.
+        }
+
+        return $this->discover(['--build=' . ($env[BuildProfile::BUILD_DIR_ENV] ?? "{$this->root}/dist")]);
     }
 
     /**
@@ -411,7 +558,7 @@ final class AppConsole
                 ? PdoConnection::sqlite($database, $connection, create: $create)
                 : throw new MigrationRefused("No database at {$database}; `{$script} migrate` makes one."),
             $this->migrations,
-            $this->models,
+            $this->classes()->models,
             out: static fn (string $line) => $running->print($line, STDOUT),
             // A failure stops the bar where it is, and is said under it.
             err: static function (string $line) use ($running): void {
@@ -437,32 +584,24 @@ final class AppConsole
     }
 
     /**
-     * Where the generators register what they write: as given, or the
-     * Kernel's own lists and the route table where each is there.
+     * Where the generators register a page's view: as given, or the route
+     * table where there is one. The classes themselves are discovered once
+     * written (ADR 0146): no list is edited.
      */
     public function registrations(): Registrations
     {
         if ($this->registrations !== null) {
             return $this->registrations;
         }
-        $lists = [];
-        $file = $this->kernel === null || !class_exists($this->kernel) ? false : new \ReflectionClass($this->kernel)->getFileName();
-        if (\is_string($file)) {
-            foreach (['page' => 'ROUTES', 'query' => 'QUERIES', 'action' => 'ACTIONS', 'model' => 'MODELS'] as $kind => $constant) {
-                if (\defined("{$this->kernel}::{$constant}")) {
-                    $lists[$kind] = [['file' => $file, 'constant' => $constant]];
-                }
-            }
-        }
         $table = "{$this->root}/resources/entries/rsc.tsx";
 
-        return $this->registrations = new Registrations($lists, is_file($table) ? $table : null, $this->routes);
+        return $this->registrations = new Registrations(is_file($table) ? $table : null, $this->classes()->routes);
     }
 
     private function builtIns(): void
     {
         $this->command('check', 'check', "Run the security model's build rules over the app, hold its lockfiles to its PackagePolicy (no network), and its Caddyfile to holding each response whole and bounding a stalled write", fn (array $a): int => $a === [] ? $this->check() : $this->usage('check'))
-            ->command('config', 'config', "Every key the app's #[Config] classes read, where each value comes from, and no secret's; exits 1, naming each key, where the server would refuse to boot", fn (array $a): int => new ConfigCommand($this->configs)->run($a))
+            ->command('config', 'config', "Every key the app's #[Config] classes read, where each value comes from, and no secret's; exits 1, naming each key, where the server would refuse to boot", fn (array $a): int => new ConfigCommand($this->classes()->configs)->run($a))
             ->command('codegen', 'codegen [--out=DIR] [--check]', 'Write the TypeScript the views use from the PHP; with --check, write nothing and fail if what is there differs', $this->codegen ?? static function (): int {
                 fwrite(STDERR, "tinvar/codegen is not installed: it is a dev dependency, which this install left out.\n");
 
@@ -479,7 +618,8 @@ final class AppConsole
                 // console over a workspace's apps, where it was run from.
                 workingDirectory: $this->projectRoot === $this->root ? $this->root : null,
             )->run($a))
-            ->command('build', 'build [--profile=production|staging|test] [--app=DIR] [--out=DIR]', 'The Vite build, made for a profile: production unless --profile says; each is served only under its own TINVAR_PROFILE', fn (array $a): int => new ProfileBuildCommand($this->projectRoot === $this->root ? $this->root : (string) getcwd())->run($a))
+            ->command('build', 'build [--profile=production|staging|test] [--app=DIR] [--out=DIR]', 'The Vite build, made for a profile: production unless --profile says; each is served only under its own TINVAR_PROFILE. Then the discovery manifest beside it, which production boots from', $this->build(...))
+            ->command('discover', 'discover [--check] [--build=DIR]', "Write every class the app registers, discovered under its namespace, to the build's manifest, which production boots from without a scan; with --check, write nothing and fail where the manifest is missing or stale", $this->discover(...))
             ->command('build:fragments', 'build:fragments [--build=DIR]', "Write the fragment manifest -- which routes may defer, and what each route's renders may query -- from the build and the routes", $this->fragments(...));
         foreach (['build:current' => 'build:current [<id>] | build:revoke <id> | build:floor <id> | build:list | build:prune [--keep=N]', 'build:revoke' => '', 'build:floor' => '', 'build:list' => '', 'build:prune' => ''] as $name => $usage) {
             $this->command($name, $usage, $usage === '' ? '' : 'The build history: what is released, and what is refused', fn (array $a): int => new BuildCommand(($this->buildStore)())->run($name, $a));
@@ -504,7 +644,7 @@ final class AppConsole
             $this->command(
                 $name,
                 $i === 0 ? "make:page <Name> --path=/racks/{rack} [--view=racks/show]\n  make:query <Name> [--model=Rack]\n  make:action <Class> <method> [--model=Rack] [--request]\n  make:model <Name> [--table=racks] [--columns=name:string,heightU:int,notes:?string] [--factory] [--migration]" : '',
-                $i === 0 ? "Write a page, query, action or model, and what each needs, and register it in the app's lists and route table where each reads as one; every check they write fails closed until you decide otherwise. Run bare on a terminal, each asks what it needs" : '',
+                $i === 0 ? "Write a page, query, action or model, and what each needs, which discovery registers once it is written, and a page's view in the route table where it reads as one; every check they write fails closed until you decide otherwise. Run bare on a terminal, each asks what it needs" : '',
                 fn (array $a): int => $this->generate($name, $a),
             );
         }
@@ -523,7 +663,7 @@ final class AppConsole
             return MakeCommand::FAILED;
         }
 
-        return new MakeCommand($layout, $this->models, registrations: $this->registrations(), migrate: $this->makeMigration(...))->run($command, $arguments);
+        return new MakeCommand($layout, $this->classes()->models, registrations: $this->registrations(), migrate: $this->makeMigration(...))->run($command, $arguments);
     }
 
     /**
@@ -559,7 +699,7 @@ final class AppConsole
         }
 
         $routes = new RouteRegistry();
-        $routes->registerAll($this->routes);
+        $routes->registerAll($this->classes()->routes);
         try {
             $manifest = FragmentManifestProducer::produce($routes, "{$build}/rsc/deferred.json");
             $manifest->write("{$build}/fragments.json");

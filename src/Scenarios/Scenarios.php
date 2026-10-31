@@ -51,10 +51,18 @@ final readonly class Scenarios
         return new self($named, $database);
     }
 
-    /** @return list<string> */
+    /**
+     * Each scenario's name, sorted: the same list whichever order the
+     * scenarios were handed over in -- discovery's, by class (ADR 0146).
+     *
+     * @return list<string>
+     */
     public function names(): array
     {
-        return array_keys($this->scenarios);
+        $names = array_keys($this->scenarios);
+        sort($names);
+
+        return $names;
     }
 
     /**
