@@ -292,10 +292,10 @@ final class ArrayQueue implements Queue, Coordination, Wakes
         return $this->batches[$id] ?? null;
     }
 
-    public function addToBatch(string $id, int $jobs): bool
+    public function addToBatch(string $id, int $jobs, int $most): bool
     {
         $batch = $this->batches[$id] ?? null;
-        if ($jobs < 1 || $batch === null || $batch->finishedAt !== null || $batch->cancelledAt !== null || $batch->pending === 0) {
+        if ($jobs < 1 || $batch === null || $batch->finishedAt !== null || $batch->cancelledAt !== null || $batch->pending === 0 || $batch->total + $jobs > $most) {
             return false;
         }
         $this->batches[$id] = $batch->with(['total' => $batch->total + $jobs, 'pending' => $batch->pending + $jobs]);

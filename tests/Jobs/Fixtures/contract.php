@@ -135,7 +135,7 @@ function coordinates(Queue&Coordination $queue, Queue&Coordination $other, ?\Clo
     $first = $other->batchJobFailed('b-1', 'j-1', 110);
     // Counted once: run again, it moves nothing.
     $again = $queue->batchJobDone('b-1', 'j-1', 115);
-    expect($queue->addToBatch('b-1', 1))->toBeFalse('cancelled, it takes no more');
+    expect($queue->addToBatch('b-1', 1, 1_000))->toBeFalse('cancelled, it takes no more');
     $second = $queue->batchJobDone('b-1', 'j-2', 120);
     $third = $other->batchJobDone('b-1', 'j-3', 130);
     expect($again?->batch->pending)->toBe(2)
@@ -154,15 +154,17 @@ function coordinates(Queue&Coordination $queue, Queue&Coordination $other, ?\Clo
     // Added to while it runs; not once it has finished.
     $queue->addBatch(new BatchRecord('b-2', 'acme', '', '', 2, 2, 0, true, 100));
     expect($queue->batchJobFailed('b-2', 'j-5', 110)?->batch->cancelledAt)->toBeNull()
-        ->and($other->addToBatch('b-2', 2))->toBeTrue()
+        ->and($other->addToBatch('b-2', 3, 4))->toBeFalse('past its cap, counted where the add is written')
+        ->and($other->addToBatch('b-2', 2, 4))->toBeTrue()
+        ->and($queue->addToBatch('b-2', 1, 4))->toBeFalse('at its cap')
         ->and($queue->batch('b-2')?->total)->toBe(4)
         ->and($queue->batch('b-2')?->pending)->toBe(3)
-        ->and($queue->addToBatch('missing', 1))->toBeFalse();
+        ->and($queue->addToBatch('missing', 1, 1_000))->toBeFalse();
     foreach (['j-6', 'j-7', 'j-8'] as $job) {
         $queue->batchJobDone('b-2', $job, 150);
     }
     expect($queue->batch('b-2')?->finishedAt)->toBe(150)
-        ->and($other->addToBatch('b-2', 1))->toBeFalse('finished, it is not started again');
+        ->and($other->addToBatch('b-2', 1, 1_000))->toBeFalse('finished, it is not started again');
 
     // Pruned: the batches finished before 151 and the lapsed lock.
     expect($queue->prune(600, 151))->toBe(3)

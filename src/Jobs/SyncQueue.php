@@ -126,9 +126,9 @@ final readonly class SyncQueue implements Queue, Coordination
         return $this->kept->batch($id);
     }
 
-    public function addToBatch(string $id, int $jobs): bool
+    public function addToBatch(string $id, int $jobs, int $most): bool
     {
-        return $this->kept->addToBatch($id, $jobs);
+        return $this->kept->addToBatch($id, $jobs, $most);
     }
 
     public function batchJobDone(string $id, string $job, int $now): ?BatchStep

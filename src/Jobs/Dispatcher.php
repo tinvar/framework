@@ -237,7 +237,9 @@ final readonly class Dispatcher
         [$user, $epoch] = $this->dispatcher($all);
         $members = $this->members($jobs, $id, $user, $epoch, $this->now());
         $this->whenCommitted(fn () => $coordination->atomically(function () use ($coordination, $id, $members): bool {
-            if (!$coordination->addToBatch($id, \count($members))) {
+            // The cap asked again where the count is written: two adds
+            // that each fit the total read above may not both fit it.
+            if (!$coordination->addToBatch($id, \count($members), Batch::MAX_JOBS)) {
                 return false;
             }
             foreach ($members as $member) {

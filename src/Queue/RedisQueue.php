@@ -479,11 +479,13 @@ final class RedisQueue implements Queue, Coordination, Wakes
         return $row === null ? null : self::batchFrom($id, $row);
     }
 
-    public function addToBatch(string $id, int $jobs): bool
+    public function addToBatch(string $id, int $jobs, int $most): bool
     {
-        return $this->atomically(function () use ($id, $jobs): bool {
+        // Read under WATCH in the unit: an add racing this one rewrites the
+        // batch, aborts this EXEC, and the cap is asked again of its count.
+        return $this->atomically(function () use ($id, $jobs, $most): bool {
             $batch = $this->batch($id);
-            if ($jobs < 1 || $batch === null || $batch->finishedAt !== null || $batch->cancelledAt !== null || $batch->pending === 0) {
+            if ($jobs < 1 || $batch === null || $batch->finishedAt !== null || $batch->cancelledAt !== null || $batch->pending === 0 || $batch->total + $jobs > $most) {
                 return false;
             }
             $this->putBatch($batch->with(['total' => $batch->total + $jobs, 'pending' => $batch->pending + $jobs]));

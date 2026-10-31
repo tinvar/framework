@@ -512,15 +512,15 @@ final class DatabaseQueue implements Queue, Coordination, Wakes
         );
     }
 
-    public function addToBatch(string $id, int $jobs): bool
+    public function addToBatch(string $id, int $jobs, int $most): bool
     {
         // Conditional on the batch still running: of an add and the end of
         // its last job, whichever writes the row first wins, and the other
         // sees what it did.
         return $jobs > 0 && $this->connection->execute(
             "UPDATE {$this->batchesTable} SET total = total + ?, pending = pending + ?
-              WHERE id = ? AND finished_at IS NULL AND cancelled_at IS NULL AND pending > 0",
-            [$jobs, $jobs, $id],
+              WHERE id = ? AND finished_at IS NULL AND cancelled_at IS NULL AND pending > 0 AND total + ? <= ?",
+            [$jobs, $jobs, $id, $jobs, $most],
         ) === 1;
     }
 

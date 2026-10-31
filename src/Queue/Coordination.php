@@ -54,9 +54,12 @@ interface Coordination
     /**
      * $jobs more to count in batch $id, pushed in the same transaction:
      * true when it took them, false when the batch is gone, has finished
-     * or was cancelled -- a batch counted to its end is not started again.
+     * or was cancelled -- a batch counted to its end is not started again
+     * -- or would hold more than $most. The cap is held in the same
+     * conditional write as the count, so adds racing each other cannot
+     * pass it together.
      */
-    public function addToBatch(string $id, int $jobs): bool;
+    public function addToBatch(string $id, int $jobs, int $most): bool;
 
     /**
      * The batch's job $job is done -- or skipped, the batch being cancelled:
