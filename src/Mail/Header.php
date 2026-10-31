@@ -16,6 +16,40 @@ final class Header
     /** Longer, and a subject is not what the reader sees of it, nor one line on the wire. */
     public const int MAX_SUBJECT = 255;
 
+    /**
+     * The most bytes of text one encoded word carries: base64'd to 60, and
+     * with `=?UTF-8?B?` and `?=` 72, inside RFC 2047's 75 for any character.
+     */
+    private const int WORD_BYTES = 45;
+
+    /**
+     * $value as RFC 2047 encoded words when it is not plain ASCII, folded a
+     * word to a line: each of whole characters and at most 75 bytes, so no
+     * reader splits a character between two, nor refuses a word too long.
+     * Plain ASCII as it is.
+     */
+    public static function encode(string $value): string
+    {
+        if (preg_match('/^[\x20-\x7e]*\z/', $value) === 1) {
+            return $value;
+        }
+
+        $words = [];
+        $chunk = '';
+        foreach (mb_str_split($value, 1, 'UTF-8') as $character) {
+            if ($chunk !== '' && \strlen($chunk) + \strlen($character) > self::WORD_BYTES) {
+                $words[] = '=?UTF-8?B?' . base64_encode($chunk) . '?=';
+                $chunk = '';
+            }
+            $chunk .= $character;
+        }
+        if ($chunk !== '') {
+            $words[] = '=?UTF-8?B?' . base64_encode($chunk) . '?=';
+        }
+
+        return implode("\r\n ", $words);
+    }
+
     /** Whether $value would break a header line, or is not UTF-8. */
     public static function breaks(string $value): bool
     {

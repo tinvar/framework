@@ -129,6 +129,25 @@ it('writes a multipart/alternative message, text first, quoted-printable, with a
         ->and(trim($parts[3]))->toBe('--');
 });
 
+// Review: a display name that was not plain ASCII was one encoded word,
+// however long -- past RFC 2047's 75 bytes, and a line past what readers fold.
+it('encodes a long display name, or a subject of four-byte characters, as words of at most 75 bytes, folded', function () {
+    $name = str_repeat('Zoë Ångström-Ñúñez ', 6) . '😀😀😀😀😀😀😀😀😀😀😀😀';
+    $header = new Address('zoe@example.test', $name)->toHeader();
+    $words = [];
+    preg_match_all('/=\?UTF-8\?B\?[A-Za-z0-9+\/=]+\?=/', $header, $words);
+
+    expect(max(array_map('strlen', $words[0])))->toBeLessThanOrEqual(75)
+        ->and(count($words[0]))->toBeGreaterThan(1)
+        ->and(implode('', array_map(static fn (string $w): string => (string) base64_decode(substr($w, 10, -2), true), $words[0])))->toBe($name)
+        ->and($header)->toEndWith(' <zoe@example.test>')
+        ->and(max(array_map('strlen', explode("\r\n", $header))))->toBeLessThanOrEqual(78);
+
+    $mime = MimeMessage::build(new Message(new Address('orders@shop.test'), [new Address('zoe@example.test')], str_repeat('😀', 30), '<p>x</p>', 'x'), 'shop.test', 1_800_000_000);
+    preg_match_all('/=\?UTF-8\?B\?[A-Za-z0-9+\/=]+\?=/', explode("\r\n\r\n", $mime, 2)[0], $words);
+    expect(max(array_map('strlen', $words[0])))->toBeLessThanOrEqual(75);
+});
+
 it('appends messages to a log, one JSON line each, and reads them back', function () {
     $path = sys_get_temp_dir() . '/tinvar-mail-' . bin2hex(random_bytes(4)) . '/mail.log';
     try {

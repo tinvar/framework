@@ -33,9 +33,10 @@ final readonly class Address
             return "<{$this->email}>";
         }
 
+        // Encoded as a subject is: words of at most 75 bytes, folded.
         $name = preg_match('/^[A-Za-z0-9 .\'_-]*\z/', $this->name) === 1
             ? '"' . $this->name . '"'
-            : '=?UTF-8?B?' . base64_encode($this->name) . '?=';
+            : Header::encode($this->name);
 
         return "{$name} <{$this->email}>";
     }

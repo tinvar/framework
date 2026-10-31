@@ -45,7 +45,7 @@ final class MimeMessage
         [$contentType, $body] = self::body($message);
         $headers = [
             ...$headers,
-            'Subject: ' . self::encodeHeader($message->subject),
+            'Subject: ' . Header::encode($message->subject),
             'Date: ' . gmdate('D, d M Y H:i:s +0000', $date ?? time()),
             'Message-ID: <' . bin2hex(random_bytes(16)) . "@{$domain}>",
             'MIME-Version: 1.0',
@@ -152,22 +152,5 @@ final class MimeMessage
         // One reader a line past the first, so a long Cc never runs a line
         // past SMTP's 998 bytes.
         return implode(",\r\n ", array_map(static fn (Address $a): string => $a->toHeader(), $addresses));
-    }
-
-    /** A header value, as RFC 2047 encoded words when it is not plain ASCII. */
-    private static function encodeHeader(string $value): string
-    {
-        if (preg_match('/^[\x20-\x7e]*\z/', $value) === 1) {
-            return $value;
-        }
-
-        // One encoded word per chunk of whole characters, each well inside
-        // the 75-byte limit on an encoded word.
-        $words = [];
-        foreach (mb_str_split($value, 12, 'UTF-8') as $chunk) {
-            $words[] = '=?UTF-8?B?' . base64_encode($chunk) . '?=';
-        }
-
-        return implode("\r\n ", $words);
     }
 }
