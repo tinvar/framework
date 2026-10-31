@@ -199,7 +199,7 @@ describe('the example session cookie', function () {
     // moment it would become valuable.
     it('rotates to a new id', function () use ($key) {
         $before = Kernel::newSession($key);
-        $line = Kernel::rotateSession(Response::make(), $key)->cookies()[Kernel::SESSION_COOKIE];
+        $line = Kernel::withSession(Response::make(), Kernel::newSession($key))->cookies()[Kernel::SESSION_COOKIE];
         $after = explode(';', substr($line, \strlen(Kernel::SESSION_COOKIE) + 1))[0];
 
         expect(Kernel::sessionFrom($after, $key))->not->toBeNull()

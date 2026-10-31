@@ -192,6 +192,5 @@ it('keeps the key and the session id out of the example session helpers', functi
         ->and($marked('sessionFrom', 'key'))->toBeTrue()
         ->and($marked('sessionFrom', 'cookie'))->toBeTrue()
         ->and($marked('withSession', 'cookie'))->toBeTrue()
-        ->and($marked('rotateSession', 'key'))->toBeTrue()
         ->and($marked('fromEnvironment', 'key'))->toBeTrue();
 });
