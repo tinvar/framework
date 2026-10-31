@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Workflows;
 
 use Tinvar\Jobs\JobControl;
+use Tinvar\Jobs\JobRefused;
 
 /**
  * A workflow's view of its own progress: the steps it has finished, with
@@ -31,7 +32,10 @@ use Tinvar\Jobs\JobControl;
  * epoch: readable by whoever reads the queue, writable by no one. Plain data
  * only -- strings, numbers, booleans, null and arrays of them -- and all of
  * a workflow's results together are at most JobControl::MAX_CHECKPOINT_BYTES
- * of JSON: an id, a status, a reference, not the work.
+ * of JSON: an id, a status, a reference, not the work. A step that returns
+ * anything else fails the workflow as it returns, without a retry -- its
+ * work has happened, and another try would only do it again -- and its
+ * failed() hook runs.
  *
  * **A step runs at least once.** If a worker dies after a step's writes
  * commit and before the step is recorded, the next run takes the step
@@ -140,6 +144,18 @@ final class Steps
         } finally {
             $this->inStep = null;
         }
+
+        // Checked here, not only as the run pauses: a result the checkpoint
+        // cannot keep would fail the pause at every try, and every try would
+        // run the step's work -- a charge, an email -- again. Its work has
+        // happened once; the workflow fails now, and its failed() hook runs.
+        if (!$this->keeps($name, $result)) {
+            throw new JobRefused('checkpoint', \sprintf(
+                "The step '%s' returned what its checkpoint cannot keep: plain data -- strings, numbers, booleans, null and arrays of them -- at most %d bytes of JSON with the steps before it. Keep an id or a status, not the work.",
+                $name,
+                JobControl::MAX_CHECKPOINT_BYTES,
+            ));
+        }
         $this->done[$name] = $result;
         $this->ended = true;
         $this->taken = $name;
@@ -216,7 +232,7 @@ final class Steps
         // A signal the checkpoint cannot keep beside what the workflow has
         // kept already is taken as none, rather than fail the pause at
         // every try until the workflow fails.
-        if ($data !== null && !$this->keeps($name, $data)) {
+        if ($data !== null && !$this->keeps($name, ['signal' => $data])) {
             $data = null;
             $deadline = $now;
         }
@@ -311,16 +327,14 @@ final class Steps
     }
 
     /**
-     * Whether the checkpoint, with $data recorded as the wait $name's
-     * result, is one the job can pause with.
-     *
-     * @param array<array-key, mixed> $data
+     * Whether the checkpoint, with $result recorded as the step or wait
+     * $name's, is one the job can pause with.
      */
-    private function keeps(string $name, array $data): bool
+    private function keeps(string $name, mixed $result): bool
     {
         $waits = $this->waits;
         unset($waits[$name]);
-        $checkpoint = ['v' => self::VERSION, 'done' => [...$this->done, $name => ['signal' => $data]]];
+        $checkpoint = ['v' => self::VERSION, 'done' => [...$this->done, $name => $result]];
         if ($waits !== []) {
             $checkpoint['waits'] = $waits;
         }

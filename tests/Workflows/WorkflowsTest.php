@@ -16,6 +16,7 @@ use Tinvar\Queue\PendingJob;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\User;
 use Tinvar\Tests\Orm\Fixtures\Script;
+use Tinvar\Tests\Workflows\Fixtures\ChargesThenKeepsTooMuch;
 use Tinvar\Tests\Workflows\Fixtures\AdminFlow;
 use Tinvar\Tests\Workflows\Fixtures\Flaky;
 use Tinvar\Tests\Workflows\Fixtures\Greedy;
@@ -223,6 +224,22 @@ it('fails a run that asks for one step twice, or one inside another, or keeps wh
     expect(queue($h)->failed())->toHaveCount(3)
         ->and($errors)->toContain("'same' was asked for twice")->toContain('plain data')->toContain("inside the step 'outer'");
 });
+
+// Review: a result the checkpoint could not keep was only caught as the run
+// paused, so the step's work -- a charge -- ran again on every try.
+it('fails a step whose result cannot be kept at once, rather than run its work again on every try', function (bool $large) {
+    $h = harness();
+    workflows($h)->start(new ChargesThenKeepsTooMuch($large));
+    for ($i = 0; $i < 4; $i++) {
+        $h->now += 60;
+        $h->work();
+    }
+
+    expect(Seen::$steps)->toBe([['step' => 'charge']])
+        ->and(queue($h)->failed())->toHaveCount(1)
+        ->and(queue($h)->failed()[0]->error)->toContain("'charge'")
+        ->and(Seen::$failed)->toHaveCount(1);
+})->with(['an object' => [false], 'too large' => [true]]);
 
 it('refuses to start inside a loader or query body, as a job is', function () {
     $h = harness();

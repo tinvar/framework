@@ -525,8 +525,10 @@ final class Worker
         // The job's own last word, in its context -- not for a refusal,
         // whose context is exactly what no longer checks out. Except one
         // for attempts: its last try never finished, and its context is the
-        // one it was tried in.
-        if ($envelope !== null && (!$error instanceof JobRefused || \in_array($error->reason, ['attempts', 'releases'], true))) {
+        // one it was tried in; and one the job's own run refused -- a pause
+        // past its count, a workflow step whose result its checkpoint
+        // cannot keep -- in the context that ran it.
+        if ($envelope !== null && (!$error instanceof JobRefused || \in_array($error->reason, ['attempts', 'releases', 'checkpoint'], true))) {
             try {
                 $this->runner->failed($envelope, $error);
             } catch (\Throwable $e) {

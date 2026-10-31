@@ -155,6 +155,28 @@ final readonly class KeepsAnObject implements Workflow
     }
 }
 
+/** Charges once, then returns what a checkpoint cannot keep: an object, or too much. */
+#[Queue(tries: 3, backoff: [0])]
+final readonly class ChargesThenKeepsTooMuch implements Workflow
+{
+    public function __construct(public bool $large = false) {}
+
+    public function run(Steps $steps): void
+    {
+        $large = $this->large;
+        $steps->step('charge', static function () use ($large): mixed {
+            Seen::$steps[] = ['step' => 'charge'];
+
+            return $large ? str_repeat('x', 20_000) : new \stdClass();
+        });
+    }
+
+    public function failed(\Throwable $error): void
+    {
+        Seen::$failed[] = $error->getMessage();
+    }
+}
+
 /** Asks for a step inside another. */
 #[Queue(tries: 1)]
 final readonly class Nested implements Workflow
