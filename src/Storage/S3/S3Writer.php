@@ -22,7 +22,7 @@ final class S3Writer implements StorageWriter
 
     private ?string $uploadId = null;
 
-    /** @var list<string> each part's ETag, in order */
+    /** @var array<int, string> each part's ETag, by its number */
     private array $etags = [];
 
     private bool $done = false;
@@ -69,17 +69,9 @@ final class S3Writer implements StorageWriter
                 $this->buffer = '';
             }
 
-            $parts = '';
-            foreach ($this->etags as $index => $etag) {
-                $parts .= '<Part><PartNumber>' . ($index + 1) . '</PartNumber><ETag>' . htmlspecialchars($etag, ENT_XML1) . '</ETag></Part>';
-            }
-            $response = $this->store->send('POST', $this->key, ['uploadId' => $uploadId], '<CompleteMultipartUpload>' . $parts . '</CompleteMultipartUpload>', timeout: 120.0);
-            S3Storage::assertOk($response, 'stored');
-            // S3 can answer 200 and put an error in the body of a completion
-            // that failed after it began.
-            if (str_contains($response->body, '<Error>')) {
-                throw new StorageException('A stored file could not be stored: the object store failed the upload as it completed it.');
-            }
+            // The store's own completion, the one a direct upload's is: an
+            // error in the body of a 200 among what it refuses.
+            $this->store->completeMultipart($this->key, $uploadId, $this->etags);
             $this->uploadId = null;
             $this->done = true;
         } catch (\Throwable $e) {
@@ -101,7 +93,7 @@ final class S3Writer implements StorageWriter
             $uploadId = $this->uploadId;
             $this->uploadId = null;
             try {
-                $this->store->send('DELETE', $this->key, ['uploadId' => $uploadId]);
+                $this->store->abortMultipart($this->key, $uploadId);
             } catch (StorageException) {
                 // An upload left begun keeps its parts until the bucket's
                 // lifecycle rule removes them; nothing is at the key.
@@ -116,14 +108,7 @@ final class S3Writer implements StorageWriter
 
     private function sendPart(string $part): void
     {
-        if ($this->uploadId === null) {
-            $response = $this->store->send('POST', $this->key, ['uploads' => '']);
-            S3Storage::assertOk($response, 'stored');
-            if (preg_match('#<UploadId>([^<]{1,1024})</UploadId>#', $response->body, $m) !== 1) {
-                throw new StorageException('The object store began an upload and named no upload id.');
-            }
-            $this->uploadId = html_entity_decode($m[1], ENT_XML1 | ENT_QUOTES);
-        }
+        $this->uploadId ??= $this->store->beginMultipart($this->key);
 
         $number = \count($this->etags) + 1;
         if ($number > 10_000) {
@@ -135,6 +120,6 @@ final class S3Writer implements StorageWriter
         if ($etag === null || $etag === '') {
             throw new StorageException('The object store took a part and named no ETag for it.');
         }
-        $this->etags[] = $etag;
+        $this->etags[$number] = $etag;
     }
 }
