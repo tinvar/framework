@@ -58,7 +58,7 @@ final readonly class MailEventsEndpoint
 
     /**
      * @param list<MailWebhook> $webhooks
-     * @param (\Closure(MailEvent): void)|null $dispatch where each event goes: Events::dispatch(...)
+     * @param (\Closure(MailEvent): void)|null $dispatch where each event goes: the event bus's dispatch, in an application
      * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
      * @param SentMailLog|null $sent what the Mailer sent: given, only events about those messages, to those readers, count
      */

@@ -6,7 +6,6 @@ namespace Tinvar\Mail;
 
 use Tinvar\Data\Encoder;
 use Tinvar\Jobs\Dispatcher;
-use Tinvar\Observability\Span;
 use Tinvar\Observability\Telemetry;
 
 /**
@@ -66,12 +65,7 @@ final readonly class Mailer
             return $this->compose($email);
         }
 
-        return $this->telemetry->trace("mail {$email->template}", ['tinvar.mail.template' => $email->template], function (?Span $span) use ($email): SentMessage {
-            $sent = $this->compose($email);
-            $span?->set('tinvar.mail.transport', $sent->transport)->set('tinvar.mail.suppressed', \count($sent->suppressed));
-
-            return $sent;
-        });
+        return $this->telemetry->trace("mail {$email->template}", ['tinvar.mail.template' => $email->template], fn (): SentMessage => $this->compose($email));
     }
 
     private function compose(Email $email): SentMessage
