@@ -5,10 +5,11 @@ declare(strict_types=1);
 namespace Tinvar\Auth;
 
 /**
- * The application's own classes by short name, as its composer.json's PSR-4
- * autoload maps them: what tenant-scoped-ids-must-be-typed looks in for a
- * model a bare id names that no list holds and no listed or taken model
- * sits beside (ADR 0122).
+ * The application's own classes, as its composer.json's PSR-4 autoload
+ * maps them: what tenant-scoped-ids-must-be-typed looks in for a model a
+ * bare id names that no list holds and no listed or taken model sits beside
+ * (ADR 0122), and what discovery reads every class the application
+ * registers from (ADR 0146).
  *
  * A list kept by hand is a list a new model is missing from, and a model
  * in a namespace of its own was found by nothing. Composer's map is what
@@ -23,19 +24,26 @@ namespace Tinvar\Auth;
  * names, and whose tokens declare a class of that name in the namespace
  * its path says, is handed back to be loaded and asked whether it is a
  * #[TenantScoped] model -- a script named like a class is never run. A
- * walk follows no symbolic link out of the tree, and stops at MAX_FILES:
- * saying so once, as a warning, and to `tinvar check`, which fails on it
- * (check()), since a model past the cap is one nothing finds.
+ * walk follows no symbolic link out of the tree, walks no directory of
+ * what Composer or npm installed, of tests or of fixtures, and stops at
+ * MAX_FILES: saying so once, as a warning, and to `tinvar check`, which
+ * fails on it (check()), since a model past the cap is one nothing finds.
  */
 final class ApplicationClasses
 {
     /** The most files one walk reads the names of, past which it stops. */
     public const int MAX_FILES = 50_000;
 
+    /** Directories never walked: what Composer and npm install, and tests and their fixtures, which are not the application's. */
+    private const array SKIPPED = ['vendor', 'node_modules', 'tests', 'fixtures'];
+
     private static ?self $composer = null;
 
     /** @var array<string, list<array{string, string}>>|null by lowercased short name, every class under the map and its file */
     private ?array $index = null;
+
+    /** @var list<array{string, string}>|null every class the map's paths name, and its file */
+    private ?array $files = null;
 
     /** Whether the walk stopped at the cap, with files left unread. */
     private bool $truncated = false;
@@ -57,29 +65,120 @@ final class ApplicationClasses
             return self::$composer;
         }
 
+        $root = class_exists(\Composer\InstalledVersions::class)
+            ? realpath(\Composer\InstalledVersions::getRootPackage()['install_path'])
+            : false;
+
+        return self::$composer = $root === false ? new self([]) : self::fromComposerJson($root);
+    }
+
+    /**
+     * The PSR-4 map of the composer.json in $root: its `autoload`, never
+     * its `autoload-dev`; none where the file does not read.
+     */
+    public static function fromComposerJson(string $root): self
+    {
+        $file = "{$root}/composer.json";
+        $json = is_file($file) ? file_get_contents($file) : false;
+        $manifest = $json === false ? null : json_decode($json, true);
+        $map = \is_array($manifest) && \is_array($manifest['autoload'] ?? null) && \is_array($manifest['autoload']['psr-4'] ?? null)
+            ? $manifest['autoload']['psr-4']
+            : [];
         $psr4 = [];
-        if (class_exists(\Composer\InstalledVersions::class)) {
-            $root = realpath(\Composer\InstalledVersions::getRootPackage()['install_path']);
-            $file = $root === false ? null : "{$root}/composer.json";
-            $json = $file === null || !is_file($file) ? false : file_get_contents($file);
-            $manifest = $json === false ? null : json_decode($json, true);
-            $map = \is_array($manifest) && \is_array($manifest['autoload'] ?? null) && \is_array($manifest['autoload']['psr-4'] ?? null)
-                ? $manifest['autoload']['psr-4']
-                : [];
-            foreach ($map as $prefix => $directories) {
-                $paths = [];
-                foreach (\is_array($directories) ? $directories : [$directories] as $directory) {
-                    if (\is_string($directory)) {
-                        $paths[] = "{$root}/{$directory}";
-                    }
+        foreach ($map as $prefix => $directories) {
+            $paths = [];
+            foreach (\is_array($directories) ? $directories : [$directories] as $directory) {
+                if (\is_string($directory)) {
+                    $paths[] = rtrim("{$root}/{$directory}", '/');
                 }
-                if (\is_string($prefix) && $paths !== []) {
-                    $psr4[$prefix] = $paths;
-                }
+            }
+            if (\is_string($prefix) && $paths !== []) {
+                $psr4[$prefix] = $paths;
             }
         }
 
-        return self::$composer = new self($psr4);
+        return new self($psr4);
+    }
+
+    /**
+     * The map's prefixes that are $namespace or under it, and nothing
+     * else: one application's classes, where a workspace's composer.json
+     * maps several (ADR 0146).
+     */
+    public function under(string $namespace): self
+    {
+        $namespace = strtolower(trim($namespace, '\\'));
+        $psr4 = [];
+        foreach ($this->psr4 as $prefix => $directories) {
+            $trimmed = strtolower(trim($prefix, '\\'));
+            if ($trimmed === $namespace || str_starts_with($trimmed, "{$namespace}\\")) {
+                $psr4[$prefix] = $directories;
+            }
+        }
+
+        return new self($psr4, $this->maxFiles);
+    }
+
+    /**
+     * The map: each prefix and the directories it maps.
+     *
+     * @return array<string, list<string>>
+     */
+    public function prefixes(): array
+    {
+        return $this->psr4;
+    }
+
+    /**
+     * Every PHP file under the map whose path names a class, with the
+     * class it names: the prefix, then the path below its directory. Read
+     * from the file system alone, nothing loaded; sorted by file. A
+     * directory of what Composer or npm installed, of tests or fixtures,
+     * or a dot-directory, is never walked, and no symbolic link is
+     * followed; the walk stops at the cap (truncated()).
+     *
+     * @return list<array{string, string}> the class its path names, and the file
+     */
+    public function files(): array
+    {
+        if ($this->files !== null) {
+            return $this->files;
+        }
+
+        $found = [];
+        $count = 0;
+        foreach ($this->psr4 as $prefix => $directories) {
+            $prefix = trim($prefix, '\\');
+            foreach ($directories as $directory) {
+                $base = realpath($directory);
+                if ($base === false || !is_dir($base)) {
+                    continue;
+                }
+                $walk = new \RecursiveIteratorIterator(new \RecursiveCallbackFilterIterator(
+                    new \RecursiveDirectoryIterator($base, \FilesystemIterator::SKIP_DOTS | \FilesystemIterator::CURRENT_AS_FILEINFO),
+                    static fn (\SplFileInfo $file): bool => !$file->isDir()
+                        || (!$file->isLink() && !\in_array(strtolower($file->getFilename()), self::SKIPPED, true) && !str_starts_with($file->getFilename(), '.')),
+                ));
+                foreach ($walk as $file) {
+                    if (++$count > $this->maxFiles) {
+                        $this->truncated = true;
+                        break 3;
+                    }
+                    if (!$file instanceof \SplFileInfo || $file->isLink() || $file->getExtension() !== 'php') {
+                        continue;
+                    }
+                    $relative = substr($file->getPathname(), \strlen($base) + 1, -4);
+                    $name = str_replace(\DIRECTORY_SEPARATOR, '\\', $relative);
+                    if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*(\\\\[A-Za-z_][A-Za-z0-9_]*)*$/D', $name) !== 1) {
+                        continue;
+                    }
+                    $found[] = [ltrim("{$prefix}\\{$name}", '\\'), $file->getPathname()];
+                }
+            }
+        }
+        usort($found, static fn (array $a, array $b): int => strcmp($a[1], $b[1]) ?: strcmp($a[0], $b[0]));
+
+        return $this->files = $found;
     }
 
     /**
@@ -110,6 +209,17 @@ final class ApplicationClasses
         $this->index();
 
         return $this->truncated;
+    }
+
+    /**
+     * Whether files() read every file under the map, without the warning
+     * truncated() gives: for a caller that fails on it itself.
+     */
+    public function walkedWhole(): bool
+    {
+        $this->files();
+
+        return !$this->truncated;
     }
 
     /**
@@ -199,34 +309,8 @@ final class ApplicationClasses
         }
 
         $index = [];
-        $files = 0;
-        foreach ($this->psr4 as $prefix => $directories) {
-            $prefix = trim($prefix, '\\');
-            foreach ($directories as $directory) {
-                $base = realpath($directory);
-                if ($base === false || !is_dir($base)) {
-                    continue;
-                }
-                $walk = new \RecursiveIteratorIterator(
-                    new \RecursiveDirectoryIterator($base, \FilesystemIterator::SKIP_DOTS | \FilesystemIterator::CURRENT_AS_FILEINFO),
-                );
-                foreach ($walk as $file) {
-                    if (++$files > $this->maxFiles) {
-                        $this->truncated = true;
-                        break 3;
-                    }
-                    if (!$file instanceof \SplFileInfo || $file->isLink() || $file->getExtension() !== 'php') {
-                        continue;
-                    }
-                    $relative = substr($file->getPathname(), \strlen($base) + 1, -4);
-                    $name = str_replace(\DIRECTORY_SEPARATOR, '\\', $relative);
-                    if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*(\\\\[A-Za-z_][A-Za-z0-9_]*)*$/D', $name) !== 1) {
-                        continue;
-                    }
-                    $class = ltrim("{$prefix}\\{$name}", '\\');
-                    $index[strtolower($file->getBasename('.php'))][] = [$class, $file->getPathname()];
-                }
-            }
+        foreach ($this->files() as [$class, $file]) {
+            $index[strtolower(basename($file, '.php'))][] = [$class, $file];
         }
         foreach ($index as $short => $classes) {
             usort($classes, static fn (array $a, array $b): int => strcmp($a[0], $b[0]));
