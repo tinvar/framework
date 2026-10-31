@@ -194,6 +194,15 @@ final class Scanner
 
         return new Height($rack->heightU);
     }
+
+    /** A body produced after the stack has returned, as the response is sent. */
+    #[Post('/api/scanner/racks/{rack}/stream', name: 'scanner.stream'), UseMiddleware(TokenOrCookie::class), Authorize('update', 'rack')]
+    public function stream(Rack $rack): Response
+    {
+        return Response::stream(static function (\Closure $sink): void {
+            $sink((string) json_encode(['cookie' => $_COOKIE, 'server' => $_SERVER['HTTP_COOKIE'] ?? null, 'request' => $_REQUEST]));
+        }, 200, ['content-type' => 'application/json']);
+    }
 }
 
 // --- refused ------------------------------------------------------------------
@@ -566,6 +575,40 @@ describe('a #[WithoutSession] endpoint, held by the Kernel', function () {
         expect($status)->toBe(401)
             ->and(Ran::$globalsSeen)->toBe([['cookie' => [], 'server' => null, 'request' => ['q' => '1']]])
             ->and($after)->toBe([['sid' => 'owner'], 'sid=owner', ['q' => '1', 'sid' => 'owner']]);
+    });
+
+    // A streamed body is produced after the stack has returned, as the
+    // response is sent: it is held to the same emptied superglobals.
+    it('empties them for a streamed body too, produced after the stack has returned', function () {
+        [$fixture, $kernel] = racks();
+        $saved = [$_COOKIE, $_SERVER['HTTP_COOKIE'] ?? null, $_REQUEST, $_GET, $_POST];
+        $_COOKIE = ['sid' => 'owner'];
+        $_SERVER['HTTP_COOKIE'] = 'sid=owner';
+        $_GET = [];
+        $_POST = [];
+        $_REQUEST = ['sid' => 'owner'];
+
+        try {
+            $response = send($kernel, 'POST', "/api/scanner/racks/{$fixture->ids['racks'][0]}/stream", ['authorization' => 'Bearer scanner-token'], session: null, csrf: false);
+            $body = '';
+            $response->sendBody(static function (string $chunk) use (&$body): void {
+                $body .= $chunk;
+            });
+            $after = [$_COOKIE, $_SERVER['HTTP_COOKIE'], $_REQUEST];
+        } finally {
+            [$_COOKIE, $header, $_REQUEST, $_GET, $_POST] = $saved;
+            if ($header === null) {
+                unset($_SERVER['HTTP_COOKIE']);
+            } else {
+                $_SERVER['HTTP_COOKIE'] = $header;
+            }
+        }
+
+        expect($response->status)->toBe(200)
+            ->and($response->isStreaming())->toBeTrue()
+            ->and(json_decode($body, true))->toBe(['cookie' => [], 'server' => null, 'request' => []])
+            // And put back once the body is sent.
+            ->and($after)->toBe([['sid' => 'owner'], 'sid=owner', ['sid' => 'owner']]);
     });
 
     // ADR 0075: what an application's front controller asks before issuing

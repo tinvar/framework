@@ -2261,11 +2261,13 @@ final class Kernel
             }
             $request = $request->withoutCookies();
 
-            // And PHP's own copies of them, for the stack's run (ADR 0125).
-            return CookielessGlobals::run(fn (): Response => $this->sessionlessStack->run(
+            // And PHP's own copies of them, for the stack's run (ADR 0125),
+            // and for a streamed body's, which runs as the response is sent,
+            // after the stack has returned and they were put back.
+            return CookielessGlobals::stream(CookielessGlobals::run(fn (): Response => $this->sessionlessStack->run(
                 $request->withAttribute(EndpointHandler::MATCHED, $endpoint),
                 fn (Request $passed): Response => $handler->handle($passed, $endpoint, $parameters, $rawBody),
-            ));
+            )));
         }
 
         return $this->endpointStack->run(

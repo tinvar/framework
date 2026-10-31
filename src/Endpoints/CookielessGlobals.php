@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Endpoints;
 
+use Tinvar\Http\Response;
+
 /**
  * PHP's own copies of the request's cookies, emptied while a
  * #[WithoutSession] endpoint runs (ADR 0125).
@@ -18,7 +20,8 @@ namespace Tinvar\Endpoints;
  * safe only because no cookie authenticates its caller. So each is emptied
  * for the endpoint's run -- `$_REQUEST` rebuilt from the query and the body
  * alone -- and put back as it was afterwards, for whatever runs after the
- * response in this request.
+ * response in this request. A streamed body is produced later, as the
+ * response is sent, so stream() wraps its producer the same way.
  *
  * What is out of reach: getallheaders() and apache_request_headers() read
  * the SAPI's headers, not a superglobal; an endpoint's code calling them
@@ -26,6 +29,29 @@ namespace Tinvar\Endpoints;
  */
 final class CookielessGlobals
 {
+    /**
+     * $response, its streamed body -- if it has one -- produced with PHP's
+     * cookie superglobals empty too. A stream's producer runs as the
+     * response is sent, after run() has put them back; its status, headers
+     * and cookies are kept as they are.
+     */
+    public static function stream(Response $response): Response
+    {
+        if (!$response->isStreaming()) {
+            return $response;
+        }
+
+        return Response::stream(
+            static function (\Closure $sink) use ($response): void {
+                self::run(static function () use ($response, $sink): void {
+                    $response->sendBody($sink);
+                });
+            },
+            $response->status,
+            $response->headers(),
+        )->withCookiesOf($response);
+    }
+
     /**
      * $work's result, run with PHP's cookie superglobals empty.
      *
