@@ -324,16 +324,8 @@ final class UploadEndpoint
         // The model the declaration names, which declarationFor() held the
         // ticket's class to; none for a parameter attached to no record.
         $model = $declared->to === null ? null : $action->models[$declared->to];
-        $panels = $this->entry->panelFor($action->panels, $action->class);
-        $stack = [
-            ...$this->entry->stackFor($action->tenantFrom, $panels),
-            ...array_map(
-                fn (string $class): Middleware => ($this->middlewareResolver)($class),
-                array_values(array_diff($action->middleware, $this->globalMiddleware)),
-            ),
-        ];
 
-        return new Pipeline($stack)->run($request, function (Request $inner) use ($ticket, $now, $model): Response {
+        return $this->within($action, $request, function (Request $inner) use ($ticket, $now, $model): Response {
             $this->assertBinding($inner, $ticket);
             if ($model !== null && $this->orm->find($model, $ticket->targetId) === null) {
                 throw self::refused('names a record that is not there');
@@ -391,16 +383,7 @@ final class UploadEndpoint
         }
         [$action, $declared] = $this->declarationFor($ticket);
 
-        $panels = $this->entry->panelFor($action->panels, $action->class);
-        $stack = [
-            ...$this->entry->stackFor($action->tenantFrom, $panels),
-            ...array_map(
-                fn (string $class): Middleware => ($this->middlewareResolver)($class),
-                array_values(array_diff($action->middleware, $this->globalMiddleware)),
-            ),
-        ];
-
-        return new Pipeline($stack)->run($request, function (Request $inner) use ($storage, $body, $ticket, $declared): Response {
+        return $this->within($action, $request, function (Request $inner) use ($storage, $body, $ticket, $declared): Response {
             $this->assertBinding($inner, $ticket);
 
             return $inner->path === self::DIRECT_PATH
