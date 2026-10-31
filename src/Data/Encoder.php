@@ -55,6 +55,9 @@ final class Encoder
      */
     public const string OPTIONAL_KEY = '$optional';
 
+    /** How a moment a Data field declares crosses: see moment(). */
+    public const string MOMENT_FORMAT = 'Y-m-d\TH:i:s.v\Z';
+
     /** What a matchOn may name: one property of an item. */
     private const string PROPERTY = '/^[A-Za-z_][A-Za-z0-9_]*\z/';
 
@@ -217,7 +220,7 @@ final class Encoder
                 continue;
             }
 
-            $field = $property->getValue($value);
+            $field = self::declared($property, $property->getValue($value));
             $fieldPath = "{$path}.{$name}";
             $failed = false;
             $encoded = isset($rescued[$name]) && $field instanceof Lazy
@@ -252,6 +255,45 @@ final class Encoder
         }
 
         return $out;
+    }
+
+    /**
+     * A Data field's value as it crosses, where the field's declared type
+     * says what it is: a backed enum declared as that enum, as its value; an
+     * immutable moment declared as DateTimeImmutable or CarbonImmutable, as
+     * ISO 8601 in UTC (moment()). The declaration is the whole of the
+     * permission: the same object in a list, a map, a mixed, object or union
+     * field, a Lazy's result or anywhere outside a Data field is walked as
+     * it is and refused, and a mutable moment never matches. Anything else
+     * is returned untouched, for walk() to judge.
+     */
+    private static function declared(\ReflectionProperty $property, mixed $field): mixed
+    {
+        if (!$field instanceof \BackedEnum && !$field instanceof \DateTimeImmutable) {
+            return $field;
+        }
+        $type = $property->getType();
+        if (!$type instanceof \ReflectionNamedType || $type->isBuiltin()) {
+            return $field;
+        }
+        $declared = $type->getName();
+
+        return match (true) {
+            $field instanceof \BackedEnum && $field::class === $declared => $field->value,
+            $field instanceof \DateTimeImmutable && is_a($declared, \DateTimeImmutable::class, true) => self::moment($field),
+            default => $field,
+        };
+    }
+
+    /**
+     * A moment as a Data field sends it: ISO 8601 in UTC, to the
+     * millisecond -- `2026-10-31T12:00:00.000Z` -- which is what a
+     * browser's Date.prototype.toISOString() writes, and what new Date()
+     * reads back to the same instant.
+     */
+    public static function moment(\DateTimeInterface $at): string
+    {
+        return \DateTimeImmutable::createFromInterface($at)->setTimezone(new \DateTimeZone('UTC'))->format(self::MOMENT_FORMAT);
     }
 
     /**

@@ -46,6 +46,7 @@ use Tinvar\Support\Lazy;
  *     keyed: bool,
  *     default: bool,
  *     nullable: bool,
+ *     scalar: 'string'|'int'|null,
  * }
  * @phpstan-type Plan array{maps: class-string|null, fields: list<Field>}
  */
@@ -237,7 +238,7 @@ final class Mapper
     private static function convert(string $class, array $field, mixed $value): mixed
     {
         if ($value === null || $field['target'] === null) {
-            return $value;
+            return self::scalar($field, $value);
         }
 
         $target = $field['target'];
@@ -245,6 +246,24 @@ final class Mapper
         return $field['kind'] === 'list'
             ? self::mapList($class, $field, $target, $value)
             : ($value instanceof $target ? $value : self::map($target, self::source($class, $field, $value)));
+    }
+
+    /**
+     * A model's moment or enum, for a field declared as the scalar it is
+     * sent as: a string field takes a moment as ISO 8601 in UTC, as the
+     * encoder sends one a field declares (Encoder::moment()); a string or
+     * int field takes a backed enum's value. Anything else is passed as it
+     * is, for the constructor's types to take or refuse.
+     *
+     * @param Field $field
+     */
+    private static function scalar(array $field, mixed $value): mixed
+    {
+        return match (true) {
+            $field['scalar'] === 'string' && $value instanceof \DateTimeInterface => Encoder::moment($value),
+            $field['scalar'] !== null && $value instanceof \BackedEnum => $value->value,
+            default => $value,
+        };
     }
 
     /**
@@ -361,6 +380,7 @@ final class Mapper
                 'keyed' => $keyed,
                 'default' => $parameter->isDefaultValueAvailable(),
                 'nullable' => $type?->allowsNull() ?? true,
+                'scalar' => \in_array($typeName, ['string', 'int'], true) ? $typeName : null,
             ];
         }
 

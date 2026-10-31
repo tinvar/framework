@@ -16,8 +16,10 @@ final class DataBoundaryException extends \RuntimeException
     {
         $class = $value::class;
         $hint = match (true) {
-            $value instanceof \DateTimeInterface => " Format it to a string inside the Data class.",
-            $value instanceof \BackedEnum => " Use its ->value inside the Data class.",
+            $value instanceof \DateTimeInterface => ' Format it to a string inside the Data class, or declare a Data field'
+                . ' CarbonImmutable or DateTimeImmutable and it is sent as ISO 8601.',
+            $value instanceof \BackedEnum => ' Use its ->value inside the Data class, or declare a Data field as the enum'
+                . ' and it is sent as its value.',
             $value instanceof \UnitEnum => " Map it to a scalar inside the Data class.",
             default => " Only Data objects, scalars, lists and maps may cross to the renderer;"
                 . " map {$class} to a Data object first.",
