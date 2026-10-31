@@ -189,7 +189,9 @@ final readonly class Uploads
      *
      * A resumable upload that ran out (ADR 0143) is pruned the same way: its
      * partial bytes, and -- in an object store -- the multipart upload begun
-     * at its key, aborted so the store drops its parts, then its record.
+     * at its key, aborted so the store drops its parts, then its record. A
+     * store that cannot list or abort its multipart uploads leaves them to
+     * the bucket's lifecycle rule and the sweep; the record goes regardless.
      *
      * @return int how many unclaimed uploads were removed
      */
@@ -199,14 +201,22 @@ final readonly class Uploads
         $removed = 0;
 
         foreach ($this->store->expired($now - self::PRUNE_GRACE, $limit) as $upload) {
-            try {
-                if ($this->storage instanceof MultipartStore && str_starts_with($upload->key, UploadEndpoint::PARTIAL_PREFIX . '/')) {
+            if ($this->storage instanceof MultipartStore && str_starts_with($upload->key, UploadEndpoint::PARTIAL_PREFIX . '/')) {
+                try {
                     foreach ($this->storage->multipartUploadsUnder($upload->key, 100) as $begun) {
                         if ($begun['key'] === $upload->key) {
                             $this->storage->abortMultipart($begun['key'], $begun['uploadId']);
                         }
                     }
+                } catch (StorageException) {
+                    // Credentials that may not list or abort, or a store
+                    // that did not answer: the multipart upload is left to
+                    // the bucket's lifecycle rule and the sweep below, as
+                    // one no record names is. Keeping the record for it
+                    // would keep it first in every run's batch, for ever.
                 }
+            }
+            try {
                 $this->storage->delete($upload->key);
             } catch (StorageException) {
                 // Kept, record and all, for the next run: forgetting the

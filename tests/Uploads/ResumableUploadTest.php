@@ -446,6 +446,19 @@ describe('straight to the store, in parts', function () {
             ->and($app->store->all())->toBe([]);
     });
 
+    // Review: a store whose credentials may not list multipart uploads kept
+    // every expired session's record for ever, first in pruning's batch.
+    it('prunes an expired session where the store\'s uploads cannot be listed, leaving them to the lifecycle rule', function () {
+        [$app, $s3] = partsApp(Tinvar\Uploads\UploadQuota::perUser(1000));
+        beginSession($app, 1000, direct: true);
+        $s3->listing = false;
+        $app->now += UploadEndpoint::SESSION_TTL + Uploads::PRUNE_GRACE + 1;
+        $s3->now = $app->now;
+
+        expect($app->uploads->prune())->toBe(1)
+            ->and($app->store->all())->toBe([]);
+    });
+
     // A multipart upload no record names -- a process killed between
     // beginning it and recording it -- is aborted once it is older than
     // any session could be, where the store lists its uploads.
