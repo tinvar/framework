@@ -120,4 +120,20 @@ describe('the daily task', function () {
             ->and(array_unique($outcomes, SORT_REGULAR))->toBe(['shop1.acme.example' => DomainStatus::Verified])
             ->and($dns->asked)->toHaveCount(CustomDomainVerification::BATCH + 30);
     });
+
+    // A whole batch whose records cannot be written stays due, first in
+    // line, and the run ended on it: every domain behind went unchecked.
+    it('checks the domains behind a batch whose every record fails', function () {
+        $hosts = array_map(static fn (int $i): string => \sprintf('s%03d.acme.example', $i), range(1, CustomDomainVerification::BATCH + 30));
+        [$verification, $records, $dns] = verification(array_fill_keys($hosts, TARGET), $hosts);
+        foreach (\array_slice($hosts, 0, CustomDomainVerification::BATCH) as $host) {
+            $records->broken[$host] = true;
+        }
+
+        $result = $verification->verifyDue();
+
+        expect($result['failures'])->toHaveCount(CustomDomainVerification::BATCH)
+            ->and($result['outcomes'])->toHaveCount(30)
+            ->and($dns->asked)->toHaveCount(CustomDomainVerification::BATCH + 30);
+    });
 });

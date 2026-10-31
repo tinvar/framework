@@ -121,7 +121,9 @@ final readonly class CustomDomainVerification
      * that keeps its times to the second does not bring a domain checked in
      * the run's first second back. A domain due() answers again after this
      * run looked at it -- its record was not written -- is not looked at
-     * twice, and a batch of nothing else ends the run.
+     * twice -- each batch is wider by every domain already looked at, so it
+     * still holds a batch of the rest -- and a batch of nothing else ends
+     * the run.
      *
      * @return array{outcomes: array<string, DomainStatus>, failures: array<string, \Throwable>}
      */
@@ -132,8 +134,14 @@ final readonly class CustomDomainVerification
         $failures = [];
 
         while (true) {
+            // A batch wider by every domain already looked at: one whose
+            // record could not be written is still due, and first in line,
+            // and a batch of only those ended the run with every domain
+            // behind them unchecked. However many of them come back first,
+            // a batch's worth of the rest come with them -- and a batch
+            // holding none of the rest means none is left.
             $fresh = array_filter(
-                $this->domains->due($since, self::BATCH),
+                $this->domains->due($since, self::BATCH + \count($outcomes) + \count($failures)),
                 static fn (CustomDomain $d): bool => !isset($outcomes[$d->host]) && !isset($failures[$d->host]),
             );
             if ($fresh === []) {
