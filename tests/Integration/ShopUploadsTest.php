@@ -248,6 +248,22 @@ it('uploads an avatar and a receipt from the account page, and shows them to the
 
         // A storage key never reaches the page.
         expect($again->body())->not->toContain((string) $row['avatar_key']);
+
+        // The receipt removed: by its customer alone, its row and then its
+        // file, and its upload's record with it -- the bytes back in the
+        // customer's quota.
+        $receiptRow = $pdo->query('SELECT id, storage_key FROM receipts WHERE customer_id = ' . $pdo->quote($demo))?->fetch(\PDO::FETCH_ASSOC);
+        $receiptKey = (string) ($receiptRow['storage_key'] ?? '');
+        expect($other->action('account.removeReceipt', ['receipt' => $receiptRow['id']])->status)->toBe(403);
+        $storage->assertExists($receiptKey);
+
+        $removed = $customer->action('account.removeReceipt', ['receipt' => $receiptRow['id']]);
+        expect($removed->status)->toBe(200, $removed->body())
+            ->and(json_decode($removed->body(), true)['revalidated'])->toBe(['shop.account'])
+            ->and($pdo->query('SELECT COUNT(*) FROM receipts')?->fetchColumn())->toBe(0)
+            ->and($pdo->query('SELECT COUNT(*) FROM uploads WHERE storage_key = ' . $pdo->quote($receiptKey))?->fetchColumn())->toBe(0);
+        $storage->assertMissing($receiptKey)->assertCount(1);
+        expect($customer->payload('/account')->body())->toContain('No receipts yet');
     } finally {
         $renderer->stop();
     }
