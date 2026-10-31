@@ -282,6 +282,10 @@ describe('tags', function () {
     it('does not cache, rather than failing, when the tag closure is wrong', function () {
         $store = new ArrayStore();
         $cache = new QueryCache($store, new AuthContext());
+        $reported = [];
+        $cache->reportTo(static function (\Throwable $e) use (&$reported): void {
+            $reported[] = $e;
+        });
         $declaration = new QueryAttribute(
             cache: '1m',
             tags: static function (string $somethingElse): array {
@@ -292,7 +296,26 @@ describe('tags', function () {
         $cache->put('q', $declaration, ['rack' => 'r1'], 'acme', 'value');
 
         expect($store->stats()['entries'])->toBe(0)
-            ->and($cache->failures())->toHaveCount(1);
+            ->and($reported)->toHaveCount(1);
+    });
+
+    // Reported as each happens, and not kept: a worker's cache lives as long
+    // as it does, and a bad tag closure on a hot query fails on every miss.
+    it('reports each failure, and keeps none of them', function () {
+        $cache = new QueryCache(new ArrayStore(), new AuthContext());
+        $count = 0;
+        $cache->reportTo(static function () use (&$count): void {
+            $count++;
+        });
+        $declaration = new QueryAttribute(cache: '1m', tags: static fn (int $n): array => [['nested']]);
+
+        for ($i = 0; $i < 50; $i++) {
+            $cache->get('q', $declaration, ['n' => $i], '');
+            $cache->put('q', $declaration, ['n' => $i], '', 'value');
+        }
+
+        expect($count)->toBe(50)
+            ->and(method_exists($cache, 'failures'))->toBeFalse();
     });
 
     it('invalidates every entry holding a tag', function () {

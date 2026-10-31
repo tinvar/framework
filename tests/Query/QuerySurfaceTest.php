@@ -181,16 +181,20 @@ describe('cache tags', function () {
     });
 
     // A mistyped tag closure is a caching bug. It must not fail the render;
-    // QueryCache records it and declines to cache that one result.
+    // QueryCache reports it and declines to cache that one result.
     it('answers the call when the tag closure returns something other than strings', function () {
         $cache = new QueryCache(new ArrayStore(), new AuthContext());
+        $reported = [];
+        $cache->reportTo(static function (\Throwable $e) use (&$reported): void {
+            $reported[] = $e;
+        });
         $runner = surfaceRunner(new Fixture(racks: 1, unitsPerRack: 1), [MistaggedCachedQuery::class], cache: $cache);
 
         $results = $runner->run([surfaceCall('surface.mistagged')], ['surface.mistagged']);
 
         expect($results[0]['value']['name'])->toBe('mistagged')
             ->and($runner->tagsRead())->toBe([])
-            ->and($cache->failures())->toHaveCount(1)
-            ->and($cache->failures()[0]->getMessage())->toContain('must return strings');
+            ->and($reported)->toHaveCount(1)
+            ->and($reported[0]->getMessage())->toContain('must return strings');
     });
 });

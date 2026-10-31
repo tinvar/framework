@@ -783,6 +783,9 @@ final class Kernel
         $cache ??= new QueryCache(new \Tinvar\Cache\ArrayStore(), $this->auth, $panels, build: $this->builds->current ?? '');
         $this->gate = $gate;
         $this->cache = $cache;
+        // A caching failure answers the call uncached, and is logged where a
+        // failed request is -- never kept for the worker's life.
+        $cache->reportTo($this->report(...));
         // Each lookup and each flag read, for the toolbar's Cache and Flags
         // panels (ADR 0112); a Kernel not built for dev has no toolbar.
         if ($this->toolbar !== null) {

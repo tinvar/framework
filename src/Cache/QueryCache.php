@@ -47,8 +47,8 @@ use Tinvar\Orm\TenantBounds;
  */
 final class QueryCache
 {
-    /** @var list<\Throwable> */
-    private array $failures = [];
+    /** @var (\Closure(\Throwable): mixed)|null where a caching failure is reported: the Kernel's report() */
+    private ?\Closure $report = null;
 
     /**
      * The panel comes from a CONTEXT, not a constructor argument.
@@ -131,6 +131,31 @@ final class QueryCache
         $this->observer = $observer;
     }
 
+    /**
+     * Where a failure seen while caching is reported, as it happens: a store
+     * that cannot answer, a mistyped tag closure or TTL, a flag store that
+     * cannot be read. They do not fail the call -- the data was fine, only
+     * the caching of it was not -- but they must not be silent either, and
+     * nothing is kept of them here: this cache lives as long as its worker.
+     * The Kernel gives its report(); without one, PHP's error log has them.
+     *
+     * @param (\Closure(\Throwable): mixed)|null $report
+     */
+    public function reportTo(?\Closure $report): void
+    {
+        $this->report = $report;
+    }
+
+    private function failed(\Throwable $e): void
+    {
+        if ($this->report !== null) {
+            ($this->report)($e);
+
+            return;
+        }
+        error_log('The query cache failed, and the call was answered uncached: ' . $e::class . ': ' . $e->getMessage());
+    }
+
     public function enabledFor(Query $declaration): bool
     {
         return $declaration->cache !== null;
@@ -211,7 +236,7 @@ final class QueryCache
             $why = 'error';
             // A flag store that cannot answer leaves the answer unproven, and
             // the body runs -- to fail the same way, or to answer.
-            $this->failures[] = $e;
+            $this->failed($e);
 
             return $miss;
         }
@@ -297,7 +322,7 @@ final class QueryCache
             // other result in the tick over it would be the wrong trade; not
             // caching this one is the right one. A flag store that cannot
             // answer leaves the same choice.
-            $this->failures[] = $e;
+            $this->failed($e);
         }
     }
 
@@ -322,19 +347,6 @@ final class QueryCache
     public function forgetTags(array $tags, string $tenant, ?TenantBounds $tenants): int
     {
         return $this->store->forgetTags(TagNamespace::written($tags, $tenant, $tenants));
-    }
-
-    /**
-     * Declaration problems seen while caching, for the dev toolbar.
-     *
-     * They do not fail the request -- the data was fine, only the caching of
-     * it was not -- but they must not be silent either.
-     *
-     * @return list<\Throwable>
-     */
-    public function failures(): array
-    {
-        return $this->failures;
     }
 
     /**
