@@ -169,7 +169,7 @@ final class Limits
             return [];
         }
 
-        if (self::separators($body) > self::MAX_JSON_ELEMENTS) {
+        if (self::elements($body) > self::MAX_JSON_ELEMENTS) {
             throw new HttpException(413, 'Request body has too many fields.', 'body_too_large');
         }
 
@@ -207,7 +207,10 @@ final class Limits
         $bytes = 0;
         $elements = 0;
         $walk = static function (array $level, int $depth) use (&$walk, &$bytes, &$elements, $maxBytes, $maxDepth): void {
-            if ($depth > $maxDepth) {
+            // At $maxDepth, as json_decode() refuses: it counts the object
+            // itself as a level, so the deepest a value may be is one level
+            // short of it -- and a form held otherwise took one level more.
+            if ($depth >= $maxDepth) {
                 throw new HttpException(400, 'Request body nests too deeply.', 'bad_json');
             }
             foreach ($level as $key => $value) {
@@ -232,20 +235,65 @@ final class Limits
     }
 
     /**
-     * The commas and colons outside strings: one per key, and one between
-     * each pair of elements, so an upper bound on what decoding would build.
-     * Strings are dropped first so a comma in a sentence does not count.
-     * Malformed JSON may be miscounted; it is refused by the decoder anyway.
+     * The fields decoding would build, counted as form() counts a parsed
+     * form's -- each key of an object, each element of a list, at every
+     * level -- before anything is decoded. Strings are dropped first so a
+     * comma or a colon in a sentence does not count; then a colon is an
+     * object's key, and a list's elements are its commas and its first.
+     * Counting stops once past the limit. Malformed JSON may be miscounted;
+     * it is refused by the decoder anyway.
      */
-    private static function separators(string $body): int
+    private static function elements(string $body): int
     {
-        $structure = preg_replace('/"(?:[^"\\\\]++|\\\\.)*+"/s', '', $body);
+        $structure = preg_replace('/"(?:[^"\\\\]++|\\\\.)*+"/s', '""', $body);
         if ($structure === null) {
             // The pattern could not run to the end (a backtrack or JIT
             // limit): too strange to decode, rather than too small to count.
             throw new HttpException(400, 'Request body is not valid JSON within the depth limit.', 'bad_json');
         }
 
-        return substr_count($structure, ',') + substr_count($structure, ':');
+        // Every comma, colon and list's first element is at most one field,
+        // so a body with no more of them than the limit needs no closer
+        // count.
+        $bound = substr_count($structure, ',') + substr_count($structure, ':') + substr_count($structure, '[');
+        if ($bound <= self::MAX_JSON_ELEMENTS) {
+            return $bound;
+        }
+
+        $count = 0;
+        $lists = [];
+        $length = \strlen($structure);
+        for ($at = strcspn($structure, '[]{},:'); $at < $length; $at += 1 + strcspn($structure, '[]{},:', $at + 1)) {
+            switch ($structure[$at]) {
+                case '{':
+                    $lists[] = false;
+                    break;
+                case '[':
+                    $lists[] = true;
+                    // Its first element, when it is not empty.
+                    $next = $at + 1 + strspn($structure, " \t\n\r", $at + 1);
+                    if ($next < $length && $structure[$next] !== ']') {
+                        $count++;
+                    }
+                    break;
+                case ']':
+                case '}':
+                    array_pop($lists);
+                    break;
+                case ':':
+                    $count++;
+                    break;
+                case ',':
+                    if ($lists !== [] && $lists[array_key_last($lists)]) {
+                        $count++;
+                    }
+                    break;
+            }
+            if ($count > self::MAX_JSON_ELEMENTS) {
+                break;
+            }
+        }
+
+        return $count;
     }
 }

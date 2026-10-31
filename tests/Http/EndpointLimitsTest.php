@@ -158,8 +158,9 @@ describe('given to the Kernel', function () {
 
         expect(post($kernel, ['pad' => nested(2)]))->toBe(['action' => 200, 'query' => 200])
             ->and(post($kernel, ['pad' => nested(3)]))->toBe(['action' => 400, 'query' => 400])
-            ->and(post($kernel, ['pad' => nested(3)], form: true))->toBe(['action' => 200, 'query' => 200])
-            ->and(post($kernel, ['pad' => nested(4)], form: true))->toBe(['action' => 400, 'query' => 400]);
+            // A form at the same nesting as the JSON: it took one level more.
+            ->and(post($kernel, ['pad' => nested(2)], form: true))->toBe(['action' => 200, 'query' => 200])
+            ->and(post($kernel, ['pad' => nested(3)], form: true))->toBe(['action' => 400, 'query' => 400]);
     });
 
     it('lets both take a deeper body, up to the ceiling', function () {
