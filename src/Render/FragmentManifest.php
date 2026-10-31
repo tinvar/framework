@@ -711,7 +711,17 @@ final class FragmentManifest
      */
     public function boundariesFor(string $route, array $params = []): array
     {
-        return $this->byPage[self::pageKey($route, $params)] ?? [];
+        // A request's params are the visitor's: bytes that are not UTF-8
+        // name no page a build could have made -- the build's own keys are
+        // JSON -- so they find none, rather than throwing out of the
+        // bootstrap endpoint as a 500.
+        try {
+            $page = self::pageKey($route, $params);
+        } catch (\JsonException) {
+            return [];
+        }
+
+        return $this->byPage[$page] ?? [];
     }
 
     /**

@@ -52,3 +52,12 @@ it('lists each route with a built page once', function () {
 
     expect($manifest->pages())->toBe(['docs.page', 'racks.show']);
 });
+
+// A request's params are the visitor's: bytes that are not UTF-8 name no
+// page a build could have made, and are no reason for a 500.
+it('finds no page for params that are not text a key can carry', function () {
+    $manifest = (new FragmentManifest())->declare('docs.page', 'toc', 'Toc', [], ['slug' => 's']);
+
+    expect($manifest->boundariesFor('docs.page', ['slug' => "\xFF"]))->toBe([])
+        ->and($manifest->boundariesFor('docs.page', ['slug' => 's']))->toHaveCount(1);
+});
