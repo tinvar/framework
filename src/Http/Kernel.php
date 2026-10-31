@@ -909,6 +909,10 @@ final class Kernel
         // no-script form's files with.
         /** @var UploadEndpoint|null $inlineUploads */
         $inlineUploads = null;
+        $inlineThrottle = new Pipeline([
+            ...$this->throttleFor($throttle, 'uploads', $limits, byAddress: true, cost: self::filesCarried(...)),
+            ...$this->throttleFor($throttle, 'uploads', $limits, byAddress: false, cost: self::filesCarried(...)),
+        ]);
         $this->actions_ = new ActionEndpoint(
             $this->actionRunner = new ActionRunner(
                 $this->actions,
@@ -933,10 +937,25 @@ final class Kernel
             maxJsonDepth: $maxJsonDepth,
             externalOrigins: new ExternalOrigins(...$redirectOrigins),
             // A form posted without script carries its files to the action
-            // itself, each taken as /_upload takes one (ADR 0127). Read when
+            // itself, each taken as /_upload takes one (ADR 0127) -- and so
+            // counted as one, by the `uploads` throttle, a hit for each file
+            // it carries, on top of the actions' hit for the post. Read when
             // called: the upload endpoint is made below.
-            inlineUploads: $uploads === null ? null : static function (Request $request, string $name, array $input) use (&$inlineUploads): array {
-                return $inlineUploads instanceof UploadEndpoint ? $inlineUploads->takeInline($request, $name, $input) : $input;
+            inlineUploads: $uploads === null ? null : static function (Request $request, string $name, array $input) use (&$inlineUploads, $inlineThrottle): array {
+                if (!$inlineUploads instanceof UploadEndpoint) {
+                    return $input;
+                }
+                if (self::filesCarried($request) === 0) {
+                    return $inlineUploads->takeInline($request, $name, $input);
+                }
+                $taken = $input;
+                $inlineThrottle->run($request, static function (Request $passed) use ($inlineUploads, $name, $input, &$taken): Response {
+                    $taken = $inlineUploads->takeInline($passed, $name, $input);
+
+                    return Response::make(204);
+                });
+
+                return $taken;
             },
         );
 
@@ -2627,6 +2646,12 @@ final class Kernel
         }
 
         return [new ThrottleRequests($throttle, $name, $limits[$name], byAddress: $byAddress, cost: $cost)];
+    }
+
+    /** How many files a request carries, each one an upload to count. */
+    private static function filesCarried(Request $request): int
+    {
+        return \count(array_filter($request->files, static fn (UploadedFile $file): bool => $file->error !== UPLOAD_ERR_NO_FILE));
     }
 
     /**

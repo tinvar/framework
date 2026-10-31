@@ -123,6 +123,20 @@ it('takes no file for a field the action does not have, and keeps no ticket in t
         ->and($app->storage instanceof MemoryStorage ? count($app->storage->keys()) : null)->toBe(1);
 });
 
+// Each file is sniffed, drawn again and scanned, as one sent to /_upload
+// is, so it is counted as one: by the `uploads` throttle, not the actions'.
+it('counts each file against the uploads throttle, as /_upload does', function () {
+    $app = new App(new MemoryStorage(), throttled: true);
+    $post = fn () => postWithoutScript($app, 'profiles.avatar', ['profile' => P1, '_upload_tickets' => ['avatar' => $app->ticket($app->profile(P1))]], ['avatar' => png()]);
+
+    expect($post()->status)->toBe(303)
+        ->and($post()->status)->toBe(303)
+        ->and($post()->status)->toBe(429);
+
+    // A post with no file is no upload, and the actions' throttle alone counts it.
+    expect(postWithoutScript($app, 'profiles.document', ['profile' => P1], [])->status)->toBe(303);
+});
+
 it('keeps no file a validate-only call carries', function () {
     $app = new App(new MemoryStorage());
     $ticket = $app->ticket($app->profile(P1));

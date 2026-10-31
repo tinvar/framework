@@ -262,6 +262,8 @@ final class App
         array $publicPrefixes = [],
         ?\Tinvar\Uploads\UploadQuota $quota = null,
         ?\Tinvar\Uploads\FileScanner $scanner = null,
+        // Counted by a throttle of two uploads, and sixty actions, a minute.
+        bool $throttled = false,
     ) {
         $connection = PdoConnection::sqlite(':memory:', 'test');
         $connection->execute('CREATE TABLE profiles (id TEXT PRIMARY KEY, owner TEXT NOT NULL, avatar_key TEXT NULL)');
@@ -307,6 +309,8 @@ final class App
             globalMiddleware: [SignIn::class],
             container: $this->container,
             uploads: $this->uploads,
+            throttle: $throttled ? new \Tinvar\Http\Throttle(new \Tinvar\Http\ArrayThrottleStore(), $this->auth, static fn (Request $r): string => $r->remoteAddress ?? '') : null,
+            limits: $throttled ? ['uploads' => 2, 'actions' => 60] : Kernel::DEFAULT_LIMITS,
             panels: $this->panels = new PanelContext(),
             panelRegistry: new PanelRegistry(new PanelDefinition('staff')),
         );
