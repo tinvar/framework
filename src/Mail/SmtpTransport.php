@@ -84,7 +84,7 @@ final readonly class SmtpTransport implements Transport
             // the end of the message.
             $data = (string) preg_replace('/^\./m', '..', $data);
             $this->write($socket, $data . ".\r\n");
-            $this->expect($socket, [250]);
+            $this->expect($socket, [250], 'the message');
 
             // Accepted: the message is the server's to deliver now, and
             // nothing after this fails the send. A QUIT that went wrong
@@ -211,7 +211,11 @@ final readonly class SmtpTransport implements Transport
 
         $code = (int) substr($lines[0], 0, 3);
         if (!\in_array($code, $accepted, true)) {
-            throw new MailTransportException("The SMTP server answered {$after} with: " . implode(' / ', $lines));
+            // A 5xx to a reader or to the message is the message's own: sent
+            // again it is refused again. Every other refusal is the server's.
+            $permanent = $code >= 500 && (str_starts_with($after, 'RCPT TO') || $after === 'the message');
+
+            throw new MailTransportException("The SMTP server answered {$after} with: " . implode(' / ', $lines), !$permanent, $code, 'smtp');
         }
 
         return $lines;

@@ -529,6 +529,31 @@ it('fails a send the server refuses, without the credentials in the message', fu
     expect($thrown)->toContain('535 authentication failed')->not->toContain('s3cret')->not->toContain(base64_encode("\0mailer\0s3cret"));
 });
 
+it('says a 5xx to a reader or to the message is the message\'s own, and every other refusal the server\'s', function (array $replies, bool $retryable, int $code) {
+    if (!\function_exists('pcntl_fork')) {
+        test()->markTestSkipped('pcntl is not available.');
+    }
+
+    [$port, $pid, $log] = smtpServer($replies);
+    $transport = new SmtpTransport('127.0.0.1', $port, 'mailer', 's3cret', SmtpTransport::NONE, timeout: 5);
+    try {
+        $transport->send(message());
+        $thrown = null;
+    } catch (MailTransportException $e) {
+        $thrown = $e;
+    } finally {
+        pcntl_waitpid($pid, $status);
+        unlink($log);
+    }
+
+    expect($thrown?->retryable)->toBe($retryable)->and($thrown?->status)->toBe($code)->and($thrown?->transport)->toBe('smtp');
+})->with([
+    'an unknown reader' => [['RCPT' => '550 5.1.1 no such user'], false, 550],
+    'the message refused' => [['.' => '554 5.7.1 rejected as spam'], false, 554],
+    'a reader deferred' => [['RCPT' => '451 4.7.1 try later'], true, 451],
+    'credentials refused' => [['AUTH' => '535 authentication failed'], true, 535],
+]);
+
 it('refuses credentials over a plain connection to anywhere but this machine', function () {
     expect(fn () => new SmtpTransport('smtp.example.test', 25, 'mailer', 's3cret', SmtpTransport::NONE))
         ->toThrow(\InvalidArgumentException::class, 'only over TLS')
