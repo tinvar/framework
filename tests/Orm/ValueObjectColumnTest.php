@@ -677,15 +677,15 @@ describe('what a value object holds, all the way down', function () {
 });
 
 describe('make:migration', function () {
-    it('types a value-object column as its cast stores it, and an enum by its backing', function () {
+    it('types a value-object column as its cast stores it, and an enum as enum(), held to its values', function () {
         $connection = new PdoConnection(new \PDO('sqlite::memory:'));
         $source = (string) (new MigrationGenerator($connection, new SqliteDialect()))->generate([Rack::class], '2026-10-26');
 
         expect($source)->toContain("\$table->json('layout');")
             ->toContain("\$table->json('spare')->nullable();")
             ->toContain("\$table->integer('price');")
-            ->toContain("\$table->string('status')->default('active');")
-            ->toContain("\$table->integer('priority')->nullable();");
+            ->toContain("\$table->enum('status', \\Tinvar\\Tests\\Orm\\ValueObjectColumn\\Status::class)->default('active');")
+            ->toContain("\$table->enum('priority', \\Tinvar\\Tests\\Orm\\ValueObjectColumn\\Priority::class)->nullable();");
     });
 });
 
