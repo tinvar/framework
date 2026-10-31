@@ -141,17 +141,32 @@ final class Console
         $output ??= Output::standard();
 
         try {
-            return match ($name) {
-                'queue:work' => $this->work($arguments, $output),
-                'queue:failed' => $this->failed($output),
-                'queue:retry' => $this->retry($arguments, $output),
-                'queue:hand-back' => $this->handBack($arguments, $output),
-                'queue:prune' => $this->prune($arguments, $output),
-                'schedule:run' => $this->scheduleRun($output),
-                'schedule:work' => $this->scheduleWork($output),
-                'schedule:list' => $this->scheduleList($output),
-                default => $this->command($name, Input::parse($arguments), $output),
-            };
+            if (!\in_array($name, self::BUILT_IN, true)) {
+                return $this->command($name, Input::parse($arguments), $output);
+            }
+
+            try {
+                return match ($name) {
+                    'queue:work' => $this->work($arguments, $output),
+                    'queue:failed' => $this->failed($output),
+                    'queue:retry' => $this->retry($arguments, $output),
+                    'queue:hand-back' => $this->handBack($arguments, $output),
+                    'queue:prune' => $this->prune($arguments, $output),
+                    'schedule:run' => $this->scheduleRun($output),
+                    'schedule:work' => $this->scheduleWork($output),
+                    default => $this->scheduleList($output),
+                };
+            } catch (\InvalidArgumentException $e) {
+                throw $e;
+            } catch (\LogicException $e) {
+                // A built-in asked of an application that has none of what
+                // it runs -- no queue, no schedule -- says so, as a failure,
+                // rather than crashing with a trace. An application's own
+                // command's LogicException is its bug, and goes on up.
+                $output->error($e->getMessage());
+
+                return 1;
+            }
         } catch (\InvalidArgumentException $e) {
             $output->error($e->getMessage());
 
@@ -320,7 +335,7 @@ final class Console
 
         $status = 0;
         foreach ($ids as $id) {
-            if ($queue->retry($id, time())) {
+            if ($queue->retry($id, $this->now()->getTimestamp())) {
                 $output->line("retried {$id}");
             } else {
                 $output->error("No failed job {$id}.");

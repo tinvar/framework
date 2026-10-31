@@ -428,3 +428,37 @@ describe('minutes a scheduler was held past', function () {
         }
     });
 });
+
+// queue:retry made a job available at the system clock's now, past the
+// clock the console was given; and a built-in asked of an application with
+// no queue or schedule threw its LogicException up as a crash.
+it('retries a failed job as of the console\'s clock, and says plainly when the application has no queue', function () {
+    $h = new Harness();
+    $h->queue->push(new \Tinvar\Queue\PendingJob('j1', 'default', 'payload', 100));
+    $reserved = $h->queue->reserve(['default'], 100, 60);
+    \assert($reserved !== null);
+    $h->queue->fail($reserved, 'boom', 100);
+    $at = 2_000_000_000;
+    $err = [];
+    $output = new Output(static function (string $line): void {}, static function (string $line) use (&$err): void {
+        $err[] = $line;
+    });
+    $console = new Console(
+        [],
+        $h->orm,
+        $h->container->resolver(),
+        $h->scope,
+        queue: $h->queue,
+        runner: $h->runner,
+        clock: static fn (): \DateTimeImmutable => new \DateTimeImmutable("@{$at}"),
+    );
+
+    expect($console->run('queue:retry', ['j1'], $output))->toBe(0)
+        ->and($h->queue->reserve(['default'], $at - 1, 60))->toBeNull()
+        ->and($h->queue->reserve(['default'], $at, 60)?->id)->toBe('j1');
+
+    $bare = new Console([], $h->orm, $h->container->resolver(), $h->scope);
+    expect($bare->run('queue:failed', [], $output))->toBe(1)
+        ->and($bare->run('schedule:list', [], $output))->toBe(1)
+        ->and($err)->toBe(['This application has no queue: the console was given no Queue and JobRunner.', 'This application has no schedule: the console was given no Scheduler.']);
+});
