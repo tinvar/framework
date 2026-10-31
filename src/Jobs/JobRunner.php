@@ -184,7 +184,8 @@ final readonly class JobRunner
                 $work = function () use ($envelope, $refusal): void {
                     $this->call($this->job($envelope), 'refused', $this->control($envelope), $refusal);
                 };
-                $this->panels === null ? $work() : $this->outsidePanels($work);
+                $panels = $this->panels;
+                $panels === null ? $work() : $this->outsidePanels(static fn () => $panels->grantedWithin(null, $work));
             });
         }));
     }
@@ -194,6 +195,14 @@ final readonly class JobRunner
     {
         // Never with the subtree granted (ADR 0047): a sync job runs inside
         // the request that dispatched it, whose panel may have granted it.
+        // Nor with that request's membership check in force: the query cache
+        // keys entries by the binding's subtree, and a job was never let in
+        // by it.
+        if ($this->panels !== null) {
+            $panels = $this->panels;
+            $inner = $work;
+            $work = static fn () => $panels->grantedWithin(null, $inner);
+        }
         $this->orm->withoutSubtreeGrant(fn () => $this->orm->actAs($envelope->tenant, function () use ($envelope, $work): void {
             $user = $this->userFor($envelope);
             $this->auth->actingAs($user, function () use ($envelope, $work): void {

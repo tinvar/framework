@@ -17,6 +17,7 @@ namespace Tinvar\Tests\Jobs\CommitsAndLimits;
 use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Query;
 use Tinvar\Auth\AllowAllGate;
+use Tinvar\Auth\PanelBinding;
 use Tinvar\Data\Data;
 use Tinvar\Jobs\Dispatcher;
 use Tinvar\Orm\IdentityMap;
@@ -188,6 +189,23 @@ it('runs a sync job without the subtree its dispatching request was granted', fu
     expect($h->journal()->entries[0]['subtree'])->toBeFalse()
         ->and($h->journal()->entries[0]['tenant'])->toBe('acme')
         ->and($kept)->toBeTrue('the request keeps its own grant once the job is done');
+});
+
+// Nor the membership check that let the request into its panel: the query
+// cache reads a binding's `subtree` to key its entries, and a request's
+// binding left in force keyed a narrowed job's reads as the subtree's.
+it('runs a sync job without the panel grant of the request it runs inside', function () {
+    $h = syncHarness();
+    $binding = new PanelBinding('admin', subtree: true);
+
+    $h->orm->actAs('acme', fn () => $h->panels->within('admin', fn () => $h->panels->grantedWithin(
+        $binding,
+        fn () => $h->orm->grantSubtree(fn () => $h->dispatcher->dispatch(new RecordContext(note: 'sync'))),
+    )));
+
+    expect($h->journal()->entries[0]['panel'])->toBe('admin')
+        ->and($h->journal()->entries[0]['granted'])->toBeNull()
+        ->and($h->journal()->entries[0]['subtree'])->toBeFalse();
 });
 
 it('runs a sync job without the subtree from inside a fiber of a granted request', function () {
