@@ -9,6 +9,9 @@ use Tinvar\Auth\BuildRules;
 use Tinvar\Auth\Violation;
 use Tinvar\Config\Configs;
 use Tinvar\Endpoints\EndpointRegistry;
+use Tinvar\Console\Prompts\Cancelled;
+use Tinvar\Console\Prompts\CannotPrompt;
+use Tinvar\Console\Prompts\Progress;
 use Tinvar\Gateway\GatewayKeys;
 use Tinvar\Generators\AppLayout;
 use Tinvar\Generators\GenerationRefused;
@@ -64,6 +67,12 @@ use Tinvar\Server\ServeCommand;
  * Codegen is tinvar/codegen's, a dev dependency the framework does not
  * name: the application hands its command in, and where a production
  * install left it out, `codegen` says so.
+ *
+ * Commands ask what they were not given, and confirm what destroys, where
+ * a person is there (Prompts, ADR 0144). `--no-interaction` or `-n`,
+ * anywhere on the line, says nobody is: read here, for every command, which
+ * then never sees it. A prompt cancelled with ctrl-c exits 130; one nobody
+ * was there to answer, 64, saying what to pass instead.
  */
 final class AppConsole
 {
@@ -186,15 +195,29 @@ final class AppConsole
     /** @param list<string> $argv the script's own, as PHP hands it over */
     public function run(array $argv): int
     {
-        $command = $argv[1] ?? 'help';
-        $arguments = \array_slice($argv, 2);
+        $line = Prompts::readNoInteraction(\array_slice($argv, 1));
+        $command = $line[0] ?? 'help';
+        $arguments = \array_slice($line, 1);
 
         if (\in_array($command, ['help', '--help', '-h'], true)) {
             return $this->help();
         }
         $known = $this->commands[$command] ?? null;
+        if ($known === null) {
+            return $this->help("Unknown command '{$command}'.");
+        }
 
-        return $known === null ? $this->help("Unknown command '{$command}'.") : ($known['run'])($arguments);
+        try {
+            return ($known['run'])($arguments);
+        } catch (Cancelled $e) {
+            fwrite(STDERR, $e->getMessage() . "\n");
+
+            return Cancelled::STATUS;
+        } catch (CannotPrompt $e) {
+            fwrite(STDERR, $e->getMessage() . "\n");
+
+            return 64;
+        }
     }
 
     /** Whether $name is a command here. */
@@ -347,6 +370,11 @@ final class AppConsole
      * since migrating is how a database comes to be; the rest refuse a
      * missing one rather than make an empty database at a mistyped path.
      *
+     * Where a person is there, what MigrateCommand asks -- a rename, a fresh
+     * migration or a rollback it was not forced to -- is a Prompts confirm,
+     * no by default, and the migrations run under a progress bar, each line
+     * they print above it.
+     *
      * @param list<string> $arguments
      */
     public function migrate(string $command, array $arguments): int
@@ -363,13 +391,48 @@ final class AppConsole
         $connection = $this->connection;
         $script = $this->name;
 
+        // The bar the migrations run under, where one is drawn: what they
+        // print goes above it.
+        $running = new class {
+            public ?Progress $bar = null;
+
+            public function print(string $line, mixed $stream): void
+            {
+                $write = static function () use ($line, $stream): void {
+                    \assert(\is_resource($stream));
+                    fwrite($stream, $line . "\n");
+                };
+                $this->bar === null ? $write() : $this->bar->above($write);
+            }
+        };
+
         return new MigrateCommand(
             static fn (bool $create): Connection => $create || is_file($database)
                 ? PdoConnection::sqlite($database, $connection, create: $create)
                 : throw new MigrationRefused("No database at {$database}; `{$script} migrate` makes one."),
             $this->migrations,
             $this->models,
+            out: static fn (string $line) => $running->print($line, STDOUT),
+            // A failure stops the bar where it is, and is said under it.
+            err: static function (string $line) use ($running): void {
+                $running->bar?->release();
+                $running->bar = null;
+                $running->print($line, STDERR);
+            },
             seeder: $this->seeder,
+            ask: static fn (string $question): bool => Prompts::confirm($question, default: false),
+            progress: static function (string $direction, int $done, int $total, string $name) use ($running): void {
+                if ($done === 0) {
+                    $running->bar = Prompts::progress($direction === 'up' ? 'Migrating' : 'Rolling back', $total)->start();
+
+                    return;
+                }
+                $running->bar?->hint($name)->advance();
+                if ($done === $total) {
+                    $running->bar?->finish();
+                    $running->bar = null;
+                }
+            },
         )->run($command, $rest);
     }
 
@@ -440,8 +503,8 @@ final class AppConsole
         foreach (MakeCommand::COMMANDS as $i => $name) {
             $this->command(
                 $name,
-                $i === 0 ? "make:page <Name> --path=/racks/{rack} [--view=racks/show]\n  make:query <Name> [--model=Rack]\n  make:action <Class> <method> [--model=Rack] [--request]\n  make:model <Name> [--table=racks] [--columns=name:string,heightU:int,notes:?string] [--factory]" : '',
-                $i === 0 ? "Write a page, query, action or model, and what each needs, and register it in the app's lists and route table where each reads as one; every check they write fails closed until you decide otherwise" : '',
+                $i === 0 ? "make:page <Name> --path=/racks/{rack} [--view=racks/show]\n  make:query <Name> [--model=Rack]\n  make:action <Class> <method> [--model=Rack] [--request]\n  make:model <Name> [--table=racks] [--columns=name:string,heightU:int,notes:?string] [--factory] [--migration]" : '',
+                $i === 0 ? "Write a page, query, action or model, and what each needs, and register it in the app's lists and route table where each reads as one; every check they write fails closed until you decide otherwise. Run bare on a terminal, each asks what it needs" : '',
                 fn (array $a): int => $this->generate($name, $a),
             );
         }
@@ -460,7 +523,23 @@ final class AppConsole
             return MakeCommand::FAILED;
         }
 
-        return new MakeCommand($layout, $this->models, registrations: $this->registrations())->run($command, $arguments);
+        return new MakeCommand($layout, $this->models, registrations: $this->registrations(), migrate: $this->makeMigration(...))->run($command, $arguments);
+    }
+
+    /**
+     * make:migration $name, run as this console in a process of its own --
+     * so it loads the model make:model has just written and registered,
+     * which this one never loaded -- on this terminal, to ask what it asks.
+     */
+    private function makeMigration(string $name): int
+    {
+        $command = [...PhpCommand::prefix(), $this->console, 'make:migration', $name];
+        if (!Prompts::interactive()) {
+            $command[] = '--no-interaction';
+        }
+        $process = proc_open($command, [STDIN, STDOUT, STDERR], $pipes);
+
+        return \is_resource($process) ? proc_close($process) : 1;
     }
 
     /**

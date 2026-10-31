@@ -10,6 +10,9 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Console\AppConsole;
 
 use Tinvar\Console\AppConsole;
+use Tinvar\Console\Prompts;
+use Tinvar\Console\Prompts\Cancelled;
+use Tinvar\Console\Prompts\Key;
 use Tinvar\Http\FileBuildStore;
 use Tinvar\Packages\PackagePolicy;
 
@@ -109,3 +112,71 @@ final class ClashesWithAPage
     #[\Tinvar\Attributes\Get('/orders/{id}'), \Tinvar\Attributes\NoAuthorization(reason: 'a fixture')]
     public function show(string $id): void {}
 }
+
+afterEach(function () {
+    Prompts::restore();
+});
+
+it('reads --no-interaction or -n anywhere on the line, the command first or not', function () {
+    $console = console()->command('echo', 'echo', 'Its arguments', static fn (array $a): int => \count($a) + (Prompts::interactive() ? 0 : 10));
+    Prompts::fakeTerminal();
+
+    expect(ran($console, 'echo', 'a')[0])->toBe(1)
+        ->and(ran($console, '-n', 'echo', 'a')[0])->toBe(11);
+});
+
+it('exits 130 when a prompt is cancelled, and 64 when nobody is there to answer one', function () {
+    $console = console()->command('ask', 'ask', 'Asks', static fn (array $a): int => Prompts::text('Name?', required: true) === '' ? 1 : 0);
+
+    Prompts::fakeTerminal([Key::CTRL_C]);
+    expect(ran($console, 'ask')[0])->toBe(Cancelled::STATUS);
+
+    Prompts::fakeTerminal();
+    expect(ran($console, 'ask', '--no-interaction')[0])->toBe(64);
+});
+
+it('confirms migrate:fresh on a terminal, and runs the migrations under a progress bar', function () {
+    $dir = sys_get_temp_dir() . '/tinvar-app-migrate-' . bin2hex(random_bytes(4));
+    mkdir("{$dir}/migrations", 0o755, true);
+    file_put_contents("{$dir}/migrations/2026_10_24_000001_create_notes.php", <<<'PHP'
+        <?php
+
+        declare(strict_types=1);
+
+        use Tinvar\Orm\Migrations\Migration;
+        use Tinvar\Orm\Schema\Schema;
+        use Tinvar\Orm\Schema\Table;
+
+        return new class extends Migration {
+            public function up(Schema $schema): void
+            {
+                $schema->create('notes', function (Table $t): void { $t->uuid('id')->primary(); });
+            }
+        };
+        PHP);
+    $environment = getenv('TINVAR_ENV');
+    putenv('TINVAR_ENV=testing');
+    try {
+        $console = console(['database' => static fn (): string => "{$dir}/app.sqlite", 'migrations' => "{$dir}/migrations"]);
+
+        $terminal = Prompts::fakeTerminal(['y', Key::ENTER]);
+        expect(ran($console, 'migrate:fresh')[0])->toBe(0)
+            ->and($terminal->screen())->toContain('migrate:fresh: drop every table, and every row in them?')->toContain('│ Yes')
+            ->toContain('┌ Migrating')->toContain('1/1')->toContain('2026_10_24_000001_create_notes');
+
+        // No, the default, refuses as a missing --force did.
+        Prompts::fakeTerminal([Key::ENTER]);
+        expect(ran($console, 'migrate:fresh')[0])->toBe(1);
+
+        // Nobody there: no question, and refused without --force as ever.
+        $terminal = Prompts::fakeTerminal();
+        expect(ran($console, 'migrate:fresh', '--no-interaction')[0])->toBe(1)
+            ->and($terminal->output())->toBe('');
+    } finally {
+        putenv($environment === false ? 'TINVAR_ENV' : "TINVAR_ENV={$environment}");
+        array_map(unlink(...), glob("{$dir}/migrations/*") ?: []);
+        rmdir("{$dir}/migrations");
+        @unlink("{$dir}/app.sqlite");
+        rmdir($dir);
+    }
+});
