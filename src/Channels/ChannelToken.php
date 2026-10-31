@@ -27,7 +27,10 @@ use Tinvar\Support\Signer;
  *
  * Short-lived and refreshed as a live token is: each trade at
  * /_live/subscribe runs the channel again and hands the token back with a
- * new expiry, up to a day from the subscription.
+ * new expiry, up to a day from the subscription. One that ran out between
+ * trades -- a tab hidden past its five minutes -- is answered with null,
+ * and the client asks /_channel/{name} for a new subscription, the
+ * channel's checks run afresh, and tells its subscriber of the gap.
  */
 final readonly class ChannelToken
 {
