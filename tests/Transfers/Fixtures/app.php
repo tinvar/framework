@@ -259,6 +259,9 @@ final class App
 {
     public int $now = 1_800_000_000;
 
+    /** Whether queueing a transfer's job throws, as a queue that is down does. */
+    public bool $dispatchFails = false;
+
     public readonly Kernel $kernel;
     public readonly Orm $orm;
     public readonly AuthContext $auth;
@@ -324,7 +327,7 @@ final class App
             $transfers,
             $this->records,
             $this->storage,
-            $dispatcher->dispatch(...),
+            fn (\Tinvar\Jobs\Job $job): string => $this->dispatchFails ? throw new \RuntimeException('The queue is down.') : $dispatcher->dispatch($job),
             $this->notes,
             $origin === null ? null : static fn (Authenticatable $user, string $tenant): string => $origin,
             clock: fn (): int => $this->now,

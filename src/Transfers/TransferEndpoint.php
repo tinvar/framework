@@ -15,6 +15,7 @@ use Tinvar\Http\Pipeline;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Http\UploadedFile;
+use Tinvar\Jobs\Job;
 use Tinvar\Orm\Orm;
 use Tinvar\Render\TenantClaim;
 use Tinvar\Storage\StorageKey;
@@ -130,7 +131,7 @@ final readonly class TransferEndpoint
 
         $record = $this->record($transfer, $format);
         $this->transfers->store->add($record);
-        $this->transfers->dispatch(new RunExport($record->id, $arguments));
+        $this->dispatchFor($record, new RunExport($record->id, $arguments));
 
         return self::accepted($record);
     }
@@ -191,7 +192,7 @@ final readonly class TransferEndpoint
         $record = $record->with(['key' => $key, 'size' => $size, 'expiresAt' => $record->createdAt + self::KEEP_IMPORTS]);
         try {
             $this->transfers->store->add($record);
-            $this->transfers->dispatch(new RunImport($record->id, $arguments));
+            $this->dispatchFor($record, new RunImport($record->id, $arguments));
         } catch (\Throwable $e) {
             // A file with no job is one nothing would ever read, or remove.
             $this->transfers->storage->delete($key);
@@ -200,6 +201,33 @@ final readonly class TransferEndpoint
         }
 
         return self::accepted($record);
+    }
+
+    /**
+     * Queues $job for $record, or fails the record when it cannot be
+     * queued: left `queued`, it would wait for a job that never comes,
+     * shown as waiting and counted against its user's waiting starts until
+     * it went stale.
+     */
+    private function dispatchFor(TransferRecord $record, Job $job): void
+    {
+        try {
+            $this->transfers->dispatch($job);
+        } catch (\Throwable $e) {
+            try {
+                $this->transfers->store->update($record->with([
+                    'status' => TransferRecord::FAILED,
+                    'failure' => 'It could not be started. Start it again.',
+                    'finishedAt' => $this->transfers->now(),
+                    'key' => '',
+                    'expiresAt' => 0,
+                ]));
+            } catch (\Throwable) {
+                // The dispatch's failure is the one reported; the record goes stale in time.
+            }
+
+            throw $e;
+        }
     }
 
     /**

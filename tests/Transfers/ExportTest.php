@@ -319,3 +319,16 @@ describe('/_download', function () {
             ->and($app->orm->actAs('acme', fn (): array => $status?->recent() ?? []))->toBe([]);
     });
 });
+
+// Review: a job that could not be queued left its record queued -- shown
+// as waiting for an hour, and counted against the user's waiting starts.
+it('fails the record of a transfer whose job could not be queued', function (string $kind) {
+    $app = new App();
+    $app->dispatchFails = true;
+
+    $response = $kind === 'export' ? $app->export() : $app->import("widget,stock\n");
+    expect($response->status)->toBe(500)
+        ->and($app->record()->status)->toBe(TransferRecord::FAILED)
+        ->and($app->record()->finishedAt)->toBe($app->now)
+        ->and($app->storage->keys())->toBe([]);
+})->with(['export', 'import']);
