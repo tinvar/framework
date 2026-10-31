@@ -1472,6 +1472,15 @@ final class Kernel
             $this->scope->add('container', $container->endRequest(...));
         }
 
+        // The build history, read once a request: the next one reads it
+        // again, and takes what an operator recorded in between.
+        if ($this->builds !== null) {
+            $this->scope->add('builds', $this->builds->endRequest(...));
+        }
+        if ($fragments !== null && $fragments->builds !== $this->builds) {
+            $this->scope->add('fragment builds', $fragments->builds->endRequest(...));
+        }
+
         // What one page's loaders read is not the next request's.
         $this->scope->add('live', $this->tagsRead->forget(...));
 

@@ -567,6 +567,48 @@ describe('the reset contract', function () {
 
         expect($kernel->scope->names())->toContain('features');
     });
+
+    // A request checks a build at several places; a database store answered
+    // each with a query. Once a request, and the next request reads again.
+    it('reads the build history once a request, and again on the next', function () {
+        $reads = 0;
+        $store = new class ($reads) implements Tinvar\Http\BuildStore {
+            public function __construct(private int &$reads) {}
+
+            public function read(): Tinvar\Http\BuildHistory
+            {
+                $this->reads++;
+
+                return new Tinvar\Http\BuildHistory()->released('b1', 1)->released('b2', 2);
+            }
+
+            public function update(\Closure $change): Tinvar\Http\BuildHistory
+            {
+                return $change($this->read());
+            }
+        };
+        $builds = Tinvar\Http\BuildRegistry::persisted('b2', $store);
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $kernel = new Kernel(
+            orm: new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat()),
+            routes: new RouteRegistry(),
+            queries: new QueryRegistry(),
+            actions: new ActionRegistry(),
+            auth: new AuthContext(),
+            policies: new PolicyRegistry(),
+            resolver: static fn (string $class): object => new $class(),
+            allowedQueries: static fn (Request $r): array => [],
+            builds: $builds,
+        );
+
+        $builds->accepts('b1');
+        $builds->accepts('b2');
+        expect($reads)->toBe(1);
+
+        $kernel->scope->reset();
+        $builds->accepts('b1');
+        expect($reads)->toBe(2);
+    });
 });
 
 /**

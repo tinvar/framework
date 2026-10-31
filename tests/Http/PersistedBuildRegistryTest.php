@@ -98,7 +98,9 @@ describe('a registry read from a store', function () {
         $builds = BuildRegistry::persisted('b3', $store);
         expect($builds->accepts('b1'))->toBeTrue();
 
+        // On the next request.
         record($store, static fn (BuildHistory $h): BuildHistory => $h->revoking('b1'));
+        $builds->endRequest();
 
         expect($builds->accepts('b1'))->toBeFalse()
             ->and($builds->standing('b1'))->toBe(BuildRegistry::REVOKED)
@@ -183,17 +185,19 @@ describe('a registry read from a store', function () {
 
         file_put_contents($store->path . '.tmp', '{broken');
         rename($store->path . '.tmp', $store->path);
+        $builds->endRequest();
 
         expect($builds->accepts('b2'))->toBeFalse()
             ->and($builds->accepts('b3'))->toBeTrue();
 
         unlink($store->path);
         released($store);
+        $builds->endRequest();
 
         expect($builds->accepts('b2'))->toBeTrue();
     });
 
-    it('asks the store on every check, so the store decides what that costs', function () {
+    it('asks the store once a request, however many checks the request makes', function () {
         $reads = 0;
         $store = new class ($reads) implements BuildStore {
             private BuildHistory $history;
@@ -218,8 +222,13 @@ describe('a registry read from a store', function () {
         $builds = BuildRegistry::persisted('b2', $store);
 
         $builds->accepts('b1');
-        $builds->accepts('b1');
+        $builds->accepts('b2');
+        $builds->standing('b1');
+        expect($reads)->toBe(1);
 
+        // The next request asks again.
+        $builds->endRequest();
+        $builds->accepts('b1');
         expect($reads)->toBe(2);
     });
 
@@ -240,13 +249,15 @@ describe('refused everywhere a build is checked', function () {
     it('answers a client navigation on a revoked build with 409 and X-Location', function () {
         $store = store();
         released($store);
-        $versions = new CheckVersion(BuildRegistry::persisted('b3', $store));
+        $builds = BuildRegistry::persisted('b3', $store);
+        $versions = new CheckVersion($builds);
         $next = static fn (Request $r): Response => Response::make(200, 'page');
         $navigation = Request::get('/racks/r-1', ['RSC' => '1', 'X-Version' => 'b1']);
 
         expect($versions->handle($navigation, $next)->status)->toBe(200);
 
         record($store, static fn (BuildHistory $h): BuildHistory => $h->revoking('b1'));
+        $builds->endRequest();
         $refused = $versions->handle($navigation, $next);
 
         expect($refused->status)->toBe(409)
@@ -261,13 +272,14 @@ describe('refused everywhere a build is checked', function () {
         $routes = new RouteRegistry();
         $routes->registerAll([RootLayout::class, SiteLayout::class, RackShowPage::class]);
         $signer = new Signer('test-app-key', FragmentToken::PURPOSE);
+        $builds = BuildRegistry::persisted('b3', $store);
 
         $endpoint = new FragmentEndpoint(
             routes: $routes,
             loaders: new LoaderRunner($orm, static fn (string $c): object => new $c(), new AllowAllGate()),
             orm: $orm,
             signer: $signer,
-            builds: BuildRegistry::persisted('b3', $store),
+            builds: $builds,
             render: static fn (): Response => Response::make(200, 'RSC', ['content-type' => 'text/x-component']),
             sessionId: static fn (Request $r): string => SESSION,
             middlewareResolver: static fn (string $class): Middleware => new $class(),
@@ -289,6 +301,7 @@ describe('refused everywhere a build is checked', function () {
         expect($endpoint->handle($request)->status)->toBe(200);
 
         record($store, static fn (BuildHistory $h): BuildHistory => $h->flooredAt('b3'));
+        $builds->endRequest();
 
         expect(fn () => $endpoint->handle($request))->toThrow(HttpException::class, 'Fragment unavailable');
     });
@@ -304,6 +317,7 @@ describe('refused everywhere a build is checked', function () {
         $routes = new RouteRegistry();
         $routes->registerAll([RootLayout::class, SiteLayout::class, RackShowPage::class]);
         $signer = new Signer('test-app-key', RouteToken::PURPOSE);
+        $builds = BuildRegistry::persisted('b3', $store);
 
         $revalidator = new Revalidator(
             routes: $routes,
@@ -311,7 +325,7 @@ describe('refused everywhere a build is checked', function () {
             signer: $signer,
             orm: $orm,
             render: static fn (LoadedRoute $loaded, Request $r): string => 'payload',
-            builds: BuildRegistry::persisted('b3', $store),
+            builds: $builds,
             middlewareResolver: static fn (string $class): Middleware => new $class(),
             panels: new PanelContext(),
         );
@@ -335,6 +349,7 @@ describe('refused everywhere a build is checked', function () {
         expect($rerender())->toHaveCount(1);
 
         record($store, static fn (BuildHistory $h): BuildHistory => $h->revoking('b2'));
+        $builds->endRequest();
 
         expect($rerender())->toBe([]);
     });

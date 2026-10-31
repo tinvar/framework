@@ -124,8 +124,10 @@ describe('PdoBuildStore', function () {
             $elsewhere = BuildRegistry::persisted('b2', $there, clock: static fn (): int => NOW);
             expect($elsewhere->accepts('b1'))->toBeTrue();
 
-            expect($command->run('build:revoke', ['b1']))->toBe(0)
-                ->and($elsewhere->standing('b1'))->toBe(BuildRegistry::REVOKED)
+            expect($command->run('build:revoke', ['b1']))->toBe(0);
+            // On its next request.
+            $elsewhere->endRequest();
+            expect($elsewhere->standing('b1'))->toBe(BuildRegistry::REVOKED)
                 ->and($elsewhere->accepts('b2'))->toBeTrue();
         });
     })->with(DRIVERS);
@@ -174,8 +176,9 @@ describe('PdoBuildStore', function () {
             $straggler = BuildRegistry::persisted('b2', $there);
             expect($straggler->standing('b2'))->toBe(BuildRegistry::PRUNED);
 
-            expect($command->run('build:revoke', ['b2']))->toBe(0)
-                ->and($there->read()->revoked)->toBe(['b2'])
+            expect($command->run('build:revoke', ['b2']))->toBe(0);
+            $straggler->endRequest();
+            expect($there->read()->revoked)->toBe(['b2'])
                 ->and($straggler->standing('b2'))->toBe(BuildRegistry::REVOKED)
                 ->and(BuildRegistry::persisted('b3', $there)->standing('b2'))->toBe(BuildRegistry::REVOKED);
         });
@@ -265,9 +268,11 @@ describe('PdoBuildStore', function () {
             $pdo->exec($driver === 'pgsql' ? "SELECT pg_terminate_backend({$id})" : "KILL {$id}");
 
             // The read the drop interrupts fails closed...
-            expect($registry->accepts('b1'))->toBeFalse()
-                // ...and the next is answered on a connection of its own.
-                ->and($registry->accepts('b1'))->toBeTrue()
+            $registry->endRequest();
+            expect($registry->accepts('b1'))->toBeFalse();
+            // ...and the next request's is answered on a connection of its own.
+            $registry->endRequest();
+            expect($registry->accepts('b1'))->toBeTrue()
                 ->and($opened)->toHaveCount(2);
         });
     })->with(['pgsql' => ['pgsql'], 'mysql' => ['mysql']]);

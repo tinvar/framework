@@ -116,6 +116,15 @@ final class BuildRegistry
     /** Whether the store could not be read the last time it was asked. */
     private bool $unreadable = false;
 
+    /**
+     * Whether the store has been asked in this request. A request checks a
+     * build at several places -- X-Version, a fragment token, a route token,
+     * one per subscribed topic -- and each asked the store again, which for
+     * a database store was a query per check. Once a request, then, cleared
+     * by endRequest() through the Kernel's RequestScope.
+     */
+    private bool $synced = false;
+
     private int $retainFor = self::RETENTION;
 
     /** @var (\Closure(): int)|null the time now; time() unless a test says otherwise */
@@ -339,6 +348,16 @@ final class BuildRegistry
     }
 
     /**
+     * The request is over: the next check asks the store again, so what an
+     * operator recorded since -- a revocation, a floor -- is in force on the
+     * next request, on a worker booted before it.
+     */
+    public function endRequest(): void
+    {
+        $this->synced = false;
+    }
+
+    /**
      * Rebuilds the retained list, revocations and floor from the store, when
      * it holds a history other than the one they were built from.
      *
@@ -350,9 +369,10 @@ final class BuildRegistry
      */
     private function sync(): void
     {
-        if ($this->store === null) {
+        if ($this->store === null || $this->synced) {
             return;
         }
+        $this->synced = true;
 
         try {
             $history = $this->store->read();
