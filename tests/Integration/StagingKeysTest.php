@@ -84,7 +84,7 @@ it('refuses a signed URL from the other', function () {
 
     expect(new SignedUrls(new Signer(production(), SignedUrls::PURPOSE))->tenantOf($request, now: 1_001))->toBe('tenant-1')
         ->and(new SignedUrls(new Signer(staging(), SignedUrls::PURPOSE))->tenantOf($request, now: 1_001))->toBeNull();
-});
+})->skip(!class_exists(SignedUrls::class), 'tinvar/tenancy is not installed: the framework\'s suite alone runs without it (ADR 0056).');
 
 it('derives the live hub\'s keys apart', function () {
     $production = HubSettings::derive(production());

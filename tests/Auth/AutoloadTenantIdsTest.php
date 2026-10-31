@@ -129,4 +129,7 @@ it('reads the root package\'s composer.json, its autoload and not its autoload-d
     expect($composer->maps(['Shop']))->toBeTrue()
         ->and($composer->named('Order', ['Shop']))->toContain('Shop\Models\Order')
         ->and($composer->named('Shop', ['Tinvar']))->toBe([]);
-});
+})->skip(
+    \Composer\InstalledVersions::getRootPackage()['name'] !== 'tinvar/workspace',
+    'the root package is not the workspace: the framework\'s suite alone runs in a project of its own (ADR 0055).',
+);
