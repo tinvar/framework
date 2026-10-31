@@ -18,6 +18,7 @@ use Tinvar\Render\RendererUser;
 use Tinvar\Render\RenderFailure;
 use Tinvar\Render\SocketTrust;
 use Tinvar\Support\BuildProfile;
+use Tinvar\Support\ChildDescriptors;
 use Tinvar\Support\DevMode;
 use Tinvar\Support\PrivateDirectory;
 
@@ -761,9 +762,13 @@ final class ServeCommand
         // forwards no signal, and the children kept serving the port as
         // orphans; but the system closes the pipe whatever killed it, and
         // each child stops when its input ends.
+        //
+        // And nothing else of this process's: no file, socket or pipe it
+        // holds -- the database, the log, the other children's tethers --
+        // reaches a child, the renderer least of all (ChildDescriptors).
         $logged = $logged && $this->rendererLog !== null;
         $output = $logged ? ['pipe', 'w'] : STDERR;
-        $process = proc_open($command, [0 => ['pipe', 'r'], 1 => $output, 2 => $output], $pipes, $cwd, $env);
+        $process = proc_open($command, ChildDescriptors::closing([0 => ['pipe', 'r'], 1 => $output, 2 => $output]), $pipes, $cwd, $env);
         if (!\is_resource($process)) {
             throw new ServeException('Could not start ' . $command[0] . '.');
         }

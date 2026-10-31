@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Packages;
 
+use Tinvar\Support\ChildDescriptors;
+
 /**
  * Package codemods: scripts an enabled package ships to rewrite the app
  * that uses it, run only when asked, in a sandbox, into a patch.
@@ -361,15 +363,8 @@ final class Codemods
      */
     private static function process(array $command, string $cwd, array $env, int $timeout, int $limit = 1 << 20): array
     {
-        // Every descriptor this process holds above the three is handed on
-        // to a child under its own number unless it was opened
-        // close-on-exec, which PHP's files and sockets are not -- and
-        // php://fd reaches each past open_basedir. So each is given to the
-        // child as /dev/null instead.
-        $spec = [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
-        foreach (self::openDescriptors() as $fd) {
-            $spec[$fd] = ['file', '/dev/null', 'r'];
-        }
+        // Nothing this process holds above the three reaches the child.
+        $spec = ChildDescriptors::closing([0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']]);
         $process = proc_open($command, $spec, $pipes, $cwd, $env);
         if (!\is_resource($process)) {
             throw new \RuntimeException('Cannot start ' . $command[0] . '.');
@@ -412,27 +407,6 @@ final class Codemods
         $exit = $status['running'] ? $code : $status['exitcode'];
 
         return [$killed ? 124 : $exit, $output];
-    }
-
-    /**
-     * The descriptors above 2 this process holds, from /proc/self/fd or
-     * /dev/fd: the listing's own among them, which is harmless to cover.
-     *
-     * @return list<int>
-     */
-    private static function openDescriptors(): array
-    {
-        foreach (['/proc/self/fd', '/dev/fd'] as $directory) {
-            $names = is_dir($directory) ? scandir($directory) : false;
-            if ($names !== false) {
-                $fds = array_map(intval(...), array_filter($names, static fn (string $name): bool => ctype_digit($name) && (int) $name > 2));
-                sort($fds);
-
-                return $fds;
-            }
-        }
-
-        throw new \RuntimeException('Cannot list this process\'s descriptors to keep them from a codemod.');
     }
 
     /** @return list<string> paths relative to $app */

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Server;
 
 use Tinvar\Render\RendererUser;
+use Tinvar\Support\ChildDescriptors;
 use Tinvar\Support\PrivateDirectory;
 
 /**
@@ -70,7 +71,8 @@ final class RendererProcess
 
         $process = proc_open(
             ['node', $bin, $socket, $entry],
-            [0 => ['file', '/dev/null', 'r'], 1 => ['file', $log, 'w'], 2 => ['file', $log, 'a']],
+            // Nothing this process holds reaches the renderer (ChildDescriptors).
+            ChildDescriptors::closing([0 => ['file', '/dev/null', 'r'], 1 => ['file', $log, 'w'], 2 => ['file', $log, 'a']]),
             $pipes,
             $projectRoot,
             [...array_intersect_key(getenv(), array_flip(self::ENV)), 'NODE_ENV' => 'production'],

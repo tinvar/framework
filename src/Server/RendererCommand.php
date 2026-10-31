@@ -8,6 +8,7 @@ use Tinvar\Render\RendererException;
 use Tinvar\Render\RendererHealth;
 use Tinvar\Render\RendererUser;
 use Tinvar\Render\SocketTrust;
+use Tinvar\Support\ChildDescriptors;
 use Tinvar\Support\PrivateDirectory;
 
 /**
@@ -563,6 +564,13 @@ final class RendererCommand
      * this process waits for, and signals must be sent to the pool's own pid,
      * which its directory records -- renderer:stop does.
      *
+     * Neither way hands the sandboxed renderers anything this process holds.
+     * The child is given /dev/null for each (ChildDescriptors). pcntl_exec
+     * keeps every descriptor not close-on-exec, which PHP's are not, and
+     * PHP can close none it did not open as a stream; the supervisor closes
+     * them itself before it starts a renderer (closeInheritedDescriptors()
+     * in @tinvar/renderer's sandbox.js), and the renderers inherit none.
+     *
      * @param list<string>          $arguments
      * @param array<string, string> $env
      * @return int the exit status to leave with
@@ -576,7 +584,7 @@ final class RendererCommand
             return 1;
         }
 
-        $process = proc_open([$program, ...$arguments], [0 => ['file', '/dev/null', 'r'], 1 => STDOUT, 2 => STDERR], $pipes, null, $env);
+        $process = proc_open([$program, ...$arguments], ChildDescriptors::closing([0 => ['file', '/dev/null', 'r'], 1 => STDOUT, 2 => STDERR]), $pipes, null, $env);
         if (!\is_resource($process)) {
             return 1;
         }
