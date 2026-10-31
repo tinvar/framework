@@ -94,3 +94,30 @@ it('refuses a directory that is not an app', function () {
 
     expect($status)->toBe(1);
 });
+
+// Where a person is there, Vite runs under a spinner and its output is
+// given whole once it is done; in a log, it streams as it always has.
+it('runs the build under a spinner where a person is there, and gives its output after', function () {
+    $terminal = \Tinvar\Console\Prompts::fakeTerminal();
+    $output = fopen('php://memory', 'w+');
+    \assert(\is_resource($output));
+    try {
+        $status = ProfileBuildCommand::execute(['sh', '-c', 'echo built 12 kB; exit 3'], sys_get_temp_dir(), ['TINVAR_PROFILE' => 'staging', 'PATH' => (string) getenv('PATH')], $output);
+        rewind($output);
+
+        expect($status)->toBe(3)
+            ->and(stream_get_contents($output))->toBe("built 12 kB\n")
+            ->and($terminal->frames()[0])->toContain('Building for staging: sh -c')
+            ->and($terminal->screen())->toBe('');
+
+        \Tinvar\Console\Prompts::withoutInteraction();
+        $streamed = tmpfile();
+        \assert(\is_resource($streamed));
+        expect(ProfileBuildCommand::execute(['sh', '-c', 'echo streamed'], sys_get_temp_dir(), ['PATH' => (string) getenv('PATH')], $streamed))->toBe(0);
+        rewind($streamed);
+        expect(stream_get_contents($streamed))->toBe("streamed\n")
+            ->and(\count($terminal->frames()))->toBe(2);
+    } finally {
+        \Tinvar\Console\Prompts::restore();
+    }
+});

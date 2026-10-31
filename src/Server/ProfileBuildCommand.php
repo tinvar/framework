@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Server;
 
+use Tinvar\Console\Prompts;
 use Tinvar\Support\BuildProfile;
 use Tinvar\Support\DevMode;
 
@@ -56,12 +57,48 @@ final class ProfileBuildCommand
     }
 
     /**
+     * Runs $command, its output on standard error: as it comes where
+     * nobody watches -- a CI log -- and where a person is there, under a
+     * spinner, then whole once it is done, so its sizes and warnings are
+     * still read.
+     *
      * @param list<string> $command
      * @param array<string, string> $env
+     * @param resource|null $output where the output goes in the end; standard error by default
      */
-    private static function execute(array $command, string $cwd, array $env): int
+    public static function execute(array $command, string $cwd, array $env, $output = null): int
     {
-        $process = proc_open($command, [0 => ['file', '/dev/null', 'r'], 1 => STDERR, 2 => STDERR], $pipes, $cwd, $env);
+        $output ??= STDERR;
+        if (!Prompts::interactive()) {
+            return self::spawn($command, $cwd, $env, $output);
+        }
+
+        $held = tmpfile();
+        if ($held === false) {
+            return self::spawn($command, $cwd, $env, $output);
+        }
+        try {
+            $status = Prompts::spin(
+                static fn (): int => self::spawn($command, $cwd, $env, $held),
+                'Building for ' . ($env[BuildProfile::ENV] ?? BuildProfile::PRODUCTION) . ': ' . implode(' ', $command),
+            );
+        } finally {
+            rewind($held);
+            stream_copy_to_stream($held, $output);
+            fclose($held);
+        }
+
+        return $status;
+    }
+
+    /**
+     * @param list<string> $command
+     * @param array<string, string> $env
+     * @param resource $output
+     */
+    private static function spawn(array $command, string $cwd, array $env, $output): int
+    {
+        $process = proc_open($command, [0 => ['file', '/dev/null', 'r'], 1 => $output, 2 => $output], $pipes, $cwd, $env);
         if (!\is_resource($process)) {
             throw new \RuntimeException('Could not start ' . $command[0] . '.');
         }
