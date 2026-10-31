@@ -6,6 +6,8 @@ namespace Tinvar\Console;
 
 use Tinvar\Attributes\Command as CommandName;
 use Tinvar\Attributes\TenantFrom;
+use Tinvar\Console\Prompts\Cancelled;
+use Tinvar\Console\Prompts\CannotPrompt;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\PanelRegistry;
 use Tinvar\Http\RequestScope;
@@ -28,7 +30,8 @@ use Tinvar\Support\KnownAttributes;
  *
  *   queue:work [options]   run jobs until stopped (see WorkerOptions)
  *   queue:failed           list failed jobs
- *   queue:retry <id|all>   put failed jobs back on their queues
+ *   queue:retry <id|all>   put failed jobs back on their queues; all is
+ *                          confirmed first where a person is there, unless --force
  *   queue:hand-back <file> put back the job a killed worker held (HeldJob), for serve
  *   queue:prune [--days=N] forget batches finished N days ago (7) and lapsed unique locks
  *   schedule:run           run the tasks due this minute, for cron
@@ -139,6 +142,8 @@ final class Console
     public function run(string $name, array $arguments, ?Output $output = null): int
     {
         $output ??= Output::standard();
+        // Read here, for every command: no command sees it, and none asks.
+        $arguments = Prompts::readNoInteraction($arguments);
 
         try {
             if (!\in_array($name, self::BUILT_IN, true)) {
@@ -171,6 +176,11 @@ final class Console
             $output->error($e->getMessage());
 
             return self::USAGE;
+        } catch (Cancelled $e) {
+            // Stopped at a prompt: no failure to report, and nothing done.
+            $output->error($e->getMessage());
+
+            return Cancelled::STATUS;
         }
     }
 
@@ -228,6 +238,10 @@ final class Console
             return $this->telemetry === null
                 ? $this->orm->actAs($tenant, $inPanel)
                 : $this->telemetry->trace("command {$name}", ['tinvar.command' => $name], fn (): int => $this->orm->actAs($tenant, $inPanel));
+        } catch (Cancelled|CannotPrompt $e) {
+            // A person stopping, or a question nobody was there to answer:
+            // no failure for the log -- run() says which, and exits 130 or 64.
+            throw $e;
         } catch (\Throwable $e) {
             $this->reportFailure($e);
             $output->error($e::class . ': ' . $e->getMessage());
@@ -326,11 +340,19 @@ final class Console
     private function retry(array $arguments, Output $output): int
     {
         [$queue] = $this->queueParts();
+        $force = \in_array('--force', $arguments, true);
+        $arguments = array_values(array_diff($arguments, ['--force']));
         $ids = $arguments === ['all']
             ? array_map(static fn ($failure): string => $failure->id, $queue->failed())
             : $arguments;
         if ($ids === []) {
-            throw new \InvalidArgumentException('Usage: tinvar queue:retry <id>... | all');
+            throw new \InvalidArgumentException('Usage: tinvar queue:retry <id>... | all [--force]');
+        }
+        // Every failed job back on its queue at once, to fail again if what
+        // failed them is not fixed: asked where a person is there to say.
+        if ($arguments === ['all'] && !$force && Prompts::canAsk()
+            && !Prompts::confirm(\sprintf('Put all %d failed job(s) back on their queues?', \count($ids)), name: 'retry-all')) {
+            throw new Cancelled('Nothing retried.');
         }
 
         $status = 0;
