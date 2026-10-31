@@ -344,6 +344,31 @@ describe('the checks', function () {
             ->and($text)->toContain("# TYPE tinvar_renderer_renders_total counter\ntinvar_renderer_renders_total{slot=\"0\"} 40\ntinvar_renderer_renders_total{slot=\"1\"} 9");
     });
 
+    // During a rolling restart a slot has two sockets -- the renderer
+    // draining and its replacement (pool.js #replace()) -- and two series
+    // with one label set is an exposition a scraper refuses. The newest is
+    // the slot's: the highest sequence, read as a number.
+    it('reports one renderer per slot during a rolling restart: the newest', function () {
+        if (!\function_exists('pcntl_fork')) {
+            test()->markTestSkipped('pcntl is not available.');
+        }
+        $directory = pool();
+        $pids = renderers([
+            "{$directory}/renderer-0-9.sock" => ['t' => Frame::HEALTHY, 'pid' => 101, 'inFlight' => 3, 'served' => 40],
+            "{$directory}/renderer-0-10.sock" => ['t' => Frame::HEALTHY, 'pid' => 103, 'inFlight' => 0, 'served' => 1],
+        ]);
+        try {
+            $text = new Metrics()->collect(new RendererCheck($directory, new RendererHealth(timeoutSeconds: 1.0)))->exposition();
+        } finally {
+            stop($pids, $directory);
+        }
+
+        expect(substr_count($text, 'tinvar_renderer_up{slot="0"}'))->toBe(1)
+            ->and(substr_count($text, 'tinvar_renderer_renders_total{slot="0"}'))->toBe(1)
+            ->and($text)->toContain('tinvar_renderer_renders_total{slot="0"} 1')
+            ->and($text)->toContain("tinvar_renderers 2\n");
+    });
+
     it('fails when no renderer answers, saying which and why', function () {
         if (!\function_exists('pcntl_fork')) {
             test()->markTestSkipped('pcntl is not available.');

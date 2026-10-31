@@ -87,8 +87,22 @@ final class RendererCheck implements HealthCheck, Collector
             ['name' => 'tinvar_renderers_answering', 'help' => 'Renderers that answered a health check.', 'value' => \count(array_filter($answers, is_array(...)))],
         ];
 
-        foreach ($answers as $socket => $answer) {
-            $slot = ['slot' => self::slot($socket)];
+        // One renderer per slot: during a rolling restart a slot has two
+        // sockets, the renderer draining and its replacement, and two series
+        // of one label set are an exposition a scraper refuses. The newest
+        // -- the highest sequence -- is the slot's.
+        $newest = [];
+        foreach (array_keys($answers) as $socket) {
+            [$slot, $sequence] = self::slotAndSequence($socket);
+            if (!isset($newest[$slot]) || $sequence > $newest[$slot][1]) {
+                $newest[$slot] = [$socket, $sequence];
+            }
+        }
+        ksort($newest, SORT_NATURAL);
+
+        foreach ($newest as [$socket]) {
+            $answer = $answers[$socket];
+            $slot = ['slot' => self::slotAndSequence($socket)[0]];
             $samples[] = ['name' => 'tinvar_renderer_up', 'help' => 'Whether a renderer answered a health check.', 'labels' => $slot, 'value' => \is_array($answer) ? 1 : 0];
             if (!\is_array($answer)) {
                 continue;
@@ -108,11 +122,13 @@ final class RendererCheck implements HealthCheck, Collector
 
     /**
      * A pool's socket by its slot -- `renderer-<slot>-<sequence>.sock`, the
-     * sequence changing with each replacement -- and a lone renderer's as
-     * `0`, there being one slot.
+     * sequence changing with each replacement, and growing (pool.js
+     * #launch()) -- and a lone renderer's as `0`, there being one slot.
+     *
+     * @return array{string, int} the slot, and the sequence
      */
-    private static function slot(string $socket): string
+    private static function slotAndSequence(string $socket): array
     {
-        return preg_match('/^renderer-(\d{1,4})-\d+\.sock\z/', basename($socket), $m) === 1 ? $m[1] : '0';
+        return preg_match('/^renderer-(\d{1,4})-(\d{1,18})\.sock\z/', basename($socket), $m) === 1 ? [$m[1], (int) $m[2]] : ['0', 0];
     }
 }
