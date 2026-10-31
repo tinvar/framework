@@ -92,7 +92,35 @@ it('runs no install script and nothing it fetched when an app is made', function
     \assert(\is_array($composer));
 
     expect($composer['scripts']['post-create-project-cmd'] ?? null)->toBe(['@php bin/tinvar setup'])
-        ->and(read('packages/skeleton/bin/tinvar'))->toContain("'install', '--ignore-scripts'");
+        ->and(read('packages/skeleton/bin/tinvar'))->toContain("'ci', '--ignore-scripts'")
+        ->and(read('packages/skeleton/bin/tinvar'))->not->toContain("'install', '--ignore-scripts'");
+});
+
+// ADR 0138: the skeleton ships its lock, and setup installs from it with
+// npm ci -- but not while it would fetch @tinvar/react or @tinvar/renderer
+// from a registry, where nobody holds the scope and anyone may publish
+// under their names. As shipped, before they are published, the check
+// refuses it for exactly that and nothing else.
+it('ships a lock its own check refuses only for leaving @tinvar/* to a registry', function () {
+    $kernel = read('packages/skeleton/app/Kernel.php');
+    expect($kernel)->toContain("unpublished: ['@tinvar/*']")
+        ->and(read('packages/skeleton/bin/tinvar'))->toContain('new SupplyChain($root, Kernel::packages())->check()');
+
+    $policy = new \Tinvar\Packages\PackagePolicy(
+        installScripts: ['fsevents' => 'As the skeleton allows it.'],
+        registries: [\Tinvar\Packages\PackagePolicy::NPM_REGISTRY, 'https://design.chopper.dev/packages/'],
+        unpublished: ['@tinvar/*'],
+    );
+    // composer.lock is written by create-project, before setup runs.
+    $violations = array_values(array_diff(new \Tinvar\Packages\SupplyChain(ROOT . '/packages/skeleton', $policy)->check(), ['composer.lock is missing.']));
+
+    expect($violations)->toHaveCount(2)
+        ->and($violations[0])->toStartWith('package.json depends on @tinvar/react, which PackagePolicy::$unpublished says no registry serves yet')
+        ->and($violations[1])->toStartWith('package.json depends on @tinvar/renderer, which PackagePolicy::$unpublished says no registry serves yet');
+
+    $lock = json_decode(read('packages/skeleton/package-lock.json'), true);
+    \assert(\is_array($lock) && \is_array($lock['packages']));
+    expect(array_filter(array_keys($lock['packages']), static fn (string $path): bool => str_contains($path, '@tinvar/')))->toBe([]);
 });
 
 /** The Caddyfile's handler for PHP, comments and blank lines taken out. */
