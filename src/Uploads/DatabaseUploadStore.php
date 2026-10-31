@@ -66,21 +66,10 @@ final readonly class DatabaseUploadStore implements UploadStore
             $uploads->index(['claimed_at', 'expires_at'], "{$table}_unclaimed");
             $uploads->index(['owner_hash'], "{$table}_owner");
             // What removing a file by its key looks up (Uploads::discard()).
+            // A table made before has none, and finds it by scanning: an
+            // application that keeps many claims (a quota) adds it.
             $uploads->index(['storage_key'], "{$table}_key");
         }, $ifNotExists);
-    }
-
-    /**
-     * The index removing a file by its key looks up, for a table define()
-     * made before Uploads::discard() did: an application's migration calls
-     * this once.
-     */
-    public static function indexKeys(Schema $schema, string $table = 'uploads'): void
-    {
-        new self($schema->connection(), $table);
-        $schema->table($table, static function (Table $uploads) use ($table): void {
-            $uploads->index(['storage_key'], "{$table}_key");
-        });
     }
 
     /**
