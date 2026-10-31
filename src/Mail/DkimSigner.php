@@ -39,6 +39,9 @@ final readonly class DkimSigner
 
     public string $selector;
 
+    /** @var list<string> */
+    private array $headers;
+
     public function __construct(string $domain, string $selector, private DkimKey $key)
     {
         $this->domain = strtolower($domain);
@@ -49,6 +52,25 @@ final readonly class DkimSigner
         if (preg_match(self::SELECTOR, $this->selector) !== 1 || \strlen($this->selector) > 63) {
             throw new \InvalidArgumentException("'{$selector}' is not a DKIM selector: DNS labels.");
         }
+        $this->headers = self::HEADERS;
+    }
+
+    /**
+     * The same signer, leaving $names out of what it covers: for a relay that
+     * rewrites them, as SES rewrites Date and Message-ID -- a signature over
+     * either would break on the way. Only those two may be left out; From,
+     * the subject, the readers and the unsubscribe headers are always
+     * covered.
+     */
+    public function excluding(string ...$names): self
+    {
+        $names = array_map(strtolower(...), $names);
+        $allowed = array_diff($names, ['date', 'message-id']);
+        if ($allowed !== []) {
+            throw new \InvalidArgumentException('A DKIM signature may leave out Date and Message-ID, and no other header.');
+        }
+
+        return clone($this, ['headers' => array_values(array_diff(self::HEADERS, $names))]);
     }
 
     /** The signer DkimConfig names, or null where it names none. */
@@ -73,7 +95,7 @@ final readonly class DkimSigner
 
         $fields = self::fields($head);
         $names = [];
-        foreach (self::HEADERS as $name) {
+        foreach ($this->headers as $name) {
             $present = \count(array_filter($fields, static fn (array $field): bool => $field[0] === $name));
             array_push($names, ...array_fill(0, $present + 1, $name));
         }

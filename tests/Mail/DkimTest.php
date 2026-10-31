@@ -177,6 +177,21 @@ it('signs what MimeMessage writes, covering List-Unsubscribe and its one-click P
         ->and(verifies(str_replace("Subject: Pellwick", "Subject:  Pellwick", $mime), $key))->toBeTrue();
 })->with(['ed25519', 'rsa']);
 
+it('leaves Date and Message-ID out of what it covers for a relay that rewrites them, and nothing else', function () {
+    $key = DkimKey::parse(base64_encode(random_bytes(32)));
+    $signer = new DkimSigner('pellwick.example', 'mail2026', $key)->excluding('Date', 'Message-ID');
+    $mime = MimeMessage::build(marketing(), 'pellwick.example', 1_800_000_000, $signer);
+    [$head] = explode("\r\n\r\n", $mime, 2);
+    $signature = str_replace("\r\n", '', DkimSigner::fields($head . "\r\n")[0][1]);
+
+    // SES writes its own Date and Message-ID: the signature still verifies.
+    $rewritten = (string) preg_replace(['/\r\nDate: [^\r]+/', '/\r\nMessage-ID: [^\r]+/'], ["\r\nDate: Mon, 01 Jan 2029 00:00:00 +0000", "\r\nMessage-ID: <ses@email.amazonses.com>"], $mime);
+    expect($signature)->not->toContain('date')->not->toContain('message-id')->toContain('from: from:')
+        ->and(verifies($rewritten, $key))->toBeTrue()
+        ->and(fn () => $signer->excluding('From'))->toThrow(\InvalidArgumentException::class)
+        ->and(fn () => $signer->excluding('list-unsubscribe'))->toThrow(\InvalidArgumentException::class);
+});
+
 it('refuses to sign mail from a domain it does not sign for', function () {
     $signer = new DkimSigner('pellwick.example', 'mail', DkimKey::parse(RFC_ED25519));
 
