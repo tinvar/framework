@@ -194,6 +194,19 @@ describe('a sign-in link', function () {
             ->and(fn () => $links->issue('admin', ORIGIN, '/l', '', new User('u-1')))->toThrow(\InvalidArgumentException::class);
     });
 
+    // One validator for an emailed link's origin and a realm's, the
+    // stricter: the two had drifted, and an address literal a realm refused
+    // was an origin a link was built on.
+    it('is built on an origin a realm could be, https: no address literal, no second spelling', function () {
+        $links = links(new ArrayEmailLinkStore(), new Users());
+
+        foreach (['https://127.0.0.1', 'https://[::1]', 'https://Shop.example', 'https://shop.example.', 'https://shop.example:443', 'http://localhost:8080'] as $origin) {
+            expect(fn () => $links->issue(EmailLinks::SIGN_IN, $origin, '/l', '', new User('u-1')))->toThrow(\InvalidArgumentException::class, $origin);
+        }
+        expect(CanonicalOrigins::origin('https://shop.example:8443'))->toBe('https://shop.example:8443')
+            ->and(Realm::hostOf('https://shop.example:8443'))->toBe('shop.example');
+    });
+
     it('is used by one of two racing for it', function () {
         $path = sys_get_temp_dir() . '/tinvar-email-links-' . bin2hex(random_bytes(4)) . '.sqlite';
         try {

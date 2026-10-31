@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Tinvar\Identity;
 
-use Tinvar\Http\HostName;
-
 /**
  * One host's authentication realm: the origin a session made there belongs
  * to, the tenant and panel that session is for, and whether the platform
@@ -108,22 +106,6 @@ final readonly class Realm
      */
     public static function hostOf(string $origin): ?string
     {
-        if (preg_match('#^(https?)://([^/:?\#@]+)(?::([1-9][0-9]{0,4}))?\z#', $origin, $m) !== 1) {
-            return null;
-        }
-        [, $scheme, $host] = $m;
-        $port = $m[3] ?? '';
-
-        if (HostName::normalize($host) !== $host || ($port !== '' && (int) $port > 65535)) {
-            return null;
-        }
-        if (($scheme === 'https' && $port === '443') || ($scheme === 'http' && $port === '80')) {
-            return null;
-        }
-        if ($scheme === 'http' && $host !== 'localhost' && !str_ends_with($host, '.localhost')) {
-            return null;
-        }
-
-        return $host;
+        return BrowserOrigin::hostOf($origin, localHttp: true);
     }
 }
