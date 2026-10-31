@@ -236,6 +236,20 @@ describe('a unique job', function () {
             ->and($h->dispatcher->dispatch(new UniqueBreaks()))->not->toBe($first);
     })->with(queues());
 
+    // Review: refusing a copy settled it as the original -- its lock given
+    // back, its chain's catch queued, its batch cancelled.
+    it('keeps its lock when a copy of its payload, under another id, is refused', function (\Closure $make) {
+        $h = harness($make);
+        $first = $h->dispatcher->dispatch(new SyncAccount('a-1'));
+        $payload = (string) $h->queue->reserve(['default'], $h->now, 60)?->payload;
+        $h->queue->push(new \Tinvar\Queue\PendingJob('copied-' . $first, 'copies', $payload, $h->now));
+        $copy = $h->queue->reserve(['copies'], $h->now, 60);
+        \assert($copy !== null);
+
+        expect($h->worker->process($copy))->toBe('failed')
+            ->and($h->dispatcher->dispatch(new SyncAccount('a-1')))->toBe($first, 'the original still holds its lock');
+    })->with(queues());
+
     it('keeps no word of what it is about: its key is a digest', function () {
         $fixture = new TenantFixture();
         $queue = databaseQueue($fixture->connection);

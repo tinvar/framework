@@ -518,6 +518,14 @@ final class Worker
             return $this->queue->release($job, $this->now() + $options->backoffAfter($job->attempts)) ? 'released' : 'lost';
         }
 
+        // A copy of another job's sealed payload, under an id of its own:
+        // the row is failed, and nothing else. What follows a job's end --
+        // its lock, its chain, its batch -- and its hooks are the original's,
+        // which is still queued, or has run, under its own id.
+        if ($error instanceof JobRefused && $error->reason === 'id_mismatch') {
+            return $this->queue->fail($job, self::describe($error), $this->now()) ? 'failed' : 'lost';
+        }
+
         if (!$this->settle($envelope, false, fn (): bool => $this->queue->fail($job, self::describe($error), $this->now()))) {
             return 'lost';
         }

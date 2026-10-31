@@ -254,6 +254,21 @@ it('refuses a sealed payload queued under another id than the one it seals', fun
         ->and(queueOf($h)->failed()[0]->error)->toContain('sealed for job');
 });
 
+it('runs neither hook of the original for a copy of its payload it refuses', function () {
+    $h = new Harness();
+    $h->users->epochs = ['u1' => 'e1'];
+    $h->auth->actingAs(new User('u1'), fn () => $h->dispatcher->dispatch(new TellsRefusal('original')), 'e1');
+    $original = queueOf($h)->pushed()[0];
+    $h->queue->push(new \Tinvar\Queue\PendingJob('copied-' . $original->id, 'copies', $original->payload, $h->now));
+    Hooks::$failed = [];
+
+    $copy = $h->queue->reserve(['copies'], $h->now, 60);
+    \assert($copy !== null);
+    expect($h->worker->process($copy))->toBe('failed')
+        ->and($h->journal()->entries)->toBe([], 'no refused() hook for the copy')
+        ->and(Hooks::$failed)->toBe([]);
+});
+
 it('resets the identity map, the user, the tenant, request-lived services and a transaction left open between jobs', function () {
     $h = new Harness();
     $h->dispatcher->dispatch(new RecordContext(note: 'first'));
