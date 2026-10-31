@@ -148,3 +148,12 @@ it('reads the imports inside a braced namespace', function () {
     expect(sharedGapViolations(Tinvar\Tests\Auth\Fixtures\CallGraphBraced\ThroughBracedImport::class))
         ->toContain(G\Secret::class . "::who(), which calls '->user('");
 });
+
+it('reads the constructor of an application class the query is handed, and of what that class is handed', function () {
+    expect(sharedGapViolations(G\ThroughInjectedConstructor::class))
+        ->toContain(G\GreetsOnConstruction::class . "::__construct(), which calls '->user('")
+        ->and(sharedGapViolations(G\ThroughTwoInjections::class))
+        ->toContain(G\GreetsOnConstruction::class . "::__construct(), which calls '->user('")
+        ->and(sharedGapViolations(G\ThroughInjectedContainerRead::class))
+        ->toContain(G\ResolvesTheUser::class . "::__construct(), which calls 'AuthContext'");
+});

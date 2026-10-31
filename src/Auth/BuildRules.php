@@ -862,6 +862,27 @@ final class BuildRules
     {
         $class = $reflection->getName();
         $graph = CallGraph::walk($class, [Query::entryMethodOf($class), '__construct']);
+
+        // And the constructor of every application class it is handed, and
+        // of every one those are handed: nothing in the query calls them, the
+        // container does, so the walk from its own methods never reached a
+        // helper that read the user while it was built and kept the answer.
+        foreach (self::injectedApplicationClasses($class) as $injected) {
+            // One the type walk already refuses is said once, by it.
+            if (self::userDependentDependencies($injected, []) !== []) {
+                continue;
+            }
+            $more = CallGraph::walk($injected, ['__construct']);
+            $graph = [
+                'reached' => [...$graph['reached'], ...$more['reached']],
+                'refused' => [...$graph['refused'], ...$more['refused']],
+                'receivers' => [...$graph['receivers'], ...$more['receivers']],
+            ];
+        }
+        // A constructor the query also reaches itself -- by `new` -- once.
+        foreach ($graph as $part => $entries) {
+            $graph[$part] = array_values(array_column($entries, null, 'where'));
+        }
         $file = $reflection->getFileName();
         $start = $reflection->getStartLine();
         $end = $reflection->getEndLine();
@@ -910,6 +931,46 @@ final class BuildRules
         }
 
         return $violations;
+    }
+
+    /**
+     * The application classes reachable by injection from $class, along the
+     * dependencies userDependentDependencies() visits: its constructor's and
+     * entry point's parameters, and each of theirs, transitively -- every
+     * class the walk would enter (CallGraph::enters()), and not one already
+     * named a read of the user by its type.
+     *
+     * @param class-string       $class
+     * @param array<string, true> $visited
+     * @return list<class-string>
+     */
+    private static function injectedApplicationClasses(string $class, array &$visited = []): array
+    {
+        if (isset($visited[$class]) || !class_exists($class)) {
+            return [];
+        }
+        $visited[$class] = true;
+
+        $reflection = new \ReflectionClass($class);
+        $found = [];
+        foreach ([...($reflection->getConstructor()?->getParameters() ?? []), ...self::entryParametersOf($reflection)] as $parameter) {
+            foreach (self::namedTypesOf($parameter) as $name) {
+                if ($name === \Tinvar\Features\FlagReader::class || isset($visited[$name])) {
+                    continue;
+                }
+                foreach (array_keys(self::USER_DEPENDENT_TYPES) as $forbidden) {
+                    if (is_a($name, $forbidden, true)) {
+                        continue 2;
+                    }
+                }
+                if (CallGraph::enters($name)) {
+                    $found[] = $name;
+                }
+                $found = [...$found, ...self::injectedApplicationClasses($name, $visited)];
+            }
+        }
+
+        return array_values(array_unique($found));
     }
 
     /**

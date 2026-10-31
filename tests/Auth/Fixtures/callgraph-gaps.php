@@ -301,3 +301,69 @@ final class ThroughUnknownFunction
         return missing_function();
     }
 }
+
+/** A helper that reads the user while the container builds it, and keeps the answer. */
+final class GreetsOnConstruction
+{
+    private string $name;
+
+    public function __construct()
+    {
+        $this->name = (string) Context::$auth?->user()?->authIdentifier();
+    }
+
+    public function name(): string
+    {
+        return $this->name;
+    }
+}
+
+/** A helper handed one that does: two injections away from the query. */
+final class HoldsAGreeter
+{
+    public function __construct(public readonly GreetsOnConstruction $greeter) {}
+}
+
+/** A helper reading the user from the container it is handed, as it is built. */
+final class ResolvesTheUser
+{
+    public readonly string $name;
+
+    public function __construct(\Tinvar\Container\Container $container)
+    {
+        $this->name = (string) $container->get(\Tinvar\Auth\AuthContext::class)->id();
+    }
+}
+
+#[Query(name: 'gaps.injected-constructor', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
+final class ThroughInjectedConstructor
+{
+    public function __construct(private readonly GreetsOnConstruction $greeter) {}
+
+    public function __invoke(): string
+    {
+        return $this->greeter->name();
+    }
+}
+
+#[Query(name: 'gaps.injected-twice', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
+final class ThroughTwoInjections
+{
+    public function __construct(private readonly HoldsAGreeter $holder) {}
+
+    public function __invoke(): string
+    {
+        return $this->holder->greeter->name();
+    }
+}
+
+#[Query(name: 'gaps.injected-container', cache: '1m', shared: true), NoAuthorization(reason: 'fixture: the shared rule is what is under test')]
+final class ThroughInjectedContainerRead
+{
+    public function __construct(private readonly ResolvesTheUser $users) {}
+
+    public function __invoke(): string
+    {
+        return $this->users->name;
+    }
+}

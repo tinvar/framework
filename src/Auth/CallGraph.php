@@ -2360,6 +2360,20 @@ final class CallGraph
         return null;
     }
 
+    /**
+     * Whether the walk would enter $class's methods: a class the application
+     * wrote, not the framework's nor a dependency's.
+     */
+    public static function enters(string $class): bool
+    {
+        if (!class_exists($class)) {
+            return false;
+        }
+        $file = new \ReflectionClass($class)->getFileName();
+
+        return $file !== false && !self::isFramework($file);
+    }
+
     /** Whether a file is the framework's own, or a dependency's: where the walk stops. */
     private static function isFramework(string $file): bool
     {
