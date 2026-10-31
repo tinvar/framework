@@ -53,25 +53,6 @@ final class Throttle
     }
 
     /**
-     * Records a hit against every bucket that applies.
-     *
-     * @param string $name   the bucket, e.g. 'actions'
-     * @param int    $limit  hits allowed per window
-     * @param int    $window seconds
-     */
-    public function hit(string $name, Request $request, int $limit, int $window): ThrottleResult
-    {
-        $results = [$this->hitAddress($name, $request, $limit, $window)];
-
-        $user = $this->auth->id();
-        if ($user !== null) {
-            $results[] = $this->hitUser($name, $limit, $window);
-        }
-
-        return self::strictest($results);
-    }
-
-    /**
      * The address half, which needs nothing to have run first.
      *
      * Split out so it can go OUTERMOST, before session and tenant

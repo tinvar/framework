@@ -76,11 +76,11 @@ describe('the client address', function () {
         $throttle = new Throttle(new ArrayThrottleStore(), new AuthContext(), $proxies->clientAddress(...));
 
         foreach (range(1, 3) as $_) {
-            $throttle->hit('sign-in', proxied('10.1.2.3', '198.51.100.1'), 3, 60);
+            $throttle->hitAddress('sign-in', proxied('10.1.2.3', '198.51.100.1'), 3, 60);
         }
 
-        expect($throttle->hit('sign-in', proxied('10.1.2.3', '198.51.100.1'), 3, 60)->allowed)->toBeFalse()
-            ->and($throttle->hit('sign-in', proxied('10.1.2.3', '198.51.100.2'), 3, 60)->allowed)->toBeTrue()
+        expect($throttle->hitAddress('sign-in', proxied('10.1.2.3', '198.51.100.1'), 3, 60)->allowed)->toBeFalse()
+            ->and($throttle->hitAddress('sign-in', proxied('10.1.2.3', '198.51.100.2'), 3, 60)->allowed)->toBeTrue()
             ->and($throttle->addressFor(proxied('10.1.2.3', 'unknown')))->toBe(Throttle::UNIDENTIFIED);
     });
 });

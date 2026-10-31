@@ -35,23 +35,32 @@ function throttle(?int &$now = null): array
     ];
 }
 
+/**
+ * A hit counted as ThrottleRequests counts it: the address outermost, the
+ * account once the session is known, and the stricter answer.
+ */
+function throttleHit(Throttle $throttle, string $name, Request $request, int $limit, int $window): Tinvar\Http\ThrottleResult
+{
+    return Throttle::strictest([$throttle->hitAddress($name, $request, $limit, $window), $throttle->hitUser($name, $limit, $window)]);
+}
+
 describe('counting', function () {
     it('allows up to the limit and refuses past it', function () {
         [$throttle] = throttle();
         $request = Request::post('/_action/x');
 
-        expect($throttle->hit('actions', $request, 3, 60)->allowed)->toBeTrue()
-            ->and($throttle->hit('actions', $request, 3, 60)->allowed)->toBeTrue()
-            ->and($throttle->hit('actions', $request, 3, 60)->allowed)->toBeTrue()
-            ->and($throttle->hit('actions', $request, 3, 60)->allowed)->toBeFalse();
+        expect(throttleHit($throttle, 'actions', $request, 3, 60)->allowed)->toBeTrue()
+            ->and(throttleHit($throttle, 'actions', $request, 3, 60)->allowed)->toBeTrue()
+            ->and(throttleHit($throttle, 'actions', $request, 3, 60)->allowed)->toBeTrue()
+            ->and(throttleHit($throttle, 'actions', $request, 3, 60)->allowed)->toBeFalse();
     });
 
     it('reports what is left', function () {
         [$throttle] = throttle();
         $request = Request::post('/_action/x');
 
-        $throttle->hit('actions', $request, 5, 60);
-        $result = $throttle->hit('actions', $request, 5, 60);
+        throttleHit($throttle, 'actions', $request, 5, 60);
+        $result = throttleHit($throttle, 'actions', $request, 5, 60);
 
         expect($result->remaining)->toBe(3)
             ->and($result->limit)->toBe(5);
@@ -63,21 +72,21 @@ describe('counting', function () {
         [$throttle] = throttle($now);
         $request = Request::post('/_action/x');
 
-        $throttle->hit('actions', $request, 1, 60);
-        expect($throttle->hit('actions', $request, 1, 60)->allowed)->toBeFalse();
+        throttleHit($throttle, 'actions', $request, 1, 60);
+        expect(throttleHit($throttle, 'actions', $request, 1, 60)->allowed)->toBeFalse();
 
         $now += 61;
 
-        expect($throttle->hit('actions', $request, 1, 60)->allowed)->toBeTrue();
+        expect(throttleHit($throttle, 'actions', $request, 1, 60)->allowed)->toBeTrue();
     });
 
     it('keeps separate buckets per name', function () {
         [$throttle] = throttle();
         $request = Request::post('/_action/x');
 
-        $throttle->hit('actions', $request, 1, 60);
+        throttleHit($throttle, 'actions', $request, 1, 60);
 
-        expect($throttle->hit('fragments', $request, 1, 60)->allowed)
+        expect(throttleHit($throttle, 'fragments', $request, 1, 60)->allowed)
             ->toBeTrue('a fragment limit is not spent by an action');
     });
 });
@@ -94,10 +103,10 @@ describe('who a limit is keyed to', function () {
         $first = new Request('POST', '/_action/x', ['x-forwarded-for' => '198.51.100.1']);
         $second = new Request('POST', '/_action/x', ['x-forwarded-for' => '198.51.100.2']);
 
-        $throttle->hit('actions', $first, 1, 60);
+        throttleHit($throttle, 'actions', $first, 1, 60);
 
-        expect($throttle->hit('actions', $first, 1, 60)->allowed)->toBeFalse()
-            ->and($throttle->hit('actions', $second, 1, 60)->allowed)
+        expect(throttleHit($throttle, 'actions', $first, 1, 60)->allowed)->toBeFalse()
+            ->and(throttleHit($throttle, 'actions', $second, 1, 60)->allowed)
             ->toBeTrue('another address has its own budget');
     });
 
@@ -108,9 +117,9 @@ describe('who a limit is keyed to', function () {
         $first = new Request('POST', '/_action/x', ['x-forwarded-for' => '198.51.100.1']);
         $second = new Request('POST', '/_action/x', ['x-forwarded-for' => '203.0.113.9']);
 
-        $throttle->hit('actions', $first, 1, 60);
+        throttleHit($throttle, 'actions', $first, 1, 60);
 
-        expect($throttle->hit('actions', $second, 1, 60)->allowed)
+        expect(throttleHit($throttle, 'actions', $second, 1, 60)->allowed)
             ->toBeFalse('changing address must not refill a user budget');
     });
 
@@ -124,7 +133,7 @@ describe('who a limit is keyed to', function () {
         // The user bucket for "198.51.100.7" and the address bucket for the
         // same string are different keys, so one hit spends one of each
         // rather than two of one.
-        $result = $throttle->hit('actions', $asUser, 1, 60);
+        $result = throttleHit($throttle, 'actions', $asUser, 1, 60);
 
         expect($result->allowed)->toBeTrue();
     });
@@ -139,13 +148,13 @@ describe('who a limit is keyed to', function () {
         $request = new Request('POST', '/_action/x', ['x-forwarded-for' => '198.51.100.1']);
 
         // Anonymous spends the address budget.
-        $throttle->hit('actions', $request, 2, 60);
-        $throttle->hit('actions', $request, 2, 60);
+        throttleHit($throttle, 'actions', $request, 2, 60);
+        throttleHit($throttle, 'actions', $request, 2, 60);
 
         // Signing in must not refill it.
         $auth->login(new AuthUser('u-1'));
 
-        expect($throttle->hit('actions', $request, 2, 60)->allowed)
+        expect(throttleHit($throttle, 'actions', $request, 2, 60)->allowed)
             ->toBeFalse('the address is over, whoever is signed in');
     });
 
@@ -154,12 +163,12 @@ describe('who a limit is keyed to', function () {
         $request = new Request('POST', '/_action/x', ['x-forwarded-for' => '198.51.100.1']);
 
         $auth->login(new AuthUser('u-1'));
-        $throttle->hit('actions', $request, 2, 60);
-        $throttle->hit('actions', $request, 2, 60);
+        throttleHit($throttle, 'actions', $request, 2, 60);
+        throttleHit($throttle, 'actions', $request, 2, 60);
 
         $auth->login(new AuthUser('u-2'));
 
-        expect($throttle->hit('actions', $request, 2, 60)->allowed)
+        expect(throttleHit($throttle, 'actions', $request, 2, 60)->allowed)
             ->toBeFalse('N accounts from one address must not be N budgets');
     });
 
@@ -176,16 +185,16 @@ describe('who a limit is keyed to', function () {
         $elsewhere = new Request('POST', '/_action/x', ['x-forwarded-for' => '203.0.113.9']);
 
         $auth->login(new AuthUser('u-1'));
-        $throttle->hit('actions', $shared, 10, 60);
-        $throttle->hit('actions', $shared, 10, 60);
+        throttleHit($throttle, 'actions', $shared, 10, 60);
+        throttleHit($throttle, 'actions', $shared, 10, 60);
 
         // A second account behind the SAME address sees the address budget,
         // which two hits have already spent.
         $auth->login(new AuthUser('u-2'));
-        expect($throttle->hit('actions', $shared, 10, 60)->remaining)->toBe(7);
+        expect(throttleHit($throttle, 'actions', $shared, 10, 60)->remaining)->toBe(7);
 
         // The same account from elsewhere sees its own, barely-used one.
-        expect($throttle->hit('actions', $elsewhere, 10, 60)->remaining)
+        expect(throttleHit($throttle, 'actions', $elsewhere, 10, 60)->remaining)
             ->toBe(8, 'u-2 has spent two of its own ten');
     });
 
@@ -201,10 +210,10 @@ describe('who a limit is keyed to', function () {
         $throttle = new Throttle(new ArrayThrottleStore(), new AuthContext(), static fn (Request $r): string => '');
         $request = Request::post('/_action/x');
 
-        $throttle->hit('actions', $request, 2, 60);
-        $throttle->hit('actions', $request, 2, 60);
+        throttleHit($throttle, 'actions', $request, 2, 60);
+        throttleHit($throttle, 'actions', $request, 2, 60);
 
-        expect($throttle->hit('actions', $request, 2, 60)->allowed)
+        expect(throttleHit($throttle, 'actions', $request, 2, 60)->allowed)
             ->toBeFalse('no limit at all is the worse failure');
     });
 
