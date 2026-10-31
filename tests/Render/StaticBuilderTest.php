@@ -186,6 +186,27 @@ namespace Tinvar\Tests\Render\StaticBuilder {
                 ->and(glob(\dirname($out) . '/*'))->toBe([$out], 'nothing left beside it');
         });
 
+        // The manifest is published before the pages go live: a new page
+        // served before its boundaries are declared bootstraps none of them.
+        it('publishes the manifest once every page is built and before any goes live', function () {
+            $out = scratch() . '/static';
+            mkdir("{$out}/gone", 0o755, true);
+            file_put_contents("{$out}/gone/index.html", 'stale');
+            $seen = null;
+            $manifest = docs();
+
+            new StaticBuilder(routes(), renderer(new \ArrayObject()))->build($out, $manifest, static function (FragmentManifest $built) use ($out, $manifest, &$seen): void {
+                $seen = [
+                    'old pages still live' => is_file("{$out}/gone/index.html"),
+                    'new pages not yet' => !is_file("{$out}/docs/intro/index.html"),
+                    'boundaries declared' => $built === $manifest && $built->hasAny(),
+                ];
+            });
+
+            expect($seen)->toBe(['old pages still live' => true, 'new pages not yet' => true, 'boundaries declared' => true])
+                ->and(is_file("{$out}/docs/intro/index.html"))->toBeTrue();
+        });
+
         // A page that fails leaves the previous build serving, whole.
         it('leaves the previous pages as they were when a page fails', function () {
             $out = scratch() . '/static';

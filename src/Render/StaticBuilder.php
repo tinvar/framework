@@ -137,11 +137,20 @@ final class StaticBuilder
      *
      * Built aside and moved into place at the end: a server reading the
      * directory meanwhile serves the old pages or the new ones, and a page
-     * that fails leaves the old ones as they were.
+     * that fails leaves the old ones as they were. The move is two renames
+     * -- the old directory out, the new one in -- so a request in the
+     * instant between them finds no page; PHP has no rename that exchanges
+     * two directories, and a symlink swapped in their place would change
+     * what a deployment copies.
      *
+     * @param (\Closure(FragmentManifest): void)|null $publish handed the manifest
+     *        once every page is built and its boundaries declared, and before
+     *        any page goes live: where it is written for /_bootstrap, so a
+     *        new page is never served before its boundaries can be. A throw
+     *        leaves the old pages as they were.
      * @return list<string> the paths built
      */
-    public function build(string $directory, FragmentManifest $manifest): array
+    public function build(string $directory, FragmentManifest $manifest, ?\Closure $publish = null): array
     {
         $directory = rtrim($directory, '/');
         $staging = $directory . '.building-' . bin2hex(random_bytes(4));
@@ -160,6 +169,10 @@ final class StaticBuilder
 
                 self::write(self::fileOf($staging, $page['path']), $html, $page['path']);
                 $built[] = $page['path'];
+            }
+
+            if ($publish !== null) {
+                $publish($manifest);
             }
 
             $previous = null;
