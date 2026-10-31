@@ -18,6 +18,7 @@ use Tinvar\Orm\Migrations\DatabaseSeeder;
 use Tinvar\Orm\Migrations\MigrateCommand;
 use Tinvar\Orm\Migrations\MigrationRefused;
 use Tinvar\Orm\PdoConnection;
+use Tinvar\Packages\Advisories;
 use Tinvar\Packages\Lockfiles;
 use Tinvar\Packages\PackageLock;
 use Tinvar\Packages\PackagePolicy;
@@ -415,7 +416,7 @@ final class AppConsole
             );
         }
         $this->command('packages:lock', 'packages:lock', "Pin each enabled package's version and files in tinvar.lock", fn (array $a): int => $this->packagesLock())
-            ->command('audit', 'audit', 'composer audit and npm audit over the lockfiles (network)', fn (array $a): int => $this->audit());
+            ->command('audit', 'audit', 'composer audit and npm audit over the lockfiles, held to the reviewed exceptions in audit-exceptions.json (network)', fn (array $a): int => $this->audit());
     }
 
     /** @param list<string> $arguments */
@@ -483,18 +484,48 @@ final class AppConsole
         return 0;
     }
 
-    /** The advisory databases' view of both lockfiles. Needs the network. */
+    /**
+     * The advisory databases' view of both lockfiles, held to the reviewed
+     * exceptions in audit-exceptions.json (Advisories, ADR 0137). Needs the
+     * network.
+     */
     private function audit(): int
     {
-        $status = 0;
-        foreach ([['composer', 'audit', '--locked', '--no-interaction'], ['npm', 'audit', '--audit-level=moderate']] as $command) {
+        $lockfiles = new Lockfiles($this->projectRoot);
+        $answers = ['composer' => null, 'npm' => null];
+        foreach ([
+            'composer' => [$lockfiles->hasComposer(), ['composer', 'audit', '--locked', '--no-interaction', '--format=json']],
+            'npm' => [$lockfiles->hasNpm(), ['npm', 'audit', '--json']],
+        ] as $ecosystem => [$present, $command]) {
+            if (!$present) {
+                $answers[$ecosystem] = null;
+
+                continue;
+            }
             echo '$ ' . implode(' ', $command) . "\n";
-            $process = proc_open($command, [STDIN, STDOUT, STDERR], $pipes, $this->projectRoot);
-            $code = \is_resource($process) ? proc_close($process) : 127;
-            $status = $status === 0 ? $code : $status;
+            $process = proc_open($command, [0 => ['file', \PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => STDERR], $pipes, $this->projectRoot);
+            if (!\is_resource($process)) {
+                $answers[$ecosystem] = ['', 127];
+
+                continue;
+            }
+            $out = (string) stream_get_contents($pipes[1]);
+            fclose($pipes[1]);
+            $answers[$ecosystem] = [$out, proc_close($process)];
         }
 
-        return $status === 0 ? 0 : 1;
+        $verdict = new Advisories($this->projectRoot, new \DateTimeImmutable('today', new \DateTimeZone('UTC')))->judge($answers['composer'], $answers['npm']);
+        foreach ($verdict['excused'] as $line) {
+            echo "excused: {$line}\n";
+        }
+        if ($verdict['failures'] !== []) {
+            fwrite(STDERR, "Audit failed:\n  " . implode("\n  ", $verdict['failures']) . "\n");
+
+            return 1;
+        }
+        echo 'ok: no advisory on what is locked that ' . Advisories::FILE . " does not excuse\n";
+
+        return 0;
     }
 
     private function usage(string $command): int
