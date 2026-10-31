@@ -12,6 +12,7 @@ namespace Tinvar\Tests\Uploads\ImageSanitizer;
 
 use Tinvar\Http\HttpException;
 use Tinvar\Storage\FileTypes;
+use Tinvar\Uploads\AvifContainer;
 use Tinvar\Uploads\ImageSanitizer;
 
 function file(string $bytes): string
@@ -196,7 +197,10 @@ describe('AVIF', function () {
     });
 
     it('draws an AVIF again from its pixels alone, at its size, keeping nothing else of the file', function () {
-        $sent = avif(6, 4) . '<script>alert(1)</script>';
+        // After the image, in a box a reader skips: bytes after it that
+        // are no box at all are refused with the container (ADR 0142).
+        $script = '<script>alert(1)</script>';
+        $sent = avif(6, 4) . pack('N', 8 + \strlen($script)) . 'free' . $script;
         $kept = (string) file_get_contents(new ImageSanitizer()->sanitize(file($sent), 'image/avif'));
         $size = getimagesizefromstring($kept);
 
@@ -212,4 +216,96 @@ describe('AVIF', function () {
             ->and(fn () => new ImageSanitizer()->sanitize(file(substr(avif(), 0, 40)), 'image/avif'))
             ->toThrow(HttpException::class);
     });
+
+    it('reads every coded image of a still AVIF, its alpha too, and draws it again', function () {
+        $image = new \Imagick();
+        $image->newImage(20, 10, 'rgba(200,30,30,0.5)');
+        $image->setImageFormat('avif');
+        $sent = $image->getImageBlob();
+        $read = AvifContainer::read($sent);
+        $kept = getimagesizefromstring((string) file_get_contents(new ImageSanitizer()->sanitize(file($sent), 'image/avif')));
+
+        expect([$read['width'], $read['height'], \count($read['images'])])->toBe([20, 10, 2])
+            ->and($read['images'][1])->toMatchArray(['width' => 20, 'height' => 10, 'frameWidth' => 20, 'frameHeight' => 10])
+            ->and([$kept[0] ?? 0, $kept[1] ?? 0])->toBe([20, 10]);
+    });
+
+    it('refuses an AVIF whose coded frame is larger than its ispe, or larger than images may be', function () {
+        expect(fn () => new ImageSanitizer()->sanitize(file(claimingAvif(avif(6, 4), 3, 2)), 'image/avif'))
+            ->toThrow(HttpException::class, 'larger than its ispe')
+            ->and(fn () => new ImageSanitizer(maxPixels: 20)->sanitize(file(avif(6, 4)), 'image/avif'))
+            ->toThrow(HttpException::class, 'larger than images may be');
+    });
+
+    it('refuses an AVIF holding an item of a type it does not draw: HEVC, a grid, an overlay', function (string $type) {
+        $avif = avif(6, 4);
+        $sent = substr_replace($avif, $type, (int) strpos($avif, 'av01'), 4);
+
+        expect(fn () => new ImageSanitizer()->sanitize(file($sent), 'image/avif'))
+            ->toThrow(HttpException::class, "'{$type}'");
+    })->with(['hvc1', 'grid', 'iovl', 'iden']);
+
+    it('refuses an AVIF with bytes after it that are no box', function () {
+        expect(fn () => new ImageSanitizer()->sanitize(file(avif(6, 4) . '<script>alert(1)</script>'), 'image/avif'))
+            ->toThrow(HttpException::class, 'not the size it says');
+    });
+
+    // ImageMagick's width and height limits are the image's own size while
+    // it decodes, so their product is never more than the pixels an image
+    // may have -- and, the process's own, they are given back after.
+    it('gives ImageMagick\'s limits back after holding it to the image\'s own size', function () {
+        $limits = fn (): array => array_map(\Imagick::getResourceLimit(...), [\Imagick::RESOURCETYPE_WIDTH, \Imagick::RESOURCETYPE_HEIGHT, \Imagick::RESOURCETYPE_AREA]);
+        $before = $limits();
+        new ImageSanitizer()->sanitize(file(avif(6, 4)), 'image/avif');
+
+        expect($limits())->toBe($before)
+            ->and(\strlen(avif(30, 20)))->toBeGreaterThan(0);
+    })->skip(ImageSanitizer::gdAvif(), 'GD draws AVIF here, not Imagick.');
 });
+
+/** $avif with its first `ispe` saying $width by $height, and nothing else changed. */
+function claimingAvif(string $avif, int $width, int $height): string
+{
+    $at = strpos($avif, 'ispe');
+    expect($at)->toBeInt();
+
+    return substr_replace($avif, pack('NN', $width, $height), (int) $at + 8, 8);
+}
+
+function fixture(string $name): string
+{
+    return __DIR__ . '/Fixtures/' . $name;
+}
+
+// A grid of tiles whose own ispe says 64 by 64: getimagesize() read 64 by
+// 64, and the decoder made 8192 by 8192 -- or, from 1.9 KB, 16384 by
+// 16384 -- outside PHP's memory limit, 1.4 GB in ImageMagick. And a single
+// coded image whose ispe says 64 by 64 over an AV1 sequence header of 8192
+// by 8192. Each refused from its container, before any decoder is asked.
+it('refuses an AVIF whose container lies about its size, before any decoder sees it', function (string $name, string $why) {
+    if (!ImageSanitizer::draws('image/avif')) {
+        $this->markTestSkipped('This PHP draws no AVIF.');
+    }
+    $before = getrusage()['ru_maxrss'] ?? 0;
+
+    expect(fn () => new ImageSanitizer()->sanitize(fixture($name), 'image/avif'))
+        ->toThrow(fn (HttpException $e) => expect([$e->status, $e->code_, str_contains($e->getMessage(), $why)])->toBe([422, 'upload_image', true]))
+        // ru_maxrss is in bytes on macOS and kilobytes on Linux: 64 MB either way is far under the bomb.
+        ->and((getrusage()['ru_maxrss'] ?? 0) - $before)->toBeLessThan(64 * 1024 * 1024);
+})->with([
+    'a grid of 8192 by 8192 under an ispe of 64 by 64' => ['grid-bomb.avif', "'grid'"],
+    'a grid of 16384 by 16384 under an ispe of 64 by 64' => ['grid-bomb-16384.avif', "'grid'"],
+    'a frame of 8192 by 8192 under an ispe of 64 by 64' => ['frame-bomb.avif', 'larger than its ispe'],
+]);
+
+it('reads an AVIF\'s container strictly, refusing what it does not understand', function (string $bytes, string $why) {
+    expect(fn () => AvifContainer::read($bytes))->toThrow(\UnexpectedValueException::class, $why);
+})->with([
+    'no ftyp first' => ["\0\0\0\x08free", 'ftyp'],
+    'a box larger than the file' => ["\0\0\0\x18ftypavif\0\0\0\0mif1avif\0\0\x10\0meta", 'not the size it says'],
+    'a box smaller than its header' => ["\0\0\0\x18ftypavif\0\0\0\0mif1avif\0\0\0\x04meta", 'not the size it says'],
+    'a movie' => ["\0\0\0\x18ftypavif\0\0\0\0mif1avif\0\0\0\x08moov", "'moov'"],
+    'no meta' => ["\0\0\0\x18ftypavif\0\0\0\0mif1avif", 'no meta'],
+    'too many boxes' => ["\0\0\0\x18ftypavif\0\0\0\0mif1avif" . str_repeat("\0\0\0\x08free", 1100), 'more than 1024 boxes'],
+    'a grid' => [(string) file_get_contents(__DIR__ . '/Fixtures/grid-bomb.avif'), "is a 'grid'"],
+]);

@@ -32,6 +32,11 @@ use Tinvar\Storage\FileTypes;
  * not decode, is refused. With no GD there is nothing to draw images with,
  * and every image upload is refused rather than kept as sent.
  *
+ * An AVIF's header is its whole container, read by AvifContainer before
+ * any decoder sees it (ADR 0142): a grid or an overlay is refused, and so
+ * is a coded frame larger than its declared size; every coded image is
+ * held to the limits.
+ *
  * An AVIF is drawn by GD where PHP's GD was built with libavif, and
  * otherwise by Imagick, where its ImageMagick reads and writes AVIF: its
  * pixels are taken out as raw RGBA, and a new image made from those bytes
@@ -83,18 +88,7 @@ final readonly class ImageSanitizer
             throw new \RuntimeException('Uploaded images are drawn again before they are kept, and PHP has no GD to draw them with: every image upload is refused.');
         }
 
-        // The header alone: nothing is decoded until the size is known.
-        $size = @getimagesize($path);
-        if ($size === false || image_type_to_mime_type($size[2]) !== $type) {
-            throw self::refused('The image cannot be read.');
-        }
-        [$width, $height] = $size;
-        if ($width < 1 || $height < 1 || $width > $this->maxDimension || $height > $this->maxDimension || $width * $height > $this->maxPixels) {
-            throw self::refused('The image is larger than images may be: ' . $this->maxDimension . ' pixels a side and ' . $this->maxPixels . ' in all.');
-        }
-        if (!$this->fits($width * $height)) {
-            throw self::refused('The image is larger than this server can draw now.');
-        }
+        [$width, $height] = $this->header($path, $type);
 
         // GD's readers report a damaged file as a warning, some of them
         // past `@`: each is the image refused, below, and no more.
@@ -194,22 +188,31 @@ final readonly class ImageSanitizer
             throw new HttpException(415, 'The file is not of a type this upload takes.', 'upload_type');
         }
 
-        $size = @getimagesize($path);
-        if ($size === false || image_type_to_mime_type($size[2]) !== $type) {
-            throw self::refused('The image cannot be read.');
-        }
-        [$width, $height] = $size;
-        if ($width < 1 || $height < 1 || $width > $this->maxDimension || $height > $this->maxDimension || $width * $height > $this->maxPixels) {
-            throw self::refused('The image is larger than images may be: ' . $this->maxDimension . ' pixels a side and ' . $this->maxPixels . ' in all.');
-        }
-        if (!$this->fits($width * $height)) {
-            throw self::refused('The image is larger than this server can draw now.');
-        }
+        [$width, $height] = $this->header($path, $type);
 
-        \Imagick::setResourceLimit(\Imagick::RESOURCETYPE_WIDTH, $this->maxDimension);
-        \Imagick::setResourceLimit(\Imagick::RESOURCETYPE_HEIGHT, $this->maxDimension);
-        \Imagick::setResourceLimit(\Imagick::RESOURCETYPE_AREA, $this->maxPixels);
+        // ImageMagick's limits are its process's: held to the image's own
+        // size, read and held to the limits above -- so the width limit
+        // times the height limit is never more than maxPixels -- while it
+        // is drawn, and given back after, so as not to refuse anything
+        // larger the worker's other code draws.
+        $limits = [\Imagick::RESOURCETYPE_WIDTH => $width, \Imagick::RESOURCETYPE_HEIGHT => $height, \Imagick::RESOURCETYPE_AREA => $width * $height];
+        $before = [];
+        foreach ($limits as $resource => $limit) {
+            $was = \Imagick::getResourceLimit($resource);
+            $before[$resource] = $was >= (float) PHP_INT_MAX ? PHP_INT_MAX : (int) $was;
+            \Imagick::setResourceLimit($resource, $limit);
+        }
+        try {
+            return $this->drawWithImagick($path, $type, $width, $height);
+        } finally {
+            foreach ($before as $resource => $limit) {
+                \Imagick::setResourceLimit($resource, $limit);
+            }
+        }
+    }
 
+    private function drawWithImagick(string $path, string $type, int $width, int $height): string
+    {
         try {
             $read = new \Imagick();
             $read->readImage('avif:' . $path);
@@ -255,6 +258,61 @@ final readonly class ImageSanitizer
         }
 
         return $out;
+    }
+
+    /**
+     * The image's width and height, read from its header alone and held to
+     * the limits: nothing is decoded until the size is known.
+     *
+     * An AVIF's header is its whole container, read by AvifContainer:
+     * getimagesize() reads only the primary item's `ispe`, and a grid under
+     * it, or a coded frame larger than it, decodes at its own size. Every
+     * coded image in the file is held to the limits, and the primary must
+     * be the size getimagesize() read.
+     *
+     * @return array{int, int}
+     */
+    private function header(string $path, string $type): array
+    {
+        $size = @getimagesize($path);
+        if ($size === false || image_type_to_mime_type($size[2]) !== $type) {
+            throw self::refused('The image cannot be read.');
+        }
+        [$width, $height] = $size;
+        $sizes = [[$width, $height]];
+        $decoded = $width * $height;
+
+        if ($type === 'image/avif') {
+            $bytes = @file_get_contents($path);
+            if ($bytes === false) {
+                throw self::refused('The image cannot be read.');
+            }
+            try {
+                $container = AvifContainer::read($bytes);
+            } catch (\UnexpectedValueException $e) {
+                throw self::refused($e->getMessage());
+            }
+            if ([$container['width'], $container['height']] !== [$width, $height]) {
+                throw self::refused('The image is not the size its header says.');
+            }
+            // Its alpha and any other coded image are decoded beside it.
+            $decoded = 0;
+            foreach ($container['images'] as $image) {
+                $sizes[] = [$image['width'], $image['height']];
+                $decoded += $image['width'] * $image['height'];
+            }
+        }
+
+        foreach ($sizes as [$w, $h]) {
+            if ($w < 1 || $h < 1 || $w > $this->maxDimension || $h > $this->maxDimension || $w * $h > $this->maxPixels) {
+                throw self::refused('The image is larger than images may be: ' . $this->maxDimension . ' pixels a side and ' . $this->maxPixels . ' in all.');
+            }
+        }
+        if (!$this->fits($decoded)) {
+            throw self::refused('The image is larger than this server can draw now.');
+        }
+
+        return [$width, $height];
     }
 
     /** Turned as the JPEG's EXIF orientation says (1 to 8), before the EXIF goes. */
