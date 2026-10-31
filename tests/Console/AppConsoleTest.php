@@ -76,6 +76,17 @@ it('fails the check on an application\'s own check, naming it', function () {
     expect(ran($console, 'check')[0])->toBe(1);
 });
 
+// The registry's own check -- an endpoint that does not compile, a path a
+// page also matches (ADR 0067) -- ran only where an application wired it in.
+it('holds the endpoints among its entry points to the registry\'s check', function () {
+    $clashes = console(['entryPoints' => [ApartFromEveryPage::class, ClashesWithAPage::class]]);
+
+    expect(AppConsole::endpointViolations([ApartFromEveryPage::class], \Shop\Kernel::ROUTES, []))->toBe([])
+        ->and(implode("\n", array_map('strval', AppConsole::endpointViolations([ClashesWithAPage::class], \Shop\Kernel::ROUTES, []))))
+        ->toContain('/orders/{order}')
+        ->and(ran($clashes, 'check')[0])->toBe(1);
+});
+
 it('refuses --worker where the application has no queue to run', function () {
     expect(ran(console(), 'serve', '--worker')[0])->toBe(64);
 });
@@ -86,3 +97,15 @@ it('registers what the generators write in the Kernel\'s own lists by default', 
     expect($registrations->none())->toBeFalse()
         ->and(console()->registrations()->none())->toBeFalse(); // the route table alone
 });
+
+final class ApartFromEveryPage
+{
+    #[\Tinvar\Attributes\Get('/api/apart'), \Tinvar\Attributes\NoAuthorization(reason: 'a fixture')]
+    public function show(): void {}
+}
+
+final class ClashesWithAPage
+{
+    #[\Tinvar\Attributes\Get('/orders/{id}'), \Tinvar\Attributes\NoAuthorization(reason: 'a fixture')]
+    public function show(string $id): void {}
+}

@@ -584,11 +584,14 @@ final class EndpointRegistry
      * also matches.
      *
      * @param list<class-string> $classes the classes holding endpoints
+     * @param list<class-string<\Tinvar\Orm\Model>> $models the application's models, as the
+     *        Kernel's registry is given them, so a bare id naming a tenant's model is refused
+     *        here too (ADR 0105)
      * @return list<Violation>
      */
-    public static function check(array $classes, RouteRegistry $routes): array
+    public static function check(array $classes, RouteRegistry $routes, array $models = []): array
     {
-        $registry = new self();
+        $registry = new self($models);
         $violations = [];
         foreach ($classes as $class) {
             try {
@@ -599,6 +602,32 @@ final class EndpointRegistry
         }
 
         return [...$violations, ...$registry->conflicts($routes)];
+    }
+
+    /**
+     * Whether a class declares an endpoint on any public method -- or tries
+     * to, with a declaration register() would refuse -- for picking the
+     * endpoints out of a list of entry points that holds channels and
+     * transfers too.
+     *
+     * @param class-string $class
+     */
+    public static function holdsEndpoints(string $class): bool
+    {
+        if (!class_exists($class)) {
+            return false;
+        }
+        foreach (new \ReflectionClass($class)->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
+            try {
+                if (Endpoint::declaredOn($method) !== null) {
+                    return true;
+                }
+            } catch (\InvalidArgumentException) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function has(string $name): bool

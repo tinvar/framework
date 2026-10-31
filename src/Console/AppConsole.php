@@ -6,7 +6,9 @@ namespace Tinvar\Console;
 
 use Tinvar\Auth\ApplicationClasses;
 use Tinvar\Auth\BuildRules;
+use Tinvar\Auth\Violation;
 use Tinvar\Config\Configs;
+use Tinvar\Endpoints\EndpointRegistry;
 use Tinvar\Gateway\GatewayKeys;
 use Tinvar\Generators\AppLayout;
 use Tinvar\Generators\GenerationRefused;
@@ -221,6 +223,30 @@ final class AppConsole
     }
 
     /**
+     * What EndpointRegistry::check() finds in the endpoints among
+     * $entryPoints -- which hold channels and transfers too -- against the
+     * pages and layouts in $routes.
+     *
+     * @param list<class-string> $entryPoints
+     * @param list<class-string> $routes
+     * @param list<class-string<\Tinvar\Orm\Model>> $models
+     * @return list<Violation>
+     */
+    public static function endpointViolations(array $entryPoints, array $routes, array $models): array
+    {
+        $endpoints = array_values(array_filter($entryPoints, EndpointRegistry::holdsEndpoints(...)));
+        if ($endpoints === []) {
+            return [];
+        }
+        // A page the registry refuses is reported by the build rules; the
+        // endpoints are held to the pages that do register.
+        $registry = new RouteRegistry($models);
+        RouteRegistry::check($routes, $registry);
+
+        return EndpointRegistry::check($endpoints, $registry, $models);
+    }
+
+    /**
      * The build rules over every entry point and payload, the config
      * classes, the supply chain and the Caddyfile, and the application's
      * own checks; every failure named, under its heading.
@@ -239,6 +265,10 @@ final class AppConsole
                 // refuses a bare id to a tenant's model too (ADR 0105).
                 ...RouteRegistry::check($this->routes, new RouteRegistry($this->models)),
                 ...new BuildRules($this->models)->check($entryPoints, $payloads),
+                // The endpoints among them, compiled as the Kernel's registry
+                // compiles them and each path held apart from every page's
+                // (ADR 0067).
+                ...self::endpointViolations($this->entryPoints, $this->routes, $this->models),
                 // The autoload map the rule finds an unlisted model in, read
                 // whole -- or a failure saying where it stopped (ADR 0122).
                 ...ApplicationClasses::fromComposer()->check(),
