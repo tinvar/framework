@@ -450,6 +450,10 @@ final class DevToolbar implements FrameTap
      * from, which is never run and so takes no nonce, and the script, which
      * carries the nonce and applies it to the style it makes.
      *
+     * The script comes straight after the data block, nothing between: it
+     * reads its settings from the element just before it, never from one
+     * found by its id, which markup the page rendered could carry first.
+     *
      * @param array<string, mixed> $config
      */
     public static function markup(string $nonce, array $config): string

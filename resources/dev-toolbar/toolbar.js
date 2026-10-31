@@ -24,6 +24,9 @@
   /** The version of the endpoint's answers this script reads (DevToolbar::PROTOCOL). */
   const PROTOCOL = 1;
 
+  /** Set on a data block the toolbar has been drawn for. */
+  const MOUNTED = Symbol.for('tinvar.devToolbar.mounted');
+
   /**
    * @param {Document} doc
    * @param {{endpoint: string, header: string, token: string, request: string, style: string, editor?: {template: string, paths: [string, string][]}}} config
@@ -31,7 +34,6 @@
    * @param {Element} data the data block it was configured from
    */
   function mount(doc, config, nonce, data) {
-    if (doc.getElementById(ID)) return;
     editor = config.editor ?? null;
 
     const host = doc.createElement('div');
@@ -883,9 +885,24 @@
     return element;
   }
 
-  const data = document.getElementById(`${ID}-config`);
-  if (data === null) return;
-  const nonce =
-    document.currentScript instanceof HTMLScriptElement ? document.currentScript.nonce : undefined;
-  mount(document, JSON.parse(data.textContent ?? '{}'), nonce, data);
+  // The data block is the element just before this script, as
+  // DevToolbar::markup() writes the two, and nothing found by its id: an id
+  // is the page's to give, and markup the app rendered from what a user
+  // wrote could carry this one ahead of it -- a planted endpoint, read with
+  // the session's token. As the page metadata is read beside the prelude.
+  const self = document.currentScript;
+  if (!(self instanceof HTMLScriptElement)) return;
+  const data = self.previousElementSibling;
+  if (
+    !(data instanceof HTMLScriptElement) ||
+    data.id !== `${ID}-config` ||
+    data.type !== 'application/json' ||
+    data[MOUNTED] === true
+  ) {
+    return;
+  }
+  // Marked on the element, which no markup can do: drawn once for its data
+  // block, whatever else on the page has the toolbar's id.
+  data[MOUNTED] = true;
+  mount(document, JSON.parse(data.textContent ?? '{}'), self.nonce || undefined, data);
 })();

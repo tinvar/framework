@@ -308,6 +308,14 @@ it('draws itself into a document under the nonce the response\'s own policy name
     expect($tags[1])->toBe([' type="application/json" id="' . DevToolbar::ID . '-config"', ' nonce="' . NONCE . '"']);
 });
 
+// The script reads its settings from the element just before it, never one
+// found by its id, which the page's own markup could carry first.
+it('writes its script straight after its data block, with nothing between', function () {
+    $markup = DevToolbar::markup(NONCE, ['endpoint' => '/_dev/toolbar', 'header' => 'h', 'token' => 't', 'request' => 'x']);
+
+    expect($markup)->toMatch('#^<script type="application/json" id="' . DevToolbar::ID . '-config">[^<]*</script><script nonce="#');
+});
+
 it('escapes its data block so nothing in it can close the element', function () {
     $markup = DevToolbar::markup(NONCE, ['endpoint' => '/_dev/toolbar', 'header' => 'h', 'token' => '</script><script>alert(1)</script>', 'request' => 'x']);
 

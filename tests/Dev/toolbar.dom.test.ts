@@ -127,10 +127,11 @@ function respond(status: number, body: unknown) {
   return Promise.resolve(new Response(JSON.stringify(body), { status }));
 }
 
-function mount(extra: Record<string, unknown> = {}) {
+/** A data block of the toolbar's, as DevToolbar::markup() writes it. */
+function dataBlock(extra: Record<string, unknown> = {}, id = 'tinvar-dev-toolbar-config') {
   const data = document.createElement('script');
   data.type = 'application/json';
-  data.id = 'tinvar-dev-toolbar-config';
+  data.id = id;
   data.textContent = JSON.stringify({
     endpoint: '/_dev/toolbar',
     header: 'x-tinvar-toolbar',
@@ -139,12 +140,52 @@ function mount(extra: Record<string, unknown> = {}) {
     style: '.toggle{position:fixed}',
     ...extra,
   });
-  document.body.append(data);
-  new Function(SCRIPT)();
+  return data;
+}
 
-  const host = document.getElementById('tinvar-dev-toolbar');
-  expect(host).not.toBeNull();
-  return host!.shadowRoot!;
+/**
+ * The script as a script element, run once it is put in the page with
+ * itself as the document's currentScript, as the browser runs it. Run here
+ * rather than by jsdom, whose scripts see none of the globals a test stubs.
+ */
+const scripts = new WeakSet<Node>();
+
+function script() {
+  const element = document.createElement('script');
+  scripts.add(element);
+  return element;
+}
+
+/** Puts `nodes` at the end of the body, running each script() among them as the page would. */
+function append(...nodes: Node[]) {
+  for (const node of nodes) {
+    document.body.append(node);
+    if (scripts.has(node)) run(node as HTMLScriptElement);
+  }
+}
+
+/** Runs the toolbar's script as `element`, in its place. */
+function run(element: HTMLScriptElement) {
+  Object.defineProperty(document, 'currentScript', { value: element, configurable: true });
+  try {
+    new Function(SCRIPT)();
+  } finally {
+    delete (document as { currentScript?: unknown }).currentScript;
+  }
+}
+
+/** The toolbar's host: the one with its shadow root, wherever another element of its id stands. */
+function host() {
+  return [...document.querySelectorAll<HTMLElement>('#tinvar-dev-toolbar')].find(
+    (e) => e.shadowRoot !== null,
+  );
+}
+
+function mount(extra: Record<string, unknown> = {}) {
+  append(dataBlock(extra), script());
+
+  expect(host()).toBeDefined();
+  return host()!.shadowRoot!;
 }
 
 async function settle() {
@@ -346,6 +387,61 @@ describe('the toolbar', () => {
     await settle();
 
     expect(document.getElementById('tinvar-dev-toolbar')).not.toBeNull();
+  });
+
+  // An id is the page's to give: markup the app rendered from what a user
+  // wrote can carry the toolbar's, ahead of the toolbar's own elements.
+  it('reads its settings from the data block written beside it, never an earlier one of its id', async () => {
+    append(dataBlock({ endpoint: '/planted', token: 'planted' }));
+    const root = mount();
+    await open(root);
+
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(0);
+    for (const [url] of fetchMock.mock.calls) expect(String(url)).toMatch(/^\/_dev\/toolbar/);
+  });
+
+  it('draws itself whatever earlier element has its id', () => {
+    const decoy = document.createElement('div');
+    decoy.id = 'tinvar-dev-toolbar';
+    append(decoy);
+
+    const root = mount();
+
+    expect(root.querySelector('.toggle')!.textContent).toBe('tinvar');
+    expect(decoy.shadowRoot).toBeNull();
+  });
+
+  it('puts back its own host, not an element of its id', async () => {
+    const decoy = document.createElement('div');
+    decoy.id = 'tinvar-dev-toolbar';
+    append(decoy);
+    mount();
+    const own = host()!;
+
+    own.remove();
+    await settle();
+
+    expect(own.isConnected).toBe(true);
+  });
+
+  it('draws nothing beside anything but its data block', () => {
+    append(dataBlock(), document.createElement('div'), script());
+    append(dataBlock({}, 'something-else'), script());
+    const notJson = dataBlock();
+    notJson.type = 'text/plain';
+    append(notJson, script());
+    append(script());
+
+    expect(host()).toBeUndefined();
+  });
+
+  it('draws itself once for its data block, however often its script runs', () => {
+    mount();
+    const again = script();
+    document.querySelector('script[type="application/json"]')!.after(again);
+    run(again);
+
+    expect([...document.querySelectorAll('#tinvar-dev-toolbar')].length).toBe(1);
   });
 });
 
