@@ -337,6 +337,38 @@ final readonly class JobRunner
         return $job;
     }
 
+    /**
+     * The error classes a parameter is typed as -- one, or a union of them,
+     * nullable or not -- or null for a parameter of any other type.
+     *
+     * @return list<class-string<\Throwable>>|null
+     */
+    private static function errorTypes(?\ReflectionType $type): ?array
+    {
+        $members = match (true) {
+            $type instanceof \ReflectionNamedType => [$type],
+            $type instanceof \ReflectionUnionType => $type->getTypes(),
+            default => [],
+        };
+        $classes = [];
+        foreach ($members as $member) {
+            if (!$member instanceof \ReflectionNamedType) {
+                return null;
+            }
+            if ($member->getName() === 'null') {
+                continue;
+            }
+            if ($member->isBuiltin() || !is_a($member->getName(), \Throwable::class, true)) {
+                return null;
+            }
+            /** @var class-string<\Throwable> $class */
+            $class = $member->getName();
+            $classes[] = $class;
+        }
+
+        return $classes === [] ? null : $classes;
+    }
+
     /** Calls a job's method with what its parameters ask for, built by the resolver. */
     private function call(Job $job, string $method, ?JobControl $control = null, ?Refusal $refusal = null, ?\Throwable $error = null): void
     {
@@ -350,10 +382,12 @@ final readonly class JobRunner
             // failed()'s error: the parameter typed as an error, or not
             // typed at all, as it always took it. One typed for an error of
             // another kind than this is refused, not handed something built.
-            $erroneous = $type instanceof \ReflectionNamedType && !$type->isBuiltin() && is_a($type->getName(), \Throwable::class, true);
+            // A union of error types takes the error if any of them does.
+            $errorTypes = self::errorTypes($type);
+            $erroneous = $errorTypes !== null;
             if ($error !== null && ($type === null || $erroneous)) {
-                if ($type instanceof \ReflectionNamedType && !is_a($error, $type->getName())) {
-                    throw new JobRefused('handle_unresolvable', $job::class . "::{$method}() takes {$type->getName()}, and the error was " . $error::class . '.');
+                if ($errorTypes !== null && !array_any($errorTypes, static fn (string $t): bool => $error instanceof $t)) {
+                    throw new JobRefused('handle_unresolvable', $job::class . "::{$method}() takes " . implode('|', $errorTypes) . ', and the error was ' . $error::class . '.');
                 }
                 $arguments[] = $error;
                 $error = null;

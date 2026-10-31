@@ -139,6 +139,23 @@ final readonly class AlwaysFails implements Job
     }
 }
 
+/** Fails once and for good, its failed() taking the errors it expects by a union. */
+#[Queue(tries: 1)]
+final readonly class FailsIntoUnion implements Job
+{
+    public function __construct(public bool $logic = false) {}
+
+    public function handle(): void
+    {
+        throw $this->logic ? new \DomainException('a domain error') : new \RuntimeException('a runtime error');
+    }
+
+    public function failed(\LengthException|\RuntimeException $error): void
+    {
+        Hooks::$failed[] = $error->getMessage();
+    }
+}
+
 final class Hooks
 {
     /** @var list<string> */

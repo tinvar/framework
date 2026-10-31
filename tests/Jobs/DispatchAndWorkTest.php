@@ -312,6 +312,19 @@ it('retries a failed job with its backoff, then fails it for good and runs its f
         ->and(Hooks::$failed)->toBe(['failing on purpose: x']);
 });
 
+// Review: failed() taking its error by a union type was refused as taking
+// a service, and its hook never ran.
+it('hands failed() its error by a union of error types, and refuses one the union does not take', function () {
+    Hooks::$failed = [];
+    $h = new Harness();
+    $h->dispatcher->dispatch(new \Tinvar\Tests\Jobs\Fixtures\FailsIntoUnion());
+    $h->dispatcher->dispatch(new \Tinvar\Tests\Jobs\Fixtures\FailsIntoUnion(logic: true));
+    $h->work();
+
+    expect(Hooks::$failed)->toBe(['a runtime error'])
+        ->and(queueOf($h)->failed())->toHaveCount(2);
+});
+
 it('runs a job that fails once and then works, and keeps no failure', function () {
     $h = new Harness();
     $h->dispatcher->dispatch(new FailsOnce());
