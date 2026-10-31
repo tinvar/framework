@@ -248,6 +248,24 @@ describe('a response as the server takes it', function () {
         expect(fn () => Response::make(200, 'x')->withFile('/tmp/x'))->toThrow(LogicException::class)
             ->and(fn () => Response::stream(static function (Closure $sink): void {})->withFile('relative'))->toThrow(InvalidArgumentException::class);
     });
+
+    it('keeps the file through what runs around the producer: a sessionless endpoint\'s emptied cookies', function () {
+        $response = Response::stream(static function (Closure $sink): void {
+            $sink(isset($_COOKIE['sid']) ? 'saw the cookie' : 'no cookie');
+        }, 200, ['content-type' => 'image/png'])->withCookie('__Host-a', 'b')->withFile('/srv/files/receipt.png');
+        $_COOKIE['sid'] = 'owner';
+
+        try {
+            $wrapped = \Tinvar\Endpoints\CookielessGlobals::stream($response);
+
+            expect($wrapped->file())->toBe('/srv/files/receipt.png')
+                ->and($wrapped->header('content-type'))->toBe('image/png')
+                ->and($wrapped->cookies())->toHaveKey('__Host-a')
+                ->and($wrapped->body())->toBe('no cookie');
+        } finally {
+            unset($_COOKIE['sid']);
+        }
+    });
 });
 
 // ADR 0109: a body too large to hold whole, or a stream of no known length,

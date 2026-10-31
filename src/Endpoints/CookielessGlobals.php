@@ -32,8 +32,8 @@ final class CookielessGlobals
     /**
      * $response, its streamed body -- if it has one -- produced with PHP's
      * cookie superglobals empty too. A stream's producer runs as the
-     * response is sent, after run() has put them back; its status, headers
-     * and cookies are kept as they are.
+     * response is sent, after run() has put them back; its status, headers,
+     * cookies and file are kept as they are.
      */
     public static function stream(Response $response): Response
     {
@@ -41,15 +41,13 @@ final class CookielessGlobals
             return $response;
         }
 
-        return Response::stream(
-            static function (\Closure $sink) use ($response): void {
-                self::run(static function () use ($response, $sink): void {
-                    $response->sendBody($sink);
-                });
-            },
-            $response->status,
-            $response->headers(),
-        )->withCookiesOf($response);
+        // Around the producer, never a new response: one rebuilt from the
+        // status, headers and cookies dropped the file withFile() named.
+        return $response->aroundBody(static function (\Closure $produce, \Closure $sink): void {
+            self::run(static function () use ($produce, $sink): void {
+                $produce($sink);
+            });
+        });
     }
 
     /**
