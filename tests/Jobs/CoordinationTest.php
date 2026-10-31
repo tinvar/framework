@@ -38,10 +38,12 @@ use Tinvar\Tests\Jobs\Fixtures\Journal;
 use Tinvar\Tests\Jobs\Fixtures\User;
 use Tinvar\Tests\Orm\Fixtures\TenantFixture;
 
+use function Tinvar\Tests\Jobs\Fixtures\behavesAsAQueue;
 use function Tinvar\Tests\Jobs\Fixtures\databaseQueue;
 use function Tinvar\Tests\Jobs\Fixtures\schemaOf;
 
 require_once __DIR__ . '/Fixtures/jobs.php';
+require_once __DIR__ . '/Fixtures/contract.php';
 require_once __DIR__ . '/../Support/Fixtures/databases.php';
 
 /** Notes that it ran, as whom and where. */
@@ -737,4 +739,9 @@ describe('a sliding rate', function () {
         expect($h->worker->run($options))->toBe(2)
             ->and(steps($h))->toBe(['s0', 's1', 's2', 's3']);
     })->with(queues());
+});
+
+it('queues, reserves, releases and fails in memory, as every queue does', function () {
+    $queue = new ArrayQueue();
+    behavesAsAQueue($queue, $queue);
 });

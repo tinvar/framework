@@ -59,17 +59,27 @@ final class ArrayQueue implements Queue, Coordination, Wakes
     public function reserve(array $queues, int $now, int $reserveFor): ?ReservedJob
     {
         foreach ($queues as $queue) {
+            // The one available soonest, as the other queues take it; of
+            // two available at once, the first queued.
+            $found = null;
             foreach ($this->jobs as $id => $job) {
                 if ($job['queue'] !== $queue || $job['availableAt'] > $now
                     || ($job['reservedUntil'] !== null && $job['reservedUntil'] > $now)) {
                     continue;
                 }
-
-                $token = bin2hex(random_bytes(8));
-                $this->jobs[$id] = [...$job, 'attempts' => $job['attempts'] + 1, 'reservedUntil' => $now + $reserveFor, 'token' => $token];
-
-                return new ReservedJob((string) $id, $queue, $job['payload'], $job['attempts'] + 1, $token);
+                if ($found === null || $job['availableAt'] < $this->jobs[$found]['availableAt']) {
+                    $found = $id;
+                }
             }
+            if ($found === null) {
+                continue;
+            }
+
+            $job = $this->jobs[$found];
+            $token = bin2hex(random_bytes(8));
+            $this->jobs[$found] = [...$job, 'attempts' => $job['attempts'] + 1, 'reservedUntil' => $now + $reserveFor, 'token' => $token];
+
+            return new ReservedJob((string) $found, $queue, $job['payload'], $job['attempts'] + 1, $token);
         }
 
         return null;

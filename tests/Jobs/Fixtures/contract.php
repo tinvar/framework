@@ -65,6 +65,15 @@ function behavesAsAQueue(Queue $queue, Queue $other): void
         ->and($queue->retry('a', 500))->toBeFalse()
         ->and($queue->reserve(['default'], 500, 60)?->attempts)->toBe(1);
 
+    // Review: the in-memory queue took the first pushed of those available,
+    // not the one available soonest. The soonest available first.
+    $queue->push(new PendingJob('late', 'ordered', 'payload-late', 50));
+    $queue->push(new PendingJob('early', 'ordered', 'payload-early', 10));
+    $queue->push(new PendingJob('middle', 'ordered', 'payload-middle', 30));
+    expect($queue->reserve(['ordered'], 100, 60)?->id)->toBe('early')
+        ->and($other->reserve(['ordered'], 100, 60)?->id)->toBe('middle')
+        ->and($queue->reserve(['ordered'], 100, 60)?->id)->toBe('late');
+
     // Woken (ADR 0119): a job waiting for later made available now, and
     // one a worker holds left as it is.
     if ($queue instanceof Wakes) {
