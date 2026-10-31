@@ -72,10 +72,7 @@ final class SqliteThrottleStore implements ThrottleStore
         // The first hit of a window made a row, so it clears a few that
         // have passed.
         if ($hits === 1) {
-            $pdo->prepare(
-                'DELETE FROM throttle WHERE entry IN (SELECT entry FROM throttle WHERE expires_at <= ? LIMIT '
-                . self::SWEEP_BATCH . ')',
-            )->execute([$this->now()]);
+            $pdo->prepare(ThrottleWindow::sweep('sqlite', 'throttle', self::SWEEP_BATCH))->execute([$this->now()]);
         }
 
         return [$hits, $resetsAt];
@@ -108,11 +105,7 @@ final class SqliteThrottleStore implements ThrottleStore
      */
     private function entry(string $key, int $window): array
     {
-        $start = intdiv($this->now(), $window) * $window;
-
-        // Hashed: a key is built from caller identity and can be long, and
-        // the file is not somewhere addresses should be listed.
-        return [hash('xxh128', $key) . ':' . $window . ':' . $start, $start];
+        return ThrottleWindow::entry($key, max(1, $window), $this->now());
     }
 
     private function pdo(): \Pdo\Sqlite

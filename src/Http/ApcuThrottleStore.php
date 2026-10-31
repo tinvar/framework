@@ -212,11 +212,9 @@ final class ApcuThrottleStore implements ThrottleStore
      */
     private function entry(string $key, int $window): array
     {
-        $start = intdiv($this->now(), $window) * $window;
+        [$entry, $start] = ThrottleWindow::entry($key, max(1, $window), $this->now());
 
-        // Hashed: a key is built from caller identity and can be long, and
-        // APCu's entry names are not where addresses should be listed.
-        return [$this->prefix . hash('xxh128', $key) . ':' . $window . ':' . $start, $start];
+        return [$this->prefix . $entry, $start];
     }
 
     private function now(): int

@@ -213,14 +213,7 @@ final class PdoThrottleStore implements ThrottleStore
      */
     private function sweep(\PDO $pdo): void
     {
-        $limit = self::SWEEP_BATCH;
-        $sql = match ($this->driver) {
-            'pgsql' => "DELETE FROM {$this->table} WHERE entry IN ("
-                . "SELECT entry FROM {$this->table} WHERE expires_at <= ? LIMIT {$limit} FOR UPDATE SKIP LOCKED)",
-            'mysql' => "DELETE FROM {$this->table} WHERE expires_at <= ? LIMIT {$limit}",
-            default => "DELETE FROM {$this->table} WHERE entry IN ("
-                . "SELECT entry FROM {$this->table} WHERE expires_at <= ? LIMIT {$limit})",
-        };
+        $sql = ThrottleWindow::sweep($this->driver, $this->table, self::SWEEP_BATCH);
 
         try {
             $pdo->prepare($sql)->execute([$this->now()]);
@@ -235,11 +228,7 @@ final class PdoThrottleStore implements ThrottleStore
      */
     private function entry(string $key, int $window): array
     {
-        $start = intdiv($this->now(), $window) * $window;
-
-        // Hashed: a key is built from caller identity and can be long, and
-        // a shared table is not somewhere addresses should be listed.
-        return [hash('xxh128', $key) . ':' . $window . ':' . $start, $start];
+        return ThrottleWindow::entry($key, max(1, $window), $this->now());
     }
 
     /** The connection, refused while a transaction is open on it; see the class comment. */
