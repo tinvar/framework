@@ -13,6 +13,7 @@ use Tinvar\Attributes\Listener;
 use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\Queue;
 use Tinvar\Auth\AuthContext;
+use Tinvar\Auth\PanelBinding;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Events\EventDispatcher;
 use Tinvar\Events\EventFake;
@@ -112,6 +113,9 @@ final class ScopeListeners
             'user' => $this->auth->id(),
             'epoch' => $this->auth->epoch(),
             'panel' => $this->panels->currentOrNull(),
+            'granted' => $this->panels->granted()?->name,
+            'grantedSubtree' => $this->panels->granted()?->subtree,
+            'ormGranted' => $this->orm->isSubtreeGranted(),
         ];
     }
 }
@@ -228,6 +232,27 @@ it('runs an afterCommit listener as the user, epoch and panel it was dispatched 
     )), 'e1');
 
     expect($h->journal()->entries[0])->toMatchArray(['user' => 'bob', 'epoch' => 'e2', 'panel' => 'reseller']);
+});
+
+// The membership check that let the dispatch into its panel comes back with
+// it, and never its subtree: the listener runs with the ORM's subtree grant
+// lifted, and a binding still saying `subtree` would key the query cache's
+// entries and tags as the subtree's while the ORM read the tenant alone.
+it('restores an afterCommit listener\'s panel grant without its subtree, as the ORM\'s grant is lifted', function () {
+    $h = new Harness();
+    $events = events($h, [ScopeListeners::class]);
+    $binding = new PanelBinding('admin', permissions: ['orders.view'], subtree: true);
+
+    $h->orm->actAs('acme', fn () => $h->orm->transaction(fn () => $h->panels->within(
+        'admin',
+        fn () => $h->panels->grantedWithin($binding, fn () => $h->orm->grantSubtree(fn () => $events->dispatch(new OrderPlaced('PW-14')))),
+    )));
+    $h->orm->actAs('acme', fn () => $h->panels->within('admin', fn () => $h->panels->grantedWithin($binding, fn () => $h->orm->transaction(
+        fn () => $h->auth->actingAs(new User('bob'), fn () => $events->dispatch(new OrderPlaced('PW-15')), 'e2'),
+    ))));
+
+    expect(array_map(static fn (array $e): array => [$e['granted'], $e['grantedSubtree'], $e['ormGranted']], $h->journal()->entries))
+        ->toBe([['admin', false, false], ['admin', false, false]]);
 });
 
 it('queues a listener whose class has #[Queue], under that class\'s queue, tries and panel', function () {

@@ -47,7 +47,12 @@ final class PanelContext
      */
     private ?PanelBinding $grantMain = null;
 
-    /** @var \WeakMap<object, PanelBinding> */
+    /**
+     * False where a fiber was run as having passed none (grantedWithin(null)),
+     * so it does not fall back to the main context's.
+     *
+     * @var \WeakMap<object, PanelBinding|false>
+     */
     private \WeakMap $grantByFiber;
 
     public function __construct()
@@ -132,35 +137,42 @@ final class PanelContext
             return $this->grantMain;
         }
 
-        return $this->grantByFiber[$fiber] ?? $this->grantMain;
+        $granted = $this->grantByFiber[$fiber] ?? $this->grantMain;
+
+        return $granted === false ? null : $granted;
     }
 
     /**
      * Runs $work as having passed a membership check against $binding,
      * restoring whatever was there afterwards -- scoped, as within() is.
+     * Null runs it as having passed none, whatever was granted around it.
      *
      * @template T
      * @param \Closure(): T $work
      * @return T
      */
-    public function grantedWithin(PanelBinding $binding, \Closure $work): mixed
+    public function grantedWithin(?PanelBinding $binding, \Closure $work): mixed
     {
         $fiber = \Fiber::getCurrent();
-        $had = $fiber !== null && isset($this->grantByFiber[$fiber]);
-        $previous = $fiber === null ? $this->grantMain : ($had ? $this->grantByFiber[$fiber] : null);
-
         if ($fiber === null) {
+            $previous = $this->grantMain;
             $this->grantMain = $binding;
-        } else {
-            $this->grantByFiber[$fiber] = $binding;
+
+            try {
+                return $work();
+            } finally {
+                $this->grantMain = $previous;
+            }
         }
+
+        $had = isset($this->grantByFiber[$fiber]);
+        $previous = $had ? $this->grantByFiber[$fiber] : false;
+        $this->grantByFiber[$fiber] = $binding ?? false;
 
         try {
             return $work();
         } finally {
-            if ($fiber === null) {
-                $this->grantMain = $previous;
-            } elseif ($had) {
+            if ($had) {
                 $this->grantByFiber[$fiber] = $previous;
             } else {
                 unset($this->grantByFiber[$fiber]);

@@ -133,13 +133,22 @@ final readonly class EventDispatcher implements Events
 
     /**
      * $work, in the panel the event was dispatched in, with the binding its
-     * membership was checked against then.
+     * membership was checked against then -- and never that binding's
+     * subtree, nor whatever was granted around the commit.
+     *
+     * The listener runs with the ORM's subtree grant lifted, and a binding
+     * still saying `subtree` would key the query cache's entries and file
+     * its tags as the subtree's while the ORM read the tenant alone. One
+     * granted around the commit, to another user or for another panel, was
+     * never this dispatch's to skip a membership check with.
      *
      * @param \Closure(): void $work
      * @return \Closure(): void
      */
     private function inPanel(PanelContext $panels, ?string $panel, ?PanelBinding $granted, \Closure $work): \Closure
     {
+        $granted = $granted === null ? null : new PanelBinding($granted->name, $granted->kinds, $granted->permissions);
+
         return static function () use ($panels, $panel, $granted, $work): void {
             if ($panel === null) {
                 // PanelContext has no scoped "none": a commit in a panel of
@@ -150,12 +159,12 @@ final readonly class EventDispatcher implements Events
                 if ($current !== null) {
                     throw new \LogicException("An afterCommit listener dispatched in no panel cannot run inside panel '{$current}'.");
                 }
-                $work();
+                $panels->grantedWithin(null, $work);
 
                 return;
             }
 
-            $panels->within($panel, $granted === null ? $work : static fn () => $panels->grantedWithin($granted, $work));
+            $panels->within($panel, static fn () => $panels->grantedWithin($granted, $work));
         };
     }
 

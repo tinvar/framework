@@ -77,6 +77,25 @@ describe('the current panel', function () {
 
         expect($panels->isSet())->toBeFalse();
     });
+
+    // A grant of none is a grant of none in a fiber too, not a fall-back to
+    // the main context's: that one was checked for other work.
+    it('runs work as granted nothing, in the main context and in a fiber', function () {
+        $panels = new PanelContext();
+        $binding = new \Tinvar\Auth\PanelBinding('admin', permissions: ['orders.view']);
+
+        $seen = $panels->grantedWithin($binding, static function () use ($panels): array {
+            $fiber = new Fiber(static fn (): array => [
+                $panels->grantedWithin(null, static fn (): ?\Tinvar\Auth\PanelBinding => $panels->granted()),
+                $panels->granted()?->name,
+            ]);
+
+            return [$panels->grantedWithin(null, static fn (): ?\Tinvar\Auth\PanelBinding => $panels->granted()), ...$fiber->start() ?? $fiber->getReturn()];
+        });
+
+        expect($seen)->toBe([null, null, 'admin'])
+            ->and($panels->granted())->toBeNull();
+    });
 });
 
 /**
