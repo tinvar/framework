@@ -211,6 +211,22 @@ describe('arguments are resolved against the declaration', function () {
             ->and($results[0]['error']['message'])->toContain('sneaky');
     });
 
+    // A query that declares none was handed whatever was sent, and PHP
+    // refused the unknown named parameter inside the call: an internal
+    // error, reported, for what is the caller's mistake.
+    it('refuses any argument to a query that declares none', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1);
+        [$runner] = runnerFor($fixture, debug: true);
+
+        $results = $runner->run(
+            callsFor([['racks.boom', ['junk' => 1]]]),
+            allowed: ['racks.boom'],
+        );
+
+        expect($results[0]['error']['code'])->toBe(QueryError::BAD_ARGUMENTS)
+            ->and($results[0]['error']['message'])->toContain('junk');
+    });
+
     it('refuses a call missing a required argument', function () {
         $fixture = new Fixture(racks: 1, unitsPerRack: 1);
         [$runner] = runnerFor($fixture, debug: true);

@@ -512,7 +512,10 @@ final class QueryRunner
             if (!\is_string($key)) {
                 return "'{$name}' was called with a positional argument; only named arguments cross the socket";
             }
-            if ($declared !== [] && !\array_key_exists($key, $declared)) {
+            // A query that declares none takes none: handed through, an
+            // unknown named argument failed inside the call, an internal
+            // error for the caller's mistake.
+            if (!\array_key_exists($key, $declared)) {
                 return "'{$name}' does not declare an argument named '{$key}'";
             }
         }
@@ -558,9 +561,7 @@ final class QueryRunner
             }
         }
 
-        // A query with no declared parameters still gets its named arguments,
-        // checked for key shape above.
-        return $declared === [] ? $args : $resolved;
+        return $resolved;
     }
 
     /**
