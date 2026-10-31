@@ -136,6 +136,83 @@ describe('every store', function () {
     ]);
 });
 
+// ADR 0143: an upload sent through PHP in chunks, each appended only where
+// the last one ended, so a chunk sent twice is written once.
+describe('appending', function () {
+    it('appends only at the length there, and says the length when it is not', function (Closure $make) {
+        /** @var Tinvar\Storage\AppendableStorage $storage */
+        [$storage, $root] = $make();
+        $key = StorageKey::generate('tinvar-partial', '');
+
+        try {
+            expect($storage->append($key, 0, 'first '))->toBe(6)
+                ->and($storage->append($key, 6, 'second'))->toBe(12);
+
+            // The second chunk again, its answer lost: refused, naming the length.
+            try {
+                $storage->append($key, 6, 'second');
+                $mismatch = null;
+            } catch (Tinvar\Storage\OffsetMismatch $e) {
+                $mismatch = $e->actual;
+            }
+            expect($mismatch)->toBe(12)
+                ->and(fn () => $storage->append($key, 20, 'ahead'))->toThrow(Tinvar\Storage\OffsetMismatch::class)
+                ->and(stream_get_contents($storage->read($key)))->toBe('first second')
+                ->and($storage->size($key))->toBe(12);
+
+            // Nothing there is empty: only an append at 0 begins it.
+            $other = StorageKey::generate('tinvar-partial', '');
+            expect(fn () => $storage->append($other, 3, 'abc'))->toThrow(Tinvar\Storage\OffsetMismatch::class)
+                ->and($storage->exists($other))->toBeFalse();
+        } finally {
+            $root === null || removeStorageTestRoot($root);
+        }
+    })->with('stores');
+
+    it('writes nothing when its guard throws under the lock', function (Closure $make) {
+        /** @var Tinvar\Storage\AppendableStorage $storage */
+        [$storage, $root] = $make();
+        $key = StorageKey::generate('tinvar-partial', '');
+
+        try {
+            $storage->append($key, 0, 'kept');
+            expect(fn () => $storage->append($key, 4, 'refused', static fn () => throw new RuntimeException('closed')))
+                ->toThrow(RuntimeException::class, 'closed')
+                ->and(stream_get_contents($storage->read($key)))->toBe('kept')
+                ->and(fn () => $storage->append('../escape', 0, 'x'))->toThrow(StorageException::class);
+        } finally {
+            $root === null || removeStorageTestRoot($root);
+        }
+    })->with('stores');
+});
+
+describe('LocalStorage, appending and listing', function () {
+    it('keeps an appended file 0600, will not append through a planted symlink, and lists a prefix', function () {
+        $root = storageTestRoot();
+        $outside = storageTestRoot();
+
+        try {
+            $storage = new LocalStorage($root);
+            $key = StorageKey::generate('tinvar-partial', '');
+            $storage->append($key, 0, 'abc');
+            expect(fileperms("{$root}/{$key}") & 0o777)->toBe(0o600)
+                ->and(array_keys($storage->keysUnder('tinvar-partial', 10)))->toBe([$key])
+                ->and($storage->keysUnder('tinvar-partial', 10)[$key])->toBeGreaterThan(time() - 60)
+                ->and($storage->keysUnder('nothing-here', 10))->toBe([]);
+
+            mkdir($outside, 0o700, true);
+            file_put_contents("{$outside}/target", 'outside');
+            $planted = 'tinvar-partial/' . str_repeat('b', 32);
+            symlink("{$outside}/target", "{$root}/{$planted}");
+            expect(fn () => $storage->append($planted, 7, 'more'))->toThrow(StorageException::class)
+                ->and(file_get_contents("{$outside}/target"))->toBe('outside');
+        } finally {
+            removeStorageTestRoot($root);
+            removeStorageTestRoot($outside);
+        }
+    });
+});
+
 describe('LocalStorage', function () {
     it('keeps its root and its directories to this user, and its files 0600', function () {
         $root = storageTestRoot();

@@ -20,9 +20,11 @@ namespace Tinvar\Storage;
  *
  * A write goes to a temporary file beside its destination and is renamed
  * into place, which is atomic on one filesystem: a reader sees the old file
- * or the new one, never part of either.
+ * or the new one, never part of either. An append (ADR 0143) is the one
+ * write made in place, under an exclusive lock on the file, and cut back to
+ * where it began if it fails part way.
  */
-final readonly class LocalStorage implements Storage
+final readonly class LocalStorage implements AppendableStorage, ListsKeys
 {
     private string $root;
 
@@ -84,6 +86,128 @@ final readonly class LocalStorage implements Storage
         @chmod($temporary, 0o600);
 
         return new LocalStorageWriter($out, $temporary, $path);
+    }
+
+    public function append(string $key, int $offset, string $bytes, ?\Closure $guard = null): int
+    {
+        if ($offset < 0) {
+            throw new \InvalidArgumentException('An append is made at an offset of at least 0.');
+        }
+        $root = $this->madeRoot();
+        StorageKey::assertValid($key);
+        $path = $root . '/' . $key;
+        $directory = \dirname($path);
+        if (!is_dir($directory) && !@mkdir($directory, 0o700, true) && !is_dir($directory)) {
+            throw new StorageException('A directory for a stored file cannot be made.');
+        }
+        $this->assertInside($root, $directory);
+        if (is_link($path)) {
+            throw new StorageException('A stored file resolves outside the storage root.');
+        }
+        // Nothing there is empty, and only an append at 0 begins a file:
+        // one ahead of it is refused without leaving an empty file behind.
+        clearstatcache(true, $path);
+        if ($offset !== 0 && !is_file($path)) {
+            throw new OffsetMismatch(0);
+        }
+
+        $out = @fopen($path, 'cb');
+        if ($out === false) {
+            throw new StorageException('A stored file cannot be written.');
+        }
+        try {
+            // The file opened is the one at the path, and no link: one
+            // swapped in after the check above would point anywhere.
+            $opened = fstat($out);
+            $there = @lstat($path);
+            if ($opened === false || $there === false || $opened['ino'] !== $there['ino'] || $opened['dev'] !== $there['dev']
+                || ($there['mode'] & 0o170000) !== 0o100000) {
+                throw new StorageException('A stored file resolves outside the storage root.');
+            }
+            @chmod($path, 0o600);
+            if (!flock($out, LOCK_EX)) {
+                throw new StorageException('A stored file cannot be locked to append to.');
+            }
+            try {
+                clearstatcache(true, $path);
+                $size = fstat($out)['size'] ?? -1;
+                if ($size !== $offset) {
+                    throw new OffsetMismatch(max(0, $size));
+                }
+                if ($guard !== null) {
+                    $guard();
+                }
+                if (fseek($out, $offset) !== 0) {
+                    throw new StorageException('A stored file cannot be appended to.');
+                }
+                $written = 0;
+                $length = \strlen($bytes);
+                while ($written < $length) {
+                    $wrote = fwrite($out, substr($bytes, $written, 1_048_576));
+                    if ($wrote === false || $wrote === 0) {
+                        // Cut back to where it began: half a chunk is no chunk.
+                        ftruncate($out, $offset);
+                        throw new StorageException('A stored file could not be appended to the end.');
+                    }
+                    $written += $wrote;
+                }
+                if (!fflush($out)) {
+                    ftruncate($out, $offset);
+                    throw new StorageException('A stored file could not be appended to the end.');
+                }
+
+                return $offset + $length;
+            } finally {
+                flock($out, LOCK_UN);
+            }
+        } finally {
+            fclose($out);
+        }
+    }
+
+    /**
+     * The files under $prefix and when each was last written, never
+     * following a link: for pruning to find what no record names.
+     */
+    public function keysUnder(string $prefix, int $limit): array
+    {
+        if (!StorageKey::isValidPrefix($prefix)) {
+            throw new \InvalidArgumentException("'{$prefix}' is not a storage prefix to list.");
+        }
+        $root = realpath($this->root);
+        if ($root === false || !is_dir("{$root}/{$prefix}") || is_link("{$root}/{$prefix}")) {
+            return [];
+        }
+
+        $keys = [];
+        $pending = [$prefix];
+        while ($pending !== [] && \count($keys) < $limit) {
+            $directory = array_shift($pending);
+            $names = @scandir("{$root}/{$directory}");
+            if ($names === false) {
+                throw new StorageException('A directory of stored files cannot be listed.');
+            }
+            foreach ($names as $name) {
+                if ($name === '.' || $name === '..' || \count($keys) >= $limit) {
+                    continue;
+                }
+                $key = "{$directory}/{$name}";
+                $path = "{$root}/{$key}";
+                if (is_link($path)) {
+                    continue;
+                }
+                if (is_dir($path)) {
+                    $pending[] = $key;
+                } elseif (StorageKey::isValid($key)) {
+                    $at = @filemtime($path);
+                    if ($at !== false) {
+                        $keys[$key] = $at;
+                    }
+                }
+            }
+        }
+
+        return $keys;
     }
 
     public function read(string $key): mixed

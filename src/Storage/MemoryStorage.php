@@ -9,7 +9,7 @@ namespace Tinvar\Storage;
  * or the next request on a php -S server can see. Keys are held to the same
  * shape as on disk, so a test cannot pass with a key the real store refuses.
  */
-final class MemoryStorage implements Storage
+final class MemoryStorage implements AppendableStorage
 {
     /** @var array<string, string> key => contents */
     private array $files = [];
@@ -27,6 +27,21 @@ final class MemoryStorage implements Storage
         }
 
         $this->files[$key] = $contents;
+    }
+
+    public function append(string $key, int $offset, string $bytes, ?\Closure $guard = null): int
+    {
+        StorageKey::assertValid($key);
+        $size = \strlen($this->files[$key] ?? '');
+        if ($size !== $offset) {
+            throw new OffsetMismatch($size);
+        }
+        if ($guard !== null) {
+            $guard();
+        }
+        $this->files[$key] = ($this->files[$key] ?? '') . $bytes;
+
+        return $offset + \strlen($bytes);
     }
 
     public function read(string $key): mixed
