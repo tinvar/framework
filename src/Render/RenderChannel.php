@@ -416,6 +416,12 @@ final class RenderChannel
                         // another session, or a longer life.
                         $requests = Frame::readMintBatch($message);
 
+                        // The render's cap, here and nowhere else in a
+                        // render: counted by request, per try, and a renderer
+                        // past it is in breach of the protocol. A minter's
+                        // own count (FragmentMinter) never reaches it here;
+                        // it bounds a minter used outside a render -- the
+                        // bootstrap endpoint's.
                         $minted += \count($requests);
                         if ($mint === null || $minted > Frame::MAX_MINTS_PER_RENDER) {
                             throw new ProtocolException(

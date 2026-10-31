@@ -131,6 +131,9 @@ final class FragmentMinter implements Minter
             throw new FragmentTokenError('the page\'s params are not text a token can carry');
         }
 
+        // In a render, RenderChannel holds the renderer to the cap by request
+        // before any reaches here; this bounds what a minter signs where no
+        // channel counts -- the bootstrap endpoint's -- one boundary refused.
         if (++$this->minted > Frame::MAX_MINTS_PER_RENDER) {
             throw new FragmentTokenError('more fragment tokens requested than one render may mint');
         }
