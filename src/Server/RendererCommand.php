@@ -8,6 +8,7 @@ use Tinvar\Render\RendererException;
 use Tinvar\Render\RendererHealth;
 use Tinvar\Render\RendererUser;
 use Tinvar\Render\SocketTrust;
+use Tinvar\Support\BuildProfile;
 use Tinvar\Support\ChildDescriptors;
 use Tinvar\Support\PrivateDirectory;
 
@@ -491,7 +492,11 @@ final class RendererCommand
         return !str_starts_with(trim((string) shell_exec("ps -o stat= -p {$pid} 2>/dev/null")), 'Z');
     }
 
-    /** The app's built rsc entry: --app's, or the working directory's. */
+    /**
+     * The app's built rsc entry: --app's, or the working directory's -- in
+     * dist/, unless TINVAR_BUILD_DIR names a build of its own, as serve
+     * reads it (BuildProfile, ADR 0066).
+     */
     private function entry(?string $given): string
     {
         $cwd = $this->workingDirectory ?? (string) getcwd();
@@ -500,7 +505,11 @@ final class RendererCommand
             throw new ServeException('No app at ' . ($given ?? $cwd) . '.');
         }
 
-        $entry = "{$app}/dist/rsc/index.js";
+        try {
+            $entry = BuildProfile::buildDirectory($app) . '/rsc/index.js';
+        } catch (\RuntimeException $e) {
+            throw new ServeException($e->getMessage());
+        }
         if (!is_file($entry)) {
             throw new ServeException("{$app} is not built: there is no {$entry}. Build it first (npx vite build in {$app}).");
         }

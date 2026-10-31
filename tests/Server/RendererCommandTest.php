@@ -156,6 +156,29 @@ describe('renderer:start', function () use ($root) {
         'a group that is not a name' => [['--socket-group=../wheel'], "--socket-group must name a group other than root's"],
     ]);
 
+    // ADR 0066: TINVAR_BUILD_DIR names the build, as serve reads it -- a
+    // test build beside dist/ -- and renderer:start ran dist/ regardless.
+    it('runs the build TINVAR_BUILD_DIR names, as serve does', function () use ($root) {
+        $build = PrivateDirectory::create('tinvar-build-dir');
+        putenv("TINVAR_BUILD_DIR={$build}");
+
+        try {
+            [$command, , $err, $execs] = command($root);
+
+            expect($command->run('renderer:start', ["--app={$root}/examples/shop"]))->toBe(RendererCommand::USAGE)
+                ->and(implode("\n", $err->getArrayCopy()))->toContain("there is no {$build}/rsc/index.js")
+                ->and($execs)->toHaveCount(0);
+
+            putenv('TINVAR_BUILD_DIR=relative/build');
+            [$command, , $err] = command($root);
+            expect($command->run('renderer:start', ["--app={$root}/examples/shop"]))->toBe(RendererCommand::USAGE)
+                ->and(implode("\n", $err->getArrayCopy()))->toContain('is not an absolute path');
+        } finally {
+            putenv('TINVAR_BUILD_DIR');
+            rmdir($build);
+        }
+    });
+
     // ADR 0028: run as a user of their own, the renderers share their
     // sockets with PHP's user through a group, which the renderer is handed
     // as a number -- it may read no group database inside its sandbox.
