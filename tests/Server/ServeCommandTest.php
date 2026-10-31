@@ -217,6 +217,14 @@ it('kills a pid at the stop only once something says it runs queue:work', functi
     $worker = proc_open([PHP_BINARY, '-r', 'sleep(30);', 'queue:work'], [], $pipes);
     \assert(\is_resource($worker));
     try {
+        // proc_open() returns once the child is forked, which may be before
+        // it has exec'd PHP with queue:work in its arguments.
+        $workerPid = proc_get_status($worker)['pid'];
+        $deadline = microtime(true) + 5;
+        while (!$isWorker->invoke(null, $workerPid) && microtime(true) < $deadline) {
+            usleep(20_000);
+        }
+
         expect($isWorker->invoke(null, proc_get_status($other)['pid']))->toBeFalse()
             ->and($isWorker->invoke(null, getmypid()))->toBeFalse()
             ->and($isWorker->invoke(null, proc_get_status($worker)['pid']))->toBeTrue();
