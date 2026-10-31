@@ -45,6 +45,7 @@ use Tinvar\Live\LiveUpdates;
 use Tinvar\Live\Mercure;
 use Tinvar\Live\SubscribeEndpoint;
 use Tinvar\Live\TagsRead;
+use Tinvar\Mail\MailEventsEndpoint;
 use Tinvar\Mail\UnsubscribeEndpoint;
 use Tinvar\Observability\Logger;
 use Tinvar\Observability\Metrics;
@@ -577,6 +578,10 @@ final class Kernel
      *        and what each request read of them is cleared by the reset contract. Give the
      *        same Features to the QueryCache, which keys an answer by the flags its body
      *        read; one without it keeps no answer that read a flag
+     * @param MailEventsEndpoint|null $mailEvents the mail providers' webhooks -- bounces,
+     *        complaints, deliveries (ADR 0147): mounted at /_mail/events/*, beside webhooks
+     *        and as they are, with no session and none of the global stack; each provider's
+     *        own signature is what a session is to a page
      */
     public function __construct(
         public readonly Orm $orm,
@@ -636,6 +641,7 @@ final class Kernel
         ?Transfers $transfers = null,
         bool $problemReports = false,
         ?Features $features = null,
+        private readonly ?MailEventsEndpoint $mailEvents = null,
     ) {
         $this->resolver = $resolver;
         $this->shared = $shared;
@@ -1678,6 +1684,12 @@ final class Kernel
         if ($this->answersProbe($request) || ($this->problemReports_?->matches($request) ?? false)) {
             return true;
         }
+        // A mail provider's server, POSTing what became of a message: its
+        // signature is all it carries, and a cookie would be a session it
+        // never uses (ADR 0147).
+        if ($this->mailEvents?->matches($request) ?? false) {
+            return true;
+        }
         if (($this->clientTelemetry_?->matches($request) ?? false) && TelemetryEndpoint::ridesNoSession($request)) {
             return true;
         }
@@ -1751,6 +1763,12 @@ final class Kernel
                 $this->telemetry?->route('_unsubscribe');
 
                 return $this->unsubscribe->handle($request, $rawBody);
+            }
+
+            if ($this->mailEvents !== null && $this->mailEvents->matches($request)) {
+                $this->telemetry?->route('_mail_events');
+
+                return $this->mailEvents->handle($request, $rawBody);
             }
 
             if ($this->handoff !== null && $this->handoff->matches($request)) {
