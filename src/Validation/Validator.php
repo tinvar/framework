@@ -30,6 +30,9 @@ final class Validator
     /** @var array<class-string, list<FieldPlan>> */
     private static array $plans = [];
 
+    /** @var array<string, FieldPlan> an action's or endpoint's own parameters, planned (parameterPlan()) */
+    private static array $parameterPlans = [];
+
     /** Whether a rule may ask the database; see withoutLookups(). */
     private bool $lookups = true;
 
@@ -301,7 +304,7 @@ final class Validator
         array $unsupplied = [],
     ): array {
         return $this->read(
-            FieldPlan::of($parameter, $owner),
+            self::parameterPlan($parameter, $owner),
             $input,
             new ValidationContext($input, $this->orm, $subject, $subjects, $unsupplied, $this->lookups),
         );
@@ -316,7 +319,7 @@ final class Validator
      */
     public function coerceParameter(\ReflectionParameter $parameter, string $owner, mixed $raw): mixed
     {
-        $plan = FieldPlan::of($parameter, $owner);
+        $plan = self::parameterPlan($parameter, $owner);
 
         try {
             return $this->coerce($raw, $plan);
@@ -467,6 +470,20 @@ final class Validator
             '0', 'false', 'off', 'no', 0 => false,
             default => throw new CoercionFailed("{$field} must be true or false."),
         };
+    }
+
+    /**
+     * An action's or an endpoint's own parameter, planned once a worker as a
+     * form request's fields are (planFor()): every call planned it again.
+     * Keyed by where it is and its place there, never by anything a request
+     * sent.
+     */
+    private static function parameterPlan(\ReflectionParameter $parameter, string $owner): FieldPlan
+    {
+        $function = $parameter->getDeclaringFunction();
+        $key = $owner . '#' . ($parameter->getDeclaringClass()?->getName() ?? '') . '::' . $function->getName() . '#' . $parameter->getPosition();
+
+        return self::$parameterPlans[$key] ??= FieldPlan::of($parameter, $owner);
     }
 
     /**
