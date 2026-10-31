@@ -180,27 +180,17 @@ final class ActionEndpoint
         // model arguments are resolved scoped to the tenant, and "the full
         // middleware stack of the action's panel (guard, MFA, network
         // allowlist, email verification)" is step one of every call.
-        $entry = [];
-        if ($this->entry !== null) {
-            $panels = $this->runner->panelsFor($name);
-            $entry = $this->entry->stackFor(
-                $this->runner->tenantSourceFor($name),
-                $panels === null ? null : $this->entry->panelFor(...$panels),
-            );
-        }
-        $own = array_values(array_diff($this->runner->middlewareFor($name), $this->globalMiddleware));
-        if ($entry === [] && $own === []) {
-            return $this->dispatch($request, $name, $rawBody);
-        }
-        $resolver = $this->middlewareResolver;
-        if ($own !== [] && $resolver === null) {
-            throw new \LogicException(
-                "Action {$name} declares #[Middleware] but the endpoint was given no middleware resolver.",
-            );
-        }
-
-        return new Pipeline([...$entry, ...($resolver === null ? [] : array_map($resolver, $own))])
-            ->run($request, fn (Request $r): Response => $this->dispatch($r, $name, $rawBody));
+        return EntryContext::runCall(
+            $this->entry,
+            $this->runner->tenantSourceFor($name),
+            $this->entry === null ? null : $this->runner->panelsFor($name),
+            $this->runner->middlewareFor($name),
+            $this->globalMiddleware,
+            $this->middlewareResolver,
+            "Action {$name}",
+            $request,
+            fn (Request $r): Response => $this->dispatch($r, $name, $rawBody),
+        );
     }
 
     private function dispatch(Request $request, string $name, string $rawBody): Response

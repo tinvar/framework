@@ -187,6 +187,44 @@ final readonly class EntryContext
         ]);
     }
 
+    /**
+     * An action's or a query's call over HTTP, run through what its
+     * declarations put around it -- its tenant and its panel's stack, then
+     * its own #[Middleware], the global middleware left out -- and then
+     * $then. The one stack both endpoints build: the two had each written
+     * it out, and drift in either would have been a call let in past a
+     * guard the other ran.
+     *
+     * @param array{list<Panel>, class-string}|null $panels its #[Panel]s and its class, as the runner answers them
+     * @param list<class-string> $middleware its own #[Middleware]
+     * @param list<string> $globalMiddleware
+     * @param (\Closure(class-string): Middleware)|null $resolver
+     * @param string $what what the call is, for the refusal of a #[Middleware] nothing can build
+     * @param \Closure(Request): Response $then
+     */
+    public static function runCall(
+        ?self $entry,
+        ?string $tenantSource,
+        ?array $panels,
+        array $middleware,
+        array $globalMiddleware,
+        ?\Closure $resolver,
+        string $what,
+        Request $request,
+        \Closure $then,
+    ): Response {
+        $stack = $entry === null ? [] : $entry->stackFor($tenantSource, $panels === null ? null : $entry->panelFor(...$panels));
+        $own = array_values(array_diff($middleware, $globalMiddleware));
+        if ($stack === [] && $own === []) {
+            return $then($request);
+        }
+        if ($own !== [] && $resolver === null) {
+            throw new \LogicException("{$what} declares #[Middleware] but the endpoint was given no middleware resolver.");
+        }
+
+        return new Pipeline([...$stack, ...($resolver === null ? [] : array_map($resolver, $own))])->run($request, $then);
+    }
+
     /** A route chain's panel: its page's and layouts' declarations, or its page's namespace. */
     public function panelForChain(RouteChain $chain): ?PanelBinding
     {

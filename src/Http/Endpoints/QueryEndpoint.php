@@ -7,7 +7,6 @@ namespace Tinvar\Http\Endpoints;
 use Tinvar\Http\EntryContext;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
-use Tinvar\Http\Pipeline;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Query\QueryError;
@@ -91,27 +90,17 @@ final class QueryEndpoint
         // Its tenant and its panel's stack ahead of that: an HTTP call gets
         // "the query's panel middleware", and "Resolve model arguments,
         // scoped to the tenant" is the step after.
-        $entry = [];
-        if ($this->entry !== null) {
-            $panels = $this->runner->panelsFor($name);
-            $entry = $this->entry->stackFor(
-                $this->runner->tenantSourceFor($name),
-                $panels === null ? null : $this->entry->panelFor(...$panels),
-            );
-        }
-        $own = array_values(array_diff($this->runner->middlewareFor($name), $this->globalMiddleware));
-        if ($entry === [] && $own === []) {
-            return $this->dispatch($request, $name, $rawBody);
-        }
-        $resolver = $this->middlewareResolver;
-        if ($own !== [] && $resolver === null) {
-            throw new \LogicException(
-                "Query {$name} declares #[Middleware] but the endpoint was given no middleware resolver.",
-            );
-        }
-
-        return new Pipeline([...$entry, ...($resolver === null ? [] : array_map($resolver, $own))])
-            ->run($request, fn (Request $r): Response => $this->dispatch($r, $name, $rawBody));
+        return EntryContext::runCall(
+            $this->entry,
+            $this->runner->tenantSourceFor($name),
+            $this->entry === null ? null : $this->runner->panelsFor($name),
+            $this->runner->middlewareFor($name),
+            $this->globalMiddleware,
+            $this->middlewareResolver,
+            "Query {$name}",
+            $request,
+            fn (Request $r): Response => $this->dispatch($r, $name, $rawBody),
+        );
     }
 
     private function dispatch(Request $request, string $name, string $rawBody): Response
