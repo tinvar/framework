@@ -17,16 +17,16 @@ use Tinvar\Http\Sapi;
 
 describe('the in-memory throttle store', function () {
     it('counts within a window and starts afresh once it has passed', function () {
-        $now = 1000;
+        $now = 1020;
         $store = new ArrayThrottleStore(static function () use (&$now): int {
             return $now;
         });
 
-        expect($store->increment('k', 60))->toBe([1, 1060])
-            ->and($store->increment('k', 60))->toBe([2, 1060]);
+        expect($store->increment('k', 60))->toBe([1, 1080])
+            ->and($store->increment('k', 60))->toBe([2, 1080]);
 
-        $now = 1060;
-        expect($store->increment('k', 60))->toBe([1, 1120]);
+        $now = 1080;
+        expect($store->increment('k', 60))->toBe([1, 1140]);
     });
 
     // An attacker rotating keys must not grow it without bound.
@@ -70,7 +70,9 @@ describe('the in-memory throttle store', function () {
     it('uses the real clock by default', function () {
         [, $resetsAt] = (new ArrayThrottleStore())->increment('k', 60);
 
-        expect($resetsAt)->toBeGreaterThanOrEqual(time() + 59)->toBeLessThanOrEqual(time() + 60);
+        // The end of the minute the clock is in.
+        expect($resetsAt % 60)->toBe(0)
+            ->and($resetsAt)->toBeGreaterThan(time() - 1)->toBeLessThanOrEqual(time() + 60);
     });
 });
 

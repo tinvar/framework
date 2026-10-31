@@ -48,15 +48,21 @@ final class ArrayThrottleStore implements ThrottleStore
             $this->sweepAt = max(self::SWEEP_AT, 2 * \count($this->windows));
         }
 
-        $current = $this->windows[$key] ?? null;
+        // Fixed windows aligned to the clock, as every other store keeps
+        // them: the window a hit falls in is floor(now / window), not one
+        // its first hit began. And one count per key and window size, as
+        // theirs are, so a test that passes here passes in production.
+        $window = max(1, $window);
+        $entry = "{$window}:{$key}";
+        $current = $this->windows[$entry] ?? null;
 
         // A window that has passed is a fresh window, not a continued one.
         if ($current === null || $current['resetsAt'] <= $now) {
-            $current = ['count' => 0, 'resetsAt' => $now + $window];
+            $current = ['count' => 0, 'resetsAt' => (intdiv($now, $window) + 1) * $window];
         }
 
         $current['count']++;
-        $this->windows[$key] = $current;
+        $this->windows[$entry] = $current;
 
         return [$current['count'], $current['resetsAt']];
     }
@@ -64,12 +70,13 @@ final class ArrayThrottleStore implements ThrottleStore
     public function release(string $key, int $window, int $hits = 1): void
     {
         $now = $this->clock === null ? time() : ($this->clock)();
-        $current = $this->windows[$key] ?? null;
+        $entry = max(1, $window) . ":{$key}";
+        $current = $this->windows[$entry] ?? null;
         if ($current === null || $current['resetsAt'] <= $now) {
             return;
         }
 
-        $this->windows[$key]['count'] = max(0, $current['count'] - max(0, $hits));
+        $this->windows[$entry]['count'] = max(0, $current['count'] - max(0, $hits));
     }
 
     /** Clears every window. Request teardown has no business calling this. */

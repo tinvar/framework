@@ -131,3 +131,25 @@ describe('a form or multipart body', function () {
         expect(Limits::form($form))->toBe($form);
     });
 });
+
+// As every other store counts: the window a hit falls in is the one the
+// clock is in, not one begun by the first hit -- so a test passing on this
+// store passes on the one in production.
+it('counts hits in a window aligned to the clock, as the other stores do', function () {
+    $now = 1_000_030;
+    $store = new ArrayThrottleStore(static function () use (&$now): int {
+        return $now;
+    });
+
+    expect($store->increment('k', 60))->toBe([1, 1_000_080])
+        ->and((function () use (&$now, $store): array {
+            $now = 1_000_079;
+
+            return $store->increment('k', 60);
+        })())->toBe([2, 1_000_080])
+        ->and((function () use (&$now, $store): array {
+            $now = 1_000_080;
+
+            return $store->increment('k', 60);
+        })())->toBe([1, 1_000_140]);
+});
