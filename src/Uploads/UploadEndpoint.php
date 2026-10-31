@@ -782,12 +782,19 @@ final class UploadEndpoint
      * Only an `Upload`: PHP gives a field of several files a nested shape
      * the request keeps none of (UploadedFile::fromGlobals()).
      *
+     * A file refused leaves none of the post's kept: those taken before it
+     * are discarded (discardTaken()) before the refusal is thrown.
+     *
      * @param array<mixed> $input
+     * @param list<string> $kept set to the ids of the uploads kept, for the caller to
+     *        discard should the post fail its validation after all
+     * @param-out list<string> $kept
      * @return array<mixed>
      * @throws ValidationException naming each field whose file was refused
      */
-    public function takeInline(Request $request, string $name, array $input): array
+    public function takeInline(Request $request, string $name, array $input, ?array &$kept = null): array
     {
+        $kept = [];
         $tickets = $input[self::INLINE_TICKETS] ?? [];
         unset($input[self::INLINE_TICKETS]);
         if ($request->files === [] || !$this->actions->has($name)) {
@@ -819,17 +826,47 @@ final class UploadEndpoint
                 $this->assertBinding($request, $ticket);
 
                 $received = $this->receivedFile($request, $field);
-                $input[$field] = $this->keepFile($ticket, $declared, $received->path, $received->clientName)->id;
+                $input[$field] = $kept[] = $this->keepFile($ticket, $declared, $received->path, $received->clientName)->id;
             } catch (HttpException $e) {
                 $errors[$field] = [$e->status === 403 ? ActionRunner::UPLOAD_REFUSED : $e->getMessage()];
             }
         }
 
         if ($errors !== []) {
+            // The post goes back with its errors, and its files must be
+            // chosen again: none kept waiting against the quota and the cap.
+            $this->discardTaken($kept);
+            $kept = [];
+
             throw new ValidationException($errors);
         }
 
         return $input;
+    }
+
+    /**
+     * Removes the uploads takeInline() kept for a post that then failed --
+     * its validation, or another file refused -- each still waiting, so it
+     * stops counting against its owner's quota and cap now rather than in
+     * an hour. One an action has claimed is the action's, and left. A file
+     * that cannot be removed is left, record and all, for pruning.
+     *
+     * @param list<string> $ids
+     */
+    public function discardTaken(array $ids): void
+    {
+        foreach ($ids as $id) {
+            $upload = $this->uploads->store->find($id);
+            if ($upload === null || $upload->claimedAt !== null) {
+                continue;
+            }
+            try {
+                $this->uploads->storage->delete($upload->key);
+            } catch (StorageException) {
+                continue;
+            }
+            $this->uploads->store->forget($id);
+        }
     }
 
     /** The one file the request carried, received whole, or the refusal that says why not. */

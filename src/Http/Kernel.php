@@ -956,19 +956,23 @@ final class Kernel
             // called: the upload endpoint is made below.
             inlineUploads: $uploads === null ? null : static function (Request $request, string $name, array $input) use (&$inlineUploads, $inlineThrottle): array {
                 if (!$inlineUploads instanceof UploadEndpoint) {
-                    return $input;
+                    return [$input, static function (): void {}];
                 }
+                $kept = [];
                 if (self::filesCarried($request) === 0) {
-                    return $inlineUploads->takeInline($request, $name, $input);
+                    $taken = $inlineUploads->takeInline($request, $name, $input, $kept);
+                } else {
+                    $taken = $input;
+                    $inlineThrottle->run($request, static function (Request $passed) use ($inlineUploads, $name, $input, &$taken, &$kept): Response {
+                        $taken = $inlineUploads->takeInline($passed, $name, $input, $kept);
+
+                        return Response::make(204);
+                    });
                 }
-                $taken = $input;
-                $inlineThrottle->run($request, static function (Request $passed) use ($inlineUploads, $name, $input, &$taken): Response {
-                    $taken = $inlineUploads->takeInline($passed, $name, $input);
 
-                    return Response::make(204);
-                });
-
-                return $taken;
+                return [$taken, static function () use ($inlineUploads, &$kept): void {
+                    $inlineUploads->discardTaken($kept);
+                }];
             },
         );
 

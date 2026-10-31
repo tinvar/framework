@@ -191,3 +191,31 @@ it('says on the field what it refused, in the words a form shows', function () {
     expect(array_keys($taken))->toBe(['profile', 'avatar'])
         ->and($app->store->find((string) $taken['avatar'])?->type)->toBe('image/png');
 });
+
+// Review: a file kept for a post whose validation then failed -- or beside a
+// file refused -- stayed waiting an hour, against the quota and the cap, for
+// a post that would never claim it.
+it('keeps no file for a post whose validation fails', function () {
+    $app = new App(new MemoryStorage());
+    $ticket = $app->ticket(null, action: 'profiles.submit', field: 'picture');
+
+    $response = postWithoutScript($app, 'profiles.submit', ['caption' => str_repeat('x', 30), '_upload_tickets' => ['picture' => $ticket]], ['picture' => png()]);
+
+    expect($response->status)->toBeIn([303, 422])
+        ->and($app->storage instanceof MemoryStorage ? $app->storage->keys() : null)->toBe([])
+        ->and($app->store->all())->toBe([]);
+});
+
+it('keeps no file beside one it refuses', function () {
+    $app = new App(new MemoryStorage());
+    $tickets = [
+        'picture' => $app->ticket(null, action: 'profiles.submit', field: 'picture'),
+        'attachment' => $app->ticket(null, action: 'profiles.submit', field: 'attachment'),
+    ];
+
+    $response = postWithoutScript($app, 'profiles.submit', ['caption' => 'Me', '_upload_tickets' => $tickets], ['picture' => png(), 'attachment' => png()]);
+
+    expect($response->status)->toBeIn([303, 422])
+        ->and($app->storage instanceof MemoryStorage ? $app->storage->keys() : null)->toBe([])
+        ->and($app->store->all())->toBe([]);
+});

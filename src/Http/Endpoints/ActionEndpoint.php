@@ -55,9 +55,11 @@ final class ActionEndpoint
      * @param int $maxJsonDepth the nesting limit, up to Limits::MAX_JSON_DEPTH_CEILING
      * @param ExternalOrigins|null $externalOrigins where ActionResult::location() may
      *        send a browser; without them, nowhere
-     * @param (\Closure(Request, string, array<mixed>): array<mixed>)|null $inlineUploads takes the
-     *        files a form posted without script carries, under the tickets beside them, and
-     *        answers with the input their references stand in (UploadEndpoint::takeInline())
+     * @param (\Closure(Request, string, array<mixed>): array{array<mixed>, \Closure(): void})|null $inlineUploads
+     *        takes the files a form posted without script carries, under the tickets beside
+     *        them, and answers with the input their references stand in
+     *        (UploadEndpoint::takeInline()) and what discards them, should the post fail its
+     *        validation
      */
     public function __construct(
         private readonly ActionRunner $runner,
@@ -209,6 +211,7 @@ final class ActionEndpoint
         // running the body, optionally one field at a time.
         $precognitive = $request->header('precognition') === 'true';
         $only = $request->header('precognition-validate-only');
+        $discardInline = null;
 
         try {
             if ($precognitive && $only !== null && $only !== '') {
@@ -270,9 +273,11 @@ final class ActionEndpoint
             // are taken here -- inside the action's own context -- as
             // /_upload would take them, their references put in their place.
             // Never for a validate-only call, which keeps nothing.
-            $input = $this->inlineUploads === null || $precognitive
-                ? array_diff_key($input, ['_upload_tickets' => true])
-                : ($this->inlineUploads)($request, $name, $input);
+            if ($this->inlineUploads === null || $precognitive) {
+                $input = array_diff_key($input, ['_upload_tickets' => true]);
+            } else {
+                [$input, $discardInline] = ($this->inlineUploads)($request, $name, $input);
+            }
 
             // Who sent it, as the route tokens it carries are held to: taken
             // before the action can sign anyone in or out, or move an epoch.
@@ -280,6 +285,11 @@ final class ActionEndpoint
 
             $result = $this->runner->run($name, $input, $precognitive, $request, $this->answerable(...));
         } catch (ValidationException $e) {
+            // The files the post carried go back with it, to be chosen
+            // again: none is kept waiting for a post that will not claim it.
+            if ($discardInline !== null) {
+                $discardInline();
+            }
             if (self::isFormNavigation($request)) {
                 // "Without JavaScript, fall back to redirect-back with
                 // flashed errors." With nowhere to flash them, the 422 goes
