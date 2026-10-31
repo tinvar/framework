@@ -18,6 +18,13 @@ namespace Tinvar\Mail;
  * learns who else did that way. Its attachments are the files it carries
  * and the images its HTML shows by `cid:`, held to a total a mail server
  * takes once each is base64'd.
+ *
+ * Its tags and metadata are for the provider that sends it, never for the
+ * reader: labels and key=value pairs Resend, SES, Postmark, Mailgun and
+ * SendGrid each keep beside the message and hand back with its bounces,
+ * complaints and deliveries. Held to what all five take -- letters, digits,
+ * `_` and `-` -- so a tag that one provider accepts is not refused by the
+ * next a failover sends it through. SMTP sends neither.
  */
 final readonly class Message
 {
@@ -39,11 +46,25 @@ final readonly class Message
     /** @var list<Attachment> */
     public array $attachments;
 
+    /** The most tags, and the most metadata entries, one message carries: SendGrid's and SES's limits are higher. */
+    public const int MAX_TAGS = 10;
+
+    /** What a tag, a metadata key or a metadata value may be, for every provider that keeps them. */
+    public const string TAG = '/^[A-Za-z0-9_-]{1,128}\z/';
+
+    /** @var list<string> */
+    public array $tags;
+
+    /** @var array<string, string> */
+    public array $metadata;
+
     /**
      * @param list<Address> $to
      * @param list<Address> $cc
      * @param list<Address> $bcc
      * @param list<Attachment> $attachments
+     * @param list<string> $tags labels the provider keeps with it
+     * @param array<string, string> $metadata key => value pairs the provider keeps with it
      */
     public function __construct(
         public Address $from,
@@ -56,6 +77,8 @@ final readonly class Message
         array $cc = [],
         array $bcc = [],
         array $attachments = [],
+        array $tags = [],
+        array $metadata = [],
     ) {
         if ($to === []) {
             throw new \InvalidArgumentException('An email needs someone to go to.');
@@ -87,10 +110,71 @@ final readonly class Message
             throw new \InvalidArgumentException('An email needs a plain-text part.');
         }
 
+        self::assertTags($tags, $metadata);
+
         $this->to = $to;
         $this->cc = $cc;
         $this->bcc = $bcc;
         $this->attachments = $attachments;
+        $this->tags = $tags;
+        $this->metadata = $metadata;
+    }
+
+    /**
+     * Refuses tags or metadata a provider would: too many, or anything but
+     * letters, digits, `_` and `-`.
+     *
+     * @param array<array-key, mixed> $tags
+     * @param array<array-key, mixed> $metadata
+     */
+    public static function assertTags(array $tags, array $metadata): void
+    {
+        if (\count($tags) > self::MAX_TAGS || \count($metadata) > self::MAX_TAGS) {
+            throw new \InvalidArgumentException('An email carries at most ' . self::MAX_TAGS . ' tags and ' . self::MAX_TAGS . ' metadata entries.');
+        }
+        if (!array_is_list($tags)) {
+            throw new \InvalidArgumentException('An email\'s tags are a list.');
+        }
+        foreach ($tags as $tag) {
+            if (!\is_string($tag) || preg_match(self::TAG, $tag) !== 1) {
+                throw new \InvalidArgumentException('A tag is 1 to 128 letters, digits, _ or -.');
+            }
+        }
+        foreach ($metadata as $key => $value) {
+            if (!\is_string($key) || preg_match(self::TAG, $key) !== 1 || !\is_string($value) || preg_match(self::TAG, $value) !== 1) {
+                throw new \InvalidArgumentException('Metadata is key => value, each 1 to 128 letters, digits, _ or -.');
+            }
+        }
+    }
+
+    /**
+     * The same message to fewer readers: those left once the suppression
+     * list has had its say. Null when no To reader is left -- a message
+     * whose readers were all copies is not sent to the copies alone.
+     *
+     * @param \Closure(Address): bool $keep
+     */
+    public function keeping(\Closure $keep): ?self
+    {
+        $to = array_values(array_filter($this->to, $keep));
+        if ($to === []) {
+            return null;
+        }
+
+        return new self(
+            $this->from,
+            $to,
+            $this->subject,
+            $this->html,
+            $this->text,
+            $this->replyTo,
+            $this->unsubscribe,
+            array_values(array_filter($this->cc, $keep)),
+            array_values(array_filter($this->bcc, $keep)),
+            $this->attachments,
+            $this->tags,
+            $this->metadata,
+        );
     }
 
     /**

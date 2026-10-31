@@ -32,6 +32,12 @@ use Tinvar\Data\Data;
  * headers, Bcc never -- its readers are on the envelope alone. And
  * $attachments are the files it carries, built here on the worker; an
  * inline one's content id is the one `cid:` its HTML may name.
+ *
+ * $category is what the suppression list asks of it (MailCategory): mail
+ * with an $unsubscribe is Marketing unless it says otherwise, and the rest
+ * Transactional. Essential mail -- a sign-in link the reader asked for a
+ * moment ago -- goes whatever the list says. $tags and $metadata are the
+ * provider's, as a Message carries them.
  */
 final readonly class Email
 {
@@ -49,6 +55,14 @@ final readonly class Email
 
     public LinkPolicy $links;
 
+    public MailCategory $category;
+
+    /** @var list<string> */
+    public array $tags;
+
+    /** @var array<string, string> */
+    public array $metadata;
+
     /**
      * @param Address|list<Address> $to
      * @param list<string> $images
@@ -56,6 +70,8 @@ final readonly class Email
      * @param list<Address> $bcc
      * @param list<Attachment> $attachments
      * @param list<string> $tracking
+     * @param list<string> $tags
+     * @param array<string, string> $metadata
      */
     public function __construct(
         Address|array $to,
@@ -70,8 +86,15 @@ final readonly class Email
         array $bcc = [],
         array $attachments = [],
         array $tracking = [],
+        ?MailCategory $category = null,
+        array $tags = [],
+        array $metadata = [],
     ) {
         $this->to = $to instanceof Address ? [$to] : $to;
+        $this->category = $category ?? ($unsubscribe !== null ? MailCategory::Marketing : MailCategory::Transactional);
+        Message::assertTags($tags, $metadata);
+        $this->tags = $tags;
+        $this->metadata = $metadata;
         $this->cc = $cc;
         $this->bcc = $bcc;
         $this->attachments = $attachments;

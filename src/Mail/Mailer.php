@@ -6,6 +6,7 @@ namespace Tinvar\Mail;
 
 use Tinvar\Data\Encoder;
 use Tinvar\Jobs\Dispatcher;
+use Tinvar\Observability\Span;
 use Tinvar\Observability\Telemetry;
 
 /**
@@ -17,6 +18,12 @@ use Tinvar\Observability\Telemetry;
  * on, and a queued send is retried with backoff when the server is down.
  * Queued inside a transaction, it is sent only once the transaction
  * commits, so a rolled-back order sends no confirmation.
+ *
+ * Given a suppression list, it asks it before every send (ADR 0146): a
+ * reader the list holds for a reason that blocks the message's category
+ * (MailCategory) is left off, and a message with no To reader left is not
+ * sent at all. What became of the send -- the provider's message id, the
+ * transport that took it, who was left off -- is deliver()'s answer.
  */
 final readonly class Mailer
 {
@@ -27,6 +34,7 @@ final readonly class Mailer
         private ?Dispatcher $jobs = null,
         private Encoder $encoder = new Encoder(),
         private ?Telemetry $telemetry = null,
+        private ?Suppressions $suppressions = null,
     ) {}
 
     /**
@@ -36,15 +44,30 @@ final readonly class Mailer
      */
     public function send(Mailable $mailable): Message
     {
-        $email = $mailable->email();
-        if ($this->telemetry === null) {
-            return $this->deliver($email);
-        }
-
-        return $this->telemetry->trace("mail {$email->template}", ['tinvar.mail.template' => $email->template], fn (): Message => $this->deliver($email));
+        return $this->deliver($mailable)->message;
     }
 
-    private function deliver(Email $email): Message
+    /**
+     * As send(), and says what became of it: the provider's message id, the
+     * transport that took it, and the readers the suppression list left
+     * off -- or that it was not sent at all, every To reader suppressed.
+     */
+    public function deliver(Mailable $mailable): SentMessage
+    {
+        $email = $mailable->email();
+        if ($this->telemetry === null) {
+            return $this->compose($email);
+        }
+
+        return $this->telemetry->trace("mail {$email->template}", ['tinvar.mail.template' => $email->template], function (?Span $span) use ($email): SentMessage {
+            $sent = $this->compose($email);
+            $span?->set('tinvar.mail.transport', $sent->transport)->set('tinvar.mail.suppressed', \count($sent->suppressed));
+
+            return $sent;
+        });
+    }
+
+    private function compose(Email $email): SentMessage
     {
         $props = $this->encoder->encode($email->props);
         if (!\is_array($props)) {
@@ -68,10 +91,43 @@ final readonly class Mailer
             $email->cc,
             $email->bcc,
             $email->attachments,
+            $email->tags,
+            $email->metadata,
         );
-        $this->transport->send($message);
 
-        return $message;
+        [$kept, $suppressed] = $this->suppress($message, $email->category);
+        if ($kept === null) {
+            return new SentMessage($message, null, 'none', $suppressed, skipped: true);
+        }
+
+        return SentMessage::through($this->transport, $kept)->withSuppressed($suppressed);
+    }
+
+    /**
+     * The message without the readers the list blocks for its category --
+     * null when no To reader is left -- and who was left off.
+     *
+     * @return array{?Message, list<string>}
+     */
+    private function suppress(Message $message, MailCategory $category): array
+    {
+        if ($this->suppressions === null || $category === MailCategory::Essential) {
+            return [$message, []];
+        }
+
+        $blocked = [];
+        foreach ($this->suppressions->find($message->envelope()) as $email => $suppression) {
+            if ($suppression->reason->blocks($category)) {
+                $blocked[strtolower($email)] = true;
+            }
+        }
+        if ($blocked === []) {
+            return [$message, []];
+        }
+
+        $left = array_values(array_filter($message->envelope(), static fn (string $email): bool => isset($blocked[strtolower($email)])));
+
+        return [$message->keeping(static fn (Address $reader): bool => !isset($blocked[strtolower($reader->email)])), $left];
     }
 
     /**
