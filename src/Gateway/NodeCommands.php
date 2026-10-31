@@ -98,12 +98,18 @@ final readonly class NodeCommands
      * bus relays it.
      *
      * @param string $publicKey the raw public key (SigningKey::$publicKey)
-     * @param NonceStore|null $spent where the node remembers the commands it has run;
-     *        without it, remembering is the caller's
+     * @param NonceStore|null $spent where the node remembers the commands it has run
+     * @param bool $allowReplay true to open without a store, the caller remembering ids
+     *        itself: said by name, since a command opened twice runs twice
      * @throws TokenError
      */
-    public static function open(string $sealed, string $publicKey, string $node, string $environment, ?int $now = null, ?NonceStore $spent = null): NodeCommand
+    public static function open(string $sealed, string $publicKey, string $node, string $environment, ?int $now = null, ?NonceStore $spent = null, bool $allowReplay = false): NodeCommand
     {
+        // Fails closed: with nowhere to spend its id, a replay would read as
+        // the command's first sight.
+        if ($spent === null && !$allowReplay) {
+            throw new \LogicException('A node command is opened with a NonceStore to spend its id in, or with allowReplay: true where the caller remembers ids itself: without one, a replay reads as its first sight.');
+        }
         $command = NodeCommand::fromMap(SignedEnvelope::decode($sealed, $publicKey, self::PURPOSE));
         $now ??= time();
 
@@ -134,9 +140,9 @@ final readonly class NodeCommands
      *
      * @throws TokenError
      */
-    public static function openFor(string $sealed, string $publicKey, NodeIdentity $node, ?int $now = null, ?NonceStore $spent = null): NodeCommand
+    public static function openFor(string $sealed, string $publicKey, NodeIdentity $node, ?int $now = null, ?NonceStore $spent = null, bool $allowReplay = false): NodeCommand
     {
-        return self::open($sealed, $publicKey, $node->id, $node->environment, $now, $spent);
+        return self::open($sealed, $publicKey, $node->id, $node->environment, $now, $spent, $allowReplay);
     }
 
     private function now(): int

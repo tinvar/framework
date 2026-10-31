@@ -117,12 +117,17 @@ final readonly class ConsoleTickets
      * console once.
      *
      * @param string $publicKey the raw public key (SigningKey::$publicKey)
-     * @param NonceStore|null $spent where the edge remembers the tickets it has taken;
-     *        without it, remembering is the caller's
+     * @param NonceStore|null $spent where the edge remembers the tickets it has taken
+     * @param bool $allowReplay true to open without a store, the caller remembering ids
+     *        itself: said by name, since a ticket opened twice opens two consoles
      * @throws TokenError
      */
-    public static function open(string $ticket, string $publicKey, string $target, string $environment, ?int $now = null, ?NonceStore $spent = null): ConsoleTicket
+    public static function open(string $ticket, string $publicKey, string $target, string $environment, ?int $now = null, ?NonceStore $spent = null, bool $allowReplay = false): ConsoleTicket
     {
+        // Fails closed, as NodeCommands::open() does.
+        if ($spent === null && !$allowReplay) {
+            throw new \LogicException('A console ticket is opened with a NonceStore to spend its id in, or with allowReplay: true where the caller remembers ids itself: without one, a replay reads as its first sight.');
+        }
         $claims = ConsoleTicket::fromMap(SignedEnvelope::decode($ticket, $publicKey, self::PURPOSE));
         $now ??= time();
 

@@ -225,3 +225,23 @@ it('prints this environment\'s public keys for gateway:keys, and nothing secret'
     expect(explode(' ', $lines[1])[1])->toBe($public)
         ->and(SignedEnvelope::VERSION)->toBe('v1');
 });
+
+// Review: with no store given, open() took a replay as the first sight of
+// it. Fail closed: a store, or replays allowed by name.
+it('refuses to open a command or a ticket with nowhere to spend it, unless replays are allowed by name', function () {
+    $now = time();
+    $outbox = new ArrayCommandOutbox();
+    $orm = new Orm(PdoConnection::sqlite(':memory:'), new IdentityMap('gateway-replay'));
+    new NodeCommands(NodeCommands::key(APP_KEY, ENV), $outbox, $orm, static fn (): int => $now)->issue('node-7', 'vm.stop');
+    $sealed = $outbox->since(0)[0]->sealed;
+    $public = NodeCommands::key(APP_KEY, ENV)->publicKey;
+
+    expect(fn () => NodeCommands::open($sealed, $public, 'node-7', ENV, $now))->toThrow(\LogicException::class, 'replay')
+        ->and(NodeCommands::open($sealed, $public, 'node-7', ENV, $now, allowReplay: true)->command)->toBe('vm.stop')
+        ->and(NodeCommands::open($sealed, $public, 'node-7', ENV, $now, allowReplay: true)->command)->toBe('vm.stop');
+
+    $auth = new AuthContext();
+    $tickets = new ConsoleTickets(APP_KEY, ConsoleTickets::key(APP_KEY, ENV), $auth, $orm, new BuildRegistry('build-1'), new PanelContext(), static fn (): int => $now);
+    $ticket = $auth->actingAs(new User('ada'), fn () => $tickets->issue('node:7', 'session-1'));
+    expect(fn () => ConsoleTickets::open($ticket, ConsoleTickets::key(APP_KEY, ENV)->publicKey, 'node:7', ENV, $now))->toThrow(\LogicException::class, 'replay');
+});

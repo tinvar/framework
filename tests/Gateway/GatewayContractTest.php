@@ -66,7 +66,7 @@ describe('node commands', function () {
         $issued = $orm->actAs('acme', fn () => $commands->issue('node-7', 'vm.start', ['vm' => 12]));
 
         $entry = $outbox->since(0)[0];
-        $opened = NodeCommands::open($entry->sealed, NodeCommands::key(APP_KEY, ENV)->publicKey, 'node-7', ENV, NOW + 10);
+        $opened = NodeCommands::open($entry->sealed, NodeCommands::key(APP_KEY, ENV)->publicKey, 'node-7', ENV, NOW + 10, allowReplay: true);
 
         expect($entry->node)->toBe('node-7')
             ->and($entry->id)->toBe($issued->id)
@@ -82,10 +82,10 @@ describe('node commands', function () {
         $sealed = $outbox->since(0)[0]->sealed;
         $public = NodeCommands::key(APP_KEY, ENV)->publicKey;
 
-        expect(fn () => NodeCommands::open($sealed, $public, 'node-8', ENV, NOW))->toThrow(TokenError::class, 'another node')
-            ->and(fn () => NodeCommands::open($sealed, $public, 'node-7', ENV, NOW + NodeCommands::TTL))->toThrow(TokenError::class, 'expired')
-            ->and(fn () => NodeCommands::open($sealed, NodeCommands::key('another-key-of-thirty-two-bytes!!!', ENV)->publicKey, 'node-7', ENV, NOW))->toThrow(TokenError::class, 'does not verify')
-            ->and(fn () => NodeCommands::open($sealed, ConsoleTickets::key(APP_KEY, ENV)->publicKey, 'node-7', ENV, NOW))->toThrow(TokenError::class, 'does not verify');
+        expect(fn () => NodeCommands::open($sealed, $public, 'node-8', ENV, NOW, allowReplay: true))->toThrow(TokenError::class, 'another node')
+            ->and(fn () => NodeCommands::open($sealed, $public, 'node-7', ENV, NOW + NodeCommands::TTL, allowReplay: true))->toThrow(TokenError::class, 'expired')
+            ->and(fn () => NodeCommands::open($sealed, NodeCommands::key('another-key-of-thirty-two-bytes!!!', ENV)->publicKey, 'node-7', ENV, NOW, allowReplay: true))->toThrow(TokenError::class, 'does not verify')
+            ->and(fn () => NodeCommands::open($sealed, ConsoleTickets::key(APP_KEY, ENV)->publicKey, 'node-7', ENV, NOW, allowReplay: true))->toThrow(TokenError::class, 'does not verify');
     });
 
     it('cannot be pointed at another node, or made, by anyone without PHP\'s key', function () {
@@ -103,8 +103,8 @@ describe('node commands', function () {
         // A console ticket's key, which the edge could be handed, signing a command.
         $ticketKeyed = resigned($sealed, ConsoleTickets::key(APP_KEY, ENV), static fn (array $m): array => $m);
 
-        expect(fn () => NodeCommands::open($moved, $public, 'node-8', ENV, NOW))->toThrow(TokenError::class, 'does not verify')
-            ->and(fn () => NodeCommands::open($ticketKeyed, $public, 'node-7', ENV, NOW))->toThrow(TokenError::class, 'does not verify');
+        expect(fn () => NodeCommands::open($moved, $public, 'node-8', ENV, NOW, allowReplay: true))->toThrow(TokenError::class, 'does not verify')
+            ->and(fn () => NodeCommands::open($ticketKeyed, $public, 'node-7', ENV, NOW, allowReplay: true))->toThrow(TokenError::class, 'does not verify');
     });
 
     // ADR 0091: an agent believes only its own environment, as a server
@@ -115,9 +115,9 @@ describe('node commands', function () {
         $staging->issue('node-7', 'vm.stop');
         $sealed = $outbox->since(0)[0]->sealed;
 
-        expect(fn () => NodeCommands::open($sealed, NodeCommands::key(APP_KEY, ENV)->publicKey, 'node-7', ENV, NOW))->toThrow(TokenError::class, 'does not verify')
-            ->and(fn () => NodeCommands::open($sealed, NodeCommands::key(APP_KEY, 'staging')->publicKey, 'node-7', ENV, NOW))->toThrow(TokenError::class, 'another environment')
-            ->and(NodeCommands::openFor($sealed, NodeCommands::key(APP_KEY, 'staging')->publicKey, new NodeIdentity('node-7', 'staging', 'ab'), NOW)->environment)->toBe('staging')
+        expect(fn () => NodeCommands::open($sealed, NodeCommands::key(APP_KEY, ENV)->publicKey, 'node-7', ENV, NOW, allowReplay: true))->toThrow(TokenError::class, 'does not verify')
+            ->and(fn () => NodeCommands::open($sealed, NodeCommands::key(APP_KEY, 'staging')->publicKey, 'node-7', ENV, NOW, allowReplay: true))->toThrow(TokenError::class, 'another environment')
+            ->and(NodeCommands::openFor($sealed, NodeCommands::key(APP_KEY, 'staging')->publicKey, new NodeIdentity('node-7', 'staging', 'ab'), NOW, allowReplay: true)->environment)->toBe('staging')
             ->and(NodeCommands::key(APP_KEY, 'staging')->publicKey)->not->toBe(NodeCommands::key(APP_KEY, ENV)->publicKey);
     });
 
@@ -127,7 +127,7 @@ describe('node commands', function () {
         $commands->issue('node-7', 'vm.stop');
         $long = resigned($outbox->since(0)[0]->sealed, $key, static fn (array $m): array => [...$m, 'e' => NOW + 86_400]);
 
-        expect(fn () => NodeCommands::open($long, $key->publicKey, 'node-7', ENV, NOW))->toThrow(TokenError::class, 'longer than any');
+        expect(fn () => NodeCommands::open($long, $key->publicKey, 'node-7', ENV, NOW, allowReplay: true))->toThrow(TokenError::class, 'longer than any');
     });
 
     it('is issued as a write is: not in a loader or query body, nor across tenants', function () {
@@ -159,7 +159,7 @@ describe('node commands', function () {
         $entries = $outbox->since(NOW - 60);
         expect($entries)->toHaveCount(1)
             ->and($entries[0]->id)->toBe($kept->id)
-            ->and(NodeCommands::open($entries[0]->sealed, NodeCommands::key(APP_KEY, ENV)->publicKey, 'node-7', ENV, NOW)->command)->toBe('vm.start')
+            ->and(NodeCommands::open($entries[0]->sealed, NodeCommands::key(APP_KEY, ENV)->publicKey, 'node-7', ENV, NOW, allowReplay: true)->command)->toBe('vm.start')
             // Found again by its id, as a result coming back names it (ADR 0119).
             ->and($outbox->find($kept->id)?->sealed)->toBe($entries[0]->sealed)
             ->and($outbox->find('missing'))->toBeNull();
@@ -179,7 +179,7 @@ describe('console tickets', function () {
         $ticket = $auth->actingAs(new User('ada'), fn () => $orm->actAs('acme', fn () => $panels->within('admin', fn () => tickets($auth, $orm, $panels)->issue('node:7/vm:12', 'session-1'))), 'e1');
         $other = $auth->actingAs(new User('ada'), fn () => $orm->actAs('acme', fn () => $panels->within('admin', fn () => tickets($auth, $orm, $panels)->issue('node:7/vm:12', 'session-1'))), 'e2');
 
-        $claims = ConsoleTickets::open($ticket, ConsoleTickets::key(APP_KEY, ENV)->publicKey, 'node:7/vm:12', ENV, NOW);
+        $claims = ConsoleTickets::open($ticket, ConsoleTickets::key(APP_KEY, ENV)->publicKey, 'node:7/vm:12', ENV, NOW, allowReplay: true);
 
         expect($claims->tenant)->toBe('acme')
             ->and($claims->panel)->toBe('admin')
@@ -189,7 +189,7 @@ describe('console tickets', function () {
             ->and($claims->user)->not->toContain('ada')
             ->and($claims->session)->not->toContain('session-1')
             // Another epoch, another binding.
-            ->and(ConsoleTickets::open($other, ConsoleTickets::key(APP_KEY, ENV)->publicKey, 'node:7/vm:12', ENV, NOW)->user)->not->toBe($claims->user);
+            ->and(ConsoleTickets::open($other, ConsoleTickets::key(APP_KEY, ENV)->publicKey, 'node:7/vm:12', ENV, NOW, allowReplay: true)->user)->not->toBe($claims->user);
     });
 
     it('opens one console only, for a minute, and only under its own key', function () {
@@ -199,10 +199,10 @@ describe('console tickets', function () {
         $ticket = $auth->actingAs(new User('ada'), fn () => tickets($auth, $orm, $panels)->issue('node:7/vm:12', 'session-1'));
         $public = ConsoleTickets::key(APP_KEY, ENV)->publicKey;
 
-        expect(fn () => ConsoleTickets::open($ticket, $public, 'node:7/vm:13', ENV, NOW))->toThrow(TokenError::class, 'another console')
-            ->and(fn () => ConsoleTickets::open($ticket, $public, 'node:7/vm:12', ENV, NOW + 60))->toThrow(TokenError::class, 'expired')
-            ->and(fn () => ConsoleTickets::open($ticket, NodeCommands::key(APP_KEY, ENV)->publicKey, 'node:7/vm:12', ENV, NOW))->toThrow(TokenError::class, 'does not verify')
-            ->and(fn () => NodeCommands::open($ticket, NodeCommands::key(APP_KEY, ENV)->publicKey, 'node:7/vm:12', ENV, NOW))->toThrow(TokenError::class);
+        expect(fn () => ConsoleTickets::open($ticket, $public, 'node:7/vm:13', ENV, NOW, allowReplay: true))->toThrow(TokenError::class, 'another console')
+            ->and(fn () => ConsoleTickets::open($ticket, $public, 'node:7/vm:12', ENV, NOW + 60, allowReplay: true))->toThrow(TokenError::class, 'expired')
+            ->and(fn () => ConsoleTickets::open($ticket, NodeCommands::key(APP_KEY, ENV)->publicKey, 'node:7/vm:12', ENV, NOW, allowReplay: true))->toThrow(TokenError::class, 'does not verify')
+            ->and(fn () => NodeCommands::open($ticket, NodeCommands::key(APP_KEY, ENV)->publicKey, 'node:7/vm:12', ENV, NOW, allowReplay: true))->toThrow(TokenError::class);
     });
 
     it('issues none for nobody, with no session, or across tenants', function () {
