@@ -76,6 +76,25 @@ if [ -f "$pool/renderer.pid" ]; then
             esac
         fi ;;
     esac
+    # A pool in another container -- another pid namespace, where its pid
+    # names nothing here -- is still running if its sockets answer: the
+    # pid file is no proof it is gone, and a second pool would share the
+    # directory with it.
+    if [ -z "$running" ] && node -e '
+        const net = require("node:net"), fs = require("node:fs"), path = require("node:path");
+        const sockets = fs.readdirSync(process.argv[1]).filter((n) => n.endsWith(".sock"));
+        let left = sockets.length;
+        if (left === 0) process.exit(1);
+        for (const name of sockets) {
+            const connection = net.createConnection(path.join(process.argv[1], name));
+            const none = () => { connection.destroy(); if (--left === 0) process.exit(1); };
+            connection.setTimeout(1000, none);
+            connection.on("connect", () => process.exit(0));
+            connection.on("error", none);
+        }' "$pool" 2>/dev/null; then
+        say "A renderer pool is already running in $pool: its sockets answer, though its pid ($stale) is not one this container can see."
+        exit 1
+    fi
     if [ -z "$running" ]; then
         say "Removing the pid file of a pool no longer running ($stale)."
         rm -f "$pool/renderer.pid"
