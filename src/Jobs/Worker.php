@@ -353,6 +353,14 @@ final class Worker
 
         try {
             $envelope = $this->runner->open($job->payload);
+            // The row it came in is the one it was sealed for: every job is
+            // queued under its envelope's id -- dispatched, chained, paused,
+            // retried -- so a sealed payload copied into a row of its own,
+            // to run twice or beside the original, is refused. Queue storage
+            // is not trusted (ADR 0031).
+            if (!hash_equals($envelope->id, $job->id)) {
+                throw new JobRefused('id_mismatch', "{$envelope->class} was sealed for job {$envelope->id}, and was queued as {$job->id}.");
+            }
             if ($span !== null) {
                 $span->name = "job {$envelope->class}";
                 $span->set('code.namespace', $envelope->class);

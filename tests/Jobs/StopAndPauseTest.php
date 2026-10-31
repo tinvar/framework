@@ -397,9 +397,9 @@ it('keeps a checkpoint with the payload it was sealed in, wherever the payload i
     \assert($queue instanceof ArrayQueue);
     $acme = (string) $queue->payload($queue->pushed()[0]->id);
 
-    // globex's own job, its row given acme's paused payload: it runs as
-    // what that payload seals -- acme, from acme's checkpoint -- and never
-    // as globex.
+    // globex's own job, its row given acme's paused payload: never run as
+    // globex, and not run a second time as acme either -- the payload seals
+    // the id of the row it was queued in, and this row is another.
     $h->orm->actAs('globex', fn () => $h->dispatcher->dispatch(new \Tinvar\Tests\Jobs\Fixtures\RecordContext(note: 'globex')));
     $first = $queue->reserve(['default'], $h->now, 60);
     $globex = $queue->reserve(['default'], $h->now, 60);
@@ -409,8 +409,11 @@ it('keeps a checkpoint with the payload it was sealed in, wherever the payload i
 
     work($h);
 
-    expect(array_column(array_filter($h->journal()->entries, static fn (array $e): bool => isset($e['item'])), 'item'))->toBe([0, 1, 2, 3, 2, 3])
-        ->and(array_filter($h->journal()->entries, static fn (array $e): bool => ($e['tenant'] ?? null) === 'globex'))->toBe([]);
+    expect(array_column(array_filter($h->journal()->entries, static fn (array $e): bool => isset($e['item'])), 'item'))->toBe([0, 1, 2, 3])
+        ->and(array_filter($h->journal()->entries, static fn (array $e): bool => ($e['tenant'] ?? null) === 'globex'))->toBe([])
+        ->and($queue->failed())->toHaveCount(1)
+        ->and($queue->failed()[0]->id)->toBe($globex->id)
+        ->and($queue->failed()[0]->error)->toContain('sealed for job');
 });
 
 it('takes back the try a requeue gives back, and acts only for the holder', function (\Closure $make) {

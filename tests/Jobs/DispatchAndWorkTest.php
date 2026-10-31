@@ -236,6 +236,24 @@ it('refuses a job running as a user in a narrowing panel when the runner has no 
         ->and($h->journal()->entries)->toBe([['user' => 'staff', 'epoch' => 'e1', 'panel' => 'open']]);
 });
 
+// Queue storage is untrusted (ADR 0031): a payload copied into a row of its
+// own verified, and ran a second time -- or ran beside the original. The
+// envelope seals the id the dispatcher queued it under, and a row under any
+// other id is refused.
+it('refuses a sealed payload queued under another id than the one it seals', function () {
+    $h = new Harness();
+    $h->dispatcher->dispatch(new RecordContext(note: 'once'));
+    $original = queueOf($h)->pushed()[0];
+    $h->queue->push(new \Tinvar\Queue\PendingJob('copied-' . $original->id, $original->queue, $original->payload, $h->now));
+
+    $h->work();
+
+    expect(array_column($h->journal()->entries, 'note'))->toBe(['once'])
+        ->and(queueOf($h)->failed())->toHaveCount(1)
+        ->and(queueOf($h)->failed()[0]->id)->toBe('copied-' . $original->id)
+        ->and(queueOf($h)->failed()[0]->error)->toContain('sealed for job');
+});
+
 it('resets the identity map, the user, the tenant, request-lived services and a transaction left open between jobs', function () {
     $h = new Harness();
     $h->dispatcher->dispatch(new RecordContext(note: 'first'));
