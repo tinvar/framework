@@ -28,4 +28,4 @@ it('keeps the in-memory shop\'s mail log in a directory of this user\'s alone', 
         ->and(fileperms(\dirname($path)) & 0o7777)->toBe(0o700)
         ->and(fileowner(\dirname($path)))->toBe(posix_geteuid())
         ->and(fileperms($path) & 0o777)->toBe(0o600);
-})->skip(getenv('SHOP_MAIL') !== false && getenv('SHOP_MAIL') !== '' || getenv('SHOP_MAIL_LOG') !== false && getenv('SHOP_MAIL_LOG') !== '', 'the environment names where the shop\'s mail goes');
+})->skip(getenv('TINVAR_MAIL_PROVIDER') !== false && getenv('TINVAR_MAIL_PROVIDER') !== '' || getenv('SHOP_MAIL_LOG') !== false && getenv('SHOP_MAIL_LOG') !== '', 'the environment names where the shop\'s mail goes');

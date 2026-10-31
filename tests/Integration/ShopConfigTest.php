@@ -96,14 +96,14 @@ it('signs its SMTP mail with the DKIM key the environment names, and refuses one
     };
 
     withShopEnvironment([
-        'SHOP_MAIL' => 'smtp+plain://127.0.0.1:1025',
+        'TINVAR_MAIL_PROVIDER' => 'smtp', 'TINVAR_SMTP_HOST' => '127.0.0.1', 'TINVAR_SMTP_PORT' => '1025', 'TINVAR_SMTP_ENCRYPTION' => 'none',
         'TINVAR_MAIL_DKIM_DOMAIN' => 'pellwick.test',
         'TINVAR_MAIL_DKIM_SELECTOR' => 'mail2026',
         'TINVAR_MAIL_DKIM_PRIVATE_KEY' => $seed,
     ], function () use ($dkim): void {
         expect($dkim(Kernel::mailTransport(':memory:'))?->selector)->toBe('mail2026');
     });
-    withShopEnvironment(['SHOP_MAIL' => 'smtp+plain://127.0.0.1:1025'], function () use ($dkim): void {
+    withShopEnvironment(['TINVAR_MAIL_PROVIDER' => 'smtp', 'TINVAR_SMTP_HOST' => '127.0.0.1', 'TINVAR_SMTP_PORT' => '1025', 'TINVAR_SMTP_ENCRYPTION' => 'none'], function () use ($dkim): void {
         expect($dkim(Kernel::mailTransport(':memory:')))->toBeNull();
     });
 
@@ -116,5 +116,24 @@ it('signs its SMTP mail with the DKIM key the environment names, and refuses one
         }
 
         expect($said)->toContain('TINVAR_MAIL_DKIM_* cannot sign')->not->toContain('c2VjcmV0');
+    });
+});
+
+it('sends through the provider TINVAR_MAIL_PROVIDER names, to a log unless it names one, and refuses one missing its key', function () {
+    withShopEnvironment(['TINVAR_MAIL_PROVIDER' => null], function (): void {
+        expect(Kernel::mailTransport(':memory:'))->toBeInstanceOf(\Tinvar\Mail\LogTransport::class);
+    });
+    withShopEnvironment(['TINVAR_MAIL_PROVIDER' => 'resend,postmark', 'TINVAR_RESEND_KEY' => 're_live_4f9c2a1e8b7d6c5a', 'TINVAR_POSTMARK_TOKEN' => 'f00dbabe-1234-4abc-9def'], function (): void {
+        expect(Kernel::mailTransport(':memory:'))->toBeInstanceOf(\Tinvar\Mail\FailoverTransport::class);
+    });
+    withShopEnvironment(['TINVAR_MAIL_PROVIDER' => 'ses', 'TINVAR_SES_REGION' => 'eu-west-1'], function (): void {
+        try {
+            Kernel::mailTransport(':memory:');
+            $said = 'built';
+        } catch (ConfigException $e) {
+            $said = $e->getMessage();
+        }
+
+        expect($said)->toContain('TINVAR_SES_KEY is required')->toContain('TINVAR_SES_SECRET (or TINVAR_SES_SECRET_FILE) is required');
     });
 });
