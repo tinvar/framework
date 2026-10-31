@@ -490,6 +490,17 @@ describe('a carried link', function () {
         expect($links->consume($next, EmailLinks::PASSWORD_RESET, ORIGIN, 'acme'))->toBeNull();
     })->with('stores');
 
+    // The path it is carried to was checked once the link was used up: a
+    // caller's mistake spent the visitor's link and made them nothing.
+    it('refuses a path it could not land on before it uses the link up', function () {
+        $links = links(new ArrayEmailLinkStore(), new Users());
+        $token = tokenOf($links->issue(EmailLinks::PASSWORD_RESET, 'https://shop.acme.test', '/r', 'acme', new User('u-1'))['url']);
+
+        expect(fn () => $links->carry($token, EmailLinks::PASSWORD_RESET, 'https://shop.acme.test', 'acme', ORIGIN, 'https://elsewhere.example/r'))
+            ->toThrow(\InvalidArgumentException::class, 'is not a path an emailed link lands on')
+            ->and($links->peek($token, EmailLinks::PASSWORD_RESET, 'https://shop.acme.test', 'acme')?->user)->toBe('u-1');
+    });
+
     it('is refused for a link that would not open where it is, or whose account moved its epoch', function () {
         $users = new Users();
         $links = links(new ArrayEmailLinkStore(), $users);

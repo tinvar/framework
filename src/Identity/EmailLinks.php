@@ -172,6 +172,9 @@ final readonly class EmailLinks
         if ($to === $origin) {
             throw new \InvalidArgumentException('A link is carried to another origin than the one it is on.');
         }
+        // Before the link is used up: a path it cannot land on would spend
+        // the visitor's link and make them nothing.
+        self::assertPath($path);
 
         $link = $this->consume($token, $purpose, $origin, $tenant);
         if ($link === null) {
@@ -185,6 +188,14 @@ final readonly class EmailLinks
         return $this->make($purpose, $to, $path, $tenant, $user, $link->data, $link->expiresAt)['url'];
     }
 
+    /** A path an emailed link lands on: root-relative, no query; or an InvalidArgumentException. */
+    private static function assertPath(string $path): void
+    {
+        if (preg_match('#^/(?!/)[A-Za-z0-9/_.-]*\z#', $path) !== 1) {
+            throw new \InvalidArgumentException("'{$path}' is not a path an emailed link lands on: root-relative, no query.");
+        }
+    }
+
     /**
      * @param array<string, string> $data
      * @return array{url: string, link: EmailLink}
@@ -192,9 +203,7 @@ final readonly class EmailLinks
     private function make(string $purpose, string $origin, string $path, string $tenant, ?Authenticatable $user, array $data, int $expiresAt): array
     {
         $origin = CanonicalOrigins::origin($origin);
-        if (preg_match('#^/(?!/)[A-Za-z0-9/_.-]*\z#', $path) !== 1) {
-            throw new \InvalidArgumentException("'{$path}' is not a path an emailed link lands on: root-relative, no query.");
-        }
+        self::assertPath($path);
         if (($user === null) !== \in_array($purpose, self::ADDRESSED, true)) {
             throw new \InvalidArgumentException('A sign-in or reset link is about an account; an invite or an opt-in is about an address and no account.');
         }
