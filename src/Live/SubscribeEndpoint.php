@@ -153,11 +153,15 @@ final class SubscribeEndpoint
         $auth = TokenClaims::hashAuth($this->live->signer, $this->auth->id(), $this->auth->epoch());
 
         $refreshed = [];
-        /** @var array<string, list<array{int, LiveToken, LiveToken}>> $byPage tokens that survived, by the page they name */
-        $byPage = [];
-        /** @var array<string, list<array{int, ChannelToken, ChannelToken}>> $byChannel subscriptions that survived, by channel */
-        $byChannel = [];
-        $binding = null;
+        /**
+         * Tokens that survived, grouped by what one run of the checks says
+         * for -- the page, or the channel and its parameters -- and by the
+         * tenant and panel they name; in the order each group's first token
+         * came.
+         *
+         * @var array<string, array{binding: array{string, string}, tokens: list<array{int, LiveToken|ChannelToken, LiveToken|ChannelToken}>}> $groups
+         */
+        $groups = [];
 
         foreach ($tokens as $i => $token) {
             $refreshed[$i] = null;
@@ -195,55 +199,53 @@ final class SubscribeEndpoint
                 continue;
             }
 
-            // One stream, one tenant and panel: the first token's. A client's
-            // tokens are all its page's, and a page is in one of each.
-            $binding ??= [$claims->tenant, $claims->panel];
-            if ([$claims->tenant, $claims->panel] !== $binding) {
-                continue;
-            }
-
             $renewed = $live->refreshed($now);
             if ($renewed === null || $renewed->claims->expiresAt - $now < self::MIN_GRANT_SECONDS) {
                 continue;
             }
 
-            $key = json_encode([$claims->route, $claims->params], JSON_THROW_ON_ERROR);
-            if ($live instanceof ChannelToken && $renewed instanceof ChannelToken) {
-                $byChannel[$key][] = [$i, $live, $renewed];
-            } elseif ($live instanceof LiveToken && $renewed instanceof LiveToken) {
-                $byPage[$key][] = [$i, $live, $renewed];
-            }
+            $binding = [$claims->tenant, $claims->panel];
+            $key = json_encode([$live instanceof ChannelToken ? 'channel' : 'page', $binding, $claims->route, $claims->params], JSON_THROW_ON_ERROR);
+            $groups[$key] ??= ['binding' => $binding, 'tokens' => []];
+            $groups[$key]['tokens'][] = [$i, $live, $renewed];
         }
 
+        // One stream, one tenant and panel: those of the first token let in.
+        // A client's tokens are all its page's, and a page is in one of each
+        // -- but a token refused, its route gone or its model out of reach,
+        // must not bind the stream, or it drops every token that is let in.
+        $binding = null;
         $granted = [];
         $expiresAt = $now + self::GRANT_SECONDS;
-        foreach ($byPage as $tokensOfPage) {
-            // Once per page: a page's token and its boundaries' name one
-            // route, so one run of it says for all of them.
-            if (!$this->admits($tokensOfPage[0][1]->claims, $request)) {
+        foreach ($groups as $group) {
+            if ($binding !== null && $group['binding'] !== $binding) {
                 continue;
             }
 
-            foreach ($tokensOfPage as [$i, $live, $renewed]) {
+            // Once per page, or per channel and parameters: a page's token
+            // and its boundaries' name one route, and the same subscription
+            // held twice is one subscription, so one run of the checks says
+            // for all of them.
+            $first = $group['tokens'][0][1];
+            $admitted = $first instanceof ChannelToken
+                ? $this->channels !== null && $this->channels->admits($first, $request)
+                : $this->admits($first->claims, $request);
+            if (!$admitted) {
+                continue;
+            }
+            $binding = $group['binding'];
+
+            foreach ($group['tokens'] as [$i, $live, $renewed]) {
                 $refreshed[$i] = $renewed->encode($this->live->signer);
-                $expiresAt = min($expiresAt, $renewed->claims->expiresAt);
-                foreach (array_keys($live->topics) as $topic) {
-                    $granted[$topic] = true;
+                if ($live instanceof ChannelToken) {
+                    $expiresAt = min($expiresAt, $renewed->claims->expiresAt, $now + self::CHANNEL_GRANT_SECONDS);
+                    $granted[$live->topic] = true;
+                } else {
+                    $expiresAt = min($expiresAt, $renewed->claims->expiresAt);
+                    foreach (array_keys($live->topics) as $topic) {
+                        $granted[$topic] = true;
+                    }
                 }
-            }
-        }
-
-        foreach ($byChannel as $tokensOfChannel) {
-            // Once per channel and parameters: the same subscription held
-            // twice is one run of its checks.
-            if ($this->channels === null || !$this->channels->admits($tokensOfChannel[0][1], $request)) {
-                continue;
-            }
-
-            foreach ($tokensOfChannel as [$i, $channel, $renewed]) {
-                $refreshed[$i] = $renewed->encode($this->live->signer);
-                $expiresAt = min($expiresAt, $renewed->claims->expiresAt, $now + self::CHANNEL_GRANT_SECONDS);
-                $granted[$channel->topic] = true;
             }
         }
         ksort($refreshed);

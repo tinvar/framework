@@ -637,6 +637,34 @@ describe('a trade', function () {
             ->and($grant['tokens'][1])->toBeString()
             ->and($grant['topics'])->toBe([(string) $live->channelTopics?->for('acme', 'scripts', ['script' => $script])]);
     });
+
+    // One stream, one tenant and panel -- those of the first token that is
+    // let in. A token refused, listed first, named another tenant, and the
+    // stream was bound to it: every token that would have been let in was
+    // then dropped as the wrong tenant's.
+    it('binds the stream to the first token let in, not the first token sent', function () {
+        [$kernel, , $live, $fixture] = kernel();
+        $script = $fixture->scripts['acme'][0];
+        $refused = (string) new LiveMinter(
+            signer: $live->signer,
+            topics: $live->topics,
+            route: 'missing.page',
+            params: [],
+            panel: '',
+            tenant: '',
+            build: 'b1',
+            sessionId: 'session-a',
+            user: 'alice',
+            authEpoch: 'e1',
+        )->mint(["\0orders"]);
+        [, $body] = subscribe($kernel, 'scripts', ['script' => $script], ALICE);
+
+        [, $grant] = trade($kernel, [$refused, (string) $body['token']], ALICE);
+
+        expect($grant['tokens'][0])->toBeNull()
+            ->and($grant['tokens'][1])->toBeString()
+            ->and($grant['topics'])->toBe([(string) $live->channelTopics?->for('acme', 'scripts', ['script' => $script])]);
+    });
 });
 
 describe('an action that changes who the browser is', function () {
