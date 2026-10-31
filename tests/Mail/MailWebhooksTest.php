@@ -15,7 +15,10 @@ namespace Tinvar\Tests\Mail\MailWebhooks;
 use Tinvar\Http\ArrayNonceStore;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Request;
+use Tinvar\Mail\Address;
+use Tinvar\Mail\ArraySentMailLog;
 use Tinvar\Mail\ArraySuppressions;
+use Tinvar\Mail\DatabaseSentMailLog;
 use Tinvar\Mail\MailBounced;
 use Tinvar\Mail\MailComplained;
 use Tinvar\Mail\MailDelivered;
@@ -23,6 +26,9 @@ use Tinvar\Mail\MailEvent;
 use Tinvar\Mail\MailEventsEndpoint;
 use Tinvar\Mail\MailWebhook;
 use Tinvar\Mail\MailWebhookDelivery;
+use Tinvar\Mail\Message;
+use Tinvar\Mail\SentMailLog;
+use Tinvar\Mail\SentMessage;
 use Tinvar\Mail\Providers\MailgunWebhook;
 use Tinvar\Mail\Providers\PostmarkWebhook;
 use Tinvar\Mail\Providers\ResendWebhook;
@@ -33,6 +39,9 @@ use Tinvar\Mail\SuppressionReason;
 use Tinvar\Outbound\FakeOutboundHttp;
 use Tinvar\Outbound\OutboundRequest;
 use Tinvar\Outbound\OutboundResponse;
+use Tinvar\Orm\PdoConnection;
+use Tinvar\Orm\Schema\Dialect;
+use Tinvar\Orm\Schema\Schema;
 
 const NOW = 1_800_000_000;
 const TOPIC = 'arn:aws:sns:eu-west-1:123456789012:ses-events';
@@ -389,12 +398,22 @@ describe('Mailgun (HMAC)', function () {
 
     it('reads temporary failures, complaints and deliveries', function () use ($key, $signed) {
         $webhook = new MailgunWebhook($key);
+        $ids = ['id' => 'ev-1', 'message' => ['headers' => ['message-id' => 'm-1@mg.pellwick.example']]];
         $events = static fn (array $data): array => $webhook->receive(post('mailgun', $signed($data)), $signed($data), NOW)->events;
 
-        expect($events(['event' => 'failed', 'severity' => 'temporary', 'recipient' => 'a@example.test'])[0]->permanent)->toBeFalse()
-            ->and($events(['event' => 'complained', 'recipient' => 'a@example.test'])[0])->toBeInstanceOf(MailComplained::class)
-            ->and($events(['event' => 'delivered', 'recipient' => 'a@example.test'])[0])->toBeInstanceOf(MailDelivered::class)
+        expect($events(['event' => 'failed', 'severity' => 'temporary', 'recipient' => 'a@example.test', ...$ids])[0]->permanent)->toBeFalse()
+            ->and($events(['event' => 'complained', 'recipient' => 'a@example.test', ...$ids])[0])->toBeInstanceOf(MailComplained::class)
+            ->and($events(['event' => 'delivered', 'recipient' => 'a@example.test', ...$ids])[0])->toBeInstanceOf(MailDelivered::class)
             ->and($events(['event' => 'opened', 'recipient' => 'a@example.test']))->toBe([]);
+    });
+
+    it('refuses an event that does not name its id and its message\'s id', function () use ($key, $signed) {
+        $webhook = new MailgunWebhook($key);
+        $without = $signed(['event' => 'failed', 'severity' => 'permanent', 'recipient' => 'a@example.test', 'id' => 'ev-1']);
+        $noId = $signed(['event' => 'complained', 'recipient' => 'a@example.test', 'message' => ['headers' => ['message-id' => 'm-1']]]);
+
+        expect(refused($webhook, post('mailgun', $without), $without))->toBe(400)
+            ->and(refused($webhook, post('mailgun', $noId), $noId))->toBe(400);
     });
 });
 
@@ -477,6 +496,11 @@ describe('the endpoint', function () {
             return 'scripted';
         }
 
+        public function provesContent(): bool
+        {
+            return true;
+        }
+
         public function receive(Request $request, string $rawBody, int $now): MailWebhookDelivery
         {
             return new MailWebhookDelivery($this->nonce, $now + 300, $this->events);
@@ -543,17 +567,100 @@ describe('the endpoint', function () {
             ->and(fn () => new MailEventsEndpoint([new Scripted([]), new Scripted([])], new ArrayNonceStore()))->toThrow(\InvalidArgumentException::class);
     });
 
-    it('runs a real provider\'s delivery through, signed', function () {
-        $key = 'mailgun-http-webhook-signing-key-0123456789';
-        $body = json_encode([
-            'signature' => ['timestamp' => (string) NOW, 'token' => str_repeat('ab', 25), 'signature' => MailgunWebhook::sign($key, (string) NOW, str_repeat('ab', 25))],
-            'event-data' => ['event' => 'complained', 'recipient' => 'ada@example.test'],
+    /** A Mailgun delivery signed with $key under $token, reporting $event about $recipient and $messageId. */
+    function mailgunDelivery(string $key, string $token, string $event, string $recipient, string $messageId): string
+    {
+        return json_encode([
+            'signature' => ['timestamp' => (string) NOW, 'token' => $token, 'signature' => MailgunWebhook::sign($key, (string) NOW, $token)],
+            'event-data' => ['event' => $event, 'severity' => 'permanent', 'id' => 'ev-' . $token, 'recipient' => $recipient, 'message' => ['headers' => ['message-id' => "<{$messageId}>"]]],
         ], JSON_THROW_ON_ERROR);
+    }
+
+    function sentThroughMailgun(ArraySentMailLog $log, string $messageId, string ...$readers): void
+    {
+        $message = new Message(new Address('orders@pellwick.example'), array_map(static fn (string $r): Address => new Address($r), $readers), 'S', '<p>x</p>', 'x');
+        $log->record(new SentMessage($message, $messageId, 'mailgun'), NOW - 60);
+    }
+
+    it('runs a real provider\'s delivery through, signed, about mail the application sent', function () {
+        $key = 'mailgun-http-webhook-signing-key-0123456789';
+        $log = new ArraySentMailLog();
+        sentThroughMailgun($log, '20261031.1@mg.pellwick.example', 'ada@example.test');
+        $body = mailgunDelivery($key, str_repeat('ab', 25), 'complained', 'ada@example.test', '20261031.1@mg.pellwick.example');
         $suppressions = new ArraySuppressions();
-        $endpoint = new MailEventsEndpoint([new MailgunWebhook($key)], new ArrayNonceStore(), $suppressions, clock: static fn (): int => NOW);
+        $endpoint = new MailEventsEndpoint([new MailgunWebhook($key)], new ArrayNonceStore(), $suppressions, clock: static fn (): int => NOW, sent: $log);
 
         expect($endpoint->handle(post('mailgun', $body), $body)->status)->toBe(200)
             ->and($suppressions->held['ada@example.test']->reason)->toBe(SuppressionReason::Complaint)
             ->and($endpoint->handle(post('mailgun', $body), $body)->body())->toContain('Already received');
     });
+
+    it('acts on no forged event: a valid Mailgun triple carrying a bounce for mail never sent to that reader suppresses nobody', function () {
+        $key = 'mailgun-http-webhook-signing-key-0123456789';
+        $log = new ArraySentMailLog();
+        sentThroughMailgun($log, '20261031.1@mg.pellwick.example', 'ada@example.test');
+        $suppressions = new ArraySuppressions();
+        $dispatched = [];
+        $endpoint = new MailEventsEndpoint([new MailgunWebhook($key)], new ArrayNonceStore(), $suppressions, static function (MailEvent $e) use (&$dispatched): void {
+            $dispatched[] = $e;
+        }, static fn (): int => NOW, $log);
+
+        // A triple lifted from a delivery signed with the same key, its
+        // event-data rewritten: another reader of a real message, a message
+        // never sent, and a real message and reader through another provider.
+        $forgeries = [
+            mailgunDelivery($key, str_repeat('c1', 25), 'failed', 'ceo@victim.example', '20261031.1@mg.pellwick.example'),
+            mailgunDelivery($key, str_repeat('c2', 25), 'failed', 'ada@example.test', 'never-sent@mg.pellwick.example'),
+        ];
+        foreach ($forgeries as $body) {
+            expect($endpoint->handle(post('mailgun', $body), $body)->status)->toBe(200);
+        }
+        expect($suppressions->held)->toBe([])->and($dispatched)->toBe([]);
+
+        $log2 = new ArraySentMailLog();
+        $log2->record(new SentMessage(new Message(new Address('o@pellwick.example'), [new Address('ada@example.test')], 'S', '<p>x</p>', 'x'), 'shared-id', 'ses'), NOW);
+        $other = new MailEventsEndpoint([new MailgunWebhook($key)], new ArrayNonceStore(), $suppressions, clock: static fn (): int => NOW, sent: $log2);
+        $body = mailgunDelivery($key, str_repeat('c3', 25), 'failed', 'ada@example.test', 'shared-id');
+        $other->handle(post('mailgun', $body), $body);
+        expect($suppressions->held)->toBe([]);
+    });
+
+    it('mounts a webhook whose proof does not cover its body only beside a sent-mail log', function () {
+        expect(fn () => new MailEventsEndpoint([new MailgunWebhook('mailgun-http-webhook-signing-key')], new ArrayNonceStore()))->toThrow(\InvalidArgumentException::class, 'SentMailLog')
+            ->and(fn () => new MailEventsEndpoint([new PostmarkWebhook('postmark', 'p0stm4rk-webhook-password-0123')], new ArrayNonceStore()))->toThrow(\InvalidArgumentException::class)
+            ->and(new MailEventsEndpoint([new ResendWebhook('whsec_' . base64_encode('resend-webhook-secret-32-bytes!!'))], new ArrayNonceStore())->names())->toBe(['resend']);
+    });
+
+    it('checks every provider\'s events against the log where one is given', function () use ($events) {
+        $log = new ArraySentMailLog();
+        $log->record(new SentMessage(new Message(new Address('o@pellwick.example'), [new Address('hard@example.test')], 'S', '<p>x</p>', 'x'), 'm', 'ses'), NOW);
+        $suppressions = new ArraySuppressions();
+        new MailEventsEndpoint([new Scripted($events)], new ArrayNonceStore(), $suppressions, clock: static fn (): int => NOW, sent: $log)->handle(post('scripted', '{}'), '{}');
+
+        expect(array_keys($suppressions->held))->toBe(['hard@example.test']);
+    });
+
+    it('keeps who was sent what as digests, for the retention, in memory or the database', function (SentMailLog $log) {
+        $message = new Message(new Address('o@pellwick.example'), [new Address('Ada@Example.test')], 'S', '<p>x</p>', 'x', bcc: [new Address('audit@pellwick.example')]);
+        $log->record(new SentMessage($message, 'id-1', 'resend'), NOW);
+        $log->record(new SentMessage($message, null, 'smtp'), NOW);
+
+        expect($log->wasSent('resend', 'id-1', 'ada@example.test', NOW))->toBeTrue()
+            ->and($log->wasSent('resend', 'id-1', 'audit@pellwick.example', NOW))->toBeTrue()
+            ->and($log->wasSent('resend', 'id-1', 'grace@example.test', NOW))->toBeFalse()
+            ->and($log->wasSent('ses', 'id-1', 'ada@example.test', NOW))->toBeFalse()
+            ->and($log->wasSent('resend', 'id-1', 'ada@example.test', NOW + SentMailLog::RETENTION + 1))->toBeFalse();
+    })->with([
+        'in memory' => fn (): SentMailLog => new ArraySentMailLog(),
+        'in the database' => function (): SentMailLog {
+            $connection = PdoConnection::sqlite(':memory:', 'test');
+            DatabaseSentMailLog::define(new Schema($connection, Dialect::for($connection)));
+            $log = new DatabaseSentMailLog($connection);
+            // An old row, swept by the next record.
+            $old = new Message(new Address('o@pellwick.example'), [new Address('old@example.test')], 'S', '<p>x</p>', 'x');
+            $log->record(new SentMessage($old, 'old', 'resend'), NOW - SentMailLog::RETENTION - 10);
+
+            return $log;
+        },
+    ]);
 });

@@ -24,6 +24,12 @@ use Tinvar\Observability\Telemetry;
  * (MailCategory) is left off, and a message with no To reader left is not
  * sent at all. What became of the send -- the provider's message id, the
  * transport that took it, who was left off -- is deliver()'s answer.
+ *
+ * Given a sent-mail log, it records each message id the provider hands
+ * back against the message's readers, which is what a webhook's event is
+ * checked against (SentMailLog). The message has gone by then: a log that
+ * cannot be written does not fail the send -- that would send it again --
+ * and the webhook's events for it are ignored instead.
  */
 final readonly class Mailer
 {
@@ -35,6 +41,7 @@ final readonly class Mailer
         private Encoder $encoder = new Encoder(),
         private ?Telemetry $telemetry = null,
         private ?Suppressions $suppressions = null,
+        private ?SentMailLog $sentLog = null,
     ) {}
 
     /**
@@ -100,7 +107,16 @@ final readonly class Mailer
             return new SentMessage($message, null, 'none', $suppressed, skipped: true);
         }
 
-        return SentMessage::through($this->transport, $kept)->withSuppressed($suppressed);
+        $sent = SentMessage::through($this->transport, $kept)->withSuppressed($suppressed);
+        try {
+            $this->sentLog?->record($sent, time());
+        } catch (\Throwable) {
+            // Sent, and not logged: its bounces will be ignored, which is
+            // better than the retry a throw here would cost -- the message
+            // sent twice.
+        }
+
+        return $sent;
     }
 
     /**

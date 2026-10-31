@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Mail\Providers;
 
 use Tinvar\Config\Secret;
+use Tinvar\Http\HttpException;
 use Tinvar\Http\Request;
 use Tinvar\Mail\MailBounced;
 use Tinvar\Mail\MailComplained;
@@ -25,6 +26,15 @@ use Tinvar\Mail\MailWebhookDelivery;
  * one; `complained` a complaint; `delivered` a delivery. The message id is
  * the one Mailgun gave the send, without its angle brackets. Opens, clicks
  * and the rest are taken and ignored.
+ *
+ * The HMAC covers the timestamp and the token, never the event: it proves a
+ * delivery came from someone holding the key, not what it reports. So an
+ * event must name its id and its message's id, and the endpoint acts on it
+ * only when the sent-mail log says that message went to that reader through
+ * Mailgun (provesContent() is false; MailEventsEndpoint requires the log).
+ * And the signing key is this endpoint's alone: shared with another app or
+ * endpoint on the account, every delivery signed for those is a triple that
+ * verifies here too.
  */
 final readonly class MailgunWebhook implements MailWebhook
 {
@@ -35,6 +45,11 @@ final readonly class MailgunWebhook implements MailWebhook
     public function __construct(#[\SensitiveParameter] Secret|string $key, private int $tolerance = self::TOLERANCE)
     {
         $this->key = $key instanceof Secret ? $key : new Secret($key);
+    }
+
+    public function provesContent(): bool
+    {
+        return false;
     }
 
     public function name(): string
@@ -81,13 +96,20 @@ final readonly class MailgunWebhook implements MailWebhook
             return [];
         }
         $headers = Payload::map(Payload::map($data['message'] ?? null)['headers'] ?? null);
-        $messageId = Payload::text($headers['message-id'] ?? null, 128);
+        $messageId = Payload::text($headers['message-id'] ?? null, 191);
+        $event = $data['event'] ?? null;
+        // The HMAC proves a delivery happened, not what it says: an event
+        // acted on names its own id and the message it is about, which the
+        // endpoint holds to the sent-mail log.
+        if (\in_array($event, ['failed', 'complained', 'delivered'], true) && (Payload::text($data['id'] ?? null, 128) === null || $messageId === null)) {
+            throw new HttpException(400, 'A Mailgun event names its id and its message\'s id.', 'bad_request');
+        }
         $messageId = $messageId === null ? null : trim($messageId, '<>');
         $at = Payload::time($data['timestamp'] ?? null, $now);
         $status = Payload::map($data['delivery-status'] ?? null);
         $reason = Payload::text($status['description'] ?? null) ?? Payload::text($status['message'] ?? null) ?? Payload::text($data['reason'] ?? null);
 
-        return match ($data['event'] ?? null) {
+        return match ($event) {
             'failed' => [new MailBounced(MailgunTransport::NAME, $recipient, $messageId, $at, ($data['severity'] ?? null) === 'permanent', $reason)],
             'complained' => [new MailComplained(MailgunTransport::NAME, $recipient, $messageId, $at)],
             'delivered' => [new MailDelivered(MailgunTransport::NAME, $recipient, $messageId, $at)],

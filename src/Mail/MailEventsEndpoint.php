@@ -27,7 +27,13 @@ use Tinvar\Http\Response;
  *      provider's retry of a delivery that was handled and whose answer it
  *      never got -- and is answered 200 with nothing done again: a 4xx
  *      would only have the provider send it again, and again.
- *   4. A hard bounce or a complaint written to the suppression list
+ *   4. Each event checked against the sent-mail log, where one is given:
+ *      an event about a message this application did not send to that
+ *      reader, through that provider, is dropped, whoever signed it. A
+ *      webhook whose proof does not cover its body -- Mailgun's HMAC is of
+ *      a timestamp and a token, Postmark's is a password -- is mounted only
+ *      beside a log (MailWebhook::provesContent()).
+ *   5. A hard bounce or a complaint written to the suppression list
  *      (Suppressions), then every event handed to $dispatch -- the event
  *      bus, in an application -- in the order the delivery has them.
  *
@@ -54,6 +60,7 @@ final readonly class MailEventsEndpoint
      * @param list<MailWebhook> $webhooks
      * @param (\Closure(MailEvent): void)|null $dispatch where each event goes: Events::dispatch(...)
      * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
+     * @param SentMailLog|null $sent what the Mailer sent: given, only events about those messages, to those readers, count
      */
     public function __construct(
         array $webhooks,
@@ -61,10 +68,16 @@ final readonly class MailEventsEndpoint
         private ?Suppressions $suppressions = null,
         private ?\Closure $dispatch = null,
         private ?\Closure $clock = null,
+        private ?SentMailLog $sent = null,
     ) {
         $named = [];
         foreach ($webhooks as $webhook) {
             $name = $webhook->name();
+            if ($sent === null && !$webhook->provesContent()) {
+                throw new \InvalidArgumentException(
+                    "The {$name} webhook's proof does not cover what a delivery says: mount it beside a SentMailLog, so only events about mail this application sent are acted on.",
+                );
+            }
             if (preg_match('/^[a-z0-9-]{1,32}\z/', $name) !== 1) {
                 throw new \InvalidArgumentException("'{$name}' is not a webhook's path segment: lowercase letters, digits and -.");
             }
@@ -112,11 +125,16 @@ final readonly class MailEventsEndpoint
             return self::ok('Already received.');
         }
 
+        $events = $this->sent === null ? $delivery->events : array_values(array_filter(
+            $delivery->events,
+            fn (MailEvent $event): bool => $event->messageId() !== null && $this->sent->wasSent($event->provider(), (string) $event->messageId(), $event->recipient(), $now),
+        ));
+
         try {
-            foreach ($delivery->events as $event) {
+            foreach ($events as $event) {
                 $this->record($event);
             }
-            foreach ($delivery->events as $event) {
+            foreach ($events as $event) {
                 if ($this->dispatch !== null) {
                     ($this->dispatch)($event);
                 }

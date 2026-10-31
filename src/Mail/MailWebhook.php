@@ -24,6 +24,15 @@ interface MailWebhook
     public function name(): string;
 
     /**
+     * Whether what proves a delivery covers what it says: a signature over
+     * the body (Resend, SES, SendGrid), as against one over a timestamp and
+     * a token (Mailgun) or credentials alone (Postmark). One that does not
+     * is mounted only beside a SentMailLog, so no event is acted on unless
+     * it is about a message the application sent to that reader.
+     */
+    public function provesContent(): bool;
+
+    /**
      * The delivery, verified: its nonce, until when a replay of it would
      * still verify, and the events it reports.
      *

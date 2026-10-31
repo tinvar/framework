@@ -22,6 +22,10 @@ use Tinvar\Mail\MailWebhookDelivery;
  *
  * With no signed id or time to hold a replay to, the nonce is a digest of
  * the body, kept for a week: a delivery sent again within it is taken once.
+ * And since a password proves who sent a delivery and nothing of what it
+ * says, the endpoint acts on its events only where the sent-mail log has
+ * the message going to that reader through Postmark (provesContent()).
+ * The credentials are this endpoint's alone, used for no other webhook.
  *
  * RecordType `Bounce` is a hard bounce for a HardBounce, a BadEmailAddress
  * or a ManuallyDeactivated -- and for any Postmark marks Inactive, which
@@ -52,6 +56,11 @@ final readonly class PostmarkWebhook implements MailWebhook
         if ($this->password->length() < PostmarkConfig::MIN_WEBHOOK_PASSWORD) {
             throw new \InvalidArgumentException('A Postmark webhook password is ' . PostmarkConfig::MIN_WEBHOOK_PASSWORD . ' characters or more.');
         }
+    }
+
+    public function provesContent(): bool
+    {
+        return false;
     }
 
     public function name(): string

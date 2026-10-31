@@ -37,6 +37,11 @@ final readonly class ResendWebhook implements MailWebhook
         }
     }
 
+    public function provesContent(): bool
+    {
+        return true;
+    }
+
     public function name(): string
     {
         return ResendTransport::NAME;

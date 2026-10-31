@@ -81,6 +81,11 @@ final readonly class SesWebhook implements MailWebhook
         $this->certificates = $certificates ?? new SnsCertificates($http);
     }
 
+    public function provesContent(): bool
+    {
+        return true;
+    }
+
     public function name(): string
     {
         return SesTransport::NAME;

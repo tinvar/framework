@@ -46,6 +46,11 @@ final readonly class SendGridWebhook implements MailWebhook
         $this->key = self::publicKey($publicKey) ?? throw new \InvalidArgumentException('A SendGrid verification key is the base64 of an ECDSA P-256 public key.');
     }
 
+    public function provesContent(): bool
+    {
+        return true;
+    }
+
     public function name(): string
     {
         return SendGridTransport::NAME;

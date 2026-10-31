@@ -218,6 +218,29 @@ it('reads a status as retryable when the transport is the trouble, and permanent
     expect(new MailTransportException('old style')->retryable)->toBeTrue();
 });
 
+it('records each id a provider hands back against the readers, and fails no send for a log it cannot write', function () {
+    $log = new \Tinvar\Mail\ArraySentMailLog();
+    $mailer = new Mailer(new ArrayTransport(), new PlainRenderer(), new Address('shop@shop.test'), sentLog: $log);
+    $sent = $mailer->deliver(new Note([new Address('Ada@example.test')]));
+
+    expect($log->wasSent('array', (string) $sent->messageId, 'ada@example.test', time()))->toBeTrue();
+
+    $broken = new class implements \Tinvar\Mail\SentMailLog {
+        public function record(SentMessage $sent, int $now): void
+        {
+            throw new \RuntimeException('database down');
+        }
+
+        public function wasSent(string $provider, string $messageId, string $recipient, int $now): bool
+        {
+            return false;
+        }
+    };
+    $array = new ArrayTransport();
+    expect(new Mailer($array, new PlainRenderer(), new Address('shop@shop.test'), sentLog: $broken)->deliver(new Note([new Address('a@example.test')]))->messageId)->toBe('array-1')
+        ->and($array->sent)->toHaveCount(1);
+});
+
 it('has SentMessage carry who was left off', function () {
     $message = new Message(new Address('a@shop.test'), [new Address('b@example.test')], 'S', '<p>x</p>', 'x');
     $sent = new SentMessage($message, 'id-1', 'ses')->withSuppressed(['c@example.test']);
