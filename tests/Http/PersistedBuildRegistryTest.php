@@ -197,7 +197,7 @@ describe('a registry read from a store', function () {
         expect($builds->accepts('b2'))->toBeTrue();
     });
 
-    it('asks the store once a request, however many checks the request makes', function () {
+    it('asks the store once a request, however many checks the request makes, and at every check outside one', function () {
         $reads = 0;
         $store = new class ($reads) implements BuildStore {
             private BuildHistory $history;
@@ -221,6 +221,7 @@ describe('a registry read from a store', function () {
         };
         $builds = BuildRegistry::persisted('b2', $store);
 
+        $builds->beginRequest();
         $builds->accepts('b1');
         $builds->accepts('b2');
         $builds->standing('b1');
@@ -228,8 +229,17 @@ describe('a registry read from a store', function () {
 
         // The next request asks again.
         $builds->endRequest();
+        $builds->beginRequest();
         $builds->accepts('b1');
+        $builds->accepts('b2');
         expect($reads)->toBe(2);
+
+        // And outside a request -- a queue job, a scheduled task -- every
+        // check asks, there being nothing sure to end one.
+        $builds->endRequest();
+        $builds->accepts('b1');
+        $builds->accepts('b1');
+        expect($reads)->toBe(4);
     });
 
     // In code it would last until the store next changed, on one worker.

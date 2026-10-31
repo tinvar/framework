@@ -36,10 +36,11 @@ use Tinvar\Render\RouteToken;
  * Configured in code, or read from a BuildStore (persisted()). Only the store
  * makes `build:revoke` an operator's command: the build that needs revoking
  * is the one whose code was written before anyone knew, so its own
- * configuration cannot be what refuses it. A persisted registry looks at the
- * store each time it is asked, which the store keeps cheap, so a revocation
- * written from a terminal is in force on every worker's next request without
- * a restart.
+ * configuration cannot be what refuses it. A persisted registry reads the
+ * store once a request inside one the Kernel has begun, and on every check
+ * outside one -- a queue worker's job, a scheduled task, a command -- so a
+ * revocation written from a terminal is in force on every worker's next
+ * request, and every queue worker's next job, without a restart.
  */
 final class BuildRegistry
 {
@@ -124,6 +125,17 @@ final class BuildRegistry
      * by endRequest() through the Kernel's RequestScope.
      */
     private bool $synced = false;
+
+    /**
+     * Whether a request the Kernel began is under way: only then is what
+     * $synced says kept. Outside one -- a queue worker, the scheduler, a
+     * command -- nothing is sure to call endRequest(), whatever scope the
+     * process was handed, and a history read once was kept for the life of
+     * the process: a build revoked, or a floor raised, after a worker's
+     * first job was not refused until it restarted. There every check asks
+     * the store, as every check did before the cache.
+     */
+    private bool $inRequest = false;
 
     private int $retainFor = self::RETENTION;
 
@@ -348,12 +360,24 @@ final class BuildRegistry
     }
 
     /**
+     * A request has begun: the store is asked at its first check and not
+     * again until endRequest(). The Kernel calls this as it handles one.
+     */
+    public function beginRequest(): void
+    {
+        $this->inRequest = true;
+        $this->synced = false;
+    }
+
+    /**
      * The request is over: the next check asks the store again, so what an
      * operator recorded since -- a revocation, a floor -- is in force on the
-     * next request, on a worker booted before it.
+     * next request, on a worker booted before it. And until the next
+     * beginRequest(), every check does.
      */
     public function endRequest(): void
     {
+        $this->inRequest = false;
         $this->synced = false;
     }
 
@@ -369,7 +393,7 @@ final class BuildRegistry
      */
     private function sync(): void
     {
-        if ($this->store === null || $this->synced) {
+        if ($this->store === null || ($this->inRequest && $this->synced)) {
             return;
         }
         $this->synced = true;

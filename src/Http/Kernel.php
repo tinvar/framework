@@ -229,6 +229,10 @@ final class Kernel
     /** Null when the application declared no builds, so there is nothing to check against. */
     private readonly ?CheckVersion $versions;
     public readonly RequestScope $scope;
+
+    /** @var list<BuildRegistry> the registries handle() begins each request on */
+    private array $requestBuilds = [];
+
     public readonly ?PanelContext $panels;
 
     /**
@@ -1476,12 +1480,16 @@ final class Kernel
             $this->scope->add('container', $container->endRequest(...));
         }
 
-        // The build history, read once a request: the next one reads it
-        // again, and takes what an operator recorded in between.
+        // The build history, read once a request: handle() begins each
+        // request on it, the next one reads it again, and takes what an
+        // operator recorded in between. Outside a request -- a queue job, a
+        // scheduled task -- it is read at every check.
         if ($this->builds !== null) {
+            $this->requestBuilds[] = $this->builds;
             $this->scope->add('builds', $this->builds->endRequest(...));
         }
         if ($fragments !== null && $fragments->builds !== $this->builds) {
+            $this->requestBuilds[] = $fragments->builds;
             $this->scope->add('fragment builds', $fragments->builds->endRequest(...));
         }
 
@@ -1541,6 +1549,9 @@ final class Kernel
         $this->handling = $request;
         $failure = null;
         $ended = false;
+        foreach ($this->requestBuilds as $builds) {
+            $builds->beginRequest();
+        }
 
         try {
             $response = $this->dispatch($request, $respond, $rawBody, $failure);

@@ -570,7 +570,9 @@ describe('the reset contract', function () {
 
     // A request checks a build at several places; a database store answered
     // each with a query. Once a request, and the next request reads again.
-    it('reads the build history once a request, and again on the next', function () {
+    // Outside a request -- a queue job, a scheduled task -- nothing resets
+    // the scope for certain, so every check reads.
+    it('reads the build history once a request, again on the next, and at every check outside one', function () {
         $reads = 0;
         $store = new class ($reads) implements Tinvar\Http\BuildStore {
             public function __construct(private int &$reads) {}
@@ -588,6 +590,7 @@ describe('the reset contract', function () {
             }
         };
         $builds = Tinvar\Http\BuildRegistry::persisted('b2', $store);
+        $checks = new KernelChecksBuilds($builds);
         $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
         $kernel = new Kernel(
             orm: new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat()),
@@ -596,18 +599,21 @@ describe('the reset contract', function () {
             actions: new ActionRegistry(),
             auth: new AuthContext(),
             policies: new PolicyRegistry(),
-            resolver: static fn (string $class): object => new $class(),
+            resolver: static fn (string $class): object => $class === KernelChecksBuilds::class ? $checks : new $class(),
             allowedQueries: static fn (Request $r): array => [],
+            globalMiddleware: [KernelChecksBuilds::class],
             builds: $builds,
         );
 
-        $builds->accepts('b1');
-        $builds->accepts('b2');
+        $kernel->handle(Request::get('/nothing-here'), render(), errorPage: false);
         expect($reads)->toBe(1);
 
-        $kernel->scope->reset();
-        $builds->accepts('b1');
+        $kernel->handle(Request::get('/nothing-here'), render(), errorPage: false);
         expect($reads)->toBe(2);
+
+        $builds->accepts('b1');
+        $builds->accepts('b2');
+        expect($reads)->toBe(4);
     });
 });
 
@@ -1167,6 +1173,20 @@ describe('the kernel with a container', function () {
             ->and($container->get(KernelRequestService::class))->not->toBe($during);
     });
 });
+
+/** Checks two builds, as a request checks X-Version and then a token. */
+final class KernelChecksBuilds implements Tinvar\Http\Middleware
+{
+    public function __construct(private Tinvar\Http\BuildRegistry $builds) {}
+
+    public function handle(Request $request, Closure $next): Response
+    {
+        $this->builds->accepts('b1');
+        $this->builds->accepts('b2');
+
+        return $next($request);
+    }
+}
 
 final class KernelCapturingMiddleware implements Tinvar\Http\Middleware
 {
