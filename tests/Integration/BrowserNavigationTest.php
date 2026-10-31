@@ -705,7 +705,7 @@ it('uploads an avatar and a receipt photo from the account page, and refuses a f
         ->and($result['before'])->toBe(['images' => 0, 'empty' => true]);
 
     // Refused by what its bytes are, whatever its name and type said.
-    expect($result['refused'])->toStartWith('That file is not a PNG, JPEG or WebP image');
+    expect($result['refused'])->toStartWith('That file is not a PNG, JPEG, WebP or AVIF image');
 
     // Three files to /_upload, each with the CSRF header; two saved, each by
     // its own action -- the refused one never reached one. (Sign-in may be
