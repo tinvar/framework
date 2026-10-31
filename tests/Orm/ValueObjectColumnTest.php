@@ -635,6 +635,31 @@ describe('what a value object holds, all the way down', function () {
         }
     });
 
+    // A readonly property left uninitialized can still be set once, from
+    // inside its class: the value changes after it was made (review of
+    // ADR 0122).
+    it('refuses a value with a property left uninitialized, at the top or nested, read or written', function () {
+        $bare = static fn (string $class): object => new \ReflectionClass($class)->newInstanceWithoutConstructor();
+        $orm = sqlite();
+
+        $model = new HolderColumn();
+        $model->layout = $bare(Holder::class);
+        expect(fn () => $orm->save($model))->toThrow(MappingException::class, 'not initialized');
+
+        $model->layout = new Holder('h', [$bare(Price::class)]);
+        expect(fn () => $orm->save($model))->toThrow(MappingException::class, 'not initialized');
+
+        $model->layout = new Holder('h');
+        $orm->save($model);
+        NextHolder::$next = new Holder('read', [], $bare(Price::class));
+        try {
+            $orm->flush();
+            expect(fn () => $orm->find(HolderColumn::class, $model->primaryKey()))->toThrow(MappingException::class, 'not initialized');
+        } finally {
+            NextHolder::$next = null;
+        }
+    });
+
     it('refuses a mutable value a cast makes when the row is read', function () {
         $orm = sqlite();
         $model = new HolderColumn();
