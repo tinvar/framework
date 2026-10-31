@@ -23,7 +23,7 @@ use Tinvar\Http\BuiltAssets;
  *
  * The pattern is BuiltAssets::routePattern(), written out; the message
  * names it. Read as CaddyfileRules reads the file, without running it: an
- * `import` is not followed, and what cannot be read fails.
+ * `import` followed as Caddy follows it, and what cannot be read fails.
  */
 final class AssetRouteRules
 {
@@ -43,9 +43,9 @@ final class AssetRouteRules
         }
 
         try {
-            $tree = CaddyfileRules::parse($contents, basename($path));
+            $tree = CaddyfileRules::expanded($path, $contents);
         } catch (\UnexpectedValueException $e) {
-            return [basename($path) . ": {$e->getMessage()}"];
+            return [$e->getMessage()];
         }
 
         $violations = [];
@@ -55,22 +55,24 @@ final class AssetRouteRules
     }
 
     /**
-     * @param list<array{name: string, args: list<string>, line: int, children: list<mixed>}> $block
-     * @param array{name: string, args: list<string>, line: int, children: list<mixed>}|null $owner the directive whose block it is
-     * @param list<array{name: string, args: list<string>, line: int, children: list<mixed>}> $siblings the block $owner is in
+     * @param list<array{name: string, args: list<string>, line: int, file: string, children: list<mixed>}> $block
+     * @param array{name: string, args: list<string>, line: int, file: string, children: list<mixed>}|null $owner the directive whose block it is
+     * @param list<array{name: string, args: list<string>, line: int, file: string, children: list<mixed>}> $siblings the block $owner is in
      * @param list<string> $violations
      */
     private static function walk(array $block, ?array $owner, array $siblings, string $file, array &$violations): void
     {
         if (self::servesBuild($block) && !self::limited($owner, $siblings)) {
+            // Where the route is: an import's file, or the Caddyfile's own.
+            $at = $owner['file'] ?? $file;
             $line = $owner['line'] ?? 1;
-            $violations[] = "{$file}:{$line}: the build's client directory is served to any path under it: serve it "
+            $violations[] = "{$at}:{$line}: the build's client directory is served to any path under it: serve it "
                 . 'only in a `handle` whose matcher is `path_regexp ' . BuiltAssets::routePattern()
                 . '`, the hashed names a build writes, as PHP serves them (ADR 0108).';
         }
 
         foreach ($block as $node) {
-            /** @var list<array{name: string, args: list<string>, line: int, children: list<mixed>}> $children */
+            /** @var list<array{name: string, args: list<string>, line: int, file: string, children: list<mixed>}> $children */
             $children = $node['children'];
             if ($children !== []) {
                 self::walk($children, $node, $block, $file, $violations);
@@ -81,7 +83,7 @@ final class AssetRouteRules
     /**
      * Whether $block runs a file server from the build's client directory.
      *
-     * @param list<array{name: string, args: list<string>, line: int, children: list<mixed>}> $block
+     * @param list<array{name: string, args: list<string>, line: int, file: string, children: list<mixed>}> $block
      */
     private static function servesBuild(array $block): bool
     {
@@ -92,7 +94,7 @@ final class AssetRouteRules
                 $root = end($node['args']);
             } elseif ($node['name'] === 'file_server') {
                 $serves = true;
-                /** @var list<array{name: string, args: list<string>, line: int, children: list<mixed>}> $settings */
+                /** @var list<array{name: string, args: list<string>, line: int, file: string, children: list<mixed>}> $settings */
                 $settings = $node['children'];
                 foreach ($settings as $setting) {
                     if ($setting['name'] === 'root' && $setting['args'] !== []) {
@@ -111,8 +113,8 @@ final class AssetRouteRules
      * a `handle` or `route` whose one argument is a matcher defined beside
      * it as that path_regexp.
      *
-     * @param array{name: string, args: list<string>, line: int, children: list<mixed>}|null $owner
-     * @param list<array{name: string, args: list<string>, line: int, children: list<mixed>}> $siblings
+     * @param array{name: string, args: list<string>, line: int, file: string, children: list<mixed>}|null $owner
+     * @param list<array{name: string, args: list<string>, line: int, file: string, children: list<mixed>}> $siblings
      */
     private static function limited(?array $owner, array $siblings): bool
     {

@@ -82,3 +82,24 @@ it('leaves a file server of another root alone, and refuses what it cannot read'
         ->and(checked("http://:8080 {\n\thandle {\n"))->toBe(['Caddyfile: a block is never closed.'])
         ->and(AssetRouteRules::check('/nonexistent/Caddyfile'))->toHaveCount(1);
 });
+
+// A route in a file the Caddyfile imports, or in a snippet, is served all
+// the same: it was passed over unread.
+it('follows an import, a file\'s or a snippet\'s, to the route it brings in', function () {
+    $directory = sys_get_temp_dir() . '/tinvar-asset-route-' . bin2hex(random_bytes(4));
+    mkdir($directory);
+    file_put_contents("{$directory}/assets.caddy", "handle /assets/* {\n\troot * {\$TINVAR_BUILD_DIR}/client\n\tfile_server\n}\n");
+    file_put_contents("{$directory}/Caddyfile", "http://:8080 {\n\timport assets.caddy\n}\n");
+    file_put_contents("{$directory}/Snippet", "(assets) {\n\thandle /assets/* {\n\t\troot * {\$TINVAR_BUILD_DIR}/client\n\t\tfile_server\n\t}\n}\nhttp://:8080 {\n\timport assets\n}\n");
+    file_put_contents("{$directory}/Missing", "http://:8080 {\n\timport nowhere.caddy\n}\n");
+
+    try {
+        expect(AssetRouteRules::check("{$directory}/Caddyfile"))->toHaveCount(1)
+            ->and(AssetRouteRules::check("{$directory}/Caddyfile")[0])->toContain('the build\'s client directory is served to any path under it')
+            ->and(AssetRouteRules::check("{$directory}/Snippet"))->toHaveCount(1)
+            ->and(AssetRouteRules::check("{$directory}/Missing"))->toHaveCount(1)
+            ->and(AssetRouteRules::check("{$directory}/Missing")[0])->toContain('cannot be read');
+    } finally {
+        exec('rm -rf ' . escapeshellarg($directory));
+    }
+});

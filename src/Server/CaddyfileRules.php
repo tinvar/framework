@@ -83,15 +83,7 @@ final class CaddyfileRules
         }
 
         try {
-            $tree = self::parse($contents, basename($path));
-        } catch (\UnexpectedValueException $e) {
-            return [basename($path) . ": {$e->getMessage()}"];
-        }
-
-        $real = realpath($path);
-        $snippets = [];
-        try {
-            $tree = self::expandFile($tree, $real === false ? $path : $real, \dirname($path), $snippets, [$real === false ? $path : $real]);
+            $tree = self::expanded($path, $contents);
         } catch (\UnexpectedValueException $e) {
             return [$e->getMessage()];
         }
@@ -103,6 +95,29 @@ final class CaddyfileRules
         }
 
         return $violations;
+    }
+
+    /**
+     * The directives of the Caddyfile at $path -- its contents, read -- with
+     * every import followed as Caddy follows it and its snippets' definitions
+     * taken out: what each rule over the file reads, so none passes over
+     * what an import brings in.
+     *
+     * @return list<array{name: string, args: list<string>, line: int, file: string, children: list<mixed>}>
+     * @throws \UnexpectedValueException naming the file and the line, for what cannot be read
+     */
+    public static function expanded(string $path, string $contents): array
+    {
+        try {
+            $tree = self::parse($contents, basename($path));
+        } catch (\UnexpectedValueException $e) {
+            throw new \UnexpectedValueException(basename($path) . ": {$e->getMessage()}", 0, $e);
+        }
+
+        $real = realpath($path);
+        $snippets = [];
+
+        return self::expandFile($tree, $real === false ? $path : $real, \dirname($path), $snippets, [$real === false ? $path : $real]);
     }
 
     /**
