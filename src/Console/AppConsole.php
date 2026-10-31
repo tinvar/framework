@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Console;
 
+use Tinvar\Auth\ApplicationClasses;
 use Tinvar\Auth\BuildRules;
 use Tinvar\Config\Configs;
 use Tinvar\Gateway\GatewayKeys;
@@ -237,6 +238,9 @@ final class AppConsole
                 // refuses a bare id to a tenant's model too (ADR 0105).
                 ...RouteRegistry::check($this->routes, new RouteRegistry($this->models)),
                 ...new BuildRules($this->models)->check($entryPoints, $payloads),
+                // The autoload map the rule finds an unlisted model in, read
+                // whole -- or a failure saying where it stopped (ADR 0122).
+                ...ApplicationClasses::fromComposer()->check(),
                 ...Configs::check($this->configs),
             ], [
                 \sprintf('ok: %d entry points, %d payloads, no violations', \count($entryPoints), \count($payloads)),

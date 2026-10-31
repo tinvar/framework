@@ -81,9 +81,44 @@ it('looks under the application\'s own top namespaces alone', function () {
     $elsewhere = new ApplicationClasses(['Elsewhere\\' => [__DIR__ . '/Fixtures/discovered']]);
 
     expect($elsewhere->named('Depot', ['Tinvar']))->toBe([])
-        ->and($elsewhere->named('Depot', ['Elsewhere']))->toBe(['Elsewhere\Depots\Depot'])
+        // Under its own root the file is found by name, and declares a
+        // class of another namespace than the map says: not handed back.
+        ->and($elsewhere->named('Depot', ['Elsewhere']))->toBe([])
         ->and(mapped()->named('depot', ['Tinvar']))->toBe(['Tinvar\Tests\Auth\Discovered\Depots\Depot'])
         ->and(new BuildRules([], $elsewhere)->checkTenantScopedIds([BareDepotQuery::class]))->toBe([]);
+});
+
+// Review of ADR 0122: a walk that stopped at its cap stopped in silence, and
+// a file named like a class was loaded whatever it held.
+it('says when its walk stopped at the cap, and tinvar check refuses it', function () {
+    $capped = new ApplicationClasses([PREFIX => [__DIR__ . '/Fixtures/discovered']], maxFiles: 1);
+
+    $warned = '';
+    set_error_handler(static function (int $level, string $message) use (&$warned): bool {
+        $warned = $message;
+
+        return true;
+    }, E_USER_WARNING);
+    try {
+        $truncated = $capped->truncated();
+    } finally {
+        restore_error_handler();
+    }
+
+    expect($truncated)->toBeTrue()
+        ->and($warned)->toContain('stopped at 1 files')
+        ->and($capped->check())->toHaveCount(1)
+        ->and($capped->check()[0])->toContain('stopped at 1 files')
+        ->and(mapped()->check())->toBe([])
+        ->and(mapped()->truncated())->toBeFalse();
+});
+
+it('loads no file named like a class that does not declare it', function () {
+    $loaded = get_included_files();
+    $found = mapped()->named('Ledger', ['Tinvar']);
+
+    expect($found)->toBe([])
+        ->and(array_diff(get_included_files(), $loaded))->toBe([]);
 });
 
 it('reads the root package\'s composer.json, its autoload and not its autoload-dev', function () {

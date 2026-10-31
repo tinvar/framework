@@ -19,9 +19,13 @@ namespace Tinvar\Auth;
  * a dependency's.
  *
  * Read from the file system, not by loading every class: the directories
- * are walked once, by file name, and only a class whose name a bare id
- * names is loaded to be asked whether it is a #[TenantScoped] model. A walk
- * stops at MAX_FILES, and follows no symbolic link out of the tree.
+ * are walked once, by file name, and only a file whose name a bare id
+ * names, and whose tokens declare a class of that name in the namespace
+ * its path says, is handed back to be loaded and asked whether it is a
+ * #[TenantScoped] model -- a script named like a class is never run. A
+ * walk follows no symbolic link out of the tree, and stops at MAX_FILES:
+ * saying so once, as a warning, and to `tinvar check`, which fails on it
+ * (check()), since a model past the cap is one nothing finds.
  */
 final class ApplicationClasses
 {
@@ -30,11 +34,17 @@ final class ApplicationClasses
 
     private static ?self $composer = null;
 
-    /** @var array<string, list<string>>|null by lowercased short name, every class under the map */
+    /** @var array<string, list<array{string, string}>>|null by lowercased short name, every class under the map and its file */
     private ?array $index = null;
 
-    /** @param array<string, list<string>> $psr4 namespace prefix ('App\\') => the directories it maps */
-    public function __construct(private readonly array $psr4) {}
+    /** Whether the walk stopped at the cap, with files left unread. */
+    private bool $truncated = false;
+
+    /**
+     * @param array<string, list<string>> $psr4 namespace prefix ('App\\') => the directories it maps
+     * @param int $maxFiles the most files the walk reads the names of
+     */
+    public function __construct(private readonly array $psr4, private readonly int $maxFiles = self::MAX_FILES) {}
 
     /**
      * The root package's PSR-4 map, read once per process from its
@@ -84,14 +94,84 @@ final class ApplicationClasses
     public function named(string $short, array $roots): array
     {
         $found = [];
-        foreach ($this->index()[strtolower($short)] ?? [] as $class) {
+        foreach ($this->index()[strtolower($short)] ?? [] as [$class, $file]) {
             $top = strstr($class, '\\', true);
-            if ($top !== false && \in_array($top, $roots, true)) {
+            if ($top !== false && \in_array($top, $roots, true) && self::declares($file, $class)) {
                 $found[] = $class;
             }
         }
 
         return $found;
+    }
+
+    /** Whether the walk stopped at the cap: a class past it is not found. */
+    public function truncated(): bool
+    {
+        $this->index();
+
+        return $this->truncated;
+    }
+
+    /**
+     * What `tinvar check` says of the map: nothing, or that the walk
+     * stopped at the cap, so tenant-scoped-ids-must-be-typed could not look
+     * at every class it maps.
+     *
+     * @return list<string>
+     */
+    public function check(): array
+    {
+        return $this->truncated() ? [self::capped($this->maxFiles)] : [];
+    }
+
+    /**
+     * Whether $file's tokens declare $class -- its namespace, then a class,
+     * an interface, a trait or an enum of its short name -- read without
+     * running it.
+     */
+    private static function declares(string $file, string $class): bool
+    {
+        $source = @file_get_contents($file);
+        if ($source === false) {
+            return false;
+        }
+        $slash = strrpos($class, '\\');
+        $namespace = $slash === false ? '' : substr($class, 0, $slash);
+        $short = $slash === false ? $class : substr($class, $slash + 1);
+
+        $tokens = array_values(array_filter(
+            token_get_all($source),
+            static fn (mixed $token): bool => !\is_array($token) || !\in_array($token[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true),
+        ));
+        $in = '';
+        foreach ($tokens as $i => $token) {
+            if (!\is_array($token)) {
+                continue;
+            }
+            if ($token[0] === T_NAMESPACE) {
+                $next = $tokens[$i + 1] ?? null;
+                $in = \is_array($next) && \in_array($next[0], [T_NAME_QUALIFIED, T_STRING], true) ? $next[1] : '';
+                continue;
+            }
+            if (\in_array($token[0], [T_CLASS, T_INTERFACE, T_TRAIT, T_ENUM], true)) {
+                $previous = $tokens[$i - 1] ?? null;
+                if (\is_array($previous) && $previous[0] === T_DOUBLE_COLON) {
+                    continue; // Foo::class
+                }
+                $next = $tokens[$i + 1] ?? null;
+                if (\is_array($next) && $next[0] === T_STRING && strcasecmp($next[1], $short) === 0 && strcasecmp($in, $namespace) === 0) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static function capped(int $max): string
+    {
+        return "tenant-scoped-ids-must-be-typed: the application's composer.json autoload map holds more files than the walk reads, and it "
+            . "stopped at {$max} files: a #[TenantScoped] model past them is found by nothing. Narrow the map's directories.";
     }
 
     /**
@@ -111,7 +191,7 @@ final class ApplicationClasses
         return false;
     }
 
-    /** @return array<string, list<string>> */
+    /** @return array<string, list<array{string, string}>> */
     private function index(): array
     {
         if ($this->index !== null) {
@@ -131,7 +211,8 @@ final class ApplicationClasses
                     new \RecursiveDirectoryIterator($base, \FilesystemIterator::SKIP_DOTS | \FilesystemIterator::CURRENT_AS_FILEINFO),
                 );
                 foreach ($walk as $file) {
-                    if (++$files > self::MAX_FILES) {
+                    if (++$files > $this->maxFiles) {
+                        $this->truncated = true;
                         break 3;
                     }
                     if (!$file instanceof \SplFileInfo || $file->isLink() || $file->getExtension() !== 'php') {
@@ -143,14 +224,17 @@ final class ApplicationClasses
                         continue;
                     }
                     $class = ltrim("{$prefix}\\{$name}", '\\');
-                    $index[strtolower($file->getBasename('.php'))][] = $class;
+                    $index[strtolower($file->getBasename('.php'))][] = [$class, $file->getPathname()];
                 }
             }
         }
         foreach ($index as $short => $classes) {
-            $classes = array_values(array_unique($classes));
-            sort($classes);
+            usort($classes, static fn (array $a, array $b): int => strcmp($a[0], $b[0]));
             $index[$short] = $classes;
+        }
+        // Loudly, where no check reads it: a registry at boot.
+        if ($this->truncated) {
+            trigger_error(self::capped($this->maxFiles), E_USER_WARNING);
         }
 
         return $this->index = $index;
