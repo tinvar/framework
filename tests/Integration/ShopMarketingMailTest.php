@@ -659,6 +659,32 @@ describe('the double opt-in', function () {
         Fakes::$queue->assertPushedCount(1, SendOptInConfirmation::class);
     });
 
+    // Off withdraws the pending yes, row and all; the window is kept apart
+    // from it, so off and on again is no way around it.
+    it('sends no second confirmation within the window for a switch turned off and on again', function () {
+        $other = customer('customer1@shop.test');
+        $flip = static fn (bool $on) => actingAs($other)->action('account.setMarketing', customer: $other, list: 'newsletter', subscribed: $on)->assertOk();
+
+        $flip(true);
+        confirmation();
+        $flip(false);
+        $again = $flip(true);
+        [$status, $lines] = console('queue:work', ['--stop-when-empty']);
+        expect($status)->toBe(0, implode("\n", $lines));
+
+        // Asked for, and on its way once the window has passed.
+        expect($again->value())->toBe(['list' => 'newsletter', 'subscribed' => false, 'pending' => true])
+            ->and(Fakes::$mail->sent(ConfirmSubscription::TEMPLATE))->toHaveCount(1)
+            ->and(consents($other))->toHaveCount(1);
+
+        // Once it has passed, at once.
+        orm()->connection()->execute('UPDATE marketing_opt_in_sends SET sent_at = ? WHERE customer_id = ?', [gmdate('Y-m-d\TH:i:s\Z', time() - MarketingConsents::RESEND_AFTER - 1), $other->id]);
+        $flip(false);
+        $flip(true);
+        confirmation();
+        expect(Fakes::$mail->sent(ConfirmSubscription::TEMPLATE))->toHaveCount(2);
+    });
+
     it('refuses a token that is not a confirmation link, the same way', function () {
         $demo = customer();
         $preferences = new Unsubscribes(KEY, new Links('https://shop.test'))->preferencesUrl($demo->id, $demo->email);
