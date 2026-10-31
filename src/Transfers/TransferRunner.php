@@ -43,6 +43,9 @@ final readonly class TransferRunner
     /** Rows read from the database at a time: a page, never the table. */
     public const int PAGE = 500;
 
+    /** The least seconds between two of a run's beats on its record (beat()). */
+    private const int BEAT_EVERY = 60;
+
     /**
      * @param \Closure(class-string): object $resolver builds an export or import afresh for each run
      * @param (\Closure(\Throwable): void)|null $report where a failure the user is told of
@@ -187,7 +190,25 @@ final readonly class TransferRunner
             return null;
         }
 
-        return $record->with(['status' => TransferRecord::RUNNING]);
+        return $this->beat($record->with(['status' => TransferRecord::RUNNING]), true);
+    }
+
+    /**
+     * Notes on its record that the run is alive -- claimed, a page or a
+     * chunk done, paused -- so it is not shown as failed while it works
+     * (TransferRecord::isStale()): at once when $always, else no more than
+     * every BEAT_EVERY seconds. Written outside any read-only scope.
+     */
+    private function beat(TransferRecord $record, bool $always = false): TransferRecord
+    {
+        $now = $this->transfers->now();
+        if (!$always && $now - max($record->createdAt, $record->updatedAt) < self::BEAT_EVERY) {
+            return $record;
+        }
+        $record = $record->with(['updatedAt' => $now]);
+        $this->transfers->store->update($record);
+
+        return $record;
     }
 
     /**
@@ -258,7 +279,7 @@ final readonly class TransferRunner
             if (!$this->transfers->store->claim($record->id)) {
                 return null;
             }
-            $record = $record->with(['status' => TransferRecord::RUNNING]);
+            $record = $this->beat($record->with(['status' => TransferRecord::RUNNING]), true);
         }
         if ($record === null || $record->status !== TransferRecord::RUNNING) {
             return null;
@@ -274,11 +295,11 @@ final readonly class TransferRunner
             if ($record->key !== '') {
                 $this->transfers->storage->delete($record->key);
             }
-            $record = $record->with(['key' => $key, 'rows' => $rows]);
+            $record = $record->with(['key' => $key, 'rows' => $rows, 'updatedAt' => $this->transfers->now()]);
             $this->transfers->store->update($record);
         }
 
-        return $record;
+        return $this->beat($record);
     }
 
     /**
@@ -327,7 +348,7 @@ final readonly class TransferRunner
             // `queued` for the next run to claim; a resumed run's is left as
             // resume() made it, holding the file its checkpoint names.
             if ($checkpoint === null && !$done) {
-                $this->transfers->store->update($record->with(['status' => TransferRecord::QUEUED]));
+                $this->transfers->store->update($record->with(['status' => TransferRecord::QUEUED, 'updatedAt' => $this->transfers->now()]));
             }
 
             throw $e;
@@ -364,7 +385,10 @@ final readonly class TransferRunner
             }
 
             try {
-                [$rows, $pausedAt] = $this->orm->readOnly(fn (): array => $this->write($transfer, $record->format, $arguments, $stream, $from, $rows, $control));
+                $beat = function () use (&$record): void {
+                    $record = $this->beat($record);
+                };
+                [$rows, $pausedAt] = $this->write($transfer, $record->format, $arguments, $stream, $from, $rows, $control, $beat);
             } catch (TooManyRows) {
                 $this->fail($record, "It has more than {$transfer->maxRows} rows. Narrow it and start it again.", $control);
 
@@ -434,9 +458,11 @@ final readonly class TransferRunner
         $key = self::pauseKey($record, $control, $control->releases() + 1);
         $this->transfers->storage->put($key, $stream);
         if ($control->checkpoint() === null) {
-            $this->transfers->store->update($record->with(['status' => TransferRecord::QUEUED]));
+            $record = $record->with(['status' => TransferRecord::QUEUED]);
         }
-
+        // The record's file and rows are left as they are, as a pause leaves
+        // them (resume()): only its beat moves.
+        $this->beat($record, true);
         $control->release(checkpoint: ['cursor' => $cursor, 'rows' => $rows, 'key' => $key, 'from' => $record->key]);
     }
 
@@ -542,7 +568,7 @@ final readonly class TransferRunner
             // after a chunk's commit and before this run noted it, so where
             // the count commits with the rows, the store's count is the one
             // put back, not this run's memory of the count before it.
-            $this->transfers->store->update($this->counted($record)->with(['status' => TransferRecord::QUEUED]));
+            $this->transfers->store->update($this->counted($record)->with(['status' => TransferRecord::QUEUED, 'updatedAt' => $this->transfers->now()]));
 
             throw $e;
         } finally {
@@ -645,10 +671,10 @@ final readonly class TransferRunner
             });
             // A chunk's models are not needed once checked.
             $this->orm->identityMap()->flush();
-            $record = $record->with(['checked' => $record->checked + \count($chunk), 'errorCount' => $failures->count, 'errors' => $failures->kept]);
+            $record = $this->beat($record->with(['checked' => $record->checked + \count($chunk), 'errorCount' => $failures->count, 'errors' => $failures->kept]));
 
             if ($control !== null && $control->stopping() && $rows->valid()) {
-                $this->transfers->store->update($record->with(['status' => TransferRecord::QUEUED]));
+                $this->transfers->store->update($record->with(['status' => TransferRecord::QUEUED, 'updatedAt' => $this->transfers->now()]));
                 $control->release();
 
                 return false;
@@ -681,7 +707,8 @@ final readonly class TransferRunner
             }
 
             $failures = new RowFailures();
-            $written = $record->with(['rows' => $record->rows + \count($chunk)]);
+            // Each chunk's write is its beat, too.
+            $written = $record->with(['rows' => $record->rows + \count($chunk), 'updatedAt' => $this->transfers->now()]);
             try {
                 $this->orm->transaction(function () use ($transfer, $arguments, $instance, $chunk, $failures, $written, $enlisted, &$record): void {
                     // The chunk is this run's once it commits, before what
@@ -742,7 +769,7 @@ final readonly class TransferRunner
             $this->orm->identityMap()->flush();
 
             if ($control !== null && $control->stopping() && $rows->valid()) {
-                $this->transfers->store->update($record->with(['status' => TransferRecord::QUEUED]));
+                $this->transfers->store->update($record->with(['status' => TransferRecord::QUEUED, 'updatedAt' => $this->transfers->now()]));
                 $control->release();
 
                 return false;
@@ -947,13 +974,17 @@ final readonly class TransferRunner
      *
      * @param array<string, mixed> $arguments
      * @param resource $stream
+     * @param (\Closure(): void)|null $beat run between pages, outside their read-only scope
      * @return array{int, string|null} the rows written in all, and the next page's cursor if it stopped before it
      * @throws TooManyRows
+     * @throws WorkerStopping when the worker's stop cuts it off, anywhere
      */
-    private function write(CompiledTransfer $transfer, string $format, array $arguments, mixed $stream, ?string $from = null, int $rows = 0, ?JobControl $control = null): array
+    private function write(CompiledTransfer $transfer, string $format, array $arguments, mixed $stream, ?string $from = null, int $rows = 0, ?JobControl $control = null, ?\Closure $beat = null): array
     {
         $instance = $this->body($transfer);
-        $query = $instance(...$arguments);
+        // Read-only a page at a time, not for the whole run: the record's
+        // beat between pages is a write (beat()).
+        $query = $this->orm->readOnly(static fn (): mixed => $instance(...$arguments));
         if (!$query instanceof Query) {
             throw new \LogicException("{$transfer->where()} returned " . get_debug_type($query) . ', not a Query.');
         }
@@ -968,17 +999,23 @@ final readonly class TransferRunner
         $cursors = new ExportCursors();
         $cursor = $from;
         do {
-            $page = $query->cursorPaginate(self::PAGE, $cursor, $cursors);
-            foreach ($page->items as $model) {
-                if (++$rows > $transfer->maxRows) {
-                    throw new TooManyRows();
+            [$rows, $cursor] = $this->orm->readOnly(function () use ($query, $cursor, $cursors, $rows, $transfer, $format, $instance, $stream): array {
+                $page = $query->cursorPaginate(self::PAGE, $cursor, $cursors);
+                foreach ($page->items as $model) {
+                    if (++$rows > $transfer->maxRows) {
+                        throw new TooManyRows();
+                    }
+                    $this->writeRow($transfer, $format, $this->row($transfer, $instance, $model), $stream);
                 }
-                $this->writeRow($transfer, $format, $this->row($transfer, $instance, $model), $stream);
-            }
-            $cursor = $page->next;
+
+                return [$rows, $page->next];
+            });
             // A page's models are not needed once written: the identity
             // map would otherwise hold every row of the table by the end.
             $this->orm->identityMap()->flush();
+            if ($beat !== null) {
+                $beat();
+            }
             if ($cursor !== null && $control !== null && $control->stopping()) {
                 return [$rows, $cursor];
             }

@@ -36,9 +36,11 @@ final readonly class Transfers
     public const int KEEP_RECORDS = 2_592_000;
 
     /**
-     * How long a transfer may be queued or running before it is shown as
-     * failed: a job refused on the worker -- its user's epoch moved, their
-     * membership gone -- never runs to say so itself.
+     * How long a transfer may be queued or running, with nothing heard of
+     * it, before it is shown as failed: a job refused on the worker -- its
+     * user's epoch moved, their membership gone -- or a worker killed never
+     * runs to say so itself. Measured from its record's last beat
+     * (TransferRecord::isStale()).
      */
     public const int STALE_AFTER = 3_600;
 

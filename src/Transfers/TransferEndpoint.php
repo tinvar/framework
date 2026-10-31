@@ -217,7 +217,7 @@ final readonly class TransferEndpoint
         $waiting = array_filter(
             $this->transfers->store->recent($tenant, $panel, $user, self::MAX_WAITING * 4),
             static fn (TransferRecord $r): bool => ($r->status === TransferRecord::QUEUED || $r->status === TransferRecord::RUNNING)
-                && $r->createdAt >= $now - Transfers::STALE_AFTER,
+                && !$r->isStale($now),
         );
         if (\count($waiting) >= self::MAX_WAITING) {
             throw new HttpException(429, 'Too many exports and imports are waiting to run.', 'transfers_waiting', [

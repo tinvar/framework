@@ -121,6 +121,30 @@ it('pauses between pages and picks up from the next, writing every row once', fu
     expect($skus)->toBe($expected);
 })->with(['csv', 'jsonl']);
 
+// Review: a transfer was shown as failed once an hour had passed since it
+// was started, however busy it still was. Its record now beats -- claimed,
+// each page, each pause -- and is stale an hour after the last beat.
+it('beats on its claim, on each page and on a pause, and is stale only an hour after the last', function () {
+    $app = manyWidgets(TransferRunner::PAGE * 2 + 1);
+    $app->export();
+    $started = $app->now;
+    $seen = [];
+
+    $paused = runOnce($app, static function () use ($app, &$seen): bool {
+        $seen[] = $app->record()->updatedAt;
+        $app->now += Transfers::STALE_AFTER;
+
+        return count($seen) === 2;
+    });
+
+    $record = $app->record();
+    expect($paused)->not->toBeNull()
+        ->and($seen)->toBe([$started, $started + Transfers::STALE_AFTER])
+        ->and($record->updatedAt)->toBe($started + 2 * Transfers::STALE_AFTER)
+        ->and($record->isStale($app->now))->toBeFalse()
+        ->and($record->isStale($app->now + Transfers::STALE_AFTER + 1))->toBeTrue();
+});
+
 it('counts the rows written before a pause against the most it may write', function () {
     $app = manyWidgets(1_000);
     $app->export();

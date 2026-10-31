@@ -24,7 +24,7 @@ use Tinvar\Orm\Schema\Table;
 final readonly class DatabaseTransferStore implements TransferStore
 {
     private const string COLUMNS = 'id, kind, name, format, tenant, panel, user_id, status, created_at, row_count, '
-        . 'error_count, errors, storage_key, size, finished_at, expires_at, file_name, failure, checked_count';
+        . 'error_count, errors, storage_key, size, finished_at, expires_at, file_name, failure, checked_count, updated_at';
 
     public function __construct(private Connection $connection, private string $table = 'transfers')
     {
@@ -59,6 +59,7 @@ final readonly class DatabaseTransferStore implements TransferStore
             $transfers->string('file_name', 255);
             $transfers->string('failure', 255);
             $transfers->bigInteger('checked_count')->default(0);
+            $transfers->bigInteger('updated_at')->default(0);
             // What a user's list asks, and what pruning asks.
             $transfers->index(['tenant', 'panel', 'user_id', 'created_at'], "{$table}_mine");
             $transfers->index(['expires_at'], "{$table}_expiry");
@@ -83,10 +84,28 @@ final readonly class DatabaseTransferStore implements TransferStore
         });
     }
 
+    /**
+     * The column a record's heartbeat is kept in, for a migration of a table
+     * define() made before it: added once, and nothing where it is there
+     * already -- as define() now makes it. A record written before reads as
+     * never having beaten, stale an hour from its start, as before.
+     */
+    public static function defineHeartbeat(Schema $schema, string $table = 'transfers'): void
+    {
+        new self($schema->connection(), $table);
+        if ($schema->hasColumn($table, 'updated_at')) {
+            return;
+        }
+
+        $schema->table($table, static function (Table $transfers): void {
+            $transfers->bigInteger('updated_at')->default(0);
+        });
+    }
+
     public function add(TransferRecord $record): void
     {
         $this->connection->execute(
-            "INSERT INTO {$this->table} (" . self::COLUMNS . ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            "INSERT INTO {$this->table} (" . self::COLUMNS . ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             self::values($record),
         );
     }
@@ -116,7 +135,7 @@ final readonly class DatabaseTransferStore implements TransferStore
         $this->connection->execute(
             "UPDATE {$this->table} SET kind = ?, name = ?, format = ?, tenant = ?, panel = ?, user_id = ?, status = ?, "
             . 'created_at = ?, row_count = ?, error_count = ?, errors = ?, storage_key = ?, size = ?, finished_at = ?, '
-            . 'expires_at = ?, file_name = ?, failure = ?, checked_count = ? WHERE id = ?',
+            . 'expires_at = ?, file_name = ?, failure = ?, checked_count = ?, updated_at = ? WHERE id = ?',
             [...$values, $id],
         );
     }
@@ -176,6 +195,7 @@ final readonly class DatabaseTransferStore implements TransferStore
             $record->fileName,
             $record->failure,
             $record->checked,
+            $record->updatedAt,
         ];
     }
 
@@ -208,6 +228,7 @@ final readonly class DatabaseTransferStore implements TransferStore
             fileName: self::string($row['file_name'] ?? null),
             failure: self::string($row['failure'] ?? null),
             checked: self::int($row['checked_count'] ?? 0),
+            updatedAt: self::int($row['updated_at'] ?? 0),
         );
     }
 

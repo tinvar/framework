@@ -57,8 +57,7 @@ final readonly class TransferStatus
     private function data(TransferRecord $record, string $user): TransferData
     {
         $now = $this->transfers->now();
-        $stale = ($record->status === TransferRecord::QUEUED || $record->status === TransferRecord::RUNNING)
-            && $record->createdAt < $now - Transfers::STALE_AFTER;
+        $stale = $record->isStale($now);
 
         return new TransferData(
             id: $record->id,

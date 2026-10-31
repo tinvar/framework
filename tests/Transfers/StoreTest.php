@@ -118,3 +118,22 @@ it('adds the check\'s count to a table made before it, once', function () {
     $store->add(transferRecord('t-1'));
     expect($store->find('t-1', 'acme', 'staff', 'u-1')?->checked)->toBe(0);
 });
+
+// Review: a transfer's staleness was measured from when it was started.
+it('keeps when a record last beat, and adds the column to a table made before it, once', function () {
+    $connection = PdoConnection::sqlite(':memory:', 'test');
+    $schema = new Schema($connection, Dialect::for($connection));
+    DatabaseTransferStore::define($schema);
+    $connection->execute('ALTER TABLE transfers DROP COLUMN updated_at');
+
+    DatabaseTransferStore::defineHeartbeat($schema);
+    DatabaseTransferStore::defineHeartbeat($schema);
+
+    $store = new DatabaseTransferStore($connection);
+    $store->add(transferRecord('t-1'));
+    expect($store->find('t-1', 'acme', 'staff', 'u-1')?->updatedAt)->toBe(0);
+    $store->update(transferRecord('t-1')->with(['updatedAt' => 9_000]));
+    expect($store->find('t-1', 'acme', 'staff', 'u-1')?->updatedAt)->toBe(9_000)
+        ->and(transferRecord('t-2', createdAt: 1_000)->isStale(1_000 + Tinvar\Transfers\Transfers::STALE_AFTER + 1))->toBeTrue()
+        ->and(transferRecord('t-2', createdAt: 1_000)->with(['updatedAt' => 5_000])->isStale(1_000 + Tinvar\Transfers\Transfers::STALE_AFTER + 1))->toBeFalse();
+});

@@ -122,6 +122,27 @@ afterEach(function () {
     RestockImport::$stopAfterCommitAt = null;
 });
 
+// Review: a transfer was shown as failed an hour after it was started,
+// however busy it still was.
+it('beats on each chunk it checks and writes', function () {
+    $count = TransferRunner::PAGE * 2 + 100;
+    $app = restockable($count);
+    $app->import(restockFile($count), name: 'restock');
+    $started = $app->now;
+    $seen = [];
+
+    expect(runImportOnce($app, static function () use ($app, &$seen): bool {
+        $seen[] = $app->record()->updatedAt;
+        $app->now += Transfers::STALE_AFTER;
+
+        return false;
+    }))->toBe('done');
+
+    // Two chunks checked, then two written, each beating before the stop is asked.
+    expect($seen)->toBe(array_map(static fn (int $n): int => $started + $n * Transfers::STALE_AFTER, range(0, count($seen) - 1)))
+        ->and(count($seen))->toBeGreaterThanOrEqual(4);
+});
+
 it('pauses its check between chunks, writing nothing, and picks it up where it got to', function () {
     $count = TransferRunner::PAGE * 2 + 100;
     $app = restockable($count);

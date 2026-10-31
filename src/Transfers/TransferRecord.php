@@ -33,6 +33,8 @@ final readonly class TransferRecord
      * @param string $failure what the user is told when it failed, never an exception's message
      * @param int $checked an import's rows checked so far, before any is written; for an import
      *        `rows` is those written, each in the transaction that wrote it (TransferRunner::import())
+     * @param int $updatedAt when its run last showed it was alive -- claimed, a page or a chunk
+     *        done, paused -- or 0 for never: what staleness is measured from (isStale())
      */
     public function __construct(
         public string $id,
@@ -54,12 +56,25 @@ final readonly class TransferRecord
         public string $fileName = '',
         public string $failure = '',
         public int $checked = 0,
+        public int $updatedAt = 0,
     ) {}
 
     /** @param array<string, mixed> $changes */
     public function with(array $changes): self
     {
         return new self(...[...get_object_vars($this), ...$changes]);
+    }
+
+    /**
+     * Whether it is queued or running and nothing has been heard of it for
+     * Transfers::STALE_AFTER: shown as failed then. Measured from its last
+     * beat, not from its start, so an export of an afternoon's pages is
+     * running for as long as its pages come.
+     */
+    public function isStale(int $now): bool
+    {
+        return ($this->status === self::QUEUED || $this->status === self::RUNNING)
+            && max($this->createdAt, $this->updatedAt) < $now - Transfers::STALE_AFTER;
     }
 
     public function isDownloadable(int $now): bool
