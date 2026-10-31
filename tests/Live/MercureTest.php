@@ -16,7 +16,9 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Live\Mercure;
 
 use Tinvar\Http\Response;
+use Tinvar\Live\HubLink;
 use Tinvar\Live\HubSettings;
+use Tinvar\Live\HubUnavailable;
 use Tinvar\Live\LiveBlock;
 use Tinvar\Live\Mercure;
 use Tinvar\Support\Signer;
@@ -133,6 +135,133 @@ describe('a hub of its own', function () {
 
         $hub->publish('tinvar:a', '{}');
     })->throws(\RuntimeException::class, 'refused an update with 403');
+
+    // A publish runs after the commit, and the write's response waits on
+    // it: a hub that is down is asked once, then left alone for a while,
+    // each update meanwhile skipped at once -- and said so, to be logged.
+    it('leaves a hub that could not be reached alone for a while, skipping each update at once', function () {
+        $now = 1_000.0;
+        $posts = 0;
+        $hub = Mercure::remote('http://hub.internal/', PUBLISHER, SUBSCRIBER, AUDIENCE, post: static function () use (&$posts, &$now): int {
+            $posts++;
+            $now += 1.0;
+
+            throw new \RuntimeException('connection timed out');
+        }, clock: static function () use (&$now): float {
+            return $now;
+        });
+
+        $failures = [];
+        foreach (['tinvar:a', 'tinvar:b', 'tinvar:c'] as $topic) {
+            try {
+                $hub->publish($topic, '{}');
+            } catch (HubUnavailable $e) {
+                $failures[] = $e->getMessage();
+            }
+        }
+
+        expect($posts)->toBe(1)
+            ->and($failures)->toHaveCount(3)
+            ->and($failures[0])->toContain('could not be reached: connection timed out')
+            ->and($failures[1])->toContain('taken for down');
+
+        // Asked again once the cooldown is over.
+        $now += HubLink::COOLDOWN;
+        $hub->endRequest();
+        expect(fn () => $hub->publish('tinvar:d', '{}'))->toThrow(HubUnavailable::class, 'could not be reached')
+            ->and($posts)->toBe(2);
+    });
+
+    it('takes a hub that failed with a 5xx for down, and one that refused with a 4xx for up', function () {
+        $status = 503;
+        $posts = 0;
+        $hub = Mercure::remote('http://hub.internal/', PUBLISHER, SUBSCRIBER, AUDIENCE, post: static function () use (&$posts, &$status): int {
+            $posts++;
+
+            return $status;
+        });
+
+        expect(fn () => $hub->publish('tinvar:a', '{}'))->toThrow(HubUnavailable::class, 'failed an update with 503')
+            ->and(fn () => $hub->publish('tinvar:b', '{}'))->toThrow(HubUnavailable::class, 'taken for down')
+            ->and($posts)->toBe(1);
+
+        $refusing = Mercure::remote('http://hub.internal/', PUBLISHER, SUBSCRIBER, AUDIENCE, post: static function () use (&$posts): int {
+            $posts++;
+
+            return 401;
+        });
+        expect(fn () => $refusing->publish('tinvar:a', '{}'))->toThrow(\RuntimeException::class, 'refused an update with 401')
+            ->and(fn () => $refusing->publish('tinvar:b', '{}'))->toThrow(\RuntimeException::class, 'refused an update with 401')
+            ->and($posts)->toBe(3);
+    });
+
+    // A slow hub that still answers: one request's publishes stop at its
+    // deadline, and the next request has a whole one.
+    it('spends at most its deadline publishing in one request, each POST given what is left of it', function () {
+        $now = 1_000.0;
+        $timeouts = [];
+        $hub = Mercure::remote('http://hub.internal/', PUBLISHER, SUBSCRIBER, AUDIENCE, post: static function (string $url, array $headers, string $body, float $timeout) use (&$now, &$timeouts): int {
+            $timeouts[] = $timeout;
+            $now += 1.25;
+
+            return 200;
+        }, clock: static function () use (&$now): float {
+            return $now;
+        });
+
+        $sent = 0;
+        $skipped = [];
+        foreach (['tinvar:a', 'tinvar:b', 'tinvar:c', 'tinvar:d'] as $topic) {
+            try {
+                $hub->publish($topic, '{}');
+                $sent++;
+            } catch (HubUnavailable $e) {
+                $skipped[] = $e->getMessage();
+            }
+        }
+
+        expect($sent)->toBe(3)
+            ->and($timeouts)->toBe([HubLink::TIMEOUT, HubLink::REQUEST_BUDGET - 1.25, HubLink::REQUEST_BUDGET - 2.5])
+            ->and($skipped)->toHaveCount(1)
+            ->and($skipped[0])->toContain('has spent the 3.0s it may spend publishing');
+
+        $hub->endRequest();
+        $hub->publish('tinvar:e', '{}');
+        expect($timeouts)->toHaveCount(4);
+    });
+
+    // A process that ends no request -- a queue worker -- has its budget
+    // renewed by the clock, or one slow job would silence every later one.
+    it('renews the deadline of a process that ends no request, once its first publish is a window old', function () {
+        $now = 1_000.0;
+        $hub = Mercure::remote('http://hub.internal/', PUBLISHER, SUBSCRIBER, AUDIENCE, post: static function () use (&$now): int {
+            $now += 1.5;
+
+            return 200;
+        }, clock: static function () use (&$now): float {
+            return $now;
+        });
+
+        $hub->publish('tinvar:a', '{}');
+        $hub->publish('tinvar:b', '{}');
+        expect(fn () => $hub->publish('tinvar:c', '{}'))->toThrow(HubUnavailable::class, 'has spent');
+
+        $now += HubLink::WINDOW;
+        $hub->publish('tinvar:d', '{}');
+    });
+
+    it('gives up connecting to a hub that does not answer within about a second', function () {
+        if (!\extension_loaded('curl')) {
+            $this->markTestSkipped('ext-curl is not loaded.');
+        }
+        // An address nothing answers on: the connection is neither refused
+        // nor accepted, and waits out the connect timeout.
+        $hub = Mercure::remote('http://10.255.255.1/.well-known/mercure', PUBLISHER, SUBSCRIBER, AUDIENCE);
+
+        $started = microtime(true);
+        expect(fn () => $hub->publish('tinvar:a', '{}'))->toThrow(HubUnavailable::class);
+        expect(microtime(true) - $started)->toBeLessThan(HubLink::CONNECT_TIMEOUT + 0.5);
+    });
 
     it('refuses keys too short to sign with', function () {
         Mercure::remote('http://hub.internal/', 'short', SUBSCRIBER, AUDIENCE);

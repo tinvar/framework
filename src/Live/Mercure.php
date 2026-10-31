@@ -45,7 +45,10 @@ final readonly class Mercure implements Hub
     /** The `type` of a Mercure authorization detail. */
     public const string DETAIL = 'https://mercure.rocks/authorization-detail';
 
-    /** @param \Closure(string, string): void $send publishes one private update to one topic */
+    /**
+     * @param \Closure(string, string): void $send publishes one private update to one topic
+     * @param HubLink|null $link a remote hub's connection, deadline and breaker; null for the built-in hub
+     */
     private function __construct(
         #[\SensitiveParameter]
         private string $subscriberKey,
@@ -53,6 +56,7 @@ final readonly class Mercure implements Hub
         private \Closure $send,
         private string $path = self::PATH,
         private string $cookie = self::COOKIE,
+        private ?HubLink $link = null,
     ) {
         if (\strlen($subscriberKey) < 32) {
             throw new \InvalidArgumentException('A hub key must be at least 32 bytes.');
@@ -88,8 +92,16 @@ final readonly class Mercure implements Hub
      * @param string $hubUrl the hub's URL as this server reaches it
      * @param string $path where the client reaches it, same-origin: a proxy
      *        in front of the application forwards it to the hub
-     * @param (\Closure(string, array<string, string>, string): int)|null $post
-     *        sends a request and returns its status; a stream POST unless given
+     * Built once per worker, as the Kernel is: it holds the worker's one
+     * connection to the hub, the deadline on what a request may spend
+     * publishing, and the breaker that stops asking a hub that is down
+     * (HubLink). An update that fails or is skipped throws, for its caller
+     * to log.
+     *
+     * @param (\Closure(string, array<string, string>, string, float): int)|null $post
+     *        sends a request within the seconds given and returns its status;
+     *        curl, with one handle for the worker's life, unless given
+     * @param (\Closure(): float)|null $clock seconds, as microtime(true) gives them
      */
     public static function remote(
         string $hubUrl,
@@ -100,28 +112,36 @@ final readonly class Mercure implements Hub
         string $audience,
         string $path = self::PATH,
         ?\Closure $post = null,
+        ?\Closure $clock = null,
     ): self {
         if (\strlen($publisherKey) < 32) {
             throw new \InvalidArgumentException('A hub key must be at least 32 bytes.');
         }
 
-        $post ??= self::streamPost(...);
+        $link = new HubLink($post, $clock);
 
-        return new self($subscriberKey, $audience, static function (string $topic, string $data) use ($hubUrl, $publisherKey, $audience, $post): void {
+        return new self($subscriberKey, $audience, static function (string $topic, string $data) use ($hubUrl, $publisherKey, $audience, $link): void {
             $token = self::accessToken($publisherKey, $audience, 'publisher', ['publish'], [$topic], time() + 60);
-            $status = $post($hubUrl, [
+            $link->send($hubUrl, [
                 'authorization' => "Bearer {$token}",
                 'content-type' => 'application/x-www-form-urlencoded',
             ], http_build_query(['topic' => $topic, 'data' => $data, 'private' => 'on']));
-            if ($status < 200 || $status >= 300) {
-                throw new \RuntimeException("The hub refused an update with {$status}.");
-            }
-        }, $path);
+        }, $path, link: $link);
     }
 
     public function publish(string $topic, string $data): void
     {
         ($this->send)($topic, $data);
+    }
+
+    /**
+     * The request is over: the next one may spend a whole deadline
+     * publishing (HubLink). The Kernel's request scope calls it; nothing to
+     * do for the built-in hub, published to in-process.
+     */
+    public function endRequest(): void
+    {
+        $this->link?->endRequest();
     }
 
     public function grant(Response $response, array $topics, int $expiresAt, string $subject): Response
@@ -180,39 +200,5 @@ final readonly class Mercure implements Hub
         ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
 
         return "{$header}.{$claims}." . Signer::encode(hash_hmac('sha256', "{$header}.{$claims}", $key, true));
-    }
-
-    /** @param array<string, string> $headers */
-    private static function streamPost(string $url, array $headers, string $body): int
-    {
-        $lines = [];
-        foreach ($headers as $name => $value) {
-            $lines[] = "{$name}: {$value}";
-        }
-
-        $context = stream_context_create(['http' => [
-            'method' => 'POST',
-            'header' => implode("\r\n", $lines),
-            'content' => $body,
-            'timeout' => 5,
-            'ignore_errors' => true,
-            // A hub answers itself; a redirect would carry the token elsewhere.
-            'follow_location' => 0,
-        ]]);
-
-        $stream = @fopen($url, 'r', false, $context);
-        if ($stream === false) {
-            throw new \RuntimeException("The hub at {$url} could not be reached.");
-        }
-
-        try {
-            $meta = stream_get_meta_data($stream);
-            /** @var list<string> $responseHeaders */
-            $responseHeaders = $meta['wrapper_data'] ?? [];
-        } finally {
-            fclose($stream);
-        }
-
-        return preg_match('#^HTTP/\S+\s+(\d{3})#', $responseHeaders[0] ?? '', $m) === 1 ? (int) $m[1] : 0;
     }
 }

@@ -42,6 +42,7 @@ use Tinvar\Identity\Realms;
 use Tinvar\Identity\TlsAskEndpoint;
 use Tinvar\Live\LiveMinter;
 use Tinvar\Live\LiveUpdates;
+use Tinvar\Live\Mercure;
 use Tinvar\Live\SubscribeEndpoint;
 use Tinvar\Live\TagsRead;
 use Tinvar\Mail\UnsubscribeEndpoint;
@@ -1489,6 +1490,12 @@ final class Kernel
         // open is not the next one's to hear.
         if ($features !== null) {
             $this->scope->add('features', $features->reset(...));
+        }
+
+        // Nor the time a request spent publishing to a hub of its own: the
+        // next request may spend a whole deadline again (HubLink).
+        if ($live?->hub instanceof Mercure) {
+            $this->scope->add('hub', $live->hub->endRequest(...));
         }
     }
 

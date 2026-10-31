@@ -117,7 +117,7 @@ final class OrderActions
 }
 
 /** @return array{Kernel, MemoryHub, LiveUpdates} */
-function kernel(bool $live = true): array
+function kernel(bool $live = true, ?\Tinvar\Live\Hub $hub = null): array
 {
     $connection = PdoConnection::sqlite(':memory:', 'test');
     $connection->execute('CREATE TABLE orders (id INTEGER PRIMARY KEY)');
@@ -132,7 +132,7 @@ function kernel(bool $live = true): array
     $actions = new ActionRegistry($container->resolver());
     $actions->register(OrderActions::class);
 
-    $hub = new MemoryHub();
+    $hub ??= new MemoryHub();
     $updates = LiveUpdates::fromKey(KEY, $hub, static fn (Request $r): string => $r->cookie(SESSION_COOKIE) ?? '');
 
     return [new Kernel(
@@ -207,6 +207,28 @@ describe('a page render', function () {
         $kernel->scope->reset();
         expect($kernel->tagsRead->all())->toBe([])
             ->and($kernel->scope->names())->toContain('live');
+    });
+
+    // The time one request spent publishing to a hub of its own is not the
+    // next one's: the reset contract renews its deadline (HubLink).
+    it('gives the next request a whole deadline for publishing to a hub of its own', function () {
+        $now = 1_000.0;
+        $hub = \Tinvar\Live\Mercure::remote('http://hub.internal/.well-known/mercure', str_repeat('p', 32), str_repeat('s', 32), 'aud', post: static function () use (&$now): int {
+            $now += 2.0;
+
+            return 200;
+        }, clock: static function () use (&$now): float {
+            return $now;
+        });
+        [$kernel] = kernel(hub: $hub);
+
+        $hub->publish('tinvar:a', '{}');
+        $hub->publish('tinvar:b', '{}');
+        expect(fn () => $hub->publish('tinvar:c', '{}'))->toThrow(\Tinvar\Live\HubUnavailable::class, 'has spent');
+
+        $kernel->scope->reset();
+        $hub->publish('tinvar:d', '{}');
+        expect($kernel->scope->names())->toContain('hub');
     });
 
     it('is handed none without a session, or without live updates', function () {
