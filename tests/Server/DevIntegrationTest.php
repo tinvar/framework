@@ -108,6 +108,8 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
             'TINVAR_APP_KEY_FILE' => "{$keyDir}/app.key",
             // The toolbar links each file:line to this editor (ADR 0132).
             'TINVAR_EDITOR' => 'vscode://file{file}:{line}',
+            // A developer's machine, where the workbench is mounted (ADR 0089).
+            'TINVAR_ENV' => 'local',
         ],
     );
     stream_set_blocking($pipes[1], false);
@@ -137,6 +139,8 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
         // render --dump --dev: the catalog rendered through this run's dev
         // server, found by its record, on a copy of the database (ADR 0132).
         [$dumpStatus, $dumped, $dumpErr] = devDump($copy);
+        // The workbench, drawing with the shop's client script (ADR 0132).
+        $workbench = runWithTimeout(['node', "{$root}/examples/shop/e2e/workbench-script.mjs", $url], $root, 150);
     } finally {
         $status = proc_get_status($process);
         if ($status['running']) {
@@ -174,6 +178,29 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
         ->and($result['styled'])->toBe('fixed');
 
     // The catalog, as the renderer was given it.
+    // A page and a component hydrated with the shop's client script, in an
+    // origin of their own: no cookie, no fetch, no reach into the workbench,
+    // a link that stays put; styled, its fonts loaded. And a page elsewhere
+    // can neither frame a render nor read a module as a sandboxed frame.
+    $bench = json_decode($workbench, true);
+    expect($bench)->toBeArray("the workbench script failed:\n{$workbench}\n{$stderr}");
+    \assert(\is_array($bench));
+    expect($bench['errors'])->toBe([]);
+    foreach (['component', 'page'] as $drawn) {
+        expect($bench['results'][$drawn])->toMatchArray([
+            'sandbox' => 'allow-scripts',
+            'origin' => 'null',
+            'hydrated' => true,
+            'cookie' => 'refused: SecurityError',
+            'fetched' => 'refused: TypeError',
+            'parent' => 'refused: SecurityError',
+            'styled' => true,
+        ])
+            ->and($bench['results'][$drawn]['afterClick'])->toBe($bench['results'][$drawn]['url'])
+            ->and($bench['results'][$drawn]['fonts'])->toBeGreaterThan(0);
+    }
+    expect($bench['results']['elsewhere'])->toBe(['module' => 'refused', 'framedLoaded' => false]);
+
     // The dump came from the dev server: its module script, from source.
     $dump = json_decode($dumped, true);
     expect($dumpStatus)->toBe(0, $dumpErr)
