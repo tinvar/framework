@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Generators;
 
+use Tinvar\Console\Prompts;
 use Tinvar\Orm\Model;
 use Tinvar\Support\Str;
 
@@ -20,8 +21,17 @@ use Tinvar\Support\Str;
  *       a #[Query] class and the Data class it returns
  *   tinvar make:action <Class> <method> [--model=Rack] [--request]
  *       a class with one #[Action] method, and its form request
- *   tinvar make:model <Name> [--table=racks] [--columns=name:string,heightU:int,notes:?string] [--factory]
- *       a #[Table] model, and its typed factory
+ *   tinvar make:model <Name> [--table=racks] [--columns=name:string,heightU:int,notes:?string] [--factory] [--migration]
+ *       a #[Table] model, its typed factory, and the migration make:migration
+ *       writes for its table
+ *
+ * Where a person is there to ask (Prompts::canAsk()), what a command needs
+ * and was not given is asked: the name, the route, the method. Run bare --
+ * `tinvar make:model` -- it asks the rest too: the table, the columns,
+ * whether to write a factory and a migration; the model a query or action
+ * takes. Each answer is held to what the argument would be. With nobody
+ * there, a missing argument is the usage error it always was, so a script
+ * runs exactly as it did.
  *
  * Every entry point is written with a check that fails closed (see
  * Sources), and passes the build rules as written: a route parameter or
@@ -48,7 +58,7 @@ final class MakeCommand
         'make:page' => 'tinvar make:page <Name> --path=/racks/{rack} [--view=racks/show]',
         'make:query' => 'tinvar make:query <Name> [--model=Rack]',
         'make:action' => 'tinvar make:action <Class> <method> [--model=Rack] [--request]',
-        'make:model' => 'tinvar make:model <Name> [--table=racks] [--columns=name:string,heightU:int,notes:?string] [--factory]',
+        'make:model' => 'tinvar make:model <Name> [--table=racks] [--columns=name:string,heightU:int,notes:?string] [--factory] [--migration]',
     ];
 
     /** What --columns may type a column as: what the ORM casts and make:migration maps. */
@@ -60,6 +70,9 @@ final class MakeCommand
     /** @var \Closure(string): void */
     private readonly \Closure $err;
 
+    /** The migration make:model --migration asks for once the model is written. */
+    private ?string $migration = null;
+
     /**
      * @param list<class-string<Model>> $models the application's models: what a route
      *        parameter or --model is matched against
@@ -68,6 +81,9 @@ final class MakeCommand
      * @param Registrations $registrations where what is written is registered: the
      *        application's lists and route table, or, with none, nowhere -- the
      *        developer is told where to
+     * @param (\Closure(string): int)|null $migrate runs make:migration with the name it is
+     *        given, in a process that loads the model just registered; with none,
+     *        make:model --migration says to
      */
     public function __construct(
         private readonly AppLayout $layout,
@@ -75,6 +91,7 @@ final class MakeCommand
         ?\Closure $out = null,
         ?\Closure $err = null,
         private readonly Registrations $registrations = new Registrations(),
+        private readonly ?\Closure $migrate = null,
     ) {
         $this->out = $out ?? static function (string $line): void {
             fwrite(STDOUT, $line . "\n");
@@ -90,6 +107,10 @@ final class MakeCommand
         try {
             $usage = self::USAGES[$command] ?? throw new \InvalidArgumentException("Unknown command '{$command}'.");
             [$positional, $options] = self::parse($arguments, $usage);
+            if (Prompts::canAsk()) {
+                [$positional, $options] = $this->ask($command, $positional, $options);
+            }
+            $this->migration = null;
 
             [$files, $next, $registered] = match ($command) {
                 'make:page' => $this->page($positional, $options, $usage),
@@ -111,7 +132,7 @@ final class MakeCommand
                 ($this->out)($line);
             }
 
-            return 0;
+            return $this->migration === null || $this->migrate === null ? 0 : ($this->migrate)($this->migration);
         } catch (\InvalidArgumentException $e) {
             ($this->err)($e->getMessage());
 
@@ -250,7 +271,7 @@ final class MakeCommand
      */
     private function model(array $positional, array $options, string $usage): array
     {
-        self::only($options, ['table', 'columns', 'factory'], $usage);
+        self::only($options, ['table', 'columns', 'factory', 'migration'], $usage);
         [$name] = self::positional($positional, 1, $usage);
         $segments = Names::classPath($name, 'model name', 'Rack');
         foreach (['table', 'columns'] as $option) {
@@ -258,8 +279,10 @@ final class MakeCommand
                 throw new \InvalidArgumentException("--{$option} takes a value. Usage: {$usage}");
             }
         }
-        if (isset($options['factory']) && $options['factory'] !== true) {
-            throw new \InvalidArgumentException("--factory takes no value. Usage: {$usage}");
+        foreach (['factory', 'migration'] as $flag) {
+            if (isset($options[$flag]) && $options[$flag] !== true) {
+                throw new \InvalidArgumentException("--{$flag} takes no value. Usage: {$usage}");
+            }
         }
 
         $short = end($segments);
@@ -273,8 +296,151 @@ final class MakeCommand
             $files->add($this->layout->pathOf($factory), Sources::factory($factory, $class, $columns));
         }
 
+        $migration = 'create_' . strtolower($table);
+        // Made here only where a process can load the model once it is
+        // registered; otherwise, as without --migration, said.
+        if (isset($options['migration']) && $this->migrate !== null && !$this->registrations->none()) {
+            $this->migration = $migration;
+
+            return [$files, [], ['model', $class, $this->layout]];
+        }
+
         return [$files, [($this->registrations->none() ? "Next: register {$class} with the application's models, and run" : 'Next: run')
-            . ' `tinvar make:migration create_' . strtolower($table) . '` for its table.'], ['model', $class, $this->layout]];
+            . " `tinvar make:migration {$migration}` for its table."], ['model', $class, $this->layout]];
+    }
+
+    /**
+     * What $command needs and was not given, asked; and, run bare, the
+     * rest of what it takes. Each answer is held to what the argument would
+     * be, and the generator holds it again as if typed.
+     *
+     * @param list<string> $positional
+     * @param array<string, string|true> $options
+     * @return array{list<string>, array<string, string|true>}
+     */
+    private function ask(string $command, array $positional, array $options): array
+    {
+        $bare = $positional === [] && $options === [];
+
+        switch ($command) {
+            case 'make:page':
+                if ($positional === []) {
+                    $positional[] = Prompts::text('What is the page called?', placeholder: 'Racks/Show', required: true, validate: self::verdict(static fn (string $name) => Names::classPath($name, 'page name', 'Racks/Show')), hint: "A class under Pages; '/' makes a namespace.", name: 'name');
+                }
+                $segments = self::tried(static fn (): array => Names::classPath($positional[0], 'page name', 'Racks/Show'));
+                $kebab = $segments === null ? [] : array_map(Names::kebab(...), $segments);
+                if (!isset($options['path']) && \count($positional) === 1) {
+                    $options['path'] = Prompts::text('What path does it answer?', placeholder: '/racks/{rack}', default: '/' . implode('/', $kebab), required: true, validate: self::verdict(function (string $path): void {
+                        foreach (Names::routeParameters($path) as $parameter) {
+                            $this->modelNamedBy($parameter, $path);
+                        }
+                    }), hint: "A {parameter} named for one of the app's models takes that model.", name: 'path');
+                }
+                if ($bare && $kebab !== []) {
+                    $options['view'] = Prompts::text('Which view renders it?', default: implode('/', $kebab), required: true, validate: self::verdict(static fn (string $view) => Names::view($view)), name: 'view');
+                }
+                break;
+            case 'make:query':
+                if ($positional === []) {
+                    $positional[] = Prompts::text('What is the query called?', placeholder: 'Racks/Stats', required: true, validate: self::verdict(static fn (string $name) => Names::classPath($name, 'query name', 'RackStats, or Racks/Stats')), name: 'name');
+                }
+                if ($bare) {
+                    $options = $this->askModel($options, 'Which model does it read?');
+                }
+                break;
+            case 'make:action':
+                if ($positional === []) {
+                    $positional[] = Prompts::text('What is the class of actions called?', placeholder: 'RackActions', required: true, validate: self::verdict(static fn (string $name) => Names::classPath($name, 'class name', 'RackActions')), name: 'class');
+                }
+                if (\count($positional) === 1) {
+                    $positional[] = Prompts::text('What is the action called?', placeholder: 'moveUnit', required: true, validate: self::verdict(static fn (string $method) => Names::method($method)), hint: 'The method, in lower camel case.', name: 'method');
+                }
+                if ($bare) {
+                    $options = $this->askModel($options, 'Which model does it act on?');
+                    if (Prompts::confirm('Write a form request for its input?', default: false, name: 'request')) {
+                        $options['request'] = true;
+                    }
+                }
+                break;
+            case 'make:model':
+                if ($positional === []) {
+                    $positional[] = Prompts::text('What is the model called?', placeholder: 'Rack', required: true, validate: self::verdict(static fn (string $name) => Names::classPath($name, 'model name', 'Rack')), name: 'name');
+                }
+                if ($bare) {
+                    $segments = Names::classPath($positional[0], 'model name', 'Rack');
+                    $options['table'] = Prompts::text('What is its table called?', default: Names::plural(Str::snake(end($segments))), required: true, validate: self::verdict(static fn (string $table) => Names::table($table)), name: 'table');
+                    $columns = Prompts::text('What columns does it have?', placeholder: 'name:string,heightU:int,notes:?string', validate: self::verdict(static fn (string $columns) => self::columns($columns)), hint: 'Each property:type -- ' . implode(', ', self::COLUMN_TYPES) . ", '?' before a type for null; the id is its own.", name: 'columns');
+                    if ($columns !== '') {
+                        $options['columns'] = $columns;
+                    }
+                    $extras = ['factory' => 'A factory, for tests and seeding'];
+                    if ($this->migrate !== null && !$this->registrations->none()) {
+                        $extras['migration'] = 'A migration, for its table';
+                    }
+                    foreach (Prompts::multiselect('What else should be written with it?', $extras, name: 'extras') as $extra) {
+                        $options[(string) $extra] = true;
+                    }
+                }
+                break;
+        }
+
+        return [$positional, $options];
+    }
+
+    /**
+     * --model, asked as a choice of the application's models, or none.
+     *
+     * @param array<string, string|true> $options
+     * @return array<string, string|true>
+     */
+    private function askModel(array $options, string $question): array
+    {
+        if ($this->models === []) {
+            return $options;
+        }
+        $choices = ['' => 'None: a policy on the class decides'];
+        foreach ($this->models as $model) {
+            $choices[$model] = Str::shortName($model);
+        }
+        $model = (string) Prompts::select($question, $choices, default: '', hint: 'A model it takes is resolved, scoped and authorized before it runs.', name: 'model');
+        if ($model !== '') {
+            $options['model'] = $model;
+        }
+
+        return $options;
+    }
+
+    /**
+     * A prompt's validate, from a check that throws what is wrong.
+     *
+     * @param \Closure(string): mixed $check
+     * @return \Closure(mixed): ?string
+     */
+    private static function verdict(\Closure $check): \Closure
+    {
+        return static function (mixed $value) use ($check): ?string {
+            try {
+                $check(\is_scalar($value) ? (string) $value : '');
+
+                return null;
+            } catch (\InvalidArgumentException $e) {
+                return $e->getMessage();
+            }
+        };
+    }
+
+    /**
+     * @template T
+     * @param \Closure(): T $check
+     * @return T|null
+     */
+    private static function tried(\Closure $check): mixed
+    {
+        try {
+            return $check();
+        } catch (\InvalidArgumentException) {
+            return null;
+        }
     }
 
     /**

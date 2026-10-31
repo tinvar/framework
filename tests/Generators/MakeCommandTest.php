@@ -26,6 +26,9 @@ use Tinvar\Auth\PolicyGate;
 use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Codegen\RouteTypes;
 use Tinvar\Codegen\TypeScriptGenerator;
+use Tinvar\Console\Prompts;
+use Tinvar\Console\Prompts\InvalidAnswer;
+use Tinvar\Console\Prompts\Key;
 use Tinvar\Data\Data;
 use Tinvar\Generators\AppLayout;
 use Tinvar\Generators\GenerationRefused;
@@ -99,7 +102,7 @@ final class App
      * @param list<string> $arguments
      * @param list<class-string<Model>> $models
      */
-    public function __invoke(string $command, array $arguments, array $models = [], ?Registrations $registrations = null): int
+    public function __invoke(string $command, array $arguments, array $models = [], ?Registrations $registrations = null, ?\Closure $migrate = null): int
     {
         $this->out = [];
         $this->err = [];
@@ -114,6 +117,7 @@ final class App
                 $this->err[] = $line;
             },
             $registrations ?? new Registrations(),
+            $migrate,
         )->run($command, $arguments);
     }
 
@@ -179,6 +183,7 @@ beforeEach(function () {
 
 afterEach(function () {
     $this->app->remove();
+    Prompts::restore();
 });
 
 it('writes a model, its factory, pages, queries and actions that lint and pass the build rules through the real registries', function () {
@@ -640,4 +645,96 @@ it('edits no file outside the application', function () {
     } finally {
         unlink($outside);
     }
+});
+
+// Run bare where a person is there, a generator asks what it was not
+// given -- and, as the owner put it, "tinvar make:model asks the name,
+// whether to make a migration, and so on" -- each answer held to what the
+// argument would be.
+it('asks make:model\'s name, table, columns, factory and migration when run bare', function () {
+    $app = $this->app;
+    $migrations = [];
+    $prompts = Prompts::fake(['name' => 'Rack', 'table' => 'server_racks', 'columns' => 'label:string,heightU:int', 'extras' => ['factory', 'migration']]);
+
+    expect($app('make:model', [], registrations: registered($app), migrate: static function (string $name) use (&$migrations): int {
+        $migrations[] = $name;
+
+        return 0;
+    }))->toBe(0, implode("\n", $app->err))
+        ->and($app->files())->toContain('app/Models/Rack.php')->toContain('database/factories/RackFactory.php')
+        ->and($app->read('app/Models/Rack.php'))->toContain("#[Table('server_racks')]")->toContain('public string $label')
+        ->and($migrations)->toBe(['create_server_racks'])
+        ->and(implode("\n", $app->out))->not->toContain('make:migration');
+    $prompts->assertAsked('What is the model called?')->assertAsked('What else should be written with it?')->assertAllAnswered();
+});
+
+it('offers no migration where nothing could load the model to diff it, and says to make one', function () {
+    $app = $this->app;
+    Prompts::fake(['name' => 'Rack', 'extras' => ['migration']]);
+
+    expect(fn () => $app('make:model', [], migrate: static fn (): int => 0))->toThrow(InvalidAnswer::class, "'migration', which is not one of 'factory'");
+
+    Prompts::fake(['name' => 'Rack']);
+    expect($app('make:model', ['--migration']))->toBe(0)
+        ->and(implode("\n", $app->out))->toContain('`tinvar make:migration create_racks`');
+});
+
+it('asks only what is missing when given some of it: a page\'s path, an action\'s method', function () {
+    $app = $this->app;
+    $prompts = Prompts::fake(['path' => '/racks/{rack}/units', 'method' => 'moveUnit']);
+
+    expect($app('make:page', ['Racks/Units']))->toBe(0, implode("\n", $app->err))
+        ->and($app->read('app/Pages/Racks/Units.php'))->toContain("'/racks/{rack}/units'")
+        ->and($app('make:action', ['RackActions']))->toBe(0, implode("\n", $app->err))
+        ->and($app->read('app/Actions/RackActions.php'))->toContain('public function moveUnit(');
+    $prompts->assertNotAsked('view')->assertNotAsked('model')->assertNotAsked('request')->assertAllAnswered();
+    expect(array_column($prompts->asked(), 'name'))->toBe(['path', 'method']);
+});
+
+it('asks a query\'s model and an action\'s model and request from the app\'s models, or none', function () {
+    $app = $this->app;
+    expect($app('make:model', ['Rack']))->toBe(0);
+    $models = [$app->class('Models\Rack')];
+    Prompts::fake(['name' => 'Racks/Stats', 'model' => $app->class('Models\Rack'), 'class' => 'RackActions', 'method' => 'retire', 'request' => true]);
+
+    expect($app('make:query', [], $models))->toBe(0, implode("\n", $app->err))
+        ->and($app->read('app/Queries/Racks/Stats.php'))->toContain('Rack $rack')
+        ->and($app('make:action', [], $models))->toBe(0, implode("\n", $app->err))
+        ->and($app->files())->toContain('app/Requests/RetireRequest.php');
+
+    Prompts::fake(['name' => 'Totals', 'model' => '']);
+    expect($app('make:query', [], $models))->toBe(0)
+        ->and(end($app->out))->toContain('Until a policy with a view() ability is registered');
+});
+
+it('holds each answer to what the argument would be', function () {
+    $app = $this->app;
+    $app('make:model', ['Rack']);
+    $models = [$app->class('Models\Rack')];
+
+    Prompts::fake(['name' => 'rack']);
+    expect(fn () => $app('make:model', []))->toThrow(InvalidAnswer::class, "'rack' is not a model name");
+
+    Prompts::fake(['path' => '/racks/{rackId}']);
+    expect(fn () => $app('make:page', ['Racks/Show'], $models))->toThrow(InvalidAnswer::class, 'names Rack by its id');
+
+    Prompts::fake(['name' => 'Shelf', 'columns' => 'id:string']);
+    expect(fn () => $app('make:model', []))->toThrow(InvalidAnswer::class, 'which is the id');
+});
+
+it('asks on a terminal, the page\'s path filled in from its name', function () {
+    $app = $this->app;
+    $terminal = Prompts::fakeTerminal(['Racks/Show', Key::ENTER, Key::ENTER, Key::ENTER]);
+
+    expect($app('make:page', []))->toBe(0, implode("\n", $app->err))
+        ->and($app->read('app/Pages/Racks/Show.php'))->toContain("'/racks/show'")
+        ->and($terminal->screen())->toContain('What is the page called?')->toContain('│ /racks/show')->toContain('│ racks/show');
+});
+
+it('asks nothing where nobody is there: a missing argument is the usage error it always was', function () {
+    $app = $this->app;
+
+    expect($app('make:model', []))->toBe(MakeCommand::USAGE)
+        ->and($app->err)->toBe(['Usage: tinvar make:model <Name> [--table=racks] [--columns=name:string,heightU:int,notes:?string] [--factory] [--migration]'])
+        ->and($app('make:page', ['Show']))->toBe(MakeCommand::USAGE);
 });
