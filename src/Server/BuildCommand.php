@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Server;
 
+use Tinvar\Console\Prompts;
+use Tinvar\Console\Prompts\Cancelled;
 use Tinvar\Http\BuildHistory;
 use Tinvar\Http\BuildRegistry;
 use Tinvar\Http\BuildStore;
@@ -12,8 +14,8 @@ use Tinvar\Http\BuildStore;
  * The operator's commands over an application's BuildHistory.
  *
  *   tinvar build:current [<id>]   the build now released, or record a release
- *   tinvar build:revoke <id>      refuse a build: its clients reload
- *   tinvar build:floor <id>       refuse every build older than this one
+ *   tinvar build:revoke <id> [--force]  refuse a build: its clients reload
+ *   tinvar build:floor <id> [--force]   refuse every build older than this one
  *   tinvar build:list             every recorded build and where it stands
  *   tinvar build:prune [--keep=N] forget the oldest builds, past every client and token
  *
@@ -71,18 +73,31 @@ final class BuildCommand
         $this->clock = $clock ?? time(...);
     }
 
-    /** @param list<string> $arguments what follows the command */
+    /**
+     * build:revoke and build:floor, which no later command takes back, are
+     * confirmed first where a person is there to say (Prompts), unless
+     * --force; with nobody there they run as they always have.
+     *
+     * @param list<string> $arguments what follows the command
+     */
     public function run(string $command, array $arguments): int
     {
+        $force = \in_array($command, ['build:revoke', 'build:floor'], true) && \in_array('--force', $arguments, true);
+        if ($force) {
+            $arguments = array_values(array_diff($arguments, ['--force']));
+        }
+
         try {
             return match ($command) {
                 'build:current' => $this->current($arguments),
-                'build:revoke' => $this->revoke(self::one($command, $arguments)),
-                'build:floor' => $this->floor(self::one($command, $arguments)),
+                'build:revoke' => $this->revoke($this->confirmed($force, self::one($command, $arguments), 'Revoke %s? Clients on it reload, its tokens are refused, and it is never served again.')),
+                'build:floor' => $this->floor($this->confirmed($force, self::one($command, $arguments), 'Set the floor at %s? Every build before it is refused from now on.')),
                 'build:list' => $arguments === [] ? $this->list() : throw new ServeException('Usage: tinvar build:list'),
                 'build:prune' => $this->prune(self::keep($arguments)),
                 default => throw new ServeException("Unknown command '{$command}'."),
             };
+        } catch (Cancelled $e) {
+            throw $e;
         } catch (ServeException $e) {
             ($this->err)($e->getMessage());
 
@@ -278,6 +293,16 @@ final class BuildCommand
                 . 'recorded is refused already.',
             );
         }
+    }
+
+    /** $build, once a person there has said yes to $question about it. */
+    private function confirmed(bool $force, string $build, string $question): string
+    {
+        if (!$force && Prompts::canAsk() && !Prompts::confirm(\sprintf($question, $build), default: false)) {
+            throw new Cancelled('Nothing changed.');
+        }
+
+        return $build;
     }
 
     /** @param list<string> $arguments */

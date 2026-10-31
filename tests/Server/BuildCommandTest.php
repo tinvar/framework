@@ -10,6 +10,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Server\BuildCommand;
 
+use Tinvar\Console\Prompts;
+use Tinvar\Console\Prompts\Cancelled;
 use Tinvar\Http\BuildHistory;
 use Tinvar\Http\BuildRegistry;
 use Tinvar\Http\FileBuildStore;
@@ -316,5 +318,39 @@ describe('bin/tinvar', function () {
         $tinvar($database, 'build:current', 'b1');
 
         expect($tinvar($database, 'build:current'))->toBe([0, "b1\n"]);
+    });
+});
+
+describe('confirming what no later command takes back', function () {
+    afterEach(function () {
+        Prompts::restore();
+    });
+
+    it('asks before revoking or setting a floor where a person is there, and changes nothing at no', function () {
+        [$command, $store] = command();
+        $command->run('build:current', ['b1']);
+        $command->run('build:current', ['b2']);
+        $prompts = Prompts::fake(['Revoke b1? Clients on it reload, its tokens are refused, and it is never served again.' => false]);
+
+        expect(fn () => $command->run('build:revoke', ['b1']))->toThrow(Cancelled::class, 'Nothing changed.')
+            ->and($store->read()->isRevoked('b1'))->toBeFalse();
+        $prompts->assertAllAnswered();
+
+        Prompts::fake(['Set the floor at b2? Every build before it is refused from now on.' => true]);
+        expect($command->run('build:floor', ['b2']))->toBe(0);
+    });
+
+    it('asks nothing given --force, or with nobody there', function () {
+        [$command, $store] = command();
+        $command->run('build:current', ['b1']);
+        $command->run('build:current', ['b2']);
+        $prompts = Prompts::fake();
+
+        expect($command->run('build:revoke', ['b1', '--force']))->toBe(0)
+            ->and($store->read()->isRevoked('b1'))->toBeTrue();
+        $prompts->assertNothingAsked();
+
+        Prompts::restore();
+        expect($command->run('build:floor', ['b2']))->toBe(0);
     });
 });
