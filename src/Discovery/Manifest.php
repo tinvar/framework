@@ -46,7 +46,7 @@ final class Manifest
             . "// The classes discovery found under {$namespace}\\ (ADR 0146), written by `tinvar discover` and\n"
             . "// `tinvar build`. Production boots from this file and never walks the sources; `tinvar check`\n"
             . "// fails while it differs from what a scan finds. Never edited by hand.\n\n"
-            . 'return ' . var_export(['version' => self::VERSION, 'namespace' => trim($namespace, '\\'), 'classes' => $classes->toArray()], true) . ";\n";
+            . 'return ' . self::export(['version' => self::VERSION, 'namespace' => trim($namespace, '\\'), 'classes' => $classes->toArray()]) . ";\n";
         $temporary = $file . '.' . bin2hex(random_bytes(6)) . '.tmp';
         if (file_put_contents($temporary, $source) === false || !rename($temporary, $file)) {
             @unlink($temporary);
@@ -57,6 +57,28 @@ final class Manifest
             @opcache_invalidate($file, true);
         }
         unset(self::$read[$file]);
+    }
+
+    /**
+     * $value as PHP source, written as the workspace's own style writes an
+     * array: short syntax, one entry to a line, four spaces a level.
+     */
+    private static function export(mixed $value, int $depth = 0): string
+    {
+        if (!\is_array($value)) {
+            return var_export($value, true);
+        }
+        if ($value === []) {
+            return '[]';
+        }
+        $indent = str_repeat('    ', $depth + 1);
+        $list = array_is_list($value);
+        $lines = [];
+        foreach ($value as $key => $item) {
+            $lines[] = $indent . ($list ? '' : var_export($key, true) . ' => ') . self::export($item, $depth + 1) . ',';
+        }
+
+        return "[\n" . implode("\n", $lines) . "\n" . str_repeat('    ', $depth) . ']';
     }
 
     /**

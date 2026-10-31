@@ -57,10 +57,10 @@ final readonly class DiscoveredClasses
      * @param list<class-string> $endpoints
      * @param list<class-string> $channels
      * @param list<class-string> $transfers
-     * @param list<class-string> $shared
+     * @param list<class-string<\Tinvar\Data\SharedData>> $shared
      * @param array<class-string, class-string> $policies the class decided about => its policy
      * @param list<class-string> $tasks
-     * @param list<class-string> $commands
+     * @param list<class-string<\Tinvar\Console\Command>> $commands
      * @param list<class-string> $configs
      * @param list<class-string<\Tinvar\Orm\Model>> $models
      * @param list<class-string> $payloads
@@ -179,15 +179,23 @@ final readonly class DiscoveredClasses
         $gone = array_flip(array_map(strtolower(...), $classes));
         $lists = [];
         foreach ($this->toArray() as $kind => $names) {
-            $lists[$kind] = $kind === 'policies'
-                ? array_filter($names, static fn (string $policy, string $subject): bool => !isset($gone[strtolower($policy)]) && !isset($gone[strtolower($subject)]), \ARRAY_FILTER_USE_BOTH)
-                : array_values(array_filter($names, static fn (string $class): bool => !isset($gone[strtolower($class)])));
+            $kept = [];
+            foreach ($names as $key => $class) {
+                if (!isset($gone[strtolower($class)]) && !($kind === 'policies' && isset($gone[strtolower((string) $key)]))) {
+                    $kept[$key] = $class;
+                }
+            }
+            $lists[$kind] = $kind === 'policies' ? $kept : array_values($kept);
         }
 
         return self::make($lists);
     }
 
-    /** Every class in any kind, each once, sorted. @return list<class-string> */
+    /**
+     * Every class in any kind, each once, sorted.
+     *
+     * @return list<class-string>
+     */
     public function all(): array
     {
         $all = [];

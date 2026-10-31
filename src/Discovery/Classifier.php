@@ -61,8 +61,7 @@ final class Classifier
     /**
      * The kinds $class is, and the classes its #[Policy] attributes decide about.
      *
-     * @template T of object
-     * @param \ReflectionClass<T> $class
+     * @param \ReflectionClass<object> $class
      * @return array{list<string>, list<class-string>} kinds, policy subjects
      */
     public static function classify(\ReflectionClass $class): array
@@ -96,7 +95,7 @@ final class Classifier
         if (self::has($class, Export::class) || self::has($class, Import::class)) {
             $kinds[] = 'transfers';
         }
-        if ($class->implementsInterface(SharedData::class) || self::onMethod($class, Shared::class)) {
+        if (is_a($name, SharedData::class, true) || self::onMethod($class, Shared::class)) {
             $kinds[] = 'shared';
         }
         $subjects = array_map(static fn (\ReflectionAttribute $a): string => $a->newInstance()->subject, $class->getAttributes(Policy::class));
@@ -112,24 +111,24 @@ final class Classifier
         if (self::has($class, Config::class)) {
             $kinds[] = 'configs';
         }
-        if ($class->isSubclassOf(Model::class)) {
+        if (is_subclass_of($name, Model::class)) {
             $kinds[] = 'models';
         }
-        if ($class->isSubclassOf(Data::class)) {
+        if (is_subclass_of($name, Data::class)) {
             $kinds[] = 'payloads';
         }
         if (self::has($class, Scenario::class)) {
             $kinds[] = 'scenarios';
         }
-        if ($class->implementsInterface(Workflow::class)) {
+        if (is_a($name, Workflow::class, true)) {
             $kinds[] = 'workflows';
-        } elseif ($class->implementsInterface(Job::class)) {
+        } elseif (is_a($name, Job::class, true)) {
             $kinds[] = 'jobs';
         }
         if (self::onMethod($class, Listener::class)) {
             $kinds[] = 'listeners';
         }
-        if ($class->implementsInterface(Mailable::class)) {
+        if (is_a($name, Mailable::class, true)) {
             $kinds[] = 'mailables';
         }
         if (($query || $action) && (self::has($class, Tool::class) || self::onMethod($class, Tool::class))) {
@@ -152,8 +151,7 @@ final class Classifier
      * is. None for a class that is a kind, a form request, or no class to
      * build.
      *
-     * @template T of object
-     * @param \ReflectionClass<T> $class
+     * @param \ReflectionClass<object> $class
      * @param list<string> $kinds what classify() found it to be
      * @return list<string>
      */
@@ -194,8 +192,7 @@ final class Classifier
     }
 
     /**
-     * @template T of object
-     * @param \ReflectionClass<T> $class
+     * @param \ReflectionClass<object> $class
      * @param class-string $attribute
      */
     private static function has(\ReflectionClass $class, string $attribute): bool
@@ -206,8 +203,7 @@ final class Classifier
     /**
      * Whether a public method of $class carries $attribute.
      *
-     * @template T of object
-     * @param \ReflectionClass<T> $class
+     * @param \ReflectionClass<object> $class
      * @param class-string $attribute
      */
     private static function onMethod(\ReflectionClass $class, string $attribute): bool
