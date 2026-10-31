@@ -573,6 +573,15 @@ final class ServeCommand
             PrivateDirectory::remove($directory);
 
             return 1;
+        } catch (\Throwable $e) {
+            // Anything else -- the application's server environment, asked
+            // once the renderers are up, failing to read a key -- is still a
+            // start that stops here: what it started is stopped and its
+            // directory removed before the failure goes on to the caller.
+            $this->terminate($children);
+            PrivateDirectory::remove($directory);
+
+            throw $e;
         }
 
         ($this->out)(sprintf('Listening on http://%s:%d', PortFinder::hostForUrl($plan['host']), $plan['port']));

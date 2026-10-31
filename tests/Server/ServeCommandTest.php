@@ -169,6 +169,45 @@ it('stops the background children first, with time for the job in hand, then the
         ]);
 });
 
+// The application's server environment is asked once the renderers are up.
+// One that threw anything but a ServeException left them running and the
+// run's private directory behind.
+it('stops what it started and removes its directory when the server environment throws', function () {
+    withoutEnvironmentBinary(function () {
+        $bin = scratch();
+        $marker = "{$bin}/started";
+        // A renderer pool that makes its socket and runs until its input ends.
+        file_put_contents("{$bin}/node", "#!/bin/sh\necho \"\$\$ \$2\" > " . escapeshellarg($marker) . "\ntouch \"\$2/r0.sock\"\ncat > /dev/null\n");
+        chmod("{$bin}/node", 0700);
+        $path = (string) getenv('PATH');
+        putenv("PATH={$bin}:{$path}");
+
+        try {
+            $command = new ServeCommand(
+                project(),
+                new PortFinder(static fn (): bool => true),
+                static function (): void {},
+                static function (): void {},
+                serverEnvironment: static fn (): array => throw new \RuntimeException('the hub key is unreadable'),
+            );
+
+            expect(fn () => $command->run(['--app=' . app(), '--renderers=1', '--workers=1']))
+                ->toThrow(\RuntimeException::class, 'the hub key is unreadable');
+        } finally {
+            putenv("PATH={$path}");
+        }
+
+        [$pid, $directory] = explode(' ', trim((string) file_get_contents($marker)), 2);
+        $deadline = microtime(true) + 5;
+        while (posix_kill((int) $pid, 0) && microtime(true) < $deadline) {
+            usleep(20_000);
+        }
+
+        expect(posix_kill((int) $pid, 0))->toBeFalse()
+            ->and(is_dir($directory))->toBeFalse();
+    });
+})->skip(!\function_exists('posix_kill'), 'needs posix');
+
 it('kills a pid at the stop only once something says it runs queue:work', function () {
     $isWorker = new \ReflectionMethod(ServeCommand::class, 'isWorker');
     // Another process of this user's, which a held file's stale pid could
