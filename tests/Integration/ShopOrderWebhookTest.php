@@ -16,6 +16,7 @@ namespace Tinvar\Tests\Integration\ShopOrderWebhook;
 
 use Shop\DemoAccount;
 use Shop\Kernel;
+use Shop\OrderEvent;
 use Shop\OrderWebhook;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;
@@ -140,7 +141,7 @@ it('queues the order webhook with the order, and the worker sends it signed, kee
 
         expect($request->url)->toBe('https://fulfilment.example.test/hooks/pellwick?store=1')
             ->and(hash_equals(WebhookSignature::mac(SECRET, $signature[0], $signature[1], 'POST', '/hooks/pellwick?store=1', $request->body), $signature[2]))->toBeTrue()
-            ->and($body['event'])->toBe(OrderWebhook::PLACED)
+            ->and($body['event'])->toBe(OrderEvent::Placed->value)
             ->and($body['data']['id'])->toBe($id)
             ->and($body['data']['number'])->toBe($number)
             ->and($body['data']['lines'][0]['quantity'])->toBe(2)

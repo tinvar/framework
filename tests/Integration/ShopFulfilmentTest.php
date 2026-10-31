@@ -15,10 +15,12 @@ namespace Tinvar\Tests\Integration\ShopFulfilment;
 use Shop\Actions\FulfilmentActions;
 use Shop\Auth\AuthEpochs;
 use Shop\Auth\StaffMemberships;
+use Shop\Auth\StaffPermission;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Models\Customer;
 use Shop\Models\Order;
+use Shop\Models\OrderStatus;
 use Shop\Pages\Admin\Orders as AdminOrders;
 use Shop\StaffAccount;
 use Tinvar\Bench\Shop;
@@ -67,10 +69,10 @@ function epochOf(Kernel $kernel, Customer $customer): string
 function placedOrder(Kernel $kernel, ?Customer $customer = null): string
 {
     $sql = 'SELECT id FROM orders WHERE status = ?' . ($customer === null ? '' : ' AND customer_id = ?') . ' ORDER BY id LIMIT 1';
-    $rows = $kernel->orm->connection()->select($sql, $customer === null ? [Order::PLACED] : [Order::PLACED, $customer->id]);
+    $rows = $kernel->orm->connection()->select($sql, $customer === null ? [OrderStatus::Placed->value] : [OrderStatus::Placed->value, $customer->id]);
     if ($rows === []) {
         $id = (string) $kernel->orm->connection()->select('SELECT id FROM orders ORDER BY id LIMIT 1')[0]['id'];
-        $kernel->orm->connection()->execute('UPDATE orders SET status = ? WHERE id = ?', [Order::PLACED, $id]);
+        $kernel->orm->connection()->execute('UPDATE orders SET status = ? WHERE id = ?', [OrderStatus::Placed->value, $id]);
 
         return $id;
     }
@@ -145,7 +147,7 @@ describe('the fulfilment workflow', function () {
 
         actingAs($staff, epochOf($this->kernel, $staff))->get('/admin/orders')->assertOk()->assertPage(AdminOrders::class, $offered(true));
 
-        new StaffMemberships($this->kernel->orm)->grant($staff->id, [StaffMemberships::VIEW_ALL_ORDERS]);
+        new StaffMemberships($this->kernel->orm)->grant($staff->id, [StaffPermission::ViewAllOrders]);
         actingAs($staff, epochOf($this->kernel, $staff))->get('/admin/orders')->assertOk()->assertPage(AdminOrders::class, $offered(false));
     });
 
@@ -156,24 +158,24 @@ describe('the fulfilment workflow', function () {
         $started->assertOk();
 
         // Started, not run: the request returned before anything moved.
-        expect(statusOf($this->kernel, $order))->toBe(Order::PLACED);
+        expect(statusOf($this->kernel, $order))->toBe(OrderStatus::Placed->value);
 
         work($this->kernel);
 
-        expect(statusOf($this->kernel, $order))->toBe(Order::PACKED)
+        expect(statusOf($this->kernel, $order))->toBe(OrderStatus::Packed->value)
             ->and(failures($this->kernel))->toBe([])
             ->and($this->kernel->queue->size('default'))->toBe(0);
     });
 
     it('is refused for an order already packed, or by staff who may not fulfil', function () {
         $order = placedOrder($this->kernel);
-        $this->kernel->orm->connection()->execute('UPDATE orders SET status = ? WHERE id = ?', [Order::PACKED, $order]);
+        $this->kernel->orm->connection()->execute('UPDATE orders SET status = ? WHERE id = ?', [OrderStatus::Packed->value, $order]);
 
         fulfil($this->kernel, $order)->assertForbidden();
 
         $other = placedOrder($this->kernel);
         $staff = account($this->kernel, StaffAccount::EMAIL);
-        new StaffMemberships($this->kernel->orm)->grant($staff->id, [StaffMemberships::VIEW_ALL_ORDERS]);
+        new StaffMemberships($this->kernel->orm)->grant($staff->id, [StaffPermission::ViewAllOrders]);
         fulfil($this->kernel, $other)->assertForbidden();
 
         expect($this->kernel->queue->size('default'))->toBe(0);
@@ -189,11 +191,11 @@ describe('the fulfilment workflow', function () {
 
         // The first step, `pack`, and no more.
         work($kernel, 1);
-        expect(statusOf($kernel, $order))->toBe(Order::PACKED);
+        expect(statusOf($kernel, $order))->toBe(OrderStatus::Packed->value);
 
         // Narrowed to reading orders: the grant moves the epoch on.
         $staff = account($kernel, StaffAccount::EMAIL);
-        new StaffMemberships($kernel->orm)->grant($staff->id, [StaffMemberships::VIEW_ALL_ORDERS]);
+        new StaffMemberships($kernel->orm)->grant($staff->id, [StaffPermission::ViewAllOrders]);
         work($kernel);
 
         expect(failures($kernel))->toHaveCount(1)
@@ -233,7 +235,7 @@ describe('the fulfilment workflow', function () {
         // Without its own credential the token is nothing.
         $fulfilment = $sent['data']['fulfilment'];
         expect(callBack($kernel, 'orders.collected', $context, ['order' => $order, 'fulfilment' => $fulfilment], signedIn: false)->status)->toBe(401)
-            ->and(statusOf($kernel, $order))->toBe(Order::PACKED);
+            ->and(statusOf($kernel, $order))->toBe(OrderStatus::Packed->value);
 
         // The workflow waits on the warehouse's word, holding no worker
         // (ADR 0119), and its progress says so.
@@ -246,20 +248,20 @@ describe('the fulfilment workflow', function () {
         // fulfilment, so it says nothing of another packed order -- and a
         // call refused for that leaves it unspent.
         $other = placedOrder($kernel);
-        $kernel->orm->connection()->execute('UPDATE orders SET status = ? WHERE id = ?', [Order::PACKED, $other]);
+        $kernel->orm->connection()->execute('UPDATE orders SET status = ? WHERE id = ?', [OrderStatus::Packed->value, $other]);
         $elsewhere = callBack($kernel, 'orders.collected', $context, ['order' => $other, 'fulfilment' => $fulfilment]);
         expect($elsewhere->status)->toBe(403)
             ->and(json_decode($elsewhere->body(), true)['reason'])->toBe('context')
             ->and(callBack($kernel, 'orders.collected', $context, ['order' => $order, 'fulfilment' => '01900000-0000-7000-8000-000000000000'])->status)->toBe(403)
-            ->and(statusOf($kernel, $other))->toBe(Order::PACKED);
+            ->and(statusOf($kernel, $other))->toBe(OrderStatus::Packed->value);
 
         // Its word is a signal to the workflow, which wakes and ships it.
         $collected = callBack($kernel, 'orders.collected', $context, ['order' => $order, 'fulfilment' => $fulfilment]);
         expect($collected->status)->toBe(200)
             ->and(json_decode($collected->body(), true))->toBe(['status' => 'ok', 'value' => ['order' => $sent['data']['number'], 'status' => 'collected']])
-            ->and(statusOf($kernel, $order))->toBe(Order::PACKED);
+            ->and(statusOf($kernel, $order))->toBe(OrderStatus::Packed->value);
         work($kernel);
-        expect(statusOf($kernel, $order))->toBe(Order::SHIPPED)
+        expect(statusOf($kernel, $order))->toBe(OrderStatus::Shipped->value)
             ->and($progress()?->status)->toBe(WorkflowRecord::FINISHED)
             ->and(failures($kernel))->toBe([]);
 
@@ -275,11 +277,11 @@ describe('the fulfilment workflow', function () {
 
     it('takes no signal for a fulfilment that is not waiting on this order', function () {
         $order = placedOrder($this->kernel);
-        $this->kernel->orm->connection()->execute('UPDATE orders SET status = ? WHERE id = ?', [Order::PACKED, $order]);
+        $this->kernel->orm->connection()->execute('UPDATE orders SET status = ? WHERE id = ?', [OrderStatus::Packed->value, $order]);
 
         $refused = callBack($this->kernel, 'orders.collected', contextFor($this->kernel), ['order' => $order, 'fulfilment' => '01900000-0000-7000-8000-000000000000']);
         expect($refused->status)->toBe(422)
-            ->and(statusOf($this->kernel, $order))->toBe(Order::PACKED);
+            ->and(statusOf($this->kernel, $order))->toBe(OrderStatus::Packed->value);
     });
 });
 
@@ -291,12 +293,12 @@ describe('the warehouse\'s service calls', function () {
         expect(callBack($this->kernel, 'orders.fulfil', $context, ['order' => $order])->status)->toBe(403)
             ->and(json_decode(callBack($this->kernel, 'orders.fulfil', $context, ['order' => $order])->body(), true)['reason'])->toBe('unknown_operation')
             ->and(callBack($this->kernel, 'orders.collected', 'v1.forged.token', ['order' => $order])->status)->toBe(403)
-            ->and(statusOf($this->kernel, $order))->toBe(Order::PLACED);
+            ->and(statusOf($this->kernel, $order))->toBe(OrderStatus::Placed->value);
     });
 
     it('are refused once the staff member the token was issued for is no longer staff', function () {
         $order = placedOrder($this->kernel);
-        $this->kernel->orm->connection()->execute('UPDATE orders SET status = ? WHERE id = ?', [Order::PACKED, $order]);
+        $this->kernel->orm->connection()->execute('UPDATE orders SET status = ? WHERE id = ?', [OrderStatus::Packed->value, $order]);
         $context = contextFor($this->kernel);
 
         new StaffMemberships($this->kernel->orm)->revoke(account($this->kernel, StaffAccount::EMAIL)->id);
@@ -304,7 +306,7 @@ describe('the warehouse\'s service calls', function () {
 
         expect($refused->status)->toBe(403)
             ->and(json_decode($refused->body(), true))->toBe(['status' => CallResult::REFUSED, 'value' => null, 'reason' => 'context'])
-            ->and(statusOf($this->kernel, $order))->toBe(Order::PACKED);
+            ->and(statusOf($this->kernel, $order))->toBe(OrderStatus::Packed->value);
     });
 
     it('validate the arguments as the operation\'s own', function () {

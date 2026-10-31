@@ -15,7 +15,7 @@ use Shop\Channels\OrderUpdates;
 use Shop\Database\Seeder;
 use Shop\DemoAccount;
 use Shop\Kernel;
-use Shop\Models\Order;
+use Shop\Models\OrderStatus;
 use Shop\OrderChanges;
 use Shop\Tasks\AdvanceShipments;
 use Tinvar\Channels\ChannelToken;
@@ -151,7 +151,7 @@ it('lets a customer subscribe to their own order, and tells that subscription wh
         ->and(json_decode($heard[0]['data'], true))->toBe([
             'topic' => $topic,
             'channel' => 'orders',
-            'message' => ['number' => $number, 'status' => Order::SHIPPED, 'title' => "Order {$number} has shipped"],
+            'message' => ['number' => $number, 'status' => OrderStatus::Shipped->value, 'title' => "Order {$number} has shipped"],
         ]);
 });
 

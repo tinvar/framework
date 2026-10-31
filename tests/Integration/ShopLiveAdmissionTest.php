@@ -16,6 +16,7 @@ namespace Tinvar\Tests\Integration\ShopLiveAdmission;
 
 use Shop\Auth\AuthEpochs;
 use Shop\Auth\StaffMemberships;
+use Shop\Auth\StaffPermission;
 use Shop\Database\Seeder;
 use Shop\Kernel;
 use Shop\StaffAccount;
@@ -185,9 +186,9 @@ it('moves the epoch when it makes an account staff, too', function () {
     $customer = (string) $orm->connection()->select("SELECT id FROM customers WHERE email <> ? LIMIT 1", [StaffAccount::EMAIL])[0]['id'];
     $before = $epochs->of($customer);
 
-    new StaffMemberships($orm)->grant($customer, [StaffMemberships::VIEW_ALL_ORDERS]);
+    new StaffMemberships($orm)->grant($customer, [StaffPermission::ViewAllOrders]);
 
     expect($epochs->of($customer))->not->toBe($before)
         ->and((string) $orm->connection()->select('SELECT permissions FROM staff WHERE customer_id = ?', [$customer])[0]['permissions'])
-        ->toBe(StaffMemberships::VIEW_ALL_ORDERS);
+        ->toBe(StaffPermission::ViewAllOrders->value);
 });

@@ -17,8 +17,9 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Integration\ShopEmailLinks;
 
 use Shop\Actions\EmailLinkActions;
-use Shop\Auth\StaffInvites;
 use Shop\Auth\StaffMemberships;
+use Shop\Auth\StaffPermission;
+use Shop\Auth\StaffRole;
 use Shop\Clock;
 use Shop\DemoAccount;
 use Shop\Kernel;
@@ -454,7 +455,7 @@ describe('a staff invite', function () {
             ->and($accepted->header('location'))->toBe('/admin/orders');
         $hire = customer($this->kernel, 'new.hire@example.com');
         $membership = new StaffMemberships($this->kernel->orm)->membership($hire, StaffMemberships::PANEL, '');
-        expect($membership?->permissions)->toBe(StaffInvites::ROLES['orders']['permissions'])
+        expect($membership?->permissions)->toBe(array_map(static fn (StaffPermission $p): string => $p->value, StaffRole::Orders->permissions()))
             ->and(signedInAs($this->kernel, $invitee))->toBe($hire->id)
             ->and($invitee->get('/admin/staff')->status)->toBe(403);
 
@@ -465,15 +466,15 @@ describe('a staff invite', function () {
     it('cannot be sent to a role wider than the inviter\'s, nor by staff who may not invite', function () {
         // The staff account narrowed to the order desk, still able to invite.
         $staffId = customer($this->kernel, StaffAccount::EMAIL)->id;
-        new StaffMemberships($this->kernel->orm)->grant($staffId, [StaffMemberships::VIEW_ALL_ORDERS, StaffMemberships::INVITE_STAFF]);
+        new StaffMemberships($this->kernel->orm)->grant($staffId, [StaffPermission::ViewAllOrders, StaffPermission::InviteStaff]);
         $this->staff->action('account.signIn', ['email' => StaffAccount::EMAIL, 'password' => StaffAccount::PASSWORD]);
 
         $wider = $this->staff->action('staff.invite', ['email' => 'x@example.com', 'role' => 'stock']);
         expect($wider->status)->toBe(422)
             ->and(errors($wider))->toBe(['role' => ['You can only invite someone to a role with no more access than your own.']]);
 
-        // And without INVITE_STAFF, not at all.
-        new StaffMemberships($this->kernel->orm)->grant($staffId, [StaffMemberships::VIEW_ALL_ORDERS]);
+        // And without InviteStaff, not at all.
+        new StaffMemberships($this->kernel->orm)->grant($staffId, [StaffPermission::ViewAllOrders]);
         $this->staff->action('account.signIn', ['email' => StaffAccount::EMAIL, 'password' => StaffAccount::PASSWORD]);
         expect($this->staff->action('staff.invite', ['email' => 'x@example.com', 'role' => 'orders'])->status)->toBe(403);
 
@@ -492,7 +493,7 @@ describe('a staff invite', function () {
         expect($this->staff->action('staff.revokeInvite', ['id' => (string) $pending[0]['id']])->status)->toBe(200);
 
         // The inviter loses RESTOCK: an invite to "stock" is theirs no longer to give.
-        new StaffMemberships($this->kernel->orm)->grant(customer($this->kernel, StaffAccount::EMAIL)->id, [StaffMemberships::VIEW_ALL_ORDERS, StaffMemberships::INVITE_STAFF]);
+        new StaffMemberships($this->kernel->orm)->grant(customer($this->kernel, StaffAccount::EMAIL)->id, [StaffPermission::ViewAllOrders, StaffPermission::InviteStaff]);
 
         $invitee = new Browser($this->kernel, '198.51.100.70');
         foreach ([$revoked, $orphaned] as $token) {

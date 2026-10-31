@@ -104,7 +104,7 @@ function ordersOf(Customer $customer, string $product): array
             'id' => (string) $row['id'],
             'number' => (string) $row['number'],
             'status' => (string) $row['status'],
-            'placedAt' => (string) $row['placed_at'],
+            'placedAt' => Encoder::moment(new \DateTimeImmutable((string) $row['placed_at'])),
             'quantity' => (int) $row['quantity'],
         ],
         orm()->connection()->select(

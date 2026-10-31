@@ -13,11 +13,13 @@ namespace Tinvar\Tests\Integration\ShopAdmin;
 
 use Shop\Actions\OrderActions;
 use Shop\Auth\StaffMemberships;
+use Shop\Auth\StaffPermission;
 use Shop\Database\Migrations;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Models\Customer;
 use Shop\Models\Order;
+use Shop\Models\OrderStatus;
 use Shop\Pages\Admin\Orders;
 use Shop\StaffAccount;
 use Tinvar\Bench\Shop;
@@ -87,7 +89,7 @@ it('makes the seeded staff account a member holding the permission the page need
 
     $staff = $memberships->membership(customer($orm, StaffAccount::EMAIL), StaffMemberships::PANEL, '');
 
-    expect($staff?->can(StaffMemberships::VIEW_ALL_ORDERS))->toBeTrue()
+    expect($staff?->can(StaffPermission::ViewAllOrders->value))->toBeTrue()
         ->and($memberships->membership(customer($orm, DemoAccount::EMAIL), StaffMemberships::PANEL, ''))->toBeNull()
         // One tenant: a membership is held in none, and no other panel exists.
         ->and($memberships->membership(customer($orm, StaffAccount::EMAIL), StaffMemberships::PANEL, 'acme'))->toBeNull()
@@ -150,7 +152,7 @@ it('reports how many orders are in each status, and what they came to', function
     foreach ($orm->connection()->select('SELECT status, COUNT(*) AS n, SUM(total_cents) AS cents FROM orders GROUP BY status') as $row) {
         $expected[(string) $row['status']] = ['status' => (string) $row['status'], 'orders' => (int) $row['n'], 'totalCents' => (int) $row['cents']];
     }
-    $expected = array_values(array_filter(array_map(static fn (string $status): ?array => $expected[$status] ?? null, Order::STATUSES)));
+    $expected = array_values(array_filter(array_map(static fn (OrderStatus $status): ?array => $expected[$status->value] ?? null, OrderStatus::cases())));
 
     actingAs(shopper(StaffAccount::EMAIL))->get('/admin/orders')
         ->assertOk()

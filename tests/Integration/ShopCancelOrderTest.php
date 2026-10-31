@@ -19,6 +19,7 @@ use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Models\Customer;
 use Shop\Models\Order;
+use Shop\Models\OrderStatus;
 use Tinvar\Bench\Shop;
 use Tinvar\Testing\Testing;
 
@@ -65,7 +66,7 @@ function signedIn(Kernel $kernel, Customer $customer): \Tinvar\Testing\Client
 
 it('cancels a placed order of the customer\'s, revalidating its page and the tags its shipping updates read', function () {
     $owner = customer($this->kernel, DemoAccount::EMAIL);
-    $order = orderOf($this->kernel, $owner, Order::PLACED);
+    $order = orderOf($this->kernel, $owner, OrderStatus::Placed->value);
 
     signedIn($this->kernel, $owner)->action('orders.cancel', order: $order)
         ->assertOk()
@@ -73,26 +74,26 @@ it('cancels a placed order of the customer\'s, revalidating its page and the tag
         ->assertRevalidatedTags(OrderActions::ORDERS_TAG, OrderActions::customerTag($owner->id), OrderActions::orderTag($order))
         ->assertFlash('message');
 
-    expect(statusOf($this->kernel, $order))->toBe(Order::CANCELLED);
+    expect(statusOf($this->kernel, $order))->toBe(OrderStatus::Cancelled->value);
 });
 
 it('refuses an order that has been packed, and leaves it packed', function () {
     $owner = customer($this->kernel, DemoAccount::EMAIL);
-    $order = orderOf($this->kernel, $owner, Order::PACKED);
+    $order = orderOf($this->kernel, $owner, OrderStatus::Packed->value);
 
     signedIn($this->kernel, $owner)->action('orders.cancel', order: $order)->assertForbidden();
 
-    expect(statusOf($this->kernel, $order))->toBe(Order::PACKED);
+    expect(statusOf($this->kernel, $order))->toBe(OrderStatus::Packed->value);
 });
 
 // An order id is in URLs and support emails: knowing one cancels nothing.
 it('refuses another customer\'s order, and a visitor who is not signed in', function () {
     $owner = customer($this->kernel, DemoAccount::EMAIL);
-    $order = orderOf($this->kernel, $owner, Order::PLACED);
+    $order = orderOf($this->kernel, $owner, OrderStatus::Placed->value);
     $other = customer($this->kernel, 'customer1@shop.test');
 
     signedIn($this->kernel, $other)->action('orders.cancel', order: $order)->assertForbidden();
     Testing::client()->action('orders.cancel', order: $order)->assertUnauthenticated();
 
-    expect(statusOf($this->kernel, $order))->toBe(Order::PLACED);
+    expect(statusOf($this->kernel, $order))->toBe(OrderStatus::Placed->value);
 });

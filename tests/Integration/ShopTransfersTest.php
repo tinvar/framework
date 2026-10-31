@@ -14,6 +14,7 @@ namespace Tinvar\Tests\Integration\ShopTransfers;
 
 use Shop\Auth\AuthEpochs;
 use Shop\Auth\StaffMemberships;
+use Shop\Auth\StaffPermission;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Models\Customer;
@@ -218,7 +219,7 @@ it('refuses a customer, and staff without the permission, and starts nothing', f
     expect($customer->export()->status)->toBe(403);
 
     $staffAccount = account($this->kernel, StaffAccount::EMAIL);
-    new StaffMemberships($this->kernel->orm)->grant($staffAccount->id, [StaffMemberships::VIEW_ALL_ORDERS]);
+    new StaffMemberships($this->kernel->orm)->grant($staffAccount->id, [StaffPermission::ViewAllOrders]);
     $staff = new Staff($this->kernel, $staffAccount);
     expect($staff->export()->status)->toBe(403)
         ->and($staff->import("sku,stock\nX,1\n")->status)->toBe(403)

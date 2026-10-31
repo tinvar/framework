@@ -21,6 +21,7 @@ use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Mail\ConfirmSubscription;
 use Shop\Mail\Links;
+use Shop\Mail\ConsentSource;
 use Shop\Mail\MarketingConsents;
 use Shop\Mail\NewsletterIssues;
 use Shop\Mail\MarketingList;
@@ -604,7 +605,7 @@ describe('the double opt-in', function () {
         expect(rows($other))->toBe(['newsletter' => true])
             ->and(consents($other)[0]['list'])->toBe('newsletter')
             ->and(consents($other)[0]['address'])->toBe('customer1@shop.test')
-            ->and(consents($other)[0]['source'])->toBe(MarketingConsents::ACCOUNT)
+            ->and(consents($other)[0]['source'])->toBe(ConsentSource::Account->value)
             ->and(consents($other)[0]['confirmed_at'])->toBeString();
 
         // Single-use: used, it confirms nothing again.
@@ -620,7 +621,7 @@ describe('the double opt-in', function () {
         action('email.setByLink', token: (string) $query['token'], list: 'announcements', subscribed: true)->assertOk();
         action('email.confirmSubscription', token: confirmation())->assertRedirect();
 
-        expect(consents($other)[0]['source'])->toBe(MarketingConsents::EMAIL_LINK)
+        expect(consents($other)[0]['source'])->toBe(ConsentSource::EmailLink->value)
             ->and(rows($other))->toBe(['announcements' => true]);
     });
 

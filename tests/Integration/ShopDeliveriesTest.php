@@ -13,6 +13,7 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Integration\ShopDeliveries;
 
 use Shop\Auth\StaffMemberships;
+use Shop\Auth\StaffPermission;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Models\Customer;
@@ -158,7 +159,7 @@ it('refuses a customer and staff without the permission, and sends nothing again
     actingAs(account($this->kernel, DemoAccount::EMAIL))->get('/admin/deliveries')->assertStatus(403);
 
     $staff = account($this->kernel, StaffAccount::EMAIL);
-    new StaffMemberships($this->kernel->orm)->grant($staff->id, [StaffMemberships::VIEW_ALL_ORDERS]);
+    new StaffMemberships($this->kernel->orm)->grant($staff->id, [StaffPermission::ViewAllOrders]);
     $staff = account($this->kernel, StaffAccount::EMAIL);
     expect(new Browser($this->kernel, $staff)->action('deliveries.resend', ['delivery' => $id])->status)->toBe(403);
     actingAs($staff)->get('/admin/deliveries')->assertStatus(403);

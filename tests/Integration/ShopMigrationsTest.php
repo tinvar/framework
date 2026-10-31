@@ -114,6 +114,7 @@ it('makes every table the shop uses, and leaves nothing the models describe for 
         '2026_10_31_000121_index_orders_by_status_and_placed_at',
         '2026_10_31_000122_index_nonces_by_expiry',
         '2026_10_31_000123_beat_transfers',
+        '2026_10_31_000130_write_order_and_account_times_as_the_orm_stores_them',
     ])
         ->and(tables($connection))->toBe(TABLES)
         ->and(($generator = new MigrationGenerator($connection, new SqliteDialect()))->generate([Product::class, Customer::class, Order::class, OrderLine::class, Receipt::class], '2026-10-24'))->toBeNull()
@@ -131,9 +132,9 @@ it('rolls all the way back to nothing, and up again', function () {
     $migrator = Migrations::migrator($connection);
     $migrator->migrate();
 
-    expect($migrator->rollback())->toHaveCount(27)
+    expect($migrator->rollback())->toHaveCount(28)
         ->and(tables($connection))->toBe(['tinvar_migrations'])
-        ->and($migrator->migrate())->toHaveCount(27)
+        ->and($migrator->migrate())->toHaveCount(28)
         ->and(tables($connection))->toBe(TABLES);
 });
 
@@ -160,10 +161,40 @@ it('adopts a database built before the shop had migrations, and keeps what is in
 
     $ran = Migrations::migrate($connection);
 
-    expect($ran)->toHaveCount(27)
+    expect($ran)->toHaveCount(28)
         ->and(tables($connection))->toBe(TABLES)
         ->and($connection->select('SELECT name FROM customers'))->toBe([['name' => 'Ada']])
+        // The account's time, written to the second as the shop wrote it,
+        // is the form the ORM writes now: the same instant, to the microsecond.
+        ->and($connection->select('SELECT created_at FROM customers'))->toBe([['created_at' => '2026-01-01T00:00:00.000000Z']])
         ->and(Migrations::migrator($connection)->pending())->toBe([]);
+});
+
+// Order, account and receipt times became CarbonImmutable, which the ORM
+// writes at one width, to the microsecond (ADR 0144): the rows written to
+// the second before sort among those, and compare with what the ORM binds.
+it('rewrites the times the shop wrote to the second as the ORM writes them, and back', function () {
+    $connection = PdoConnection::sqlite(database(), create: true);
+    $migrator = Migrations::migrator($connection);
+    $migrator->migrate();
+    $migrator->rollback(1);
+    $connection->execute("INSERT INTO customers (id, email, name, password_hash, created_at) VALUES ('c1', 'ada@shop.test', 'Ada', 'x', '2026-01-01T09:30:00Z')");
+    $connection->execute("INSERT INTO customers (id, email, name, password_hash, created_at) VALUES ('c2', 'bo@shop.test', 'Bo', 'x', '2026-01-01T09:30:00.250000Z')");
+    $connection->execute("INSERT INTO orders (id, number, customer_id, status, placed_at, subtotal_cents, shipping_cents, total_cents) VALUES ('o1', 'PW-1', 'c1', 'placed', '2026-01-02T10:00:00Z', 1, 0, 1)");
+
+    $migrator->migrate();
+    $up = [$connection->select('SELECT created_at FROM customers ORDER BY created_at'), $connection->select('SELECT placed_at FROM orders')];
+    $migrator->rollback(1);
+    $down = $connection->select('SELECT created_at FROM customers ORDER BY created_at');
+    $migrator->migrate();
+
+    expect($up)->toBe([
+        [['created_at' => '2026-01-01T09:30:00.000000Z'], ['created_at' => '2026-01-01T09:30:00.250000Z']],
+        [['placed_at' => '2026-01-02T10:00:00.000000Z']],
+    ])
+        ->and($down)->toBe([['created_at' => '2026-01-01T09:30:00Z'], ['created_at' => '2026-01-01T09:30:00Z']])
+        ->and(Customer::query(new \Tinvar\Orm\Orm($connection, new \Tinvar\Orm\IdentityMap('shop')))->orderBy('createdAt')->fetch()[0]->createdAt->toIso8601ZuluString())
+        ->toBe('2026-01-01T09:30:00Z');
 });
 
 // The uploads table as the uploads migration made it before a waiting
@@ -173,7 +204,7 @@ it('gives an uploads table made before uploads had an owner one, counting by it'
     $connection = PdoConnection::sqlite(database(), create: true);
     $migrator = Migrations::migrator($connection);
     $migrator->migrate();
-    $migrator->rollback(19);
+    $migrator->rollback(20);
 
     $columns = array_column($connection->select('SELECT name FROM pragma_table_info(?)', ['uploads']), 'name');
     $owner = array_values(array_filter(new SqliteDialect()->indexes($connection, 'uploads'), static fn (array $i): bool => $i['name'] === 'uploads_owner'));
@@ -200,6 +231,7 @@ it('gives an uploads table made before uploads had an owner one, counting by it'
         '2026_10_31_000121_index_orders_by_status_and_placed_at',
         '2026_10_31_000122_index_nonces_by_expiry',
         '2026_10_31_000123_beat_transfers',
+        '2026_10_31_000130_write_order_and_account_times_as_the_orm_stores_them',
     ]);
 
     $columns = array_column($connection->select('SELECT name FROM pragma_table_info(?)', ['uploads']), 'name');
@@ -257,8 +289,8 @@ describe('from the command line', function () {
 
         expect([$firstStatus, $status])->toBe([0, 0], "{$firstErr}\n{$err}")
             ->and([$firstOut, $out])->toContain("Nothing to migrate.\n")
-            ->and(implode('', [$firstOut, $out]))->toContain('Ran 27 migration(s).')
-            ->and($connection->select('SELECT COUNT(*) AS n, MAX(batch) AS batch FROM ' . Migrator::TABLE))->toBe([['n' => 27, 'batch' => 1]])
+            ->and(implode('', [$firstOut, $out]))->toContain('Ran 28 migration(s).')
+            ->and($connection->select('SELECT COUNT(*) AS n, MAX(batch) AS batch FROM ' . Migrator::TABLE))->toBe([['n' => 28, 'batch' => 1]])
             ->and(file_exists("{$database}-migrate.lock"))->toBeFalse();
     });
 
@@ -283,7 +315,7 @@ describe('from the command line', function () {
         $connection = PdoConnection::sqlite($database);
 
         expect($status)->toBe(0, $err)
-            ->and($out)->toContain('Dropped every table and ran 27 migration(s).')
+            ->and($out)->toContain('Dropped every table and ran 28 migration(s).')
             ->and($out)->toContain('24 products, 3 customers')
             ->and(Migrations::migrator($connection)->pending())->toBe([])
             ->and($connection->select('SELECT COUNT(*) AS n FROM staff'))->toBe([['n' => 1]]);
