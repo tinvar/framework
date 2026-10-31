@@ -117,6 +117,12 @@ final class SearchPrompt extends Prompt
         return $this->current()['label'] ?? '';
     }
 
+    /** Chosen is enough: an option keyed '' or 0 is a choice. */
+    protected function isEmpty(mixed $value): bool
+    {
+        return $value === null;
+    }
+
     protected function preset(): mixed
     {
         return null;

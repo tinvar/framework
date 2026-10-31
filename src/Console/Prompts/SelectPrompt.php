@@ -100,6 +100,12 @@ final class SelectPrompt extends Prompt
         return $this->current()['label'] ?? '';
     }
 
+    /** Chosen is enough: an option keyed '' or 0 is a choice. */
+    protected function isEmpty(mixed $value): bool
+    {
+        return $value === null;
+    }
+
     protected function preset(): mixed
     {
         return $this->default === null ? null : $this->answerOf($this->options[$this->indexOf($this->default) ?? 0]);

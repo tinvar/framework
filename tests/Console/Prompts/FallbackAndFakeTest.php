@@ -127,3 +127,10 @@ it('fails an assertion on what was asked as a test failure', function (): void {
     expect(fn () => $fake->assertNothingAsked())->toThrow(PHPUnit\Framework\AssertionFailedError::class, "Asked: 'Name'")
         ->and(fn () => $fake->assertAsked('Other'))->toThrow(PHPUnit\Framework\AssertionFailedError::class);
 });
+
+it('takes an option keyed by an empty string or zero as a choice a required select accepts', function (): void {
+    Prompts::fake(['Model' => '', 'Count' => 0]);
+
+    expect(Prompts::select('Model', ['' => 'None', 'App\\Rack' => 'Rack']))->toBe('')
+        ->and(Prompts::select('Count', [0 => 'zero', 5 => 'five']))->toBe(0);
+});
