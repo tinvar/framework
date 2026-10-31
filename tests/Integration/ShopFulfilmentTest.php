@@ -242,6 +242,17 @@ describe('the fulfilment workflow', function () {
         expect($progress()?->status)->toBe(WorkflowRecord::WAITING)
             ->and($progress()?->step)->toBe("collected:{$order}");
 
+        // Good for this order alone: the token is bound to it and to this
+        // fulfilment, so it says nothing of another packed order -- and a
+        // call refused for that leaves it unspent.
+        $other = placedOrder($kernel);
+        $kernel->orm->connection()->execute('UPDATE orders SET status = ? WHERE id = ?', [Order::PACKED, $other]);
+        $elsewhere = callBack($kernel, 'orders.collected', $context, ['order' => $other, 'fulfilment' => $fulfilment]);
+        expect($elsewhere->status)->toBe(403)
+            ->and(json_decode($elsewhere->body(), true)['reason'])->toBe('context')
+            ->and(callBack($kernel, 'orders.collected', $context, ['order' => $order, 'fulfilment' => '01900000-0000-7000-8000-000000000000'])->status)->toBe(403)
+            ->and(statusOf($kernel, $other))->toBe(Order::PACKED);
+
         // Its word is a signal to the workflow, which wakes and ships it.
         $collected = callBack($kernel, 'orders.collected', $context, ['order' => $order, 'fulfilment' => $fulfilment]);
         expect($collected->status)->toBe(200)
