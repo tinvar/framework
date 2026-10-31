@@ -496,6 +496,14 @@ final class Telemetry implements Spans
         $failure = $e instanceof RendererException ? $e->failure()->value : 'error';
         $this->metrics?->increment(self::RENDER_RETRIES, ['kind' => $trace->kind, 'failure' => $failure]);
         $this->logger->warning('render retried', ['kind' => $trace->kind, 'failure' => $failure, 'retry' => $retry]);
+
+        // Not a failed render -- that is counted only for a render that is
+        // not tried again (renderFailed()) -- but this try's span ends here,
+        // failed, saying it was tried again.
+        if ($trace->span !== null) {
+            $trace->span->set('tinvar.render.failure', $failure)->set('tinvar.render.retried', true)->fail($failure);
+            $this->tracer?->end($trace->span);
+        }
     }
 
     /**

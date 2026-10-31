@@ -66,6 +66,7 @@ function scriptedRenderer(string $path, array $answers): int
             $out = match ($answer) {
                 'crash' => '',
                 'crash-after-chunk' => $codec->encodeFrame(Frame::chunk('partial')),
+                'report-then-crash' => $codec->encodeFrame(['t' => Frame::REPORT, 'code' => 'query_failed', 'digest' => 'abc123']),
                 'error' => $codec->encodeFrame(['t' => Frame::ERROR, 'code' => 'render_incomplete', 'digest' => 'd1']),
                 default => $codec->encodeFrame(Frame::chunk($answer)) . $codec->encodeFrame(['t' => Frame::DONE]),
             };
@@ -171,6 +172,61 @@ describe('a render the retry hook may repeat', function () {
 
         expect($metrics->exposition())->toContain('tinvar_render_retries_total{kind="document",failure="render_incomplete"} 1')
             ->and(implode("\n", $sink->lines))->toContain('"message":"render retried"');
+    });
+
+    // A try that is tried again is not a failed render: the page was drawn.
+    // Counted as failed too, every retried render showed on a dashboard as
+    // a failure and a success both.
+    it('counts a render that succeeded on its retry as one that went well, and none that failed', function () {
+        $metrics = new Metrics();
+        $telemetry = new Telemetry(new Logger(new MemorySink()), $metrics);
+
+        attempt(['crash', 'second'], new RenderRetry(backoffMs: 0), repeatable: true, telemetry: $telemetry);
+
+        expect($metrics->exposition())->toContain('tinvar_renders_total{kind="document",outcome="ok"} 1')
+            ->and($metrics->exposition())->not->toContain('outcome="render_incomplete"');
+
+        $failed = new Metrics();
+        attempt(['crash', 'crash'], new RenderRetry(retries: 1, backoffMs: 0), repeatable: true, telemetry: new Telemetry(new Logger(new MemorySink()), $failed));
+        expect($failed->exposition())->toContain('tinvar_renders_total{kind="document",outcome="render_incomplete"} 1');
+    });
+
+    // The subtrees a failed try reported are not the page's: the retry draws
+    // it again, and says its own.
+    it('reports no boundary of a try that was tried again', function () {
+        $path = '/tmp/tvretry-' . bin2hex(random_bytes(4)) . '.sock';
+        $pid = scriptedRenderer($path, ['report-then-crash', 'second']);
+        $reported = 0;
+        $boundaries = 0;
+        $metrics = new Metrics();
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+
+        try {
+            new RenderChannel(
+                $path,
+                new QueryRunner(new QueryRegistry(), new Orm($fixture->connection, new IdentityMap('test')), new AllowAllGate()),
+                new MessagePackCodec(),
+                deadlineSeconds: 5.0,
+                report: static function (\Throwable $e, ?string $digest) use (&$reported): string {
+                    $reported++;
+
+                    return (string) $digest;
+                },
+                telemetry: new Telemetry(new Logger(new MemorySink()), $metrics),
+                retry: new RenderRetry(backoffMs: 0),
+                boundaryFailed: static function () use (&$boundaries): void {
+                    $boundaries++;
+                },
+            )->render(['t' => 'render'], [], static function (string $bytes): void {}, repeatable: true);
+        } finally {
+            posix_kill($pid, SIGKILL);
+            pcntl_waitpid($pid, $status);
+            @unlink($path);
+        }
+
+        expect($reported)->toBe(0)
+            ->and($boundaries)->toBe(0)
+            ->and($metrics->exposition())->not->toContain('tinvar_render_boundary_failures_total{');
     });
 });
 

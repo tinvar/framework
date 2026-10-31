@@ -211,16 +211,21 @@ final class RenderChannel
             };
 
             $trace = $this->telemetry?->renderStarted($frame);
+            $rescued = [];
 
             try {
-                $result = $this->exchange($frame, $allowed, $tracked, $mint, $trace, $shared);
+                $result = $this->exchange($frame, $allowed, $tracked, $mint, $trace, $shared, $rescued);
             } catch (\Throwable $e) {
-                if ($trace !== null) {
-                    $this->telemetry->renderFailed($trace, $e);
-                }
-
+                // Failed only when it is not tried again: a try the retry
+                // hook repeats is counted as retried (renderRetried()), and
+                // what it rescued is dropped with it.
                 if (!$repeatable || $this->retry === null || ($sent && $rewind === null)
                     || !$this->retry->retries($e, $try + 1)) {
+                    $this->rescued($rescued, $trace);
+                    if ($trace !== null) {
+                        $this->telemetry?->renderFailed($trace, $e);
+                    }
+
                     throw $e;
                 }
 
@@ -236,11 +241,33 @@ final class RenderChannel
                 continue;
             }
 
+            $this->rescued($rescued, $trace);
             if ($trace !== null) {
-                $this->telemetry->renderFinished($trace, $result);
+                $this->telemetry?->renderFinished($trace, $result);
             }
 
             return $result;
+        }
+    }
+
+    /**
+     * The subtrees one try's renderer rendered as error rows, told of once
+     * that try is the render's -- it finished, or failed and is not tried
+     * again: logged (report), counted on its trace, and handed to
+     * boundaryFailed.
+     *
+     * @param list<RendererException> $rescued
+     */
+    private function rescued(array $rescued, ?RenderTrace $trace): void
+    {
+        foreach ($rescued as $failed) {
+            $this->reportRendered($failed);
+            if ($trace !== null) {
+                $this->telemetry?->boundaryFailed($trace, $failed->failure()->value);
+            }
+            if ($this->boundaryFailed !== null) {
+                ($this->boundaryFailed)($failed);
+            }
         }
     }
 
@@ -268,8 +295,9 @@ final class RenderChannel
      * @param list<string> $allowed
      * @param \Closure(string): void $sink
      * @param (\Closure(string, array<string, mixed>): string)|null $mint
+     * @param list<RendererException> $rescued the subtrees the renderer reported it rendered as error rows, so far
      */
-    private function exchange(array $frame, array $allowed, \Closure $sink, ?\Closure $mint, ?RenderTrace $trace, ?SharedReads $shared): RenderResult
+    private function exchange(array $frame, array $allowed, \Closure $sink, ?\Closure $mint, ?RenderTrace $trace, ?SharedReads $shared, array &$rescued): RenderResult
     {
         $minted = 0;
         $started = hrtime(true);
@@ -442,15 +470,12 @@ final class RenderChannel
                         // a failed render is. The message, stack and line
                         // are the renderer's to choose, so they are kept
                         // only under debug, as an error frame's are.
+                        //
+                        // Held until the try ends (rescued()): a try that is
+                        // tried again drew no page, and its subtrees are not
+                        // the page's.
                         if (++$reports <= self::MAX_REPORTS) {
-                            $failed = RendererException::fromReport(Frame::readReport($message), $this->debug);
-                            $this->reportRendered($failed);
-                            if ($trace !== null) {
-                                $this->telemetry?->boundaryFailed($trace, $failed->failure()->value);
-                            }
-                            if ($this->boundaryFailed !== null) {
-                                ($this->boundaryFailed)($failed);
-                            }
+                            $rescued[] = RendererException::fromReport(Frame::readReport($message), $this->debug);
                         }
                     } elseif ($type === Frame::DONE) {
                         // What the renderer timed of its own work, drawn
