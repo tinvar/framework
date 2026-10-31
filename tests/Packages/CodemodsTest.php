@@ -730,6 +730,17 @@ it('binds a PHP outside the system\'s directories as its one file, and the libra
         ->and(bound(Codemods::bubblewrap('/tmp/r', '/php')))->not->toContain('/');
 });
 
+// A merged /usr, as Debian's and Ubuntu's are: /lib is a link to usr/lib,
+// and ldd names the libraries through it. They are shown through /usr, and
+// bwrap refuses to bind a file onto a path that goes through a link.
+it('binds no library ldd names through a merged /usr\'s link', function () {
+    $library = '/lib/x86_64-linux-gnu/libreadline.so.8';
+    $mounts = bound(Codemods::bubblewrap('/tmp/r', '/usr/local/bin/php', [$library, '/srv/shop/lib/libphp-extra.so.1']));
+
+    expect($mounts)->not->toContain($library)
+        ->and($mounts)->toContain('/srv/shop/lib/libphp-extra.so.1');
+})->skip(!is_link('/lib') || realpath('/lib') !== '/usr/lib', 'Here /lib is no link to /usr/lib.');
+
 // The app under /usr -- /usr/src/app and /usr/local/app are common working
 // directories in an image -- the home, or the temporary directory under
 // what is bound read-only would show the codemod all of it.

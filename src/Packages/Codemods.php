@@ -287,10 +287,13 @@ final class Codemods
     {
         $arguments = [];
         $bound = [];
+        $linked = [];
         foreach (['/usr', '/etc', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/libx32', '/nix/store'] as $path) {
             if (is_link($path)) {
                 // A merged /usr's /bin -> usr/bin: the link, not a second mount.
-                $arguments = [...$arguments, '--symlink', (string) readlink($path), $path];
+                $target = (string) readlink($path);
+                $arguments = [...$arguments, '--symlink', $target, $path];
+                $linked[$path] = $target !== '' && $target[0] === '/' ? $target : rtrim(\dirname($path), '/') . '/' . $target;
             } elseif (is_dir($path)) {
                 $arguments = [...$arguments, '--ro-bind', $path, $path];
                 $bound[] = $path;
@@ -305,7 +308,16 @@ final class Codemods
             if ($file === '' || $file[0] !== '/' || $file === '/' || str_ends_with($file, '/')) {
                 continue;
             }
-            if (array_filter($bound, static fn (string $path): bool => $under($file, $path)) === []) {
+            // Named through a link made above -- ldd's /lib/x86_64-linux-gnu/
+            // on a merged /usr -- it is shown already where the link points,
+            // and bwrap cannot bind a file onto a path through a link.
+            $shownAs = $file;
+            foreach ($linked as $link => $target) {
+                if ($under($file, $link)) {
+                    $shownAs = rtrim($target, '/') . substr($file, \strlen($link));
+                }
+            }
+            if (array_filter($bound, static fn (string $path): bool => $under($shownAs, $path)) === []) {
                 $arguments = [...$arguments, '--ro-bind', $file, $file];
                 $bound[] = $file;
             }
