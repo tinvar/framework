@@ -147,6 +147,34 @@ it('refuses a credentials file already there, or named relatively, before seedin
     }
 })->with(['there', 'relative']);
 
+// The file is made before the scenario is seeded: one that cannot be made
+// once the users exist leaves them with passwords nobody can read.
+it('refuses a credentials file it cannot make, and seeds nothing', function () {
+    $shoppers = new Shoppers();
+    $said = '';
+    $status = new ScenarioSeedCommand(static fn (): Scenarios => Scenarios::of([$shoppers]), STAGING, static function (): void {}, static function (string $line) use (&$said): void {
+        $said .= $line;
+    })->run(['shoppers', '--credentials=/nonexistent-' . bin2hex(random_bytes(4)) . '/credentials.json']);
+
+    expect($status)->toBe(ScenarioSeedCommand::REFUSED)
+        ->and($shoppers->seeded)->toBe(0)
+        ->and($said)->toContain('Cannot create');
+});
+
+it('leaves no credentials file behind when the seeding fails', function () {
+    $directory = PrivateDirectory::create('scenario-seed');
+    $file = "{$directory}/credentials.json";
+    try {
+        $status = new ScenarioSeedCommand(static fn (): Scenarios => Scenarios::of([new Shoppers()]), STAGING, static function (): void {}, static function (): void {})
+            ->run(['shoppers', '--input={"count":0}', "--credentials={$file}"]);
+
+        expect($status)->toBe(ScenarioSeedCommand::REFUSED)
+            ->and(file_exists($file))->toBeFalse();
+    } finally {
+        PrivateDirectory::remove($directory);
+    }
+});
+
 it('refuses under production at the command line too', function () {
     $status = new ScenarioSeedCommand(static fn (): Scenarios => Scenarios::of([new Shoppers()]), [], static function (): void {}, static function (): void {})
         ->run(['shoppers']);

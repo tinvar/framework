@@ -90,16 +90,45 @@ final class ScenarioSeedCommand
             return self::USAGE;
         }
 
+        // Made before the users are: a file that cannot be made once they
+        // exist leaves them with passwords nobody holds.
+        $handle = null;
+        if ($file !== null) {
+            $handle = self::createPrivately($file);
+            if ($handle === null) {
+                ($this->err)("Cannot create {$file} for the scenario's sign-ins; nothing was seeded.");
+
+                return self::REFUSED;
+            }
+        }
+
         try {
             $seeded = ($this->scenarios)()->seed($name, $input, $this->env);
         } catch (\LogicException|\InvalidArgumentException|\RuntimeException $e) {
+            self::discard($handle, $file);
             ($this->err)($e->getMessage());
 
             return self::REFUSED;
+        } catch (\Throwable $e) {
+            self::discard($handle, $file);
+
+            throw $e;
         }
 
-        if ($file !== null) {
-            self::writePrivately($file, json_encode($seeded->credentials, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES) . "\n");
+        if ($handle !== null) {
+            $contents = json_encode($seeded->credentials, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES) . "\n";
+            $written = fwrite($handle, $contents) === \strlen($contents) && fflush($handle);
+            $written = fclose($handle) && $written;
+            if (!$written) {
+                @unlink($file);
+                ($this->err)(\sprintf(
+                    "Seeded '%s', but its sign-ins could not be written to %s: seed it again into a fresh database.",
+                    $name,
+                    $file,
+                ));
+
+                return self::REFUSED;
+            }
         }
 
         ($this->out)(\sprintf(
@@ -113,24 +142,41 @@ final class ScenarioSeedCommand
         return 0;
     }
 
-    /** Created exclusively, under a 0077 umask: never readable by anyone else, not for an instant. */
-    private static function writePrivately(string $file, #[\SensitiveParameter] string $contents): void
+    /**
+     * Created exclusively, under a 0077 umask: never readable by anyone
+     * else, not for an instant.
+     *
+     * @return resource|null
+     */
+    private static function createPrivately(string $file)
     {
         $previous = umask(0077);
+        // A file that cannot be made is an answer, said by the caller: the
+        // warning fopen() raises beside it -- through @, to any error
+        // handler installed -- is held back.
+        set_error_handler(static fn (): bool => true);
         try {
-            $handle = @fopen($file, 'x');
+            $handle = fopen($file, 'x');
         } finally {
+            restore_error_handler();
             umask($previous);
         }
-        if ($handle === false) {
-            throw new \RuntimeException("Cannot create {$file} for the scenario's sign-ins.");
-        }
-        try {
-            if (fwrite($handle, $contents) !== \strlen($contents) || !fflush($handle)) {
-                throw new \RuntimeException("Cannot write the scenario's sign-ins to {$file}.");
-            }
-        } finally {
+
+        return $handle === false ? null : $handle;
+    }
+
+    /**
+     * The file made for sign-ins that will not come: closed and removed.
+     *
+     * @param resource|null $handle
+     */
+    private static function discard($handle, ?string $file): void
+    {
+        if ($handle !== null) {
             fclose($handle);
+        }
+        if ($file !== null && $handle !== null) {
+            @unlink($file);
         }
     }
 }
