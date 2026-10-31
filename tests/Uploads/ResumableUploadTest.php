@@ -502,3 +502,156 @@ it('throttles chunks by a budget of their own, not by the uploads one', function
     expect(offsetOf($app, $session)->status)->toBe(200)
         ->and(offsetOf($app, $session)->status)->toBe(429);
 });
+
+// Review: keeping a whole file removed its partial bytes and forgot its
+// record before the keep had an outcome, so a scanner that was down, or a
+// store that failed, lost the upload; and a last chunk sent again while the
+// first was being kept was told the session was gone.
+describe('completing', function () {
+    /** A scanner that fails as it is told, then finds nothing. */
+    function flakyScanner(\Throwable ...$failures): Tinvar\Uploads\FileScanner
+    {
+        return new class (array_values($failures)) implements Tinvar\Uploads\FileScanner {
+            /** @param list<\Throwable> $failures */
+            public function __construct(private array $failures) {}
+
+            public function scan(string $path): ?string
+            {
+                $failure = array_shift($this->failures);
+                if ($failure !== null) {
+                    throw $failure;
+                }
+
+                return null;
+            }
+        };
+    }
+
+    it('keeps a session whose keep failed for a reason that passes, and keeps it on the next try', function (\Throwable $failure, int $status) {
+        $app = new App($storage = new MemoryStorage(), scanner: flakyScanner($failure));
+        $file = largePdf(UploadEndpoint::MIN_CHUNK_BYTES + 10);
+        $session = (string) beginSession($app, strlen($file))['session'];
+        sendChunk($app, $session, 0, substr($file, 0, UploadEndpoint::MIN_CHUNK_BYTES));
+        $last = substr($file, UploadEndpoint::MIN_CHUNK_BYTES);
+
+        $failed = sendChunk($app, $session, UploadEndpoint::MIN_CHUNK_BYTES, $last);
+        expect($failed->status)->toBe($status)
+            // The bytes and the record are kept, the claim given back.
+            ->and($storage->keys())->toHaveCount(1)
+            ->and($app->store->all())->toHaveCount(1)
+            ->and($app->store->all()[0]->claimedAt)->toBeNull()
+            ->and(json(offsetOf($app, $session)))->toMatchArray(['offset' => strlen($file)]);
+
+        // The last chunk sent again completes it, from the bytes held.
+        $done = sendChunk($app, $session, UploadEndpoint::MIN_CHUNK_BYTES, $last);
+        expect($done->status)->toBe(201, $done->body());
+        $kept = $app->store->find((string) json($done)['upload']);
+        expect($storage->contents((string) $kept?->key))->toBe($file)
+            ->and($storage->keys())->toBe([(string) $kept?->key])
+            ->and($app->store->all())->toHaveCount(1);
+    })->with([
+        'a scanner that could not scan' => [new Tinvar\Uploads\ScanFailed('clamd is down'), 503],
+        'anything else that fails' => [new \RuntimeException('the disk blinked'), 500],
+    ]);
+
+    it('completes a session held whole after a failed keep through /complete too', function () {
+        $app = new App(new MemoryStorage(), scanner: flakyScanner(new Tinvar\Uploads\ScanFailed('down')));
+        $file = largePdf(UploadEndpoint::MIN_CHUNK_BYTES + 10);
+        $session = (string) beginSession($app, strlen($file))['session'];
+        sendChunk($app, $session, 0, substr($file, 0, UploadEndpoint::MIN_CHUNK_BYTES));
+        expect(sendChunk($app, $session, UploadEndpoint::MIN_CHUNK_BYTES, substr($file, UploadEndpoint::MIN_CHUNK_BYTES))->status)->toBe(503);
+
+        $done = postSession($app, UploadEndpoint::SESSION_COMPLETE_PATH, ['session' => $session]);
+        expect($done->status)->toBe(201, $done->body())
+            ->and($app->store->all())->toHaveCount(1);
+    });
+
+    it('refuses /complete for a session in chunks that is not yet whole, saying what it holds', function () {
+        $app = new App(new MemoryStorage());
+        $file = largePdf(UploadEndpoint::MIN_CHUNK_BYTES + 10);
+        $session = (string) beginSession($app, strlen($file))['session'];
+        sendChunk($app, $session, 0, substr($file, 0, UploadEndpoint::MIN_CHUNK_BYTES));
+
+        $early = postSession($app, UploadEndpoint::SESSION_COMPLETE_PATH, ['session' => $session]);
+        expect($early->status)->toBe(409)
+            ->and($early->header('upload-offset'))->toBe((string) UploadEndpoint::MIN_CHUNK_BYTES)
+            ->and($app->store->all()[0]->claimedAt)->toBeNull();
+    });
+
+    it('counts the session it completes once against the quota', function () {
+        $file = largePdf(UploadEndpoint::MIN_CHUNK_BYTES + 10);
+        $app = new App(new MemoryStorage(), quota: Tinvar\Uploads\UploadQuota::perUser(strlen($file)));
+        $session = (string) beginSession($app, strlen($file))['session'];
+        sendChunk($app, $session, 0, substr($file, 0, UploadEndpoint::MIN_CHUNK_BYTES));
+
+        expect(sendChunk($app, $session, UploadEndpoint::MIN_CHUNK_BYTES, substr($file, UploadEndpoint::MIN_CHUNK_BYTES))->status)->toBe(201);
+    });
+
+    it('tells a last chunk sent while another is being kept to come back, not that the session is gone', function () {
+        $app = new App(new MemoryStorage());
+        $file = largePdf(UploadEndpoint::MIN_CHUNK_BYTES + 10);
+        $session = (string) beginSession($app, strlen($file))['session'];
+        sendChunk($app, $session, 0, substr($file, 0, UploadEndpoint::MIN_CHUNK_BYTES));
+        // The other last chunk, claimed and being kept.
+        $id = $app->store->all()[0]->id;
+        expect($app->store->claim($id, $app->now))->toBeTrue();
+
+        $again = sendChunk($app, $session, UploadEndpoint::MIN_CHUNK_BYTES, substr($file, UploadEndpoint::MIN_CHUNK_BYTES));
+        $asked = offsetOf($app, $session);
+        expect($again->status)->toBe(425)
+            ->and(json($again)['error']['code'])->toBe('upload_completing')
+            ->and($again->header('retry-after'))->not->toBeNull()
+            ->and($asked->status)->toBe(425);
+
+        // Given back by the other, as a keep that failed would: the next goes on.
+        $app->store->release($id);
+        $done = sendChunk($app, $session, UploadEndpoint::MIN_CHUNK_BYTES, substr($file, UploadEndpoint::MIN_CHUNK_BYTES));
+        expect($done->status)->toBe(201)
+            ->and(json(sendChunk($app, $session, UploadEndpoint::MIN_CHUNK_BYTES, substr($file, UploadEndpoint::MIN_CHUNK_BYTES))))->toBe(json($done));
+    });
+
+    it('still ends a session its keep refuses for good', function () {
+        $app = new App($storage = new MemoryStorage());
+        $html = '<html>' . str_repeat('x', 300_000) . '</html>';
+        $session = (string) beginSession($app, strlen($html))['session'];
+        sendChunk($app, $session, 0, substr($html, 0, UploadEndpoint::MIN_CHUNK_BYTES));
+
+        expect(sendChunk($app, $session, UploadEndpoint::MIN_CHUNK_BYTES, substr($html, UploadEndpoint::MIN_CHUNK_BYTES))->status)->toBe(415)
+            ->and($storage->keys())->toBe([])
+            ->and($app->store->all())->toBe([])
+            ->and(offsetOf($app, $session)->status)->toBe(404);
+    });
+
+    it('keeps what was sent in parts, once assembled, for a completion tried again after a keep that failed', function () {
+        $s3 = new FakeS3();
+        $app = new App($s3->storage(), scanner: flakyScanner(new Tinvar\Uploads\ScanFailed('down')));
+        $s3->now = $app->now;
+        $file = largePdf(1000);
+        $session = (string) beginSession($app, strlen($file), field: 'archive', direct: true)['session'];
+        $parts = json(postSession($app, UploadEndpoint::SESSION_PARTS_PATH, ['session' => $session]))['parts'];
+        $s3->browser('PUT', $parts[0]['url'], $file);
+
+        expect(postSession($app, UploadEndpoint::SESSION_COMPLETE_PATH, ['session' => $session])->status)->toBe(503)
+            ->and($app->store->all())->toHaveCount(1)
+            ->and(json(offsetOf($app, $session))['offset'])->toBe(strlen($file))
+            ->and(json(postSession($app, UploadEndpoint::SESSION_PARTS_PATH, ['session' => $session]))['parts'])->toBe([]);
+
+        $done = postSession($app, UploadEndpoint::SESSION_COMPLETE_PATH, ['session' => $session]);
+        expect($done->status)->toBe(201, $done->body());
+        $kept = $app->store->find((string) json($done)['upload']);
+        expect(array_keys($s3->objects))->toBe([(string) $kept?->key])
+            ->and($app->store->all())->toHaveCount(1);
+    });
+
+    it('tells a completion or a look in parts while another completion runs to come back', function () {
+        $s3 = new FakeS3();
+        $app = new App($s3->storage());
+        $s3->now = $app->now;
+        $session = (string) beginSession($app, 1000, field: 'archive', direct: true)['session'];
+        $app->store->claim($app->store->all()[0]->id, $app->now);
+
+        expect(postSession($app, UploadEndpoint::SESSION_COMPLETE_PATH, ['session' => $session])->status)->toBe(425)
+            ->and(postSession($app, UploadEndpoint::SESSION_PARTS_PATH, ['session' => $session])->status)->toBe(425)
+            ->and(offsetOf($app, $session)->status)->toBe(425);
+    });
+});

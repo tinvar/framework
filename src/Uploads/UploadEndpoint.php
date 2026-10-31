@@ -627,11 +627,13 @@ final class UploadEndpoint
     /**
      * keep(), answering with the upload recorded rather than a response --
      * under $id, given one: a resumable upload's, drawn from its session so
-     * a completion asked about again finds it (ResumableUploads).
+     * a completion asked about again finds it (ResumableUploads). $replaces
+     * is the session's own record, still held while this runs: its room is
+     * taken over, not counted beside this upload's.
      *
      * @internal for ResumableUploads
      */
-    public function keepFile(UploadTicket $ticket, Uploaded $declared, string $path, string $clientName, ?string $id = null): PendingUpload
+    public function keepFile(UploadTicket $ticket, Uploaded $declared, string $path, string $clientName, ?string $id = null, ?PendingUpload $replaces = null): PendingUpload
     {
         $user = (string) $this->auth->id();
         $size = filesize($path);
@@ -654,6 +656,12 @@ final class UploadEndpoint
         $now = $this->uploads->now();
         $owner = $this->uploads->ownerHash($user);
         $quota = $this->uploads->quota?->bytesFor($user);
+        // A resumable session's record, claimed and kept until this has an
+        // outcome, is room this upload takes over, not room beside it: it
+        // goes once this is added, and is not counted against it.
+        if ($quota !== null && $replaces !== null) {
+            $quota += $replaces->size;
+        }
         // Asked here to spare storing a file that would be refused; the
         // count that holds is addWithin()'s, below, made with the add.
         if ($this->uploads->store->pendingCount($owner, $now) >= self::MAX_PENDING) {

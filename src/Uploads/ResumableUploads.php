@@ -50,10 +50,15 @@ use Tinvar\Storage\StorageKey;
  *      /_upload/session/complete -- the session is claimed, once, and the
  *      whole file kept exactly as /_upload keeps one: sniffed, drawn again,
  *      scanned, counted and stored under a key of the server's. Nothing of
- *      it is trusted, served or bound before. Its partial bytes go, and its
- *      record; the upload made from it is found from the session again, so
- *      a completion whose answer was lost is answered once more, never made
- *      twice.
+ *      it is trusted, served or bound before. Once kept, or refused for good
+ *      (a 4xx: its type, its size, the quota), its partial bytes go, and its
+ *      record; failed for a reason that passes -- a scanner or a store that
+ *      did not answer -- its claim is given back and its bytes kept, and the
+ *      last chunk sent again, or /complete, completes it from them. While a
+ *      completion runs, any other use of the session is a 425,
+ *      `upload_completing`, with Retry-After. The upload made from it is
+ *      found from the session again, so a completion whose answer was lost
+ *      is answered once more, never made twice.
  *   6. /_upload/session/abort gives it up: its bytes removed -- the store's
  *      upload aborted -- and its room given back.
  *
@@ -293,6 +298,13 @@ final readonly class ResumableUploads
                 $claimed = $final;
             });
         } catch (OffsetMismatch $e) {
+            // Whole already: the last chunk sent again after a keep that
+            // failed for a reason that passes gave its claim back. Kept from
+            // the bytes held; this chunk's are not written.
+            if ($final && $e->actual === $session->size) {
+                return $this->completeHeld($session, $record, $declared);
+            }
+
             throw self::elsewhere($e->actual);
         } catch (SessionClosed) {
             return UploadEndpoint::kept($this->completed($session));
@@ -308,7 +320,41 @@ final readonly class ResumableUploads
             return self::json(200, ['offset' => $held], [UploadEndpoint::OFFSET_HEADER => (string) $held]);
         }
 
-        return $this->keepWhole($session, $record, $declared, function (string $path) use ($storage, $record, $session): void {
+        return $this->keepWhole($session, $record, $declared, $this->fetchAppended($record, $session));
+    }
+
+    /**
+     * A session sent in chunks that holds every byte, completed: claimed,
+     * once, and kept from the bytes held -- after a keep that failed for a
+     * reason that passes, through its last chunk sent again or /complete.
+     */
+    private function completeHeld(UploadSession $session, PendingUpload $record, Uploaded $declared): Response
+    {
+        if (!$this->uploads->store->claim($session->id, $this->uploads->now())) {
+            return UploadEndpoint::kept($this->completed($session));
+        }
+        try {
+            $held = $this->appendable()->size($record->key) ?? 0;
+        } catch (\Throwable $e) {
+            $this->uploads->store->release($session->id);
+
+            throw $e;
+        }
+        if ($held !== $session->size) {
+            $this->uploads->store->release($session->id);
+
+            throw self::elsewhere($held);
+        }
+
+        return $this->keepWhole($session, $record, $declared, $this->fetchAppended($record, $session));
+    }
+
+    /** @return \Closure(string): void what fetches the bytes appended into the path it is given */
+    private function fetchAppended(PendingUpload $record, UploadSession $session): \Closure
+    {
+        $storage = $this->appendable();
+
+        return static function (string $path) use ($storage, $record, $session): void {
             $in = $storage->read($record->key);
             if ($in === null) {
                 throw new HttpException(422, 'The file did not arrive.', 'upload_missing');
@@ -318,7 +364,7 @@ final readonly class ResumableUploads
             } finally {
                 fclose($in);
             }
-        });
+        };
     }
 
     private function parts(UploadSession $session): Response
@@ -326,7 +372,13 @@ final readonly class ResumableUploads
         if ($session->mode !== UploadSession::PARTS) {
             throw new HttpException(400, 'This upload is sent through PHP in chunks.', 'bad_request');
         }
-        $record = $this->openRecord($session) ?? throw self::gone();
+        $record = $this->openRecord($session);
+        if ($record === null) {
+            // Being completed, or over: a 425 to come back, or the 404.
+            $this->completed($session);
+
+            throw self::gone();
+        }
         $store = $this->multipart();
         $held = $this->heldParts($session, $record);
 
@@ -353,7 +405,18 @@ final readonly class ResumableUploads
     private function complete(UploadSession $session, Uploaded $declared): Response
     {
         if ($session->mode !== UploadSession::PARTS) {
-            throw new HttpException(400, 'An upload sent in chunks is completed by its last chunk.', 'bad_request');
+            // Completed by its last chunk -- or, once it holds every byte
+            // and a keep failed for a reason that passes, here.
+            $record = $this->openRecord($session);
+            if ($record === null) {
+                return UploadEndpoint::kept($this->completed($session));
+            }
+            $held = $this->appendable()->size($record->key) ?? 0;
+            if ($held !== $session->size) {
+                throw self::elsewhere($held);
+            }
+
+            return $this->completeHeld($session, $record, $declared);
         }
         $record = $this->openRecord($session);
         $now = $this->uploads->now();
@@ -364,18 +427,22 @@ final readonly class ResumableUploads
 
         $store = $this->multipart();
         try {
-            $held = $this->heldParts($session, $record);
-            $offset = self::contiguous($session, $held);
-            if ($offset !== $session->size) {
-                throw self::elsewhere($offset);
-            }
-            $etags = [];
-            foreach ($held as $number => $part) {
-                if ($number <= $session->partCount()) {
-                    $etags[$number] = $part['etag'];
+            // Assembled already, by a completion whose keep failed for a
+            // reason that passes: kept from the object it made.
+            if (!$this->assembled($session, $record)) {
+                $held = $this->heldParts($session, $record);
+                $offset = self::contiguous($session, $held);
+                if ($offset !== $session->size) {
+                    throw self::elsewhere($offset);
                 }
+                $etags = [];
+                foreach ($held as $number => $part) {
+                    if ($number <= $session->partCount()) {
+                        $etags[$number] = $part['etag'];
+                    }
+                }
+                $store->completeMultipart($record->key, $session->uploadId, $etags);
             }
-            $store->completeMultipart($record->key, $session->uploadId, $etags);
         } catch (\Throwable $e) {
             // Not complete: the session is open again, to be gone on with.
             if ($this->uploads->store->find($session->id) !== null) {
@@ -430,10 +497,13 @@ final readonly class ResumableUploads
     }
 
     /**
-     * The whole file, claimed: fetched into a temporary file by $fetch, its
-     * partial bytes and its record removed whatever comes of it, and kept as
-     * /_upload keeps a file -- or refused as one would be, the session over
-     * either way.
+     * The whole file, claimed: fetched into a temporary file by $fetch and
+     * kept as /_upload keeps a file. The session's partial bytes and its
+     * record are held until that has an outcome: kept, or refused for good
+     * -- not a type the field takes, too large, over the quota -- and they
+     * go, the session over; failed for a reason that passes -- a scanner or
+     * a store that did not answer, a 5xx -- and its claim is given back, its
+     * bytes still there, for the next try to complete it.
      *
      * @param \Closure(string): void $fetch writes the whole file to the path it is given
      */
@@ -449,24 +519,37 @@ final readonly class ResumableUploads
         try {
             try {
                 $fetch($path);
-            } finally {
-                // Gone whatever comes of it: the bytes as sent are fetched
-                // once, and never kept as they were sent.
-                try {
-                    $this->removeBytes($session, $record);
-                } catch (StorageException) {
-                    // Removed by pruning's sweep of the prefix, or the bucket's lifecycle rule.
+                clearstatcache(true, $path);
+                if (filesize($path) !== $session->size) {
+                    throw new HttpException(422, 'The file did not arrive whole.', 'upload_missing');
                 }
-                $this->uploads->store->forget($session->id);
-            }
-            if (filesize($path) !== $session->size) {
-                throw new HttpException(422, 'The file did not arrive whole.', 'upload_missing');
-            }
+                $kept = $this->endpoint->keepFile($session->binding(), $declared, $path, $record->name, self::resultId($this->uploads, $session->id), $record);
+            } catch (\Throwable $e) {
+                if ($e instanceof HttpException && $e->status >= 400 && $e->status < 500) {
+                    $this->end($session, $record);
+                } else {
+                    $this->uploads->store->release($session->id);
+                }
 
-            return UploadEndpoint::kept($this->endpoint->keepFile($session->binding(), $declared, $path, $record->name, self::resultId($this->uploads, $session->id)));
+                throw $e;
+            }
+            $this->end($session, $record);
+
+            return UploadEndpoint::kept($kept);
         } finally {
             @unlink($path);
         }
+    }
+
+    /** A claimed session over: its bytes removed, where they can be, and its record forgotten. */
+    private function end(UploadSession $session, PendingUpload $record): void
+    {
+        try {
+            $this->removeBytes($session, $record);
+        } catch (StorageException) {
+            // Removed by pruning's sweep of the prefix, or the bucket's lifecycle rule.
+        }
+        $this->uploads->store->forget($session->id);
     }
 
     /** What is held of an upload, removed: the partial file, or the store's upload and whatever it completed to. */
@@ -500,6 +583,13 @@ final readonly class ResumableUploads
             || $kept->targetClass !== $session->targetClass || $kept->targetId !== $session->targetId
             || $kept->tenant !== $session->tenant || $kept->panel !== $session->panel
             || !hash_equals($kept->sessionHash, $session->sessionHash) || !hash_equals($kept->authHash, $session->authHash)) {
+            // Claimed and not yet kept: another request is completing it,
+            // and may yet fail for a reason that passes and give it back.
+            $own = $this->uploads->store->find($session->id);
+            if ($own !== null && $session->names($own) && $own->claimedAt !== null && $own->expiresAt > $this->uploads->now()) {
+                throw self::completing();
+            }
+
             throw self::gone();
         }
 
@@ -526,6 +616,16 @@ final readonly class ResumableUploads
     private function heldParts(UploadSession $session, PendingUpload $record): array
     {
         $held = $this->multipart()->listParts($record->key, $session->uploadId);
+        if ($held === null && $this->uploads->storage->size($record->key) === $session->size) {
+            // Assembled by a completion whose keep failed for a reason that
+            // passes: every part is in, and /complete keeps the object.
+            $held = [];
+            for ($number = 1; $number <= $session->partCount(); $number++) {
+                $held[$number] = ['size' => $session->partSize($number), 'etag' => ''];
+            }
+
+            return $held;
+        }
         if ($held === null) {
             $this->uploads->store->forget($record->id);
 
@@ -533,6 +633,17 @@ final readonly class ResumableUploads
         }
 
         return $held;
+    }
+
+    /**
+     * Whether the store's upload has been completed into the object at the
+     * session's key already, at the size declared: by a completion whose
+     * keep failed for a reason that passes.
+     */
+    private function assembled(UploadSession $session, PendingUpload $record): bool
+    {
+        return $this->multipart()->listParts($record->key, $session->uploadId) === null
+            && $this->uploads->storage->size($record->key) === $session->size;
     }
 
     private function heldOffset(UploadSession $session, PendingUpload $record): int
@@ -617,6 +728,16 @@ final readonly class ResumableUploads
     private static function elsewhere(int $offset): HttpException
     {
         return new HttpException(409, "The upload holds {$offset} bytes.", 'upload_offset', [UploadEndpoint::OFFSET_HEADER => (string) $offset]);
+    }
+
+    /**
+     * 425: another request has claimed the session and is keeping the file.
+     * Asked again in a moment, it is the upload made, the 404 of a session
+     * refused for good, or the session open again.
+     */
+    private static function completing(): HttpException
+    {
+        return new HttpException(425, 'The upload is being completed: ask again in a moment.', 'upload_completing', ['retry-after' => '2']);
     }
 
     private static function gone(): HttpException
