@@ -656,6 +656,25 @@ describe('completing', function () {
             ->and($app->store->all())->toHaveCount(1);
     });
 
+    // Review: a process killed while it held a session's claim left the
+    // record claimed, holding its size against the quota for ever.
+    it('prunes a session claimed by a completion that never finished, once past its expiry and the grace', function () {
+        $file = largePdf(UploadEndpoint::MIN_CHUNK_BYTES + 10);
+        $app = new App($storage = new MemoryStorage(), quota: Tinvar\Uploads\UploadQuota::perUser(strlen($file)));
+        $session = (string) beginSession($app, strlen($file))['session'];
+        sendChunk($app, $session, 0, substr($file, 0, UploadEndpoint::MIN_CHUNK_BYTES));
+        $app->store->claim($app->store->all()[0]->id, $app->now);
+
+        $app->now += UploadEndpoint::SESSION_TTL;
+        expect($app->uploads->prune())->toBe(0)
+            ->and($app->store->all())->toHaveCount(1);
+
+        $app->now += Uploads::PRUNE_GRACE + 1;
+        expect($app->uploads->prune())->toBeGreaterThanOrEqual(1)
+            ->and($app->store->all())->toBe([])
+            ->and($storage->keys())->toBe([]);
+    });
+
     it('tells a completion or a look in parts while another completion runs to come back', function () {
         $s3 = new FakeS3();
         $app = new App($s3->storage());

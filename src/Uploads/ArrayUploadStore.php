@@ -91,7 +91,7 @@ final class ArrayUploadStore implements UploadStore
     {
         $expired = array_values(array_filter(
             $this->uploads,
-            static fn (PendingUpload $u): bool => $u->claimedAt === null && $u->expiresAt <= $now,
+            static fn (PendingUpload $u): bool => ($u->claimedAt === null || $u->type === '') && $u->expiresAt <= $now,
         ));
         usort($expired, static fn (PendingUpload $a, PendingUpload $b): int => $a->expiresAt <=> $b->expiresAt);
 

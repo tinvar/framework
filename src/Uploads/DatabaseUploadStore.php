@@ -244,7 +244,7 @@ final readonly class DatabaseUploadStore implements UploadStore
     public function expired(int $now, int $limit): array
     {
         $rows = $this->connection->select(
-            'SELECT ' . self::COLUMNS . " FROM {$this->table} WHERE claimed_at IS NULL AND expires_at <= ? ORDER BY expires_at LIMIT " . max(1, $limit),
+            'SELECT ' . self::COLUMNS . " FROM {$this->table} WHERE (claimed_at IS NULL OR type = '') AND expires_at <= ? ORDER BY expires_at LIMIT " . max(1, $limit),
             [$now],
         );
 

@@ -57,7 +57,10 @@ interface UploadStore
     public function release(string $id): void;
 
     /**
-     * Unclaimed uploads that have expired, oldest first.
+     * Unclaimed uploads that have expired, oldest first -- and resumable
+     * sessions (of no type) past their expiry, claimed or not: a claim on
+     * one is a completion in flight, and one still held past its expiry was
+     * left by a process that died holding it.
      *
      * @return list<PendingUpload>
      */

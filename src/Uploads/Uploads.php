@@ -192,6 +192,9 @@ final readonly class Uploads
      * at its key, aborted so the store drops its parts, then its record. A
      * store that cannot list or abort its multipart uploads leaves them to
      * the bucket's lifecycle rule and the sweep; the record goes regardless.
+     * A session claimed by a completion that never finished -- its process
+     * killed -- is pruned the same way once past its expiry and the grace,
+     * so its room is given back.
      *
      * @return int how many unclaimed uploads were removed
      */
