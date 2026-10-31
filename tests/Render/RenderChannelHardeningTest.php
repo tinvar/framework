@@ -20,6 +20,7 @@ use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
 use Tinvar\Render\RenderChannel;
 use Tinvar\Render\RendererException;
+use Tinvar\Render\RenderRetry;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
 
 require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/models.php';
@@ -246,9 +247,17 @@ describe('the socket path', function () {
         $done = cleanUp($dir, $pid);
         chmod($dir, 0777);
 
+        // Refused as untrusted, not unreachable: the socket is there and
+        // will be the same on the next try, so no retry may send it the
+        // render (RenderRetry::NEVER), and it is not reported as a renderer
+        // that is down.
         try {
             expect(fn () => hardeningChannel($path)->render(['t' => 'render'], [], static function (string $bytes): void {}))
-                ->toThrow(RendererException::class, 'writable by other users');
+                ->toThrow(function (RendererException $e): void {
+                    expect($e->code_)->toBe('renderer_untrusted')
+                        ->and($e->getMessage())->toContain('writable by other users')
+                        ->and(new RenderRetry(retries: 2, backoffMs: 0)->retries($e, 1))->toBeFalse();
+                });
         } finally {
             $done();
         }

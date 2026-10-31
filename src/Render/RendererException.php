@@ -41,7 +41,10 @@ final class RendererException extends \RuntimeException
     /**
      * A renderer that is there, and is not the one renders may go to: the
      * renderer is to run as a user of its own, and this one is answered by
-     * someone else, or cannot be shown not to be (SocketTrust::assertPeer()).
+     * someone else, or cannot be shown not to be (SocketTrust::assertPeer());
+     * or a socket or pool directory owned or writable by another user, who
+     * could have put their own renderer there (SocketTrust::assertSocket(),
+     * assertPool()). Never retried: the next try finds the same socket.
      */
     public static function untrusted(string $path, string $reason): self
     {

@@ -408,6 +408,7 @@ describe('a pool run as another user', function () use ($root) {
             // Not in the group, the directory is closed to it: there are no
             // renderers to be found.
             ->and($outsideGroup)->toStartWith('threw: Cannot reach the renderer at')
+            ->and($heldToAnother)->toStartWith('threw: Refusing the renderer at')
             ->and($heldToAnother)->toContain('the pool directory belongs to another user')
             ->and($wrongPeer)->toStartWith("threw: Refusing the renderer at {$dir}/php/r.sock")
             ->and($wrongPeer)->toContain("it is answered by a process of uid {$php['uid']}, not the renderer's own user (uid {$renderer['uid']})")

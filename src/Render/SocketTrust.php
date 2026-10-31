@@ -89,19 +89,19 @@ final class SocketTrust
 
         $trusted = $this->trusted();
         if (!\in_array($directory['uid'], $trusted, true)) {
-            throw RendererException::cannotConnect($socketPath, 'its directory belongs to another user');
+            throw RendererException::untrusted($socketPath, 'its directory belongs to another user');
         }
 
         $shared = ($directory['mode'] & 0022) !== 0;
         $sticky = ($directory['mode'] & 01000) !== 0;
         if ($shared && !$sticky) {
-            throw RendererException::cannotConnect(
+            throw RendererException::untrusted(
                 $socketPath,
                 'its directory is writable by other users, who could replace the socket',
             );
         }
         if (($shared || $directory['uid'] !== posix_geteuid()) && !\in_array($socket['uid'], $trusted, true)) {
-            throw RendererException::cannotConnect(
+            throw RendererException::untrusted(
                 $socketPath,
                 'it belongs to another user, in a directory any user can write to',
             );
@@ -188,7 +188,7 @@ final class SocketTrust
         clearstatcache(true, $directory);
         $stat = @lstat($directory);
         if ($stat !== false && ($stat['mode'] & 0170000) === 0120000) {
-            throw RendererException::cannotConnect(
+            throw RendererException::untrusted(
                 $directory,
                 'the pool directory is a symbolic link, which whoever made it could point anywhere',
             );
@@ -197,10 +197,10 @@ final class SocketTrust
             throw RendererException::cannotConnect($directory, 'cannot inspect the pool directory, or it is not a directory');
         }
         if (!\in_array($stat['uid'], $this->trusted(), true)) {
-            throw RendererException::cannotConnect($directory, 'the pool directory belongs to another user');
+            throw RendererException::untrusted($directory, 'the pool directory belongs to another user');
         }
         if (($stat['mode'] & 0022) !== 0) {
-            throw RendererException::cannotConnect(
+            throw RendererException::untrusted(
                 $directory,
                 'the pool directory is writable by other users, who could add a renderer of their own',
             );

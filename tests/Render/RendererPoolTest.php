@@ -239,7 +239,7 @@ describe('trusting a pool', function () {
 
         try {
             expect(fn () => renderOnce(channel($dir)))
-                ->toThrow(RendererException::class, 'the pool directory is writable by other users');
+                ->toThrow(fn (RendererException $e) => expect($e->code_)->toBe('renderer_untrusted')->and($e->getMessage())->toContain('the pool directory is writable by other users'));
         } finally {
             cleanUpPool($dir, [$pid]);
         }
@@ -264,7 +264,7 @@ describe('trusting a pool', function () {
 
         try {
             expect(fn () => renderOnce(channel($link . $suffix)))
-                ->toThrow(RendererException::class, 'the pool directory is a symbolic link');
+                ->toThrow(fn (RendererException $e) => expect($e->code_)->toBe('renderer_untrusted')->and($e->getMessage())->toContain('the pool directory is a symbolic link'));
         } finally {
             unlink($link);
             cleanUpPool($dir, [$pid]);
