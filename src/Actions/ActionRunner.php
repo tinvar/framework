@@ -10,7 +10,6 @@ use Tinvar\Cache\QueryCache;
 use Tinvar\Data\Encoder;
 use Tinvar\Data\SharedTags;
 use Tinvar\Endpoints\UnknownField;
-use Tinvar\Http\ForbiddenException;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Http\Request;
 use Tinvar\Live\Invalidator;
@@ -653,26 +652,7 @@ final class ActionRunner
      */
     private function requiredOnly(CompiledAction $action, array $input, array $fields, ?Model $subject, array $models): array
     {
-        $validator = $this->validator->withoutLookups();
-        $unsupplied = self::unsupplied($action, $models);
-        $errors = [];
-        foreach ($fields as $field) {
-            foreach ($action->formRequests as $class) {
-                foreach (Reflected::constructorParameters($class) as $parameter) {
-                    if ($parameter->getName() === $field) {
-                        $errors = self::mergeErrors($errors, [
-                            $field => $validator->errorsFor($class, $input, $field, $subject, $models, $models, $unsupplied),
-                        ]);
-                    }
-                }
-            }
-            if (($errors[$field] ?? []) === []) {
-                throw ForbiddenException::undecided($action->where());
-            }
-        }
-
-        /** @var non-empty-array<string, non-empty-list<string>> $errors */
-        return $errors;
+        return $this->validator->requiredOnly($action->formRequests, $input, $fields, $subject, $models, self::unsupplied($action, $models), $action->where());
     }
 
     /** Whether the action has a field of this name: a form request's, an upload or a parameter. */
@@ -699,53 +679,9 @@ final class ActionRunner
      */
     private function authorize(CompiledAction $action, array $models, array $unsent = []): array
     {
-        $optional = array_keys($action->optionalModels);
-
-        // A check on a required form field the caller left out has no
-        // subject, and is set aside rather than counted as undecided. That
-        // is safe only because the call cannot reach the body, nor learn
-        // anything a rule would say: it is answered with that field's "is
-        // required" alone (requiredOnly()), and Precognition runs no body
-        // at all.
-        $checks = $action->checks;
-        $classLevel = $action->classLevelChecks;
-        $setAside = [];
-        if ($unsent !== []) {
-            $kept = [];
-            foreach ($checks as $index => $check) {
-                if ($check->argument !== null && \in_array($check->argument, $unsent, true)) {
-                    if ($index < $action->classLevelChecks) {
-                        $classLevel--;
-                    }
-                    $setAside[$check->argument] = true;
-                    continue;
-                }
-                $kept[] = $check;
-            }
-            $checks = $kept;
-        }
-
-        // Every check named an optional input and the call left them all
-        // out: nothing would be asked, and the body would still run. Judged
-        // for the method's own checks apart from the class's, so a blanket
-        // check on the holder cannot stand in for the method's.
-        if (Checks::undecided($checks, $classLevel, $models, $optional)) {
-            throw ForbiddenException::undecided($action->where());
-        }
-
-        foreach ($checks as $check) {
-            // A check naming a declared-optional model input the caller did
-            // not supply has no subject to decide about; the body gets null.
-            if (!Checks::applies($check, $models, $optional)) {
-                continue;
-            }
-
-            if (!$this->gate->allows($check, $models)) {
-                throw ForbiddenException::check($check->ability, $action->where());
-            }
-        }
-
-        return array_keys($setAside);
+        // Answered, for a check set aside, with that field's "is required"
+        // alone (requiredOnly()); see Checks::authorize().
+        return Checks::authorize($this->gate, $action->checks, $action->classLevelChecks, $models, array_keys($action->optionalModels), $unsent, $action->where());
     }
 
     /**

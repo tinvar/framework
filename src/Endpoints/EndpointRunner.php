@@ -11,7 +11,6 @@ use Tinvar\Auth\Gate;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Data\Data;
 use Tinvar\Data\Encoder;
-use Tinvar\Http\ForbiddenException;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Http\Request;
@@ -284,25 +283,7 @@ final class EndpointRunner
      */
     private function requiredOnly(CompiledEndpoint $endpoint, array $input, array $fields, array $models, ?Model $subject): array
     {
-        $validator = $this->validator->withoutLookups();
-        $unsupplied = array_diff_key($endpoint->allModels(), $models);
-        $errors = [];
-        foreach ($fields as $field) {
-            foreach ($endpoint->formRequests as $class) {
-                foreach (Reflected::constructorParameters($class) as $parameter) {
-                    if ($parameter->getName() === $field) {
-                        $found = $validator->errorsFor($class, $input, $field, $subject, $models, $models, $unsupplied);
-                        $errors[$field] = array_values(array_unique([...$errors[$field] ?? [], ...$found]));
-                    }
-                }
-            }
-            if (($errors[$field] ?? []) === []) {
-                throw ForbiddenException::undecided($endpoint->where());
-            }
-        }
-
-        /** @var non-empty-array<string, non-empty-list<string>> $errors */
-        return $errors;
+        return $this->validator->requiredOnly($endpoint->formRequests, $input, $fields, $subject, $models, array_diff_key($endpoint->allModels(), $models), $endpoint->where());
     }
 
     /** Whether a form request of the endpoint declares a field of this name. */
@@ -404,39 +385,9 @@ final class EndpointRunner
      */
     private function authorize(CompiledEndpoint $endpoint, array $models, array $unsent): array
     {
-        $checks = [];
-        $setAside = [];
-        $classLevel = $endpoint->classLevelChecks;
-        foreach ($endpoint->checks as $index => $check) {
-            // A check on a required form field the caller left out has no
-            // subject, and is set aside: the call is answered with that
-            // field's "is required" alone (requiredOnly()), before any rule
-            // could answer it or the body could run.
-            if ($check->argument !== null && \in_array($check->argument, $unsent, true)) {
-                if ($index < $endpoint->classLevelChecks) {
-                    $classLevel--;
-                }
-                $setAside[$check->argument] = true;
-                continue;
-            }
-            $checks[] = $check;
-        }
-
-        $optional = array_keys($endpoint->optionalModels);
-        if (Checks::undecided($checks, $classLevel, $models, $optional)) {
-            throw ForbiddenException::undecided($endpoint->where());
-        }
-
-        foreach ($checks as $check) {
-            if (!Checks::applies($check, $models, $optional)) {
-                continue;
-            }
-            if (!$this->gate->allows($check, $models)) {
-                throw ForbiddenException::check($check->ability, $endpoint->where());
-            }
-        }
-
-        return array_keys($setAside);
+        // Answered, for a check set aside, with that field's "is required"
+        // alone (requiredOnly()); see Checks::authorize().
+        return Checks::authorize($this->gate, $endpoint->checks, $endpoint->classLevelChecks, $models, array_keys($endpoint->optionalModels), $unsent, $endpoint->where());
     }
 
     /**

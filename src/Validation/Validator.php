@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace Tinvar\Validation;
 
+use Tinvar\Http\ForbiddenException;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 use Tinvar\Support\Str;
 use Tinvar\Support\KnownAttributes;
+use Tinvar\Support\Reflected;
 use Tinvar\Uploads\Upload;
 use Tinvar\Uploads\UploadList;
 
@@ -308,6 +310,46 @@ final class Validator
             $input,
             new ValidationContext($input, $this->orm, $subject, $subjects, $unsupplied, $this->lookups),
         );
+    }
+
+    /**
+     * What a call is told while a check on a model field it left out is set
+     * aside (Checks::authorize()) -- an action's or an endpoint's alike:
+     * each such field's "is required", judged by every form request that
+     * declares it with the database rules standing down, and nothing else.
+     * A field that drew no error is refused as undecided, rather than let
+     * the call reach the body with a check unasked.
+     *
+     * @param array<array-key, class-string<FormRequest>> $formRequests
+     * @param array<string, mixed> $input
+     * @param non-empty-list<string> $fields
+     * @param array<string, Model> $models
+     * @param array<string, class-string<Model>> $unsupplied
+     * @return non-empty-array<string, non-empty-list<string>>
+     * @throws ForbiddenException for a field no rule says is required
+     */
+    public function requiredOnly(array $formRequests, array $input, array $fields, ?Model $subject, array $models, array $unsupplied, string $where): array
+    {
+        $validator = $this->withoutLookups();
+        $errors = [];
+        foreach ($fields as $field) {
+            foreach ($formRequests as $class) {
+                foreach (Reflected::constructorParameters($class) as $parameter) {
+                    if ($parameter->getName() === $field) {
+                        $found = $validator->errorsFor($class, $input, $field, $subject, $models, $models, $unsupplied);
+                        if ($found !== []) {
+                            $errors[$field] = array_values(array_unique([...$errors[$field] ?? [], ...$found]));
+                        }
+                    }
+                }
+            }
+            if (($errors[$field] ?? []) === []) {
+                throw ForbiddenException::undecided($where);
+            }
+        }
+
+        /** @var non-empty-array<string, non-empty-list<string>> $errors */
+        return $errors;
     }
 
     /**

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Auth;
 
 use Tinvar\Attributes\Authorize;
+use Tinvar\Http\ForbiddenException;
 use Tinvar\Orm\Model;
 
 /**
@@ -115,5 +116,61 @@ final class Checks
     {
         return self::noneApply(\array_slice($checks, 0, $classLevel), $models, $optional)
             || self::noneApply(\array_slice($checks, $classLevel), $models, $optional);
+    }
+
+    /**
+     * Every check of an action or an endpoint that applies, asked of the
+     * gate -- the one authorize step both runners take, so the two cannot
+     * come apart.
+     *
+     * A check on a required form field the call left out ($unsent) has no
+     * subject, and is set aside rather than counted as undecided. That is
+     * safe only because such a call cannot reach the body, nor learn
+     * anything a rule would say: the runner answers it with that field's
+     * "is required" alone, and Precognition runs no body at all. A call that
+     * sidesteps every check the method declares -- each naming an optional
+     * input it left out -- is undecided, and refused.
+     *
+     * @param list<Authorize>      $checks     the class's checks first, then the method's
+     * @param int                  $classLevel how many of $checks the class declared
+     * @param array<string, Model> $models     subjects resolved for this call
+     * @param list<string>         $optional   model inputs the entry point declares optional
+     * @param list<string>         $unsent     required form-request models the call left out
+     * @return list<string> the fields whose checks were set aside
+     * @throws ForbiddenException for a check denied, or a call left undecided
+     */
+    public static function authorize(Gate $gate, array $checks, int $classLevel, array $models, array $optional, array $unsent, string $where): array
+    {
+        $kept = [];
+        $setAside = [];
+        $declaredByClass = $classLevel;
+        foreach ($checks as $index => $check) {
+            if ($check->argument !== null && \in_array($check->argument, $unsent, true)) {
+                if ($index < $declaredByClass) {
+                    $classLevel--;
+                }
+                $setAside[$check->argument] = true;
+
+                continue;
+            }
+            $kept[] = $check;
+        }
+
+        if (self::undecided($kept, $classLevel, $models, $optional)) {
+            throw ForbiddenException::undecided($where);
+        }
+
+        foreach ($kept as $check) {
+            // A check naming a declared-optional model input the caller did
+            // not supply has no subject to decide about; the body gets null.
+            if (!self::applies($check, $models, $optional)) {
+                continue;
+            }
+            if (!$gate->allows($check, $models)) {
+                throw ForbiddenException::check($check->ability, $where);
+            }
+        }
+
+        return array_keys($setAside);
     }
 }
