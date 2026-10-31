@@ -32,6 +32,12 @@ final class FakeS3
     /** @var array<string, array<int, string>> upload id => part number => bytes */
     public array $uploads = [];
 
+    /** @var array<string, array{key: string, initiated: int}> upload id => its key, and when it was begun */
+    public array $begun = [];
+
+    /** The least a part but the last may be, as S3 holds a completion to: 5 MiB. */
+    public int $minPartBytes = 5_242_880;
+
     /** @var array<string, int> object key => when it was last written */
     public array $modified = [];
 
@@ -102,14 +108,21 @@ final class FakeS3
         if ($method === 'GET' && $key === '' && ($query['list-type'] ?? '') === '2') {
             return $this->list($query);
         }
+        if ($method === 'GET' && $key === '' && \array_key_exists('uploads', $query)) {
+            return $this->listUploads($query);
+        }
+        if ($method === 'GET' && isset($query['uploadId'])) {
+            return $this->listParts($key, $query);
+        }
         if ($method === 'POST' && \array_key_exists('uploads', $query)) {
             $id = bin2hex(random_bytes(8));
             $this->uploads[$id] = [];
+            $this->begun[$id] = ['key' => $key, 'initiated' => $this->now];
 
             return new OutboundResponse(200, [], "<InitiateMultipartUploadResult><UploadId>{$id}</UploadId></InitiateMultipartUploadResult>");
         }
         if ($method === 'PUT' && isset($query['uploadId'], $query['partNumber'])) {
-            if (!isset($this->uploads[$query['uploadId']])) {
+            if (!isset($this->uploads[$query['uploadId']]) || ($this->begun[$query['uploadId']]['key'] ?? $key) !== $key) {
                 return new OutboundResponse(404, [], '<Error><Code>NoSuchUpload</Code></Error>');
             }
             $this->uploads[$query['uploadId']][(int) $query['partNumber']] = $body;
@@ -118,18 +131,40 @@ final class FakeS3
         }
         if ($method === 'POST' && isset($query['uploadId'])) {
             $parts = $this->uploads[$query['uploadId']] ?? null;
-            if ($parts === null) {
+            if ($parts === null || ($this->begun[$query['uploadId']]['key'] ?? $key) !== $key) {
                 return new OutboundResponse(404, [], '<Error><Code>NoSuchUpload</Code></Error>');
             }
-            ksort($parts);
-            $this->objects[$key] = implode('', $parts);
+            // The parts the body names, in order, each with the ETag the
+            // store gave it, and each but the last at least 5 MiB, as S3
+            // holds a completion to.
+            preg_match_all('#<Part><PartNumber>(\d+)</PartNumber><ETag>([^<]*)</ETag></Part>#', $body, $named, PREG_SET_ORDER);
+            $joined = '';
+            $previous = 0;
+            foreach ($named as $index => [, $number, $etag]) {
+                $part = $parts[(int) $number] ?? null;
+                if ($part === null || (int) $number <= $previous || html_entity_decode($etag, ENT_XML1 | ENT_QUOTES) !== '"' . md5($part) . '"') {
+                    return new OutboundResponse(400, [], '<Error><Code>InvalidPart</Code></Error>');
+                }
+                if ($index < \count($named) - 1 && \strlen($part) < $this->minPartBytes) {
+                    return new OutboundResponse(400, [], '<Error><Code>EntityTooSmall</Code></Error>');
+                }
+                $previous = (int) $number;
+                $joined .= $part;
+            }
+            if ($named === []) {
+                return new OutboundResponse(400, [], '<Error><Code>MalformedXML</Code></Error>');
+            }
+            $this->objects[$key] = $joined;
             $this->modified[$key] = $this->now;
-            unset($this->uploads[$query['uploadId']]);
+            unset($this->uploads[$query['uploadId']], $this->begun[$query['uploadId']]);
 
             return new OutboundResponse(200, [], '<CompleteMultipartUploadResult/>');
         }
         if ($method === 'DELETE' && isset($query['uploadId'])) {
-            unset($this->uploads[$query['uploadId']]);
+            if (!isset($this->uploads[$query['uploadId']])) {
+                return new OutboundResponse(404, [], '<Error><Code>NoSuchUpload</Code></Error>');
+            }
+            unset($this->uploads[$query['uploadId']], $this->begun[$query['uploadId']]);
 
             return new OutboundResponse(204);
         }
@@ -195,6 +230,71 @@ final class FakeS3
         }
 
         return new OutboundResponse(200, ['content-type' => ['application/xml']], $xml . '</ListBucketResult>');
+    }
+
+    /**
+     * ListParts: the parts of one upload, `max-parts` a page from after
+     * `part-number-marker`.
+     *
+     * @param array<string, string> $query
+     */
+    private function listParts(string $key, array $query): OutboundResponse
+    {
+        $parts = $this->uploads[$query['uploadId']] ?? null;
+        if ($parts === null || ($this->begun[$query['uploadId']]['key'] ?? $key) !== $key) {
+            return new OutboundResponse(404, [], '<Error><Code>NoSuchUpload</Code></Error>');
+        }
+        ksort($parts);
+        $marker = (int) ($query['part-number-marker'] ?? 0);
+        $max = min(1000, (int) ($query['max-parts'] ?? 1000));
+        $after = array_filter($parts, static fn (int $number): bool => $number > $marker, ARRAY_FILTER_USE_KEY);
+        $page = \array_slice($after, 0, $max, true);
+        $truncated = \count($after) > $max;
+
+        $xml = '<?xml version="1.0" encoding="UTF-8"?><ListPartsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            . '<IsTruncated>' . ($truncated ? 'true' : 'false') . '</IsTruncated>';
+        foreach ($page as $number => $bytes) {
+            $xml .= '<Part><PartNumber>' . $number . '</PartNumber><ETag>&quot;' . md5($bytes) . '&quot;</ETag><Size>' . \strlen($bytes) . '</Size></Part>';
+        }
+        if ($truncated) {
+            $xml .= '<NextPartNumberMarker>' . array_key_last($page) . '</NextPartNumberMarker>';
+        }
+
+        return new OutboundResponse(200, ['content-type' => ['application/xml']], $xml . '</ListPartsResult>');
+    }
+
+    /**
+     * ListMultipartUploads: the uploads begun and not ended whose key starts
+     * with `prefix`, in key order, `max-uploads` a page.
+     *
+     * @param array<string, string> $query
+     */
+    private function listUploads(array $query): OutboundResponse
+    {
+        if (!$this->listing) {
+            return new OutboundResponse(403, [], '<Error><Code>AccessDenied</Code></Error>');
+        }
+        $prefix = $query['prefix'] ?? '';
+        $found = array_filter($this->begun, static fn (array $upload): bool => str_starts_with($upload['key'], $prefix));
+        uasort($found, static fn (array $a, array $b): int => [$a['key'], $a['initiated']] <=> [$b['key'], $b['initiated']]);
+        $ids = array_keys($found);
+        $start = isset($query['upload-id-marker']) ? (int) array_search($query['upload-id-marker'], $ids, true) + 1 : 0;
+        $max = min(1000, (int) ($query['max-uploads'] ?? 1000));
+        $page = \array_slice($ids, $start, $max);
+        $truncated = $start + $max < \count($ids);
+
+        $xml = '<?xml version="1.0" encoding="UTF-8"?><ListMultipartUploadsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            . '<IsTruncated>' . ($truncated ? 'true' : 'false') . '</IsTruncated>';
+        foreach ($page as $id) {
+            $xml .= '<Upload><Key>' . htmlspecialchars($found[$id]['key'], ENT_XML1) . '</Key><UploadId>' . $id . '</UploadId>'
+                . '<Initiated>' . gmdate('Y-m-d\TH:i:s.000\Z', $found[$id]['initiated']) . '</Initiated></Upload>';
+        }
+        if ($truncated) {
+            $last = (string) end($page);
+            $xml .= '<NextKeyMarker>' . htmlspecialchars($found[$last]['key'], ENT_XML1) . '</NextKeyMarker><NextUploadIdMarker>' . $last . '</NextUploadIdMarker>';
+        }
+
+        return new OutboundResponse(200, ['content-type' => ['application/xml']], $xml . '</ListMultipartUploadsResult>');
     }
 
     /**

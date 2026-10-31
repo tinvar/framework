@@ -222,6 +222,40 @@ describe('S3Storage against MinIO', function () {
         $storage->delete((string) $kept?->key);
     });
 
+    // ADR 0143: parts presigned for their number and length, listed when the
+    // browser comes back, completed by PHP or aborted.
+    it('takes the parts of an upload at the URLs presigned for each, lists them, and completes or aborts it', function () {
+        [$storage] = minio();
+        $key = StorageKey::generate('tinvar-partial', '');
+        $id = $storage->beginMultipart($key);
+        $first = str_repeat('a', S3Storage::MIN_PART_BYTES);
+
+        $url = $storage->presignedPart($key, $id, 1, \strlen($first), 60)->url;
+        expect(minioBrowser('PUT', $url, $first . 'x')[0])->toBe(403)
+            ->and(minioBrowser('PUT', $url, $first)[0])->toBe(200)
+            ->and(minioBrowser('PUT', $storage->presignedPart($key, $id, 2, 3, 60)->url, 'end')[0])->toBe(200);
+
+        $parts = $storage->listParts($key, $id);
+        expect(array_keys((array) $parts))->toBe([1, 2])
+            ->and(array_column((array) $parts, 'size'))->toBe([\strlen($first), 3])
+            ->and(array_column($storage->multipartUploadsUnder($key, 10), 'uploadId'))->toBe([$id]);
+
+        $storage->completeMultipart($key, $id, array_map(static fn (array $part): string => $part['etag'], (array) $parts));
+        expect($storage->size($key))->toBe(\strlen($first) + 3)
+            ->and($storage->listParts($key, $id))->toBeNull()
+            // Its URLs are dead with it.
+            ->and(minioBrowser('PUT', $url, $first)[0])->toBe(404);
+        $storage->delete($key);
+
+        $other = StorageKey::generate('tinvar-partial', '');
+        $aborted = $storage->beginMultipart($other);
+        minioBrowser('PUT', $storage->presignedPart($other, $aborted, 1, 3, 60)->url, 'abc');
+        $storage->abortMultipart($other, $aborted);
+        expect($storage->listParts($other, $aborted))->toBeNull()
+            ->and($storage->multipartUploadsUnder($other, 10))->toBe([])
+            ->and($storage->exists($other))->toBeFalse();
+    });
+
     it('lists the keys under a prefix, page by page, with when each was written', function () {
         [$storage] = minio();
         $prefix = 'listed-' . bin2hex(random_bytes(4));

@@ -289,4 +289,92 @@ describe('S3Storage', function () {
         $s3->listing = false;
         expect(fn () => $storage->keysUnder('incoming', 1))->toThrow(StorageException::class, 'AccessDenied');
     });
+
+    // ADR 0143: a browser sends a file in parts, each to a URL presigned for
+    // its number and length, over as many sittings as it takes.
+    it('presigns each part of an upload for its number, its upload and its length, and lists what is there', function () {
+        $s3 = new FakeS3();
+        $s3->minPartBytes = 4;
+        $storage = $s3->storage(root: 'app');
+        $key = StorageKey::generate('tinvar-partial', '');
+        $id = $storage->beginMultipart($key);
+
+        $first = $storage->presignedPart($key, $id, 1, 4, 300);
+        expect($first->headers)->toBe([])
+            ->and($first->expiresAt)->toBe($s3->now + 300)
+            ->and($storage->listParts($key, $id))->toBe([])
+            ->and($s3->browser('PUT', $first->url, 'abcd')->status)->toBe(200)
+            // Another length than signed, another number or another upload: refused.
+            ->and($s3->browser('PUT', $first->url, 'abcde')->status)->toBe(403)
+            ->and($s3->browser('PUT', str_replace('partNumber=1', 'partNumber=2', $first->url), 'abcd')->status)->toBe(403)
+            ->and($s3->browser('PUT', str_replace('uploadId=' . $id, 'uploadId=other', $first->url), 'abcd')->status)->toBe(403);
+
+        $s3->now += 301;
+        expect($s3->browser('PUT', $first->url, 'abcd')->status)->toBe(403);
+
+        $second = $storage->presignedPart($key, $id, 2, 2, 300);
+        expect($s3->browser('PUT', $second->url, 'ef')->status)->toBe(200);
+        $parts = $storage->listParts($key, $id);
+        expect($parts)->toBe([
+            1 => ['size' => 4, 'etag' => '"' . md5('abcd') . '"'],
+            2 => ['size' => 2, 'etag' => '"' . md5('ef') . '"'],
+        ])->and($storage->multipartUploadsUnder('tinvar-partial/', 10))->toBe([['key' => $key, 'uploadId' => $id, 'initiated' => $s3->now - 301]]);
+
+        $storage->completeMultipart($key, $id, array_map(static fn (array $part): string => $part['etag'], $parts));
+        expect($s3->objects["app/{$key}"])->toBe('abcdef')
+            ->and($storage->listParts($key, $id))->toBeNull()
+            ->and($storage->multipartUploadsUnder('tinvar-partial/', 10))->toBe([])
+            ->and(fn () => $storage->presignedPart($key, $id, 10_001, 1, 300))->toThrow(InvalidArgumentException::class)
+            ->and(fn () => $storage->presignedPart($key, $id, 1, 0, 300))->toThrow(InvalidArgumentException::class);
+    });
+
+    it('lists the parts of an upload page by page', function () {
+        $s3 = new FakeS3();
+        $storage = $s3->storage();
+        $key = StorageKey::generate('tinvar-partial', '');
+        $id = $storage->beginMultipart($key);
+        for ($n = 1; $n <= 1500; $n++) {
+            $s3->uploads[$id][$n] = 'p';
+        }
+
+        expect($storage->listParts($key, $id))->toHaveCount(1500)
+            ->and(\count(array_filter($s3->log, static fn (string $line): bool => str_contains($line, 'part-number-marker'))))->toBe(2);
+    });
+
+    it('aborts an upload, its parts dropped, and finds the uploads begun at a key or under a prefix', function () {
+        $s3 = new FakeS3();
+        $storage = $s3->storage();
+        $key = StorageKey::generate('tinvar-partial', '');
+        $other = StorageKey::generate('tinvar-partial', '');
+        $id = $storage->beginMultipart($key);
+        $storage->beginMultipart($other);
+        $s3->browser('PUT', $storage->presignedPart($key, $id, 1, 3, 300)->url, 'abc');
+
+        expect(array_column($storage->multipartUploadsUnder($key, 10), 'key'))->toBe([$key])
+            ->and($storage->multipartUploadsUnder('tinvar-partial/', 10))->toHaveCount(2)
+            ->and($storage->multipartUploadsUnder('tinvar-partial/', 1))->toHaveCount(1)
+            ->and(fn () => $storage->multipartUploadsUnder('../x/', 1))->toThrow(InvalidArgumentException::class);
+
+        $storage->abortMultipart($key, $id);
+        $storage->abortMultipart($key, $id);
+        expect($s3->uploads)->not->toHaveKey($id)
+            ->and($storage->listParts($key, $id))->toBeNull()
+            ->and(array_column($storage->multipartUploadsUnder('tinvar-partial/', 10), 'key'))->toBe([$other]);
+
+        $s3->listing = false;
+        expect(fn () => $storage->multipartUploadsUnder('tinvar-partial/', 1))->toThrow(StorageException::class, 'AccessDenied');
+    });
+
+    it('refuses a completion from parts the store does not hold, or too small', function () {
+        $s3 = new FakeS3();
+        $storage = $s3->storage();
+        $key = StorageKey::generate('tinvar-partial', '');
+        $id = $storage->beginMultipart($key);
+        $s3->browser('PUT', $storage->presignedPart($key, $id, 1, 3, 300)->url, 'abc');
+        $s3->browser('PUT', $storage->presignedPart($key, $id, 2, 3, 300)->url, 'def');
+
+        expect(fn () => $storage->completeMultipart($key, $id, [1 => '"nope"']))->toThrow(StorageException::class, 'InvalidPart')
+            ->and(fn () => $storage->completeMultipart($key, $id, [1 => '"' . md5('abc') . '"', 2 => '"' . md5('def') . '"']))->toThrow(StorageException::class, 'EntityTooSmall')
+            ->and($s3->objects)->toBe([]);
+    });
 });

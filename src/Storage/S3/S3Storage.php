@@ -13,7 +13,7 @@ use Tinvar\Outbound\OutboundResponse;
 use Tinvar\Outbound\Target;
 use Tinvar\Storage\FileTypes;
 use Tinvar\Storage\ListsKeys;
-use Tinvar\Storage\ObjectStore;
+use Tinvar\Storage\MultipartStore;
 use Tinvar\Storage\PresignedUpload;
 use Tinvar\Storage\StorageException;
 use Tinvar\Storage\StorageKey;
@@ -49,8 +49,14 @@ use Tinvar\Storage\StorageWriter;
  * through writer(), a multipart upload of parts that size, each held in
  * memory as it is filled -- so nothing is gathered in the temporary
  * directory -- and completed only on commit, or aborted.
+ *
+ * A browser may send a file in parts too, each to a URL presigned for its
+ * number and length, over as many sittings as it takes (MultipartStore,
+ * ADR 0143): PHP begins the upload, asks what parts are there, completes it
+ * and aborts it, and never hands out the upload's id but inside a URL it
+ * signed.
  */
-final readonly class S3Storage implements ObjectStore, ListsKeys
+final readonly class S3Storage implements MultipartStore, ListsKeys
 {
     /** 8 MiB: S3 takes parts of 5 MiB and more, but for the last. */
     public const int PART_BYTES = 8_388_608;
@@ -249,6 +255,175 @@ final readonly class S3Storage implements ObjectStore, ListsKeys
             $headers,
             $this->now() + $ttl,
         );
+    }
+
+    public function beginMultipart(string $key): string
+    {
+        $response = $this->send('POST', $key, ['uploads' => '']);
+        self::assertOk($response, 'begun');
+        if (preg_match('#<UploadId>([^<]{1,1024})</UploadId>#', $response->body, $m) !== 1) {
+            throw new StorageException('The object store began an upload and named no upload id.');
+        }
+
+        return html_entity_decode($m[1], ENT_XML1 | ENT_QUOTES);
+    }
+
+    /**
+     * Signed with the part's number, the upload's id and the length: a
+     * browser sends the length of what it PUTs, which the store holds to
+     * this, and cannot move the bytes to another part or another upload.
+     * Nothing of the type: a part has none, and the object it becomes is
+     * fetched back by PHP and never served (UploadEndpoint).
+     */
+    public function presignedPart(string $key, string $uploadId, int $number, int $size, int $ttl): PresignedUpload
+    {
+        if ($number < 1 || $number > 10_000) {
+            throw new \InvalidArgumentException('A part is numbered from 1 to 10000.');
+        }
+        if ($size < 1 || $size > 5_368_709_120) {
+            throw new \InvalidArgumentException('A part is between a byte and 5 GiB.');
+        }
+        if ($uploadId === '') {
+            throw new \InvalidArgumentException('A part belongs to an upload.');
+        }
+        StorageKey::assertValid($key);
+        [$url, $path, $host] = $this->location($key, []);
+        $query = ['partNumber' => (string) $number, 'uploadId' => $uploadId];
+
+        return new PresignedUpload(
+            $url . '?' . $this->signer->presign('PUT', $path, $query, ['host' => $host, 'content-length' => (string) $size], $ttl, $this->now()),
+            [],
+            $this->now() + $ttl,
+        );
+    }
+
+    public function listParts(string $key, string $uploadId): ?array
+    {
+        $parts = [];
+        $marker = '0';
+        // At most ten pages: an upload has at most ten thousand parts.
+        for ($page = 0; $page < 11; $page++) {
+            $response = $this->send('GET', $key, ['uploadId' => $uploadId, 'max-parts' => '1000', 'part-number-marker' => $marker]);
+            if ($response->status === 404) {
+                return null;
+            }
+            self::assertOk($response, 'listed');
+            $list = self::xml($response->body);
+            foreach ($list->Part as $part) {
+                $number = (string) $part->PartNumber;
+                $size = (string) $part->Size;
+                if (!ctype_digit($number) || !ctype_digit($size) || (int) $number < 1 || (int) $number > 10_000) {
+                    continue;
+                }
+                $parts[(int) $number] = ['size' => (int) $size, 'etag' => (string) $part->ETag];
+            }
+            $next = (string) $list->NextPartNumberMarker;
+            if ((string) $list->IsTruncated !== 'true' || !ctype_digit($next) || (int) $next <= (int) $marker) {
+                ksort($parts);
+
+                return $parts;
+            }
+            $marker = $next;
+        }
+
+        throw new StorageException('The object store listed more parts than an upload has.');
+    }
+
+    public function completeMultipart(string $key, string $uploadId, array $etags): void
+    {
+        if ($etags === []) {
+            throw new \InvalidArgumentException('An upload is completed from at least one part.');
+        }
+        ksort($etags);
+        $parts = '';
+        foreach ($etags as $number => $etag) {
+            $parts .= '<Part><PartNumber>' . $number . '</PartNumber><ETag>' . htmlspecialchars($etag, ENT_XML1) . '</ETag></Part>';
+        }
+        $response = $this->send('POST', $key, ['uploadId' => $uploadId], '<CompleteMultipartUpload>' . $parts . '</CompleteMultipartUpload>', timeout: 120.0);
+        self::assertOk($response, 'completed');
+        // S3 can answer 200 and put an error in the body of a completion
+        // that failed after it began.
+        if (str_contains($response->body, '<Error>')) {
+            throw new StorageException('A stored file could not be completed: the object store failed the upload as it completed it.');
+        }
+    }
+
+    public function abortMultipart(string $key, string $uploadId): void
+    {
+        $response = $this->send('DELETE', $key, ['uploadId' => $uploadId]);
+        if ($response->status !== 404) {
+            self::assertOk($response, 'aborted');
+        }
+    }
+
+    /**
+     * By ListMultipartUploads, a page of up to 1000 at a time until $limit.
+     * Needs `s3:ListBucketMultipartUploads` on the bucket: the store's 403
+     * is a StorageException then.
+     */
+    public function multipartUploadsUnder(string $prefix, int $limit): array
+    {
+        $whole = str_ends_with($prefix, '/') ? substr($prefix, 0, -1) : $prefix;
+        if (!StorageKey::isValidPrefix($whole) && !StorageKey::isValid($whole)) {
+            throw new \InvalidArgumentException("'{$prefix}' is not a storage prefix to list.");
+        }
+        $root = $this->root === '' ? '' : $this->root . '/';
+        $uploads = [];
+        $keyMarker = null;
+        $idMarker = null;
+        while (\count($uploads) < $limit) {
+            $query = ['uploads' => '', 'prefix' => $root . $prefix, 'max-uploads' => (string) min(1000, $limit - \count($uploads))];
+            if ($keyMarker !== null) {
+                $query['key-marker'] = $keyMarker;
+                $query['upload-id-marker'] = (string) $idMarker;
+            }
+            [$url, $path, $host] = $this->bucketLocation($query);
+            $response = $this->dispatch('GET', $url, $path, $host, $query, '', null, null, null);
+            self::assertOk($response, 'listed');
+            $list = self::xml($response->body);
+            foreach ($list->Upload as $upload) {
+                $key = (string) $upload->Key;
+                $at = self::timestamp((string) $upload->Initiated);
+                if (!str_starts_with($key, $root) || $at === null || \count($uploads) >= $limit) {
+                    continue;
+                }
+                $key = substr($key, \strlen($root));
+                if (StorageKey::isValid($key) && (string) $upload->UploadId !== '') {
+                    $uploads[] = ['key' => $key, 'uploadId' => (string) $upload->UploadId, 'initiated' => $at];
+                }
+            }
+            if ((string) $list->IsTruncated !== 'true' || (string) $list->NextKeyMarker === '') {
+                break;
+            }
+            $keyMarker = (string) $list->NextKeyMarker;
+            $idMarker = (string) $list->NextUploadIdMarker;
+        }
+
+        return $uploads;
+    }
+
+    /** A document the store answered with, read with no network and no entities. */
+    private static function xml(string $body): \SimpleXMLElement
+    {
+        $previous = libxml_use_internal_errors(true);
+        try {
+            $list = simplexml_load_string($body, options: LIBXML_NONET);
+        } finally {
+            libxml_use_internal_errors($previous);
+        }
+        if ($list === false) {
+            throw new StorageException('The object store\'s answer could not be read.');
+        }
+
+        return $list;
+    }
+
+    private static function timestamp(string $at): ?int
+    {
+        $parsed = \DateTimeImmutable::createFromFormat('Y-m-d\TH:i:s.vP', $at)
+            ?: \DateTimeImmutable::createFromFormat('Y-m-d\TH:i:sP', $at);
+
+        return $parsed === false ? null : $parsed->getTimestamp();
     }
 
     /**
