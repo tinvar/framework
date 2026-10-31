@@ -36,7 +36,7 @@ require_once __DIR__ . '/Fixtures/app.php';
  * @param array<string, mixed> $fields
  * @param array<string, string> $files field => bytes
  */
-function postWithoutScript(App $app, string $action, array $fields, array $files, string $user = 'u-1', string $session = 'session-a'): Response
+function postWithoutScript(App $app, string $action, array $fields, array $files, string $user = 'u-1', string $session = 'session-a', array $headers = []): Response
 {
     $received = [];
     foreach ($files as $field => $bytes) {
@@ -56,6 +56,7 @@ function postWithoutScript(App $app, string $action, array $fields, array $files
                     'referer' => 'http://localhost/account',
                     'x-test-user' => $user,
                     'x-test-epoch' => 'e1',
+                    ...$headers,
                 ],
                 body: ['_token' => CSRF, ...$fields],
                 cookies: [SESSION_COOKIE => $session, VerifyCsrfToken::COOKIE => CSRF],
@@ -120,6 +121,15 @@ it('takes no file for a field the action does not have, and keeps no ticket in t
     expect($response->status)->toBe(303)
         ->and(ProfileActions::$received?->id)->toBe($reference)
         ->and($app->storage instanceof MemoryStorage ? count($app->storage->keys()) : null)->toBe(1);
+});
+
+it('keeps no file a validate-only call carries', function () {
+    $app = new App(new MemoryStorage());
+    $ticket = $app->ticket($app->profile(P1));
+
+    postWithoutScript($app, 'profiles.avatar', ['profile' => P1, '_upload_tickets' => ['avatar' => $ticket]], ['avatar' => png()], headers: ['precognition' => 'true']);
+
+    expect($app->storage instanceof MemoryStorage ? $app->storage->keys() : null)->toBe([]);
 });
 
 it('still refuses the upload a form without script left out', function () {

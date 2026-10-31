@@ -268,7 +268,8 @@ final class ActionEndpoint
             // And the upload tickets one carries beside its files, which
             // are taken here -- inside the action's own context -- as
             // /_upload would take them, their references put in their place.
-            $input = $this->inlineUploads === null
+            // Never for a validate-only call, which keeps nothing.
+            $input = $this->inlineUploads === null || $precognitive
                 ? array_diff_key($input, ['_upload_tickets' => true])
                 : ($this->inlineUploads)($request, $name, $input);
 
