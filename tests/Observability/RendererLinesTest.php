@@ -35,9 +35,9 @@ it('keeps a render\'s line as JSON, under the request id it carries, as the rend
         'message' => 'render failed',
         'source' => 'renderer',
         'request_id' => ID,
-        'code' => 'render_failed',
-        'error' => ['class' => 'TypeError', 'message' => 'x is undefined'],
-    ])->and($line['time'])->toMatch('/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/');
+        'renderer' => ['code' => 'render_failed', 'error' => ['class' => 'TypeError', 'message' => 'x is undefined']],
+    ])->and($line)->not->toHaveKey('code')
+        ->and($line['time'])->toMatch('/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/');
 });
 
 it('joins a line split across reads, keeps two streams apart, and writes what a stream left at its end', function () {
@@ -76,7 +76,7 @@ it('believes no source, request id or level of the renderer\'s that is not one, 
         ->and($first['source'])->toBe('renderer')
         ->and($first)->not->toHaveKey('request_id')
         ->and($first['message'])->not->toContain('ada@example.com')->not->toContain('abcdefghijklmnop')
-        ->and($first['password'])->not->toBe('hunter2')
+        ->and($first['renderer']['password'])->not->toBe('hunter2')
         ->and($second['level'])->toBe('error')
         ->and($second)->not->toHaveKey('request_id')
         ->and($sink->lines)->toHaveCount(2);
@@ -119,7 +119,7 @@ it('writes at most its budget of lines a second, and says next how many it dropp
 
     $lines->feed('1', str_repeat("{\"level\":\"error\",\"message\":\"flood\"}\n", RendererLines::MAX_PER_SECOND + 40), true);
     $now = 1001.2;
-    $lines->line('{"level":"info","message":"after"}', false);
+    $lines->feed('1', "{\"level\":\"info\",\"message\":\"after\"}\n", false);
 
     $records = $sink->records();
     expect($records)->toHaveCount(RendererLines::MAX_PER_SECOND + 2)
@@ -134,4 +134,50 @@ it('writes nothing below the application\'s level', function () {
     $lines->feed('1', '{"level":"info","message":"a render"}' . "\n" . '{"level":"error","message":"a failure"}' . "\n", false);
 
     expect(array_column($sink->records(), 'message'))->toBe(['a failure']);
+});
+
+// A line's size, not only its count: 500 lines a second of 64 KiB each was
+// 32 MiB a second into the application's log.
+it('holds each stream to a budget of bytes a second, and cuts each line it relays', function () {
+    $sink = new MemorySink();
+    $now = 1000.0;
+    $lines = new RendererLines($sink, clock: static function () use (&$now): float {
+        return $now;
+    });
+
+    $long = json_encode(['level' => 'info', 'message' => str_repeat('x', 20_000)]);
+    $lines->feed('1', $long . "\n", false);
+    $big = str_repeat('y', RendererLines::MAX_LINE - 10);
+    $lines->feed('1', str_repeat($big . "\n", 200), false);
+    // Another stream's share is its own.
+    $lines->feed('2', "{\"level\":\"info\",\"message\":\"other\"}\n", false);
+
+    $written = array_sum(array_map(strlen(...), $sink->lines));
+    $records = $sink->records();
+    expect(RendererLines::MAX_LINE)->toBeLessThanOrEqual(8_192)
+        ->and(\strlen($sink->lines[0]))->toBeLessThan(RendererLines::MAX_LINE + 512)
+        ->and($records[0]['truncated'] ?? null)->toBeTrue()
+        ->and($written)->toBeLessThan(RendererLines::MAX_BYTES_PER_SECOND + 64 * 1024)
+        ->and(\count($records))->toBeLessThan(150)
+        ->and(end($records)['message'])->toBe('other');
+});
+
+// A renderer's line is the renderer's say-so: it pages no one at critical,
+// and its fields never stand beside the line's own as if PHP had set them.
+it('caps a relayed line\'s level by its stream, and nests its fields under renderer', function () {
+    $sink = new MemorySink();
+    $lines = new RendererLines($sink);
+
+    $lines->line('{"level":"critical","message":"a","digest":"forged","user_id":7,"exception":{"class":"X"}}', true);
+    $lines->line('{"level":"error","message":"b"}', false);
+    $lines->line('{"level":"critical","message":"c"}', false);
+    $lines->line('{"level":"debug","message":"d"}', true);
+
+    [$a, $b, $c] = $sink->records();
+    expect($a['level'])->toBe('error')
+        ->and($a)->not->toHaveKeys(['digest', 'user_id', 'exception'])
+        ->and($a['renderer'])->toMatchArray(['digest' => 'forged', 'user_id' => 7])
+        ->and($b['level'])->toBe('warning')
+        ->and($c['level'])->toBe('warning')
+        ->and($sink->lines)->toHaveCount(3);
 });

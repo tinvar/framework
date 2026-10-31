@@ -26,22 +26,34 @@ namespace Tinvar\Observability;
  * redacted, at the stream's level. A line past MAX_LINE is cut there, and
  * says so.
  *
- * And at most MAX_PER_SECOND lines a second reach the log: a renderer that
- * writes without end -- broken, or made to -- would otherwise fill the disk
- * the application's own lines are written to. Past the budget a line is
- * dropped, and the next second's first line says how many were. Standard
- * error is serve's to pass on whole, as it always was.
+ * And each stream is held to a budget a second -- MAX_PER_SECOND lines and
+ * MAX_BYTES_PER_SECOND bytes -- with each line cut at MAX_LINE: a renderer
+ * that writes without end, broken or made to, would otherwise fill the disk
+ * the application's own lines are written to. Per stream, so one cannot
+ * spend the others' share. Past the budget a line is dropped, and the
+ * stream's next line in a later second says how many were. Standard error
+ * is serve's to pass on whole, as it always was.
+ *
+ * What a line says of itself is believed no further than it must be. Its
+ * level is capped -- at error on standard error, at warning on standard
+ * output -- as an unverified browser error is, so a renderer cannot page
+ * anyone at critical. Its own fields go under one key, `renderer`, never
+ * beside the line's: it cannot set a `digest`, a `user_id` or an
+ * `exception` that reads as PHP's.
  */
 final class RendererLines
 {
-    /** The longest line kept whole: a render's failure, its stack redacted, with room to spare. */
-    public const int MAX_LINE = 65_536;
+    /** The longest line relayed: a render's failure with its stack, redacted, cut past this. */
+    public const int MAX_LINE = 8_192;
 
     /** How deep a line's JSON is read: an error's fields, and a little more. */
     private const int MAX_DEPTH = 8;
 
-    /** Lines a second the log takes from the renderers, all of them together. */
+    /** Lines a second the log takes from one stream. */
     public const int MAX_PER_SECOND = 500;
+
+    /** Bytes a second the log takes from one stream. */
+    public const int MAX_BYTES_PER_SECOND = 1_048_576;
 
     /** What the line itself owns, taken from the renderer's only as checked. */
     private const array OWNED = ['time', 'level', 'message', 'source', 'request_id'];
@@ -54,10 +66,8 @@ final class RendererLines
     /** @var array<string, string> each stream's bytes since its last newline */
     private array $partial = [];
 
-    /** The second the budget is counted in, its lines so far, and how many were dropped in it. */
-    private int $second = 0;
-    private int $written = 0;
-    private int $dropped = 0;
+    /** @var array<string, array{second: int, lines: int, bytes: int, dropped: int}> each stream's budget */
+    private array $budgets = [];
 
     /** @var \Closure(): float */
     private readonly \Closure $clock;
@@ -84,12 +94,12 @@ final class RendererLines
     {
         $buffer = ($this->partial[$stream] ?? '') . $bytes;
         while (($end = strpos($buffer, "\n")) !== false) {
-            $this->line(substr($buffer, 0, $end), $error);
+            $this->line(substr($buffer, 0, $end), $error, $stream);
             $buffer = substr($buffer, $end + 1);
         }
         // A line that never ends is not held without end.
         if (\strlen($buffer) > self::MAX_LINE) {
-            $this->line($buffer, $error);
+            $this->line($buffer, $error, $stream);
             $buffer = '';
         }
         $this->partial[$stream] = $buffer;
@@ -101,19 +111,20 @@ final class RendererLines
         $rest = $this->partial[$stream] ?? '';
         unset($this->partial[$stream]);
         if ($rest !== '') {
-            $this->line($rest, $error);
+            $this->line($rest, $error, $stream);
         }
     }
 
     /** One line, rebuilt and written; see the class. */
-    public function line(string $line, bool $error): void
+    public function line(string $line, bool $error, string $stream = ''): void
     {
         $cut = \strlen($line) > self::MAX_LINE;
         $line = trim($cut ? substr($line, 0, self::MAX_LINE) : $line);
-        if ($line === '') {
+        if ($line === '' || !$this->spend($stream, \strlen($line))) {
             return;
         }
 
+        $ceiling = $error ? 'error' : 'warning';
         $fallback = $error ? 'error' : 'info';
         $decoded = $cut ? null : json_decode($line, true, self::MAX_DEPTH);
         if (!\is_array($decoded) || array_is_list($decoded) || !\is_string($decoded['message'] ?? null)) {
@@ -123,36 +134,55 @@ final class RendererLines
         }
 
         $level = $decoded['level'] ?? null;
+        $level = \is_string($level) && isset(Logger::LEVELS[$level]) ? $level : $fallback;
+        if (Logger::LEVELS[$level] > Logger::LEVELS[$ceiling]) {
+            $level = $ceiling;
+        }
         $id = $decoded['request_id'] ?? null;
-        $context = array_diff_key($decoded, array_flip(self::OWNED));
+        $fields = array_diff_key($decoded, array_flip(self::OWNED));
         $this->write(
-            \is_string($level) && isset(Logger::LEVELS[$level]) ? $level : $fallback,
+            $level,
             $decoded['message'],
-            $context,
+            $fields === [] ? [] : ['renderer' => $fields],
             \is_string($id) && RequestId::isValid($id) ? $id : null,
         );
+    }
+
+    /**
+     * Whether $stream may write a line of $bytes this second, counting it if
+     * so. A new second's first line first says how many the last dropped.
+     */
+    private function spend(string $stream, int $bytes): bool
+    {
+        $second = (int) floor(($this->clock)());
+        $budget = $this->budgets[$stream] ?? ['second' => $second, 'lines' => 0, 'bytes' => 0, 'dropped' => 0];
+        if ($budget['second'] !== $second) {
+            if ($budget['dropped'] > 0) {
+                $this->logger->log('warning', 'renderer lines dropped', [
+                    'dropped' => $budget['dropped'],
+                    'per_second' => self::MAX_PER_SECOND,
+                    'bytes_per_second' => self::MAX_BYTES_PER_SECOND,
+                ]);
+            }
+            $budget = ['second' => $second, 'lines' => 0, 'bytes' => 0, 'dropped' => 0];
+        }
+
+        if ($budget['lines'] + 1 > self::MAX_PER_SECOND || $budget['bytes'] + $bytes > self::MAX_BYTES_PER_SECOND) {
+            $budget['dropped']++;
+            $this->budgets[$stream] = $budget;
+
+            return false;
+        }
+        $budget['lines']++;
+        $budget['bytes'] += $bytes;
+        $this->budgets[$stream] = $budget;
+
+        return true;
     }
 
     /** @param array<array-key, mixed> $context */
     private function write(string $level, string $message, array $context, ?string $requestId): void
     {
-        $second = (int) floor(($this->clock)());
-        if ($second !== $this->second) {
-            $dropped = $this->dropped;
-            $this->second = $second;
-            $this->written = 0;
-            $this->dropped = 0;
-            if ($dropped > 0) {
-                $this->written++;
-                $this->logger->log('warning', 'renderer lines dropped', ['dropped' => $dropped, 'per_second' => self::MAX_PER_SECOND]);
-            }
-        }
-        if (++$this->written > self::MAX_PER_SECOND) {
-            $this->dropped++;
-
-            return;
-        }
-
         $this->requestId = $requestId;
         try {
             $this->logger->log($level, $message, $context);
