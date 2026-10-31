@@ -273,6 +273,10 @@ final class ActionEndpoint
                 ? array_diff_key($input, ['_upload_tickets' => true])
                 : ($this->inlineUploads)($request, $name, $input);
 
+            // Who sent it, as the route tokens it carries are held to: taken
+            // before the action can sign anyone in or out, or move an epoch.
+            $binding = $this->revalidator?->binding();
+
             $result = $this->runner->run($name, $input, $precognitive, $request, $this->answerable(...));
         } catch (ValidationException $e) {
             if (self::isFormNavigation($request)) {
@@ -314,7 +318,7 @@ final class ActionEndpoint
                 ->withHeader('x-invalidated-tags', implode(',', $result->revalidatedTags));
         }
 
-        $rerendered = $this->rerender($result->revalidatedRoutes, $routeTokens, $request);
+        $rerendered = $this->rerender($result->revalidatedRoutes, $routeTokens, $request, $binding);
 
         return self::json($result->status, [
             'value' => $result->value,
@@ -396,9 +400,10 @@ final class ActionEndpoint
      * Re-renders the mounted routes this action invalidated.
      *
      * @param list<string> $invalidated
+     * @param string|null $binding who sent the action, before it ran (Revalidator::binding())
      * @return array{payloads: array<string, string>, live: array<string, string|null>}
      */
-    private function rerender(array $invalidated, mixed $tokens, Request $request): array
+    private function rerender(array $invalidated, mixed $tokens, Request $request, ?string $binding): array
     {
         if ($this->revalidator === null || $invalidated === []) {
             return ['payloads' => [], 'live' => []];
@@ -430,6 +435,7 @@ final class ActionEndpoint
             \array_slice($tokens, 0, self::MAX_ROUTE_TOKENS),
             $request,
             $this->sessionId,
+            $binding,
         );
     }
 }

@@ -198,6 +198,9 @@ function post(Kernel $kernel, Signer $routeSigner, string $action): Response
         sessionHash: TokenClaims::hashSession($routeSigner, 'session-a'),
         expiresAt: time() + 600,
         issuedAt: time(),
+        // Bound to who sends the action, before it runs: u-1 at the epoch
+        // the session holds, whatever the action moves it to.
+        authHash: TokenClaims::hashAuth($routeSigner, 'u-1', SignIn::$epoch),
     ))->encode($routeSigner);
 
     return $kernel->handle(
@@ -254,10 +257,12 @@ it('answers null for a re-render that answered as a page and minted nothing', fu
 });
 
 it('says nothing of live tokens for a render that answers with its payload alone, or without live updates', function () {
+    // One kernel at a time: SignIn signs in on the AuthContext of the last
+    // one built, and the route token is held to who sends the action.
     [$withString, , $routes] = kernel(static fn (LoadedRoute $l, Request $r): string => 'payload');
-    [$withoutLive, , $routesToo] = kernel(answering(), live: false);
-
     $string = json_decode(post($withString, $routes, 'orders.cancel')->body(), true);
+
+    [$withoutLive, , $routesToo] = kernel(answering(), live: false);
     $off = json_decode(post($withoutLive, $routesToo, 'orders.cancel')->body(), true);
 
     expect($string['payloads'])->toBe(['orders?' => 'payload'])

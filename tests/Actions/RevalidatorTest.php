@@ -14,6 +14,8 @@ declare(strict_types=1);
 
 use Tinvar\Actions\Revalidator;
 use Tinvar\Auth\AllowAllGate;
+use Tinvar\Auth\Authenticatable;
+use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\DenyGate;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Http\Request;
@@ -82,6 +84,7 @@ function routeToken(Signer $signer, Fixture $fixture, array $overrides = []): st
             ?? TokenClaims::hashSession($signer, REVALIDATE_SESSION),
         expiresAt: $overrides['expiresAt'] ?? time() + 3600,
         issuedAt: $overrides['issuedAt'] ?? time(),
+        authHash: $overrides['authHash'] ?? '',
     )))->encode($signer);
 }
 
@@ -793,5 +796,132 @@ describe('the request a re-render sees', function () {
         );
 
         expect($payloads)->toBe([]);
+    });
+});
+
+/**
+ * A route token is bound to whoever was signed in, at their auth epoch, as
+ * every other consumer of one holds it. The re-render checked the session,
+ * the build, the panel and the tenant, and not that.
+ */
+describe('the user a route token was minted for', function () {
+    $user = static fn (string $id): Authenticatable => new class ($id) implements Authenticatable {
+        public function __construct(private string $id) {}
+
+        public function authIdentifier(): string
+        {
+            return $this->id;
+        }
+    };
+
+    /** @return array{Revalidator, Fixture} */
+    $bound = static function (AuthContext $auth): array {
+        [, $fixture, $signer, $panels, $orm] = revalidator();
+        $routes = new RouteRegistry();
+        $routes->registerAll([RootLayout::class, SiteLayout::class, RackShowPage::class]);
+
+        return [new Revalidator(
+            routes: $routes,
+            loaders: new LoaderRunner($orm, static fn (string $c): object => new $c(), new AllowAllGate()),
+            signer: $signer,
+            orm: $orm,
+            render: static fn (LoadedRoute $l, Request $r): string => 'payload',
+            builds: new Tinvar\Http\BuildRegistry('build-1'),
+            middlewareResolver: static fn (string $class): Tinvar\Http\Middleware => new $class(),
+            panels: $panels,
+            auth: $auth,
+        ), $fixture];
+    };
+
+    $signer = new Signer('test-app-key', RouteToken::PURPOSE);
+
+    /** @param array{Revalidator, Fixture} $bound */
+    $rerender = static function (array $bound, ?string $authHash) use ($signer): array {
+        [$revalidator, $fixture] = $bound;
+
+        return $revalidator->rerender(
+            ['racks.show'],
+            [routeToken($signer, $fixture, $authHash === null ? [] : ['authHash' => $authHash])],
+            Request::post('/_action/x'),
+            session(),
+        );
+    };
+
+    it('re-renders for the user and epoch it was minted for', function () use ($user, $bound, $rerender, $signer) {
+        $auth = new AuthContext();
+        $auth->login($user('alice'), 'epoch-1');
+
+        expect($rerender($bound($auth), TokenClaims::hashAuth($signer, 'alice', 'epoch-1')))->toHaveCount(1);
+    });
+
+    it('re-renders a signed-out visitor\'s page for a signed-out visitor', function () use ($bound, $rerender, $signer) {
+        expect($rerender($bound(new AuthContext()), TokenClaims::hashAuth($signer, null, '')))->toHaveCount(1);
+    });
+
+    it('omits a payload for another user in the same session', function () use ($user, $bound, $rerender, $signer) {
+        $auth = new AuthContext();
+        $auth->login($user('bob'), 'epoch-1');
+
+        expect($rerender($bound($auth), TokenClaims::hashAuth($signer, 'alice', 'epoch-1')))->toBe([]);
+    });
+
+    it('omits a payload once the user\'s auth epoch has moved', function () use ($user, $bound, $rerender, $signer) {
+        $auth = new AuthContext();
+        $auth->login($user('alice'), 'epoch-2');
+
+        expect($rerender($bound($auth), TokenClaims::hashAuth($signer, 'alice', 'epoch-1')))->toBe([]);
+    });
+
+    it('omits a payload for a token that carries no binding at all', function () use ($user, $bound, $rerender) {
+        $auth = new AuthContext();
+        $auth->login($user('alice'), 'epoch-1');
+
+        expect($rerender($bound($auth), null))->toBe([]);
+    });
+
+    it('omits a payload for a visitor\'s page once someone is signed in', function () use ($user, $bound, $rerender, $signer) {
+        $auth = new AuthContext();
+        $auth->login($user('alice'), 'epoch-1');
+
+        expect($rerender($bound($auth), TokenClaims::hashAuth($signer, null, '')))->toBe([]);
+    });
+
+    // A sign-in action, or one that moves the epoch: the token is held to
+    // who sent the action, taken before it ran, and the page is drawn for
+    // whoever it left signed in -- through that route's full pipeline.
+    it('holds the token to who sent the action, before it signed someone in', function () use ($user, $bound, $signer) {
+        $auth = new AuthContext();
+        [$revalidator, $fixture] = $bound($auth);
+        $before = $revalidator->binding();
+        $auth->login($user('alice'), 'epoch-1');
+
+        $rendered = $revalidator->rerendered(
+            ['racks.show'],
+            [routeToken($signer, $fixture, ['authHash' => TokenClaims::hashAuth($signer, null, '')])],
+            Request::post('/_action/x'),
+            session(),
+            $before,
+        );
+
+        expect($before)->toBe(TokenClaims::hashAuth($signer, null, ''))
+            ->and($rendered['payloads'])->toHaveCount(1);
+    });
+
+    it('refuses a token not minted for who sent the action, whoever it left signed in', function () use ($user, $bound, $signer) {
+        $auth = new AuthContext();
+        $auth->login($user('mallory'), 'epoch-1');
+        [$revalidator, $fixture] = $bound($auth);
+        $before = $revalidator->binding();
+        $auth->login($user('alice'), 'epoch-1');
+
+        $rendered = $revalidator->rerendered(
+            ['racks.show'],
+            [routeToken($signer, $fixture, ['authHash' => TokenClaims::hashAuth($signer, 'alice', 'epoch-1')])],
+            Request::post('/_action/x'),
+            session(),
+            $before,
+        );
+
+        expect($rendered['payloads'])->toBe([]);
     });
 });

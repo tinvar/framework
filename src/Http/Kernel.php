@@ -886,6 +886,9 @@ final class Kernel
                 liveMinter: $live === null
                     ? null
                     : fn (Request $request, string $route, array $params, ?TagsRead $loaders): ?LiveMinter => $this->liveMinter($request, $route, $params, $loaders),
+                // A route token re-rendered only for the user and epoch it
+                // was minted for, as a fragment's is served.
+                auth: $this->auth,
             );
 
         // Built before the runners, which report through it: a rescued field

@@ -771,6 +771,7 @@ describe('post-action revalidation through the kernel', function () {
             sessionHash: Tinvar\Render\TokenClaims::hashSession($signer, 'session-abc'),
             expiresAt: time() + 3600,
             issuedAt: time(),
+            authHash: Tinvar\Render\TokenClaims::hashAuth($signer, 'u-1', ''),
         )))->encode($signer);
 
         $response = $kernel->handle(

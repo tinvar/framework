@@ -182,6 +182,7 @@ describe('route tokens', function () {
             sessionHash: TokenClaims::hashSession($routeSigner, SESSION),
             expiresAt: time() + 3600,
             issuedAt: time(),
+            authHash: TokenClaims::hashAuth($routeSigner, 'u-1', ''),
         )))->encode($routeSigner);
 
         $response = $kernel->handle(

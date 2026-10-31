@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Actions;
 
+use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Http\BuildRegistry;
 use Tinvar\Http\EntryContext;
@@ -81,6 +82,9 @@ final class Revalidator
      * @param (\Closure(Request, string, array<string, string>, TagsRead|null): ?LiveMinter)|null $liveMinter
      *        the minter for one re-render, bound to the request as it stands
      *        (the Kernel's liveMinter()); none without live updates
+     * @param AuthContext|null $auth who is signed in, at which auth epoch: a
+     *        route token is re-rendered only for the user and epoch it was
+     *        minted for, as FragmentEndpoint serves one (see binding())
      */
     public function __construct(
         private readonly RouteRegistry $routes,
@@ -96,6 +100,7 @@ final class Revalidator
         private readonly ?EntryContext $entry = null,
         private readonly ?TagsRead $tags = null,
         private readonly ?\Closure $liveMinter = null,
+        private readonly ?AuthContext $auth = null,
     ) {}
 
     /**
@@ -134,6 +139,25 @@ final class Revalidator
     }
 
     /**
+     * Who is signed in now, at which auth epoch, as a route token binds them;
+     * null with no AuthContext to ask.
+     *
+     * Taken by the action endpoint BEFORE the action runs, and handed to
+     * rerendered(): a token is re-rendered for the client that held it as
+     * the user it was minted for, and the page is then drawn -- and its live
+     * token minted -- for whoever the action left signed in (ADR 0048). An
+     * action that signs someone in or moves their epoch still has the page
+     * it was sent from re-rendered, under the new binding, through that
+     * route's full pipeline; a token minted for anyone else, at any other
+     * epoch, or for nobody known, is skipped, and the client reloads the
+     * route itself (ADR 0133).
+     */
+    public function binding(): ?string
+    {
+        return $this->auth === null ? null : TokenClaims::hashAuth($this->signer, $this->auth->id(), $this->auth->epoch());
+    }
+
+    /**
      * @param list<string> $invalidated what the action revalidated: route
      *        names or view paths, see routesFor()
      * @param list<string> $tokens      route tokens the client is holding
@@ -154,10 +178,14 @@ final class Revalidator
      * @param list<string> $invalidated
      * @param list<string> $tokens
      * @param \Closure(Request): string $sessionId
+     * @param string|null $binding the binding() taken before the action ran;
+     *        null takes it now
      * @return array{payloads: array<string, string>, live: array<string, string|null>}
      */
-    public function rerendered(array $invalidated, array $tokens, Request $request, \Closure $sessionId): array
+    public function rerendered(array $invalidated, array $tokens, Request $request, \Closure $sessionId, ?string $binding = null): array
     {
+        $binding ??= $this->binding();
+
         $wanted = array_flip($this->routesFor($invalidated));
 
         if ($wanted === [] || $tokens === []) {
@@ -173,7 +201,7 @@ final class Revalidator
         // tell.
         $pages = [];
         foreach ($tokens as $raw) {
-            $token = $this->verified($raw, $request, $sessionId);
+            $token = $this->verified($raw, $request, $sessionId, $binding);
             if ($token === null) {
                 continue;
             }
@@ -228,7 +256,7 @@ final class Revalidator
      * leaves the action successful and the payload absent, which is what
      * the spec asks for and what the client already knows how to handle.
      */
-    private function verified(string $raw, Request $request, \Closure $sessionId): ?RouteToken
+    private function verified(string $raw, Request $request, \Closure $sessionId, ?string $binding): ?RouteToken
     {
         try {
             $token = RouteToken::decode($raw, $this->signer);
@@ -238,6 +266,15 @@ final class Revalidator
 
         $session = $sessionId($request);
         if ($session === '' || !$token->claims->belongsTo($this->signer, $session)) {
+            return null;
+        }
+
+        // And to whoever was signed in, at their auth epoch, as every other
+        // consumer of a token holds it: the signature, the session and the
+        // build were checked and the user the token was minted for was not.
+        // Required, as a fragment's is: a token without a binding was minted
+        // where nobody was known. See binding() for which moment's user.
+        if ($binding !== null && !hash_equals($token->claims->authHash, $binding)) {
             return null;
         }
 
