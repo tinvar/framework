@@ -25,8 +25,10 @@ namespace Tinvar\Generators;
  * namespace and imports give it -- is left, so running a generator twice
  * adds it once. The class is named the way the file names its others: by an
  * import, which is added in order among the file's own where its short name
- * is free, or else in full. The new source is parsed before it is written,
- * and the list read again to hold one more entry, naming the class; then it
+ * is free -- neither imported nor used bare anywhere in the file -- or else
+ * in full. The new source is parsed before it is written,
+ * and the list read again to hold one more entry, naming the class, and
+ * every other entry naming what it named before; then it
  * is written to a file beside the old one and renamed over it.
  *
  * A symbolic link is never written through.
@@ -91,6 +93,12 @@ final class ClassList
         }
         if (\count($after) !== \count($entries) + 1 || strcasecmp(end($after)['class'], $class) !== 0) {
             throw new RegistrationRefused("the edit did not read back as {$constant} with {$class} added");
+        }
+        // And every entry that was there still names the class it named.
+        foreach ($entries as $i => $entry) {
+            if (strcasecmp($after[$i]['class'], $entry['class']) !== 0) {
+                throw new RegistrationRefused("the edit would have changed what {$constant} names: {$entry['class']} would read as {$after[$i]['class']}");
+            }
         }
 
         self::write($file, $edited);
@@ -318,7 +326,12 @@ final class ClassList
         }
 
         $short = self::short($class);
-        $taken = isset($this->imports[strtolower($short)]);
+        $imported = isset($this->imports[strtolower($short)]);
+        // An import takes the short name for the whole file: any bare use of
+        // it -- an entry here, a type or a `new` elsewhere, the first segment
+        // of a qualified name -- means a class of the file's namespace now,
+        // and would mean the imported one after.
+        $taken = $imported || $this->usesBare($short);
 
         if ($this->namespace === '') {
             // No namespace to import into: the name in full, as the file's
@@ -326,7 +339,9 @@ final class ClassList
             // otherwise take its first segment.
             return [isset($this->imports[strtolower(explode('\\', $class)[0])]) ? "\\{$class}" : $class, null];
         }
-        if (!$taken && strcasecmp(self::namespaceOf($class), $this->namespace) === 0) {
+        // In the file's own namespace, a bare use of the short name already
+        // means this class: only an import can take it.
+        if (!$imported && strcasecmp(self::namespaceOf($class), $this->namespace) === 0) {
             return [$short, null];
         }
         if (!$taken && $this->lastImport !== null) {
@@ -334,6 +349,28 @@ final class ClassList
         }
 
         return ["\\{$class}", null];
+    }
+
+    /**
+     * Whether $short appears anywhere in the file as a bare name, or as the
+     * first segment of a qualified one. Read wide -- a method or a constant
+     * of that name counts too -- since a name taken for nothing costs only
+     * a class written in full.
+     */
+    private function usesBare(string $short): bool
+    {
+        foreach ($this->tokens as $token) {
+            $name = match ($token->id) {
+                T_STRING => $token->text,
+                T_NAME_QUALIFIED => explode('\\', $token->text, 2)[0],
+                default => null,
+            };
+            if ($name !== null && strcasecmp($name, $short) === 0) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

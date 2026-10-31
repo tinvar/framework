@@ -93,6 +93,45 @@ it('names a class in full where its short name is taken', function () {
         ->and($after)->not->toContain('use Other\Home;');
 });
 
+// A bare name the file already uses means a class of its namespace: an
+// import of that short name would rebind it -- an entry of the list, or a
+// type anywhere else in the file -- to the class being added.
+it('names a class in full where its short name is used bare anywhere in the file', function (string $class, string $short) {
+    $source = <<<'PHP'
+        <?php
+
+        namespace Shop;
+
+        use Shop\Pages\Catalog;
+
+        final class Kernel
+        {
+            public const array ROUTES = [
+                Catalog::class,
+                Search::class,
+                Admin\Panel::class,
+            ];
+
+            public function mailer(): Mailer
+            {
+                return new Mailer();
+            }
+        }
+
+        PHP;
+    $after = edited($source, function (string $file) use ($class): void {
+        expect(ClassList::add($file, 'ROUTES', $class))->toBeTrue();
+    });
+
+    expect($after)->not->toContain("use {$class};")
+        ->and($after)->toContain("        \\{$class}::class,\n    ];")
+        ->and($after)->toContain("        Search::class,\n");
+})->with([
+    'an entry of the list' => ['Shop\Pages\Search', 'Search'],
+    'a type elsewhere in the file' => ['Shop\Mail\Mailer', 'Mailer'],
+    'the first segment of a qualified entry' => ['Shop\Other\Admin', 'Admin'],
+]);
+
 it('adds to a console\'s list outside any namespace, in full', function () {
     $console = "<?php\n\nuse Tinvar\\Routing\\RouteRegistry;\n\nconst APP_MODELS = [\n    Shop\\Models\\Product::class,\n    Shop\\Models\\Order::class,\n];\n\n\$x = array_map(static function () use (\$y) { return 1; }, []);\n";
     $after = edited($console, function (string $file): void {
