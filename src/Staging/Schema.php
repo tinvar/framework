@@ -134,6 +134,113 @@ final class Schema
                 . implode(', ', array_map(fn (string $column): string => $this->quote($column) . ' = excluded.' . $this->quote($column), $rest));
     }
 
+    /**
+     * A read-only transaction over one snapshot of the database, for every
+     * read the import makes of production: a row written while it runs is
+     * in none of the tables, rather than in those read after the write.
+     * Ended by endSnapshot(), which writes nothing.
+     *
+     * @return bool whether one was begun; false where the connection was in a transaction already
+     */
+    public function beginSnapshot(): bool
+    {
+        if ($this->pdo->inTransaction()) {
+            return false;
+        }
+
+        match ($this->driver) {
+            // Deferred: the snapshot is taken by the first read, made here
+            // at once. In WAL mode a writer goes on beside it; in a rollback
+            // journal it waits for the import, as for any reader.
+            'sqlite' => (function (): void {
+                $this->pdo->beginTransaction();
+                $this->pdo->exec('SELECT COUNT(*) FROM sqlite_master');
+            })(),
+            'pgsql' => (function (): void {
+                $this->pdo->beginTransaction();
+                $this->pdo->exec('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY');
+            })(),
+            default => (function (): void {
+                // PDO's beginTransaction() names no snapshot: MySQL's own,
+                // which PDO does not track, and endSnapshot() ends.
+                $this->pdo->exec('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+                $this->pdo->exec('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY');
+            })(),
+        };
+
+        return true;
+    }
+
+    public function endSnapshot(): void
+    {
+        if ($this->driver === 'mysql') {
+            $this->pdo->exec('ROLLBACK');
+
+            return;
+        }
+        if ($this->pdo->inTransaction()) {
+            $this->pdo->rollBack();
+        }
+    }
+
+    /**
+     * The rows $select gives, one at a time, never the whole table held in
+     * memory: SQLite steps through them as they are read; MySQL's are read
+     * unbuffered; Postgres's -- whose driver otherwise holds the whole
+     * result -- through a cursor, CURSOR_ROWS at a time, inside the
+     * snapshot. $select is the import's own, from quoted names; $value, the
+     * one parameter, is bound or quoted by the driver.
+     *
+     * @return \Generator<int, array<string, mixed>>
+     */
+    public function stream(string $select, ?string $where, ?string $value): \Generator
+    {
+        if ($this->driver === 'pgsql' && $this->pdo->inTransaction()) {
+            $sql = $where === null ? $select : "{$select} WHERE {$where} = " . $this->pdo->quote((string) $value);
+            $cursor = 'tinvar_import_' . bin2hex(random_bytes(4));
+            $this->pdo->exec("DECLARE {$cursor} NO SCROLL CURSOR FOR {$sql}");
+            try {
+                do {
+                    $batch = $this->pdo->query("FETCH " . self::CURSOR_ROWS . " FROM {$cursor}");
+                    $rows = $batch === false ? [] : $batch->fetchAll(\PDO::FETCH_ASSOC);
+                    foreach ($rows as $row) {
+                        /** @var array<string, mixed> $row */
+                        yield $row;
+                    }
+                } while (\count($rows) === self::CURSOR_ROWS);
+            } finally {
+                $this->pdo->exec("CLOSE {$cursor}");
+            }
+
+            return;
+        }
+
+        $buffered = null;
+        if ($this->driver === 'mysql') {
+            $buffered = $this->pdo->getAttribute(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY);
+            $this->pdo->setAttribute(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, false);
+        }
+        try {
+            $read = $this->pdo->prepare($where === null ? $select : "{$select} WHERE {$where} = ?");
+            $read->execute($where === null ? [] : [$value]);
+            try {
+                while (($row = $read->fetch(\PDO::FETCH_ASSOC)) !== false) {
+                    /** @var array<string, mixed> $row */
+                    yield $row;
+                }
+            } finally {
+                $read->closeCursor();
+            }
+        } finally {
+            if ($buffered !== null) {
+                $this->pdo->setAttribute(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, $buffered);
+            }
+        }
+    }
+
+    /** Rows a Postgres cursor is read in at a time. */
+    private const int CURSOR_ROWS = 1000;
+
     /** A transaction whose foreign keys are checked at its end, where the database lets them be. */
     public function begin(): void
     {

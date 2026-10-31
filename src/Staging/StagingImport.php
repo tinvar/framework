@@ -63,6 +63,28 @@ final readonly class StagingImport
         if ($production === $staging || ($from->file() !== null && $from->file() === $to->file())) {
             throw new ImportRefused('Production and staging are one database here; the import writes only into staging\'s.');
         }
+
+        // Every read of production -- its schema, then its rows -- in one
+        // read-only snapshot: production goes on being written while the
+        // import runs, and a row written then would otherwise be in the
+        // tables read after it and not those before, a child without its
+        // parent (Schema::beginSnapshot()).
+        $snapshot = $from->beginSnapshot();
+        try {
+            return $this->import($staging, $from, $to, $tenant);
+        } finally {
+            if ($snapshot) {
+                $from->endSnapshot();
+            }
+        }
+    }
+
+    /**
+     * @return array<string, int>
+     * @throws ImportRefused
+     */
+    private function import(\PDO $staging, Schema $from, Schema $to, ?string $tenant): array
+    {
         // Staging's database marked production's is production's, whatever
         // was passed as staging: the import empties every table it writes.
         $marks = $to->has(ProductionMarker::TABLE) ? $staging->query('SELECT COUNT(*) FROM ' . $to->quote(ProductionMarker::TABLE)) : false;
@@ -97,7 +119,7 @@ final readonly class StagingImport
             }
 
             foreach ($tables as $table => $declared) {
-                $written[$table] = $this->copy($production, $staging, $from, $to, $table, $declared, $tenant, $context);
+                $written[$table] = $this->copy($staging, $from, $to, $table, $declared, $tenant, $context);
             }
 
             $to->commit();
@@ -191,7 +213,6 @@ final readonly class StagingImport
      * @param array{columns: array<string, Scrub>, tenant: ?string, shared: bool} $declared
      */
     private function copy(
-        \PDO $production,
         \PDO $staging,
         Schema $from,
         Schema $to,
@@ -203,8 +224,8 @@ final readonly class StagingImport
         $columns = array_keys($declared['columns']);
         $select = 'SELECT ' . implode(', ', array_map($from->quote(...), $columns)) . ' FROM ' . $from->quote($table);
         $filter = $tenant !== null && !$declared['shared'] ? $declared['tenant'] : null;
-        $read = $production->prepare($filter === null ? $select : "{$select} WHERE " . $from->quote($filter) . ' = ?');
-        $read->execute($filter === null ? [] : [$tenant]);
+        // Row by row, never the table held whole in memory (Schema::stream()).
+        $rows = $from->stream($select, $filter === null ? null : $from->quote($filter), $filter === null ? null : $tenant);
 
         $key = $tenant !== null && $declared['shared'] ? $to->primaryKey($table) : [];
         $insert = $staging->prepare($key !== []
@@ -214,8 +235,7 @@ final readonly class StagingImport
 
         $context->table = $table;
         $count = 0;
-        while (($row = $read->fetch(\PDO::FETCH_ASSOC)) !== false) {
-            /** @var array<string, mixed> $row */
+        foreach ($rows as $row) {
             $context->row = $row;
             $values = [];
             foreach ($declared['columns'] as $column => $rule) {

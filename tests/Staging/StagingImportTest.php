@@ -388,3 +388,75 @@ it('refuses an import of one tenant through a shared table with no primary key t
 
     new StagingImport($plan, production(), staging())->run($production, $staging, tenant: 't1');
 })->throws(ImportRefused::class, 'regions is shared and has no primary key');
+
+/**
+ * Production of $driver's twice over -- the connection the import reads,
+ * and another, as production's own traffic -- and staging's, each with the
+ * shared parent and its child, for $test.
+ *
+ * @param \Closure(\PDO, \PDO, \PDO): void $test given production, production's other connection, and staging
+ */
+function twoWriters(string $driver, \Closure $test): void
+{
+    if ($driver === 'sqlite') {
+        $directory = sys_get_temp_dir() . '/tinvar-staging-' . bin2hex(random_bytes(4));
+        mkdir($directory, 0700);
+        try {
+            $open = static function () use ($directory): \PDO {
+                $pdo = new \PDO("sqlite:{$directory}/production.sqlite");
+                $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+                $pdo->exec('PRAGMA busy_timeout = 2000');
+
+                return $pdo;
+            };
+            cascading('sqlite', static function (\PDO $seed, \PDO $staging) use ($open, $test): void {
+                $production = $open();
+                $production->exec('PRAGMA journal_mode = WAL');
+                $production->exec('CREATE TABLE tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL)');
+                $production->exec('CREATE TABLE customers (id INTEGER PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, name TEXT NOT NULL)');
+                $production->exec("INSERT INTO tenants VALUES ('t1', 'Acme'), ('t2', 'Globex')");
+                $production->exec("INSERT INTO customers VALUES (1, 't1', 'Ada'), (2, 't2', 'Grace')");
+                $test($production, $open(), $staging);
+            });
+        } finally {
+            foreach (glob("{$directory}/*") ?: [] as $file) {
+                unlink($file);
+            }
+            rmdir($directory);
+        }
+
+        return;
+    }
+
+    cascading('pgsql', static function (\PDO $production, \PDO $staging) use ($test): void {
+        $other = Databases::another('pgsql');
+        $other->exec('SET search_path TO ' . (string) $production->query('SELECT current_schema()')->fetchColumn());
+        $test($production, $other, $staging);
+    });
+}
+
+// What the import copies is production at one moment: a row production
+// writes while it runs is in none of the tables, rather than in the ones
+// read after the write and not the ones before.
+it('reads production as it was when the import began', function (string $driver) {
+    twoWriters($driver, static function (\PDO $production, \PDO $other, \PDO $staging): void {
+        $wrote = false;
+        $plan = ScrubPlan::create()
+            ->shared('tenants', ['id' => Scrub::keep(), 'name' => Scrub::using(static function (mixed $name) use ($other, &$wrote): mixed {
+                if (!$wrote) {
+                    $wrote = true;
+                    $other->exec("INSERT INTO customers VALUES (3, 't1', 'Written during the import')");
+                }
+
+                return $name;
+            })])
+            ->table('customers', ['id' => Scrub::keep(), 'tenant_id' => Scrub::keep(), 'name' => Scrub::keep()], tenant: 'tenant_id');
+
+        new StagingImport($plan, production(), staging())->run($production, $staging);
+
+        expect($wrote)->toBeTrue()
+            ->and(array_column(rows($staging, 'customers'), 'name'))->toBe(['Ada', 'Grace'])
+            ->and($production->inTransaction())->toBeFalse()
+            ->and((int) $production->query('SELECT COUNT(*) FROM customers')->fetchColumn())->toBe(3);
+    });
+})->with(['sqlite', 'pgsql']);
