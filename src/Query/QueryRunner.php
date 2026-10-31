@@ -749,12 +749,6 @@ final class QueryRunner
     }
 
     /**
-     * Encodes one result, which is where the data boundary is enforced for
-     * queries: a model returned by a query body never reaches the renderer.
-     *
-     * @return array{value?: mixed, error?: array{code: string, digest: string, message?: string}}
-     */
-    /**
      * A cached value for this call, or null for a miss.
      *
      * @param array<string, mixed> $arguments
@@ -888,6 +882,9 @@ final class QueryRunner
     }
 
     /**
+     * Encodes one result, which is where the data boundary is enforced for
+     * queries: a model returned by a query body never reaches the renderer.
+     *
      * @param (\Closure(string): \Tinvar\Data\DataContext)|null $provide what a ProvidesData
      *        in the value is told; none for a query's result, which is placed on no page
      * @param string $segment what the value's dot paths are rooted at
