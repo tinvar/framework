@@ -217,6 +217,18 @@ final class SupplyChain
                 continue;
             }
             $locked = \is_array($entries[$key] ?? null) ? $entries[$key] : [];
+            // A package no registry serves yet, which the lock installs
+            // from nowhere: `npm install` would fetch it from the registry,
+            // where its name is anyone's (ADR 0138).
+            foreach (['dependencies', 'devDependencies', 'optionalDependencies'] as $field) {
+                foreach (\is_array($manifest[$field] ?? null) ? array_keys($manifest[$field]) : [] as $name) {
+                    $name = (string) $name;
+                    if ($this->policy->unpublished($name) && array_filter($packages, static fn (LockedPackage $p): bool => $p->name === $name) === []) {
+                        $violations[] = "{$file} depends on {$name}, which PackagePolicy::\$unpublished says no registry serves yet, and package-lock.json does not install it: "
+                            . "npm would fetch it from the registry, where its name is anyone's. Put its `npm pack` tarball inside the project and depend on it as file:, then npm install --ignore-scripts.";
+                    }
+                }
+            }
             foreach (['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as $field) {
                 $want = \is_array($manifest[$field] ?? null) ? $manifest[$field] : [];
                 $have = \is_array($locked[$field] ?? null) ? $locked[$field] : [];
@@ -257,6 +269,10 @@ final class SupplyChain
                 if (!self::insideProject($tarball) || !str_ends_with($tarball, '.tgz')) {
                     $violations[] = "{$package->where} installs {$package->source}, which is no tarball inside the project.";
                 }
+            } elseif ($this->policy->unpublished($package->name)) {
+                $violations[] = "{$package->where} resolves from " . ($package->source ?? 'nowhere it names')
+                    . ", and PackagePolicy::\$unpublished says no registry serves {$package->name} yet: whatever is published under its name is anyone's. "
+                    . 'Install it from a tarball inside the project (file:) or a workspace.';
             } elseif ($package->source === null || !$this->policy->registryAllows($package->source)) {
                 $violations[] = "{$package->where} resolves from " . ($package->source ?? 'nowhere it names')
                     . ', which PackagePolicy::$registries does not allow.';

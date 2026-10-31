@@ -197,6 +197,29 @@ describe('pins', function () {
         ]);
     });
 
+    // ADR 0138: a package no registry serves yet -- @tinvar/*, whose scope
+    // nobody has claimed -- is whatever anyone published under its name
+    // there. It comes from inside the project or not at all.
+    it('refuses an unpublished package resolved from a registry, or left for npm to fetch', function () {
+        $policy = new PackagePolicy(unpublished: ['@tinvar/*', 'solo']);
+        $this->workspace->packageJson['dependencies'] += ['@tinvar/react' => '0.4.x', '@tinvar/renderer' => 'file:.packages/tinvar-renderer-0.4.0.tgz', 'solo' => '1.0.0', '@tinvar/link' => '*', '@other/kit' => '1.0.0'];
+        $this->workspace->npm('@tinvar/renderer', ['resolved' => 'file:.packages/tinvar-renderer-0.4.0.tgz']);
+        $this->workspace->npm('solo');
+        $this->workspace->npm('@tinvar/link', ['resolved' => 'packages/link', 'link' => true, 'integrity' => null]);
+        $this->workspace->npm('@other/kit');
+
+        expect(violations($this->workspace, $policy))->toBe([
+            'package.json depends on @tinvar/react, which PackagePolicy::$unpublished says no registry serves yet, and package-lock.json does not install it: '
+                . 'npm would fetch it from the registry, where its name is anyone\'s. Put its `npm pack` tarball inside the project and depend on it as file:, then npm install --ignore-scripts.',
+            'package-lock.json node_modules/solo resolves from https://registry.npmjs.org/solo/-/solo-1.3.0.tgz, and PackagePolicy::$unpublished says no registry serves solo yet: '
+                . 'whatever is published under its name is anyone\'s. Install it from a tarball inside the project (file:) or a workspace.',
+        ]);
+    });
+
+    it('takes a name or a whole scope as unpublished, and nothing looser', function (string $entry) {
+        new PackagePolicy(unpublished: [$entry]);
+    })->with(['*', '@tinvar', '@tinvar/', 'Tinvar', '@tinvar/re*'])->throws(\InvalidArgumentException::class, 'is not an npm package name or @scope/*');
+
     it('refuses a Composer package pinned to a tag rather than a commit', function () {
         $this->workspace->composer('acme/tagged', [
             'source' => ['type' => 'git', 'url' => 'https://github.com/acme/tagged.git', 'reference' => 'v1.0.0'],

@@ -35,12 +35,16 @@ final readonly class PackagePolicy
      * @param array<string, string> $installScripts npm package => why it may run an install script
      * @param list<string> $registries URL prefixes npm packages may resolve from
      * @param list<string> $composerSources URL prefixes Composer packages may download from: every dist, source and mirror
+     * @param list<string> $unpublished npm packages no registry serves this project yet, by name or as a whole
+     *        `@scope/*`: each installed from inside the project -- a tarball or a workspace -- and never from a
+     *        registry, where whatever is published under an unclaimed name is anyone's (ADR 0138)
      */
     public function __construct(
         public array $packages = [],
         public array $installScripts = [],
         public array $registries = [self::NPM_REGISTRY],
         public array $composerSources = [self::GITHUB_ARCHIVES, self::GITHUB_REPOSITORIES],
+        public array $unpublished = [],
     ) {
         $seen = [];
         foreach ($packages as $package) {
@@ -55,6 +59,14 @@ final readonly class PackagePolicy
                 throw new \InvalidArgumentException(
                     "Say why {$name} may run an install script: the reason is what a reviewer reads.",
                 );
+            }
+        }
+
+        // A name, or a scope whole: a looser pattern says less than a
+        // reviewer would read into it.
+        foreach ($unpublished as $entry) {
+            if (preg_match('#^(?:@[a-z0-9][a-z0-9._~-]*/(?:\*|[a-z0-9][a-z0-9._~-]*)|[a-z0-9][a-z0-9._~-]*)$#', $entry) !== 1) {
+                throw new \InvalidArgumentException("'{$entry}' is not an npm package name or @scope/*.");
             }
         }
 
@@ -74,6 +86,18 @@ final readonly class PackagePolicy
     {
         foreach ($this->packages as $package) {
             if ($package->ecosystem === $ecosystem && $package->name === $name) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** Whether $name is one no registry serves yet: named, or in a scope named whole. */
+    public function unpublished(string $name): bool
+    {
+        foreach ($this->unpublished as $entry) {
+            if ($entry === $name || (str_ends_with($entry, '/*') && str_starts_with($name, substr($entry, 0, -1)))) {
                 return true;
             }
         }
