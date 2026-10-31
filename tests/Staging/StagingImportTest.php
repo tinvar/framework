@@ -16,6 +16,9 @@ use Tinvar\Staging\ScrubPlan;
 use Tinvar\Staging\StagingImport;
 use Tinvar\Support\AppKey;
 use Tinvar\Support\Encrypter;
+use Tinvar\Tests\Support\Fixtures\Databases;
+
+require_once __DIR__ . '/../Support/Fixtures/databases.php';
 
 const KEY = 'production-key-of-at-least-thirty-two-bytes';
 
@@ -295,3 +298,93 @@ it('leaves production\'s mark behind, and refuses to write into a database that 
         ->toThrow(ImportRefused::class, "marked production's")
         ->and(rows($marked, 'products'))->toBe([['id' => 9, 'name' => 'Kept']]);
 });
+
+/**
+ * Two databases of $driver's -- production's and staging's -- each with a
+ * shared parent table and a child that cascades from it, for $test.
+ *
+ * @param \Closure(\PDO, \PDO): void $test
+ */
+function cascading(string $driver, \Closure $test): void
+{
+    $schema = [
+        'CREATE TABLE tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL)',
+        'CREATE TABLE customers (id INTEGER PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, name TEXT NOT NULL)',
+    ];
+    $seed = static function (\PDO $pdo) use ($schema): void {
+        foreach ($schema as $statement) {
+            $pdo->exec($statement);
+        }
+        $pdo->exec("INSERT INTO tenants VALUES ('t1', 'Acme'), ('t2', 'Globex')");
+        $pdo->exec("INSERT INTO customers VALUES (1, 't1', 'Ada'), (2, 't2', 'Grace')");
+    };
+
+    if ($driver === 'sqlite') {
+        $production = new \PDO('sqlite::memory:');
+        $staging = new \PDO('sqlite::memory:');
+        foreach ([$production, $staging] as $pdo) {
+            $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+            $pdo->exec('PRAGMA foreign_keys = ON');
+            $seed($pdo);
+        }
+        $test($production, $staging);
+
+        return;
+    }
+
+    $missing = Databases::postgresMissing();
+    if ($missing !== null) {
+        test()->markTestSkipped($missing);
+    }
+    Databases::inScratchSchema('pgsql', static function (\PDO $production, string $schema) use ($seed, $test): void {
+        $seed($production);
+        $staging = Databases::another('pgsql');
+        $other = $schema . '_staging';
+        $staging->exec("CREATE SCHEMA {$other}");
+        $staging->exec("SET search_path TO {$other}");
+        try {
+            $seed($staging);
+            $test($production, $staging);
+        } finally {
+            if ($staging->inTransaction()) {
+                $staging->rollBack();
+            }
+            $staging->exec("DROP SCHEMA {$other} CASCADE");
+        }
+    });
+}
+
+// A shared table is every tenant's: an import of one tenant writes its rows
+// over staging's, and never empties it -- an ON DELETE CASCADE would take
+// the other tenants' rows with it.
+it('leaves other tenants\' rows alone in an import of one tenant, where a shared table cascades', function (string $driver) {
+    cascading($driver, static function (\PDO $production, \PDO $staging): void {
+        $production->exec("UPDATE tenants SET name = 'Acme Renamed' WHERE id = 't1'");
+        $production->exec("INSERT INTO tenants VALUES ('t3', 'Initech')");
+        $production->exec("UPDATE customers SET name = 'Ada Updated' WHERE id = 1");
+
+        $plan = ScrubPlan::create()
+            ->shared('tenants', ['id' => Scrub::keep(), 'name' => Scrub::keep()])
+            ->table('customers', ['id' => Scrub::keep(), 'tenant_id' => Scrub::keep(), 'name' => Scrub::keep()], tenant: 'tenant_id');
+
+        $written = new StagingImport($plan, production(), staging())->run($production, $staging, tenant: 't1');
+
+        expect($written)->toBe(['tenants' => 3, 'customers' => 1])
+            ->and(rows($staging, 'customers'))->toBe([
+                ['id' => 1, 'tenant_id' => 't1', 'name' => 'Ada Updated'],
+                ['id' => 2, 'tenant_id' => 't2', 'name' => 'Grace'],
+            ])
+            ->and(array_column(rows($staging, 'tenants'), 'name', 'id'))->toBe(['t1' => 'Acme Renamed', 't2' => 'Globex', 't3' => 'Initech']);
+    });
+})->with(['sqlite', 'pgsql']);
+
+it('refuses an import of one tenant through a shared table with no primary key to write its rows over', function () {
+    $production = new \PDO('sqlite::memory:');
+    $staging = new \PDO('sqlite::memory:');
+    foreach ([$production, $staging] as $pdo) {
+        $pdo->exec('CREATE TABLE regions (name TEXT NOT NULL)');
+    }
+    $plan = ScrubPlan::create()->shared('regions', ['name' => Scrub::keep()]);
+
+    new StagingImport($plan, production(), staging())->run($production, $staging, tenant: 't1');
+})->throws(ImportRefused::class, 'regions is shared and has no primary key');

@@ -22,7 +22,9 @@ use Tinvar\Support\Encrypter;
  *     ignored -- and every column of a copied table has a rule, and every
  *     rule a column; staging has every table and column it writes;
  *   - in an import of one tenant, every copied table says which column is
- *     the tenant's, or that it is shared;
+ *     the tenant's, or that it is shared -- and a shared table, which is
+ *     every tenant's, has a primary key: it is written over by that key,
+ *     never emptied, since a cascade would take other tenants' rows;
  *   - the two keys are not one: a staging encrypter with production's id
  *     is production's key, and the import stops;
  *   - all of that is checked before a row is read, and the rows are
@@ -81,13 +83,16 @@ final readonly class StagingImport
             }
 
             // Emptied newest first, so a row is gone before the row it names.
+            // In an import of one tenant a shared table is every tenant's:
+            // it is never emptied -- an ON DELETE CASCADE would take the
+            // other tenants' rows with it -- and production's rows are
+            // written over staging's by primary key instead.
             $tables = $this->plan->tables();
             foreach (array_reverse(array_keys($tables)) as $table) {
-                $column = $tenant === null || $tables[$table]['shared'] ? null : $tables[$table]['tenant'];
-                if ($column === null) {
+                if ($tenant === null) {
                     $staging->exec('DELETE FROM ' . $to->quote($table));
-                } else {
-                    $staging->prepare('DELETE FROM ' . $to->quote($table) . ' WHERE ' . $to->quote($column) . ' = ?')->execute([$tenant]);
+                } elseif (!$tables[$table]['shared'] && $tables[$table]['tenant'] !== null) {
+                    $staging->prepare('DELETE FROM ' . $to->quote($table) . ' WHERE ' . $to->quote($tables[$table]['tenant']) . ' = ?')->execute([$tenant]);
                 }
             }
 
@@ -154,6 +159,14 @@ final readonly class StagingImport
             if ($tenant !== null && !$declared['shared'] && $declared['tenant'] === null) {
                 $problems[] = "{$table} says no tenant column, and is not shared: an import of one tenant would copy every tenant's rows";
             }
+            if ($tenant !== null && $declared['shared']) {
+                $key = $to->primaryKey($table);
+                if ($key === []) {
+                    $problems[] = "{$table} is shared and has no primary key in staging: an import of one tenant writes a shared table's rows over staging's by its key, and never empties it";
+                } elseif (array_diff($key, array_keys($declared['columns'])) !== []) {
+                    $problems[] = "staging's primary key of {$table} (" . implode(', ', $key) . ') is not among the columns the plan copies';
+                }
+            }
         }
 
         // ScrubPlan refuses these already; held again here, where it counts.
@@ -193,10 +206,11 @@ final readonly class StagingImport
         $read = $production->prepare($filter === null ? $select : "{$select} WHERE " . $from->quote($filter) . ' = ?');
         $read->execute($filter === null ? [] : [$tenant]);
 
-        $insert = $staging->prepare(
-            'INSERT INTO ' . $to->quote($table) . ' (' . implode(', ', array_map($to->quote(...), $columns)) . ') VALUES ('
-            . implode(', ', array_fill(0, \count($columns), '?')) . ')',
-        );
+        $key = $tenant !== null && $declared['shared'] ? $to->primaryKey($table) : [];
+        $insert = $staging->prepare($key !== []
+            ? $to->upsert($table, $columns, $key)
+            : 'INSERT INTO ' . $to->quote($table) . ' (' . implode(', ', array_map($to->quote(...), $columns)) . ') VALUES ('
+                . implode(', ', array_fill(0, \count($columns), '?')) . ')');
 
         $context->table = $table;
         $count = 0;

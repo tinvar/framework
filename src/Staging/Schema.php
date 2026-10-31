@@ -73,6 +73,67 @@ final class Schema
         return $this->driver === 'mysql' ? "`{$identifier}`" : "\"{$identifier}\"";
     }
 
+    /**
+     * The table's primary key columns, in key order; [] where it has none.
+     *
+     * @return list<string>
+     */
+    public function primaryKey(string $table): array
+    {
+        if ($this->driver === 'sqlite') {
+            $statement = $this->pdo->query('PRAGMA table_info(' . $this->quote($table) . ')');
+            $key = [];
+            foreach ($statement === false ? [] : $statement->fetchAll(\PDO::FETCH_ASSOC) as $column) {
+                if ((int) $column['pk'] > 0) {
+                    $key[(int) $column['pk']] = (string) $column['name'];
+                }
+            }
+            ksort($key);
+
+            return array_values($key);
+        }
+
+        $statement = $this->pdo->prepare(
+            'SELECT kcu.column_name FROM information_schema.table_constraints tc '
+            . 'JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = tc.constraint_name '
+            . 'AND kcu.table_schema = tc.table_schema AND kcu.table_name = tc.table_name '
+            . "WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_name = ? AND tc.table_schema = "
+            . ($this->driver === 'pgsql' ? 'current_schema()' : 'DATABASE()') . ' ORDER BY kcu.ordinal_position',
+        );
+        $statement->execute([$table]);
+
+        return array_values(array_map('strval', $statement->fetchAll(\PDO::FETCH_COLUMN)));
+    }
+
+    /**
+     * An INSERT of $columns that writes over the row with the same $key
+     * rather than failing on it, in the database's own syntax.
+     *
+     * @param list<string> $columns
+     * @param non-empty-list<string> $key
+     */
+    public function upsert(string $table, array $columns, array $key): string
+    {
+        $insert = 'INSERT INTO ' . $this->quote($table) . ' (' . implode(', ', array_map($this->quote(...), $columns)) . ') VALUES ('
+            . implode(', ', array_fill(0, \count($columns), '?')) . ')';
+        $rest = array_values(array_diff($columns, $key));
+
+        if ($this->driver === 'mysql') {
+            $set = $rest === []
+                ? [$this->quote($key[0]) . ' = ' . $this->quote($key[0])]
+                : array_map(fn (string $column): string => $this->quote($column) . ' = VALUES(' . $this->quote($column) . ')', $rest);
+
+            return "{$insert} ON DUPLICATE KEY UPDATE " . implode(', ', $set);
+        }
+
+        $conflict = ' ON CONFLICT (' . implode(', ', array_map($this->quote(...), $key)) . ')';
+
+        return $rest === []
+            ? "{$insert}{$conflict} DO NOTHING"
+            : "{$insert}{$conflict} DO UPDATE SET "
+                . implode(', ', array_map(fn (string $column): string => $this->quote($column) . ' = excluded.' . $this->quote($column), $rest));
+    }
+
     /** A transaction whose foreign keys are checked at its end, where the database lets them be. */
     public function begin(): void
     {
