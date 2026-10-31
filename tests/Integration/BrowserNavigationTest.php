@@ -707,7 +707,8 @@ it('uploads an avatar and a receipt photo from the account page, and refuses a f
     // Refused by what its bytes are, whatever its name and type said.
     expect($result['refused'])->toStartWith('That file is not a PNG, JPEG, WebP or AVIF image');
 
-    // Three files to /_upload, each with the CSRF header; two saved, each by
+    // Three files sent, each a resumable upload begun -- and each of its
+    // chunks sent -- with the CSRF header; two saved, each by
     // its own action -- the refused one never reached one. (Sign-in may be
     // sent twice: a first visit's 419 is retried with the cookie it set.)
     $saves = array_values(array_filter($result['actions'], static fn (string $a): bool => $a !== 'account.signIn'));
@@ -718,6 +719,68 @@ it('uploads an avatar and a receipt photo from the account page, and refuses a f
     expect($result['fetched'])->toBe(['status' => 200, 'type' => 'image/png', 'nosniff' => 'nosniff'])
         ->and($result['elsewhere'])->toBe(404)
         ->and($result['receipts'])->toBe(1);
+});
+
+// ADR 0143, as a person meets it: a receipt photo uploading, the page
+// reloaded mid-upload, the new page offering to resume, the same file
+// chosen again -- and only the bytes the shop did not hold sent again.
+it('resumes an upload after the page is reloaded mid-upload, sending the server only the bytes it lacks', function () use ($root) {
+    $storage = sys_get_temp_dir() . '/tinvar-e2e-uploads-' . bin2hex(random_bytes(4));
+    $fixtures = sys_get_temp_dir() . '/tinvar-e2e-images-' . bin2hex(random_bytes(4));
+    mkdir($fixtures, 0o700);
+    // Noise, so it does not compress: three chunks of a megabyte, under the
+    // receipt's five.
+    $image = imagecreatetruecolor(900, 900);
+    \assert($image !== false);
+    for ($y = 0; $y < 900; $y++) {
+        for ($x = 0; $x < 900; $x++) {
+            imagesetpixel($image, $x, $y, random_int(0, 0xFFFFFF));
+        }
+    }
+    imagepng($image, "{$fixtures}/long-receipt.png");
+
+    $output = '';
+    try {
+        served($root, function (string $origin) use ($root, $fixtures, &$output): void {
+            $output = runWithTimeout(
+                ['node', "{$root}/examples/shop/e2e/resumable-upload.mjs", $origin, DemoAccount::EMAIL, DemoAccount::PASSWORD, "{$fixtures}/long-receipt.png"],
+                $root,
+                120,
+            );
+        }, ['SHOP_STORAGE' => $storage]);
+        $partial = glob("{$storage}/tinvar-partial/*") ?: [];
+    } finally {
+        exec('rm -rf ' . escapeshellarg($storage) . ' ' . escapeshellarg($fixtures));
+    }
+
+    $result = json_decode((string) $output, true);
+    expect($result)->toBeArray("the browser script failed:\n{$output}");
+    expect($result['errors'])->toBe([]);
+
+    $chunk = \Tinvar\Uploads\UploadEndpoint::CHUNK_BYTES;
+    $size = $result['size'];
+    expect($size)->toBeGreaterThan(2 * $chunk);
+    $before = array_values(array_filter($result['chunks'], static fn (array $c): bool => $c['page'] === 'before'));
+    $after = array_values(array_filter($result['chunks'], static fn (array $c): bool => $c['page'] === 'after'));
+
+    // One upload, begun once: the new page went on with it, and began none.
+    expect($result['begun'])->toBe(['before'])
+        // The first chunk went in; the second was cut off by the reload.
+        ->and(array_column($before, 'offset'))->toBe([0, $chunk])
+        // The new page asked where the shop was -- a megabyte in -- and
+        // offered to go on from there.
+        ->and($result['offsets'][0] ?? null)->toBe($chunk)
+        ->and($result['offer'])->toContain('Resume uploading long-receipt.png (')
+        ->and($result['offer'])->toContain('% done)');
+
+    // Then only the rest: from the first byte the shop lacked, never from
+    // zero, and not a byte of what it held sent again.
+    expect($after[0]['offset'] ?? null)->toBe($chunk)
+        ->and(array_sum(array_column($after, 'bytes')))->toBe($size - $chunk)
+        ->and(array_column($after, 'csrf'))->each->toBeTrue()
+        ->and($result['pendingAfter'])->toBe(0)
+        // Kept as a receipt, and nothing left waiting.
+        ->and($partial)->toBe([]);
 });
 
 // "#[Optional] ... only when named in X-Only" (ADR 0045): the product page

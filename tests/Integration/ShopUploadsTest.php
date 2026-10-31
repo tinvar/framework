@@ -25,6 +25,7 @@ use Tinvar\Orm\PdoConnection;
 use Tinvar\Support\PrivateDirectory;
 use Tinvar\Support\Signer;
 use Tinvar\Testing\Fakes\StorageFake;
+use Tinvar\Uploads\UploadEndpoint;
 use Tinvar\Uploads\UploadTicket;
 
 const KEY = 'shop-uploads-test-key-of-32-bytes!!!';
@@ -98,6 +99,39 @@ final class Visitor
         } finally {
             @unlink($path);
         }
+    }
+
+    /**
+     * POSTs to a resumable upload's paths as the upload field does: JSON, or
+     * a chunk as the raw body under its session and offset.
+     *
+     * @param array<string, mixed>|string $body
+     * @param array<string, string> $headers
+     */
+    public function session(string $path, array|string $body, array $headers = []): Response
+    {
+        $token = $this->csrf();
+        $chunk = \is_string($body);
+
+        return $this->keep($this->kernel->handle(
+            new Request(
+                'POST',
+                $path,
+                [
+                    'content-type' => $chunk ? 'application/offset+octet-stream' : 'application/json',
+                    'accept' => 'application/json',
+                    'x-xsrf-token' => $token,
+                    'rsc' => '1',
+                    ...$headers,
+                ],
+                [],
+                [],
+                [...$this->cookies, '__Host-XSRF-TOKEN' => $token],
+                null,
+                '127.0.0.1',
+            ),
+            $chunk ? $body : json_encode($body, JSON_THROW_ON_ERROR),
+        ));
     }
 
     public function signIn(string $email, string $password): void
@@ -264,6 +298,70 @@ it('uploads an avatar and a receipt from the account page, and shows them to the
             ->and($pdo->query('SELECT COUNT(*) FROM uploads WHERE storage_key = ' . $pdo->quote($receiptKey))?->fetchColumn())->toBe(0);
         $storage->assertMissing($receiptKey)->assertCount(1);
         expect($customer->payload('/account')->body())->toContain('No receipts yet');
+    } finally {
+        $renderer->stop();
+    }
+});
+
+// ADR 0143: the receipt field's upload, resumable, through the shop's own
+// stack -- begun under the page's ticket, its first chunk in, the page
+// loaded again, and only the rest sent before the receipt is saved.
+it('resumes a receipt upload from the byte the shop holds, and saves it once whole', function () {
+    $database = database();
+    $renderer = Renderer::start('msgpack', 'shop-uploads-resumable');
+    $storage = new StorageFake();
+    $kernel = Kernel::fromEnvironment($renderer->socketPath, key: KEY, database: $database, storage: $storage);
+    $customer = new Visitor($kernel);
+    $other = new Visitor($kernel);
+    $pdo = new \PDO("sqlite:{$database}");
+    $demo = (string) $pdo->query('SELECT id FROM customers WHERE email = ' . $pdo->quote(DemoAccount::EMAIL))?->fetchColumn();
+
+    // A PNG of noise, large enough for two chunks, and under the receipt's limit.
+    $image = imagecreatetruecolor(400, 400);
+    \assert($image !== false);
+    for ($i = 0; $i < 160_000; $i++) {
+        imagesetpixel($image, $i % 400, intdiv($i, 400), random_int(0, 0xFFFFFF));
+    }
+    ob_start();
+    imagepng($image);
+    $bytes = (string) ob_get_clean();
+    $chunk = UploadEndpoint::MIN_CHUNK_BYTES;
+    expect(\strlen($bytes))->toBeGreaterThan($chunk);
+
+    try {
+        $customer->signIn(DemoAccount::EMAIL, DemoAccount::PASSWORD);
+        $ticket = tickets($customer->payload('/account'))['receipt'];
+
+        $begun = $customer->session(UploadEndpoint::SESSION_PATH, ['ticket' => $ticket, 'size' => \strlen($bytes), 'name' => 'long receipt.png']);
+        expect($begun->status)->toBe(201, $begun->body());
+        $session = (string) json_decode($begun->body(), true)['session'];
+        $first = $customer->session(UploadEndpoint::SESSION_CHUNK_PATH, substr($bytes, 0, $chunk), [
+            'upload-session' => $session,
+            'upload-offset' => '0',
+        ]);
+        expect($first->status)->toBe(200, $first->body())
+            ->and($storage->keys('receipts'))->toBe([]);
+
+        // The page loaded again: the session is still this customer's, and
+        // the shop says where it got to. Another customer's is refused.
+        $customer->payload('/account');
+        $offset = $customer->session(UploadEndpoint::SESSION_OFFSET_PATH, ['session' => $session]);
+        $other->signIn('customer1@shop.test', 'pellwick-1');
+        expect(json_decode($offset->body(), true)['offset'])->toBe($chunk)
+            ->and($other->session(UploadEndpoint::SESSION_OFFSET_PATH, ['session' => $session])->status)->toBe(403);
+
+        $done = $customer->session(UploadEndpoint::SESSION_CHUNK_PATH, substr($bytes, $chunk), [
+            'upload-session' => $session,
+            'upload-offset' => (string) $chunk,
+        ]);
+        expect($done->status)->toBe(201, $done->body());
+        $reference = (string) json_decode($done->body(), true)['upload'];
+
+        $saved = $customer->action('account.addReceipt', ['customer' => $demo, 'receipt' => $reference]);
+        expect($saved->status)->toBe(200, $saved->body())
+            ->and($storage->keys('tinvar-partial'))->toBe([])
+            ->and($storage->keys('receipts'))->toHaveCount(1)
+            ->and($customer->payload('/account')->body())->toContain('long receipt.png');
     } finally {
         $renderer->stop();
     }
