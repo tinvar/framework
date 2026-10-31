@@ -157,7 +157,7 @@ return [
             'tools' => ['Tinvar\\Tools\\', 'Tinvar\\Attributes\\Tool'],
             'services' => ['Tinvar\\Services\\', 'Tinvar\\Attributes\\ServiceCall'],
             'gateway' => ['Tinvar\\Gateway\\'],
-            'kernel' => ['Tinvar\\Http\\Kernel', 'Tinvar\\Console\\', 'Tinvar\\Server\\', 'Tinvar\\Http\\TestableApplication', 'Tinvar\\Http\\BrowserTestable', 'Tinvar\\Attributes\\Command'],
+            'kernel' => ['Tinvar\\Http\\Kernel', 'Tinvar\\Console\\', 'Tinvar\\Discovery\\', 'Tinvar\\Server\\', 'Tinvar\\Http\\TestableApplication', 'Tinvar\\Http\\BrowserTestable', 'Tinvar\\Attributes\\Command'],
             ...$above,
         ],
         'uses' => [
