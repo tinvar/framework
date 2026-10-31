@@ -31,7 +31,7 @@ const LOCAL = ['TINVAR_ENV' => 'local'];
 function tools(string $database, array $env, string &$out, string &$err, ?string $log = null): DevToolsCommand
 {
     $routes = new RouteRegistry();
-    $routes->registerAll(Kernel::ROUTES);
+    $routes->registerAll(Kernel::classes()->routes);
 
     return new DevToolsCommand(
         app: Shop::root(),
@@ -49,7 +49,7 @@ function tools(string $database, array $env, string &$out, string &$err, ?string
             );
         },
         models: [\Shop\Models\Product::class, \Shop\Models\Customer::class, \Shop\Models\Order::class],
-        configs: Kernel::CONFIGS,
+        configs: Kernel::classes()->configs,
         log: $log,
         env: $env,
         out: static function (string $text) use (&$out): void {

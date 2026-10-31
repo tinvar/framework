@@ -35,7 +35,7 @@ function withShopEnvironment(array $env, \Closure $body): mixed
 }
 
 it('declares its config as tinvar check holds it', function () {
-    expect(Configs::check(Kernel::CONFIGS))->toBe([]);
+    expect(Configs::check(Kernel::classes()->configs))->toBe([]);
 });
 
 it('refuses to boot on a malformed setting, naming every one and quoting none', function () {

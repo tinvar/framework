@@ -44,7 +44,7 @@ function assets(): array
 
 it('keeps the admin panel\'s views, as the routes put them, to chunks of the panel\'s own', function () {
     $routes = new RouteRegistry();
-    $routes->registerAll(Kernel::ROUTES);
+    $routes->registerAll(Kernel::classes()->routes);
     $report = report();
 
     expect($report['panels']['admin']['views'])->toBe(['admin/deliveries', 'admin/orders', 'admin/staff', 'admin/transfers'])

@@ -251,12 +251,15 @@ describe('dev mode, from the environment', function () {
     it('stops the shop from booting rather than serving the overlay in production', function () {
         putenv('TINVAR_DEV=1');
         putenv('TINVAR_ENV=production');
+        // A production build has its discovery manifest (ADR 0146).
+        putenv('TINVAR_BUILD_DIR=' . \Tinvar\Bench\Shop::productionBuild());
         try {
             expect(fn () => ShopKernel::fromEnvironment('/tmp/none.sock', key: str_repeat('k', 40), database: ':memory:'))
                 ->toThrow(\RuntimeException::class, 'TINVAR_DEV=1 is refused');
         } finally {
             putenv('TINVAR_DEV');
             putenv('TINVAR_ENV');
+            putenv('TINVAR_BUILD_DIR');
         }
     });
 });

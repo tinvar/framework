@@ -342,7 +342,7 @@ describe('from the command line', function () {
     it('refuses to seed where the environment says production, --non-production or not', function () {
         $database = database();
 
-        [$status, , $err] = run([PHP_BINARY, 'bin/tinvar', 'db:seed', "--database={$database}"], ['APP_ENV' => 'production']);
+        [$status, , $err] = run([PHP_BINARY, 'bin/tinvar', 'db:seed', "--database={$database}"], ['APP_ENV' => 'production', 'TINVAR_BUILD_DIR' => \Tinvar\Bench\Shop::productionBuild()]);
         [$flagged, , $flaggedErr] = run(['examples/shop/bin/seed', '--non-production', "--database={$database}"], ['NODE_ENV' => 'production']);
 
         expect($status)->toBe(1)

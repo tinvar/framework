@@ -298,7 +298,7 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
 function devDump(string $app): array
 {
     $routes = new RouteRegistry();
-    $routes->registerAll(ShopKernel::ROUTES);
+    $routes->registerAll(ShopKernel::classes()->routes);
     $out = $err = '';
     $before = getenv('TINVAR_ENV');
     putenv('TINVAR_ENV=local');

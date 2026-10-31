@@ -156,8 +156,8 @@ it('names the renderers\' user from the config, blank as unset', function () {
 });
 
 it('is listed by the shop beside its own classes, none reading a variable another does', function () {
-    expect(\Shop\Kernel::CONFIGS)->toContain(FrameworkConfig::class)
-        ->and(Configs::check(\Shop\Kernel::CONFIGS))->toBe([]);
+    expect(\Shop\Kernel::classes()->configs)->toContain(FrameworkConfig::class)
+        ->and(Configs::check(\Shop\Kernel::classes()->configs))->toBe([]);
 });
 
 // ADR 0111: the node CA, staging's key and the FrankenPHP binary, read as

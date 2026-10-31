@@ -221,12 +221,15 @@ it('refuses to boot with the toolbar asked for in production', function (string 
     $directory = run();
     putenv(DevToolbar::ENV . "={$directory}");
     putenv("{$marker}=production");
+    // A production build has its discovery manifest (ADR 0146).
+    putenv('TINVAR_BUILD_DIR=' . Shop::productionBuild());
     try {
         expect(fn () => Kernel::fromEnvironment('/tmp/no.sock', key: KEY, database: Shop::database(), dev: false))
             ->toThrow(\RuntimeException::class, "TINVAR_DEV_TOOLBAR is refused: {$marker}=production");
     } finally {
         putenv(DevToolbar::ENV);
         putenv($marker);
+        putenv('TINVAR_BUILD_DIR');
     }
 })->with(['TINVAR_ENV', 'APP_ENV', 'NODE_ENV']);
 

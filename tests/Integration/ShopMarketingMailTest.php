@@ -751,7 +751,7 @@ describe('the scheduled newsletter', function () {
     it('is listed among the shop\'s tasks, hourly', function () {
         $schedule = new \ReflectionClass(ScheduleNewsletter::class)->getAttributes(\Tinvar\Attributes\Schedule::class)[0]->newInstance();
 
-        expect(Kernel::TASKS)->toContain(ScheduleNewsletter::class)
+        expect(Kernel::classes()->tasks)->toContain(ScheduleNewsletter::class)
             ->and($schedule->expression)->toBe('23 * * * *');
     });
 

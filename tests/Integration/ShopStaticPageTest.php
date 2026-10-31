@@ -71,7 +71,7 @@ function build(string $out, ?string $database = null, ?string $manifestFile = nu
     $renderer = Renderer::start('msgpack', 'static-build');
     try {
         $routes = new \Tinvar\Routing\RouteRegistry();
-        $routes->registerAll(Kernel::ROUTES);
+        $routes->registerAll(Kernel::classes()->routes);
         $manifest = FragmentManifestProducer::produce($routes, Shop::root() . '/dist/rsc/deferred.json');
         $kernel = Kernel::fromEnvironment($renderer->socketPath, key: KEY, database: $database ?? Shop::database(), manifest: $manifest);
         $built = new StaticBuilder($kernel->routes, $kernel->renderStatic(...))->build($out, $manifest);
@@ -239,7 +239,7 @@ describe('the built catalog', function () {
         $renderer = Renderer::start('msgpack', 'static-signed-in');
         try {
             $routes = new \Tinvar\Routing\RouteRegistry();
-            $routes->registerAll(Kernel::ROUTES);
+            $routes->registerAll(Kernel::classes()->routes);
             $manifest = FragmentManifestProducer::produce($routes, Shop::root() . '/dist/rsc/deferred.json');
             $kernel = Kernel::fromEnvironment($renderer->socketPath, key: KEY, database: Shop::database(), manifest: $manifest);
 

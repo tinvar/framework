@@ -250,12 +250,15 @@ it('answers a form a page posts with the fake, after the form is validated', fun
 it('refuses fakes where the environment says production', function () {
     $fakes = new BodyFakes();
     putenv('TINVAR_ENV=production');
+    // A production build has its discovery manifest (ADR 0146).
+    putenv('TINVAR_BUILD_DIR=' . Shop::productionBuild());
 
     try {
         expect(fn () => new BodyFakes())->toThrow(\LogicException::class, 'TINVAR_ENV=production')
             ->and(fn () => shop($fakes))->toThrow(\InvalidArgumentException::class, 'TINVAR_ENV=production');
     } finally {
         putenv('TINVAR_ENV');
+        putenv('TINVAR_BUILD_DIR');
     }
 });
 

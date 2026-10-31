@@ -181,5 +181,5 @@ it('takes the hub\'s grant away when the customer signs out, and refuses the old
 });
 
 it('is a channel the shop registers, and publishes to', function () {
-    expect(Kernel::CHANNELS)->toBe([OrderUpdates::class]);
+    expect(Kernel::classes()->channels)->toBe([OrderUpdates::class]);
 });

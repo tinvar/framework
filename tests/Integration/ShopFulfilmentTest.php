@@ -272,7 +272,7 @@ describe('the fulfilment workflow', function () {
     });
 
     it('is pruned nightly once ended, with the queue\'s finished batches and lapsed locks', function () {
-        expect(Kernel::TASKS)->toContain(\Tinvar\Jobs\PruneQueue::class, \Tinvar\Workflows\PruneWorkflows::class);
+        expect(Kernel::classes()->tasks)->toContain(\Tinvar\Jobs\PruneQueue::class, \Tinvar\Workflows\PruneWorkflows::class);
     });
 
     it('takes no signal for a fulfilment that is not waiting on this order', function () {

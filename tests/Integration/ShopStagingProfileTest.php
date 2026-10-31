@@ -36,9 +36,12 @@ function build(string $profile): string
     $directory = PrivateDirectory::create('profile');
     mkdir("{$directory}/rsc");
     file_put_contents("{$directory}/rsc/profile.json", json_encode(['format' => 1, 'profile' => $profile], JSON_THROW_ON_ERROR));
+    // And the discovery manifest a production or staging boot reads (ADR 0146).
+    \Tinvar\Discovery\Discovery::of(Kernel::class, $directory)->write();
     $owner = getmypid();
     register_shutdown_function(static function () use ($directory, $owner): void {
         if (getmypid() === $owner) {
+            @unlink("{$directory}/" . \Tinvar\Discovery\Manifest::FILE);
             PrivateDirectory::remove("{$directory}/rsc");
             PrivateDirectory::remove($directory);
         }
