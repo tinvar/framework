@@ -211,6 +211,54 @@ it('creates its file readable and writable by its owner alone, and refuses one o
     }
 });
 
+// SQLite reads its write-ahead log and journal beside the file as part of
+// it: a sidecar someone else could write is a way in for a forged series.
+it('refuses a sidecar others may write, and a directory anyone may write without the sticky bit', function (string $plant, ?int $dirMode) {
+    $directory = sys_get_temp_dir() . '/tinvar-metrics-' . bin2hex(random_bytes(4));
+    mkdir($directory, 0700);
+    try {
+        if ($plant !== '') {
+            touch("{$directory}/m.sqlite{$plant}");
+            chmod("{$directory}/m.sqlite{$plant}", 0o666);
+        }
+        if ($dirMode !== null) {
+            chmod($directory, $dirMode);
+        }
+
+        expect(static fn () => new SqliteMetricsStore("{$directory}/m.sqlite")->all())->toThrow(\RuntimeException::class, 'writable');
+    } finally {
+        chmod($directory, 0700);
+        exec('rm -rf ' . escapeshellarg($directory));
+    }
+})->with([
+    'a write-ahead log' => ['-wal', null],
+    'its shared memory' => ['-shm', null],
+    'a journal' => ['-journal', null],
+    'a directory anyone may write' => ['', 0o777],
+]);
+
+// /tmp is anyone's but sticky: no one else can replace a file in it, and
+// what they plant is refused by its owner. A group's shared data directory
+// is the group's to write, as an application's often is.
+it('opens a file in a sticky directory anyone may write, or one its group may, with sidecars its owner\'s alone', function (int $dirMode) {
+    $directory = sys_get_temp_dir() . '/tinvar-metrics-' . bin2hex(random_bytes(4));
+    mkdir($directory, 0700);
+    chmod($directory, $dirMode);
+    try {
+        $store = new SqliteMetricsStore("{$directory}/m.sqlite");
+        $store->add(['k' => 1]);
+        clearstatcache();
+        $sidecars = array_map(static fn (string $f): int => fileperms($f) & 0o777, glob("{$directory}/m.sqlite-*") ?: []);
+
+        expect($store->all())->toBe(['k' => 1])
+            ->and($sidecars)->not->toBeEmpty()
+            ->and(array_filter($sidecars, static fn (int $mode): bool => ($mode & 0o077) !== 0))->toBe([]);
+    } finally {
+        chmod($directory, 0700);
+        exec('rm -rf ' . escapeshellarg($directory));
+    }
+})->with(['sticky, anyone\'s' => [0o1777], 'its group\'s' => [0o770]]);
+
 it('writes what it can read when one of the stores it reads fails', function () {
     $failing = new class implements \Tinvar\Observability\MetricsStore {
         public function add(array $deltas): void {}
