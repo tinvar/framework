@@ -228,6 +228,21 @@ final readonly class AwaitsCollection implements Workflow
     }
 }
 
+/** Keeps most of what a checkpoint holds, then waits for an answer. */
+final readonly class KeepsALot implements Workflow
+{
+    public function run(Steps $steps): void
+    {
+        $steps->step('keep', static fn (): string => str_repeat('k', 13_000));
+        $answer = $steps->waitFor('answer', 3600);
+        $steps->step('read', static function () use ($answer): null {
+            Seen::$steps[] = ['step' => 'read', 'answer' => $answer === null ? 'none' : 'some'];
+
+            return null;
+        });
+    }
+}
+
 /** The jobs harness, with Workflows registered for the job to ask for, keeping progress and signals in memory. */
 function harness(): Harness
 {

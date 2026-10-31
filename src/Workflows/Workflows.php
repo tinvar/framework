@@ -117,7 +117,8 @@ final readonly class Workflows
      * ended, as for one that was signalled so already; an id says nothing
      * about any workflow elsewhere.
      *
-     * @param array<array-key, mixed> $data plain data, at most Steps::MAX_SIGNAL_BYTES of JSON
+     * @param array<array-key, mixed> $data plain data, nested at most Steps::MAX_SIGNAL_DEPTH
+     *        deep and at most Steps::MAX_SIGNAL_BYTES of JSON: what a checkpoint can keep
      */
     public function signal(string $id, string $name, array $data = []): bool
     {
@@ -280,8 +281,8 @@ final readonly class Workflows
 
     private static function assertPlain(mixed $value, int $depth): void
     {
-        if ($depth > 8) {
-            throw new \InvalidArgumentException('A signal\'s data nests at most 8 deep.');
+        if ($depth > Steps::MAX_SIGNAL_DEPTH) {
+            throw new \InvalidArgumentException('A signal\'s data nests at most ' . Steps::MAX_SIGNAL_DEPTH . ' deep: a checkpoint keeps it three levels down.');
         }
         if (\is_array($value)) {
             foreach ($value as $item) {

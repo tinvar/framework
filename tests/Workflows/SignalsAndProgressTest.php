@@ -21,7 +21,9 @@ use Tinvar\Tests\Workflows\Fixtures\AwaitsCollection;
 use Tinvar\Tests\Workflows\Fixtures\Flaky;
 use Tinvar\Tests\Workflows\Fixtures\Seen;
 use Tinvar\Tests\Workflows\Fixtures\ThreeSteps;
+use Tinvar\Workflows\Steps;
 use Tinvar\Workflows\WorkflowRecord;
+use Tinvar\Tests\Workflows\Fixtures\KeepsALot;
 use Tinvar\Workflows\Workflows;
 
 use function Tinvar\Tests\Workflows\Fixtures\harness;
@@ -205,4 +207,33 @@ it('keeps its records in the database, signals once a name, and forgets the ende
         ->and($store->prune(131))->toBe(1)
         ->and($store->find('w-1'))->toBeNull()
         ->and($store->received('w-1', 'collected'))->toBeNull();
+});
+
+// Review: a signal the checkpoint cannot hold failed the workflow at every
+// pause until its tries were spent.
+it('refuses a signal nested deeper, or larger, than a checkpoint can keep it', function () {
+    $h = harness();
+    $id = workflows($h)->start(new AwaitsCollection());
+    $deep = ['a' => ['b' => ['c' => ['d' => ['e' => 1]]]]];
+
+    expect(fn () => workflows($h)->signal($id, 'collected', $deep))->toThrow(\InvalidArgumentException::class)
+        ->and(fn () => workflows($h)->signal($id, 'collected', ['blob' => str_repeat('x', Steps::MAX_SIGNAL_BYTES)]))->toThrow(\LengthException::class)
+        ->and(workflows($h)->signal($id, 'collected', ['a' => ['b' => ['c' => 1]]]))->toBeTrue();
+});
+
+it('takes a signal that will not fit beside what the workflow has kept as none, rather than fail at the pause', function () {
+    $h = harness();
+    $id = workflows($h)->start(new KeepsALot());
+    $h->work();
+    $h->work();
+    expect(workflows($h)->progress($id)?->status)->toBe(WorkflowRecord::WAITING);
+
+    // Within a signal's own limit, past what the checkpoint has left.
+    expect(workflows($h)->signal($id, 'answer', ['blob' => str_repeat('y', Steps::MAX_SIGNAL_BYTES - 20)]))->toBeTrue();
+    $h->work();
+    $h->work();
+
+    expect(queue($h)->failed())->toBe([])
+        ->and(array_column(Seen::$steps, 'answer'))->toBe(['none'])
+        ->and(workflows($h)->progress($id)?->status)->toBe(WorkflowRecord::FINISHED);
 });

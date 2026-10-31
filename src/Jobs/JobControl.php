@@ -54,7 +54,7 @@ final class JobControl
     public const int MAX_CHECKPOINT_BYTES = 16_384;
 
     /** How deep a checkpoint may nest. */
-    private const int MAX_DEPTH = 8;
+    public const int MAX_DEPTH = 8;
 
     /** @var array{delay: int, checkpoint: array<array-key, mixed>|null, counted: bool}|null */
     private ?array $release = null;
@@ -194,6 +194,24 @@ final class JobControl
     public function idempotencyKey(string $scope = ''): string
     {
         return Signer::encode($this->signer->sign("idempotency\0{$this->envelope->id}\0{$scope}"));
+    }
+
+    /**
+     * Whether $checkpoint is one release() would take: plain data, nested
+     * no deeper than MAX_DEPTH, at most MAX_CHECKPOINT_BYTES of JSON. For
+     * a caller that must know before it pauses, rather than fail there.
+     *
+     * @param array<array-key, mixed> $checkpoint
+     */
+    public static function fits(array $checkpoint): bool
+    {
+        try {
+            self::assertData($checkpoint, 0);
+
+            return \strlen(json_encode($checkpoint, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION)) <= self::MAX_CHECKPOINT_BYTES;
+        } catch (\InvalidArgumentException|\JsonException) {
+            return false;
+        }
     }
 
     private static function assertData(mixed $value, int $depth): void

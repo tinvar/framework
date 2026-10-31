@@ -58,8 +58,18 @@ final class Steps
     /** The longest a workflow waits on a signal: thirty days. */
     public const int MAX_WAIT = 2_592_000;
 
-    /** The largest signal's data, as JSON: a reply, not a document. */
-    public const int MAX_SIGNAL_BYTES = 8_192;
+    /**
+     * The largest signal's data, as JSON: a reply, not a document -- a
+     * quarter of what a checkpoint holds, the steps' results beside it.
+     */
+    public const int MAX_SIGNAL_BYTES = 4_096;
+
+    /**
+     * How deep a signal's data may nest: a checkpoint keeps it under
+     * `done`, its step and `signal`, so the checkpoint's depth less those
+     * and one to spare.
+     */
+    public const int MAX_SIGNAL_DEPTH = JobControl::MAX_DEPTH - 4;
 
     /** The checkpoint's version, so a later layout is not misread as this one. */
     private const int VERSION = 1;
@@ -203,6 +213,14 @@ final class Steps
         $this->ended = true;
         $this->taken = $name;
 
+        // A signal the checkpoint cannot keep beside what the workflow has
+        // kept already is taken as none, rather than fail the pause at
+        // every try until the workflow fails.
+        if ($data !== null && !$this->keeps($name, $data)) {
+            $data = null;
+            $deadline = $now;
+        }
+
         if ($data !== null || $now >= $deadline) {
             // Over: the signal, or the deadline. Recorded as a step, so the
             // replay returns what this run saw.
@@ -290,6 +308,24 @@ final class Steps
     public function count(): int
     {
         return \count($this->done);
+    }
+
+    /**
+     * Whether the checkpoint, with $data recorded as the wait $name's
+     * result, is one the job can pause with.
+     *
+     * @param array<array-key, mixed> $data
+     */
+    private function keeps(string $name, array $data): bool
+    {
+        $waits = $this->waits;
+        unset($waits[$name]);
+        $checkpoint = ['v' => self::VERSION, 'done' => [...$this->done, $name => ['signal' => $data]]];
+        if ($waits !== []) {
+            $checkpoint['waits'] = $waits;
+        }
+
+        return JobControl::fits($checkpoint);
     }
 
     private function ask(string $name): void
