@@ -12,16 +12,20 @@ namespace Tinvar\Tests\Events\Events;
 use Tinvar\Attributes\Listener;
 use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\Queue;
+use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Events\EventDispatcher;
 use Tinvar\Events\EventFake;
 use Tinvar\Events\EventRegistry;
 use Tinvar\Jobs\Queueable;
+use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\ReadOnlyViolation;
 use Tinvar\Queue\ArrayQueue;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
 use Tinvar\Tests\Jobs\Fixtures\Journal;
+use Tinvar\Tests\Jobs\Fixtures\User;
+use Tinvar\Tests\Orm\Fixtures\Tenancy;
 
 require_once __DIR__ . '/../Jobs/Fixtures/jobs.php';
 
@@ -88,6 +92,30 @@ final class TenantListeners
     }
 }
 
+final class ScopeListeners
+{
+    public function __construct(
+        private readonly Journal $journal,
+        private readonly Orm $orm,
+        private readonly AuthContext $auth,
+        private readonly PanelContext $panels,
+    ) {}
+
+    #[Listener(afterCommit: true)]
+    public function later(OrderPlaced $event): void
+    {
+        $this->journal->entries[] = [
+            'afterCommit' => $event->number,
+            'tenant' => $this->orm->tenant(),
+            'unscoped' => $this->orm->isUnscoped(),
+            'subtree' => $this->orm->subtreeInForce() !== null,
+            'user' => $this->auth->id(),
+            'epoch' => $this->auth->epoch(),
+            'panel' => $this->panels->currentOrNull(),
+        ];
+    }
+}
+
 #[Queue]
 final class QueuedWithBadEvent
 {
@@ -105,7 +133,7 @@ function events(Harness $h, array $classes): EventDispatcher
     $registry = new EventRegistry();
     $registry->registerAll($classes);
 
-    return new EventDispatcher($registry, $h->orm, $h->container->resolver(), $h->dispatcher);
+    return new EventDispatcher($registry, $h->orm, $h->container->resolver(), $h->dispatcher, $h->auth, $h->panels);
 }
 
 it('runs listeners now, by the event\'s type and the interfaces it implements', function () {
@@ -160,6 +188,46 @@ it('runs an afterCommit listener as the tenant it was dispatched in, wherever th
         ['afterCommit' => 'PW-8', 'tenant' => 'acme'],
         ['afterCommit' => 'PW-9', 'tenant' => 'acme'],
     ])->and($h->orm->tenant())->toBe('');
+});
+
+// The same tenant name is not the same scope: a commit inside acrossTenants()
+// or withinSubtree(), of a transaction opened there, ran the listener with
+// tenant scoping lifted or widened, because only the tenant name was kept.
+it('runs an afterCommit listener scoped to its tenant when the commit comes inside acrossTenants() or withinSubtree()', function () {
+    $h = new Harness();
+    $orm = new Orm($h->fixture->connection, new IdentityMap('events-tree'), tenants: Tenancy::tree(['globex' => 'acme']));
+    $h->container->instance(Orm::class, $orm);
+    $registry = new EventRegistry();
+    $registry->register(ScopeListeners::class);
+    $events = new EventDispatcher($registry, $orm, $h->container->resolver(), $h->dispatcher, $h->auth, $h->panels);
+
+    $orm->actAs('acme', fn () => $orm->acrossTenants(fn () => $orm->transaction(
+        fn () => $orm->actAs('acme', fn () => $events->dispatch(new OrderPlaced('PW-10'))),
+    )));
+    $orm->actAs('acme', fn () => $orm->grantSubtree(fn () => $orm->withinSubtree(fn () => $orm->transaction(
+        fn () => $events->dispatch(new OrderPlaced('PW-11')),
+    ))));
+
+    expect(array_map(static fn (array $e): array => [$e['tenant'], $e['unscoped'], $e['subtree']], $h->journal()->entries))
+        ->toBe([['acme', false, false], ['acme', false, false]]);
+});
+
+// And the user and panel: the listener is about the dispatcher's event, so it
+// runs as the user, on the epoch and in the panel the event was dispatched
+// in -- not as whoever the code around the commit was acting as.
+it('runs an afterCommit listener as the user, epoch and panel it was dispatched in', function () {
+    $h = new Harness();
+    $events = events($h, [ScopeListeners::class]);
+
+    $h->auth->actingAs(new User('alice'), fn () => $h->panels->within('admin', fn () => $h->orm->transaction(
+        fn () => $h->auth->actingAs(
+            new User('bob'),
+            fn () => $h->panels->within('reseller', fn () => $events->dispatch(new OrderPlaced('PW-12'))),
+            'e2',
+        ),
+    )), 'e1');
+
+    expect($h->journal()->entries[0])->toMatchArray(['user' => 'bob', 'epoch' => 'e2', 'panel' => 'reseller']);
 });
 
 it('queues a listener whose class has #[Queue], under that class\'s queue, tries and panel', function () {
