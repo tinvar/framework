@@ -2,10 +2,11 @@
 
 declare(strict_types=1);
 
-namespace Tinvar\Storage\S3;
+namespace Tinvar\Aws;
 
 /**
- * The access key an object store's requests are signed with.
+ * The access key an AWS API's requests are signed with: an object store's,
+ * or SES's for mail.
  *
  * Held by PHP alone. Nothing that leaves the server carries the secret: a
  * request carries a signature made with a key derived from it for one day,
@@ -14,7 +15,7 @@ namespace Tinvar\Storage\S3;
  * anything that is not Data). Kept out of dumps and stack traces, as every
  * secret here is.
  */
-final readonly class S3Credentials
+final readonly class AwsCredentials
 {
     public function __construct(
         public string $accessKey,
@@ -27,7 +28,7 @@ final readonly class S3Credentials
             throw new \InvalidArgumentException('An access key id is letters and digits.');
         }
         if ($secretKey === '') {
-            throw new \InvalidArgumentException('An object store\'s secret key is not empty.');
+            throw new \InvalidArgumentException('An AWS secret access key is not empty.');
         }
     }
 

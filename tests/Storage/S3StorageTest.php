@@ -9,9 +9,9 @@ declare(strict_types=1);
  */
 
 use Tinvar\Outbound\OutboundRequest;
-use Tinvar\Storage\S3\S3Credentials;
+use Tinvar\Aws\AwsCredentials;
 use Tinvar\Storage\S3\S3Storage;
-use Tinvar\Storage\S3\SigV4;
+use Tinvar\Aws\SigV4;
 use Tinvar\Storage\StorageException;
 use Tinvar\Storage\StorageKey;
 use Tinvar\Tests\Storage\Fixtures\FakeS3;
@@ -33,7 +33,7 @@ function s3StreamOf(string $contents)
 describe('SigV4', function () {
     // docs.aws.amazon.com/AmazonS3/latest/API/sig-v4-header-based-auth.html
     // and sigv4-query-string-auth.html: the example bucket, key and date.
-    $credentials = new S3Credentials('AKIAIOSFODNN7EXAMPLE', 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY');
+    $credentials = new AwsCredentials('AKIAIOSFODNN7EXAMPLE', 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY');
     $at = gmmktime(0, 0, 0, 5, 24, 2013);
 
     it('signs a request in its header as AWS\'s example does', function () use ($credentials, $at) {
@@ -232,7 +232,7 @@ describe('S3Storage', function () {
             'endpoint' => 'https://s3.store.example',
             'bucket' => 'uploads',
             'region' => 'eu-west-1',
-            'credentials' => new S3Credentials('AKID', 'secret'),
+            'credentials' => new AwsCredentials('AKID', 'secret'),
             'http' => new FakeS3()->http,
             ...$arguments,
         ]))->toThrow(InvalidArgumentException::class);
@@ -252,7 +252,7 @@ describe('S3Storage', function () {
             endpoint: 'https://s3.store.example',
             bucket: 'uploads',
             region: 'eu-west-1',
-            credentials: new S3Credentials('AKID', 'secret'),
+            credentials: new AwsCredentials('AKID', 'secret'),
             http: new Tinvar\Outbound\FakeOutboundHttp(function (OutboundRequest $request) use (&$sent): Tinvar\Outbound\OutboundResponse {
                 $sent[] = $request;
 

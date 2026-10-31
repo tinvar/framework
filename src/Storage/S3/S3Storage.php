@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Storage\S3;
 
+use Tinvar\Aws\AwsCredentials;
+use Tinvar\Aws\SigV4;
 use Tinvar\Outbound\Destinations;
 use Tinvar\Outbound\OutboundFailed;
 use Tinvar\Outbound\OutboundHttp;
@@ -27,7 +29,7 @@ use Tinvar\Storage\StorageWriter;
  *         endpoint: 'https://s3.eu-west-1.amazonaws.com',
  *         bucket: 'pellwick-uploads',
  *         region: 'eu-west-1',
- *         credentials: new S3Credentials($id, $secret),
+ *         credentials: new AwsCredentials($id, $secret),
  *         http: $outboundHttp,
  *     )
  *
@@ -77,7 +79,7 @@ final readonly class S3Storage implements MultipartStore, ListsKeys
         string $endpoint,
         private string $bucket,
         string $region,
-        S3Credentials $credentials,
+        AwsCredentials $credentials,
         private OutboundHttp $http,
         private string $root = '',
         private bool $pathStyle = true,

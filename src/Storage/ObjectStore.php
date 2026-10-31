@@ -11,7 +11,7 @@ namespace Tinvar\Storage;
  *
  * Every URL is for one key the framework made, one method, and a short
  * while; an upload's is for one size. The credentials that sign them stay
- * with PHP (S3\S3Credentials).
+ * with PHP (Tinvar\Aws\AwsCredentials).
  */
 interface ObjectStore extends Storage
 {

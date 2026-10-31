@@ -15,9 +15,9 @@ use Tinvar\Outbound\FakeOutboundHttp;
 use Tinvar\Outbound\OutboundRequest;
 use Tinvar\Outbound\OutboundResponse;
 use Tinvar\Outbound\Target;
-use Tinvar\Storage\S3\S3Credentials;
+use Tinvar\Aws\AwsCredentials;
 use Tinvar\Storage\S3\S3Storage;
-use Tinvar\Storage\S3\SigV4;
+use Tinvar\Aws\SigV4;
 
 const S3_ACCESS = 'AKIDTESTFAKE0001';
 const S3_SECRET = 'fake-secret/never-sent+0123456789abcdefghij';
@@ -67,7 +67,7 @@ final class FakeS3
             endpoint: S3_ENDPOINT,
             bucket: S3_BUCKET,
             region: 'eu-west-1',
-            credentials: new S3Credentials(S3_ACCESS, $secret ?? $this->secret),
+            credentials: new AwsCredentials(S3_ACCESS, $secret ?? $this->secret),
             http: $this->http,
             root: $root,
             partBytes: $partBytes,
@@ -340,7 +340,7 @@ final class FakeS3
             return false;
         }
 
-        $expected = new SigV4(new S3Credentials(S3_ACCESS, $this->secret), $m[3])
+        $expected = new SigV4(new AwsCredentials(S3_ACCESS, $this->secret), $m[3])
             ->sign($method, $path, $query, $signed, $headers['x-amz-content-sha256'], $at->getTimestamp());
 
         return hash_equals($expected['authorization'], $authorization);
@@ -369,7 +369,7 @@ final class FakeS3
             static fn (string $name): bool => !\in_array($name, ['X-Amz-Algorithm', 'X-Amz-Credential', 'X-Amz-Date', 'X-Amz-Expires', 'X-Amz-SignedHeaders', 'X-Amz-Signature', 'X-Amz-Security-Token'], true),
             ARRAY_FILTER_USE_KEY,
         );
-        $expected = new SigV4(new S3Credentials(S3_ACCESS, $this->secret), $m[1])
+        $expected = new SigV4(new AwsCredentials(S3_ACCESS, $this->secret), $m[1])
             ->presign($method, $path, $unsigned, $signed, $expires, $at->getTimestamp());
         parse_str($expected, $recomputed);
 

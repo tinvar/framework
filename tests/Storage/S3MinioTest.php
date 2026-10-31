@@ -22,9 +22,9 @@ declare(strict_types=1);
 use Tinvar\Attributes\OutboundPolicy;
 use Tinvar\Outbound\OutboundRequest;
 use Tinvar\Outbound\PinnedHttp;
-use Tinvar\Storage\S3\S3Credentials;
+use Tinvar\Aws\AwsCredentials;
 use Tinvar\Storage\S3\S3Storage;
-use Tinvar\Storage\S3\SigV4;
+use Tinvar\Aws\SigV4;
 use Tinvar\Storage\StorageException;
 use Tinvar\Storage\StorageKey;
 
@@ -43,7 +43,7 @@ function minio(): array
     // The store on this machine: its address opened by the policy, as an
     // application opens its own store's.
     $http = new PinnedHttp(new OutboundPolicy(allow: [$host === 'localhost' ? '127.0.0.1' : $host]));
-    $credentials = new S3Credentials($key, $secret);
+    $credentials = new AwsCredentials($key, $secret);
 
     // The bucket, made once: S3Storage itself makes none.
     $port = (int) parse_url($endpoint, PHP_URL_PORT);
@@ -139,7 +139,7 @@ describe('S3Storage against MinIO', function () {
     it('refuses a wrong secret with the store\'s own code', function () {
         [, $endpoint, $bucket] = minio();
         $host = (string) parse_url($endpoint, PHP_URL_HOST);
-        $wrong = new S3Storage($endpoint, $bucket, 'us-east-1', new S3Credentials((string) getenv('TINVAR_TEST_S3_KEY'), 'not-the-secret'), new PinnedHttp(new OutboundPolicy(allow: [$host])));
+        $wrong = new S3Storage($endpoint, $bucket, 'us-east-1', new AwsCredentials((string) getenv('TINVAR_TEST_S3_KEY'), 'not-the-secret'), new PinnedHttp(new OutboundPolicy(allow: [$host])));
 
         expect(fn () => $wrong->put(StorageKey::generate('a', 'pdf'), minioStream('x')))
             ->toThrow(StorageException::class, 'SignatureDoesNotMatch');

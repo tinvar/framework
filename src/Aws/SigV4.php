@@ -2,17 +2,18 @@
 
 declare(strict_types=1);
 
-namespace Tinvar\Storage\S3;
+namespace Tinvar\Aws;
 
 /**
- * AWS Signature Version 4, as S3 and every store speaking its API take it:
- * a request signed in its Authorization header, or a URL presigned in its
- * query.
+ * AWS Signature Version 4, as S3 and every store speaking its API take it,
+ * and every other AWS API the framework calls -- SES's, for mail: a request
+ * signed in its Authorization header, or a URL presigned in its query. One
+ * signer for each, told the service it signs for (`s3`, `ses`).
  *
  * What is signed is the canonical request -- the method, the path, the
  * query, the headers named in SignedHeaders and the payload's hash -- under
  * a key derived from the secret for one day, region and service
- * (S3Credentials::signingKey()). The secret itself goes nowhere.
+ * (AwsCredentials::signingKey()). The secret itself goes nowhere.
  *
  * A presigned URL is a capability: whoever holds it may make that one
  * request until it expires. So one is minted only for a key the framework
@@ -30,7 +31,7 @@ final readonly class SigV4
     public const int MAX_EXPIRES = 604_800;
 
     public function __construct(
-        private S3Credentials $credentials,
+        private AwsCredentials $credentials,
         private string $region,
         private string $service = 's3',
     ) {
