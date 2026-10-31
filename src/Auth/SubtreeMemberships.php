@@ -62,20 +62,43 @@ final readonly class SubtreeMemberships
      */
     public function tenants(Authenticatable $user, string $panel, ?string $root): array
     {
-        if (!$this->memberships instanceof TenantMemberships) {
-            return [];
+        return iterator_to_array($this->confirmed($user, $panel, $root), false);
+    }
+
+    /**
+     * The first tenant tenants() would list, or null for none -- asking
+     * Memberships no further than it: a handoff lands in one tenant, and
+     * confirming every other one listed was a lookup each for nothing.
+     */
+    public function first(Authenticatable $user, string $panel, ?string $root): ?string
+    {
+        foreach ($this->confirmed($user, $panel, $root) as $tenant) {
+            return $tenant;
         }
 
-        $tenants = [];
+        return null;
+    }
+
+    /**
+     * The tenants tenants() lists, each confirmed only as it is reached.
+     *
+     * @return \Generator<int, string>
+     */
+    private function confirmed(Authenticatable $user, string $panel, ?string $root): \Generator
+    {
+        if (!$this->memberships instanceof TenantMemberships) {
+            return;
+        }
+
+        $seen = [];
         foreach ($this->memberships->tenantsOf($user, $panel) as $tenant) {
-            if ($tenant === '' || isset($tenants[$tenant])) {
+            if ($tenant === '' || isset($seen[$tenant])) {
                 continue;
             }
+            $seen[$tenant] = true;
             if (($root === null || $this->within($root, $tenant)) && $this->holds($user, $panel, $tenant)) {
-                $tenants[$tenant] = true;
+                yield $tenant;
             }
         }
-
-        return array_map('strval', array_keys($tenants));
     }
 }

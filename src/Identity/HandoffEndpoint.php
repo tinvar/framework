@@ -656,10 +656,9 @@ final class HandoffEndpoint
             return [null, $realm->tenant];
         }
 
-        if ($realm->tenant !== '') {
-            foreach ($members->tenants($user, $realm->panel, $realm->tenant) as $below) {
-                return [null, $below];
-            }
+        $below = $realm->tenant === '' ? null : $members->first($user, $realm->panel, $realm->tenant);
+        if ($below !== null) {
+            return [null, $below];
         }
 
         return ["the user holds no membership of panel '{$realm->panel}' in its tenant or below it", ''];
