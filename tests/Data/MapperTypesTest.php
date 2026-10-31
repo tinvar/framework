@@ -98,3 +98,31 @@ it('says when a Data field is handed a scalar', function () {
     expect(fn () => Imported::from(['items' => ['nope'], 'byKey' => [], 'partial' => []]))
         ->toThrow(DataMappingException::class, 'is a Data field, but its source is string');
 });
+
+final readonly class Grid extends Data
+{
+    /** @param list<list<ItemData>> $rows */
+    public function __construct(public array $rows) {}
+}
+
+final readonly class ScalarGrid extends Data
+{
+    /**
+     * @param list<list<string>>             $rows
+     * @param array<string, list<int>>       $byKey
+     */
+    public function __construct(public array $rows, public array $byKey) {}
+}
+
+// The hint was unwrapped twice: a list of lists of Data was mapped as one
+// list of Data, each inner list taken for one item -- fields defaulted and
+// the data silently gone.
+it('refuses a list of lists of Data rather than unwrapping it twice', function () {
+    Grid::from(['rows' => [[['id' => 'a'], ['id' => 'b']], [['id' => 'c']]]]);
+})->throws(DataMappingException::class, 'is a container of list<ItemData>');
+
+it('passes nested lists of scalars through as they are', function () {
+    $view = ScalarGrid::from(['rows' => [['a', 'b'], ['c']], 'byKey' => ['k' => [1, 2]]]);
+
+    expect($view->rows)->toBe([['a', 'b'], ['c']])->and($view->byKey)->toBe(['k' => [1, 2]]);
+});

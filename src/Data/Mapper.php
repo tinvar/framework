@@ -464,16 +464,34 @@ final class Mapper
     }
 
     /**
-     * The Data class a hint names -- a list of one, or one -- resolved as
-     * PHP resolves names, or null if it names a scalar or a non-Data class.
-     * A name that resolves to nothing at all is refused.
+     * The Data class an element type names -- what elementOf() gave, already
+     * unwrapped once by its caller -- resolved as PHP resolves names, or
+     * null if it names a scalar or a non-Data class. A name that resolves to
+     * nothing at all is refused, and so is a container of Data inside the
+     * container (`list<list<X>>`): nothing maps a nested list item by item,
+     * and unwrapped once more it was mapped as a list of X, each inner list
+     * taken for one X.
      *
      * @param \ReflectionClass<Data> $declaring
      * @return class-string<Data>|null
      */
-    private static function dataIn(?string $hint, \ReflectionClass $declaring, string $where): ?string
+    private static function dataIn(?string $element, \ReflectionClass $declaring, string $where): ?string
     {
-        $name = self::elementOf($hint);
+        $name = self::withoutNull($element);
+        if ($name !== null && self::elementOf($name) !== $name) {
+            $innermost = $name;
+            while (($inner = self::elementOf($innermost)) !== null && $inner !== $innermost) {
+                $innermost = $inner;
+            }
+            if (self::dataIn($innermost, $declaring, $where) !== null) {
+                throw new DataMappingException(
+                    "{$where} is a container of {$name}: a Data field holds Data, or a list or map of Data, and no deeper. "
+                    . 'Wrap the inner list in a Data class of its own.',
+                );
+            }
+
+            return null;
+        }
         if ($name === null || !preg_match('/^\\\\?[A-Za-z_][A-Za-z0-9_\\\\]*$/', $name)) {
             return null;
         }
