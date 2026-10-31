@@ -142,6 +142,25 @@ it('spends a token at its first call that passes its checks, and refuses it afte
         ->and($h->rackName())->toBe('S-1');
 });
 
+// A token for one record was good for any: the warehouse handed a token to
+// say one order was collected could say it of another. Arguments bound into
+// the token are held to the call's, before it is spent.
+it('holds a call to the arguments its token was bound to, before spending it', function () {
+    $h = new Harness();
+    $token = $h->services->context('warehouse', ['racks.rename'], bound: ['rack' => $h->rack(0)]);
+    $call = fn (array $arguments): CallResult => $h->asWarehouse(fn () => $h->services->call($token, 'racks.rename', $arguments));
+
+    expect($call(['rack' => $h->rack(1), 'name' => 'B-1'])->reason)->toBe('context')
+        ->and($call(['name' => 'B-1'])->reason)->toBe('context')
+        ->and($call(['rack' => [$h->rack(0)], 'name' => 'B-1'])->reason)->toBe('context')
+        ->and($call(['rack' => $h->rack(0), 'name' => 'B-2'])->status)->toBe(CallResult::OK)
+        ->and($h->rackName(0))->toBe('B-2')
+        ->and($h->rackName(1))->not->toBe('B-1');
+
+    expect(fn () => $h->services->context('warehouse', ['racks.rename'], bound: ['rack' => ['x']]))
+        ->toThrow(\InvalidArgumentException::class);
+});
+
 it('lets a token issued reusable be called with until it expires', function () {
     $h = new Harness();
     $token = $h->services->context('warehouse', ['racks.rename'], reusable: true);

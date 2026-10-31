@@ -65,9 +65,11 @@ final readonly class ContextTokens
      * @param list<string> $operations
      * @param int|null $ttl seconds it lasts; this kind's default unless given, and never past its ceiling
      * @param bool $singleUse whether its id is to be spent at its first use, by whoever checks it
+     * @param array<string, string|int> $bound arguments a call with it must carry, each exactly
      */
-    public function issue(string $audience, array $operations, string $tenant, string $panel, ?string $user, string $epoch, ?int $ttl = null, bool $singleUse = false): string
+    public function issue(string $audience, array $operations, string $tenant, string $panel, ?string $user, string $epoch, ?int $ttl = null, bool $singleUse = false, array $bound = []): string
     {
+        $bound = ContextToken::boundOf($bound);
         $operations = array_values(array_unique($operations));
         if ($operations === [] || \count($operations) > ContextToken::MAX_OPERATIONS) {
             throw new \InvalidArgumentException('A ' . $this->purpose . ' names between 1 and ' . ContextToken::MAX_OPERATIONS . ' operations.');
@@ -91,6 +93,7 @@ final readonly class ContextTokens
             issuedAt: $now,
             expiresAt: $now + $ttl,
             singleUse: $singleUse,
+            bound: $bound,
         )->toMap());
     }
 

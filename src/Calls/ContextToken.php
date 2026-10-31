@@ -30,14 +30,22 @@ use Tinvar\Render\TokenError;
  *   - `singleUse`: whether its id is spent at its first call (ADR 0119);
  *     null in a token issued before tokens said, which a service call
  *     refuses rather than guess.
+ *   - `bound`: arguments a call with it must carry, each exactly: the
+ *     record it was issued about, so a token for one order says nothing
+ *     of another. None unless issued with some; a service call holds a
+ *     call to them (binds()).
  */
 final readonly class ContextToken
 {
     /** The most operations one token may name. */
     public const int MAX_OPERATIONS = 64;
 
+    /** The most arguments one token may be bound to. */
+    public const int MAX_BOUND = 16;
+
     /**
      * @param list<string> $operations
+     * @param array<string, string> $bound argument name => the value a call must carry
      */
     public function __construct(
         public string $id,
@@ -51,6 +59,7 @@ final readonly class ContextToken
         public int $issuedAt,
         public int $expiresAt,
         public ?bool $singleUse = false,
+        public array $bound = [],
     ) {}
 
     /** Whether it names $operation. */
@@ -59,10 +68,32 @@ final readonly class ContextToken
         return \in_array($operation, $this->operations, true);
     }
 
+    /**
+     * Whether $arguments carry every argument it is bound to, each exactly:
+     * a string, or an integer, equal to the one bound. An argument missing,
+     * or of any other shape, does not.
+     *
+     * @param array<array-key, mixed> $arguments
+     */
+    public function binds(array $arguments): bool
+    {
+        foreach ($this->bound as $name => $value) {
+            $given = $arguments[$name] ?? null;
+            if (\is_int($given)) {
+                $given = (string) $given;
+            }
+            if (!\is_string($given) || !hash_equals($value, $given)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /** @return array<string, mixed> */
     public function toMap(): array
     {
-        return [
+        $map = [
             'j' => $this->id,
             'a' => $this->audience,
             'o' => $this->operations,
@@ -75,6 +106,13 @@ final readonly class ContextToken
             'e' => $this->expiresAt,
             's' => $this->singleUse ?? false,
         ];
+        // Only where there are some: a token bound to nothing reads as
+        // every token before tokens could be bound did.
+        if ($this->bound !== []) {
+            $map['g'] = $this->bound;
+        }
+
+        return $map;
     }
 
     /**
@@ -108,7 +146,54 @@ final readonly class ContextToken
             issuedAt: self::int($map, 'i'),
             expiresAt: self::int($map, 'e'),
             singleUse: \array_key_exists('s', $map) ? (\is_bool($map['s']) ? $map['s'] : throw new TokenError("field 's' is not a boolean")) : null,
+            bound: \array_key_exists('g', $map) ? self::bound($map['g']) : [],
         );
+    }
+
+    /**
+     * Arguments to bind a token to, each name and value a string -- an
+     * integer taken as its digits -- and no more than MAX_BOUND.
+     *
+     * @return array<string, string>
+     * @throws \InvalidArgumentException when they are not
+     */
+    public static function boundOf(mixed $bound): array
+    {
+        if (!\is_array($bound) || \count($bound) > self::MAX_BOUND) {
+            throw new \InvalidArgumentException('A token is bound to at most ' . self::MAX_BOUND . ' arguments.');
+        }
+
+        $strings = [];
+        foreach ($bound as $name => $value) {
+            if (!\is_string($name) || $name === '' || (!\is_string($value) && !\is_int($value))) {
+                throw new \InvalidArgumentException('A token is bound to arguments by name, each to a string or an integer.');
+            }
+            $strings[$name] = (string) $value;
+        }
+
+        return $strings;
+    }
+
+    /**
+     * @return array<string, string>
+     * @throws TokenError
+     */
+    private static function bound(mixed $bound): array
+    {
+        // As issue() writes it: a map of one to MAX_BOUND names, each to a
+        // string. Anything else is refused, not coerced.
+        if (!\is_array($bound) || $bound === [] || \count($bound) > self::MAX_BOUND) {
+            throw new TokenError("field 'g' is not a map of arguments");
+        }
+        $strings = [];
+        foreach ($bound as $name => $value) {
+            if (!\is_string($name) || $name === '' || !\is_string($value)) {
+                throw new TokenError("field 'g' is not a map of arguments to strings");
+            }
+            $strings[$name] = $value;
+        }
+
+        return $strings;
     }
 
     /** @param array<string, mixed> $map */

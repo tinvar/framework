@@ -54,7 +54,10 @@ use Tinvar\Render\TokenError;
  *   - the operation is in the token's panel; and, in a panel, the user the
  *     token was issued for is still there, on the same auth epoch, and still
  *     holds a membership of it meeting everything the operation's binding
- *     requires. A token issued for nobody reaches no panel's operation.
+ *     requires. A token issued for nobody reaches no panel's operation;
+ *   - the call carries every argument the token was bound to, each exactly:
+ *     a token issued about one record -- an order the warehouse is to
+ *     collect -- says nothing of another.
  *
  * Then the operation runs in the token's tenant and panel, never across
  * tenants or a subtree, through the runner a browser's call goes through
@@ -139,8 +142,10 @@ final readonly class ServiceCalls
      * @param int|null $ttl seconds; TTL unless given, never past MAX_TTL
      * @param bool $reusable whether it may be called with more than once, until it expires;
      *        spent at its first call unless so
+     * @param array<string, string|int> $bound arguments a call with it must carry, each
+     *        exactly: the record it is about, by its id
      */
-    public function context(string $service, array $operations, ?int $ttl = null, bool $reusable = false): string
+    public function context(string $service, array $operations, ?int $ttl = null, bool $reusable = false, array $bound = []): string
     {
         $user = $this->auth->user();
         if ($user instanceof Service) {
@@ -164,7 +169,7 @@ final readonly class ServiceCalls
             }
         }
 
-        return $this->tokens->issue($service, $operations, $this->orm->tenant(), $panel, $user?->authIdentifier(), $this->auth->epoch(), $ttl, singleUse: !$reusable);
+        return $this->tokens->issue($service, $operations, $this->orm->tenant(), $panel, $user?->authIdentifier(), $this->auth->epoch(), $ttl, singleUse: !$reusable, bound: $bound);
     }
 
     /** The token a request carries, in HEADER; '' for none. */
@@ -201,7 +206,7 @@ final readonly class ServiceCalls
         }
         // A token that does not say whether it is spent was issued before
         // tokens said: refused, rather than taken as reusable.
-        if ($claims->singleUse === null || !$this->fits($claims, $service, $operation)) {
+        if ($claims->singleUse === null || !$this->fits($claims, $service, $operation) || !$claims->binds($arguments)) {
             return CallResult::refused('context');
         }
         if (($declared->panel->name ?? '') !== $claims->panel || ($claims->panel !== '' && $this->panels === null)) {
