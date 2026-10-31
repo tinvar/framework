@@ -6,6 +6,7 @@ namespace Tinvar\Actions;
 
 use Tinvar\Attributes\Action;
 use Tinvar\Attributes\Authorize;
+use Tinvar\Attributes\ClassAttributes;
 use Tinvar\Attributes\Cors;
 use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\NoAuthorization;
@@ -97,8 +98,10 @@ final class ActionRegistry
             // An endpoint's own bucket and cross-origin policy (ADR 0074) are
             // read by the endpoint registry alone. On an action they would
             // limit and open nothing, which its author would not guess.
+            // On the class, its ancestors' and its traits' count too: they
+            // limit and open nothing here either.
             if ($method->getAttributes(Throttle::class) !== [] || $method->getAttributes(Cors::class) !== []
-                || $reflection->getAttributes(Throttle::class) !== [] || $reflection->getAttributes(Cors::class) !== []) {
+                || ClassAttributes::of($reflection, Throttle::class) !== [] || ClassAttributes::of($reflection, Cors::class) !== []) {
                 throw new ActionException(
                     "{$class}::{$method->getName()}() is an action under #[Throttle] or #[Cors], which only an endpoint reads. "
                     . 'An action spends throttle:actions and is called from this origin alone.',

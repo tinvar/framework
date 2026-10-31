@@ -236,6 +236,47 @@ final class ThrottledAction
     public function go(): void {}
 }
 
+#[Bucket('inherited', perMinute: 3)]
+abstract class ThrottledBase {}
+
+#[Bucket('traited', perMinute: 4)]
+trait ThrottledTrait {}
+
+final class InheritsABucket extends ThrottledBase
+{
+    #[Get('/inherited'), NoAuthorization(reason: 'test')]
+    public function show(): void {}
+}
+
+final class TakesABucketFromATrait
+{
+    use ThrottledTrait;
+
+    #[Get('/traited'), NoAuthorization(reason: 'test')]
+    public function show(): void {}
+}
+
+#[Bucket('nearer', perMinute: 7)]
+final class NamesItsOwnOverItsBase extends ThrottledBase
+{
+    #[Get('/nearer'), NoAuthorization(reason: 'test')]
+    public function show(): void {}
+}
+
+final class ThrottledActionByItsBase extends ThrottledBase
+{
+    #[Action, NoAuthorization(reason: 'test')]
+    public function go(): void {}
+}
+
+final class ThrottledActionByATrait
+{
+    use ThrottledTrait;
+
+    #[Action, NoAuthorization(reason: 'test')]
+    public function go(): void {}
+}
+
 /**
  * @param list<class-string> $endpoints
  * @param array<string, int> $limits
@@ -376,6 +417,18 @@ describe('an endpoint\'s own throttle bucket', function () {
 
     it('is refused on an action, which spends throttle:actions', function () {
         expect(fn () => (new ActionRegistry())->register(ThrottledAction::class))
+            ->toThrow(ActionException::class, 'only an endpoint reads');
+    });
+
+    // PHP inherits no class attribute: a bucket on a base class or a trait
+    // limited nothing, and an action holder under one registered unrefused.
+    it('reads a bucket off a base class or a trait, the nearest first, and refuses an action under one', function () {
+        expect(Bucket::declaredOn(InheritsABucket::class, 'show'))->toEqual(new Bucket('inherited', 3))
+            ->and(Bucket::declaredOn(TakesABucketFromATrait::class, 'show'))->toEqual(new Bucket('traited', 4))
+            ->and(Bucket::declaredOn(NamesItsOwnOverItsBase::class, 'show'))->toEqual(new Bucket('nearer', 7))
+            ->and(fn () => (new ActionRegistry())->register(ThrottledActionByItsBase::class))
+            ->toThrow(ActionException::class, 'only an endpoint reads')
+            ->and(fn () => (new ActionRegistry())->register(ThrottledActionByATrait::class))
             ->toThrow(ActionException::class, 'only an endpoint reads');
     });
 

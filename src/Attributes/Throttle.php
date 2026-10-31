@@ -21,9 +21,10 @@ use Tinvar\Support\Str;
  * itself.
  *
  * Endpoints naming one bucket share it, and must agree on its size. On the
- * class it covers each endpoint in the class; on the method it replaces the
- * class's. Only endpoints read it (ADR 0074): an action holder carrying it
- * is refused when it registers, not ignored.
+ * class -- or a class it extends, or a trait it uses -- it covers each
+ * endpoint in the class; on the method it replaces the class's. Only
+ * endpoints read it (ADR 0074): an action holder carrying it, on itself or
+ * by inheritance, is refused when it registers, not ignored.
  */
 #[\Attribute(\Attribute::TARGET_CLASS | \Attribute::TARGET_METHOD)]
 final readonly class Throttle
@@ -50,8 +51,11 @@ final readonly class Throttle
     }
 
     /**
-     * The bucket an endpoint is held to: its method's, else its class's;
-     * null for none. Off the class itself, never an ancestor's.
+     * The bucket an endpoint is held to: its method's, else its class's --
+     * the class's own, else the nearest a trait or an ancestor declares
+     * (ClassAttributes) -- null for none. A limit adds something, so it is
+     * inherited as a check is: PHP drops a parent's and a trait's class
+     * attributes, and a bucket on a base class limited nothing.
      */
     public static function declaredOn(string $class, string $method): ?self
     {
@@ -59,8 +63,9 @@ final readonly class Throttle
             return null;
         }
         $reflection = new \ReflectionClass($class);
+        $onClass = ClassAttributes::of($reflection, self::class);
         $attribute = ($reflection->hasMethod($method) ? $reflection->getMethod($method)->getAttributes(self::class)[0] ?? null : null)
-            ?? $reflection->getAttributes(self::class)[0] ?? null;
+            ?? ($onClass === [] ? null : $onClass[array_key_last($onClass)]);
 
         return $attribute?->newInstance();
     }
