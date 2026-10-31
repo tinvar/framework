@@ -48,8 +48,20 @@ final readonly class PublicAccess
         return $reason === null || trim($reason) === '' ? null : $reason;
     }
 
-    /** Whether an entry point -- a class, or one method of one -- opts out. */
+    /**
+     * Whether an entry point -- a class, or one method of one -- opts out.
+     * Read once a worker for each: RequireAuthentication asks on every
+     * request, and a class does not change while the worker runs.
+     */
     public static function declaredOn(string $class, ?string $method = null): bool
+    {
+        /** @var array<string, bool> $declared what it answered, by class and method */
+        static $declared = [];
+
+        return $declared[$class . '::' . ($method ?? '')] ??= self::read($class, $method);
+    }
+
+    private static function read(string $class, ?string $method): bool
     {
         if (!class_exists($class)) {
             return false;

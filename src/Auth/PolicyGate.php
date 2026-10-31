@@ -60,17 +60,28 @@ final class PolicyGate implements Gate
      */
     private static function callable(object $policy, string $method): bool
     {
-        $reflection = new \ReflectionClass($policy);
+        // Once a worker for each policy and method: a class does not change
+        // while it runs, and every check reflected the policy again. Only
+        // what the class declares is kept, never a decision.
+        $key = $policy::class . '::' . strtolower($method);
+        $visibility = self::$visibility[$key] ??= (static function () use ($policy, $method): string {
+            $reflection = new \ReflectionClass($policy);
+            if (!$reflection->hasMethod($method)) {
+                return 'none';
+            }
 
-        if (!$reflection->hasMethod($method)) {
-            return false;
-        }
-        if (!$reflection->getMethod($method)->isPublic()) {
+            return $reflection->getMethod($method)->isPublic() ? 'public' : 'hidden';
+        })();
+
+        if ($visibility === 'hidden') {
             throw AuthorizationException::notPublic($policy::class, $method);
         }
 
-        return true;
+        return $visibility === 'public';
     }
+
+    /** @var array<string, 'none'|'public'|'hidden'> what callable() found, by policy class and method */
+    private static array $visibility = [];
 
     /**
      * A policy answers with a bool or it has not answered.
