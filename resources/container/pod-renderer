@@ -12,12 +12,12 @@
 # The pool is TINVAR_SOCKET, a directory the supervisor makes in the volume
 # shared with PHP's container: its own, 0750, in the socket group. That
 # volume outlives this container in a pod, so a pid file a pool of an
-# earlier run left names a pid of the shared namespace that may since be
-# another process's -- one of PHP's, which the supervisor could not tell
-# from a pool still running. So the pid file is removed first unless it
-# names a pool's supervisor for this directory still running as this user:
-# Node running renderer.js on this pool, not merely a process of ours --
-# tini here, or a probe -- that was given the same pid.
+# earlier run left names a pid of that run's namespace, which in this one
+# may be another process's, and the supervisor would take it for a pool
+# still running. So the pid file is removed first unless it names a pool's
+# supervisor for this directory still running as this user: Node running
+# renderer.js on this pool, not merely a process of ours -- tini here, or a
+# probe -- that was given the same pid.
 #
 # SIGTERM, passed on by tini, drains the pool (60 s for the renders in
 # flight); SIGUSR2 restarts it one renderer at a time.

@@ -54,6 +54,26 @@ function poolPath(): string
     return '/tmp/tvrc-' . bin2hex(random_bytes(4));
 }
 
+// From PHP's container beside the renderers', in a pid namespace of its
+// own, the pid file names a pid that is another process here, or none: it
+// was reported as the supervisor, running.
+it('says a supervisor it cannot see is not seen, where its pid is another process here', function () use ($root) {
+    $pool = poolPath();
+    mkdir($pool, 0700);
+    file_put_contents("{$pool}/" . RendererCommand::PID_FILE, (string) getmypid());
+    [$command, $out] = command($root);
+
+    try {
+        $status = $command->run('renderer:check', ["--socket={$pool}"]);
+    } finally {
+        unlink("{$pool}/" . RendererCommand::PID_FILE);
+        rmdir($pool);
+    }
+
+    expect($status)->toBe(RendererCommand::FAILED)
+        ->and($out->getArrayCopy())->toBe([\sprintf('supervisor  pid %d  not seen: another process has that pid here (the pool in another pid namespace, or gone)', getmypid())]);
+});
+
 describe('renderer:start', function () use ($root) {
     it('becomes the pool supervisor, with N renderers and a scrubbed environment', function () use ($root) {
         [$command, $out, , $execs] = command($root);

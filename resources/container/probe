@@ -10,8 +10,8 @@
 # trust it no more (TINVAR_PROBE_TRUST_LOOPBACK=0), and this sends the
 # probe token, TINVAR_PROBE_TOKEN from the container's environment, which a
 # docker HEALTHCHECK and a kubelet exec probe both run with. The token goes
-# to PHP on its standard input: a command line is anyone's to read in the
-# shared pid namespace, and printf is the shell's own, so it is on none.
+# to PHP on its standard input: a command line is anyone's to read who
+# shares the pid namespace, and printf is the shell's own, so it is on none.
 # Nothing else of the environment is passed on.
 #
 # Only 200 passes.

@@ -237,7 +237,17 @@ final class RendererCommand
         $pidFile = "{$path}/" . self::PID_FILE;
         if (is_dir($path) && is_file($pidFile)) {
             $pid = (int) trim((string) file_get_contents($pidFile));
-            ($this->out)(\sprintf('supervisor  pid %d  %s', $pid, self::running($pid) ? 'running' : 'NOT RUNNING'));
+            // As signal() would hold it: a pid is the supervisor only where
+            // its command line is one. From another pid namespace -- PHP's
+            // container beside the renderers' -- the pid is someone else's
+            // here, or no one's, and the renderers' answers below are the
+            // pool's state.
+            $command = $pid > 0 ? trim((string) shell_exec("ps -ww -o args= -p {$pid} 2>/dev/null")) : '';
+            ($this->out)(\sprintf('supervisor  pid %d  %s', $pid, match (true) {
+                self::running($pid) && self::isSupervisor($command) => 'running',
+                self::running($pid) => 'not seen: another process has that pid here (the pool in another pid namespace, or gone)',
+                default => 'not seen: no process has that pid here (the pool in another pid namespace, or gone)',
+            }));
         }
 
         $answers = new RendererHealth(trust: self::trust())->checkAll($path);

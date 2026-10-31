@@ -2,7 +2,7 @@
 # PHP's container in the two-container shape (ADR 0071): the image starts as
 # PHP's own user, and this checks what it was given and becomes serve. The
 # renderers are another container, of their own image and user, sharing a
-# socket volume and a pid namespace with this one: nothing here starts one,
+# socket volume with this one and nothing else: nothing here starts one,
 # changes user or holds a capability.
 #
 #   pod-php                 serve: FrankenPHP, the queue worker, the scheduler
