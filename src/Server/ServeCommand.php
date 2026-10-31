@@ -132,11 +132,8 @@ final class ServeCommand
     /** How often in a minute a background child may be started again before serve gives up on it. */
     public const int RESTARTS = 5;
 
-    /** Variables the renderer may see; it refuses to start holding anything secret. */
-    private const array RENDERER_ENV = ['PATH', 'TZ', 'LANG', 'LC_ALL'];
-
     /**
-     * And what dev mode's renderer is told beside them: which environment
+     * What dev mode's renderer is told beside RendererBinary::ENV: which environment
      * and profile this is, none of it secret, so the dev server's workbench
      * mounts only where TINVAR_ENV says this is a developer's machine (ADR
      * 0089), and its email preview sees a production marker for itself.
@@ -463,7 +460,7 @@ final class ServeCommand
 
         $this->trapSignals();
 
-        $rendererEnv = array_intersect_key(getenv(), array_flip(self::RENDERER_ENV));
+        $rendererEnv = RendererBinary::environment();
         // What FrankenPHP is told on top of this process's environment and the
         // application's (serverEnvironment, asked as FrankenPHP starts).
         $phpEnv = [

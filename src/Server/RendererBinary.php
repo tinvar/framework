@@ -8,6 +8,24 @@ namespace Tinvar\Server;
 final class RendererBinary
 {
     /**
+     * The variables a renderer may see of the environment it is started
+     * from, and nothing else: it refuses to start holding anything
+     * secret-shaped, and is never handed it. One list for every command
+     * that starts one -- serve, renderer:start, a build step's.
+     */
+    public const array ENV = ['PATH', 'TZ', 'LANG', 'LC_ALL'];
+
+    /**
+     * This process's values of ENV, for a renderer's environment.
+     *
+     * @return array<string, string>
+     */
+    public static function environment(): array
+    {
+        return array_intersect_key(array_filter(getenv(), \is_string(...)), array_flip(self::ENV));
+    }
+
+    /**
      * One of the renderer package's entry scripts -- renderer.js, or
      * dev-renderer.js -- the installed package's, else the workspace's.
      */

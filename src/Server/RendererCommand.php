@@ -53,9 +53,6 @@ final class RendererCommand
     /** Exit status for a bad invocation, as sysexits(3) has it. */
     public const int USAGE = 64;
 
-    /** Variables the renderer may see; it refuses to start holding anything secret. */
-    private const array RENDERER_ENV = ['PATH', 'TZ', 'LANG', 'LC_ALL'];
-
     /** Exit status when the command ran and what it was asked to do did not happen. */
     public const int FAILED = 1;
 
@@ -191,7 +188,7 @@ final class RendererCommand
         return ($this->exec)(
             $node,
             [$script, $directory, $entry, "--processes={$count}", "--codec={$codec}", ...($group === null ? [] : ["--socket-group={$group}"])],
-            [...array_intersect_key(getenv(), array_flip(self::RENDERER_ENV)), 'NODE_ENV' => 'production'],
+            [...RendererBinary::environment(), 'NODE_ENV' => 'production'],
         );
     }
 
