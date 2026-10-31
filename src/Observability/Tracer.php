@@ -54,6 +54,9 @@ final class Tracer
     /** Spans dropped because too many were pending. */
     public private(set) int $dropped = 0;
 
+    /** How many of those have been reported. */
+    private int $droppedReported = 0;
+
     /** @var (\Closure(\Throwable): void)|null */
     private ?\Closure $report = null;
 
@@ -242,6 +245,21 @@ final class Tracer
         } catch (\Throwable $e) {
             if ($this->report !== null) {
                 ($this->report)($e);
+            }
+        }
+
+        // Spans dropped for too many pending, said once each export finds
+        // more of them, as a failed export is: counted alone, nobody heard.
+        if ($this->dropped > $this->droppedReported) {
+            $more = $this->dropped - $this->droppedReported;
+            $this->droppedReported = $this->dropped;
+            if ($this->report !== null) {
+                ($this->report)(new \RuntimeException(\sprintf(
+                    '%d span%s dropped: more than %d waited for export.',
+                    $more,
+                    $more === 1 ? ' was' : 's were',
+                    $this->maxPending,
+                )));
             }
         }
     }

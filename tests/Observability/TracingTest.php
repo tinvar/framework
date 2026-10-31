@@ -198,6 +198,25 @@ describe('the tracer', function () {
 
         expect($reported)->toBe(['collector down'])->and($tracer->pending())->toBe(0);
     });
+
+    // Spans dropped for too many pending were counted and said nowhere:
+    // reported once each export finds more of them, as a failed one is.
+    it('reports the spans it dropped for too many pending, once', function () {
+        $reported = [];
+        $tracer = new Tracer(new Exported(), exportEvery: 0.0, maxPending: 2, batchSize: 100);
+        $tracer->reportTo(static function (\Throwable $e) use (&$reported): void {
+            $reported[] = $e->getMessage();
+        });
+        $tracer->startRequest(TRACE, null, 'GET');
+        foreach (['a', 'b', 'c', 'd'] as $name) {
+            $tracer->end($tracer->start($name));
+        }
+        $tracer->export(true);
+        $tracer->end($tracer->start('e'));
+        $tracer->export(true);
+
+        expect($reported)->toBe(['2 spans were dropped: more than 2 waited for export.']);
+    });
 });
 
 describe('OTLP export', function () {
@@ -268,9 +287,12 @@ describe('OTLP export', function () {
             ->and($message)->not->toContain('otlp-secret');
 
         // Left alone for the backoff: one down collector costs one attempt.
+        // What it is not sent is dropped, and says so -- the Tracer reports
+        // it -- rather than going silently.
         $status = 200;
-        $exporter->export([$span]);
-        expect($sent)->toHaveCount(1);
+        expect(fn () => $exporter->export([$span, $span]))->toThrow(\RuntimeException::class, 'backing off; 2 spans dropped')
+            ->and($sent)->toHaveCount(1)
+            ->and($exporter->dropped)->toBe(3);
     });
 
     it('never chains what a transport said, which can quote the request', function () {

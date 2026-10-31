@@ -17,13 +17,17 @@ namespace Tinvar\Observability;
  * It runs after the response has gone, in batches (Tracer), so a slow
  * collector holds a worker between requests, never a visitor. A collector
  * that fails or answers with an error is left alone for `backoff` seconds,
- * its spans dropped meanwhile, so one that is down costs one timeout, not
+ * its spans dropped meanwhile -- each batch reported, and counted in
+ * $dropped -- so one that is down costs one timeout, not
  * one per request. Redirects are not followed: the headers would go with
  * them.
  */
 final class OtlpHttpExporter implements SpanExporter
 {
     private float $backingOffUntil = 0.0;
+
+    /** Spans this exporter could not deliver: failed, refused, or dropped while backing off. */
+    public private(set) int $dropped = 0;
 
     /** @var \Closure(string, array<string, string>, string, float): int */
     private readonly \Closure $transport;
@@ -66,9 +70,23 @@ final class OtlpHttpExporter implements SpanExporter
 
     public function export(array $spans): void
     {
-        if ($spans === [] || microtime(true) < $this->backingOffUntil) {
+        if ($spans === []) {
             return;
         }
+        if (microtime(true) < $this->backingOffUntil) {
+            // Dropped, and said so: the Tracer reports it, as it does a
+            // failed export, rather than the batch going silently.
+            $this->dropped += \count($spans);
+
+            throw new \RuntimeException(\sprintf(
+                'The trace collector at %s is backing off; %d span%s dropped.',
+                $this->origin,
+                \count($spans),
+                \count($spans) === 1 ? '' : 's',
+            ));
+        }
+        // Counted now, and taken back once the collector has them.
+        $this->dropped += \count($spans);
 
         try {
             $status = ($this->transport)(
@@ -88,6 +106,7 @@ final class OtlpHttpExporter implements SpanExporter
             $this->backingOffUntil = microtime(true) + $this->backoff;
             throw new \RuntimeException("The trace collector at {$this->origin} answered {$status}.");
         }
+        $this->dropped -= \count($spans);
     }
 
     /** @param array<string, string> $headers */
