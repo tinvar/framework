@@ -65,11 +65,35 @@ final readonly class DatabaseUploadStore implements UploadStore
             // What pruning asks, and what the per-user cap counts.
             $uploads->index(['claimed_at', 'expires_at'], "{$table}_unclaimed");
             $uploads->index(['owner_hash'], "{$table}_owner");
-            // What removing a file by its key looks up (Uploads::discard()).
-            // A table made before has none, and finds it by scanning: an
-            // application that keeps many claims (a quota) adds it.
+            // What removing a file by its key looks up (Uploads::discard());
+            // a table made before gets it from indexKeys().
             $uploads->index(['storage_key'], "{$table}_key");
         }, $ifNotExists);
+    }
+
+    /**
+     * The index removing a file by its key looks up, for a table define()
+     * made before Uploads::discard() did: an application's migration calls
+     * this once. Nothing for a table that has it, as one define() makes now.
+     */
+    public static function indexKeys(Schema $schema, string $table = 'uploads'): void
+    {
+        new self($schema->connection(), $table);
+        $connection = $schema->connection();
+        $name = "{$table}_key";
+        $driver = $connection instanceof NamesDriver ? $connection->driver() : 'sqlite';
+        $found = match ($driver) {
+            'pgsql' => $connection->select('SELECT 1 AS found FROM pg_indexes WHERE indexname = ?', [$name]),
+            'mysql' => $connection->select('SELECT 1 AS found FROM information_schema.statistics WHERE table_schema = DATABASE() AND index_name = ?', [$name]),
+            default => $connection->select("SELECT 1 AS found FROM sqlite_master WHERE type = 'index' AND name = ?", [$name]),
+        };
+        if ($found !== []) {
+            return;
+        }
+
+        $schema->table($table, static function (Table $uploads) use ($name): void {
+            $uploads->index(['storage_key'], $name);
+        });
     }
 
     /**

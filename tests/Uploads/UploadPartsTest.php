@@ -333,6 +333,19 @@ describe('an upload store', function () {
             ->and($store->bytesHeld('u', 1500))->toBe(6);
     })->with('upload stores');
 
+    it('gives a table made before it looked uploads up by key the index, once', function () {
+        $connection = \Tinvar\Orm\PdoConnection::sqlite(':memory:', 'test');
+        $schema = new \Tinvar\Orm\Schema\Schema($connection, \Tinvar\Orm\Schema\Dialect::for($connection));
+        DatabaseUploadStore::define($schema);
+        $connection->execute('DROP INDEX uploads_key');
+        $indexes = static fn (): array => array_column($connection->select("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'uploads_key'"), 'name');
+
+        expect($indexes())->toBe([]);
+        DatabaseUploadStore::indexKeys($schema);
+        DatabaseUploadStore::indexKeys($schema);
+        expect($indexes())->toBe(['uploads_key']);
+    });
+
     // Counted and added apart, uploads sent at once each found room and were
     // all kept. Processes of their own, each with its own connection to one
     // file, as workers are.
