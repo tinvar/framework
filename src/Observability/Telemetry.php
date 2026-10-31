@@ -338,8 +338,10 @@ final class Telemetry implements Spans
      */
     public function statement(string $sql, string $system, int $startedHr, int $endedHr, ?\Throwable $failure = null): void
     {
+        // Not sampled, the span would be dropped as it ends: none is made,
+        // and the statement's text is not sanitized for it.
         $tracer = $this->tracer;
-        if ($tracer === null || $tracer->root() === null) {
+        if ($tracer === null || !$tracer->sampled()) {
             return;
         }
 
@@ -363,8 +365,10 @@ final class Telemetry implements Spans
             default => ($frame['rsc'] ?? false) === true ? 'payload' : 'document',
         };
 
+        // A span only for a sampled request: it is all a render's span, and
+        // the query batches and renderer phases under it, are kept for.
         $span = null;
-        if ($this->tracer?->root() !== null) {
+        if ($this->tracer?->sampled() === true) {
             $view = $frame['route'] ?? $frame['template'] ?? null;
             $span = $this->tracer->start("render {$kind}", [
                 'tinvar.render.kind' => $kind,

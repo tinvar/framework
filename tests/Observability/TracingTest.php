@@ -298,3 +298,24 @@ describe('OTLP export', function () {
         'header name' => ['http://collector:4318/v1/traces', ['X Key' => 'a']],
     ])->throws(\InvalidArgumentException::class);
 });
+
+// A request that is not sampled keeps no span, so it should make none: a
+// statement's text sanitized, a render's span opened and its phases drawn,
+// for every request of the 99% a small ratio leaves out.
+it('makes no span for a request it does not sample', function () {
+    $tracer = new Tracer(new Exported(), sampleRatio: 0.0, exportEvery: 0.0);
+    $telemetry = new \Tinvar\Observability\Telemetry(new \Tinvar\Observability\Logger(new \Tinvar\Observability\MemorySink()), null, $tracer);
+    $tracer->startRequest(TRACE, null, 'GET');
+
+    $trace = $telemetry->renderStarted(['t' => 'render', 'route' => 'home']);
+    $telemetry->statement('SELECT * FROM orders WHERE id = 1', 'sqlite', hrtime(true), hrtime(true));
+
+    expect($trace->span)->toBeNull()
+        ->and($tracer->sampled())->toBeFalse();
+
+    // And a sampled one still does.
+    $tracer->endRequest();
+    $sampled = new Tracer(new Exported(), exportEvery: 0.0);
+    $sampled->startRequest(TRACE, null, 'GET');
+    expect(new \Tinvar\Observability\Telemetry(new \Tinvar\Observability\Logger(new \Tinvar\Observability\MemorySink()), null, $sampled)->renderStarted(['t' => 'render'])->span)->not->toBeNull();
+});
