@@ -296,8 +296,9 @@ final readonly class Uploads
 
     /**
      * Removes what lies under the prefix direct uploads arrive at, last
-     * written longer ago than any intent could still want it -- its URL's
-     * life and the grace -- where the store can list it: a file a record no
+     * written longer ago than any intent could still want it -- the time it
+     * may be completed in (UploadEndpoint::COMPLETE_TTL) and the grace --
+     * where the store can list it: a file a record no
      * longer names, put there by a PUT that arrived after its record was
      * pruned, or left by a process killed mid-completion. An intent began
      * before its file was written, so one written that long ago is past
@@ -319,7 +320,7 @@ final readonly class Uploads
 
         $removed = 0;
         foreach ($keys as $key => $written) {
-            if ($written > $now - UploadEndpoint::DIRECT_TTL - self::PRUNE_GRACE) {
+            if ($written > $now - UploadEndpoint::COMPLETE_TTL - self::PRUNE_GRACE) {
                 continue;
             }
             try {

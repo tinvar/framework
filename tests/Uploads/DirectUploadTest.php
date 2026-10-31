@@ -143,12 +143,12 @@ it('counts an intent against the cap, and prunes one never completed, file and a
     }
     expect(postDirect($app, UploadEndpoint::DIRECT_PATH, ['ticket' => $app->ticket($app->profile(P1)), 'size' => 10])->status)->toBe(429);
 
-    $app->now += UploadEndpoint::DIRECT_TTL + Uploads::PRUNE_GRACE + 1;
+    $app->now += UploadEndpoint::COMPLETE_TTL + Uploads::PRUNE_GRACE + 1;
     $s3->now = $app->now;
     expect($app->uploads->prune())->toBe(UploadEndpoint::MAX_PENDING);
 });
 
-// An intent runs out in ten minutes, and what was PUT under it stays in the
+// An intent runs out in an hour and ten minutes, and what was PUT under it stays in the
 // bucket until pruning removes it: counted until then, or a loop of begun
 // and never-completed uploads held several times the quota and the cap.
 it('counts an intent past its expiry against the quota and the cap until pruning removes its file', function () {
@@ -156,7 +156,7 @@ it('counts an intent past its expiry against the quota and the cap until pruning
     $ticket = $app->ticket($app->profile(P1));
 
     expect(postDirect($app, UploadEndpoint::DIRECT_PATH, ['ticket' => $ticket, 'size' => 4000])->status)->toBe(201);
-    $app->now += UploadEndpoint::DIRECT_TTL + 1;
+    $app->now += UploadEndpoint::COMPLETE_TTL + 1;
     $s3->now = $app->now;
     expect(postDirect($app, UploadEndpoint::DIRECT_PATH, ['ticket' => $app->ticket($app->profile(P1)), 'size' => 4000])->status)->toBe(507);
 
@@ -167,12 +167,27 @@ it('counts an intent past its expiry against the quota and the cap until pruning
         ->and(postDirect($app, UploadEndpoint::DIRECT_PATH, ['ticket' => $app->ticket($app->profile(P1)), 'size' => 4000])->status)->toBe(201);
 });
 
+// Review: the intent ran out with its URL, so a large file whose PUT began
+// in time but took longer than ten minutes to arrive could not be completed.
+it('completes an upload whose PUT began in time and arrived after its URL ran out', function () {
+    [$app, $s3] = directApp();
+    $bytes = png();
+    [$ticket, $intent] = begun($app, strlen($bytes));
+    $s3->browser('PUT', $intent['url'], $bytes, $intent['headers']);
+
+    $app->now += UploadEndpoint::DIRECT_TTL + Uploads::PRUNE_GRACE + 60;
+    $s3->now = $app->now;
+    $app->uploads->prune();
+
+    expect(postDirect($app, UploadEndpoint::COMPLETE_PATH, ['ticket' => $ticket, 'intent' => $intent['intent']])->status)->toBe(201);
+});
+
 it('counts an expired upload against the cap until pruning removes its file', function () {
     [$app] = directApp();
     for ($i = 0; $i < UploadEndpoint::MAX_PENDING; $i++) {
         begun($app, 10);
     }
-    $app->now += UploadEndpoint::DIRECT_TTL + 1;
+    $app->now += UploadEndpoint::COMPLETE_TTL + 1;
 
     expect(postDirect($app, UploadEndpoint::DIRECT_PATH, ['ticket' => $app->ticket($app->profile(P1)), 'size' => 10])->status)->toBe(429);
 });
@@ -253,8 +268,8 @@ it('sweeps the incoming prefix of what is older than any intent could still want
     $kept = 'avatars/' . str_repeat('c', 32) . '.png';
     $s3->objects = [$old => 'x', $young => 'y', $kept => 'z'];
     $s3->modified = [
-        $old => $app->now - UploadEndpoint::DIRECT_TTL - Uploads::PRUNE_GRACE - 1,
-        $young => $app->now - UploadEndpoint::DIRECT_TTL,
+        $old => $app->now - UploadEndpoint::COMPLETE_TTL - Uploads::PRUNE_GRACE - 1,
+        $young => $app->now - UploadEndpoint::COMPLETE_TTL,
         $kept => 0,
     ];
     $s3->now = $app->now;

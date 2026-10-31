@@ -99,6 +99,13 @@ final class UploadEndpoint
     public const int INCOMING_GRACE = 3600;
 
     /**
+     * Seconds an intent may be completed in: its URL's life, and the grace
+     * after it. The store holds a PUT to the URL's expiry as it begins, not
+     * as it ends, so a large file begun in time can arrive long after.
+     */
+    public const int COMPLETE_TTL = self::DIRECT_TTL + self::INCOMING_GRACE;
+
+    /**
      * Where a resumable upload begins (ADR 0143): under its ticket, for the
      * size, name and type declared up front, answered with a session the
      * browser keeps -- and, for a file sent straight to an object store, a
@@ -441,7 +448,7 @@ final class UploadEndpoint
             type: '',
             size: $size,
             createdAt: $now,
-            expiresAt: $now + self::DIRECT_TTL,
+            expiresAt: $now + self::COMPLETE_TTL,
             ownerHash: $owner,
         );
         if (!$this->uploads->store->addWithin($intent, self::MAX_PENDING, $now, $quota)) {
@@ -518,8 +525,10 @@ final class UploadEndpoint
                 }
                 // The URL is good until it runs out, and a PUT replayed
                 // under it puts the file there again: the intent is kept,
-                // consumed, and pruning removes its key once the URL is dead.
-                $this->uploads->store->add($intent->consumed($now, self::INCOMING_GRACE));
+                // consumed, and pruning removes its key once the URL is dead
+                // and INCOMING_GRACE has passed -- the intent's own expiry,
+                // which COMPLETE_TTL already puts that far out.
+                $this->uploads->store->add($intent->consumed($now, 0));
                 $this->uploads->store->forget($intent->id);
             }
             if (!$found || $bytes !== $intent->size) {
