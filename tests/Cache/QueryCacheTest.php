@@ -100,10 +100,12 @@ describe('the key', function () {
             ->and($english)->toBe(new QueryCache(new ArrayStore(), new AuthContext(), locale: 'en')->key('q', $declaration, ['x' => 1], 'acme'));
     });
 
-    it('fails a lookup whose locale cannot be read, rather than keying it without one', function () {
+    // A lookup whose locale cannot be read is a miss (see "a store that
+    // cannot answer"); the key itself is never made without one.
+    it('makes no key whose locale cannot be read, rather than keying it without one', function () {
         $cache = new QueryCache(new ArrayStore(), new AuthContext(), locale: static fn (): string => throw new \RuntimeException('no locale'));
 
-        expect(fn () => $cache->get('q', new QueryAttribute(cache: '1m'), ['x' => 1], 'acme'))
+        expect(fn () => $cache->key('q', new QueryAttribute(cache: '1m'), ['x' => 1], 'acme'))
             ->toThrow(\RuntimeException::class, 'no locale');
     });
 
@@ -350,6 +352,67 @@ it('expires an entry once its TTL has passed', function () {
 
     $now += 31;
     expect($cache->get('q', $declaration, [], 'acme')['hit'])->toBeFalse();
+});
+
+describe('a store that cannot answer', function () {
+    $down = static fn (): Tinvar\Cache\Store => new class implements Tinvar\Cache\Store {
+        public function get(string $key): array
+        {
+            throw new \PDOException('SQLSTATE[HY000] the cache database is gone');
+        }
+
+        public function put(string $key, mixed $value, ?int $ttlSeconds = null, array $tags = []): void
+        {
+            throw new \PDOException('SQLSTATE[HY000] the cache database is gone');
+        }
+
+        public function forget(string $key): void {}
+
+        public function forgetTags(array $tags): int
+        {
+            return 0;
+        }
+
+        public function flush(): void {}
+    };
+
+    // The cache is an optimisation: a store that cannot be read is a miss,
+    // and the body answers -- never a failed tick for every query in it.
+    it('is a miss, reported, and the query still answers', function () use ($down) {
+        $fixture = new Fixture(racks: 2, unitsPerRack: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $registry = new QueryRegistry(static fn (string $c): object => new $c());
+        $registry->register(Tinvar\Tests\Query\Fixtures\CachedSummary::class);
+        $cache = new QueryCache($down(), new AuthContext());
+        $reported = [];
+        $cache->reportTo(static function (\Throwable $e) use (&$reported): void {
+            $reported[] = $e->getMessage();
+        });
+        $runner = new QueryRunner($registry, $orm, new AllowAllGate(), cache: $cache);
+
+        $result = $runner->run([['id' => 0, 'name' => 'racks.cached', 'args' => ['rack' => $fixture->ids['racks'][0]]]], allowed: ['racks.cached']);
+
+        expect($result[0])->toHaveKey('value')
+            ->and($result[0])->not->toHaveKey('error')
+            ->and($reported)->toHaveCount(2)
+            ->and($reported[0])->toContain('the cache database is gone');
+    });
+
+    // A locale closure that throws leaves the call uncached: never keyed
+    // loosely, and never a failed call.
+    it('is a miss where the locale cannot be read', function () {
+        $cache = new QueryCache(new ArrayStore(), new AuthContext(), locale: static fn (): string => throw new \RuntimeException('no locale'));
+        $reported = [];
+        $cache->reportTo(static function (\Throwable $e) use (&$reported): void {
+            $reported[] = $e->getMessage();
+        });
+        $declaration = new QueryAttribute(cache: '1m');
+
+        expect($cache->get('q', $declaration, [], '')['hit'])->toBeFalse();
+        $cache->put('q', $declaration, [], '', 'value');
+        expect($cache->get('q', $declaration, [], '')['hit'])->toBeFalse()
+            ->and($reported)->toBe(['no locale', 'no locale', 'no locale']);
+    });
 });
 
 describe('through the runner', function () {

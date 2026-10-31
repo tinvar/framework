@@ -72,7 +72,7 @@ final class QueryCache
      *        the application's: a string where it has one, or -- as the panel is read from
      *        its context -- a closure asked at every lookup for the locale of the request
      *        or render in hand, so one worker serving two languages never answers one
-     *        from the other's entry. One that throws fails the call, never keys it loosely.
+     *        from the other's entry. One that throws leaves the call uncached and is reported, never keys it loosely.
      */
     public function __construct(
         private readonly Store $store,
@@ -188,25 +188,29 @@ final class QueryCache
     {
         $miss = ['hit' => false, 'value' => null];
 
-        // Unkeyable means uncacheable, never loosely keyed.
-        $key = $this->keyOrNull($name, $declaration, $arguments, $tenant);
-        if ($key === null) {
-            $why = 'unkeyable';
-
-            return $miss;
-        }
-
-        if (\count($this->looked) >= self::MAX_LOOKED) {
-            $this->looked = [];
-        }
-        $this->looked[$key] = ['flags' => [], 'variant' => null];
-
-        $found = $this->store->get($key);
-        if (!$found['hit']) {
-            return $miss;
-        }
-
+        // Everything here -- the key's locale, the store, the flags -- is in
+        // the try: the cache is an optimisation, and a part of it that cannot
+        // answer is a miss the body answers, never a failed call (nor, since
+        // a tick runs its calls together, a failed tick).
         try {
+            // Unkeyable means uncacheable, never loosely keyed.
+            $key = $this->keyOrNull($name, $declaration, $arguments, $tenant);
+            if ($key === null) {
+                $why = 'unkeyable';
+
+                return $miss;
+            }
+
+            if (\count($this->looked) >= self::MAX_LOOKED) {
+                $this->looked = [];
+            }
+            $this->looked[$key] = ['flags' => [], 'variant' => null];
+
+            $found = $this->store->get($key);
+            if (!$found['hit']) {
+                return $miss;
+            }
+
             $entry = $found['value'];
             $flags = self::flagsNamed($entry);
             if ($flags !== null) {
@@ -234,8 +238,9 @@ final class QueryCache
             }
         } catch (\Throwable $e) {
             $why = 'error';
-            // A flag store that cannot answer leaves the answer unproven, and
-            // the body runs -- to fail the same way, or to answer.
+            // A store or flag store that cannot answer, or a locale that
+            // cannot be read, leaves the answer unproven, and the body runs
+            // -- to fail the same way, or to answer.
             $this->failed($e);
 
             return $miss;
@@ -271,7 +276,13 @@ final class QueryCache
         }
         $read = $reads?->flags() ?? [];
 
-        $key = $this->keyOrNull($name, $declaration, $arguments, $tenant);
+        try {
+            $key = $this->keyOrNull($name, $declaration, $arguments, $tenant);
+        } catch (\Throwable $e) {
+            $this->failed($e);
+
+            return;
+        }
         if ($key === null) {
             return;
         }
