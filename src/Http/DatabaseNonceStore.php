@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Http;
 
 use Tinvar\Orm\Connection;
+use Tinvar\Orm\NamesDriver;
 use Tinvar\Orm\Schema\Dialect;
 use Tinvar\Orm\Schema\Schema;
 use Tinvar\Orm\Schema\Table;
@@ -31,7 +32,16 @@ final readonly class DatabaseNonceStore implements NonceStore
     /** The longest nonce the table holds whole, in bytes. */
     public const int MAX_NONCE_BYTES = 128;
 
+    /**
+     * Expired nonces deleted, at most, by each claim: more than the one row
+     * a claim adds, so the table never grows past what is unexpired, and no
+     * claim pays for a backlog -- as the throttle stores sweep.
+     */
+    public const int SWEEP_BATCH = 10;
+
     private string $insert;
+
+    private string $sweep;
 
     /**
      * @param bool $durable whether each claim's commit is synced in full
@@ -45,6 +55,18 @@ final readonly class DatabaseNonceStore implements NonceStore
             throw new \InvalidArgumentException("'{$table}' is not a table name this store will write.");
         }
         $this->insert = Dialect::for($connection)->insertUnlessTaken($table, ['scope', 'nonce', 'expires_at']);
+
+        // By the expiry index, a batch at a time. Postgres skips rows
+        // another claim's sweep has locked rather than wait on them; MySQL
+        // takes a LIMIT on the DELETE itself, and none in an IN subquery.
+        $limit = self::SWEEP_BATCH;
+        $this->sweep = match ($connection instanceof NamesDriver ? $connection->driver() : 'sqlite') {
+            'pgsql' => "DELETE FROM {$table} WHERE (scope, nonce) IN ("
+                . "SELECT scope, nonce FROM {$table} WHERE expires_at < ? LIMIT {$limit} FOR UPDATE SKIP LOCKED)",
+            'mysql' => "DELETE FROM {$table} WHERE expires_at < ? LIMIT {$limit}",
+            default => "DELETE FROM {$table} WHERE (scope, nonce) IN ("
+                . "SELECT scope, nonce FROM {$table} WHERE expires_at < ? LIMIT {$limit})",
+        };
     }
 
     /**
@@ -56,12 +78,38 @@ final readonly class DatabaseNonceStore implements NonceStore
     {
         new self($schema->connection(), $table);
 
-        $schema->create($table, static function (Table $nonces): void {
+        $schema->create($table, static function (Table $nonces) use ($table): void {
             $nonces->string('scope', 64);
             $nonces->string('nonce', self::MAX_NONCE_BYTES);
             $nonces->bigInteger('expires_at');
             $nonces->primary(['scope', 'nonce']);
+            // What each claim's sweep looks expired nonces up by.
+            $nonces->index(['expires_at'], "{$table}_expires_at");
         }, $ifNotExists);
+    }
+
+    /**
+     * The expiry index, for a table define() made before it made one; and
+     * nothing for a table that has it. Without it each claim's sweep read
+     * the whole table.
+     */
+    public static function indexExpiry(Schema $schema, string $table = 'webhook_nonces'): void
+    {
+        new self($schema->connection(), $table);
+        $connection = $schema->connection();
+        $name = "{$table}_expires_at";
+        $found = match ($connection instanceof NamesDriver ? $connection->driver() : 'sqlite') {
+            'pgsql' => $connection->select('SELECT 1 AS found FROM pg_indexes WHERE indexname = ?', [$name]),
+            'mysql' => $connection->select('SELECT 1 AS found FROM information_schema.statistics WHERE table_schema = DATABASE() AND index_name = ?', [$name]),
+            default => $connection->select("SELECT 1 AS found FROM sqlite_master WHERE type = 'index' AND name = ?", [$name]),
+        };
+        if ($found !== []) {
+            return;
+        }
+
+        $schema->table($table, static function (Table $nonces) use ($name): void {
+            $nonces->index(['expires_at'], $name);
+        });
     }
 
     /**
@@ -76,7 +124,7 @@ final readonly class DatabaseNonceStore implements NonceStore
         }
 
         $claim = function () use ($scope, $nonce, $expiresAt, $now): bool {
-            $this->connection->execute("DELETE FROM {$this->table} WHERE expires_at < ?", [$now]);
+            $this->connection->execute($this->sweep, [$now]);
 
             return $this->connection->execute($this->insert, [hash('sha256', $scope), $nonce, $expiresAt]) === 1;
         };

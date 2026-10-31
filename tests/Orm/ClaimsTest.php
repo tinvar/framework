@@ -51,6 +51,19 @@ function claimsHoldOn(PdoConnection $connection): void
     expect($other->claim('Hook', $nonce, 200, 100))->toBeTrue()
         ->and($nonces->claim('Hook', $nonce, 400, 300))->toBeTrue();
 
+    // Each claim sweeps a bounded batch of what has expired, never the lot:
+    // one DELETE of every expired row, on every claim, was a table scan.
+    for ($i = 0; $i < DatabaseNonceStore::SWEEP_BATCH * 2 + 5; $i++) {
+        expect($nonces->claim('Stale', "s{$i}", 150, 100))->toBeTrue();
+    }
+    $count = static fn (): int => (int) $connection->select('SELECT COUNT(*) AS n FROM webhook_nonces WHERE expires_at = 150')[0]['n'];
+    expect($nonces->claim('Fresh', 'f1', 900, 160))->toBeTrue()
+        ->and($count())->toBe(DatabaseNonceStore::SWEEP_BATCH + 5)
+        ->and($nonces->claim('Fresh', 'f2', 900, 160))->toBeTrue()
+        ->and($count())->toBe(5)
+        ->and($nonces->claim('Fresh', 'f3', 900, 160))->toBeTrue()
+        ->and($count())->toBe(0);
+
     $runs = new DatabaseScheduleStore($connection);
     $otherRuns = new DatabaseScheduleStore($connection);
     $task = str_repeat('T', DatabaseScheduleStore::MAX_TASK_BYTES);
@@ -76,6 +89,25 @@ it('claims each key once on MySQL', function () {
         claimsHoldOn(new PdoConnection($pdo, 'mysql'));
     });
 })->group('mysql')->skip(Databases::mysqlMissing() !== null, Databases::mysqlMissing() ?? '');
+
+// What the sweep looks rows up by is indexed, in a table define() makes
+// and, through indexExpiry(), in one it made before.
+it('indexes a nonce table by when its nonces expire, new or made before', function () {
+    $connection = PdoConnection::sqlite(':memory:');
+    $schema = new Schema($connection, Dialect::for($connection));
+    $indexed = static fn (string $table): array => array_column(
+        $connection->select("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql LIKE '%expires_at%'", [$table]),
+        'name',
+    );
+
+    DatabaseNonceStore::define($schema);
+    $connection->execute('CREATE TABLE old_nonces (scope VARCHAR(64) NOT NULL, nonce VARCHAR(128) NOT NULL, expires_at BIGINT NOT NULL, PRIMARY KEY (scope, nonce))');
+    DatabaseNonceStore::indexExpiry($schema, 'old_nonces');
+    DatabaseNonceStore::indexExpiry($schema, 'old_nonces');
+
+    expect($indexed('webhook_nonces'))->toBe(['webhook_nonces_expires_at'])
+        ->and($indexed('old_nonces'))->toBe(['old_nonces_expires_at']);
+});
 
 it('spells a claim as each database has it', function () {
     expect(new SqliteDialect()->insertUnlessTaken('schedule_runs', ['task', 'minute']))
