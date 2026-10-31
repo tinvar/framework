@@ -16,12 +16,12 @@ use Tinvar\Deps\DepsException;
 use Tinvar\Deps\Outcome;
 use Tinvar\Deps\PinnedFiles;
 use Tinvar\Deps\Pins\AnchorePin;
-use Tinvar\Deps\Pins\ApcuPin;
 use Tinvar\Deps\Pins\ComposerPin;
 use Tinvar\Deps\Pins\FrankenPhpPin;
 use Tinvar\Deps\Pins\GhPin;
 use Tinvar\Deps\Pins\ImagePin;
 use Tinvar\Deps\Pins\NodePin;
+use Tinvar\Deps\Pins\PeclPin;
 use Tinvar\Deps\Pins\WatchedPin;
 use Tinvar\Deps\Version;
 
@@ -159,6 +159,17 @@ describe('an image', function () {
         expect($outcome->status)->toBe('bumped')
             ->and(implode(' ', $outcome->notes))->toContain('rebuilt upstream')
             ->and($files->contents('.github/workflows/ci.yml'))->toContain(' # 8.4.13');
+    });
+
+    it('moves Redis to the newest patch on its line', function () {
+        $http = new FakeHttp();
+        $digest = image($http, 'redis', '8.10.', '8.10.4', ['8.10.3' => null, '8.12.0' => null]);
+        $files = files();
+
+        $outcome = ImagePin::redis()->check($files, context($http));
+
+        expect($outcome->status)->toBe('bumped')
+            ->and($files->contents('.github/workflows/ci.yml'))->toContain('redis:8.10@' . $digest . ' # 8.10.4');
     });
 
     it('refuses a manifest that does not hash to the digest the registry gave', function () {
@@ -383,7 +394,7 @@ describe('APCu', function () {
         releases($http, 'krakjoe/apcu', ['v5.1.29' => []]);
         $files = files();
 
-        $outcome = new ApcuPin()->check($files, context($http));
+        $outcome = PeclPin::apcu()->check($files, context($http));
 
         expect($outcome->status)->toBe('bumped')
             ->and($files->contents(PinnedFiles::SETUP))->toContain("APCU_VERSION=5.1.29\nAPCU_SHA256=" . hash('sha256', $tarball) . "\n");
@@ -392,16 +403,40 @@ describe('APCu', function () {
     it('refuses a release GitHub does not have, and holds a new major', function () {
         $http = (new FakeHttp())->on('https://pecl.php.net/rest/r/apcu/stable.txt', "5.1.29\n");
         releases($http, 'krakjoe/apcu', ['v5.1.28' => []]);
-        expect(fn () => new ApcuPin()->check(files(), context($http)))->toThrow(DepsException::class, 'has no release in krakjoe/apcu');
+        expect(fn () => PeclPin::apcu()->check(files(), context($http)))->toThrow(DepsException::class, 'has no release in krakjoe/apcu');
 
         $http->on('https://pecl.php.net/rest/r/apcu/stable.txt', '6.0.0');
-        expect(new ApcuPin()->check(files(), context($http))->status)->toBe('held');
+        expect(PeclPin::apcu()->check(files(), context($http))->status)->toBe('held');
     });
 
     it('refuses a version PECL gives that is not one', function () {
         $http = (new FakeHttp())->on('https://pecl.php.net/rest/r/apcu/stable.txt', "5.1.29\nAPCU_SHA256=0");
 
-        expect(fn () => new ApcuPin()->check(files(), context($http)))->toThrow(DepsException::class, 'Not a version');
+        expect(fn () => PeclPin::apcu()->check(files(), context($http)))->toThrow(DepsException::class, 'Not a version');
+    });
+});
+
+describe('phpredis', function () {
+    it('moves to PECL\'s newest stable release, published on GitHub too', function () {
+        $tarball = (string) gzencode("package.xml\0<version>\n  <release>6.3.1</release>\n</version>");
+        $http = (new FakeHttp())
+            ->on('https://pecl.php.net/rest/r/redis/stable.txt', "6.3.1\n")
+            ->on('https://pecl.php.net/get/redis-6.3.1.tgz', $tarball);
+        releases($http, 'phpredis/phpredis', ['6.3.1' => []]);
+        $files = files();
+
+        $outcome = PeclPin::phpredis()->check($files, context($http));
+
+        expect($outcome->status)->toBe('bumped')
+            ->and($files->contents(PinnedFiles::SETUP))->toContain("PHPREDIS_VERSION=6.3.1\nPHPREDIS_SHA256=" . hash('sha256', $tarball) . "\n")
+            ->and($files->contents(PinnedFiles::SETUP))->toContain("APCU_VERSION=5.1.28\n");
+    });
+
+    it('refuses a release GitHub does not have', function () {
+        $http = (new FakeHttp())->on('https://pecl.php.net/rest/r/redis/stable.txt', "6.3.1\n");
+        releases($http, 'phpredis/phpredis', ['6.3.0' => []]);
+
+        expect(fn () => PeclPin::phpredis()->check(files(), context($http)))->toThrow(DepsException::class, 'has no release in phpredis/phpredis');
     });
 });
 

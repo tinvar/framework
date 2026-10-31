@@ -19,6 +19,8 @@ jobs:
         image: postgres:17@sha256:b8faeff7712663c2773a190181e1246e37e364b887611c04658c28b44e2408fe # 17.11
       mysql:
         image: mysql:8.4@sha256:76f0358884cb92d9a086d24e5671c38048d3fef40f2588703d73eb55392d6b69 # 8.4.13
+      redis:
+        image: redis:8.10@sha256:4764ce37931aac77c0d033680b339b19b4a4a81772204d268947cb851212d0ac # 8.10.3
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
