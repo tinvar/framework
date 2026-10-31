@@ -163,15 +163,18 @@ final class QueryCache
 
     /**
      * @param array<string, mixed> $arguments resolved arguments, models included
+     * @param bool $subtree whether the call reads across its tenant's subtree,
+     *        as the Orm says (Orm::isSubtreeGranted()) -- the one source the
+     *        reads themselves and the tags a render records are scoped by
      * @return array{hit: bool, value: mixed}
      */
-    public function get(string $name, Query $declaration, array $arguments, string $tenant): array
+    public function get(string $name, Query $declaration, array $arguments, string $tenant, bool $subtree = false): array
     {
         if (!$this->enabledFor($declaration)) {
             return ['hit' => false, 'value' => null];
         }
         $why = 'absent';
-        $found = $this->lookup($name, $declaration, $arguments, $tenant, $why);
+        $found = $this->lookup($name, $declaration, $arguments, $tenant, $subtree, $why);
         if ($this->observer !== null) {
             ($this->observer)($name, $found['hit'], $found['hit'] ? '' : $why);
         }
@@ -184,7 +187,7 @@ final class QueryCache
      * @param-out string $why
      * @return array{hit: bool, value: mixed}
      */
-    private function lookup(string $name, Query $declaration, array $arguments, string $tenant, string &$why): array
+    private function lookup(string $name, Query $declaration, array $arguments, string $tenant, bool $subtree, string &$why): array
     {
         $miss = ['hit' => false, 'value' => null];
 
@@ -194,7 +197,7 @@ final class QueryCache
         // a tick runs its calls together, a failed tick).
         try {
             // Unkeyable means uncacheable, never loosely keyed.
-            $key = $this->keyOrNull($name, $declaration, $arguments, $tenant);
+            $key = $this->keyOrNull($name, $declaration, $arguments, $tenant, $subtree);
             if ($key === null) {
                 $why = 'unkeyable';
 
@@ -255,6 +258,7 @@ final class QueryCache
      * @param array<string, mixed> $arguments
      * @param FlagReads|null $reads what the body read, as the runner recorded
      *        it; null says it read no flag
+     * @param bool $subtree as get() takes it: the Orm's word on the subtree
      */
     public function put(
         string $name,
@@ -263,6 +267,7 @@ final class QueryCache
         string $tenant,
         mixed $value,
         ?FlagReads $reads = null,
+        bool $subtree = false,
     ): void {
         if (!$this->enabledFor($declaration)) {
             return;
@@ -277,7 +282,7 @@ final class QueryCache
         $read = $reads?->flags() ?? [];
 
         try {
-            $key = $this->keyOrNull($name, $declaration, $arguments, $tenant);
+            $key = $this->keyOrNull($name, $declaration, $arguments, $tenant, $subtree);
         } catch (\Throwable $e) {
             $this->failed($e);
 
@@ -294,7 +299,7 @@ final class QueryCache
             // Filed as the key is: an entry keyed apart for a request granted
             // the subtree is tagged under the subtree's namespace, which a
             // write made as any tenant in it reaches (TagNamespace).
-            $tags = $this->tagsFor($declaration, $arguments, $tenant, $this->subtreeGranted());
+            $tags = $this->tagsFor($declaration, $arguments, $tenant, $subtree);
             $answer = ['k' => self::ANSWER, 'r' => $read, 'v' => $value];
 
             // No flag read, where no body of this call has been seen to read
@@ -411,20 +416,11 @@ final class QueryCache
         return TagNamespace::read($strings, $tenant, $subtree);
     }
 
-    /**
-     * Whether the request was granted reads across its tenant's subtree:
-     * what keys an entry apart (key()) and files its tags (put()).
-     */
-    private function subtreeGranted(): bool
-    {
-        return $this->panels?->granted()?->subtree === true;
-    }
-
     /** @param array<string, mixed> $arguments */
-    private function keyOrNull(string $name, Query $declaration, array $arguments, string $tenant): ?string
+    private function keyOrNull(string $name, Query $declaration, array $arguments, string $tenant, bool $subtree): ?string
     {
         try {
-            return $this->key($name, $declaration, $arguments, $tenant);
+            return $this->key($name, $declaration, $arguments, $tenant, $subtree);
         } catch (\JsonException) {
             return null;
         }
@@ -437,8 +433,9 @@ final class QueryCache
      * whose results differ must not share an entry.
      *
      * @param array<string, mixed> $arguments
+     * @param bool $subtree whether the call reads across its tenant's subtree, as the Orm says
      */
-    public function key(string $name, Query $declaration, array $arguments, string $tenant): string
+    public function key(string $name, Query $declaration, array $arguments, string $tenant, bool $subtree = false): string
     {
         // The build, beside what the spec lists: the same call answered by
         // another build's code may have another shape (ADR 0049).
@@ -455,8 +452,10 @@ final class QueryCache
         // "The panel and its effective scope": a request whose membership
         // granted reads across its tenant's subtree may get a different
         // answer from the same query, so it keys apart. Only then, so every
-        // other key is the one it was.
-        if ($this->subtreeGranted()) {
+        // other key is the one it was. The Orm's word, from the caller: the
+        // reads and a render's recorded tags are scoped by it, and a panel
+        // binding that names the subtree widens nothing the Orm did not.
+        if ($subtree) {
             $parts['s'] = 'subtree';
         }
 

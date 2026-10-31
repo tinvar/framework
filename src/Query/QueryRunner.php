@@ -776,7 +776,9 @@ final class QueryRunner
             return null;
         }
 
-        $hit = $this->cache->get($name, $declaration, $arguments, $this->orm->tenant());
+        // Keyed apart across the subtree as the Orm says, the one source the
+        // reads and the tags above are scoped by.
+        $hit = $this->cache->get($name, $declaration, $arguments, $this->orm->tenant(), $this->orm->isSubtreeGranted());
 
         return $hit['hit'] ? ['value' => $hit['value']] : null;
     }
@@ -801,6 +803,7 @@ final class QueryRunner
             $this->orm->tenant(),
             $outcome['value'],
             $reads,
+            $this->orm->isSubtreeGranted(),
         );
     }
 

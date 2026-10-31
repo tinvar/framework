@@ -109,6 +109,25 @@ describe('the key', function () {
             ->toThrow(\RuntimeException::class, 'no locale');
     });
 
+    // One source for whether the subtree was granted: the Orm's, which the
+    // reads themselves and the tags a render records are scoped by. Read
+    // from the panel's binding instead, a service call held to a binding
+    // that names the subtree keyed apart reads the Orm never widened.
+    it('keys a read across the subtree apart as its caller says the Orm granted it, not as a panel binding says', function () {
+        $declaration = new QueryAttribute(cache: '1m');
+        $panels = new PanelContext();
+        $cache = new QueryCache(new ArrayStore(), new AuthContext(), $panels);
+
+        $plain = $cache->key('q', $declaration, [], 'acme');
+        $bound = $panels->grantedWithin(
+            new \Tinvar\Auth\PanelBinding('reseller', subtree: true),
+            static fn (): string => $cache->key('q', $declaration, [], 'acme'),
+        );
+
+        expect($bound)->toBe($plain)
+            ->and($cache->key('q', $declaration, [], 'acme', subtree: true))->not->toBe($plain);
+    });
+
     it('separates two panels', function () {
         $auth = new AuthContext();
         $declaration = new QueryAttribute(cache: '1m');
