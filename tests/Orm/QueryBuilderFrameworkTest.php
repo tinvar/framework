@@ -64,6 +64,19 @@ final readonly class ShelfCardData extends Data
     ) {}
 }
 
+/** Renamed on the property, not the parameter: the Mapper reads either. */
+#[MapsFrom(Shelf::class)]
+final readonly class RenamedOnPropertyData extends Data
+{
+    #[From('note')]
+    public string $name;
+
+    public function __construct(public string $id, string $name)
+    {
+        $this->name = $name;
+    }
+}
+
 /** No #[MapsFrom]: nothing says which of its fields are columns. */
 final readonly class LooseData extends Data
 {
@@ -154,6 +167,12 @@ describe('fields from Data', function () {
         expect(DataFields::of(ShelfCardData::class))->toBe(['id', 'name', 'position'])
             ->and(fn () => DataFields::of(LooseData::class))->toThrow(\LogicException::class, '#[MapsFrom]')
             ->and(fn () => DataFields::of(Shelf::class))->toThrow(\LogicException::class, 'not a Data class');
+    });
+
+    // `name` here is filled from the note column: sorted by `name`, the
+    // list would be ordered by a column the field does not show.
+    it('takes a field renamed on its property for no column, as the Mapper reads it', function () {
+        expect(DataFields::of(RenamedOnPropertyData::class))->toBe(['id']);
     });
 
     it('generates an #[In] list from them for a form request', function () {

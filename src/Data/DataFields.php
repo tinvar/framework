@@ -147,7 +147,11 @@ final class DataFields
         $fields = [];
         foreach ($reflection->getConstructor()?->getParameters() ?? [] as $parameter) {
             $name = $parameter->getName();
-            if ($parameter->getAttributes(From::class) !== [] || !isset($columns[$name])) {
+            // Renamed on the parameter or on its property, as the Mapper
+            // reads it (Mapper::planFor()): either way not this column.
+            $property = $reflection->hasProperty($name) ? $reflection->getProperty($name) : null;
+            $renamed = $parameter->getAttributes(From::class) !== [] || ($property?->getAttributes(From::class) ?? []) !== [];
+            if ($renamed || !isset($columns[$name])) {
                 continue;
             }
             $fields[] = $name;
