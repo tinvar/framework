@@ -414,10 +414,6 @@ final class RendererCommand
     }
 
     /**
-     * Whether a command line is a pool supervisor's: renderer.js run with
-     * --processes, as renderer:start and serve both run it.
-     */
-    /**
      * The command line of $pid, its arguments a space apart: from /proc
      * where there is one -- an image may have no ps -- and from ps
      * otherwise, -ww for the whole of it, however long its paths.
@@ -436,6 +432,10 @@ final class RendererCommand
         return trim((string) shell_exec("ps -ww -o args= -p {$pid} 2>/dev/null"));
     }
 
+    /**
+     * Whether a command line is a pool supervisor's: renderer.js run with
+     * --processes, as renderer:start and serve both run it.
+     */
     private static function isSupervisor(string $command): bool
     {
         return preg_match('#(^|[\s/])renderer\.js\s#', $command) === 1
