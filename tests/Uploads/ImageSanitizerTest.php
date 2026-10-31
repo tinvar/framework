@@ -250,17 +250,39 @@ describe('AVIF', function () {
             ->toThrow(HttpException::class, 'not the size it says');
     });
 
-    // ImageMagick's width and height limits are the image's own size while
-    // it decodes, so their product is never more than the pixels an image
-    // may have -- and, the process's own, they are given back after.
-    it('gives ImageMagick\'s limits back after holding it to the image\'s own size', function () {
-        $limits = fn (): array => array_map(\Imagick::getResourceLimit(...), [\Imagick::RESOURCETYPE_WIDTH, \Imagick::RESOURCETYPE_HEIGHT, \Imagick::RESOURCETYPE_AREA]);
-        $before = $limits();
-        new ImageSanitizer()->sanitize(file(avif(6, 4)), 'image/avif');
+    // ImageMagick's limits are the process's, shared by a worker's threads:
+    // set for one image and given back after, they were given back while
+    // another thread decoded. So they only come down, to the strictest
+    // sanitizer's, and stay there.
+    it('lowers ImageMagick\'s limits to the strictest sanitizer\'s, and never raises them', function () {
+        $limits = fn (): array => array_map(
+            static fn (int $resource): int => (int) \Imagick::getResourceLimit($resource),
+            [\Imagick::RESOURCETYPE_WIDTH, \Imagick::RESOURCETYPE_HEIGHT, \Imagick::RESOURCETYPE_AREA],
+        );
 
-        expect($limits())->toBe($before)
-            ->and(\strlen(avif(30, 20)))->toBeGreaterThan(0);
+        new ImageSanitizer(maxDimension: 4096, maxPixels: 4096 * 2048)->sanitize(file(avif(6, 4)), 'image/avif');
+        expect($limits())->toBe([4096, 4096, 4096 * 2048]);
+
+        new ImageSanitizer()->sanitize(file(avif(6, 4)), 'image/avif');
+        expect($limits())->toBe([4096, 4096, 4096 * 2048]);
     })->skip(ImageSanitizer::gdAvif(), 'GD draws AVIF here, not Imagick.');
+
+    // Extents that overlap would let a file of a few KB be joined into
+    // data many times its size: no byte is read twice, for any item.
+    it('refuses an AVIF whose items\' data overlaps', function () {
+        $image = new \Imagick();
+        $image->newImage(20, 10, 'rgba(200,30,30,0.5)');
+        $image->setImageFormat('avif');
+        $avif = $image->getImageBlob();
+        // An iloc of version 0 with four-byte offsets, lengths and bases:
+        // each item's base offset follows its ID and data reference.
+        $entries = (int) strpos($avif, 'iloc') + 4 + 4 + 2 + 2;
+        expect(substr($avif, $entries - 4, 2))->toBe("\x44\x40");
+        $sent = substr_replace($avif, substr($avif, $entries + 4, 4), $entries + 18 + 4, 4);
+
+        expect(fn () => AvifContainer::read($sent))->toThrow(\UnexpectedValueException::class, 'overlaps')
+            ->and(AvifContainer::read($avif)['images'])->toHaveCount(2);
+    });
 });
 
 /** $avif with its first `ispe` saying $width by $height, and nothing else changed. */

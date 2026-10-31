@@ -23,7 +23,10 @@ namespace Tinvar\Uploads;
  * - a coded image without exactly one `ispe` and one `av1C`, or whose data
  *   is not found whole in the file;
  * - a protected item, a data reference outside the file, or an item
- *   located by another item.
+ *   located by another item;
+ * - extents that overlap, for one item or two, so the data joined is never
+ *   more than the file; more than 256 extents in all; and more than four
+ *   AV1 sequence headers for one image.
  *
  * - a coded image any AV1 sequence header of which -- in its `av1C`, or in
  *   its data -- declares a frame larger than its `ispe`.
@@ -48,6 +51,15 @@ final class AvifContainer
     /** The most extents one item's data may be in. */
     private const int MAX_EXTENTS = 64;
 
+    /** The most extents every item together may be in. */
+    private const int MAX_ALL_EXTENTS = 256;
+
+    /**
+     * The most AV1 sequence headers one coded image may carry, in its
+     * `av1C` and its data together: one in each is usual.
+     */
+    private const int MAX_SEQUENCE_HEADERS = 4;
+
     private const array ITEM_TYPES = ['av01', 'Exif', 'mime'];
 
     /** References that do not derive one image from others. */
@@ -71,6 +83,9 @@ final class AvifContainer
 
     /** @var list<array{string, int, list<int>}> type, from, to */
     private array $references = [];
+
+    /** @var list<array{int, int}> the stretches of the file items' data has been read from: start, end */
+    private array $read = [];
 
     private ?int $primary = null;
 
@@ -336,6 +351,7 @@ final class AvifContainer
         if ($count > self::MAX_ITEMS) {
             throw self::refused('it locates more items than it may hold');
         }
+        $allExtents = 0;
         for ($i = 0; $i < $count; $i++) {
             $id = $this->uint($at, $idWidth, $end);
             $at += $idWidth;
@@ -359,6 +375,10 @@ final class AvifContainer
             }
             if ($extents < 1 || $extents > self::MAX_EXTENTS) {
                 throw self::refused("its item {$id}'s data is in {$extents} extents");
+            }
+            $allExtents += $extents;
+            if ($allExtents > self::MAX_ALL_EXTENTS) {
+                throw self::refused('its items are in more than ' . self::MAX_ALL_EXTENTS . ' extents');
             }
             $list = [];
             for ($j = 0; $j < $extents; $j++) {
@@ -407,6 +427,9 @@ final class AvifContainer
         }
 
         $frames = [...self::sequenceHeaders($config[0]), ...self::sequenceHeaders($this->data($id))];
+        if (\count($frames) > self::MAX_SEQUENCE_HEADERS) {
+            throw self::refused('it has more than ' . self::MAX_SEQUENCE_HEADERS . ' AV1 sequence headers for one image');
+        }
         if ($frames === []) {
             throw self::refused("its item {$id} has no AV1 sequence header");
         }
@@ -435,7 +458,17 @@ final class AvifContainer
             if ($offset > $to - $from || $length > $to - $from - $offset) {
                 throw self::refused("its item {$id}'s data is not in the file");
             }
-            $data .= substr($this->bytes, $from + $offset, $length);
+            // No byte of the file read twice, for this item or another: so
+            // what is joined here, over every item, is never more than the
+            // file, however its extents are drawn.
+            $start = $from + $offset;
+            foreach ($this->read as [$readFrom, $readTo]) {
+                if ($start < $readTo && $readFrom < $start + $length) {
+                    throw self::refused("its item {$id}'s data overlaps data already read");
+                }
+            }
+            $this->read[] = [$start, $start + $length];
+            $data .= substr($this->bytes, $start, $length);
         }
 
         return $data;
@@ -479,6 +512,9 @@ final class AvifContainer
                 throw self::refused('its AV1 data is cut short');
             }
             if ($type === 1) {
+                if (\count($frames) === self::MAX_SEQUENCE_HEADERS) {
+                    throw self::refused('it has more than ' . self::MAX_SEQUENCE_HEADERS . ' AV1 sequence headers for one image');
+                }
                 $frames[] = self::maxFrame(substr($obus, $at, $size));
             }
             $at += $size;

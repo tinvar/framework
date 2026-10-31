@@ -190,24 +190,50 @@ final readonly class ImageSanitizer
 
         [$width, $height] = $this->header($path, $type);
 
-        // ImageMagick's limits are its process's: held to the image's own
-        // size, read and held to the limits above -- so the width limit
-        // times the height limit is never more than maxPixels -- while it
-        // is drawn, and given back after, so as not to refuse anything
-        // larger the worker's other code draws.
-        $limits = [\Imagick::RESOURCETYPE_WIDTH => $width, \Imagick::RESOURCETYPE_HEIGHT => $height, \Imagick::RESOURCETYPE_AREA => $width * $height];
-        $before = [];
-        foreach ($limits as $resource => $limit) {
-            $was = \Imagick::getResourceLimit($resource);
-            $before[$resource] = $was >= (float) PHP_INT_MAX ? PHP_INT_MAX : (int) $was;
-            \Imagick::setResourceLimit($resource, $limit);
+        $this->limitImagick();
+
+        return $this->drawWithImagick($path, $type, $width, $height);
+    }
+
+    /**
+     * ImageMagick's width, height and area limits lowered to this
+     * sanitizer's -- never raised -- and left there.
+     *
+     * They are the process's, shared by every thread of a FrankenPHP
+     * worker: limits set for one image and given back after would be given
+     * back while another thread decodes, and fail open. So they only ever
+     * come down, to the strictest of every sanitizer's, under a lock on a
+     * file so two threads lowering them at once cannot leave the looser.
+     * Each image is held to its own size by its container (AvifContainer)
+     * before it is decoded and by the size it decodes to after.
+     */
+    private function limitImagick(): void
+    {
+        $limits = [
+            \Imagick::RESOURCETYPE_WIDTH => $this->maxDimension,
+            \Imagick::RESOURCETYPE_HEIGHT => $this->maxDimension,
+            \Imagick::RESOURCETYPE_AREA => $this->maxPixels,
+        ];
+        $loose = static function () use ($limits): array {
+            return array_filter($limits, static fn (int $limit, int $resource): bool => \Imagick::getResourceLimit($resource) > $limit, ARRAY_FILTER_USE_BOTH);
+        };
+        if ($loose() === []) {
+            return;
+        }
+
+        $lock = @fopen(sys_get_temp_dir() . '/tinvar-imagick-limits.lock', 'c');
+        if ($lock === false || !flock($lock, LOCK_EX)) {
+            throw new \RuntimeException('ImageMagick\'s limits could not be lowered: no lock to lower them under.');
         }
         try {
-            return $this->drawWithImagick($path, $type, $width, $height);
-        } finally {
-            foreach ($before as $resource => $limit) {
+            // Read again under the lock: another thread may have lowered
+            // them further since.
+            foreach ($loose() as $resource => $limit) {
                 \Imagick::setResourceLimit($resource, $limit);
             }
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
         }
     }
 
