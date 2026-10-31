@@ -39,9 +39,12 @@ $core = [
     // an application declares with: attributes are declarations, so they
     // stand with the transport, except those that run a check of a layer
     // above as they are built. Anything of Tinvar's no layer names is here,
-    // the lowest, so a new namespace that uses anything above fails.
+    // the lowest, so a new namespace that uses anything above fails. The
+    // console's prompts are here too (ADR 0144): they use nothing of
+    // Tinvar's, and the generators, staging and every module may ask.
     'http' => [
         'Tinvar\\', 'Tinvar\\Http\\', 'Tinvar\\Http\\Middleware', 'Tinvar\\Http\\Endpoints\\Limits', 'Tinvar\\Console\\Cron',
+        'Tinvar\\Console\\Prompts', 'Tinvar\\Console\\Prompts\\',
         'Tinvar\\Attributes\\ClassAttributes', 'Tinvar\\Attributes\\Authorize', 'Tinvar\\Attributes\\Panel', 'Tinvar\\Attributes\\PublicAccess',
     ],
     // Who is asking: the user, the panel, the gates and the policies, the
