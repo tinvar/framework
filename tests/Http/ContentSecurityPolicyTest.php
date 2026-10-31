@@ -18,14 +18,14 @@ use Tinvar\Http\Request;
  */
 it('is the policy the spec describes, for the nonce given', function () {
     expect(\Shop\Kernel::contentSecurityPolicy('abc+/=='))
-        ->toBe("script-src 'nonce-abc+/==' 'strict-dynamic'; object-src 'none'; base-uri 'none'");
+        ->toBe("script-src 'nonce-abc+/==' 'strict-dynamic'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
 });
 
 // React's development build rebuilds server components' stacks in the
 // browser with eval; dev mode allows it, and production never does.
 it('allows eval in dev, and only there', function () {
     expect(\Shop\Kernel::contentSecurityPolicy('abc', dev: true))
-        ->toBe("script-src 'nonce-abc' 'strict-dynamic' 'unsafe-eval'; object-src 'none'; base-uri 'none'")
+        ->toBe("script-src 'nonce-abc' 'strict-dynamic' 'unsafe-eval'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
         ->and(\Shop\Kernel::contentSecurityPolicy('abc'))->not->toContain('unsafe-eval');
 });
 
@@ -34,8 +34,15 @@ it('allows eval in dev, and only there', function () {
 // a static page's meta element cannot, so its policy never does.
 it('names the problem reports endpoint when asked to, and only then', function () {
     expect(\Shop\Kernel::contentSecurityPolicy('abc', reports: true))
-        ->toBe("script-src 'nonce-abc' 'strict-dynamic'; object-src 'none'; base-uri 'none'; report-uri /_reports; report-to default")
+        ->toBe("script-src 'nonce-abc' 'strict-dynamic'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; report-uri /_reports; report-to default")
         ->and(\Shop\Kernel::contentSecurityPolicy('abc'))->not->toContain('report');
+});
+
+// No page is framed, by another origin or the shop's own. A browser ignores
+// frame-ancestors in a meta element, so a static page's policy leaves it out.
+it('refuses every frame, except in a static page\'s meta element', function () {
+    expect(\Shop\Kernel::contentSecurityPolicy('abc'))->toContain("frame-ancestors 'none'")
+        ->and(\Shop\Kernel::contentSecurityPolicy('abc', meta: true))->toBe("script-src 'nonce-abc' 'strict-dynamic'; object-src 'none'; base-uri 'none'");
 });
 
 // The framework's own HTML response runs no script, so it allows none.

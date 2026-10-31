@@ -321,7 +321,7 @@ it('sends a CSP, and puts its nonce on every script in the document', function (
     // (ADR 0093).
     $policy = (string) $document->header('content-security-policy');
     expect(preg_match(
-        "#^script-src 'nonce-([A-Za-z0-9+/]{22}==)' 'strict-dynamic'; object-src 'none'; base-uri 'none'(; report-uri /_reports; report-to default)?\$#",
+        "#^script-src 'nonce-([A-Za-z0-9+/]{22}==)' 'strict-dynamic'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'(; report-uri /_reports; report-to default)?\$#",
         $policy,
         $m,
     ))->toBe(1, "the policy sent: '{$policy}'");
