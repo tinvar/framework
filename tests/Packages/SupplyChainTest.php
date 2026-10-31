@@ -975,7 +975,11 @@ describe('workflows', function () {
         $workflow = Yaml::parse((string) file_get_contents(\dirname(__DIR__, 4) . '/.github/workflows/ci.yml'));
         $packages = array_map(static fn (string $file): string => basename(\dirname($file)), glob(\dirname(__DIR__, 4) . '/packages/*/composer.json') ?: []);
         $packages = array_values(array_diff($packages, ['skeleton']));
-        $matrix = $workflow['jobs']['packages']['strategy']['matrix']['package'];
+        // Those whose suites reach a database, and those whose do not.
+        $matrix = [
+            ...$workflow['jobs']['packages']['strategy']['matrix']['package'],
+            ...$workflow['jobs']['packages-plain']['strategy']['matrix']['package'],
+        ];
         sort($packages);
         sort($matrix);
 
