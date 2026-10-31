@@ -322,6 +322,14 @@ final class Revalidator
                 return null;
             }
 
+            // The panel the route is in, as the token says it was minted in,
+            // as /_live's trade holds it (SubscribeEndpoint): a token naming
+            // another, or none, was not minted for this page, and the page
+            // is not drawn inside a panel it is not in.
+            if (($this->entry?->panelForChain($chain)->name ?? '') !== $claims->panel) {
+                return null;
+            }
+
             // "Each re-render runs that route's full GET pipeline:
             // MIDDLEWARE, layout and page #[Authorize], loaders." The
             // middleware was the part missing: FragmentEndpoint runs a
@@ -381,6 +389,13 @@ final class Revalidator
                     // the tenant the route runs as now -- resolved from this
                     // request, never from the token.
                     if (TenantClaim::current($this->orm) !== $claims->tenant) {
+                        return Response::make(200, '');
+                    }
+                    // And the panel, once the route's middleware has run, as
+                    // a fragment's is: middleware that put the request in
+                    // another panel means this is not the page the token
+                    // came from.
+                    if (($this->panels?->currentOrNull() ?? '') !== $claims->panel) {
                         return Response::make(200, '');
                     }
 

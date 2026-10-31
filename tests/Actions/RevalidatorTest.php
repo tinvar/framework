@@ -252,6 +252,21 @@ describe('re-rendering after an action', function () {
         expect($renders)->toBe(Revalidator::MAX_ROUTES);
     });
 
+    // As /_live's trade holds a token (SubscribeEndpoint): the panel it
+    // names is the route's panel, or the token was minted for another page.
+    // Re-rendering entered whatever panel the token named and drew the page
+    // there -- a page in no panel drawn inside the admin panel's.
+    it('renders nothing for a token naming another panel than its route is in', function () {
+        [$revalidator, $fixture, $signer] = revalidator();
+
+        expect($revalidator->rerender(
+            ['racks.show'],
+            [routeToken($signer, $fixture, ['panel' => 'admin'])],
+            Request::post('/_action/x'),
+            session(),
+        ))->toBe([]);
+    });
+
     // Neither side decides alone.
     // A route that exists: naming one that does not is now refused outright
     // (see RevalidationTargetsTest), which is not what this case is about.
