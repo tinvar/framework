@@ -258,6 +258,10 @@ final class Kernel
         'handoff' => 60,
         // Each one a file written to disk: fewer than actions.
         'uploads' => 30,
+        // A resumable upload's chunks (ADR 0143): each a megabyte or so
+        // appended to one bounded file, so a file of ten is ten of them -- a
+        // budget of their own, or a single upload would spend `uploads`.
+        'upload-chunks' => 240,
         // Images on a page, each its own request; and an export's download.
         'files' => 600,
         // Starting an export or an import: each a job, and an import a file
@@ -364,6 +368,8 @@ final class Kernel
     private readonly Pipeline $channelStack;
     private readonly Pipeline $handoffStack;
     private readonly Pipeline $uploadStack;
+
+    private readonly Pipeline $uploadChunkStack;
     private readonly Pipeline $fileStack;
     private readonly Pipeline $transferStack;
     private readonly Pipeline $telemetryStack;
@@ -1083,6 +1089,21 @@ final class Kernel
             new RequireAuthentication($this->auth),
         ]);
 
+        // A chunk of a resumable upload: the same stack, spending a budget
+        // of its own -- `upload-chunks`, or eight times `uploads` where an
+        // application's limits name none. Every chunk is still held to a
+        // session that counts against the cap and the quota, to its size and
+        // to the floor on a chunk's.
+        $chunkLimits = [...$limits, 'upload-chunks' => $limits['upload-chunks'] ?? ($limits['uploads'] ?? 0) * 8];
+        $this->uploadChunkStack = new Pipeline([
+            ...$this->floodGuardFor($throttle, 'upload-chunks', $chunkLimits),
+            ...$global,
+            new VerifyCsrfToken(tokens: $csrf),
+            ...$this->throttleFor($throttle, 'upload-chunks', $chunkLimits, byAddress: true),
+            ...$this->throttleFor($throttle, 'upload-chunks', $chunkLimits, byAddress: false),
+            new RequireAuthentication($this->auth),
+        ]);
+
         // A file is a GET with no body, so no CSRF; the session, for the
         // token's binding, and its throttle. Its token says who may use it.
         $this->fileStack = new Pipeline([
@@ -1799,7 +1820,7 @@ final class Kernel
                 $this->telemetry?->route('_upload');
                 UploadEndpoint::assertMethod($request);
 
-                return $this->uploadStack->run(
+                return (UploadEndpoint::isChunk($request) ? $this->uploadChunkStack : $this->uploadStack)->run(
                     $request,
                     fn (Request $passed): Response => $this->uploads_->handle($passed, $rawBody),
                 );

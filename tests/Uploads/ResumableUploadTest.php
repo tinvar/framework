@@ -486,3 +486,19 @@ it('begins a session only in a mode its storage can take', function () {
     $ticket = $app->ticket($app->profile(P1), action: 'profiles.document', field: 'document');
     expect(postSession($app, UploadEndpoint::SESSION_PATH, ['ticket' => $ticket, 'size' => 10])->status)->toBe(404);
 });
+
+// A chunk spends a budget of its own: a file of several chunks is one
+// upload, not several, against `uploads`.
+it('throttles chunks by a budget of their own, not by the uploads one', function () {
+    $app = new App(new MemoryStorage(), throttled: true);
+    $file = largePdf(UploadEndpoint::MIN_CHUNK_BYTES * 3);
+    $session = (string) beginSession($app, strlen($file))['session'];
+
+    foreach ([0, 1, 2] as $at) {
+        $sent = sendChunk($app, $session, $at * UploadEndpoint::MIN_CHUNK_BYTES, substr($file, $at * UploadEndpoint::MIN_CHUNK_BYTES, UploadEndpoint::MIN_CHUNK_BYTES));
+        expect($sent->status)->toBe($at === 2 ? 201 : 200);
+    }
+    // Two `uploads` a minute: the session's beginning spent one.
+    expect(offsetOf($app, $session)->status)->toBe(200)
+        ->and(offsetOf($app, $session)->status)->toBe(429);
+});
