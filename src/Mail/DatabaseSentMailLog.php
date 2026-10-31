@@ -44,7 +44,7 @@ final readonly class DatabaseSentMailLog implements SentMailLog
     }
 
     /** The log's table, for the application's migration to make. */
-    public static function define(Schema $schema, string $table = self::TABLE): void
+    public static function define(Schema $schema, string $table = self::TABLE, bool $ifNotExists = false): void
     {
         new self($schema->connection(), $table);
         $schema->create($table, static function (Table $rows) use ($table): void {
@@ -54,7 +54,7 @@ final readonly class DatabaseSentMailLog implements SentMailLog
             $rows->bigInteger('sent_at');
             $rows->primary(['provider', 'message_id', 'recipient']);
             $rows->index(['sent_at'], "{$table}_sent_at");
-        });
+        }, $ifNotExists);
     }
 
     public function record(SentMessage $sent, int $now): void

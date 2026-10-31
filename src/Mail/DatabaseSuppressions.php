@@ -32,7 +32,7 @@ final readonly class DatabaseSuppressions implements Suppressions
     }
 
     /** The list's table, for the application's migration to make. */
-    public static function define(Schema $schema, string $table = self::TABLE): void
+    public static function define(Schema $schema, string $table = self::TABLE, bool $ifNotExists = false): void
     {
         new self($schema->connection(), $table);
         $schema->create($table, static function (Table $rows): void {
@@ -42,7 +42,7 @@ final readonly class DatabaseSuppressions implements Suppressions
             $rows->string('detail', Suppression::MAX_DETAIL)->nullable();
             $rows->bigInteger('suppressed_at');
             $rows->primary(['email']);
-        });
+        }, $ifNotExists);
     }
 
     public function find(array $emails): array
