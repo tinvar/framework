@@ -31,6 +31,9 @@ final class MemoryStorage implements AppendableStorage
 
     public function append(string $key, int $offset, string $bytes, ?\Closure $guard = null): int
     {
+        if ($offset < 0) {
+            throw new \InvalidArgumentException('An append is made at an offset of at least 0.');
+        }
         StorageKey::assertValid($key);
         $size = \strlen($this->files[$key] ?? '');
         if ($size !== $offset) {

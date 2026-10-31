@@ -185,6 +185,19 @@ describe('appending', function () {
         }
     })->with('stores');
 
+    // Review: the memory store answered a negative offset as a mismatch, where
+    // the local one refuses it as no offset at all.
+    it('refuses a negative offset as no offset', function (Closure $make) {
+        /** @var Tinvar\Storage\AppendableStorage $storage */
+        [$storage, $root] = $make();
+
+        try {
+            expect(fn () => $storage->append(StorageKey::generate('tinvar-partial', ''), -1, 'x'))->toThrow(\InvalidArgumentException::class);
+        } finally {
+            $root === null || removeStorageTestRoot($root);
+        }
+    })->with('stores');
+
     // Review: a guard that threw on a first append left an empty file there.
     it('leaves no file behind when its guard throws on the first append', function (Closure $make) {
         /** @var Tinvar\Storage\AppendableStorage $storage */
