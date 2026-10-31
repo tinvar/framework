@@ -51,10 +51,12 @@ final readonly class StagingImport
 
     /**
      * @param string|null $tenant the one tenant whose rows are copied; null for every row
+     * @param (\Closure(string, int, int): void)|null $progress told each table copied, and how many of
+     *        how many are: with '' and 0 before the first
      * @return array<string, int> each table written, with the rows written to it; a dropped one with 0
      * @throws ImportRefused before anything is written, or after, with everything rolled back
      */
-    public function run(\PDO $production, \PDO $staging, ?string $tenant = null): array
+    public function run(\PDO $production, \PDO $staging, ?string $tenant = null, ?\Closure $progress = null): array
     {
         $production->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
         $staging->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
@@ -71,7 +73,7 @@ final readonly class StagingImport
         // parent (Schema::beginSnapshot()).
         $snapshot = $from->beginSnapshot();
         try {
-            return $this->import($staging, $from, $to, $tenant);
+            return $this->import($staging, $from, $to, $tenant, $progress);
         } finally {
             if ($snapshot) {
                 $from->endSnapshot();
@@ -80,10 +82,11 @@ final readonly class StagingImport
     }
 
     /**
+     * @param (\Closure(string, int, int): void)|null $progress
      * @return array<string, int>
      * @throws ImportRefused
      */
-    private function import(\PDO $staging, Schema $from, Schema $to, ?string $tenant): array
+    private function import(\PDO $staging, Schema $from, Schema $to, ?string $tenant, ?\Closure $progress): array
     {
         // Staging's database marked production's is production's, whatever
         // was passed as staging: the import empties every table it writes.
@@ -118,8 +121,15 @@ final readonly class StagingImport
                 }
             }
 
+            $done = 0;
+            if ($progress !== null) {
+                $progress('', 0, \count($tables));
+            }
             foreach ($tables as $table => $declared) {
                 $written[$table] = $this->copy($staging, $from, $to, $table, $declared, $tenant, $context);
+                if ($progress !== null) {
+                    $progress($table, ++$done, \count($tables));
+                }
             }
 
             $to->commit();

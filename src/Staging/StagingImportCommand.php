@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Tinvar\Staging;
 
 use Tinvar\Config\FrameworkConfig;
+use Tinvar\Console\Prompts;
+use Tinvar\Console\Prompts\Cancelled;
+use Tinvar\Console\Prompts\Progress;
 use Tinvar\Support\AppKey;
 use Tinvar\Support\BuildProfile;
 use Tinvar\Support\Encrypter;
@@ -13,7 +16,11 @@ use Tinvar\Support\Encrypter;
  * `tinvar staging:import`: an application's production database into its
  * staging database, through its ScrubPlan (ADR 0090).
  *
- *   tinvar staging:import --from=PRODUCTION --to=STAGING --staging-key-file=PATH [--tenant=ID]
+ *   tinvar staging:import --from=PRODUCTION --to=STAGING --staging-key-file=PATH [--tenant=ID] [--force]
+ *
+ * It replaces what staging holds, so where a person is there it asks first
+ * (Prompts), unless --force, and copies under a progress bar, a table a
+ * step; with nobody there it runs as it always has.
  *
  * Run on production's side, under production's profile, with production's
  * key -- the application's, as its server has it -- which it reads with and
@@ -36,7 +43,7 @@ final class StagingImportCommand
 
     private const array OPTIONS = ['from', 'to', 'staging-key-file', 'tenant'];
 
-    private const string SYNOPSIS = 'tinvar staging:import --from=PRODUCTION --to=STAGING --staging-key-file=PATH [--tenant=ID]';
+    private const string SYNOPSIS = 'tinvar staging:import --from=PRODUCTION --to=STAGING --staging-key-file=PATH [--tenant=ID] [--force]';
 
     /** @var \Closure(string): void */
     private readonly \Closure $out;
@@ -69,7 +76,8 @@ final class StagingImportCommand
     public function run(array $arguments): int
     {
         $options = [];
-        foreach ($arguments as $argument) {
+        $force = \in_array('--force', $arguments, true);
+        foreach (array_diff($arguments, ['--force']) as $argument) {
             if (preg_match('/^--([a-z-]+)=(.+)\z/s', $argument, $m) !== 1 || !\in_array($m[1], self::OPTIONS, true)) {
                 ($this->err)("Unknown argument '{$argument}'. " . self::SYNOPSIS);
 
@@ -107,7 +115,38 @@ final class StagingImportCommand
                 new Encrypter($production),
                 new Encrypter(AppKey::forProfile($staging, BuildProfile::STAGING)),
             );
-            $written = $import->run(($this->open)($options['from']), ($this->open)($options['to']), $options['tenant'] ?? null);
+            $from = ($this->open)($options['from']);
+            $to = ($this->open)($options['to']);
+            if (!$force && Prompts::canAsk() && !Prompts::confirm(
+                "Replace what staging holds in {$options['to']}" . (isset($options['tenant']) ? " for tenant {$options['tenant']}" : '') . " with production's, scrubbed?",
+                default: false,
+                name: 'replace-staging',
+            )) {
+                throw new Cancelled('Nothing imported.');
+            }
+            $bar = null;
+            try {
+                $written = $import->run($from, $to, $options['tenant'] ?? null, static function (string $table, int $done, int $total) use (&$bar): void {
+                    if ($done === 0) {
+                        $bar = Prompts::progress('Importing into staging', $total)->start();
+
+                        return;
+                    }
+                    if ($bar instanceof Progress) {
+                        $bar->hint($table)->advance();
+                        if ($done === $total) {
+                            $bar->finish();
+                        }
+                    }
+                });
+            } finally {
+                // Stopped where it failed, the reason said under it.
+                if ($bar instanceof Progress) {
+                    $bar->release();
+                }
+            }
+        } catch (Cancelled $e) {
+            throw $e;
         } catch (ImportRefused|\RuntimeException|\InvalidArgumentException|\PDOException $e) {
             ($this->err)($e->getMessage());
 

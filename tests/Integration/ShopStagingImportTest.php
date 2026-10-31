@@ -13,6 +13,8 @@ namespace Tinvar\Tests\Integration\ShopStagingImport;
 
 use Shop\Database\StagingScrub;
 use Tinvar\Bench\Shop;
+use Tinvar\Console\Prompts;
+use Tinvar\Console\Prompts\Cancelled;
 use Tinvar\Staging\ImportRefused;
 use Tinvar\Staging\Scrub;
 use Tinvar\Staging\StagingImportCommand;
@@ -172,4 +174,30 @@ it('refuses a database into itself', function () {
     [$status, $said] = import(["--from={$database}", "--to={$database}"]);
 
     expect($status)->toBe(StagingImportCommand::REFUSED)->and($said)->toContain('one database');
+});
+
+// It replaces what staging holds: asked first where a person is there,
+// and copied under a progress bar, a table a step.
+it('asks before replacing staging\'s data where a person is there, and imports nothing at no', function () {
+    $production = Shop::testDatabase();
+    $staging = Shop::testDatabase();
+    new \PDO('sqlite:' . $staging)->exec("UPDATE customers SET name = 'staging as it was'");
+    try {
+        $prompts = Prompts::fake(['replace-staging' => false]);
+        expect(fn () => import(["--from={$production}", "--to={$staging}"]))->toThrow(Cancelled::class, 'Nothing imported.')
+            ->and(array_values(array_unique(array_column(rows($staging, 'SELECT name FROM customers'), 'name'))))->toBe(['staging as it was']);
+        $prompts->assertAsked("Replace what staging holds in {$staging} with production's, scrubbed?");
+
+        $prompts = Prompts::fake(['replace-staging' => true]);
+        [$status, $said] = import(["--from={$production}", "--to={$staging}"]);
+        expect($status)->toBe(0, $said);
+        $prompts->assertOutputContains('Importing into staging: ');
+
+        $prompts = Prompts::fake();
+        [$status] = import(["--from={$production}", "--to={$staging}", '--force']);
+        expect($status)->toBe(0);
+        $prompts->assertNothingAsked();
+    } finally {
+        Prompts::restore();
+    }
 });
