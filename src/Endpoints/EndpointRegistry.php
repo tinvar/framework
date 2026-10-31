@@ -23,6 +23,8 @@ use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Orm\Model;
 use Tinvar\Routing\CompiledRoute;
+use Tinvar\Routing\PathTemplate;
+use Tinvar\Routing\PathTemplateRefused;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\KnownAttributes;
 use Tinvar\Support\Str;
@@ -397,32 +399,22 @@ final class EndpointRegistry
      */
     private static function compilePath(string $where, string $path): array
     {
-        $template = '/' . trim($path, '/');
-        $template = (string) preg_replace('#/+#', '/', $template);
-        $template = $template === '/' ? '/' : rtrim($template, '/');
+        $template = PathTemplate::normalize($path);
         $segments = CompiledRoute::split($template);
 
         if (($segments[0] ?? '') !== '' && str_starts_with($segments[0], '_')) {
             throw new EndpointException("{$where}: '{$path}' is under /_, which is the framework's own. Choose another path.");
         }
 
-        $parameters = [];
-        foreach ($segments as $segment) {
-            if (!CompiledRoute::isParameter($segment)) {
-                if (preg_match('/^[A-Za-z0-9._~\-]+$/D', $segment) !== 1 || $segment === '.' || $segment === '..') {
-                    throw new EndpointException("{$where}: '{$path}' has '{$segment}', which is not a literal path segment.");
-                }
-                continue;
-            }
-
-            $parameter = substr($segment, 1, -1);
-            if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/D', $parameter) !== 1) {
-                throw new EndpointException("{$where}: '{$path}' has '{$parameter}', which is not a parameter name.");
-            }
-            if (\in_array($parameter, $parameters, true)) {
-                throw new EndpointException("{$where}: '{$path}' names {{$parameter}} twice.");
-            }
-            $parameters[] = $parameter;
+        // By the compiler a page's template is held to as well.
+        try {
+            [$segments, $parameters] = PathTemplate::compile($template);
+        } catch (PathTemplateRefused $e) {
+            throw new EndpointException(match ($e->rule) {
+                PathTemplateRefused::LITERAL => "{$where}: '{$path}' has '{$e->part}', which is not a literal path segment.",
+                PathTemplateRefused::NAME => "{$where}: '{$path}' has '{$e->part}', which is not a parameter name.",
+                default => "{$where}: '{$path}' names {{$e->part}} twice.",
+            });
         }
 
         return [$template, $segments, $parameters];

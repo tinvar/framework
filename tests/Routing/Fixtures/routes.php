@@ -178,6 +178,15 @@ final class DuplicateParameterPage {}
 #[Page('/bad/seg ment', view: 'x', name: 'bad.segment')]
 final class BadSegmentPage {}
 
+#[Page('/racks/..', view: 'x', name: 'bad.dots')]
+final class DotDotSegmentPage {}
+
+#[Page('/racks/./units', view: 'x', name: 'bad.dot')]
+final class DotSegmentPage {}
+
+#[Page("/racks\n", view: 'x', name: 'bad.newline')]
+final class TrailingNewlineSegmentPage {}
+
 final class NotARoute {}
 
 /** Class-level check: the spec writes Authorize('viewAny', Rack::class). */

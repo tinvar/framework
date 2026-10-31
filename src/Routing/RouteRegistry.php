@@ -701,23 +701,22 @@ final class RouteRegistry
         $this->sorted = true;
     }
 
-    /** @return list<string> */
+    /**
+     * The template's segments, by the compiler an endpoint's path is held
+     * to as well (PathTemplate).
+     *
+     * @return list<string>
+     */
     private static function compile(string $template): array
     {
-        $segments = CompiledRoute::split(self::normalizeTemplate($template));
-
-        foreach ($segments as $segment) {
-            if (!CompiledRoute::isParameter($segment)) {
-                if (!preg_match('/^[A-Za-z0-9._~\-]+$/', $segment)) {
-                    throw RoutingException::badTemplate($template, "segment '{$segment}' is not a literal path segment");
-                }
-                continue;
-            }
-
-            $name = trim($segment, '{}');
-            if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $name)) {
-                throw RoutingException::badTemplate($template, "'{$name}' is not a valid parameter name");
-            }
+        try {
+            [$segments] = PathTemplate::compile($template);
+        } catch (PathTemplateRefused $e) {
+            throw RoutingException::badTemplate($template, match ($e->rule) {
+                PathTemplateRefused::LITERAL => "segment '{$e->part}' is not a literal path segment",
+                PathTemplateRefused::NAME => "'{$e->part}' is not a valid parameter name",
+                default => "'{$e->part}' appears twice",
+            });
         }
 
         return $segments;
@@ -776,9 +775,6 @@ final class RouteRegistry
 
     private static function normalizeTemplate(string $template): string
     {
-        $template = '/' . trim($template, '/');
-        $template = (string) preg_replace('#/+#', '/', $template);
-
-        return $template === '/' ? '/' : rtrim($template, '/');
+        return PathTemplate::normalize($template);
     }
 }

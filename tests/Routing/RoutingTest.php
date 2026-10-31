@@ -93,6 +93,11 @@ describe('route compilation', function () {
         'invalid parameter name' => [Tinvar\Tests\Routing\Fixtures\BadParameterNamePage::class, 'is not a valid parameter name'],
         'repeated parameter' => [Tinvar\Tests\Routing\Fixtures\DuplicateParameterPage::class, 'appears twice'],
         'space in a literal segment' => [Tinvar\Tests\Routing\Fixtures\BadSegmentPage::class, 'not a literal path segment'],
+        // As an endpoint's path is held: one compiler for both (the
+        // two had drifted), with no . or .. and no newline after the end.
+        'a .. segment' => [Tinvar\Tests\Routing\Fixtures\DotDotSegmentPage::class, 'not a literal path segment'],
+        'a . segment' => [Tinvar\Tests\Routing\Fixtures\DotSegmentPage::class, 'not a literal path segment'],
+        'a newline after a segment' => [Tinvar\Tests\Routing\Fixtures\TrailingNewlineSegmentPage::class, 'not a literal path segment'],
     ]);
 
     it('refuses a class with neither #[Page] nor #[Layout]', function () {
