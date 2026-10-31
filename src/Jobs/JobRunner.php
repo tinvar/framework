@@ -38,7 +38,8 @@ use Tinvar\Support\Uuid;
  *   4. The panel: one the application still defines, the one the job's
  *      class declares if it declares one, and -- for a job that runs as a
  *      user -- one the user still holds a membership of, in that tenant, as
- *      the panel requires (Memberships).
+ *      the panel requires (Memberships). A runner given none refuses a
+ *      user's job in a panel that requires one, rather than skip the check.
  *   5. The job's models, read again inside that tenant.
  *
  * Every switch is scoped, so the runner leaves the context as it found it;
@@ -276,12 +277,24 @@ final readonly class JobRunner
 
         // A job running as a user is held to the panel as a request by them
         // would be: their membership, in this tenant, as the panel requires.
-        if ($this->auth->user() !== null && $this->memberships !== null) {
-            $binding = $declared ?? new PanelBinding($envelope->panel);
-            try {
-                RequirePanelMembership::verify($this->auth, $this->memberships, $this->orm, $binding->within($definition));
-            } catch (HttpException $e) {
-                throw new JobRefused('membership', $e->getMessage(), $e);
+        // With no Memberships to hold them to, a panel that requires one is
+        // refused, as a request in it is at boot and a tool or service call
+        // in it is -- never run on trust.
+        if ($this->auth->user() !== null) {
+            $binding = ($declared ?? new PanelBinding($envelope->panel))->within($definition);
+            if ($this->memberships === null) {
+                if ($binding->narrows()) {
+                    throw new JobRefused(
+                        'membership',
+                        "{$envelope->class} runs as a user in panel '{$envelope->panel}', which requires a membership, and the runner was given no Memberships to hold them to.",
+                    );
+                }
+            } else {
+                try {
+                    RequirePanelMembership::verify($this->auth, $this->memberships, $this->orm, $binding);
+                } catch (HttpException $e) {
+                    throw new JobRefused('membership', $e->getMessage(), $e);
+                }
             }
         }
 

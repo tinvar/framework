@@ -15,7 +15,11 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Jobs\DispatchAndWork;
 
+use Tinvar\Auth\PanelDefinition;
+use Tinvar\Auth\PanelRegistry;
+use Tinvar\Jobs\Dispatcher;
 use Tinvar\Jobs\JobRefused;
+use Tinvar\Jobs\JobRunner;
 use Tinvar\Queue\ArrayQueue;
 use Tinvar\Tests\Jobs\Fixtures\Address;
 use Tinvar\Tests\Jobs\Fixtures\AdminWork;
@@ -198,6 +202,38 @@ it('holds a job running as a user to their membership of its panel, in its tenan
 
     expect($h->journal()->entries)->toBe([['user' => 'staff', 'epoch' => '', 'panel' => 'admin']])
         ->and(queueOf($h)->failed()[0]->error)->toContain("not a member of panel 'admin'");
+});
+
+// A runner given no Memberships skipped the check, and ran a user's job in
+// a panel whose requirements nothing could hold. A request in such a panel
+// is refused at boot, and a tool or service call refused; so is the job.
+it('refuses a job running as a user in a narrowing panel when the runner has no memberships to hold them to', function () {
+    $h = new Harness();
+    $h->users->epochs = ['mallory' => 'e1', 'staff' => 'e1'];
+    $registry = new PanelRegistry(new PanelDefinition('admin', permission: 'orders.view'), new PanelDefinition('open'));
+    $runner = new JobRunner($h->orm, $h->signer, $h->container->resolver(), $h->auth, $h->panels, $registry, null, $h->users);
+    $dispatcher = new Dispatcher($h->queue, $h->orm, $h->signer, $h->auth, $h->panels, $registry);
+
+    $run = function (string $user, string $panel) use ($h, $runner, $dispatcher): string {
+        $h->orm->actAs('acme', fn () => $h->auth->actingAs(
+            new User($user),
+            fn () => $h->panels->within($panel, fn () => $dispatcher->dispatch(new AsDispatcher())),
+            'e1',
+        ));
+        $job = $h->queue->reserve(['default'], $h->now + 10, 60);
+        \assert($job !== null);
+        try {
+            $runner->run($runner->open($job->payload));
+
+            return 'ran';
+        } catch (JobRefused $e) {
+            return $e->reason;
+        }
+    };
+
+    expect($run('mallory', 'admin'))->toBe('membership')
+        ->and($run('staff', 'open'))->toBe('ran')
+        ->and($h->journal()->entries)->toBe([['user' => 'staff', 'epoch' => 'e1', 'panel' => 'open']]);
 });
 
 it('resets the identity map, the user, the tenant, request-lived services and a transaction left open between jobs', function () {
