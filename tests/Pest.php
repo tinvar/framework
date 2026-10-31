@@ -38,3 +38,18 @@ foreach (['TINVAR_APP_KEY_FILE' => 'app.key', 'TINVAR_PROBE_TOKEN_FILE' => 'prob
         @rmdir($keyDir);
     });
 }
+
+/*
+ * APCu, where the CLI has it (`apc.enable_cli=1`, as CI's PHP does), is one
+ * store for the whole worker process: a throttle count, a cached entry or a
+ * metric one test put would reach every test after it in that worker -- the
+ * shop's throttles, counting every test's requests from 127.0.0.1, refused
+ * the later ones with a 429. Each test starts with it empty, as a fresh
+ * server does. Every package's tests, since the workspace's run loads this
+ * file once for all of them.
+ */
+if (\function_exists('apcu_enabled') && apcu_enabled()) {
+    pest()->beforeEach(function (): void {
+        apcu_clear_cache();
+    })->in(\dirname(__DIR__, 2));
+}
