@@ -63,8 +63,8 @@ final readonly class Invitations
 
         // Only those the inviter could have sent: re-inviting someone at a
         // narrower role never takes away an invite a wider member made.
-        foreach ($this->pending($tenant, $panel) as $earlier) {
-            if ($earlier->email === $address && $this->policy->mayInvite($inviter, $tenant, $panel, $earlier->role)) {
+        foreach ($this->openTo($tenant, ['panel' => $panel, 'email' => $address]) as $earlier) {
+            if ($earlier->panel === $panel && $earlier->email === $address && $this->policy->mayInvite($inviter, $tenant, $panel, $earlier->role)) {
                 $this->links->revoke($earlier->id, EmailLinks::INVITE, $tenant);
             }
         }
@@ -87,15 +87,31 @@ final readonly class Invitations
      */
     public function pending(string $tenant, string $panel): array
     {
-        $pending = [];
-        foreach ($this->links->open(EmailLinks::INVITE, $tenant, self::LIST_LIMIT) as $link) {
+        return array_values(array_filter(
+            $this->openTo($tenant, ['panel' => $panel]),
+            static fn (Invitation $invitation): bool => $invitation->panel === $panel,
+        ));
+    }
+
+    /**
+     * The open invites in $tenant whose record holds $data, newest first:
+     * asked of the store with $data, so another panel's newer invites take
+     * none of the LIST_LIMIT.
+     *
+     * @param array<string, string> $data
+     * @return list<Invitation>
+     */
+    private function openTo(string $tenant, array $data): array
+    {
+        $open = [];
+        foreach ($this->links->open(EmailLinks::INVITE, $tenant, self::LIST_LIMIT, $data) as $link) {
             $invitation = Invitation::of($link);
-            if ($invitation !== null && $invitation->panel === $panel) {
-                $pending[] = $invitation;
+            if ($invitation !== null) {
+                $open[] = $invitation;
             }
         }
 
-        return $pending;
+        return $open;
     }
 
     /**

@@ -279,14 +279,16 @@ final readonly class EmailLinks
     }
 
     /**
-     * Links of a purpose in a tenant still open, newest first.
+     * Links of a purpose in a tenant still open, newest first: those whose
+     * data holds each of $data's values, when it names any.
      *
      * @param int<1, max> $limit
+     * @param array<string, string> $data
      * @return list<EmailLink>
      */
-    public function open(string $purpose, string $tenant, int $limit = 100): array
+    public function open(string $purpose, string $tenant, int $limit = 100, array $data = []): array
     {
-        return $this->store->open($purpose, $tenant, $this->now(), $limit);
+        return $this->store->open($purpose, $tenant, $this->now(), $limit, $data);
     }
 
     /** @return array{EmailLink, string}|null the link and its secret's hash */

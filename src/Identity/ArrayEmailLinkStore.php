@@ -58,11 +58,12 @@ final class ArrayEmailLinkStore implements EmailLinkStore
         return null;
     }
 
-    public function open(string $purpose, string $tenant, int $now, int $limit): array
+    public function open(string $purpose, string $tenant, int $now, int $limit, array $data = []): array
     {
         $open = array_values(array_filter(
             $this->links,
-            static fn (EmailLink $link): bool => $link->purpose === $purpose && $link->tenant === $tenant && $link->isOpen($now),
+            static fn (EmailLink $link): bool => $link->purpose === $purpose && $link->tenant === $tenant && $link->isOpen($now)
+                && array_intersect_assoc($data, $link->data) === $data,
         ));
         usort($open, static fn (EmailLink $a, EmailLink $b): int => [$b->createdAt, $b->id] <=> [$a->createdAt, $a->id]);
 

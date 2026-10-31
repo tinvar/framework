@@ -307,6 +307,25 @@ describe('an invite', function () {
             ->and($this->invitations->accept($second, ORIGIN, 'acme')?->role)->toBe('manager');
     });
 
+    // The tenant's newest LIST_LIMIT invites were read and then narrowed to
+    // the panel: a panel's own fell off the list behind another's, and an
+    // earlier invite to the address was left open beside the new one.
+    it('lists and replaces a panel\'s invites however many newer ones another panel has', function (EmailLinkStore $store) {
+        $links = links($store, $this->users);
+        $invitations = new Invitations($links, $this->roles, $this->users, '/invites');
+        $first = tokenOf($invitations->invite(new User('boss'), 'x@example.com', 'acme', 'staff', 'clerk', ORIGIN)['url']);
+        Clock::$now = NOW + 1;
+        for ($i = 0; $i < Invitations::LIST_LIMIT; $i++) {
+            $links->issue(EmailLinks::INVITE, ORIGIN, '/invites', 'acme', null, ['email' => "s{$i}@example.com", 'panel' => 'support', 'role' => 'clerk', 'inviter' => 'boss']);
+        }
+
+        expect(array_map(static fn ($i) => $i->email, $invitations->pending('acme', 'staff')))->toBe(['x@example.com']);
+
+        $second = tokenOf($invitations->invite(new User('boss'), 'x@example.com', 'acme', 'staff', 'manager', ORIGIN)['url']);
+        expect($invitations->accept($first, ORIGIN, 'acme'))->toBeNull()
+            ->and($invitations->accept($second, ORIGIN, 'acme')?->role)->toBe('manager');
+    })->with('stores');
+
     it('expires after a week, and is no sign-in link', function () {
         $token = tokenOf($this->invitations->invite(new User('boss'), 'x@example.com', 'acme', 'staff', 'clerk', ORIGIN)['url']);
 

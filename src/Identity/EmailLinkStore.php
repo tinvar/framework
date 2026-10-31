@@ -41,12 +41,15 @@ interface EmailLinkStore
 
     /**
      * Records of $purpose in $tenant still open at $now, newest first, at
-     * most $limit.
+     * most $limit -- and of those, only the ones whose data holds each of
+     * $data's values under its key, so a list of one panel's invites is
+     * that panel's newest, not the tenant's newest narrowed afterwards.
      *
      * @param int<1, max> $limit
+     * @param array<string, string> $data
      * @return list<EmailLink>
      */
-    public function open(string $purpose, string $tenant, int $now, int $limit): array;
+    public function open(string $purpose, string $tenant, int $now, int $limit, array $data = []): array;
 
     /**
      * Forgets records that expired before $before, at most $limit of them.

@@ -114,15 +114,30 @@ final readonly class DatabaseEmailLinkStore implements EmailLinkStore
         return $row === null ? null : self::hydrate($row);
     }
 
-    public function open(string $purpose, string $tenant, int $now, int $limit): array
+    public function open(string $purpose, string $tenant, int $now, int $limit, array $data = []): array
     {
+        // Each value found in the data column by its JSON, written as add()
+        // writes it: a key and its value side by side, which no other value
+        // can spell, since a value's own quotes are escaped. LIKE folds case
+        // on SQLite and MySQL, so what comes back is held to $data exactly
+        // too.
+        $matching = '';
+        $bindings = [$tenant, $purpose, $now];
+        foreach ($data as $key => $value) {
+            $pair = substr(json_encode([$key => $value], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 1, -1);
+            $matching .= " AND data LIKE ? ESCAPE '!'";
+            $bindings[] = '%' . strtr($pair, ['!' => '!!', '%' => '!%', '_' => '!_']) . '%';
+        }
         $rows = $this->connection->select(
             'SELECT ' . self::COLUMNS . " FROM {$this->table} WHERE tenant = ? AND purpose = ? AND expires_at > ? "
-            . 'AND used_at IS NULL AND revoked_at IS NULL ORDER BY created_at DESC, id DESC LIMIT ' . max(1, $limit),
-            [$tenant, $purpose, $now],
+            . "AND used_at IS NULL AND revoked_at IS NULL{$matching} ORDER BY created_at DESC, id DESC LIMIT " . max(1, $limit),
+            $bindings,
         );
 
-        return array_map(self::hydrate(...), $rows);
+        return array_values(array_filter(
+            array_map(self::hydrate(...), $rows),
+            static fn (EmailLink $link): bool => array_intersect_assoc($data, $link->data) === $data,
+        ));
     }
 
     public function prune(int $before, int $limit): int
