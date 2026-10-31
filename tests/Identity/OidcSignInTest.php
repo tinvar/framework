@@ -235,6 +235,19 @@ describe('the ID token', function () {
             ->and($refused(static fn (array $header, array $claims): array => [['alg' => 'RS256', 'kid' => 'rsa-attacker', 'jku' => 'https://evil.example/jwks'], $claims, 'rsa-attacker']))->toBe('id_token:key');
     });
 
+    // A token that names no key is the provider's when one of its keys that
+    // fits verifies it: with two RSA keys published, refusing as ambiguous
+    // turned away every token their own provider signed.
+    it('is believed naming no key when one of the provider\'s keys that fits verifies it, and refused when none does', function () use ($refused) {
+        $both = static function (FakeOidcProvider $idp): void {
+            $idp->published = ['rsa-1', 'rsa-2'];
+        };
+
+        expect($refused(static fn (array $header, array $claims): array => [['alg' => 'RS256'], $claims, 'rsa-2'], $both))->toBe('signed in')
+            ->and($refused(static fn (array $header, array $claims): array => [['alg' => 'RS256'], $claims, 'rsa-1'], $both))->toBe('signed in')
+            ->and($refused(static fn (array $header, array $claims): array => [['alg' => 'RS256'], $claims, 'rsa-attacker'], $both))->toBe('id_token:signature');
+    });
+
     it('is refused with its claims changed after signing', function () use ($refused) {
         expect($refused(static function (array $header, array $claims): array {
             [$h, , $s] = explode('.', FakeOidcProvider::sign($header, $claims, 'rsa-1'));

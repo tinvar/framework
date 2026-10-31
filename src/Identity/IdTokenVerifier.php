@@ -65,6 +65,12 @@ final readonly class IdTokenVerifier
     public const int LEEWAY = 60;
 
     /**
+     * The most keys a token that names none is tried with: a provider's key
+     * set holds a few, and each try is a signature check anyone can ask for.
+     */
+    public const int MAX_UNNAMED_KEYS = 4;
+
+    /**
      * @param list<string>|null $algorithms the algorithms an application narrows these to; all of ALGORITHMS when null
      */
     public function __construct(private ?array $algorithms = null)
@@ -186,8 +192,13 @@ final readonly class IdTokenVerifier
         if ($kid !== null && !\is_string($kid)) {
             throw new IdTokenRefused(IdTokenRefused::MALFORMED, 'The ID token\'s key id is not a string.');
         }
-        $jwk = self::key($keys(false), $kid, $kty, $alg) ?? self::key($keys(true), $kid, $kty, $alg)
-            ?? throw new IdTokenRefused(IdTokenRefused::KEY, 'No key of the provider\'s signs with this algorithm under this key id.');
+        $candidates = self::keys($keys(false), $kid, $kty, $alg);
+        if ($candidates === []) {
+            $candidates = self::keys($keys(true), $kid, $kty, $alg);
+        }
+        if ($candidates === []) {
+            throw new IdTokenRefused(IdTokenRefused::KEY, 'No key of the provider\'s signs with this algorithm under this key id.');
+        }
 
         if ($kty === 'EC') {
             $signature = Jwk::ecdsaSignature($signature, (string) $curve)
@@ -196,11 +207,20 @@ final readonly class IdTokenVerifier
         if ($kty === 'OKP' && \strlen($signature) !== 64) {
             throw new IdTokenRefused(IdTokenRefused::SIGNATURE, 'The ID token\'s signature is not an Ed25519 signature\'s size.');
         }
-        $verified = openssl_verify("{$encodedHeader}.{$encodedClaims}", $signature, Jwk::publicKey($jwk, $kty, $curve), $digest, $padding);
-        if ($verified !== 1) {
-            while (openssl_error_string() !== false) {
-                // Drained: OpenSSL's queue is the process's, and the next caller's.
+        // The key the token names, or -- naming none -- each of the
+        // provider's that fits, until one verifies.
+        $verified = 0;
+        foreach ($candidates as $jwk) {
+            $verified = openssl_verify("{$encodedHeader}.{$encodedClaims}", $signature, Jwk::publicKey($jwk, $kty, $curve), $digest, $padding);
+            if ($verified === 1) {
+                break;
             }
+            while (openssl_error_string() !== false) {
+                // Drained after each key that did not verify: OpenSSL's
+                // queue is the process's, and the next caller's.
+            }
+        }
+        if ($verified !== 1) {
             throw new IdTokenRefused(IdTokenRefused::SIGNATURE, 'The ID token\'s signature does not verify.');
         }
 
@@ -238,20 +258,28 @@ final readonly class IdTokenVerifier
     }
 
     /**
-     * The key $kid names, of $kty, usable for signatures by $alg; or the one
-     * such key when the token names none.
+     * The keys a signature is tried with: the one key $kid names, of $kty,
+     * usable for signatures by $alg -- none when two share the id -- or,
+     * when the token names none, every such key, up to MAX_UNNAMED_KEYS.
+     * A provider that publishes two keys of one type and names neither in
+     * its tokens -- mid-rotation -- signs with one of them, and refusing as
+     * ambiguous turned away every token it signed.
      *
      * @param list<array<string, mixed>> $keys
-     * @return array<string, mixed>|null
+     * @return list<array<string, mixed>>
      */
-    private static function key(array $keys, ?string $kid, string $kty, string $alg): ?array
+    private static function keys(array $keys, ?string $kid, string $kty, string $alg): array
     {
         $fits = array_values(array_filter($keys, static fn (array $key): bool => ($key['kty'] ?? null) === $kty
             && ($key['use'] ?? 'sig') === 'sig'
             && ($key['alg'] ?? $alg) === $alg
             && ($kid === null || ($key['kid'] ?? null) === $kid)));
 
-        return \count($fits) === 1 ? $fits[0] : null;
+        if ($kid !== null) {
+            return \count($fits) === 1 ? $fits : [];
+        }
+
+        return \array_slice($fits, 0, self::MAX_UNNAMED_KEYS);
     }
 
     /** @return array<string, mixed> */
