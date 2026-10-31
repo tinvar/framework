@@ -74,6 +74,11 @@ final class InputSchema
         if ($field->nullable && isset($schema['type']) && \is_string($schema['type'])) {
             $schema['type'] = [$schema['type'], 'null'];
         }
+        // And in its enum, which a value must also be one of: null is valid
+        // for a nullable field, and a schema listing only the cases refused it.
+        if ($field->nullable && isset($schema['enum']) && \is_array($schema['enum']) && !\in_array(null, $schema['enum'], true)) {
+            $schema['enum'][] = null;
+        }
 
         return $schema;
     }
