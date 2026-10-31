@@ -46,6 +46,12 @@ function asRendererUser(string $user, \Closure $body): mixed
 }
 
 it('refuses to be built when the renderers\' user is no one, root, or the shop\'s own', function (\Closure $user, string $message) {
+    // Run as root -- a CI job's container -- the shop's own user is root,
+    // refused as root by the case before.
+    if ($message === 'the user this process runs as' && \function_exists('posix_geteuid') && posix_geteuid() === 0) {
+        $this->markTestSkipped('run as root, the shop\'s own user is root, which the root case covers');
+    }
+
     expect(fn () => asRendererUser($user(), fn (): Kernel => Kernel::fromEnvironment('/tmp/tinvar-renderer-user-none', key: KEY, database: Shop::database())))
         ->toThrow(\InvalidArgumentException::class, $message);
 })->with([
