@@ -6,6 +6,7 @@ namespace Tinvar\Identity;
 
 use Tinvar\Config\Secret;
 use Tinvar\Http\NonceStore;
+use Tinvar\Http\Response;
 use Tinvar\Outbound\Destinations;
 use Tinvar\Outbound\OutboundHttp;
 use Tinvar\Outbound\OutboundRequest;
@@ -460,11 +461,16 @@ final class OidcClient
         return hash('sha256', "oidc-session\0{$sessionId}");
     }
 
+    /**
+     * A path on this application to go on to, or `/`: root-relative and
+     * same-origin by Response's own rules, as HandoffEndpoint's is, so the
+     * two cannot drift -- encoded traversal (`/%2e%2e//host`) included. No
+     * fragment, and nothing past the cap.
+     */
     private static function returnPath(string $path): string
     {
-        // A path on this application, never another's: one slash, then not a
-        // second or a backslash, and nothing a header could be broken with.
-        if (\strlen($path) > self::MAX_RETURN || preg_match('#^/(?![/\\\\])[\x21-\x7e]*\z#', $path) !== 1) {
+        if ($path === '' || \strlen($path) > self::MAX_RETURN || str_contains($path, '#')
+            || !Response::isSameOriginTarget($path)) {
             return '/';
         }
 

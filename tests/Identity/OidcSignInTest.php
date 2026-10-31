@@ -160,7 +160,20 @@ it('goes on to a path on this application alone', function (string $returnTo) {
     $client = client($idp);
 
     expect($client->finish(SESSION, $idp->authorize($client->start(SESSION, $returnTo)))->returnTo)->toBe('/');
-})->with(['https://evil.example/', '//evil.example', '/\\evil.example', "/x\r\nSet-Cookie: a=b", 'relative']);
+})->with([
+    'https://evil.example/', '//evil.example', '/\\evil.example', "/x\r\nSet-Cookie: a=b", 'relative',
+    // Encoded traversal: a browser decodes %2e%2e and resolves the path to //evil.example.
+    '/%2e%2e//evil.example', '/%2E%2E//evil.example', '/./..//evil.example', '/a/%2e%2e/%2e%2e//evil.example',
+    // A fragment is never a return path, and nor is anything past the cap.
+    '/account#x', '/' . str_repeat('a', OidcClient::MAX_RETURN),
+]);
+
+it('goes on to a path with a query', function () {
+    $idp = new FakeOidcProvider();
+    $client = client($idp);
+
+    expect($client->finish(SESSION, $idp->authorize($client->start(SESSION, '/orders?page=2')))->returnTo)->toBe('/orders?page=2');
+});
 
 describe('the ID token', function () {
     /** @param \Closure(array<string, mixed>, array<string, mixed>): array<int, mixed> $shape */
