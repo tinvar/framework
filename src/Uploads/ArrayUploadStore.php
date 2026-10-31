@@ -40,7 +40,7 @@ final class ArrayUploadStore implements UploadStore
     {
         return \count(array_filter(
             $this->uploads,
-            static fn (PendingUpload $u): bool => $u->ownerHash === $ownerHash && $u->claimedAt === null && $u->expiresAt > $now,
+            static fn (PendingUpload $u): bool => $u->ownerHash === $ownerHash && $u->claimedAt === null,
         ));
     }
 
@@ -48,7 +48,9 @@ final class ArrayUploadStore implements UploadStore
     {
         $held = 0;
         foreach ($this->uploads as $upload) {
-            if ($upload->ownerHash === $ownerHash && ($upload->claimedAt !== null || $upload->expiresAt > $now)) {
+            // Every record, until pruning or a discard forgets it: its
+            // file is kept until then.
+            if ($upload->ownerHash === $ownerHash) {
                 $held += $upload->size;
             }
         }

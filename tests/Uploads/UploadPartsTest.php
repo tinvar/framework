@@ -309,26 +309,31 @@ describe('an upload store', function () {
         expect($store->addWithin(pendingUpload(str_repeat('b', 32), 3000), 2, 1500))->toBeTrue()
             ->and($store->addWithin(pendingUpload(str_repeat('d', 32), 3000), 2, 1500))->toBeFalse()
             ->and($store->find(str_repeat('d', 32)))->toBeNull()
-            // An expired one no longer counts.
-            ->and($store->addWithin(pendingUpload(str_repeat('d', 32), 4000), 2, 3000))->toBeTrue();
+            // Expired, an upload still counts: its file is kept until it is
+            // pruned, and only then is its place given back.
+            ->and($store->addWithin(pendingUpload(str_repeat('d', 32), 4000), 2, 3000))->toBeFalse();
+        $store->forget(str_repeat('a', 32));
+        expect($store->addWithin(pendingUpload(str_repeat('d', 32), 4000), 2, 3000))->toBeTrue();
     })->with('upload stores');
 
     it('holds an owner to a quota of bytes, claimed and waiting, and forgets a file by its key', function (\Closure $make) {
         /** @var UploadStore $store */
         $store = $make();
-        // 3 bytes each: one waiting, one claimed, one expired, one someone else's.
+        // 3 bytes each: one waiting, one claimed, one expired and not yet
+        // pruned -- its file still kept -- and one someone else's.
         $store->add(pendingUpload(str_repeat('a', 32), 3000));
         $store->add(pendingUpload(str_repeat('b', 32), 3000));
         $store->claim(str_repeat('b', 32), 1000);
         $store->add(pendingUpload(str_repeat('c', 32), 1200));
         $store->add(pendingUpload(str_repeat('d', 32), 3000, owner: 'someone else'));
 
-        expect($store->bytesHeld('u', 1500))->toBe(6)
-            ->and($store->addWithin(pendingUpload(str_repeat('e', 32), 3000), 20, 1500, quotaBytes: 8))->toBeFalse()
-            ->and($store->addWithin(pendingUpload(str_repeat('e', 32), 3000), 20, 1500, quotaBytes: 9))->toBeTrue()
-            ->and($store->bytesHeld('u', 1500))->toBe(9);
+        expect($store->bytesHeld('u', 1500))->toBe(9)
+            ->and($store->addWithin(pendingUpload(str_repeat('e', 32), 3000), 20, 1500, quotaBytes: 11))->toBeFalse()
+            ->and($store->addWithin(pendingUpload(str_repeat('e', 32), 3000), 20, 1500, quotaBytes: 12))->toBeTrue()
+            ->and($store->bytesHeld('u', 1500))->toBe(12);
 
         $store->forgetKey('avatars/' . str_repeat('b', 32) . '.png');
+        $store->forget(str_repeat('c', 32));
         expect($store->find(str_repeat('b', 32)))->toBeNull()
             ->and($store->bytesHeld('u', 1500))->toBe(6);
     })->with('upload stores');

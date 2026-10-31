@@ -29,10 +29,10 @@ require_once __DIR__ . '/Fixtures/app.php';
 require_once __DIR__ . '/../Storage/Fixtures/s3.php';
 
 /** @return array{App, FakeS3} */
-function directApp(?Tinvar\Uploads\FileScanner $scanner = null): array
+function directApp(?Tinvar\Uploads\FileScanner $scanner = null, ?Tinvar\Uploads\UploadQuota $quota = null): array
 {
     $s3 = new FakeS3();
-    $app = new App($s3->storage(), scanner: $scanner);
+    $app = new App($s3->storage(), scanner: $scanner, quota: $quota);
     $s3->now = $app->now;
 
     return [$app, $s3];
@@ -146,6 +146,35 @@ it('counts an intent against the cap, and prunes one never completed, file and a
     $app->now += UploadEndpoint::DIRECT_TTL + Uploads::PRUNE_GRACE + 1;
     $s3->now = $app->now;
     expect($app->uploads->prune())->toBe(UploadEndpoint::MAX_PENDING);
+});
+
+// An intent runs out in ten minutes, and what was PUT under it stays in the
+// bucket until pruning removes it: counted until then, or a loop of begun
+// and never-completed uploads held several times the quota and the cap.
+it('counts an intent past its expiry against the quota and the cap until pruning removes its file', function () {
+    [$app, $s3] = directApp(quota: Tinvar\Uploads\UploadQuota::perUser(4000));
+    $ticket = $app->ticket($app->profile(P1));
+
+    expect(postDirect($app, UploadEndpoint::DIRECT_PATH, ['ticket' => $ticket, 'size' => 4000])->status)->toBe(201);
+    $app->now += UploadEndpoint::DIRECT_TTL + 1;
+    $s3->now = $app->now;
+    expect(postDirect($app, UploadEndpoint::DIRECT_PATH, ['ticket' => $app->ticket($app->profile(P1)), 'size' => 4000])->status)->toBe(507);
+
+    // Pruned, its file and its record gone: the room is given back.
+    $app->now += Uploads::PRUNE_GRACE;
+    $s3->now = $app->now;
+    expect($app->uploads->prune())->toBe(1)
+        ->and(postDirect($app, UploadEndpoint::DIRECT_PATH, ['ticket' => $app->ticket($app->profile(P1)), 'size' => 4000])->status)->toBe(201);
+});
+
+it('counts an expired upload against the cap until pruning removes its file', function () {
+    [$app] = directApp();
+    for ($i = 0; $i < UploadEndpoint::MAX_PENDING; $i++) {
+        begun($app, 10);
+    }
+    $app->now += UploadEndpoint::DIRECT_TTL + 1;
+
+    expect(postDirect($app, UploadEndpoint::DIRECT_PATH, ['ticket' => $app->ticket($app->profile(P1)), 'size' => 10])->status)->toBe(429);
 });
 
 it('scans what it keeps, as /_upload does', function () {
