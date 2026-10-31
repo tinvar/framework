@@ -436,6 +436,20 @@ it('records a failed render\'s classification and the reference the visitor was 
         ->and($one['request']['timings'])->toBe([]);
 });
 
+// Dev serves a second host under `.localhost` -- the admin panel's -- which
+// a browser resolves to loopback itself, as the error overlay already knew.
+it('draws itself and answers on a name under localhost, as the overlay does', function () {
+    $toolbar = toolbar(run());
+    $kernel = kernel($toolbar);
+    $page = $kernel->handle(local('/catalog', headers: ['host' => 'admin.localhost:6123']), respond($toolbar));
+    $token = tokenIn($page);
+
+    $response = $kernel->handle(local(DevToolbar::PATH, headers: [DevToolbar::HEADER => $token, 'host' => 'admin.localhost:6123']), respond(null));
+
+    expect($page->body())->toContain(DevToolbar::ID)
+        ->and($response->status)->toBe(200);
+});
+
 it('is not there for a peer that is not loopback, or a request naming another host', function (string $remote, string $host) {
     $toolbar = toolbar(run());
     $kernel = kernel($toolbar);

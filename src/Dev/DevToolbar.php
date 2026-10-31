@@ -179,7 +179,7 @@ final class DevToolbar implements FrameTap
      */
     public function begin(Request $request): void
     {
-        $this->current = $this->matches($request) || !Loopback::request($request) ? null : new Recording($request);
+        $this->current = $this->matches($request) || !Loopback::local($request) ? null : new Recording($request);
     }
 
     public function frame(string $direction, array $frame): void
@@ -374,7 +374,7 @@ final class DevToolbar implements FrameTap
      */
     public function respond(Request $request, AuthContext $auth): Response
     {
-        if (!Loopback::request($request)) {
+        if (!Loopback::local($request)) {
             return self::json(404, ['error' => 'not_found']);
         }
         if ($request->method !== 'GET') {
@@ -427,7 +427,7 @@ final class DevToolbar implements FrameTap
         if ($nonce === null
             || $response->isStreaming()
             || $request->wantsRscPayload()
-            || !Loopback::request($request)
+            || !Loopback::local($request)
             || !str_starts_with(strtolower($response->header('content-type') ?? ''), 'text/html')
             || stripos($response->body(), '</body>') === false) {
             return $response;

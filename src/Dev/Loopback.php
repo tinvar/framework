@@ -57,4 +57,14 @@ final class Loopback
     {
         return self::address($request->remoteAddress) && self::host($request->header('host'));
     }
+
+    /**
+     * From loopback, naming this machine by any of its names (name()): what
+     * a dev tool answers -- the error overlay, the toolbar -- on every host
+     * dev serves, `admin.localhost` among them.
+     */
+    public static function local(Request $request): bool
+    {
+        return self::address($request->remoteAddress) && self::name($request->header('host'));
+    }
 }

@@ -1725,7 +1725,7 @@ final class Kernel
             if ($this->toolbar !== null && $this->toolbar->matches($request)) {
                 $this->telemetry?->route('_dev_toolbar');
 
-                return Loopback::request($request)
+                return Loopback::local($request)
                     ? $this->globalStack->run($request, fn (Request $passed): Response => $this->toolbar->respond($passed, $this->auth))
                     : throw new NotFoundException();
             }
