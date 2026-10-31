@@ -57,6 +57,25 @@ final class Redactor
      * @var array<string, string> pattern => replacement
      */
     private const array VALUES = [
+        ...self::SECRETS,
+        // A query parameter named like a secret, wherever a URL is quoted.
+        '/([?&;][a-z0-9_\-]*(?:token|secret|passw|signature|sig|key|code|session|auth)[a-z0-9_\-]*=)[^&\s#"\']*/i' => '$1' . self::REDACTED,
+        // Email addresses: the commonest personal data in an exception message.
+        '/[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}/' => '[email]',
+        // A long run of key material -- a MAC, a hash, a base64 secret, a
+        // session cookie's signature -- with letters and digits both, so a
+        // request id (32 characters) and an identifier (no digits) survive.
+        '/(?<![A-Za-z0-9_\-])(?=[A-Za-z0-9_\-]*[0-9])(?=[A-Za-z0-9_\-]*[A-Za-z])[A-Za-z0-9_\-]{40,}(?![A-Za-z0-9_\-])/' => self::REDACTED,
+    ];
+
+    /**
+     * The shapes of a credential in free text, whatever key it is under:
+     * the first of VALUES, and every one the dev toolbar's Recording cuts
+     * out -- one list, so the two cannot drift apart.
+     *
+     * @var array<string, string> pattern => replacement
+     */
+    public const array SECRETS = [
         // user:password@ in a URL: an SMTP or database URL quoted in a
         // message. The user may be empty (`redis://:secret@`), and the
         // password is everything up to the last @ -- a / an @ or a : in it
@@ -75,14 +94,6 @@ final class Redactor
         '/\beyJ[A-Za-z0-9_\-]*\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*/' => '[jwt]',
         // The framework's signed tokens (SignedToken): route, fragment, live.
         '/\bv1\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}/' => '[token]',
-        // A query parameter named like a secret, wherever a URL is quoted.
-        '/([?&;][a-z0-9_\-]*(?:token|secret|passw|signature|sig|key|code|session|auth)[a-z0-9_\-]*=)[^&\s#"\']*/i' => '$1' . self::REDACTED,
-        // Email addresses: the commonest personal data in an exception message.
-        '/[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}/' => '[email]',
-        // A long run of key material -- a MAC, a hash, a base64 secret, a
-        // session cookie's signature -- with letters and digits both, so a
-        // request id (32 characters) and an identifier (no digits) survive.
-        '/(?<![A-Za-z0-9_\-])(?=[A-Za-z0-9_\-]*[0-9])(?=[A-Za-z0-9_\-]*[A-Za-z])[A-Za-z0-9_\-]{40,}(?![A-Za-z0-9_\-])/' => self::REDACTED,
     ];
 
     private readonly string $keys;

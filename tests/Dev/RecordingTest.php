@@ -250,3 +250,16 @@ it('cuts a credential the preview\'s end would split, a password holding an @ or
         ->and(Recording::redact(['pwd' => 'x', 'pass' => 'y', 'jwt' => 'z', 'auth' => 'w', 'author' => 'Ada']))
         ->toBe(['pwd' => Recording::REDACTED, 'pass' => Recording::REDACTED, 'jwt' => Recording::REDACTED, 'auth' => Recording::REDACTED, 'author' => 'Ada']);
 });
+
+// The shapes of a secret in free text are the log's Redactor's, one list: a
+// copy here drifted, and a URL whose user is an address -- ops@example.com
+// -- kept its password in the toolbar while the log took it out.
+it('cuts the same secrets out of free text as the log does', function (string $text) {
+    $redacted = Recording::redact(['message' => $text])['message'];
+
+    expect($redacted)->not->toContain('hunter2pass')
+        ->and($redacted)->toContain(Recording::REDACTED);
+})->with([
+    'a URL whose user is an address' => ['connect failed: smtp://ops@example.com:hunter2pass@mail.example.com:587'],
+    'a password holding an @' => ['redis://:hunter2pass@x@cache:6379'],
+]);

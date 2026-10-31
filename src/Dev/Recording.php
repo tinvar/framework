@@ -6,6 +6,7 @@ namespace Tinvar\Dev;
 
 use Tinvar\Codec\Bin;
 use Tinvar\Http\Request;
+use Tinvar\Observability\Redactor;
 use Tinvar\Orm\LazyLoad;
 use Tinvar\Orm\RawStatement;
 use Tinvar\Render\FrameTap;
@@ -54,8 +55,8 @@ final class Recording
     /** Bytes of the path a summary keeps, so the summary stays one short line (RecordingStore). */
     public const int MAX_PATH_BYTES = 2048;
 
-    /** What a redacted value is replaced by. */
-    public const string REDACTED = '[redacted]';
+    /** What a redacted value is replaced by: the log's word for it too. */
+    public const string REDACTED = Redactor::REDACTED;
 
     /**
      * Keys whose string values are never kept, wherever they appear: the
@@ -78,17 +79,12 @@ final class Recording
      * the log's Redactor takes: props are the page's own, and an email the
      * page shows is no secret from the developer reading it.
      *
+     * The Redactor's own list, not a copy: a copy drifted, and kept the
+     * password of a URL whose user is an address.
+     *
      * @var array<string, string> pattern => replacement
      */
-    private const array SECRET_VALUES = [
-        // The password is everything up to the last @, as the Redactor reads
-        // it: a password may hold an @ or a / of its own.
-        '~\b([a-z][a-z0-9+.\-]*://[^\s/:@]*):\S*@~i' => '$1:' . self::REDACTED . '@',
-        '/\b(Bearer)\s+[A-Za-z0-9._~+\/=\-]{8,}/i' => '$1 ' . self::REDACTED,
-        '/\b((?i:basic))\s+(?=[A-Za-z0-9+\/]*[0-9+\/=]|[A-Za-z0-9+\/]+[A-Z])[A-Za-z0-9+\/]{8,}={0,2}/' => '$1 ' . self::REDACTED,
-        '/\beyJ[A-Za-z0-9_\-]*\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*/' => '[jwt]',
-        '/\bv1\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}/' => '[token]',
-    ];
+    private const array SECRET_VALUES = Redactor::SECRETS;
 
     /**
      * And in the URL's query, the names the Redactor takes out of a query
