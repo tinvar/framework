@@ -6,6 +6,7 @@ namespace Tinvar\Config;
 
 use Tinvar\Attributes\Config;
 use Tinvar\Attributes\ListOf;
+use Tinvar\Http\TrustedProxies;
 use Tinvar\Support\AppKey;
 use Tinvar\Support\BuildProfile;
 use Tinvar\Support\DevMode;
@@ -60,6 +61,8 @@ final readonly class FrameworkConfig
      *        which dev's toolbar and overlay link each `file:line` by (EditorTemplate, ADR 0132)
      * @param list<string> $editorPaths `from=to` prefixes from where the server sees a file to where
      *        the editor does
+     * @param list<string> $trustedProxies the networks of the proxies in front of this server, whose
+     *        X-Forwarded-For names the client the throttles count (TrustedProxies, ADR 0134)
      */
     public function __construct(
         public ?string $dev = null,
@@ -81,8 +84,16 @@ final readonly class FrameworkConfig
         public ?string $editor = null,
         #[ListOf('string')]
         public array $editorPaths = [],
+        #[ListOf('string')]
+        public array $trustedProxies = [],
     ) {
         $problems = [];
+
+        try {
+            TrustedProxies::of($trustedProxies);
+        } catch (\InvalidArgumentException $e) {
+            $problems[] = $e->getMessage();
+        }
 
         try {
             EditorTemplate::of($editor, $editorPaths);
@@ -170,6 +181,16 @@ final readonly class FrameworkConfig
     public function editorTemplate(): ?EditorTemplate
     {
         return EditorTemplate::of($this->editor, $this->editorPaths);
+    }
+
+    /**
+     * The proxies in front of this server, through which a throttle reads
+     * the client's address: none where TINVAR_TRUSTED_PROXIES names none,
+     * and the peer is the client.
+     */
+    public function proxies(): TrustedProxies
+    {
+        return TrustedProxies::of($this->trustedProxies);
     }
 
     /** The renderers' own user as named, or null where none is. */

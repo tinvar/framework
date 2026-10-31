@@ -193,3 +193,21 @@ it('reads the dumps\' MySQL user as a Secret, refusing any other driver by varia
         ->and($e->problems)->toBe(['TINVAR_DUMP_MYSQL_DSN must be a mysql: DSN.'])
         ->and($e->getMessage())->not->toContain('hunter2');
 });
+
+// ADR 0134: the proxies in front, pinned by network, through which the
+// throttles read the client's address -- a malformed list stops the boot.
+it('reads the trusted proxies as a list of networks, refusing a malformed one by its place alone', function () {
+    $config = Configs::load(FrameworkConfig::class, ['TINVAR_TRUSTED_PROXIES' => '10.89.0.1, fd00::/8']);
+    $none = Configs::load(FrameworkConfig::class, []);
+    $e = refusal(['TINVAR_TRUSTED_PROXIES' => '10.0.0.0/8,proxy.internal']);
+    $everyone = refusal(['TINVAR_TRUSTED_PROXIES' => '0.0.0.0/0']);
+
+    expect($config->proxies()->trusts('10.89.0.1'))->toBeTrue()
+        ->and($config->proxies()->trusts('fd12::1'))->toBeTrue()
+        ->and($config->proxies()->trusts('10.89.0.2'))->toBeFalse()
+        ->and($none->proxies()->isEmpty())->toBeTrue()
+        ->and($e->problems)->toHaveCount(1)
+        ->and($e->problems[0])->toStartWith("TINVAR_TRUSTED_PROXIES's 2nd entry is not a network")
+        ->and($e->getMessage())->not->toContain('proxy.internal')
+        ->and($everyone->problems[0])->toStartWith("TINVAR_TRUSTED_PROXIES's 1st entry is not a network");
+});

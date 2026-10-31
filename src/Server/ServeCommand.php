@@ -6,6 +6,7 @@ namespace Tinvar\Server;
 
 use Tinvar\Config\ConfigException;
 use Tinvar\Config\FrameworkConfig;
+use Tinvar\Http\TrustedProxies;
 use Tinvar\Jobs\StopBudget;
 use Tinvar\Observability\RendererLines;
 use Tinvar\Protocol\ProtocolException;
@@ -475,6 +476,12 @@ final class ServeCommand
             // The pool's directory -- this serve's, or the one the renderers'
             // own user runs -- and dev mode's one socket.
             'TINVAR_SOCKET' => $plan['dev'] ? $socket : ($plan['pool'] ?? $directory),
+            // The proxies TINVAR_TRUSTED_PROXIES pins, space-separated, for
+            // the Caddyfile's `trusted_proxies static`: Caddy then logs and
+            // forwards the client PHP's throttles count (ADR 0134). Always
+            // set, from the list alone, so a stray value in the environment
+            // is not what Caddy trusts.
+            TrustedProxies::CADDY_ENV => FrameworkConfig::load()->proxies()->caddyRanges(),
         ];
 
         try {

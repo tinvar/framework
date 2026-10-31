@@ -16,6 +16,17 @@ use Tinvar\Server\CaddyfileRules;
 const ROOT = __DIR__ . '/../../../..';
 
 /**
+ * What the skeleton's `servers` block holds after its timeouts: the proxies
+ * in front (ADR 0134), read from the file so the block can be taken out
+ * whole.
+ */
+\define('SERVERS_AFTER_TIMEOUTS', (string) preg_replace(
+    '/^.*?\n\tservers \{\n\t\ttimeouts \{\n\t\t\twrite_idle 8s\n\t\t\}\n(.*?)\t\}\n.*$/s',
+    '$1',
+    (string) file_get_contents(ROOT . '/packages/skeleton/Caddyfile'),
+));
+
+/**
  * $contents written to a Caddyfile of its own, and checked.
  *
  * @return list<string>
@@ -175,7 +186,7 @@ function checkedTree(array $files, bool $holdsResponses = true): array
 it('refuses PHP served with no write_idle, or a longer one, in the global options', function (string $search, string $replace, string $message) {
     expect(implode("\n", checked(skeleton($search, $replace))))->toContain($message);
 })->with([
-    'no servers block' => ["\tservers {\n\t\ttimeouts {\n\t\t\twrite_idle 8s\n\t\t}\n\t}\n", '', 'serves PHP with no `servers` block for every listener setting `write_idle`'],
+    'no servers block' => ["\tservers {\n\t\ttimeouts {\n\t\t\twrite_idle 8s\n\t\t}\n" . SERVERS_AFTER_TIMEOUTS . "\t}\n", '', 'serves PHP with no `servers` block for every listener setting `write_idle`'],
     'no write_idle' => ["\t\t\twrite_idle 8s\n", "\t\t\tread_body 10s\n", '`servers` sets no `write_idle`'],
     'a minute' => ['write_idle 8s', 'write_idle 1m', '`write_idle 1m` is not a duration of at most 8s'],
     'a placeholder' => ['write_idle 8s', 'write_idle {$IDLE:8s}', '`write_idle {$IDLE:8s}` is not a duration of at most 8s'],
