@@ -78,8 +78,8 @@ final class MakeCommand
      *        parameter or --model is matched against
      * @param (\Closure(string): void)|null $out a line for standard output
      * @param (\Closure(string): void)|null $err a line for standard error
-     * @param Registrations $registrations where what is written is registered: the
-     *        application's lists and route table, or, with none, nowhere -- the
+     * @param Registrations $registrations where a page's view is registered: the
+     *        route table, or, with none, nowhere -- the
      *        developer is told where to
      * @param (\Closure(string): int)|null $migrate runs make:migration with the name it is
      *        given, in a process that loads the model just registered; with none,
@@ -122,8 +122,8 @@ final class MakeCommand
             foreach ($files->write($this->layout->relative(...)) as $path) {
                 ($this->out)('wrote ' . $this->layout->relative($path));
             }
-            // Registered once written: each list and the route table its
-            // own edit, and what could not be made said, file by file.
+            // Discovered once written (ADR 0146); a page's view registered in
+            // the route table, or what could not be made said.
             [$done, $left] = $this->registrations->register(...$registered);
             foreach ($done as $line) {
                 ($this->out)($line);
@@ -190,7 +190,7 @@ final class MakeCommand
             ->add($viewFile, Sources::view($view, $this->layout->typesImport($view), $class, $path, $parameters !== []));
 
         $next = [$this->registrations->none()
-            ? "Next: register {$class} with the application's routes, add the view to its renderer's route table, and run `tinvar codegen` for PageProps<'{$view}'>."
+            ? "Next: add the view to its renderer's route table, and run `tinvar codegen` for PageProps<'{$view}'>."
             : "Next: run `tinvar codegen` for PageProps<'{$view}'>."];
         if (array_filter($parameters) === []) {
             $next[] = "Until a policy with a view() ability is registered for {$class}, every request to the page is refused.";
@@ -222,7 +222,7 @@ final class MakeCommand
         // No list to keep: the build reads each view's calls into its
         // route's allowlist, so the query is allowed exactly where it is
         // called, and a hand-kept list could only drift from that.
-        $next = [($this->registrations->none() ? "Next: register {$class} with the application's queries, and run" : 'Next: run')
+        $next = ['Next: run'
             . " `tinvar codegen` for its `@queries` function. The build allows '{$wire}' on each route whose views call it."];
         if ($model === null) {
             $next[] = "Until a policy with a view() ability is registered for {$class}, every call to the query is refused.";
@@ -255,7 +255,7 @@ final class MakeCommand
             $files->add($this->layout->pathOf($request), Sources::request($request, Names::short($class) . "::{$method}"));
         }
 
-        $next = [($this->registrations->none() ? "Next: register {$class} with the application's actions, and run" : 'Next: run')
+        $next = ['Next: run'
             . ' `tinvar codegen` for `@actions/' . Names::short($class) . '`.'];
         if ($model === null) {
             $next[] = "Until a policy with a {$method}() ability is registered for {$class}, every call to the action is refused.";
@@ -298,14 +298,14 @@ final class MakeCommand
 
         $migration = 'create_' . strtolower($table);
         // Made here only where a process can load the model once it is
-        // registered; otherwise, as without --migration, said.
-        if (isset($options['migration']) && $this->migrate !== null && !$this->registrations->none()) {
+        // discovered; otherwise, as without --migration, said.
+        if (isset($options['migration']) && $this->migrate !== null) {
             $this->migration = $migration;
 
             return [$files, [], ['model', $class, $this->layout]];
         }
 
-        return [$files, [($this->registrations->none() ? "Next: register {$class} with the application's models, and run" : 'Next: run')
+        return [$files, ['Next: run'
             . " `tinvar make:migration {$migration}` for its table."], ['model', $class, $this->layout]];
     }
 
@@ -374,7 +374,7 @@ final class MakeCommand
                         $options['columns'] = $columns;
                     }
                     $extras = ['factory' => 'A factory, for tests and seeding'];
-                    if ($this->migrate !== null && !$this->registrations->none()) {
+                    if ($this->migrate !== null) {
                         $extras['migration'] = 'A migration, for its table';
                     }
                     foreach (Prompts::multiselect('What else should be written with it?', $extras, name: 'extras') as $extra) {

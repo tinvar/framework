@@ -9,26 +9,21 @@ use Tinvar\Routing\RouteRegistry;
 use Tinvar\Routing\RoutingException;
 
 /**
- * Where a generated class is registered once it is written: the lists an
- * application keeps of its pages, queries, actions and models -- a
- * Kernel's ROUTES, QUERIES, ACTIONS and MODELS, a console's APP_MODELS --
- * and, for a page, the renderer's route table.
+ * Where a generated page's view is registered once it is written: the
+ * renderer's route table. The class itself -- a page, a query, an action,
+ * a model -- is registered by nothing here: discovery finds it under the
+ * application's namespace (ADR 0146), so no Kernel list is edited, and
+ * none can drift from the classes there are.
  *
  *     new Registrations(
- *         lists: [
- *             'page' => [['file' => 'app/Kernel.php', 'constant' => 'ROUTES']],
- *             'model' => [['file' => 'app/Kernel.php', 'constant' => 'MODELS']],
- *         ],
  *         routeTable: 'resources/entries/rsc.tsx',
  *         routes: $routes, // the application's pages and layouts
  *     )
  *
- * Each edit is ClassList's or RouteTable's: made where the file reads as
- * the list or table it is meant to be, never twice, and refused otherwise.
- * Each file is its own edit, so one refused leaves the others made, and
- * the developer is told, file by file, what was registered and what is
- * left to do by hand, and why. Nothing is written outside the
- * application the layout names.
+ * The edit is RouteTable's: made where the file reads as the table it is
+ * meant to be, never twice, and refused otherwise, saying what is left to
+ * do by hand and why. Nothing is written outside the application the
+ * layout names.
  *
  * A page's layouts in the route table are the ones PHP will run its
  * loaders in: the application's layouts that wrap the page's path, read
@@ -39,32 +34,25 @@ final readonly class Registrations
     public const array KINDS = ['page', 'query', 'action', 'model'];
 
     /**
-     * @param array<string, list<array{file: string, constant: string}>> $lists by kind:
-     *        page, query, action or model
      * @param string|null $routeTable the renderer's rsc entry, holding const ROUTES
      * @param list<class-string> $routes the application's pages and layouts, for a
      *        new page's layouts
      */
     public function __construct(
-        private array $lists = [],
         private ?string $routeTable = null,
         private array $routes = [],
-    ) {
-        foreach (array_keys($lists) as $kind) {
-            if (!\in_array($kind, self::KINDS, true)) {
-                throw new \InvalidArgumentException("'{$kind}' is not a kind of class a generator writes: " . implode(', ', self::KINDS) . '.');
-            }
-        }
-    }
+    ) {}
 
-    /** Whether anything is registered where: none, as a generator ran before this. */
+    /** Whether a page's view is registered anywhere: not, with no route table. */
     public function none(): bool
     {
-        return $this->lists === [] && $this->routeTable === null;
+        return $this->routeTable === null;
     }
 
     /**
-     * Registers $class, a $kind just written, and says what was done.
+     * Registers what $class, a $kind just written, needs beyond being
+     * discovered -- a page's view, in the route table -- and says what was
+     * done.
      *
      * @param string|null $view a page's view, for the route table
      * @return array{list<string>, list<string>} lines saying what was registered, and
@@ -72,21 +60,11 @@ final readonly class Registrations
      */
     public function register(string $kind, string $class, AppLayout $layout, ?string $view = null): array
     {
+        if (!\in_array($kind, self::KINDS, true)) {
+            throw new \InvalidArgumentException("'{$kind}' is not a kind of class a generator writes: " . implode(', ', self::KINDS) . '.');
+        }
         $done = [];
         $left = [];
-        foreach ($this->lists[$kind] ?? [] as ['file' => $file, 'constant' => $constant]) {
-            $shown = $file;
-            try {
-                $file = $layout->inProject($file);
-                $shown = $layout->relative($file);
-                $done[] = ClassList::add($file, $constant, $class)
-                    ? "registered {$class} in {$shown} ({$constant})"
-                    : "{$class} is in {$shown} ({$constant}) already";
-            } catch (RegistrationRefused|GenerationRefused $e) {
-                $left[] = "Left {$shown} as it was -- {$e->getMessage()}: add {$class} to {$constant} there by hand.";
-            }
-        }
-
         if ($kind === 'page' && $view !== null && $this->routeTable !== null) {
             $shown = $this->routeTable;
             try {

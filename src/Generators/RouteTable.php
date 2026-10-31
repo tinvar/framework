@@ -14,7 +14,7 @@ namespace Tinvar\Generators;
  *   ...
  *   'notes/show': { Page: NotesShowPage as Page, layouts: ['app'] },
  *
- * As ClassList is with a PHP list, it is made only where the table reads
+ * It is made only where the table reads
  * exactly as the table make:page expects, and refused otherwise: one
  * `const ROUTES` whose object literal is opened at the end of its line and
  * closed on a line of its own, and holds nothing but comments and entries
@@ -50,7 +50,7 @@ final class RouteTable
             throw new RegistrationRefused('the view\'s path from it holds characters an import is not written with');
         }
 
-        $source = ClassList::read($file);
+        $source = ProjectFile::read($file);
         $lines = explode("\n", $source);
 
         $declared = preg_grep('/^(?:export\s+)?const ROUTES\b/', $lines) ?: [];
@@ -130,7 +130,7 @@ final class RouteTable
         }
         array_splice($lines, $lastImport + 1, 0, [$import]);
 
-        ClassList::write($file, implode("\n", $lines));
+        ProjectFile::write($file, implode("\n", $lines));
 
         return true;
     }
