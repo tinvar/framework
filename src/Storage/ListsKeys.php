@@ -6,7 +6,7 @@ namespace Tinvar\Storage;
 
 /**
  * A store that can say what it holds under a prefix: for pruning to find
- * a file no record names (Uploads::prune()).
+ * a file no record names, as the upload pruning does.
  *
  * Optional: a store that cannot list, or whose credentials may not, is
  * pruned by its records alone.
