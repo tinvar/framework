@@ -344,3 +344,18 @@ it('stops, and says so, when serve exits on its own', function () {
         cleanUp($log);
     }
 });
+
+// A fixed fifteen seconds was shorter than serve's own stop -- ten for
+// FrankenPHP and ten for the renderer, and the stop budget for a job in hand
+// -- so dev killed serve before serve could stop what it started.
+it('gives serve longer to stop than serve gives what it started', function () {
+    $serve = \Tinvar\Server\ServeCommand::class;
+    $alone = $serve::stopSeconds(['the dev renderer', 'FrankenPHP']);
+    $working = $serve::stopSeconds(['the dev renderer', 'FrankenPHP', 'queue:work', 'schedule:work'], 90);
+
+    expect(DevCommand::stopSeconds(['serve', '--dev'], 90))->toBeGreaterThan($alone)
+        ->and($alone)->toBe(2 * $serve::STOP_SECONDS)
+        ->and(DevCommand::stopSeconds(['serve', '--dev', '--worker'], 90))->toBeGreaterThan($working)
+        ->and(DevCommand::stopSeconds(['serve', '--dev', '--schedule'], 90))->toBeGreaterThan($working)
+        ->and($working)->toBe(90 + 2 * $serve::STOP_SECONDS);
+});

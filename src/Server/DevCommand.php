@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Server;
 
 use Tinvar\Dev\DevToolbar;
+use Tinvar\Jobs\StopBudget;
 use Tinvar\Support\DevMode;
 use Tinvar\Support\PrivateDirectory;
 
@@ -59,6 +60,9 @@ final class DevCommand
 
     private bool $stopping = false;
 
+    /** @var list<string> what serve was run with, which says how long it takes to stop */
+    private array $serveArguments = [];
+
     /**
      * @param string $console the CLI whose `serve` runs PHP, the renderer and Vite
      * @param list<string> $watch the directories (and files) of the application's PHP that codegen
@@ -107,6 +111,7 @@ final class DevCommand
             }
 
             $php = PhpCommand::prefix();
+            $this->serveArguments = $plan['serve'];
             $serve = $this->spawn(
                 [...$php, __DIR__ . '/../../bin/tethered.php', ...$php, $this->console, ...$plan['serve']],
                 [...array_filter(getenv(), \is_string(...)), DevToolbar::ENV => $run],
@@ -341,8 +346,37 @@ final class DevCommand
     }
 
     /**
+     * How long serve is given to stop: every group of children it stops in
+     * turn, each given what serve gives it (ServeCommand::stopOrder()) --
+     * the queue worker and scheduler the stop budget, a job in hand among
+     * them -- and a few seconds over for serve itself.
+     *
+     * A fixed fifteen seconds was shorter than serve's own stop: ten for
+     * FrankenPHP and ten for the renderer, and with --worker the minute and
+     * more a running job is given. Killed first, serve could stop none of
+     * it, and a job in hand was killed rather than handed back.
+     *
+     * @param list<string> $serveArguments what serve is run with
+     */
+    public static function stopSeconds(array $serveArguments, int $stopBudget): int
+    {
+        $children = ['the dev renderer', 'FrankenPHP'];
+        if (\in_array('--worker', $serveArguments, true)) {
+            $children[] = 'queue:work';
+        }
+        if (\in_array('--schedule', $serveArguments, true)) {
+            $children[] = 'schedule:work';
+        }
+
+        return ServeCommand::stopSeconds($children, $stopBudget) + self::STOP_MARGIN_SECONDS;
+    }
+
+    /** What serve is given to stop beyond its children's time: its own exit. */
+    private const int STOP_MARGIN_SECONDS = 5;
+
+    /**
      * SIGTERM to serve, which stops what it started, and SIGKILL if it has
-     * not gone in fifteen seconds -- longer than serve gives its own children.
+     * not gone within serve's own stop (stopSeconds()).
      *
      * @param resource $process
      * @param resource $tether
@@ -353,7 +387,13 @@ final class DevCommand
             proc_terminate($process, \defined('SIGTERM') ? SIGTERM : 15);
         }
 
-        $deadline = microtime(true) + 15;
+        try {
+            $budget = StopBudget::fromEnvironment();
+        } catch (\InvalidArgumentException) {
+            // serve refuses one that is not, and stops nothing then.
+            $budget = StopBudget::DEFAULT;
+        }
+        $deadline = microtime(true) + self::stopSeconds($this->serveArguments, $budget);
         while (proc_get_status($process)['running'] && microtime(true) < $deadline) {
             usleep(50_000);
         }

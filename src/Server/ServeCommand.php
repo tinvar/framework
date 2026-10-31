@@ -1033,6 +1033,17 @@ final class ServeCommand
     }
 
     /**
+     * How long a stop of these children takes at most: each group in
+     * stopOrder() is given its seconds in turn.
+     *
+     * @param list<string> $names
+     */
+    public static function stopSeconds(array $names, int $stopBudget = self::BACKGROUND_STOP_SECONDS): int
+    {
+        return array_sum(array_column(self::stopOrder($names, $stopBudget), 1));
+    }
+
+    /**
      * SIGTERM to each child still running, then SIGKILL to any that will
      * not go within $seconds.
      *
