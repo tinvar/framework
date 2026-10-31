@@ -149,7 +149,7 @@ final class Codemods
                 self::copyTree($current, $run . '/app');
                 mkdir($run . '/tmp', 0o700);
 
-                [$status, $output] = $this->sandboxed($run, $run . '/package/' . $codemod['script']);
+                [$status, $output] = $this->sandboxed($run, $run . '/package/' . $codemod['script'], $app);
                 $label = self::printable("{$codemod['package']} {$codemod['script']}");
                 if ($status !== 0) {
                     // bubblewrap could not build the sandbox, and nothing ran:
@@ -176,12 +176,12 @@ final class Codemods
     }
 
     /** @return array{int, string} exit status (124 when killed) and what it printed */
-    private function sandboxed(string $root, string $script): array
+    private function sandboxed(string $root, string $script, string $app): array
     {
         // A trailing slash, or open_basedir also admits /tmp/run-1x.
         $base = $root . '/';
         $command = [
-            ...self::confinement($root),
+            ...self::confinement($root, $app),
             \PHP_BINARY, '-n',
             '-d', 'open_basedir=' . $base,
             '-d', 'disable_functions=' . implode(',', self::DISABLED),
@@ -209,7 +209,7 @@ final class Codemods
      *
      * @return list<string> the command to put in front of PHP's
      */
-    private static function confinement(string $root): array
+    private static function confinement(string $root, string $app): array
     {
         if (preg_match('/["\\\\\x00-\x1f]/', $root) === 1) {
             throw new \RuntimeException("Cannot sandbox a run under {$root}.");
@@ -231,7 +231,15 @@ final class Codemods
         if (\PHP_OS_FAMILY === 'Linux') {
             foreach (['/usr/bin/bwrap', '/bin/bwrap', '/usr/local/bin/bwrap'] as $bwrap) {
                 if (is_executable($bwrap)) {
-                    return [$bwrap, ...self::bubblewrap($root, (string) realpath(\PHP_BINARY))];
+                    $php = (string) realpath(\PHP_BINARY);
+                    $home = getenv('HOME');
+                    $outside = array_values(array_filter([
+                        $app,
+                        \is_string($home) && $home !== '' ? (realpath($home) ?: $home) : null,
+                        realpath(sys_get_temp_dir()) ?: null,
+                    ]));
+
+                    return [$bwrap, ...self::bubblewrap($root, $php, self::linkedLibraries($php), $outside)];
                 }
             }
         }
@@ -254,14 +262,26 @@ final class Codemods
      * and SOAP clients a static PHP carries, which no ini setting takes
      * away. So /run, /tmp, /var, /home and the app itself are not there:
      * only /usr, /etc and the directories a system links into /usr, which
-     * hold programs, libraries and settings rather than sockets, and PHP's
-     * own directory, with a `lib` beside it, where PHP is installed
-     * elsewhere. A fresh /dev and a /proc of the sandbox's own pids.
+     * hold programs, libraries and settings rather than sockets. A fresh
+     * /dev and a /proc of the sandbox's own pids.
+     *
+     * PHP installed elsewhere brings its binary as one file, and each
+     * library it loads ($libraries, from its loader) as one file: never a
+     * directory, since a static PHP kept beside the app or in a home would
+     * otherwise bring the app or the home, sockets and .env with them.
+     *
+     * And the paths in $outside -- the app, the home, the temporary
+     * directory -- must not lie under anything bound read-only: an app in
+     * /usr/src/app would be shown whole through /usr. Then the codemods do
+     * not run.
      *
      * @internal
+     * @param list<string> $libraries the files PHP's loader maps, by path
+     * @param list<string> $outside paths the codemod must not be shown
      * @return list<string> what follows `bwrap` on its command line, ending with `--`
+     * @throws \RuntimeException when a path in $outside would be shown
      */
-    public static function bubblewrap(string $root, string $php): array
+    public static function bubblewrap(string $root, string $php, array $libraries = [], array $outside = []): array
     {
         $arguments = [];
         $bound = [];
@@ -274,16 +294,27 @@ final class Codemods
                 $bound[] = $path;
             }
         }
-        if ($php !== '') {
-            $directory = \dirname($php);
-            $covered = array_filter($bound, static fn (string $path): bool => str_starts_with($directory . '/', $path . '/'));
-            // Never the root itself: a PHP at /php would bring back the
-            // whole filesystem, and every socket on it.
-            if ($covered === [] && $directory !== '/') {
-                $arguments = [...$arguments, '--ro-bind', $directory, $directory];
-                $lib = \dirname($directory) . '/lib';
-                if (is_dir($lib)) {
-                    $arguments = [...$arguments, '--ro-bind', $lib, $lib];
+        $under = static function (string $path, string $parent): bool {
+            return $path === $parent || str_starts_with($path, rtrim($parent, '/') . '/');
+        };
+        foreach ([$php, ...$libraries] as $file) {
+            // A file of its own, absolute, not one already shown, and never
+            // the root: each is bound as itself and nothing around it.
+            if ($file === '' || $file[0] !== '/' || $file === '/' || str_ends_with($file, '/')) {
+                continue;
+            }
+            if (array_filter($bound, static fn (string $path): bool => $under($file, $path)) === []) {
+                $arguments = [...$arguments, '--ro-bind', $file, $file];
+                $bound[] = $file;
+            }
+        }
+        foreach ($outside as $path) {
+            foreach ($bound as $shown) {
+                if ($under($path, $shown)) {
+                    throw new \RuntimeException(
+                        "Cannot sandbox a codemod: {$path} is under {$shown}, which the sandbox shows it read-only. "
+                        . 'Keep the app, the home and the temporary directory out of the system\'s directories.',
+                    );
                 }
             }
         }
@@ -296,13 +327,50 @@ final class Codemods
     }
 
     /**
+     * The files $php's loader maps -- the loader itself and each shared
+     * library, as `ldd` names them -- and none for a static binary, or
+     * where there is no ldd: a PHP that needs a library not found then
+     * fails to start in the sandbox, and the codemod with it.
+     *
+     * @return list<string>
+     */
+    private static function linkedLibraries(string $php): array
+    {
+        $ldd = is_executable('/usr/bin/ldd') ? '/usr/bin/ldd' : (is_executable('/bin/ldd') ? '/bin/ldd' : null);
+        if ($ldd === null || $php === '') {
+            return [];
+        }
+        [$status, $output] = self::process([$ldd, $php], '/', ['PATH' => '/usr/bin:/bin'], 10);
+        if ($status !== 0) {
+            return [];
+        }
+        $files = [];
+        foreach (explode("\n", $output) as $line) {
+            if (preg_match('#(?:=>\s*)?(/\S+)\s+\(0x[0-9a-f]+\)#', $line, $m) === 1) {
+                $files[] = $m[1];
+            }
+        }
+
+        return array_values(array_unique($files));
+    }
+
+    /**
      * @param list<string> $command
      * @param array<string, string> $env
      * @return array{int, string}
      */
     private static function process(array $command, string $cwd, array $env, int $timeout, int $limit = 1 << 20): array
     {
-        $process = proc_open($command, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $cwd, $env);
+        // Every descriptor this process holds above the three is handed on
+        // to a child under its own number unless it was opened
+        // close-on-exec, which PHP's files and sockets are not -- and
+        // php://fd reaches each past open_basedir. So each is given to the
+        // child as /dev/null instead.
+        $spec = [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+        foreach (self::openDescriptors() as $fd) {
+            $spec[$fd] = ['file', '/dev/null', 'r'];
+        }
+        $process = proc_open($command, $spec, $pipes, $cwd, $env);
         if (!\is_resource($process)) {
             throw new \RuntimeException('Cannot start ' . $command[0] . '.');
         }
@@ -344,6 +412,27 @@ final class Codemods
         $exit = $status['running'] ? $code : $status['exitcode'];
 
         return [$killed ? 124 : $exit, $output];
+    }
+
+    /**
+     * The descriptors above 2 this process holds, from /proc/self/fd or
+     * /dev/fd: the listing's own among them, which is harmless to cover.
+     *
+     * @return list<int>
+     */
+    private static function openDescriptors(): array
+    {
+        foreach (['/proc/self/fd', '/dev/fd'] as $directory) {
+            $names = is_dir($directory) ? scandir($directory) : false;
+            if ($names !== false) {
+                $fds = array_map(intval(...), array_filter($names, static fn (string $name): bool => ctype_digit($name) && (int) $name > 2));
+                sort($fds);
+
+                return $fds;
+            }
+        }
+
+        throw new \RuntimeException('Cannot list this process\'s descriptors to keep them from a codemod.');
     }
 
     /** @return list<string> paths relative to $app */

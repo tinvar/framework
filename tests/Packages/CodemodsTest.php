@@ -682,8 +682,15 @@ it('keeps a codemod off the Unix sockets outside its copy, through the clients P
         ->and($result->failed)->toBe([]);
 });
 
-it('shows a codemod under bubblewrap the system\'s directories and its own, and nothing that holds sockets', function () {
-    $arguments = Codemods::bubblewrap('/tmp/tinvar-codemods-x', '/usr/bin/php8.5');
+/**
+ * What bubblewrap is given to bind, read-only or not: each path after a
+ * --ro-bind or --bind.
+ *
+ * @param list<string> $arguments
+ * @return list<string>
+ */
+function bound(array $arguments): array
+{
     $mounts = [];
     foreach ($arguments as $at => $argument) {
         if (\in_array($argument, ['--ro-bind', '--bind'], true)) {
@@ -691,21 +698,77 @@ it('shows a codemod under bubblewrap the system\'s directories and its own, and 
         }
     }
 
-    $elsewhere = Codemods::bubblewrap('/tmp/r', '/opt/php-8.5/bin/php');
+    return $mounts;
+}
+
+it('shows a codemod under bubblewrap the system\'s directories and its own, and nothing that holds sockets', function () {
+    $arguments = Codemods::bubblewrap('/tmp/tinvar-codemods-x', '/usr/bin/php8.5');
 
     // Of where sockets live, the run's own directory alone.
-    expect(array_values(array_filter($mounts, static fn (string $path): bool => preg_match('#^/(run|tmp|var|home|root|srv|opt|mnt|media)?(/|$)#', $path) === 1)))
+    expect(array_values(array_filter(bound($arguments), static fn (string $path): bool => preg_match('#^/(run|tmp|var|home|root|srv|opt|mnt|media)?(/|$)#', $path) === 1)))
         ->toBe(['/tmp/tinvar-codemods-x'])
         ->and(\array_slice($arguments, -11))->toBe([
             '--dev', '/dev', '--proc', '/proc', '--bind', '/tmp/tinvar-codemods-x', '/tmp/tinvar-codemods-x',
             '--unshare-all', '--die-with-parent', '--new-session', '--',
-        ])
-        // A PHP installed outside /usr brings its own directory, and nothing above it.
-        ->and($elsewhere)->toContain('/opt/php-8.5/bin')
-        ->and($elsewhere)->not->toContain('/opt/php-8.5')
-        ->and($elsewhere)->not->toContain('/opt')
-        // Nor the root, for a PHP that lives there.
-        ->and(array_slice(Codemods::bubblewrap('/tmp/r', '/php'), 0, -11))->not->toContain('/');
+        ]);
+});
+
+// A static PHP kept beside the app, or in a home directory: its directory
+// is the app's, or the home, sockets and .env with it.
+it('binds a PHP outside the system\'s directories as its one file, and the libraries it loads as theirs, never a directory', function () {
+    $arguments = Codemods::bubblewrap('/tmp/r', '/srv/shop/php', ['/srv/shop/lib/libphp-extra.so.1', '/usr/lib/libc.so.6']);
+    $mounts = bound($arguments);
+
+    expect($mounts)->toContain('/srv/shop/php')
+        ->and($mounts)->toContain('/srv/shop/lib/libphp-extra.so.1')
+        ->and($mounts)->not->toContain('/srv/shop')
+        ->and($mounts)->not->toContain('/srv/shop/lib')
+        ->and($mounts)->not->toContain('/srv')
+        // One already under a system directory is not bound again.
+        ->and(array_count_values($mounts)['/usr/lib/libc.so.6'] ?? 0)->toBe(0)
+        ->and(bound(Codemods::bubblewrap('/tmp/r', '/home/dev/php')))->not->toContain('/home/dev')
+        ->and(bound(Codemods::bubblewrap('/tmp/r', '/php')))->not->toContain('/');
+});
+
+// The app under /usr -- /usr/src/app and /usr/local/app are common working
+// directories in an image -- the home, or the temporary directory under
+// what is bound read-only would show the codemod all of it.
+it('refuses to run where the app, the home or the temporary directory is under what the sandbox shows', function (string $outside) {
+    expect(fn () => Codemods::bubblewrap('/tmp/r', '/usr/bin/php', [], [$outside]))
+        ->toThrow(\RuntimeException::class, "{$outside} is under ");
+})->with(['/usr/src/app', '/usr/local/app', '/usr/share/app', '/usr']);
+
+it('runs where none of them is under what the sandbox shows', function () {
+    expect(Codemods::bubblewrap('/tmp/r', '/usr/bin/php', [], ['/srv/shop', '/home/dev', '/tmp']))->toContain('--unshare-all');
+});
+
+// The console's descriptors -- a file it read, a socket it listens on -- are
+// not opened close-on-exec, and a child holds each one under the same
+// number, where php://fd reaches it past open_basedir.
+it('hands a codemod none of the descriptors the process running it holds', function () {
+    $this->workspace->file('outside/secret.txt', "held-open-secret\n");
+    $held = fopen($this->workspace->root . '/outside/secret.txt', 'r');
+    $listener = stream_socket_server('tcp://127.0.0.1:0');
+    $codemods = withCodemod($this, <<<'PHP'
+    <?php
+    // Only a count: a descriptor of PHP's own may read as anything.
+    $leaked = 0;
+    for ($fd = 3; $fd < 64; $fd++) {
+        $read = @file_get_contents("php://fd/{$fd}", false, null, 0, 64);
+        $leaked += is_string($read) && str_contains($read, 'held-open-secret') ? 1 : 0;
+    }
+    file_put_contents($argv[1] . '/seen.txt', "leaked {$leaked}\n");
+    PHP);
+
+    try {
+        $result = $codemods->run($this->app, allowed: true);
+    } finally {
+        fclose($held);
+        fclose($listener);
+    }
+
+    expect($result->failed)->toBe([])
+        ->and($result->patch)->toContain('+leaked 0');
 });
 
 it('says why when bubblewrap could not make the sandbox', function () {
