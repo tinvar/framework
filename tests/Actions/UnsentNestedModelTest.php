@@ -20,7 +20,11 @@ use Tinvar\Actions\ActionResult;
 use Tinvar\Actions\ActionRunner;
 use Tinvar\Attributes\Action;
 use Tinvar\Attributes\Authorize;
+use Tinvar\Attributes\Post;
 use Tinvar\Auth\Gate;
+use Tinvar\Endpoints\EndpointRegistry;
+use Tinvar\Endpoints\EndpointRunner;
+use Tinvar\Http\Request;
 use Tinvar\Http\ForbiddenException;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Orm\IdentityMap;
@@ -28,7 +32,11 @@ use Tinvar\Orm\Orm;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
 use Tinvar\Tests\Orm\Fixtures\Site;
 use Tinvar\Validation\FormRequest;
+use Tinvar\Tests\Orm\Fixtures\Rack;
 use Tinvar\Validation\Rules\Email;
+use Tinvar\Validation\Rules\Exists;
+use Tinvar\Validation\Rules\Unique;
+use Tinvar\Validation\ValidationContext;
 use Tinvar\Validation\ValidationException;
 use Tinvar\Validation\Validator;
 
@@ -66,6 +74,41 @@ final readonly class InviteRequest extends FormRequest
     ) {}
 }
 
+/**
+ * A field judged against the database, beside a model field whose check
+ * cannot be asked until it is sent.
+ */
+final readonly class ClaimRequest extends FormRequest
+{
+    public function __construct(
+        #[Unique(Site::class, 'code')]
+        public string $code,
+        #[Exists(Rack::class, 'name')]
+        public string $rack,
+        public Site $site,
+    ) {}
+}
+
+final class ClaimActions
+{
+    #[Action, Authorize('claim', 'site')]
+    public function claim(ClaimRequest $request): ActionResult
+    {
+        Ran::$bodies++;
+
+        return ActionResult::ok('claimed');
+    }
+}
+
+final class ClaimEndpoints
+{
+    #[Post('/api/claims', name: 'claims.create'), Authorize('claim', 'site')]
+    public function create(ClaimRequest $request): void
+    {
+        Ran::$bodies++;
+    }
+}
+
 final class InviteActions
 {
     #[Action, Authorize('invite', 'site')]
@@ -97,6 +140,7 @@ function runner(bool $admin = true): array
     $registry = new ActionRegistry();
     $registry->register(InviteActions::class);
     $registry->register(AdminInviteActions::class);
+    $registry->register(ClaimActions::class);
     $gate = new RecordingGate($admin);
 
     return [new ActionRunner($registry, $orm, $gate, new Validator($orm)), $fixture, $gate];
@@ -120,8 +164,9 @@ beforeEach(function () {
 it("validates one field while the form's site select is still empty", function () {
     [$runner, , $gate] = runner();
 
-    expect($runner->validateField('InviteActions.invite', ['email' => 'nope'], 'email'))
-        ->toBe(['email must be a valid email address.'])
+    // Nothing but "is required" until the site is sent: its check has not
+    // been asked, so no other field is judged yet.
+    expect($runner->validateField('InviteActions.invite', ['email' => 'nope'], 'email'))->toBe([])
         ->and($runner->validateField('InviteActions.invite', ['email' => 'a@b.co'], 'email'))->toBe([])
         ->and($runner->validateField('InviteActions.invite', ['email' => 'a@b.co'], 'site'))
         ->toBe(['site is required.'])
@@ -129,14 +174,11 @@ it("validates one field while the form's site select is still empty", function (
         ->and($gate->asked)->toBe([]);
 });
 
-it('answers a submit without the site with a 422, every error at once, and runs no body', function () {
+it('answers a submit without the site with a 422 that says only that, and runs no body', function () {
     [$runner] = runner();
 
     expect(errorsOf(fn () => $runner->run('InviteActions.invite', ['email' => 'nope'])))
-        ->toBe([
-            'email' => ['email must be a valid email address.'],
-            'site' => ['site is required.'],
-        ])
+        ->toBe(['site' => ['site is required.']])
         ->and(errorsOf(fn () => $runner->run('InviteActions.invite', ['email' => 'a@b.co', 'site' => ''], true)))
         ->toBe(['site' => ['site is required.']])
         ->and(Ran::$bodies)->toBe(0);
@@ -168,4 +210,81 @@ it('checks the site once it is sent', function () {
     expect($runner->run('InviteActions.invite', ['email' => 'a@b.co', 'site' => $fixture->ids['sites'][0]])->value)
         ->toBe('sent')
         ->and($gate->asked)->toBe(['invite']);
+});
+
+/**
+ * The check on the site was set aside because the site was not sent, so
+ * nothing the database says about the other fields may answer yet: Unique
+ * and Exists ran, and their answers came back, for a caller no check had
+ * been asked about -- an existence oracle, through Precognition-Validate-Only
+ * too.
+ */
+describe('a database rule beside a model field left out', function () {
+    it('answers an action alike for a taken value and a free one, and says only "is required"', function () {
+        [$runner, $fixture, $gate] = runner(admin: false);
+
+        $taken = ['code' => 'LAX0', 'rack' => 'R1'];
+        $free = ['code' => 'NOPE', 'rack' => 'no-such-rack'];
+
+        expect(errorsOf(fn () => $runner->run('ClaimActions.claim', $taken)))->toBe(['site' => ['site is required.']])
+            ->and(errorsOf(fn () => $runner->run('ClaimActions.claim', $free)))->toBe(['site' => ['site is required.']])
+            ->and(errorsOf(fn () => $runner->run('ClaimActions.claim', $taken, true)))->toBe(['site' => ['site is required.']])
+            ->and(errorsOf(fn () => $runner->run('ClaimActions.claim', $free, true)))->toBe(['site' => ['site is required.']])
+            ->and($runner->validateField('ClaimActions.claim', $taken, 'code'))->toBe([])
+            ->and($runner->validateField('ClaimActions.claim', $free, 'code'))->toBe([])
+            ->and($runner->validateField('ClaimActions.claim', $free, 'rack'))->toBe([])
+            ->and($runner->validateField('ClaimActions.claim', $taken, 'site'))->toBe(['site is required.'])
+            ->and($gate->asked)->toBe([])
+            ->and(Ran::$bodies)->toBe(0);
+    });
+
+    it('judges against the database once the site is sent and its check asked', function () {
+        [$runner, $fixture, $gate] = runner();
+        $site = $fixture->ids['sites'][0];
+
+        expect($runner->validateField('ClaimActions.claim', ['code' => 'LAX0', 'site' => $site], 'code'))
+            ->not->toBe([])
+            ->and($runner->validateField('ClaimActions.claim', ['rack' => 'no-such-rack', 'site' => $site], 'rack'))
+            ->not->toBe([])
+            ->and($gate->asked)->toBe(['claim', 'claim']);
+    });
+
+    it('answers an endpoint alike for a taken value and a free one, and says only "is required"', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $registry = new EndpointRegistry();
+        $registry->register(ClaimEndpoints::class);
+        $endpoint = $registry->get('claims.create');
+        $gate = new RecordingGate();
+        $runner = new EndpointRunner(static fn (string $c): object => new $c(), $orm, $gate, new Validator($orm));
+
+        $taken = ['code' => 'LAX0', 'rack' => 'R1'];
+        $free = ['code' => 'NOPE', 'rack' => 'no-such-rack'];
+        $required = ['site' => ['site is required.']];
+
+        expect($runner->precognition($endpoint, [], $taken, null))->toBe($required)
+            ->and($runner->precognition($endpoint, [], $free, null))->toBe($required)
+            ->and($runner->precognition($endpoint, [], $taken, ['code', 'rack']))->toBe([])
+            ->and($runner->precognition($endpoint, [], $free, ['code', 'rack']))->toBe([])
+            ->and($runner->precognition($endpoint, [], $free, ['site']))->toBe($required)
+            ->and(errorsOf(fn () => $runner->run($endpoint, [], $taken, Request::post('/api/claims'))))->toBe($required)
+            ->and(errorsOf(fn () => $runner->run($endpoint, [], $free, Request::post('/api/claims'))))->toBe($required)
+            ->and($gate->asked)->toBe([])
+            ->and(Ran::$bodies)->toBe(0);
+
+        $site = $fixture->ids['sites'][0];
+        expect($runner->precognition($endpoint, [], ['code' => 'LAX0', 'site' => $site], ['code']))->not->toBe([]);
+    });
+
+    it('stands Exists and Unique down in a context that may not look', function () {
+        $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
+        $orm = new Orm($fixture->connection, new IdentityMap('test'));
+        $looking = new ValidationContext([], $orm);
+        $blind = new ValidationContext([], $orm, lookups: false);
+
+        expect((new Unique(Site::class, 'code'))->check('LAX0', 'code', $looking))->not->toBeNull()
+            ->and((new Unique(Site::class, 'code'))->check('LAX0', 'code', $blind))->toBeNull()
+            ->and((new Exists(Rack::class, 'name'))->check('no-such-rack', 'rack', $looking))->not->toBeNull()
+            ->and((new Exists(Rack::class, 'name'))->check('no-such-rack', 'rack', $blind))->toBeNull();
+    });
 });

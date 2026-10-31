@@ -63,7 +63,13 @@ final class EndpointRunner
     public function run(CompiledEndpoint $endpoint, array $path, array $input, Request $request): Response
     {
         // 1. Resolve, and 2. authorize.
-        [$models, $subject] = $this->resolveAndAuthorize($endpoint, $path, $input);
+        [$models, $subject, $setAside] = $this->resolveAndAuthorize($endpoint, $path, $input);
+
+        // A check set aside for a model field left out: "is required", and
+        // nothing else -- no rule has been cleared to answer this caller.
+        if ($setAside !== []) {
+            throw new ValidationException($this->requiredOnly($endpoint, $input, $setAside, $models, $subject));
+        }
 
         // 3. Validate, every form request before anything is reported.
         $requests = $this->validate($endpoint, $input, $models, $subject);
@@ -151,7 +157,24 @@ final class EndpointRunner
     public function precognition(CompiledEndpoint $endpoint, array $path, array $input, ?array $only): array
     {
         return $this->orm->readOnly(function () use ($endpoint, $path, $input, $only): array {
-            [$models, $subject] = $this->resolveAndAuthorize($endpoint, $path, $input);
+            [$models, $subject, $setAside] = $this->resolveAndAuthorize($endpoint, $path, $input);
+
+            // As run() answers: the field left out is required, and every
+            // other field waits for it, since none has been cleared to be
+            // judged -- the database rules least of all.
+            if ($setAside !== []) {
+                $required = $this->requiredOnly($endpoint, $input, $setAside, $models, $subject);
+                if ($only === null) {
+                    return $required;
+                }
+                foreach ($only as $field) {
+                    if (!$this->declares($endpoint, $field)) {
+                        throw new UnknownField('A field no form request of this endpoint declares.');
+                    }
+                }
+
+                return array_intersect_key($required, array_flip($only));
+            }
 
             if ($only === null) {
                 try {
@@ -198,7 +221,8 @@ final class EndpointRunner
      *
      * @param array<string, string> $path
      * @param array<string, mixed>  $input
-     * @return array{array<string, Model>, Model|null} the models, and the subject a form request is judged against
+     * @return array{array<string, Model>, Model|null, list<string>} the models, the subject a form
+     *         request is judged against, and the fields whose checks were set aside because the call left them out
      */
     private function resolveAndAuthorize(CompiledEndpoint $endpoint, array $path, array $input): array
     {
@@ -226,7 +250,7 @@ final class EndpointRunner
             $models[$field] = $this->orm->find($class, (string) $id) ?? throw NotFoundException::model($class, (string) $id);
         }
 
-        $this->authorize($endpoint, $models, $unsent);
+        $setAside = $this->authorize($endpoint, $models, $unsent);
 
         $subject = null;
         foreach ($endpoint->checks as $index => $check) {
@@ -236,7 +260,56 @@ final class EndpointRunner
             }
         }
 
-        return [$models, $subject];
+        return [$models, $subject, $setAside];
+    }
+
+    /**
+     * What a call is told while a check on a model field it left out is set
+     * aside, as an action's is (ActionRunner): each such field's "is
+     * required", judged with the database rules standing down, and nothing
+     * else. A field that drew no error is refused as undecided, rather than
+     * let the call reach the body with a check unasked.
+     *
+     * @param array<string, mixed> $input
+     * @param non-empty-list<string> $fields
+     * @param array<string, Model> $models
+     * @return non-empty-array<string, non-empty-list<string>>
+     */
+    private function requiredOnly(CompiledEndpoint $endpoint, array $input, array $fields, array $models, ?Model $subject): array
+    {
+        $validator = $this->validator->withoutLookups();
+        $unsupplied = array_diff_key($endpoint->allModels(), $models);
+        $errors = [];
+        foreach ($fields as $field) {
+            foreach ($endpoint->formRequests as $class) {
+                foreach ((new \ReflectionClass($class))->getConstructor()?->getParameters() ?? [] as $parameter) {
+                    if ($parameter->getName() === $field) {
+                        $found = $validator->errorsFor($class, $input, $field, $subject, $models, $models, $unsupplied);
+                        $errors[$field] = array_values(array_unique([...$errors[$field] ?? [], ...$found]));
+                    }
+                }
+            }
+            if (($errors[$field] ?? []) === []) {
+                throw ForbiddenException::undecided($endpoint->where());
+            }
+        }
+
+        /** @var non-empty-array<string, non-empty-list<string>> $errors */
+        return $errors;
+    }
+
+    /** Whether a form request of the endpoint declares a field of this name. */
+    private function declares(CompiledEndpoint $endpoint, string $field): bool
+    {
+        foreach ($endpoint->formRequests as $class) {
+            foreach ((new \ReflectionClass($class))->getConstructor()?->getParameters() ?? [] as $parameter) {
+                if ($parameter->getName() === $field) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -319,19 +392,23 @@ final class EndpointRunner
      *
      * @param array<string, Model> $models
      * @param list<string> $unsent required form-request models the call left out
+     * @return list<string> the fields whose checks were set aside, because the call left them out
      */
-    private function authorize(CompiledEndpoint $endpoint, array $models, array $unsent): void
+    private function authorize(CompiledEndpoint $endpoint, array $models, array $unsent): array
     {
         $checks = [];
+        $setAside = [];
         $classLevel = $endpoint->classLevelChecks;
         foreach ($endpoint->checks as $index => $check) {
             // A check on a required form field the caller left out has no
-            // subject, and is set aside: the form request refuses the call
-            // with "is required" before the body could run.
+            // subject, and is set aside: the call is answered with that
+            // field's "is required" alone (requiredOnly()), before any rule
+            // could answer it or the body could run.
             if ($check->argument !== null && \in_array($check->argument, $unsent, true)) {
                 if ($index < $endpoint->classLevelChecks) {
                     $classLevel--;
                 }
+                $setAside[$check->argument] = true;
                 continue;
             }
             $checks[] = $check;
@@ -350,6 +427,8 @@ final class EndpointRunner
                 throw ForbiddenException::check($check->ability, $endpoint->where());
             }
         }
+
+        return array_keys($setAside);
     }
 
     /**

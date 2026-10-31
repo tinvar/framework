@@ -30,7 +30,23 @@ final class Validator
     /** @var array<class-string, list<FieldPlan>> */
     private static array $plans = [];
 
+    /** Whether a rule may ask the database; see withoutLookups(). */
+    private bool $lookups = true;
+
     public function __construct(private readonly ?Orm $orm = null) {}
+
+    /**
+     * This validator, its database rules standing down (ValidationContext's
+     * $lookups): for a call whose check on a model field it left out was set
+     * aside, which is answered "is required" and nothing the database says.
+     */
+    public function withoutLookups(): self
+    {
+        $blind = clone $this;
+        $blind->lookups = false;
+
+        return $blind;
+    }
 
     /**
      * @template T of FormRequest
@@ -60,7 +76,7 @@ final class Validator
         array $subjects = [],
         array $unsupplied = [],
     ): FormRequest {
-        $context = new ValidationContext($input, $this->orm, $subject, $subjects, $unsupplied);
+        $context = new ValidationContext($input, $this->orm, $subject, $subjects, $unsupplied, $this->lookups);
 
         /** @var array<string, list<string>> $errors */
         $errors = [];
@@ -165,7 +181,7 @@ final class Validator
             throw new \LogicException("{$class} declares no field named '{$field}'.");
         }
 
-        $context = new ValidationContext($input, $this->orm, $subject, $subjects, $unsupplied);
+        $context = new ValidationContext($input, $this->orm, $subject, $subjects, $unsupplied, $this->lookups);
 
         try {
             $errors = $this->checkField($plan, $input, $context, $resolved);
@@ -287,7 +303,7 @@ final class Validator
         return $this->read(
             FieldPlan::of($parameter, $owner),
             $input,
-            new ValidationContext($input, $this->orm, $subject, $subjects, $unsupplied),
+            new ValidationContext($input, $this->orm, $subject, $subjects, $unsupplied, $this->lookups),
         );
     }
 

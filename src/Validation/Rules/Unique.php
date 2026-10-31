@@ -41,6 +41,13 @@ final readonly class Unique implements Rule
 
     public function check(mixed $value, string $field, ValidationContext $context): ?string
     {
+        // Standing down, not passing judgement: a check on a model field the
+        // call left out was set aside, and what the database holds is not
+        // this caller's to learn until it has been asked.
+        if (!$context->lookups) {
+            return null;
+        }
+
         $column = Column::resolve($this->model, $this->column, self::class, $field);
         $matches = $context->orm()->whereIn($this->model, $column, [$value]);
 

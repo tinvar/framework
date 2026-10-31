@@ -26,6 +26,10 @@ final readonly class ValidationContext
      *        entry point declares that this call left out -- an optional
      *        `?Site $site = null` on a create, say -- so a rule can tell "no
      *        record is being edited" from "the action never binds one"
+     * @param bool $lookups whether a rule may ask the database: false when a
+     *        check on a model field the call left out was set aside, so
+     *        Exists and Unique stand down rather than answer a caller no
+     *        check has been asked about
      */
     public function __construct(
         public array $input,
@@ -33,6 +37,7 @@ final readonly class ValidationContext
         public ?Model $subject = null,
         public array $subjects = [],
         public array $unsupplied = [],
+        public bool $lookups = true,
     ) {}
 
     /**

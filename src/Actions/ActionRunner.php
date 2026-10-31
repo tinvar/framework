@@ -146,9 +146,15 @@ final class ActionRunner
         [$models, $unsent] = $this->resolveModels($action, $input);
 
         // 3. Authorize, against the resolved models.
-        $this->authorize($action, $models, $unsent);
+        $setAside = $this->authorize($action, $models, $unsent);
 
         $subject = $this->subjectOf($action, $models);
+
+        // A check set aside for a model field left out: "is required", and
+        // nothing else -- no rule has been cleared to answer this caller.
+        if ($setAside !== []) {
+            throw new ValidationException($this->requiredOnly($action, $input, $setAside, $subject, $models));
+        }
 
         // 4. Validate, every form request, scalar parameter and upload
         //    before anything is reported. A Precognition call stops here.
@@ -228,9 +234,24 @@ final class ActionRunner
     {
         $action = $this->registry->get($name);
         [$models, $unsent] = $this->resolveModels($action, $input);
-        $this->authorize($action, $models, $unsent);
+        $setAside = $this->authorize($action, $models, $unsent);
 
         $subject = $this->subjectOf($action, $models);
+
+        // As run() answers: the field left out is required, and every other
+        // field waits for it, since none has been cleared to be judged.
+        if ($setAside !== []) {
+            if (\in_array($field, $setAside, true)) {
+                return $this->requiredOnly($action, $input, [$field], $subject, $models)[$field];
+            }
+            if (!$this->declares($action, $field)) {
+                throw new \LogicException(
+                    "Action '{$name}' has no form-request field named '{$field}', nor a parameter of that name.",
+                );
+            }
+
+            return [];
+        }
 
         // Every form request that declares the field, not just the first: two
         // requests sharing a name both judge it on submit, so answering from
@@ -615,20 +636,78 @@ final class ActionRunner
     }
 
     /**
+     * What a call is told while a check on a model field it left out is set
+     * aside: each such field's "is required", from the form requests that
+     * declare it, judged with the database rules standing down. Nothing
+     * else is judged, so no Exists or Unique -- nor any rule -- answers a
+     * caller whose check on that field has not been asked. A field that
+     * somehow drew no error is refused as undecided: the call would
+     * otherwise reach the body with a check unasked.
+     *
+     * @param array<string, mixed> $input
+     * @param non-empty-list<string> $fields
+     * @param array<string, Model> $models
+     * @return non-empty-array<string, non-empty-list<string>>
+     */
+    private function requiredOnly(CompiledAction $action, array $input, array $fields, ?Model $subject, array $models): array
+    {
+        $validator = $this->validator->withoutLookups();
+        $unsupplied = self::unsupplied($action, $models);
+        $errors = [];
+        foreach ($fields as $field) {
+            foreach ($action->formRequests as $class) {
+                foreach ((new \ReflectionClass($class))->getConstructor()?->getParameters() ?? [] as $parameter) {
+                    if ($parameter->getName() === $field) {
+                        $errors = self::mergeErrors($errors, [
+                            $field => $validator->errorsFor($class, $input, $field, $subject, $models, $models, $unsupplied),
+                        ]);
+                    }
+                }
+            }
+            if (($errors[$field] ?? []) === []) {
+                throw ForbiddenException::undecided($action->where());
+            }
+        }
+
+        /** @var non-empty-array<string, non-empty-list<string>> $errors */
+        return $errors;
+    }
+
+    /** Whether the action has a field of this name: a form request's, an upload or a parameter. */
+    private function declares(CompiledAction $action, string $field): bool
+    {
+        if (isset($action->uploads[$field]) || isset(self::scalarParameters($action)[$field])) {
+            return true;
+        }
+        foreach ($action->formRequests as $class) {
+            foreach ((new \ReflectionClass($class))->getConstructor()?->getParameters() ?? [] as $parameter) {
+                if ($parameter->getName() === $field) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * @param array<string, Model> $models
      * @param list<string>         $unsent required form-request models the call left out
+     * @return list<string> the fields whose checks were set aside, because the call left them out
      */
-    private function authorize(CompiledAction $action, array $models, array $unsent = []): void
+    private function authorize(CompiledAction $action, array $models, array $unsent = []): array
     {
         $optional = array_keys($action->optionalModels);
 
         // A check on a required form field the caller left out has no
         // subject, and is set aside rather than counted as undecided. That
-        // is safe only because the call cannot reach the body: the form
-        // request that requires the field fails validation with "is
-        // required", and Precognition runs no body at all.
+        // is safe only because the call cannot reach the body, nor learn
+        // anything a rule would say: it is answered with that field's "is
+        // required" alone (requiredOnly()), and Precognition runs no body
+        // at all.
         $checks = $action->checks;
         $classLevel = $action->classLevelChecks;
+        $setAside = [];
         if ($unsent !== []) {
             $kept = [];
             foreach ($checks as $index => $check) {
@@ -636,6 +715,7 @@ final class ActionRunner
                     if ($index < $action->classLevelChecks) {
                         $classLevel--;
                     }
+                    $setAside[$check->argument] = true;
                     continue;
                 }
                 $kept[] = $check;
@@ -662,6 +742,8 @@ final class ActionRunner
                 throw ForbiddenException::check($check->ability, $action->where());
             }
         }
+
+        return array_keys($setAside);
     }
 
     /**
