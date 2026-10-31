@@ -703,7 +703,9 @@ it('shows a codemod under bubblewrap the system\'s directories and its own, and 
         // A PHP installed outside /usr brings its own directory, and nothing above it.
         ->and($elsewhere)->toContain('/opt/php-8.5/bin')
         ->and($elsewhere)->not->toContain('/opt/php-8.5')
-        ->and($elsewhere)->not->toContain('/opt');
+        ->and($elsewhere)->not->toContain('/opt')
+        // Nor the root, for a PHP that lives there.
+        ->and(array_slice(Codemods::bubblewrap('/tmp/r', '/php'), 0, -11))->not->toContain('/');
 });
 
 it('says why when bubblewrap could not make the sandbox', function () {

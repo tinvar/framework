@@ -277,7 +277,9 @@ final class Codemods
         if ($php !== '') {
             $directory = \dirname($php);
             $covered = array_filter($bound, static fn (string $path): bool => str_starts_with($directory . '/', $path . '/'));
-            if ($covered === []) {
+            // Never the root itself: a PHP at /php would bring back the
+            // whole filesystem, and every socket on it.
+            if ($covered === [] && $directory !== '/') {
                 $arguments = [...$arguments, '--ro-bind', $directory, $directory];
                 $lib = \dirname($directory) . '/lib';
                 if (is_dir($lib)) {
