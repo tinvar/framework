@@ -171,7 +171,7 @@ it('adopts a database built before the shop had migrations, and keeps what is in
 });
 
 // Order, account and receipt times became CarbonImmutable, which the ORM
-// writes at one width, to the microsecond (ADR 0144): the rows written to
+// writes at one width, to the microsecond (ADR 0145): the rows written to
 // the second before sort among those, and compare with what the ORM binds.
 it('rewrites the times the shop wrote to the second as the ORM writes them, and back', function () {
     $connection = PdoConnection::sqlite(database(), create: true);
