@@ -392,7 +392,7 @@ final class Frame
      * once, a finite start no later than its end, both within MAX_PHASE_MS
      * -- and a frame that breaks it is a protocol violation, as any
      * malformed frame is. They are only ever drawn as spans, within the
-     * render's own (Telemetry::renderFinished()).
+     * render's own, by the render channel's telemetry.
      *
      * @param array<string, mixed> $frame
      * @return list<array{name: string, start: float, end: float}>
