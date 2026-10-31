@@ -22,7 +22,7 @@ use Tinvar\Support\Signer;
  * So the renderer's two fields go in, and everything that decides who may use
  * the token comes from here.
  */
-final class FragmentMinter
+final class FragmentMinter implements Minter
 {
     /**
      * Encoded props may not exceed this.
@@ -96,6 +96,12 @@ final class FragmentMinter
     public function closure(): \Closure
     {
         return $this->mint(...);
+    }
+
+    /** A retried render's next try: its budget is whole again (Minter). */
+    public function reset(): void
+    {
+        $this->minted = 0;
     }
 
     /** @param array<string, mixed> $props */

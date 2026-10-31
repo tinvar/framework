@@ -494,6 +494,10 @@ describe('the reset contract', function () {
             // Reset by the render channel per render, which is narrower than
             // per request -- a render must not inherit the previous one's.
             'BatchScheduler::reset',
+            // A minter is made for one render, and reset by the render
+            // channel before each retry of it (Minter).
+            'FragmentMinter::reset',
+            'StaticMinter::reset',
         ];
 
         $unregistered = array_values(array_diff($resettable, $exempt));

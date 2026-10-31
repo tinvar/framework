@@ -25,9 +25,14 @@ use Tinvar\Orm\Orm;
 use Tinvar\Protocol\Frame;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Query\QueryRunner;
+use Tinvar\Render\FragmentMinter;
+use Tinvar\Render\FragmentToken;
+use Tinvar\Render\Minter;
 use Tinvar\Render\RenderChannel;
 use Tinvar\Render\RendererException;
 use Tinvar\Render\RenderRetry;
+use Tinvar\Render\StaticMinter;
+use Tinvar\Support\Signer;
 use Tinvar\Tests\Orm\Fixtures\Fixture;
 
 require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/models.php';
@@ -228,5 +233,99 @@ describe('RenderRetry', function () {
     it('refuses more tries or a longer pause than it allows', function () {
         expect(fn () => new RenderRetry(retries: 3))->toThrow(\InvalidArgumentException::class)
             ->and(fn () => new RenderRetry(backoffMs: 5000))->toThrow(\InvalidArgumentException::class);
+    });
+});
+
+/**
+ * A renderer whose every connection asks for $mints tokens at once, then
+ * hangs up -- all but the last, which writes how many came back with none.
+ */
+function mintingRenderer(string $path, int $connections, int $mints): int
+{
+    $server = stream_socket_server("unix://{$path}", $errno, $error);
+    if ($server === false) {
+        throw new \RuntimeException("Cannot listen on {$path}: {$error}");
+    }
+
+    $pid = pcntl_fork();
+    if ($pid === 0) {
+        $codec = new MessagePackCodec();
+        for ($c = 1; $c <= $connections; $c++) {
+            $client = @stream_socket_accept($server, 10);
+            if ($client === false) {
+                break;
+            }
+            fread($client, 65536);
+            $requests = [];
+            for ($i = 0; $i < $mints; $i++) {
+                $requests[] = ['id' => $i, 'component' => 'Box', 'props' => ['i' => $i]];
+            }
+            fwrite($client, $codec->encodeFrame(['t' => Frame::MINT, 'm' => $requests]));
+            $buffer = '';
+            $offset = 0;
+            $reply = null;
+            while ($reply === null) {
+                $read = fread($client, 65536);
+                if ($read === false || $read === '') {
+                    break;
+                }
+                $buffer .= $read;
+                $reply = $codec->decodeFrame($buffer, $offset);
+            }
+            if ($c < $connections) {
+                fclose($client);
+
+                continue;
+            }
+            $refused = \count(array_filter($reply['m'] ?? [], static fn (array $minted): bool => $minted['token'] === null));
+            fwrite($client, $codec->encodeFrame(Frame::chunk("refused {$refused}")) . $codec->encodeFrame(['t' => Frame::DONE]));
+            fclose($client);
+        }
+        posix_kill(getmypid(), SIGKILL);
+        exit(0);
+    }
+    fclose($server);
+
+    return $pid;
+}
+
+// The mint cap is one render's: a try that failed after minting must not
+// leave the next with what it spent, or the retried page draws its
+// boundaries as refused.
+describe('a retried render that mints', function () {
+    it('has a whole budget again on its next try', function (\Closure $make) {
+        $path = '/tmp/tvretry-' . bin2hex(random_bytes(4)) . '.sock';
+        $pid = mintingRenderer($path, 2, 40);
+        $written = '';
+
+        try {
+            retryChannel($path, new RenderRetry(retries: 1, backoffMs: 0))->render(
+                ['t' => 'render'],
+                [],
+                static function (string $bytes) use (&$written): void {
+                    $written .= $bytes;
+                },
+                $make(),
+                repeatable: true,
+            );
+        } finally {
+            posix_kill($pid, SIGKILL);
+            pcntl_waitpid($pid, $status);
+            @unlink($path);
+        }
+
+        expect($written)->toBe('refused 0');
+    })->with([
+        'a page render\'s minter' => [static fn (): Minter => new FragmentMinter(new Signer(str_repeat('k', 32), FragmentToken::PURPOSE), 'home', [], '', '', 'b1', 'session')],
+        'a static build\'s minter, as the closure its build hands the render' => [static fn (): \Closure => new StaticMinter('home', [])->closure()],
+    ]);
+
+    it('records only the boundaries of the try that finished, in a static build', function () {
+        $minter = new StaticMinter('home', []);
+        $minter->mint('Box', ['i' => 1]);
+        $minter->reset();
+        $minter->mint('Box', ['i' => 2]);
+
+        expect(array_column($minter->boundaries(), 'props'))->toBe([['i' => 2]]);
     });
 });

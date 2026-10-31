@@ -168,9 +168,10 @@ final class RenderChannel
      * @param array<string, mixed>  $frame   a render or fragment frame
      * @param list<string>          $allowed the route's query allowlist
      * @param \Closure(string): void $sink   receives output bytes as they arrive
-     * @param (\Closure(string, array<string, mixed>): string)|null $mint
+     * @param Minter|(\Closure(string, array<string, mixed>): string)|null $mint
      *        signs a fragment token for one <Deferred> boundary; null means
-     *        this render may not mint any
+     *        this render may not mint any. A Minter is reset before each try
+     *        after the first, so a retried render has a whole budget again
      * @param SharedReads|null $shared the page's shared data (the Kernel's shared()),
      *        which its components read as query calls; null means this render
      *        may read none (ADR 0060)
@@ -186,12 +187,20 @@ final class RenderChannel
         array $frame,
         array $allowed,
         \Closure $sink,
-        ?\Closure $mint = null,
+        Minter|\Closure|null $mint = null,
         ?SharedReads $shared = null,
         bool $repeatable = false,
         ?\Closure $rewind = null,
     ): RenderResult {
+        $minter = self::minterOf($mint);
+        $mint = $mint instanceof Minter ? $mint->mint(...) : $mint;
+
         for ($try = 0; ; $try++) {
+            if ($try > 0) {
+                // A new render: what the failed try minted is not this one's.
+                $minter?->reset();
+            }
+
             // Whether any of this try's output went to the caller: what
             // the browser may already hold, unless the caller can take it
             // back.
@@ -233,6 +242,25 @@ final class RenderChannel
 
             return $result;
         }
+    }
+
+    /**
+     * The Minter behind $mint, to reset between tries: the one given, or
+     * the one whose closure() it is -- a static build hands its render the
+     * minter's closure, through an application's own render callback. Any
+     * other closure keeps whatever it counts itself.
+     *
+     * @param Minter|(\Closure(string, array<string, mixed>): string)|null $mint
+     */
+    private static function minterOf(Minter|\Closure|null $mint): ?Minter
+    {
+        if (!$mint instanceof \Closure) {
+            return $mint;
+        }
+        $function = new \ReflectionFunction($mint);
+        $bound = $function->getClosureThis();
+
+        return $bound instanceof Minter && $function->getName() === 'mint' ? $bound : null;
     }
 
     /**

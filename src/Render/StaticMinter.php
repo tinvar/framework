@@ -29,7 +29,7 @@ use Tinvar\Support\Signer;
  * to name exactly the boundary its own page was built with. Two boundaries
  * alike are one, and share a token.
  */
-final class StaticMinter
+final class StaticMinter implements Minter
 {
     public const string PREFIX = 'b1.';
 
@@ -77,6 +77,17 @@ final class StaticMinter
     public function closure(): \Closure
     {
         return $this->mint(...);
+    }
+
+    /**
+     * A retried render's next try (Minter): the boundaries and refusals of
+     * the try that failed are not the page's, and the cap is whole again.
+     */
+    public function reset(): void
+    {
+        $this->boundaries = [];
+        $this->refused = [];
+        $this->rules->reset();
     }
 
     /** @param array<string, mixed> $props */
