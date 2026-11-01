@@ -274,6 +274,7 @@ final class TransferRegistry
             panels: $panels,
             mapsRows: $mapsRows,
             revalidates: $declaration instanceof Import ? TagNamespace::declared($class, $declaration->revalidates) : [],
+            host: \Tinvar\Attributes\Domain::declaredOn($class, '__invoke')?->pattern,
         );
     }
 

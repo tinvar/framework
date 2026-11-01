@@ -823,7 +823,10 @@ final class Kernel
         // resolve them the same way. Checked now: a panel nobody defined, or
         // a requirement nothing can hold, is refused here rather than found
         // by whoever first reaches it.
-        $this->domains = self::domainsFor($domains, $this->routes, $this->actions, $this->queries, $endpoints, $panelRegistry);
+        $this->domains = self::domainsFor($domains, $this->routes, $this->actions, $this->queries, $endpoints, $panelRegistry, [
+            ...array_map(static fn ($c): ?string => $c->host, $channels?->all() ?? []),
+            ...array_map(static fn ($t): ?string => $t->host, $transfers?->registry->all() ?? []),
+        ]);
         $entry = new EntryContext($this->orm, $resolver, $panels, $panelRegistry, $memberships, $this->auth, $realms ?? $handoff?->realms, $tenants, $this->domains);
         if ($this->domains !== null) {
             self::assertPanelHosts($entry, $panelRegistry, $this->routes, $endpoints);
@@ -1567,6 +1570,8 @@ final class Kernel
      * read it by, two patterns that match one host, or one naming a domain
      * nobody configured. Given to the registries, which match on host and
      * build links across hosts with it.
+     *
+     * @param list<string|null> $held the patterns channels and transfers are held to, null for none
      */
     private static function domainsFor(
         ?Domains $domains,
@@ -1575,8 +1580,11 @@ final class Kernel
         QueryRegistry $queries,
         ?EndpointRegistry $endpoints,
         ?PanelRegistry $panels,
+        array $held = [],
     ): ?Domains {
         $declared = [
+            // What a channel's or a transfer's #[Domain] holds it to.
+            ...array_values(array_filter($held, \is_string(...))),
             ...array_map(static fn ($p): string => $p->pattern, $routes->hostPatterns()),
             ...array_map(static fn ($p): string => $p->pattern, $endpoints?->hostPatterns() ?? []),
             ...$queries->hostPatterns(),

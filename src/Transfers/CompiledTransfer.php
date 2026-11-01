@@ -58,6 +58,10 @@ final readonly class CompiledTransfer implements DeclaredEntryPoint
         public array $panels,
         public bool $mapsRows = false,
         public array $revalidates = [],
+        // The #[Domain] pattern it is held to (ADR 0149): started and
+        // downloaded there alone; null for none, on any host the
+        // application serves, unless its panel's is one.
+        public ?string $host = null,
     ) {}
 
     public function isExport(): bool

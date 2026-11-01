@@ -134,6 +134,10 @@ final readonly class ScriptRuns
     TenantFrom(FromHeader::class)]
 final readonly class Status {}
 
+#[Channel('admin.status', message: OtherData::class), PublicAccess, NoAuthorization(reason: 'the admin host\'s status is everyone\'s there'),
+    TenantFrom(FromHeader::class), \Tinvar\Attributes\Domain('admin.{root}')]
+final readonly class AdminStatus {}
+
 #[Channel('rooms.{room}', message: OtherData::class), NoAuthorization(reason: 'a test room'), TenantFrom(FromHeader::class)]
 final readonly class Rooms
 {
@@ -236,7 +240,7 @@ final readonly class ChecksAString
 }
 
 /** @return array{Kernel, MemoryHub, LiveUpdates, TenantFixture, Orm, ChannelRegistry} */
-function kernel(): array
+function kernel(?\Tinvar\Routing\Domains $domains = null): array
 {
     $fixture = new TenantFixture();
     $orm = new Orm($fixture->connection, new IdentityMap('test'), tenants: Tenancy::flat());
@@ -246,7 +250,7 @@ function kernel(): array
     $container = new Container();
 
     $channels = new ChannelRegistry();
-    $channels->registerAll([ScriptRuns::class, Status::class, Rooms::class]);
+    $channels->registerAll([ScriptRuns::class, Status::class, Rooms::class, ...($domains === null ? [] : [AdminStatus::class])]);
     $actions = new ActionRegistry();
     $actions->registerAll([SessionActions::class]);
     $endpoints = new EndpointRegistry();
@@ -272,6 +276,7 @@ function kernel(): array
         live: $live,
         endpoints: $endpoints,
         channels: $channels,
+        domains: $domains,
     ), $hub, $live, $fixture, $orm, $channels];
 }
 
@@ -430,6 +435,20 @@ describe('a subscription', function () {
         expect($refused->status)->toBe(401)
             ->and($public->status)->toBe(200)
             ->and($body['token'])->toBeString();
+    });
+
+    // Its #[Domain] is honoured as a page's is (ADR 0149): heard on that
+    // host, and on no other.
+    it('is answered only on the host its #[Domain] names', function () {
+        [$kernel] = kernel(new \Tinvar\Routing\Domains(['root' => 'shop.test']));
+
+        [$there, $body] = subscribe($kernel, 'admin.status', [], ['x-tenant' => 'acme', 'host' => 'admin.shop.test']);
+        [$here] = subscribe($kernel, 'admin.status', [], ['x-tenant' => 'acme', 'host' => 'shop.test']);
+        [$anywhere] = subscribe($kernel, 'status', [], ['x-tenant' => 'acme', 'host' => 'admin.shop.test']);
+
+        expect($there->status)->toBe(200, json_encode($body))
+            ->and($here->status)->toBe(404)
+            ->and($anywhere->status)->toBe(200);
     });
 
     it('is refused with no session to bind it to', function () {

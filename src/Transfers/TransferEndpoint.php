@@ -105,7 +105,7 @@ final readonly class TransferEndpoint
         }
 
         $stack = [
-            ...$this->entry->stackFor($transfer->tenantFrom, $this->entry->panelFor($transfer->panels, $transfer->class)),
+            ...$this->entry->stackFor($transfer->tenantFrom, $this->entry->panelFor($transfer->panels, $transfer->class), $transfer->host ?? false),
             ...array_map(
                 fn (string $class): Middleware => ($this->middlewareResolver)($class),
                 array_values(array_diff($transfer->middleware, $this->globalMiddleware)),

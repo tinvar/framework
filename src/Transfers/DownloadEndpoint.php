@@ -99,7 +99,7 @@ final readonly class DownloadEndpoint
 
         $export = $this->transfers->registry->export($token->name) ?? throw self::missing();
         $stack = [
-            ...$this->entry->stackFor($export->tenantFrom, $this->entry->panelFor($export->panels, $export->class)),
+            ...$this->entry->stackFor($export->tenantFrom, $this->entry->panelFor($export->panels, $export->class), $export->host ?? false),
             ...array_map(
                 fn (string $class): Middleware => ($this->middlewareResolver)($class),
                 array_values(array_diff($export->middleware, $this->globalMiddleware)),

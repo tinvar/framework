@@ -34,6 +34,9 @@ final readonly class CompiledChannel
         public array $panels,
         public bool $publicAccess,
         public string $message,
+        // The #[Domain] pattern it is held to (ADR 0149); null for none, and
+        // heard on any host the application serves, unless its panel's is one.
+        public ?string $host = null,
     ) {}
 
     public function where(): string

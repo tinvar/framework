@@ -605,6 +605,12 @@ final class Discovery
 
             return;
         }
+        $hostless = Classifier::hostless($class, $kinds);
+        if ($hostless !== null) {
+            $problems[] = $hostless;
+
+            return;
+        }
         foreach ($kinds as $kind) {
             if ($kind !== 'policies') {
                 $lists[$kind][] = $name;

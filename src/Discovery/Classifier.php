@@ -76,8 +76,11 @@ final class Classifier
      */
     private const array INHERITED = [
         Authorize::class, Cors::class, Middleware::class, Panel::class, Queue::class, TenantFrom::class, Throttle::class,
-        OutboundPolicy::class, NotRegistered::class,
+        OutboundPolicy::class, NotRegistered::class, \Tinvar\Attributes\Domain::class,
     ];
+
+    /** The kinds a #[Domain] holds to a host (ADR 0149): every entry point a request reaches through its stack. */
+    private const array HOSTED = ['routes', 'queries', 'actions', 'endpoints', 'channels', 'transfers'];
 
     /**
      * The kinds $class is, and the classes its #[Policy] attributes decide about.
@@ -247,6 +250,34 @@ final class Classifier
         return "{$class->getName()} {$what} and carries " . implode(', ', $found)
             . ($one ? ', which registers only the class it is on and is' : ', which register only the class they are on and are')
             . " inherited by nothing, so it would be dropped: {$where}.";
+    }
+
+    /**
+     * What is wrong with $class carrying a #[Domain] -- on itself, a method,
+     * an ancestor or a trait -- when none of the kinds it is holds a host:
+     * a task, a job or a webhook is reached by no request a host could hold,
+     * and the host would be dropped without a word. Null when it is one of
+     * them, or declares none.
+     *
+     * @param \ReflectionClass<object> $class
+     * @param list<string> $kinds what classify() found it to be
+     */
+    public static function hostless(\ReflectionClass $class, array $kinds): ?string
+    {
+        if ($kinds === [] || array_intersect($kinds, self::HOSTED) !== []) {
+            return null;
+        }
+        $declared = \Tinvar\Attributes\ClassAttributes::of($class, \Tinvar\Attributes\Domain::class) !== [];
+        foreach ($class->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
+            $declared = $declared || $method->getAttributes(\Tinvar\Attributes\Domain::class) !== [];
+        }
+        if (!$declared) {
+            return null;
+        }
+
+        return "{$class->getName()} is held to a host by #[Domain], and is " . implode(', ', $kinds) . ', which no host holds: '
+            . 'only a page, a layout, an endpoint, an action, a query, a channel or a transfer is reached by a request a host '
+            . 'could hold (ADR 0149). Take it off.';
     }
 
     private static function framework(string $attribute): bool

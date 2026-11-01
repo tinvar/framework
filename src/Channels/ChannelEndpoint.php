@@ -215,7 +215,8 @@ final class ChannelEndpoint
     }
 
     /**
-     * The channel's tenant, its panel and the panel's stack, then its own
+     * The channel's host, as its #[Domain] holds it (ADR 0149), its
+     * tenant, its panel and the panel's stack, then its own
      * #[Middleware]. On a trade, which no authentication stands in front
      * of, the authentication a subscription met first: a channel that is
      * not #[PublicAccess] is heard by someone signed in, or by no one.
@@ -224,7 +225,7 @@ final class ChannelEndpoint
     {
         return new Pipeline([
             ...($authenticate && !$channel->publicAccess ? [new RequireAuthentication($this->auth)] : []),
-            ...$this->entry->stackFor($channel->tenantFrom, $this->entry->panelFor($channel->panels, $channel->class)),
+            ...$this->entry->stackFor($channel->tenantFrom, $this->entry->panelFor($channel->panels, $channel->class), $channel->host ?? false),
             ...array_map(
                 fn (string $class): Middleware => ($this->middlewareResolver)($class),
                 array_values(array_diff($channel->middleware, $this->globalMiddleware)),

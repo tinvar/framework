@@ -207,6 +207,20 @@ describe('the file', function () {
         expect($app->download(substr($link, \strlen('https://shop.example')))->status)->toBe(200);
     });
 
+    // An export's #[Domain] is honoured as a page's is (ADR 0149): started
+    // and downloaded on that host, and on no other.
+    it('is started and downloaded only on the host its #[Domain] names', function () {
+        $app = new App(domains: new \Tinvar\Routing\Domains(['root' => 'shop.example']));
+
+        expect($app->export(headers: ['host' => 'shop.example'], name: 'hosted.widgets')->status)->toBe(404)
+            ->and($app->export(headers: ['host' => 'admin.shop.example'], name: 'hosted.widgets')->status)->toBe(202);
+        $app->work();
+        $link = $app->linkFor($app->record());
+
+        expect($app->download($link, headers: ['host' => 'shop.example'])->status)->toBe(404)
+            ->and($app->download($link, headers: ['host' => 'admin.shop.example'])->status)->toBe(200);
+    });
+
     it('emails no link where the application gave no origin', function () {
         $app = new App(origin: null);
         exported($app);

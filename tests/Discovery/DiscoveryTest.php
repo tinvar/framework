@@ -351,6 +351,23 @@ it('refuses on an abstract class an attribute that registers only the class it i
         ->not->toContain($app->name('AdminPages'));
 });
 
+// #[Domain] is read off a base class or trait by the kinds held to a host
+// (ADR 0149), and refused on a kind nothing reads it on: a task has no
+// request, and a host would be dropped without a word.
+it('keeps #[Domain] on an abstract base, and refuses it on a kind no host holds', function () {
+    $app = $this->app;
+    $app->write('AdminSection', "#[Domain('admin.{root}')] abstract class AdminSection {}", 'use Tinvar\\Attributes\\Domain;');
+    $app->write('Nightly', "#[Schedule('0 3 * * *'), Domain('admin.{root}')] final class Nightly { public function __invoke(): void {} }", "use Tinvar\\Attributes\\Domain;\nuse Tinvar\\Attributes\\Schedule;");
+    $app->write('NightlyBase', "#[Domain('admin.{root}')] abstract class NightlyBase {}", 'use Tinvar\\Attributes\\Domain;');
+    $app->write('Inherited', "#[Schedule('0 4 * * *')] final class Inherited extends NightlyBase { public function __invoke(): void {} }", 'use Tinvar\\Attributes\\Schedule;');
+
+    $said = problems(fn () => $app->discovery()->scan());
+
+    expect($said)->not->toContain($app->name('AdminSection') . ' is abstract')
+        ->toContain($app->name('Nightly') . ' is held to a host by #[Domain]')
+        ->toContain($app->name('Inherited') . ' is held to a host by #[Domain]');
+});
+
 it('writes a manifest, and says how a stale one differs from a scan', function () {
     $app = $this->app;
     $app->write('Home', "#[Page('/', 'home')] final class Home { public function __invoke(): void {} }", 'use Tinvar\\Attributes\\Page;');

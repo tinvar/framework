@@ -244,6 +244,7 @@ final class ChannelRegistry
             $tenantFrom = TenantFrom::declaredOn($class);
             $panels = Panel::declaredOn($class);
             PanelBinding::of($panels);
+            $host = \Tinvar\Attributes\Domain::declaredOn($class)?->pattern;
         } catch (\LogicException|\InvalidArgumentException $e) {
             throw new ChannelException("{$class}: {$e->getMessage()}", 0, $e);
         }
@@ -262,6 +263,7 @@ final class ChannelRegistry
             panels: $panels,
             publicAccess: PublicAccess::declaredOn($class),
             message: $declaration->message,
+            host: $host,
         );
     }
 

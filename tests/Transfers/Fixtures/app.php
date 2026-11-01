@@ -141,6 +141,18 @@ final readonly class WidgetsExport
     }
 }
 
+/** The same export, held to the admin host by its own #[Domain] (ADR 0149). */
+#[Export(WidgetRow::class, name: 'hosted.widgets', maxRows: 1_000), Panel('staff'), Authorize('export', Widget::class), \Tinvar\Attributes\Domain('admin.{root}')]
+final readonly class HostedWidgetsExport
+{
+    public function __construct(private Orm $orm) {}
+
+    public function __invoke(): Query
+    {
+        return Widget::query($this->orm)->orderBy('sku');
+    }
+}
+
 final readonly class StockRow extends FormRequest
 {
     public function __construct(
@@ -281,7 +293,7 @@ final class App
     public readonly ArrayTagVersions $versions;
 
     /** @param bool $databaseStore records in a table on the application's connection, as an application keeps them */
-    public function __construct(?string $origin = 'https://shop.example', bool $databaseStore = false)
+    public function __construct(?string $origin = 'https://shop.example', bool $databaseStore = false, ?\Tinvar\Routing\Domains $domains = null)
     {
         $this->connection = PdoConnection::sqlite(':memory:', 'test');
         $this->connection->execute('CREATE TABLE widgets (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, sku TEXT NOT NULL, name TEXT NOT NULL, stock INTEGER NOT NULL, secret TEXT NOT NULL)');
@@ -315,7 +327,7 @@ final class App
         $this->runner = new JobRunner($this->orm, $jobSigner, $container->resolver(), $this->auth, $panels, $registry, users: $this->users);
 
         $transfers = new TransferRegistry();
-        $transfers->registerAll([WidgetsExport::class, StockImport::class, RestockImport::class]);
+        $transfers->registerAll([WidgetsExport::class, StockImport::class, RestockImport::class, ...($domains === null ? [] : [HostedWidgetsExport::class])]);
         $this->store = new ArrayTransferStore();
         if ($databaseStore) {
             DatabaseTransferStore::define(new Schema($this->connection, Dialect::for($this->connection)));
@@ -349,6 +361,7 @@ final class App
             panelRegistry: $registry,
             transfers: $this->transfers,
             tagVersions: $this->versions,
+            domains: $domains,
         );
     }
 
@@ -414,10 +427,11 @@ final class App
     }
 
     /** GETs a /_download path, as the browser following the link does. */
-    public function download(string $path, string $user = 'staff-1', string $epoch = 'e1', string $tenant = 'acme'): Response
+    /** @param array<string, string> $headers */
+    public function download(string $path, string $user = 'staff-1', string $epoch = 'e1', string $tenant = 'acme', array $headers = []): Response
     {
         return $this->kernel->handle(
-            new Request('GET', $path, ['x-test-user' => $user, 'x-test-epoch' => $epoch, 'x-test-tenant' => $tenant], cookies: [SESSION_COOKIE => 'session-b']),
+            new Request('GET', $path, ['x-test-user' => $user, 'x-test-epoch' => $epoch, 'x-test-tenant' => $tenant, ...$headers], cookies: [SESSION_COOKIE => 'session-b']),
             self::noPage(...),
         );
     }
