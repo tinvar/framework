@@ -65,6 +65,10 @@ final readonly class Dispatcher
         // The job running now, if this dispatch is made from one: its
         // starter is the starter of what it dispatches (ADR 0150).
         private ?RunningJobs $running = null,
+        // Who is signed in as the user, where the application lets staff
+        // act as someone else: their id, or null. Sealed with the job, so
+        // its audit entries name them as the request's would (ADR 0150).
+        private ?\Closure $impersonator = null,
     ) {}
 
     /**
@@ -434,7 +438,23 @@ final readonly class Dispatcher
             // them, for the audit log to name: whoever is signed in, or the
             // starter of the job dispatching this one.
             startedBy: $this->auth->id() ?? $this->running?->current()?->startedBy,
+            startedByImpersonator: $this->impersonatorNow(),
         );
+    }
+
+    /**
+     * Who is signed in as the user dispatching, if anyone is: the
+     * application's answer while someone is signed in, else the impersonator
+     * the job dispatching this one was started under.
+     */
+    private function impersonatorNow(): ?string
+    {
+        if ($this->auth->id() === null) {
+            return $this->running?->current()?->startedByImpersonator;
+        }
+        $impersonator = $this->impersonator === null ? null : ($this->impersonator)();
+
+        return \is_string($impersonator) && $impersonator !== '' ? $impersonator : null;
     }
 
     /** The job's own #[Panel] or namespace's, or else the panel the dispatcher is in. */

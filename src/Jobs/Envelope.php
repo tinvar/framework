@@ -75,6 +75,9 @@ final readonly class Envelope
      *                                         them: the user signed in where it was dispatched, or the
      *                                         starter of the job that dispatched it -- what the audit log
      *                                         says a job was started by (ADR 0150)
+     * @param string|null          $startedByImpersonator who was signed in as that user, when the work
+     *                                         was started under impersonation: sealed beside it, so a
+     *                                         job's entries name both, as the request's would
      */
     public function __construct(
         public string $id,
@@ -94,6 +97,7 @@ final readonly class Envelope
         public ?array $catch = null,
         public ?string $member = null,
         public ?string $startedBy = null,
+        public ?string $startedByImpersonator = null,
     ) {}
 
     /** What its batch counts it as: the chain it is part of, by the chain's first job, or itself. */
@@ -131,6 +135,7 @@ final readonly class Envelope
             catch: $this->catch,
             member: $this->member,
             startedBy: $this->startedBy,
+            startedByImpersonator: $this->startedByImpersonator,
         );
     }
 
@@ -161,6 +166,7 @@ final readonly class Envelope
             catch: $this->catch,
             member: $this->batch === null ? null : $this->batchMember(),
             startedBy: $this->startedBy,
+            startedByImpersonator: $this->startedByImpersonator,
         );
     }
 
@@ -187,6 +193,7 @@ final readonly class Envelope
             dispatchedAt: $now,
             declaredBy: $this->catch['by'],
             startedBy: $this->startedBy,
+            startedByImpersonator: $this->startedByImpersonator,
         );
     }
 
@@ -240,6 +247,11 @@ final readonly class Envelope
         if ($this->startedBy !== null) {
             $fields['sb'] = $this->startedBy;
         }
+        // Only where there is one, so a payload sealed before it reads --
+        // and verifies -- as it did.
+        if ($this->startedByImpersonator !== null) {
+            $fields['si'] = $this->startedByImpersonator;
+        }
         $json = json_encode($fields, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION);
 
         return Signer::encode($signer->sign($json)) . '.' . $json;
@@ -280,6 +292,7 @@ final readonly class Envelope
             || !(!\array_key_exists('uq', $data) || \is_string($data['uq']))
             || !(!\array_key_exists('bm', $data) || \is_string($data['bm']))
             || !(!\array_key_exists('sb', $data) || \is_string($data['sb']))
+            || !(!\array_key_exists('si', $data) || \is_string($data['si']))
             || !(!\array_key_exists('catch', $data) || \is_array($data['catch']))
             || !(!\array_key_exists('chain', $data) || \is_array($data['chain']))) {
             throw new JobRefused('payload_unsigned', 'The job\'s payload is not an envelope this version wrote.');
@@ -305,6 +318,7 @@ final readonly class Envelope
         $catch = \array_key_exists('catch', $data) ? self::chainFrom([$data['catch']])[0] : null;
         $member = $data['bm'] ?? null;
         $startedBy = $data['sb'] ?? null;
+        $startedByImpersonator = $data['si'] ?? null;
 
         return new self(
             id: $data['id'],
@@ -324,6 +338,7 @@ final readonly class Envelope
             catch: $catch,
             member: $member,
             startedBy: $startedBy,
+            startedByImpersonator: $startedByImpersonator,
         );
     }
 
