@@ -71,11 +71,22 @@ final class Listing
     }
 }
 
+#[Query(name: 'typed.tags'), NoAuthorization(reason: 'argument coercion is what is under test')]
+final class Tagged
+{
+    /** @param array<array-key, mixed> $tags */
+    public function __invoke(array $tags = []): Seen
+    {
+        return new Seen((string) \count($tags));
+    }
+}
+
 function runner(): QueryRunner
 {
     $fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
     $registry = new QueryRegistry();
     $registry->register(Listing::class);
+    $registry->register(Tagged::class);
 
     return new QueryRunner($registry, new Orm($fixture->connection, new IdentityMap('test')), new AllowAllGate());
 }
@@ -108,6 +119,18 @@ describe('a render\'s call', function () {
         'not a whole number' => [['status' => 'open', 'priority' => 1, 'page' => '2.5']],
         'an array' => [['status' => ['open'], 'priority' => 1]],
         'null for a required enum' => [['status' => null, 'priority' => 1]],
+    ]);
+
+    // A list is the caller's to get right as much as a number is: a string
+    // spread into `array $tags` was a TypeError in the body, a failure.
+    it('refuses a value an array parameter has no place for as bad arguments', function (mixed $tags, ?string $code) {
+        $result = runner()->run([['id' => 0, 'name' => 'typed.tags', 'args' => ['tags' => $tags]]], ['typed.tags'])[0];
+
+        expect($result['error']['code'] ?? null)->toBe($code);
+    })->with([
+        'a list' => [['a', 'b'], null],
+        'a string' => ['a', QueryError::BAD_ARGUMENTS],
+        'a number' => [3, QueryError::BAD_ARGUMENTS],
     ]);
 
     it('dedupes two calls that name one value two ways', function () {

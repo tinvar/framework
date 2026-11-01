@@ -555,7 +555,7 @@ final class QueryRunner
             }
         }
 
-        // A scalar or a backed enum, coerced to its declared type as an
+        // A scalar, an array or a backed enum, coerced to its declared type as an
         // action's parameter is: a case arrives as its backing value and an
         // int as digits from a form or a URL, and spread as they came, each
         // was a TypeError inside the call -- a failure for the caller's

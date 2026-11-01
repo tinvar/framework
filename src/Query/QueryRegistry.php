@@ -440,10 +440,11 @@ final class QueryRegistry
 
     /**
      * The parameters a call's value is coerced to before the body sees it:
-     * a plain query's int, float, bool and string parameters and its backed
-     * enums, as an action's are (Validator::coerceParameter()). JSON sends a
-     * case as its backing value and a form or a URL sends digits, and
-     * spread as they came each was a TypeError from inside the call.
+     * a plain query's int, float, bool, string and array parameters and its
+     * backed enums, as an action's are (Validator::coerceParameter()). JSON
+     * sends a case as its backing value and a form or a URL sends digits,
+     * and spread as they came each was a TypeError from inside the call --
+     * as a string sent for an array was.
      *
      * @return array<string, \ReflectionParameter>
      */
@@ -470,7 +471,7 @@ final class QueryRegistry
                 continue;
             }
             $named = $type->getName();
-            if ($type->isBuiltin() ? \in_array($named, ['int', 'float', 'bool', 'string'], true) : is_subclass_of($named, \BackedEnum::class)) {
+            if ($type->isBuiltin() ? \in_array($named, ['int', 'float', 'bool', 'string', 'array'], true) : is_subclass_of($named, \BackedEnum::class)) {
                 $scalars[$parameter->getName()] = $parameter;
             }
         }
