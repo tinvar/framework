@@ -226,7 +226,16 @@ final readonly class ServiceCalls
 
             // Spent here, every check passed, before the operation runs:
             // a call refused above leaves the token for the call that fits.
+            // That includes arguments the runner would refuse for their
+            // shape alone -- a field the operation does not take, a list
+            // for an object -- before anything is resolved or validated; a
+            // call that fails its validation has been answered, and spends
+            // it (ADR 0119).
             if ($claims->singleUse === true) {
+                $misshapen = CallRunner::admit($declared, $arguments);
+                if ($misshapen !== null) {
+                    return $misshapen;
+                }
                 if ($this->spent === null) {
                     return CallResult::refused('context');
                 }

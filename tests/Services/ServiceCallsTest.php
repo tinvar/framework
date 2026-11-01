@@ -142,6 +142,20 @@ it('spends a token at its first call that passes its checks, and refuses it afte
         ->and($h->rackName())->toBe('S-1');
 });
 
+// Review: a call refused for its arguments' shape -- a field the operation
+// does not take, a list for an object -- had spent the token, though nothing
+// was resolved, validated or run. The shape is held before the token is.
+it('leaves a token unspent by a call refused for its arguments\' shape, before anything ran', function () {
+    $h = new Harness();
+    $token = $h->services->context('warehouse', ['racks.rename']);
+    $call = fn (array $arguments): CallResult => $h->asWarehouse(fn () => $h->services->call($token, 'racks.rename', $arguments));
+
+    expect($call(['rack' => $h->rack(), 'name' => 'E-1', 'colour' => 'red'])->status)->toBe(CallResult::INVALID)
+        ->and($call([$h->rack(), 'E-1'])->status)->toBe(CallResult::INVALID)
+        ->and($call(['rack' => $h->rack(), 'name' => 'E-2'])->status)->toBe(CallResult::OK)
+        ->and($h->rackName())->toBe('E-2');
+});
+
 // A token for one record was good for any: the warehouse handed a token to
 // say one order was collected could say it of another. Arguments bound into
 // the token are held to the call's, before it is spent.

@@ -117,11 +117,14 @@ final readonly class CallRunner
 
     /**
      * Refuses arguments that are not a JSON object of plain data naming the
-     * operation's inputs, before anything is resolved or validated.
+     * operation's inputs, before anything is resolved or validated. run()
+     * asks it first; a caller that spends something on a call -- a
+     * single-use service context token -- asks it before spending, so a call
+     * refused for its shape, which nothing ran for, spends nothing.
      *
      * @param array<array-key, mixed> $arguments
      */
-    private static function admit(Operation $operation, array $arguments): ?CallResult
+    public static function admit(Operation $operation, array $arguments): ?CallResult
     {
         if ($arguments !== [] && array_is_list($arguments)) {
             return CallResult::invalid(['arguments' => ['The arguments are an object of named values.']]);
