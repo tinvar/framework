@@ -974,7 +974,7 @@ final class Kernel
             flashes: $flashes,
             entry: $entry,
             maxJsonDepth: $maxJsonDepth,
-            externalOrigins: new ExternalOrigins(...$redirectOrigins),
+            externalOrigins: new ExternalOrigins(...$redirectOrigins)->serving($this->domains),
             // A form posted without script carries its files to the action
             // itself, each taken as /_upload takes one (ADR 0127) -- and so
             // counted as one, by the `uploads` throttle, a hit for each file

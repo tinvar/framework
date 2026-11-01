@@ -54,8 +54,20 @@ final readonly class ExternalOrigins
     }
 
     /** Whether $url is an https URL on one of the allowed origins. */
+    /** The application's own hosts (ADR 0149), which an action may send a browser to as to its own origin. */
+    private ?\Tinvar\Routing\Domains $own;
+
+    /** The same origins, and every host $domains serves. */
+    public function serving(?\Tinvar\Routing\Domains $domains): self
+    {
+        return clone($this, ['own' => $domains]);
+    }
+
     public function allows(string $url): bool
     {
+        if (isset($this->own) && $this->own->owns($url)) {
+            return true;
+        }
         $parsed = self::parse($url);
 
         return $parsed !== null && isset($this->allowed[$parsed['origin']]);

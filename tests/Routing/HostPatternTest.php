@@ -190,3 +190,17 @@ it('sends route() the hosts with every render, and the page its copy', function 
         ->and($frame['page']['hosts'])->toBe($hosts)
         ->and($payload)->not->toHaveKey('hosts');
 });
+
+it('lets an action send a browser to one of the application\'s own hosts, and to no host like it', function () {
+    $domains = Domains::fromUrl('http://localhost:8080', aliases: ['127.0.0.1'])->serving(['admin.{root}']);
+    $origins = new \Tinvar\Http\ExternalOrigins()->serving($domains);
+
+    expect($origins->allows('http://admin.localhost:8080/orders'))->toBeTrue()
+        ->and($origins->allows('http://localhost:8080/'))->toBeTrue()
+        ->and($origins->allows('https://admin.localhost:8080/orders'))->toBeFalse()
+        ->and($origins->allows('http://admin.localhost:9999/orders'))->toBeFalse()
+        ->and($origins->allows('http://evil.localhost:8080/'))->toBeFalse()
+        ->and($origins->allows('http://127.0.0.1:8080/'))->toBeFalse()
+        ->and($origins->allows('http://x@admin.localhost:8080/'))->toBeFalse()
+        ->and(new \Tinvar\Http\ExternalOrigins()->allows('http://admin.localhost:8080/orders'))->toBeFalse();
+});

@@ -305,6 +305,29 @@ final readonly class Domains
     }
 
     /**
+     * Whether $url is on one of these hosts, as the application writes its
+     * URLs -- this scheme, this port, a host it serves by name -- for an
+     * action to redirect to one of its own hosts as it redirects on its
+     * own origin (ExternalOrigins). Nothing a browser would read another
+     * way: no userinfo, no control character, no backslash.
+     */
+    public function owns(string $url): bool
+    {
+        if (preg_match('/[\x00-\x20\x7f\\\\]/', $url) === 1
+            || preg_match('#^(https?)://([^/?\#@:]+)(?::([0-9]{1,5}))?(?:[/?\#].*)?\z#is', $url, $m) !== 1) {
+            return false;
+        }
+        $default = $this->scheme === 'https' ? 443 : 80;
+        $port = ($m[3] ?? '') === '' ? $default : (int) $m[3];
+        $host = HostName::normalize($m[2]);
+        if (strtolower($m[1]) !== $this->scheme || $port !== ($this->port ?? $default) || $host === null || \in_array($host, $this->aliases, true)) {
+            return false;
+        }
+
+        return $this->match($host) !== null;
+    }
+
+    /**
      * What the client's route() builds an absolute URL with: the scheme, the
      * port, the configured domains and the primary host's pattern. All of it
      * is in every URL the application hands out already; none is a secret.
