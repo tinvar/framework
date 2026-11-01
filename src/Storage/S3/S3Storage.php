@@ -477,26 +477,16 @@ final readonly class S3Storage implements MultipartStore, ListsKeys
             [$url, $path, $host] = $this->bucketLocation($query);
             $response = $this->dispatch('GET', $url, $path, $host, $query, '', null, null, null);
             self::assertOk($response, 'listed');
-
-            $previous = libxml_use_internal_errors(true);
-            try {
-                $list = simplexml_load_string($response->body, options: LIBXML_NONET);
-            } finally {
-                libxml_use_internal_errors($previous);
-            }
-            if ($list === false) {
-                throw new StorageException('The object store\'s list of files could not be read.');
-            }
+            $list = self::xml($response->body);
             foreach ($list->Contents as $object) {
                 $key = (string) $object->Key;
-                $at = \DateTimeImmutable::createFromFormat('Y-m-d\TH:i:s.vP', (string) $object->LastModified)
-                    ?: \DateTimeImmutable::createFromFormat('Y-m-d\TH:i:sP', (string) $object->LastModified);
-                if (!str_starts_with($key, $root) || $at === false) {
+                $at = self::timestamp((string) $object->LastModified);
+                if (!str_starts_with($key, $root) || $at === null) {
                     continue;
                 }
                 $key = substr($key, \strlen($root));
                 if (StorageKey::isValid($key) && \count($keys) < $limit) {
-                    $keys[$key] = $at->getTimestamp();
+                    $keys[$key] = $at;
                 }
             }
             $token = (string) $list->IsTruncated === 'true' ? (string) $list->NextContinuationToken : '';
