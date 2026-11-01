@@ -68,6 +68,19 @@ it('sends everything else to PHP', function (array $server, array $cookies) {
     'an escaped climb' => [server('/%2e%2e/x'), []],
 ]);
 
+// Built for the primary host alone (ADR 0149): the admin host's `/`, an
+// unserved host and a request naming none all go to PHP.
+it('serves a built page on the primary host alone, where the application routes by host', function () {
+    $domains = \Tinvar\Routing\Domains::fromUrl('https://shop.test', aliases: ['127.0.0.1'])->serving(['admin.{root}']);
+    $root = built();
+
+    expect(StaticFiles::match($root, server('/', server: ['HTTP_HOST' => 'shop.test']), [], COOKIE, $domains))->not->toBeNull()
+        ->and(StaticFiles::match($root, server('/', server: ['HTTP_HOST' => '127.0.0.1']), [], COOKIE, $domains))->not->toBeNull()
+        ->and(StaticFiles::match($root, server('/', server: ['HTTP_HOST' => 'admin.shop.test']), [], COOKIE, $domains))->toBeNull()
+        ->and(StaticFiles::match($root, server('/', server: ['HTTP_HOST' => 'evil.test']), [], COOKIE, $domains))->toBeNull()
+        ->and(StaticFiles::match($root, server('/'), [], COOKIE, $domains))->toBeNull();
+});
+
 it('leaves another cookie alone, which says nothing about the visitor', function () {
     expect(StaticFiles::match(built(), server('/'), ['theme' => 'dark'], COOKIE))->not->toBeNull();
 });

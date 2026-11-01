@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Http;
 
+use Tinvar\Routing\Domains;
+
 /**
  * Serving the pages `tinvar build:static` wrote, from a front controller --
  * `php -S`, which has no file server of its own. The app's Caddyfile applies
@@ -18,7 +20,10 @@ namespace Tinvar\Http;
  *   same for everyone;
  * - `RSC: 1` is the client router asking for a payload, which a document is
  *   not;
- * - a query is something the build never rendered.
+ * - a query is something the build never rendered;
+ * - another host than the primary one, where the application routes by host
+ *   (ADR 0149): a page is built for the primary host, and the same path on
+ *   another is another page, or none.
  *
  * Sent `no-cache` with `Vary: Cookie, RSC`: the same URL answers a visitor
  * with a cookie from PHP, privately, and a shared cache keying on the URL
@@ -34,11 +39,16 @@ final class StaticFiles
      *
      * @param array<array-key, mixed> $server $_SERVER
      * @param array<array-key, mixed> $cookies $_COOKIE
+     * @param Domains|null $domains the hosts the application serves: given, a page is sent on
+     *        the primary host, or an alias of it, alone
      */
-    public static function match(string $root, array $server, array $cookies, string $sessionCookie): ?string
+    public static function match(string $root, array $server, array $cookies, string $sessionCookie, ?Domains $domains = null): ?string
     {
         $method = $server['REQUEST_METHOD'] ?? 'GET';
         if (($method !== 'GET' && $method !== 'HEAD') || isset($server['HTTP_RSC']) || isset($cookies[$sessionCookie])) {
+            return null;
+        }
+        if ($domains !== null && !self::onPrimaryHost($domains, $server)) {
             return null;
         }
 
@@ -56,6 +66,25 @@ final class StaticFiles
         $file = realpath($base . rtrim($path, '/') . '/index.html');
 
         return $file !== false && str_starts_with($file, $base . \DIRECTORY_SEPARATOR) && is_file($file) ? $file : null;
+    }
+
+    /**
+     * Whether the request names the primary host, as Domains reads a host --
+     * a pinned proxy's X-Forwarded-Host included.
+     *
+     * @param array<array-key, mixed> $server
+     */
+    private static function onPrimaryHost(Domains $domains, array $server): bool
+    {
+        $headers = array_filter(
+            ['host' => $server['HTTP_HOST'] ?? null, 'x-forwarded-host' => $server['HTTP_X_FORWARDED_HOST'] ?? null],
+            \is_string(...),
+        );
+        $address = $server['REMOTE_ADDR'] ?? null;
+        $host = $domains->hostOf(new Request('GET', '/', $headers, remoteAddress: \is_string($address) ? $address : null));
+        $match = $host === null ? null : $domains->match($host);
+
+        return $match !== null && $match->pattern === null;
     }
 
     /** The response a built page is sent as. */

@@ -479,6 +479,12 @@ describe('serving it', function () use ($root) {
             $session = fetch("{$m[1]}/", ['Accept: text/html', 'Cookie: ' . Kernel::SESSION_COOKIE . '=abc']);
             $navigation = fetch("{$m[1]}/", ['RSC: 1', 'X-Version: dev']);
             $built = fetch("{$m[1]}/index.html", ['Accept: text/html']);
+            // Built for the primary host alone (ADR 0149): another host the
+            // shop serves gets its own page from PHP, and one it does not
+            // serve a 421 -- never the storefront's file.
+            $port = (string) parse_url($m[1], PHP_URL_PORT);
+            $admin = fetch("{$m[1]}/", ['Accept: text/html', "Host: admin.localhost:{$port}"]);
+            $unserved = fetch("{$m[1]}/", ['Accept: text/html', "Host: evil.test:{$port}"]);
         } finally {
             $status = proc_get_status($process);
             if ($status['running']) {
@@ -501,7 +507,10 @@ describe('serving it', function () use ($root) {
             ->and($session[1]['content-security-policy'] ?? '')->toStartWith("script-src 'nonce-")
             ->and($navigation[1]['content-type'] ?? '')->toStartWith('text/x-component')
             // Only by the page's path: the file itself is no page.
-            ->and($built[2])->not->toBe($file);
+            ->and($built[2])->not->toBe($file)
+            ->and($admin[2])->not->toBe($file)
+            ->and($unserved[0])->toBe(421)
+            ->and($unserved[2])->not->toBe($file);
     });
 });
 

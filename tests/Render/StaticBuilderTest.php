@@ -22,6 +22,7 @@ namespace Tinvar\Tests\Render\StaticBuilder {
     use Tinvar\Tests\Render\StaticBuilder\Pages\ListedPage;
     use Tinvar\Tests\Render\StaticBuilder\Pages\MislistedPage;
     use Tinvar\Tests\Render\StaticBuilder\Pages\EncryptedPage;
+    use Tinvar\Tests\Render\StaticBuilder\Pages\HostedPage;
     use Tinvar\Tests\Render\StaticBuilder\Pages\HomePage;
     use Tinvar\Tests\Render\StaticBuilder\Pages\PathlessPage;
     use Tinvar\Tests\Render\StaticBuilder\Pages\PrivatePage;
@@ -131,6 +132,14 @@ namespace Tinvar\Tests\Render\StaticBuilder {
                 ->toThrow(\RuntimeException::class, 'history encrypted');
         });
 
+        // The file is found by the path alone, and served whatever the host
+        // (ADR 0149): a page held to a host of its own would be sent on every
+        // other, so registration refuses it.
+        it('refuses a static page held to a host of its own', function () {
+            expect(fn () => routes([HostedPage::class]))
+                ->toThrow(\Tinvar\Routing\RoutingException::class, 'primary host');
+        });
+
         // The file is found by the path the browser asked for: an escaped or
         // climbing param has no file a request could name.
         it('refuses a param that cannot name a file', function () {
@@ -154,6 +163,21 @@ namespace Tinvar\Tests\Render\StaticBuilder {
                 expect($request->method)->toBe('GET')
                     ->and($request->cookies)->toBe([], 'no session to mint for, no user to load')
                     ->and($request->remoteAddress)->toBeNull();
+            }
+        });
+
+        // Where the application routes by host, a request naming none is
+        // refused; a built page is the primary host's (ADR 0149).
+        it('renders each page on the primary host', function () {
+            $requests = new \ArrayObject();
+            $routes = routes();
+            $routes->serveOn(\Tinvar\Routing\Domains::fromUrl('https://shop.test:8443'));
+
+            new StaticBuilder($routes, renderer($requests))->build(scratch() . '/static', docs());
+
+            expect($requests)->not->toBeEmpty();
+            foreach ($requests as $request) {
+                expect($request->header('host'))->toBe('shop.test:8443');
             }
         });
 
@@ -296,6 +320,7 @@ namespace Tinvar\Tests\Render\StaticBuilder {
 }
 
 namespace Tinvar\Tests\Render\StaticBuilder\Pages {
+    use Tinvar\Attributes\Domain;
     use Tinvar\Attributes\EncryptHistory;
     use Tinvar\Attributes\Page;
     use Tinvar\Attributes\StaticPage;
@@ -315,6 +340,9 @@ namespace Tinvar\Tests\Render\StaticBuilder\Pages {
 
     #[Page('/sealed', view: 'sealed', name: 'static.sealed'), StaticPage, EncryptHistory]
     final class EncryptedPage {}
+
+    #[Page('/hosted', view: 'hosted', name: 'static.hosted'), StaticPage, Domain('admin.{root}')]
+    final class HostedPage {}
 
     #[Page('/files/{file}', view: 'file', name: 'static.file'), StaticPage(params: [['file' => '../etc']])]
     final class PathlessPage {}

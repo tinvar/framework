@@ -133,6 +133,15 @@ final class RouteRegistry
         }
 
         $host = self::hostOf($class);
+        // A built page is a file found by its path alone, and sent whatever
+        // the host (ADR 0149): one held to a host of its own would be sent
+        // on every other.
+        if ($host !== null && new \ReflectionClass($class)->getAttributes(\Tinvar\Attributes\StaticPage::class) !== []) {
+            throw new RoutingException(
+                "{$class} is a #[StaticPage] held to {$host->pattern}. A built page is served by its path on the primary host; "
+                . 'render it per request, or drop its #[Domain].',
+            );
+        }
         $pathParameters = self::parametersOf($declaration->path, $segments);
         foreach ($host->parameters ?? [] as $parameter) {
             if (\in_array($parameter, $pathParameters, true)) {
