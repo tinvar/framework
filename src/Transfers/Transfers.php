@@ -197,7 +197,8 @@ final readonly class Transfers
      * Removes what has run its time: each export's file once it has
      * expired, and every record a month old, its file with it. A file is
      * removed before its record, so none is ever left with nothing to find
-     * it by.
+     * it by. A transfer queued or running is left until it goes stale
+     * (TransferRecord::isStale()): its worker holds it until then.
      *
      * @return int how many records were removed or emptied
      */
@@ -206,6 +207,14 @@ final readonly class Transfers
         $now ??= $this->now();
         $removed = 0;
         foreach ($this->store->expired($now, $now - self::KEEP_RECORDS, $limit) as $record) {
+            // One still at work -- an import's file expires a day from its
+            // start, however long its run takes -- is its worker's: its file
+            // is being read, and its record, written back from this copy,
+            // would undo what the worker has noted since. Once it has gone
+            // stale, nothing is at work on it.
+            if (($record->status === TransferRecord::QUEUED || $record->status === TransferRecord::RUNNING) && !$record->isStale($now)) {
+                continue;
+            }
             if ($record->key !== '') {
                 try {
                     $this->storage->delete($record->key);

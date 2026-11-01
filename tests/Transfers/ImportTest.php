@@ -180,6 +180,30 @@ describe('an import that fails with an error', function () {
     });
 });
 
+// Review: pruning took an import still at work a day after it was sent for
+// one whose file had expired -- deleting the file it was reading, and
+// writing its record back from a stale copy over the worker's progress.
+describe('pruning', function () {
+    it('leaves an import that is still at work, and takes one gone stale', function (bool $databaseStore) {
+        $app = new App(databaseStore: $databaseStore);
+        expect($app->import("widget,stock\n" . W1 . ",10\n")->status)->toBe(202);
+        $app->now += \Tinvar\Transfers\TransferEndpoint::KEEP_IMPORTS + 1;
+        // Running, and beating as its pages are checked and written.
+        $app->records->update($app->record()->with(['status' => TransferRecord::RUNNING, 'rows' => 7, 'updatedAt' => $app->now]));
+        $key = $app->record()->key;
+
+        expect($app->transfers->prune())->toBe(0)
+            ->and($app->record()->key)->toBe($key)
+            ->and($app->record()->rows)->toBe(7)
+            ->and($app->storage->keys())->toBe([$key]);
+
+        // An hour with no beat: its worker is gone, and its file is pruned.
+        $app->now += Transfers::STALE_AFTER + 1;
+        expect($app->transfers->prune())->toBe(1)
+            ->and($app->storage->keys())->toBe([]);
+    })->with(['in memory' => [false], 'in a table' => [true]]);
+});
+
 describe('/_import', function () {
     it('refuses a user its #[Authorize] denies, and stores nothing', function () {
         $app = new App();
