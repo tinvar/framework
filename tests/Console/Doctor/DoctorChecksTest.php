@@ -1,0 +1,411 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * `tinvar doctor`'s checks (ADR 0150), each over an application of the
+ * test's own in a temporary directory and an environment handed in --
+ * never the process's -- so each says what it would on that machine.
+ */
+
+namespace Tinvar\Tests\Console\Doctor;
+
+use Tinvar\Console\Doctor\Checks\BuildCheck;
+use Tinvar\Console\Doctor\Checks\ConfigCheck;
+use Tinvar\Console\Doctor\Checks\DatabaseCheck;
+use Tinvar\Console\Doctor\Checks\HostsCheck;
+use Tinvar\Console\Doctor\Checks\MailCheck;
+use Tinvar\Console\Doctor\Checks\NodeCheck;
+use Tinvar\Console\Doctor\Checks\PermissionsCheck;
+use Tinvar\Console\Doctor\Checks\PhpCheck;
+use Tinvar\Console\Doctor\Checks\ProductionCheck;
+use Tinvar\Console\Doctor\Checks\ProxiesCheck;
+use Tinvar\Console\Doctor\Checks\RendererCheck;
+use Tinvar\Console\Doctor\Checks\SecretsCheck;
+use Tinvar\Console\Doctor\Doctor;
+use Tinvar\Console\Doctor\DoctorCheck;
+use Tinvar\Console\Doctor\DoctorContext;
+use Tinvar\Console\Doctor\Finding;
+use Tinvar\Console\Doctor\Severity;
+use Tinvar\Orm\Connection;
+use Tinvar\Orm\Migrations\MigrationRefused;
+use Tinvar\Orm\PdoConnection;
+
+/** A fresh application directory, removed after the test. */
+function app(): string
+{
+    $root = sys_get_temp_dir() . '/tinvar-doctor-' . bin2hex(random_bytes(4));
+    mkdir($root, 0o700, true);
+    Made::$roots[] = $root;
+
+    return $root;
+}
+
+/** The directories a test made, removed after it. */
+final class Made
+{
+    /** @var list<string> */
+    public static array $roots = [];
+}
+
+/**
+ * @param array<string, string> $env
+ * @param array<string, mixed> $more
+ */
+function context(string $root, array $env = [], array $more = []): DoctorContext
+{
+    return new DoctorContext(...['root' => $root, 'env' => $env, ...$more]);
+}
+
+/**
+ * @param list<Finding> $findings
+ * @return list<string>
+ */
+function severities(array $findings): array
+{
+    return array_map(static fn (Finding $f): string => $f->severity->value, $findings);
+}
+
+/** The finding's safe fix, which the test has just said it has. */
+function fixOf(Finding $finding): \Tinvar\Console\Doctor\SafeFix
+{
+    return $finding->safeFix ?? throw new \LogicException('No safe fix.');
+}
+
+afterEach(function () {
+    foreach (Made::$roots as $root) {
+        exec('rm -rf ' . escapeshellarg($root));
+    }
+    Made::$roots = [];
+});
+
+describe('PHP', function () {
+    it('passes PHP 8.5 with every extension the manifests and the CLI need', function () {
+        $root = app();
+        file_put_contents("{$root}/composer.json", json_encode(['require' => ['php' => '>=8.5', 'ext-intl' => '*']]));
+        file_put_contents("{$root}/composer.lock", json_encode(['packages' => [['name' => 'tinvar/framework', 'require' => ['ext-dom' => '*']]]]));
+
+        $findings = new PhpCheck('8.5.1', ['Core', 'sockets', 'pcntl', 'posix', 'intl', 'dom', 'pdo_sqlite'])->run(context($root));
+
+        expect(severities($findings))->toBe(['ok'])
+            ->and($findings[0]->message)->toContain('dom, intl, pcntl, pdo_sqlite, posix, sockets');
+    });
+
+    it('names each missing extension, who needs it, and how to install it, and an old PHP', function () {
+        $root = app();
+        file_put_contents("{$root}/composer.json", json_encode(['require' => ['ext-intl' => '*']]));
+
+        $findings = new PhpCheck('8.4.9', ['sockets', 'pdo_sqlite'])->run(context($root, ['APP_DATABASE_DRIVER' => 'postgres']));
+        $messages = implode("\n", array_map(static fn (Finding $f): string => $f->message . ' / ' . $f->fix, $findings));
+
+        expect(severities($findings))->toBe(['problem', 'problem', 'problem', 'problem', 'problem'])
+            ->and($messages)->toContain('PHP is 8.4.9; Tinvar needs 8.5.0')
+            ->and($messages)->toContain('The intl extension is not loaded, and composer.json needs it')
+            ->and($messages)->toContain('The pcntl extension is not loaded')
+            ->and($messages)->toContain('The pdo_pgsql extension is not loaded, and the PostgreSQL database (APP_DATABASE_DRIVER) needs it')
+            ->and($messages)->toContain('pecl install posix');
+    });
+});
+
+describe('Node', function () {
+    it('holds node to package.json\'s engines', function () {
+        $root = app();
+        file_put_contents("{$root}/package.json", json_encode(['engines' => ['node' => '>=22.13']]));
+
+        expect(severities(new NodeCheck(static fn (): string => 'v22.14.0')->run(context($root))))->toBe(['ok'])
+            ->and(new NodeCheck(static fn (): string => 'v20.1.0')->run(context($root))[0]->message)->toBe('Node is 20.1.0; package.json asks for 22.13 or later.')
+            ->and(new NodeCheck(static fn (): ?string => null)->run(context($root))[0]->fix)->toContain('Install Node 22.13 or later');
+    });
+});
+
+describe('the app key and the probe token', function () {
+    it('takes a key from its variable or its file, and refuses one too short', function () {
+        $root = app();
+        $key = "{$root}/state/app.key";
+        mkdir(\dirname($key), 0o700);
+        file_put_contents($key, base64_encode(random_bytes(32)) . "\n");
+        chmod($key, 0o600);
+
+        $findings = new SecretsCheck()->run(context($root, ['TINVAR_PROBE_TOKEN' => 'short'], ['keyFile' => $key, 'probeTokenFile' => "{$root}/state/probe"]));
+
+        expect(severities($findings))->toBe(['ok', 'problem'])
+            ->and($findings[1]->message)->toContain('TINVAR_PROBE_TOKEN is 5 characters')
+            ->and($findings[1]->message)->not->toContain('short');
+    });
+
+    it('offers to generate a missing dev secret, and generates it outside the project, private', function () {
+        $root = app();
+        $key = "{$root}/state/app.key";
+
+        $findings = new SecretsCheck()->run(context($root, [], ['keyFile' => $key, 'probeTokenFile' => "{$root}/state/probe-token"]));
+
+        expect(severities($findings))->toBe(['warning', 'warning'])
+            ->and($findings[0]->safeFix)->not->toBeNull();
+        expect((fixOf($findings[0])->apply)())->toBe("generated {$key}")
+            ->and(is_file($key))->toBeTrue()
+            ->and(fileperms($key) & 0o777)->toBe(0o600);
+    });
+
+    it('never generates a server\'s secret: it belongs in the secret store', function () {
+        $root = app();
+
+        $findings = new SecretsCheck()->run(context($root, ['TINVAR_ENV' => 'production'], ['keyFile' => "{$root}/k", 'probeTokenFile' => "{$root}/p"]));
+
+        expect(severities($findings))->toBe(['problem', 'problem'])
+            ->and($findings[0]->safeFix)->toBeNull()
+            ->and($findings[0]->fix)->toContain('secret store');
+    });
+
+    it('names a secret written into .env, never its value, and a relative _FILE', function () {
+        $root = app();
+        file_put_contents("{$root}/.env", "APP_DATABASE_DRIVER=sqlite\nAPP_DATABASE_PASSWORD=hunter2hunter2\n");
+
+        $findings = new SecretsCheck()->run(context($root, ['TINVAR_APP_KEY_FILE' => 'keys/app.key', 'TINVAR_PROBE_TOKEN' => str_repeat('p', 40)]));
+        $said = implode("\n", array_map(static fn (Finding $f): string => $f->message . $f->fix, $findings));
+
+        expect(severities($findings))->toBe(['problem', 'ok', 'warning'])
+            ->and($said)->toContain('TINVAR_APP_KEY_FILE is keys/app.key, which is not an absolute path')
+            ->and($said)->toContain('APP_DATABASE_PASSWORD has a value in .env')
+            ->and($said)->toContain('APP_DATABASE_PASSWORD_FILE')
+            ->and($said)->not->toContain('hunter2');
+    });
+});
+
+describe('config, proxies and hosts', function () {
+    it('says every refused key of the framework\'s config, by its variable', function () {
+        $findings = new ConfigCheck()->run(context(app(), ['TINVAR_TRUSTED_PROXIES' => '0.0.0.0/0', 'TINVAR_STOP_BUDGET' => 'soon']));
+        $said = implode("\n", array_map(static fn (Finding $f): string => $f->message, $findings));
+
+        expect(severities($findings))->toBe(['problem', 'problem'])
+            ->and($said)->toContain('TINVAR_TRUSTED_PROXIES')
+            ->and($said)->toContain('TINVAR_STOP_BUDGET must be whole seconds');
+    });
+
+    it('warns of a server with no proxy pinned, and of a wide range no secret backs', function () {
+        $root = app();
+
+        expect(severities(new ProxiesCheck()->run(context($root))))->toBe(['ok'])
+            ->and(new ProxiesCheck()->run(context($root, ['TINVAR_ENV' => 'production']))[0]->fix)->toContain('deploy:init');
+
+        $wide = new ProxiesCheck()->run(context($root, ['TINVAR_TRUSTED_PROXIES' => '10.0.0.0/8']));
+        $backed = new ProxiesCheck()->run(context($root, ['TINVAR_TRUSTED_PROXIES' => '10.0.0.0/8', 'TINVAR_TRUSTED_PROXY_SECRET' => str_repeat('s', 40)]));
+        $narrow = new ProxiesCheck()->run(context($root, ['TINVAR_TRUSTED_PROXIES' => '10.213.91.0/24']));
+
+        expect(severities($wide))->toBe(['warning', 'ok'])
+            ->and($wide[0]->fix)->toContain('header_up X-Tinvar-Proxy')
+            ->and(severities($backed))->toBe(['ok'])
+            ->and(severities($narrow))->toBe(['ok']);
+    });
+
+    it('warns of a server with no primary host', function () {
+        $root = app();
+
+        expect(severities(new HostsCheck()->run(context($root))))->toBe(['ok'])
+            ->and(severities(new HostsCheck()->run(context($root, ['TINVAR_ENV' => 'production', 'TINVAR_APP_DOMAIN' => 'https://app.example.com']))))->toBe(['ok']);
+        $missing = new HostsCheck()->run(context($root, ['TINVAR_ENV' => 'production']));
+        expect(severities($missing))->toBe(['warning'])
+            ->and($missing[0]->fix)->toContain('TINVAR_APP_DOMAIN');
+    });
+});
+
+describe('mail', function () {
+    it('builds the transport the provider names, and names every variable it lacks', function () {
+        $root = app();
+
+        expect(severities(new MailCheck()->run(context($root))))->toBe(['ok'])
+            ->and(new MailCheck()->run(context($root, ['TINVAR_MAIL_PROVIDER' => 'postmark', 'TINVAR_POSTMARK_TOKEN' => 'pm-token']))[0]->message)->toBe('Mail goes through postmark, with every variable it needs.');
+        $missing = new MailCheck()->run(context($root, ['TINVAR_MAIL_PROVIDER' => 'resend']));
+        expect(severities($missing))->toBe(['problem'])
+            ->and($missing[0]->message)->toContain('TINVAR_RESEND_KEY');
+    });
+
+    it('refuses a provider that sends nothing on a server, as the boot does', function () {
+        $findings = new MailCheck()->run(context(app(), ['TINVAR_ENV' => 'production', 'TINVAR_MAIL_PROVIDER' => 'log']));
+
+        expect(severities($findings))->toBe(['problem'])
+            ->and($findings[0]->message)->toContain('names log, which sends nothing');
+    });
+});
+
+describe('the database', function () {
+    it('holds the database to its migrations, and runs the pending ones only on a developer\'s machine', function () {
+        $root = app();
+        mkdir("{$root}/migrations");
+        file_put_contents("{$root}/migrations/2026_11_01_000001_create_things.php", <<<'PHP'
+            <?php
+            use Tinvar\Orm\Migrations\Migration;
+            use Tinvar\Orm\Schema\Schema;
+            use Tinvar\Orm\Schema\Table;
+            return new class extends Migration {
+                public function up(Schema $schema): void { $schema->create('things', static function (Table $table): void { $table->id(); }); }
+                public function down(Schema $schema): void { $schema->drop('things'); }
+            };
+            PHP);
+        $connection = PdoConnection::sqlite("{$root}/app.sqlite", 'doctor-test', create: true);
+        $ran = 0;
+        $more = [
+            'connect' => static fn (bool $create): Connection => $connection,
+            'migrations' => "{$root}/migrations",
+            'migrate' => static function () use (&$ran): int {
+                ++$ran;
+
+                return 0;
+            },
+        ];
+
+        $dev = new DatabaseCheck()->run(context($root, [], $more));
+        $server = new DatabaseCheck()->run(context($root, ['TINVAR_ENV' => 'production'], $more));
+
+        expect(severities($dev))->toBe(['problem'])
+            ->and($dev[0]->message)->toBe('1 migration has not run: 2026_11_01_000001_create_things.')
+            ->and($dev[0]->safeFix)->not->toBeNull()
+            ->and($server[0]->safeFix)->toBeNull()
+            ->and($server[0]->fix)->toContain('as part of the deploy');
+        (fixOf($dev[0])->apply)();
+        expect($ran)->toBe(1);
+    });
+
+    it('says a database that cannot be reached, never a password, and one never made', function () {
+        $root = app();
+        $unreachable = new DatabaseCheck()->run(context($root, [], ['connect' => static fn (bool $create): Connection => throw new \PDOException("SQLSTATE[08006] connection to server at \"db\" failed\nmore")]));
+        $missing = new DatabaseCheck()->run(context($root, [], ['connect' => static fn (bool $create): Connection => throw new MigrationRefused('No database at /x.sqlite; `bin/tinvar migrate` makes one.')]));
+
+        expect($unreachable[0]->message)->toBe('The database cannot be reached: SQLSTATE[08006] connection to server at "db" failed')
+            ->and($unreachable[0]->fix)->toContain('APP_DATABASE_HOST')
+            ->and($missing[0]->message)->toContain('No database at /x.sqlite')
+            ->and(severities(new DatabaseCheck()->run(context($root))))->toBe(['skipped']);
+    });
+});
+
+describe('the build, the renderers and production', function () {
+    it('needs a build made for the profile on a server, and none on a developer\'s machine', function () {
+        $root = app();
+
+        expect(severities(new BuildCheck()->run(context($root))))->toBe(['ok'])
+            ->and(severities(new BuildCheck()->run(context($root, ['TINVAR_ENV' => 'production']))))->toBe(['problem']);
+
+        mkdir("{$root}/dist/rsc", 0o755, true);
+        file_put_contents("{$root}/dist/rsc/profile.json", '{"profile":"test"}');
+        $mismatched = new BuildCheck()->run(context($root, ['TINVAR_ENV' => 'production']));
+        expect(severities($mismatched))->toBe(['problem', 'problem'])
+            ->and($mismatched[0]->fix)->toBe('`bin/tinvar build --profile=production`.')
+            ->and($mismatched[1]->message)->toContain('fragments.json is missing');
+    });
+
+    it('needs a renderer answering on a server, and only says so on a developer\'s machine', function () {
+        $root = app();
+        $socket = "{$root}/pool";
+
+        expect(severities(new RendererCheck()->run(context($root, ['TINVAR_SOCKET' => $socket]))))->toBe(['ok'])
+            ->and(severities(new RendererCheck()->run(context($root, ['TINVAR_SOCKET' => $socket, 'TINVAR_ENV' => 'production']))))->toBe(['problem']);
+        mkdir($socket);
+        expect(new RendererCheck()->run(context($root, ['TINVAR_SOCKET' => $socket]))[0]->message)->toContain('No renderer is listening');
+    });
+
+    it('says what the production profile refuses, each with its fix', function () {
+        $findings = new ProductionCheck()->run(context(app(), [
+            'TINVAR_ENV' => 'production',
+            'TINVAR_DEV' => '1',
+            'TINVAR_DEV_TOOLBAR' => '/tmp/toolbar',
+            'TINVAR_TEST_RUN' => 'abc',
+            'TINVAR_PROBE_TRUST_LOOPBACK' => '1',
+        ]));
+        $said = implode("\n", array_map(static fn (Finding $f): string => $f->message, $findings));
+
+        expect(severities($findings))->toBe(['problem', 'problem', 'problem', 'problem'])
+            ->and($said)->toContain('TINVAR_DEV=1 is refused')
+            ->and($said)->toContain('TINVAR_DEV_TOOLBAR is refused')
+            ->and($said)->toContain('TINVAR_TEST_RUN is set')
+            ->and($said)->toContain('TINVAR_PROBE_TRUST_LOOPBACK=1')
+            ->and(severities(new ProductionCheck()->run(context(app()))))->toBe(['ok']);
+    });
+
+    it('finds secrets and a database other users may read', function () {
+        $root = app();
+        mkdir("{$root}/state", 0o755);
+        file_put_contents("{$root}/state/app.key", str_repeat('k', 44));
+        chmod("{$root}/state/app.key", 0o644);
+        mkdir("{$root}/database");
+        touch("{$root}/database/app.sqlite");
+        chmod("{$root}/database/app.sqlite", 0o644);
+
+        $findings = new PermissionsCheck()->run(context($root, [], ['keyFile' => "{$root}/state/app.key"]));
+        $fixes = array_map(static fn (Finding $f): ?string => $f->fix, $findings);
+
+        expect(severities($findings))->toBe(['problem', 'problem', 'problem'])
+            ->and($fixes)->toContain("`chmod 600 {$root}/state/app.key`.")
+            ->and($fixes)->toContain("`chmod 700 {$root}/state`.")
+            ->and($fixes)->toContain("`chmod 600 {$root}/database/app.sqlite`.");
+    });
+});
+
+describe('the doctor', function () {
+    it('reports every check at once, counts the problems, and exits 1 on any', function () {
+        $checks = [
+            new class implements DoctorCheck {
+                public function title(): string
+                {
+                    return 'One';
+                }
+
+                public function run(DoctorContext $context): array
+                {
+                    return [Finding::problem('Broken.', 'Mend it.'), Finding::warning('Odd.', 'Look.')];
+                }
+            },
+            new class implements DoctorCheck {
+                public function title(): string
+                {
+                    return 'Two';
+                }
+
+                public function run(DoctorContext $context): array
+                {
+                    throw new \RuntimeException('it fell over');
+                }
+            },
+        ];
+        $out = '';
+        $status = new Doctor($checks)->run(context(app()), false, static function (string $text) use (&$out): void {
+            $out .= $text;
+        });
+
+        expect($status)->toBe(1)
+            ->and($out)->toContain("One\n  problem  Broken.\n           fix: Mend it.\n  warning  Odd.")
+            ->and($out)->toContain('The check itself failed: it fell over')
+            ->and($out)->toContain('2 problems, 1 warning.');
+    });
+
+    it('does the safe fixes first with --fix, then reports again', function () {
+        $fixed = false;
+        $check = new class ($fixed) implements DoctorCheck {
+            public function __construct(private bool &$fixed) {}
+
+            public function title(): string
+            {
+                return 'Secret';
+            }
+
+            public function run(DoctorContext $context): array
+            {
+                return $this->fixed
+                    ? [Finding::passed('Generated.')]
+                    : [Finding::warning('Missing.', 'key:generate', new \Tinvar\Console\Doctor\SafeFix('generate it', function (): string {
+                        $this->fixed = true;
+
+                        return 'generated it';
+                    }))];
+            }
+        };
+        $out = '';
+        $status = new Doctor([$check])->run(context(app()), true, static function (string $text) use (&$out): void {
+            $out .= $text;
+        });
+
+        expect($status)->toBe(0)
+            ->and($out)->toContain('fixed: generated it')
+            ->and($out)->toContain("Secret\n  ok       Generated.")
+            ->and($out)->toContain('No problems.')
+            ->and(Severity::from('problem'))->toBe(Severity::Problem);
+    });
+});

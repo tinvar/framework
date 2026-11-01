@@ -10,10 +10,13 @@ use Tinvar\Auth\Violation;
 use Tinvar\Channels\ChannelRegistry;
 use Tinvar\Config\Configs;
 use Tinvar\Endpoints\EndpointRegistry;
+use Tinvar\Console\Doctor\Doctor;
+use Tinvar\Console\Doctor\DoctorContext;
 use Tinvar\Http\EntryContext;
 use Tinvar\Console\Prompts\Cancelled;
 use Tinvar\Console\Prompts\CannotPrompt;
 use Tinvar\Console\Prompts\Progress;
+use Tinvar\Console\Secrets\SecretFiles;
 use Tinvar\Discovery\DiscoveredClasses;
 use Tinvar\Discovery\Discovery;
 use Tinvar\Discovery\DiscoveryFailed;
@@ -128,6 +131,13 @@ final class AppConsole
      *        which serve writes its renderers' lines to as well as to standard error (ADR 0128)
      * @param (\Closure(\Tinvar\Generators\ResourcePlan): string)|null $resourceTest the test
      *        make:resource writes, tinvar/testing's, where it is installed (ADR 0151)
+     * @param (\Closure(bool): Connection)|null $connect the application's own database, told whether
+     *        to make a SQLite file that is missing: what the migrations and `doctor` open where no
+     *        --database=PATH names a SQLite file instead, so a Postgres or MySQL application migrates
+     *        the server it runs on (ADR 0150). None, and $database's SQLite file
+     * @param (\Closure(): ?string)|null $keyFile where the app key is generated when TINVAR_APP_KEY gives none,
+     *        for `key:generate` and `doctor`; null where the application has no file
+     * @param (\Closure(): ?string)|null $probeTokenFile where the probe token is, likewise
      */
     public function __construct(
         string $root,
@@ -149,6 +159,9 @@ final class AppConsole
         private readonly string $name = 'bin/tinvar',
         private readonly ?\Closure $rendererLog = null,
         private readonly ?\Closure $resourceTest = null,
+        private readonly ?\Closure $connect = null,
+        private readonly ?\Closure $keyFile = null,
+        private readonly ?\Closure $probeTokenFile = null,
     ) {
         $this->root = realpath($root) ?: $root;
         $this->projectRoot = $projectRoot === null ? $this->root : (realpath($projectRoot) ?: $projectRoot);
@@ -628,7 +641,7 @@ final class AppConsole
      */
     public function migrate(string $command, array $arguments): int
     {
-        $database = ($this->database)();
+        $database = null;
         $rest = [];
         foreach ($arguments as $argument) {
             if (str_starts_with($argument, '--database=')) {
@@ -637,6 +650,10 @@ final class AppConsole
                 $rest[] = $argument;
             }
         }
+        // The application's own database, where it opens its own and no
+        // --database=PATH names a SQLite file instead.
+        $connect = $database === null ? $this->connect : null;
+        $database ??= ($this->database)();
         $connection = $this->connection;
         $script = $this->name;
 
@@ -656,7 +673,7 @@ final class AppConsole
         };
 
         return new MigrateCommand(
-            static fn (bool $create): Connection => $create || is_file($database)
+            $connect ?? static fn (bool $create): Connection => $create || is_file($database)
                 ? PdoConnection::sqlite($database, $connection, create: $create)
                 : throw new MigrationRefused("No database at {$database}; `{$script} migrate` makes one."),
             $this->migrations,
@@ -755,8 +772,144 @@ final class AppConsole
                 fn (array $a): int => $this->generate($name, $a),
             );
         }
+        $this->command('doctor', 'doctor [--fix]', "Check everything the app needs to boot and serve -- PHP, Node, the key and probe token, config, proxies, hosts, mail, the database, the build, the renderers, file permissions and production's refusals -- and report every problem at once, each with its fix; --fix does the safe ones (a dev secret, a dev migration)", $this->doctor(...))
+            ->command('key:generate', 'key:generate [--show]', "Generate the app key and the probe token into their files outside the project where neither the environment nor the file has one, saying where and never what; --show prints a new key for a platform's secret store instead, and writes nothing", $this->keyGenerate(...));
         $this->command('packages:lock', 'packages:lock', "Pin each enabled package's version and files in tinvar.lock", fn (array $a): int => $this->packagesLock())
             ->command('audit', 'audit', 'composer audit and npm audit over the lockfiles, held to the reviewed exceptions in audit-exceptions.json (network)', fn (array $a): int => $this->audit());
+    }
+
+    /**
+     * What `doctor` reads: this application, and the environment this
+     * process runs in, read once.
+     */
+    public function doctorContext(): DoctorContext
+    {
+        $database = $this->database;
+        $script = $this->name;
+
+        return new DoctorContext(
+            root: $this->root,
+            env: array_filter(getenv(), \is_string(...)),
+            console: $this->name,
+            classes: $this->classes(...),
+            connect: $this->connect ?? static function (bool $create) use ($database, $script): Connection {
+                $path = $database();
+
+                return $create || $path === ':memory:' || is_file($path)
+                    ? PdoConnection::sqlite($path, 'doctor', create: $create)
+                    : throw new MigrationRefused("No database at {$path}; `{$script} migrate` makes one.");
+            },
+            migrations: $this->migrations,
+            keyFile: $this->secretFile($this->keyFile, 'keyFile'),
+            probeTokenFile: $this->secretFile($this->probeTokenFile, 'probeTokenFile'),
+            discovery: $this->discovery(),
+            domains: $this->domains(...),
+            migrate: fn (): int => $this->migrate('migrate', []),
+            buildDirectory: BuildProfile::buildDirectory($this->root),
+            projectRoot: $this->projectRoot,
+        );
+    }
+
+    /**
+     * Where a secret's file is: the closure the application gave, else its
+     * Kernel's static $method where it has one; null where neither says,
+     * or where it refuses (a relative TINVAR_APP_KEY_FILE, no state
+     * directory), which `doctor` then reports from the environment.
+     *
+     * @param (\Closure(): ?string)|null $given
+     */
+    private function secretFile(?\Closure $given, string $method): ?string
+    {
+        try {
+            if ($given !== null) {
+                return $given();
+            }
+            $callable = [$this->kernel, $method];
+            if ($this->kernel !== null && \is_callable($callable)) {
+                $file = $callable();
+
+                return \is_string($file) ? $file : null;
+            }
+        } catch (\RuntimeException) {
+            return null;
+        }
+
+        return null;
+    }
+
+    /** @param list<string> $arguments */
+    private function doctor(array $arguments): int
+    {
+        $fix = false;
+        foreach ($arguments as $argument) {
+            if ($argument !== '--fix') {
+                return $this->usage('doctor');
+            }
+            $fix = true;
+        }
+
+        return new Doctor()->run($this->doctorContext(), $fix, static function (string $text): void {
+            echo $text;
+        });
+    }
+
+    /**
+     * `key:generate`: the app key and the probe token, each generated into
+     * its file where neither its variable nor the file has one, saying
+     * where -- never what. Refused where the environment says production
+     * or staging: a server's secrets are its secret store's, and two
+     * servers generating their own would sign with two keys. `--show`
+     * prints one new key for that store and writes nothing.
+     *
+     * @param list<string> $arguments
+     */
+    private function keyGenerate(array $arguments): int
+    {
+        if ($arguments === ['--show']) {
+            echo SecretFiles::fresh(), "\n";
+
+            return 0;
+        }
+        if ($arguments !== []) {
+            return $this->usage('key:generate');
+        }
+        $context = $this->doctorContext();
+        $production = $context->production();
+        if ($production !== null) {
+            fwrite(STDERR, "key:generate writes no key on a server ({$production}): set TINVAR_APP_KEY and TINVAR_PROBE_TOKEN from the platform's secret store; `{$this->name} key:generate --show` prints a new value for each.\n");
+
+            return 1;
+        }
+
+        $status = 0;
+        foreach ([SecretFiles::APP_KEY => ['the app key', $context->keyFile], SecretFiles::PROBE_TOKEN => ['the probe token', $context->probeTokenFile]] as $variable => [$what, $file]) {
+            if ($file === null) {
+                if (($context->env[$variable] ?? '') !== '') {
+                    echo "{$what}: given by {$variable}\n";
+
+                    continue;
+                }
+                fwrite(STDERR, "{$what}: this app names no file for it, and {$variable} is not set; set {$variable}, or {$variable}_FILE to an absolute path outside the project.\n");
+                $status = 1;
+
+                continue;
+            }
+            try {
+                $done = SecretFiles::ensure($variable, $file, $context->env);
+            } catch (\RuntimeException $e) {
+                fwrite(STDERR, "{$what}: {$e->getMessage()}\n");
+                $status = 1;
+
+                continue;
+            }
+            echo match ($done) {
+                'environment' => "{$what}: given by {$variable}; no file is used\n",
+                'kept' => "{$what}: {$file} (already there, kept)\n",
+                'generated' => "{$what}: generated {$file}\n",
+            };
+        }
+
+        return $status;
     }
 
     /** @param list<string> $arguments */
