@@ -120,11 +120,6 @@ final class Metrics
         $this->report = $report;
     }
 
-    public function defines(string $name): bool
-    {
-        return isset($this->definitions[$name]);
-    }
-
     /** @param array<string, string|int> $labels */
     public function increment(string $name, array $labels = [], float $by = 1.0): void
     {
