@@ -51,10 +51,12 @@ use Tinvar\Storage\StorageKey;
  *      whole file kept exactly as /_upload keeps one: sniffed, drawn again,
  *      scanned, counted and stored under a key of the server's. Nothing of
  *      it is trusted, served or bound before. Once kept, or refused for good
- *      (a 4xx: its type, its size, the quota), its partial bytes go, and its
- *      record; failed for a reason that passes -- a scanner or a store that
- *      did not answer -- its claim is given back and its bytes kept, and the
- *      last chunk sent again, or /complete, completes it from them. While a
+ *      (a 4xx: its type, its size), its partial bytes go, and its record;
+ *      failed for a reason that passes -- a scanner or a store that did not
+ *      answer, bytes held the server could not read back, a 5xx such as the
+ *      507 of a quota with no room left -- its claim is given back and its
+ *      bytes kept, and the last chunk sent again, or /complete, completes
+ *      it from them. While a
  *      completion runs, any other use of the session is a 425,
  *      `upload_completing`, with Retry-After -- an abort too, since the
  *      file may yet be kept. A claim holds for SESSION_CLAIM_LEASE
@@ -519,10 +521,10 @@ final readonly class ResumableUploads
      * The whole file, claimed: fetched into a temporary file by $fetch and
      * kept as /_upload keeps a file. The session's partial bytes and its
      * record are held until that has an outcome: kept, or refused for good
-     * -- not a type the field takes, too large, over the quota -- and they
-     * go, the session over; failed for a reason that passes -- a scanner or
-     * a store that did not answer, a 5xx -- and its claim is given back, its
-     * bytes still there, for the next try to complete it.
+     * -- not a type the field takes, too large -- and they go, the session
+     * over; failed for a reason that passes -- a scanner or a store that did
+     * not answer, a 5xx (507 over the quota too), a 429 -- and its claim is
+     * given back, its bytes still there, for the next try to complete it.
      *
      * The claim is fenced by $claimedAt, the time it was made: a keep that
      * outlived its lease (UploadStore::SESSION_CLAIM_LEASE) may have had it

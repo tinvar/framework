@@ -683,6 +683,29 @@ describe('completing', function () {
         expect(sendChunk($app, $session, UploadEndpoint::MIN_CHUNK_BYTES, substr($file, UploadEndpoint::MIN_CHUNK_BYTES))->status)->toBe(201);
     });
 
+    it('keeps the session, bytes and all, when the quota has no room for it by the time it is complete', function () {
+        $file = largePdf(UploadEndpoint::MIN_CHUNK_BYTES + 10);
+        $quota = strlen($file);
+        $app = new App($storage = new MemoryStorage(), quota: Tinvar\Uploads\UploadQuota::by(static function () use (&$quota): int {
+            return $quota;
+        }));
+        $session = (string) beginSession($app, strlen($file))['session'];
+        sendChunk($app, $session, 0, substr($file, 0, UploadEndpoint::MIN_CHUNK_BYTES));
+        $last = substr($file, UploadEndpoint::MIN_CHUNK_BYTES);
+
+        // Lowered while the file was on its way: a 507, which passes as room is made.
+        $quota = 1000;
+        $full = sendChunk($app, $session, UploadEndpoint::MIN_CHUNK_BYTES, $last);
+        expect($full->status)->toBe(507)
+            ->and(json($full)['error']['code'])->toBe('upload_quota')
+            ->and($storage->keys())->toHaveCount(1)
+            ->and($app->store->all())->toHaveCount(1)
+            ->and($app->store->all()[0]->claimedAt)->toBeNull();
+
+        $quota = strlen($file);
+        expect(sendChunk($app, $session, UploadEndpoint::MIN_CHUNK_BYTES, $last)->status)->toBe(201);
+    });
+
     it('tells a last chunk sent while another is being kept to come back, not that the session is gone', function () {
         $app = new App(new MemoryStorage());
         $file = largePdf(UploadEndpoint::MIN_CHUNK_BYTES + 10);
