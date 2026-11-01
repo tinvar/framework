@@ -34,6 +34,7 @@ use Tinvar\Mail\Providers\PostmarkWebhook;
 use Tinvar\Mail\Providers\ResendWebhook;
 use Tinvar\Mail\Providers\SendGridWebhook;
 use Tinvar\Mail\Providers\SesWebhook;
+use Tinvar\Mail\Providers\SnsCertificates;
 use Tinvar\Mail\Providers\SvixSignature;
 use Tinvar\Mail\SuppressionReason;
 use Tinvar\Outbound\FakeOutboundHttp;
@@ -332,6 +333,113 @@ describe('Amazon SES (SNS)', function () {
             ->and(refused($webhook, post('ses', $body), $body, NOW + 3601))->toBe(401)
             ->and(refused($webhook, post('ses', $body, ['x-amz-sns-message-type' => 'SubscriptionConfirmation']), $body))->toBe(400)
             ->and(refused(new SesWebhook([TOPIC], sns($pem)), post('ses', $body), $body, NOW + 400 * 86_400))->toBe(401);
+    });
+
+    /** The status SnsCertificates::key() answers $url with at $now: 200 for a key. */
+    function certificateStatus(SnsCertificates $certificates, string $url, int $now): int
+    {
+        try {
+            $certificates->key($url, $now);
+
+            return 200;
+        } catch (HttpException $e) {
+            return $e->status;
+        }
+    }
+
+    it('remembers a certificate that could not be fetched for a minute, by URL, and asks again after', function () {
+        $http = new FakeOutboundHttp(static fn (): OutboundResponse => new OutboundResponse(503, [], ''));
+        $certificates = new SnsCertificates($http);
+
+        expect(certificateStatus($certificates, CERT_URL, NOW))->toBe(401)
+            ->and(certificateStatus($certificates, CERT_URL, NOW + 1))->toBe(401)
+            ->and(certificateStatus($certificates, CERT_URL, NOW + SnsCertificates::FAILURE_TTL - 1))->toBe(401)
+            ->and($http->sent)->toHaveCount(1)
+            ->and(certificateStatus($certificates, CERT_URL, NOW + SnsCertificates::FAILURE_TTL))->toBe(401)
+            ->and($http->sent)->toHaveCount(2);
+    });
+
+    it('fetches certificates it does not hold a few at a time per worker, and answers 429 past that', function () {
+        [, $pem] = snsCertificate();
+        $http = new FakeOutboundHttp(static fn (OutboundRequest $r): OutboundResponse => $r->url === CERT_URL ? new OutboundResponse(200, [], $pem) : new OutboundResponse(404, [], ''));
+        $certificates = new SnsCertificates($http);
+        $other = static fn (int $n): string => 'https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-' . str_pad((string) $n, 32, 'a') . '.pem';
+
+        expect(certificateStatus($certificates, CERT_URL, NOW))->toBe(200);
+        for ($n = 1; $n < SnsCertificates::FETCH_BURST; $n++) {
+            expect(certificateStatus($certificates, $other($n), NOW))->toBe(401);
+        }
+
+        $statuses = [
+            certificateStatus($certificates, $other(100), NOW),
+            certificateStatus($certificates, $other(101), NOW + 1),
+        ];
+        expect($statuses)->toBe([429, 429])
+            ->and($http->sent)->toHaveCount(SnsCertificates::FETCH_BURST)
+            // The one it holds is still answered, fetching nothing.
+            ->and(certificateStatus($certificates, CERT_URL, NOW + 2))->toBe(200)
+            ->and($http->sent)->toHaveCount(SnsCertificates::FETCH_BURST)
+            // And one more fetch is allowed once a token has come back.
+            ->and(certificateStatus($certificates, $other(102), NOW + SnsCertificates::FETCH_EVERY))->toBe(401)
+            ->and($http->sent)->toHaveCount(SnsCertificates::FETCH_BURST + 1)
+            ->and(certificateStatus($certificates, $other(103), NOW + SnsCertificates::FETCH_EVERY))->toBe(429);
+    });
+
+    it('refuses a certificate URL not of its topic\'s region before fetching, so a flood of them blocks no real notification', function () {
+        [$key, $pem] = snsCertificate();
+        $http = sns($pem);
+        $webhook = new SesWebhook([TOPIC], $http);
+        for ($n = 0; $n < SnsCertificates::FETCH_BURST * 3; $n++) {
+            $url = 'https://sns.us-east-1.amazonaws.com/SimpleNotificationService-' . str_pad((string) $n, 32, 'b') . '.pem';
+            $forged = json_encode(snsMessage($key, 'Notification', ['Message' => sesBounce(), 'SigningCertURL' => $url]), JSON_THROW_ON_ERROR);
+            expect(refused($webhook, post('ses', $forged), $forged))->toBe(401);
+        }
+        expect($http->sent)->toBe([]);
+
+        $body = json_encode(snsMessage($key, 'Notification', ['Message' => sesBounce()]), JSON_THROW_ON_ERROR);
+        expect($webhook->receive(post('ses', $body), $body, NOW + 1)->events)->toHaveCount(1)
+            ->and($http->sent)->toHaveCount(1)
+            ->and(SnsCertificates::hostFor(TOPIC))->toBe('sns.eu-west-1.amazonaws.com')
+            ->and(SnsCertificates::hostFor('arn:aws-cn:sns:cn-north-1:123456789012:t'))->toBe('sns.cn-north-1.amazonaws.com.cn')
+            ->and(SnsCertificates::hostFor('arn:aws:s3:::bucket'))->toBeNull();
+    });
+
+    it('counts certificate fetches by the client, so a flood of made-up paths from one address blocks no other\'s new certificate', function () {
+        [$key, $pem] = snsCertificate();
+        $http = new FakeOutboundHttp(static fn (OutboundRequest $r): OutboundResponse => $r->url === CERT_URL ? new OutboundResponse(200, [], $pem) : new OutboundResponse(404, [], ''));
+        $webhook = new SesWebhook([TOPIC], $http);
+        $from = static fn (string $address, string $body): Request => new Request('POST', '/_mail/events/ses', [], remoteAddress: $address);
+        $statuses = [];
+        for ($n = 0; $n < SnsCertificates::FETCH_BURST + 3; $n++) {
+            $url = 'https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-' . str_pad((string) $n, 32, 'c') . '.pem';
+            $forged = json_encode(snsMessage($key, 'Notification', ['Message' => sesBounce(), 'SigningCertURL' => $url]), JSON_THROW_ON_ERROR);
+            $statuses[] = refused($webhook, $from('203.0.113.9', $forged), $forged);
+        }
+        expect(\array_slice($statuses, -3))->toBe([429, 429, 429])
+            ->and($http->sent)->toHaveCount(SnsCertificates::FETCH_BURST);
+
+        // SNS, from its own address, with a certificate this worker has never fetched.
+        $body = json_encode(snsMessage($key, 'Notification', ['Message' => sesBounce()]), JSON_THROW_ON_ERROR);
+        expect($webhook->receive($from('54.240.197.1', $body), $body, NOW)->events)->toHaveCount(1)
+            ->and($http->sent)->toHaveCount(SnsCertificates::FETCH_BURST + 1);
+    });
+
+    it('answers the last certificate that verified for its host without a fetch or a bucket, whatever was kept since', function () {
+        [$key, $pem] = snsCertificate();
+        $http = new FakeOutboundHttp(static fn (OutboundRequest $r): OutboundResponse => new OutboundResponse(200, [], $pem));
+        $certificates = new SnsCertificates($http);
+        $webhook = new SesWebhook([TOPIC], $http, certificates: $certificates);
+        $body = json_encode(snsMessage($key, 'Notification', ['Message' => sesBounce()]), JSON_THROW_ON_ERROR);
+        $webhook->receive(post('ses', $body), $body, NOW);
+        // Other URLs of the host, each served the same certificate, push it
+        // out of the few kept and drain the shared bucket.
+        for ($n = 0; $n < 12; $n++) {
+            certificateStatus($certificates, 'https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-' . str_pad((string) $n, 32, 'd') . '.pem', NOW + 100 * $n);
+        }
+        $sent = \count($http->sent);
+
+        expect($webhook->receive(post('ses', $body), $body, NOW + 1)->events)->toHaveCount(1)
+            ->and($http->sent)->toHaveCount($sent);
     });
 
     it('confirms a verified subscription to one of its topics by fetching its SubscribeURL from SNS', function () {

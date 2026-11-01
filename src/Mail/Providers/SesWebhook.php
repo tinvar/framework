@@ -62,6 +62,7 @@ final readonly class SesWebhook implements MailWebhook
     /**
      * @param list<string> $topics the SNS topic ARNs the application's SES events are published to
      * @param bool $confirm whether a subscription to one of them is confirmed on its first message
+     * @param (\Closure(Request): string)|null $clientAddress the address a request came from, as the throttles read it through the trusted proxies; the peer's when null
      */
     public function __construct(
         private array $topics,
@@ -69,6 +70,7 @@ final readonly class SesWebhook implements MailWebhook
         private bool $confirm = true,
         private int $tolerance = self::TOLERANCE,
         ?SnsCertificates $certificates = null,
+        private ?\Closure $clientAddress = null,
     ) {
         if ($topics === []) {
             throw new \InvalidArgumentException('An SES webhook names the SNS topics its events come from: SNS signs every account\'s topics alike.');
@@ -115,7 +117,7 @@ final readonly class SesWebhook implements MailWebhook
             throw Payload::unverified('The SNS message\'s id is not one.');
         }
 
-        $this->verify($message, $fields, $now);
+        $this->verify($message, $fields, $now, $this->clientAddress === null ? ($request->remoteAddress ?? '') : ($this->clientAddress)($request));
         $timestamp = strtotime((string) $message['Timestamp']);
         if ($timestamp === false) {
             throw Payload::unverified('The SNS message\'s timestamp cannot be read.');
@@ -160,7 +162,7 @@ final readonly class SesWebhook implements MailWebhook
      * @param array<array-key, mixed> $message
      * @param list<string> $fields
      */
-    private function verify(array $message, array $fields, int $now): void
+    private function verify(array $message, array $fields, int $now, string $client): void
     {
         $algorithm = match ($message['SignatureVersion']) {
             '1' => OPENSSL_ALGO_SHA1,
@@ -172,10 +174,14 @@ final readonly class SesWebhook implements MailWebhook
             throw Payload::unverified('The SNS message\'s signature cannot be read.');
         }
 
-        $key = $this->certificates->key((string) $message['SigningCertURL'], $now);
+        // Its topic, already one of the application's, says which SNS host
+        // may have signed it: a certificate URL of any other is refused
+        // before anything is fetched.
+        $key = $this->certificates->key((string) $message['SigningCertURL'], $now, SnsCertificates::hostFor((string) $message['TopicArn']) ?? '', $client);
         if (openssl_verify(self::stringToSign($message, $fields), $signature, $key, $algorithm) !== 1) {
             throw Payload::unverified('The SNS message\'s signature does not verify.');
         }
+        $this->certificates->verified((string) $message['SigningCertURL']);
     }
 
     /**

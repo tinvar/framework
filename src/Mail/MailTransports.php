@@ -157,10 +157,11 @@ final readonly class MailTransports
      * second still reports what it sent.
      *
      * @param array<string, string>|null $env
+     * @param (\Closure(\Tinvar\Http\Request): string)|null $clientAddress the address a request came from, as the throttles read it (TrustedProxies::clientAddress()): what SES's certificate fetches are counted by
      * @return list<MailWebhook>
      * @throws ConfigException
      */
-    public function webhooks(?array $env = null): array
+    public function webhooks(?array $env = null, ?\Closure $clientAddress = null): array
     {
         $webhooks = [];
         $problems = [];
@@ -175,7 +176,7 @@ final readonly class MailTransports
         }
         $ses = self::load(SesConfig::class, $env, $problems);
         if ($ses instanceof SesConfig && $ses->webhookTopics !== []) {
-            $webhooks[] = new SesWebhook($ses->webhookTopics, $this->http);
+            $webhooks[] = new SesWebhook($ses->webhookTopics, $this->http, clientAddress: $clientAddress);
         }
         $mailgun = self::load(MailgunConfig::class, $env, $problems);
         if ($mailgun instanceof MailgunConfig && $mailgun->webhookSecret !== null) {
