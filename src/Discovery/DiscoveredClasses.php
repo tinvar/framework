@@ -48,6 +48,8 @@ final readonly class DiscoveredClasses
         'tools' => 'a query or action carrying #[Tool]',
         'services' => 'a query or action carrying #[ServiceCall]',
         'webhooks' => '#[Webhook]',
+        'notifications' => '#[Notification]',
+        'inboxes' => '#[Inbox]',
     ];
 
     /**
@@ -73,6 +75,8 @@ final readonly class DiscoveredClasses
      * @param list<class-string> $tools
      * @param list<class-string> $services
      * @param list<class-string> $webhooks
+     * @param list<class-string> $notifications
+     * @param list<class-string> $inboxes
      */
     public function __construct(
         public array $routes = [],
@@ -97,6 +101,8 @@ final readonly class DiscoveredClasses
         public array $tools = [],
         public array $services = [],
         public array $webhooks = [],
+        public array $notifications = [],
+        public array $inboxes = [],
     ) {}
 
     /**

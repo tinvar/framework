@@ -146,7 +146,8 @@ return [
     // The framework's package, held apart inside: the queue's storage on
     // the database alone; the core, which names no module; jobs on the
     // queue; events, mail, webhooks, transfers, workflows and push each on jobs
-    // and none on another; calls (an action or query run outside HTTP) on
+    // and none on another; notifications on jobs, mail and push, whose
+    // channels they are (ADR 0150); calls (an action or query run outside HTTP) on
     // the core, with tools and services on calls; the gateway's contract on
     // the core (ADR 0098, 0099); the accounts kit on jobs and mail (ADR 0153);
     // and the kernel -- the HTTP kernel, the console and the
@@ -168,6 +169,7 @@ return [
             // Full-text search (ADR 0154): the ORM followed, the outbound
             // client, and jobs for a remote index.
             'search' => ['Tinvar\\Search\\', 'Tinvar\\Attributes\\Searchable'],
+            'notifications' => ['Tinvar\\Notifications\\', 'Tinvar\\Attributes\\Notification', 'Tinvar\\Attributes\\Inbox'],
             'calls' => ['Tinvar\\Calls\\'],
             'tools' => ['Tinvar\\Tools\\', 'Tinvar\\Attributes\\Tool'],
             'services' => ['Tinvar\\Services\\', 'Tinvar\\Attributes\\ServiceCall'],
@@ -190,16 +192,17 @@ return [
             'workflows' => ['support', 'database', 'queue', ...$coreNames, 'jobs'],
             'push' => ['support', 'database', 'queue', ...$coreNames, 'jobs'],
             'search' => ['support', 'database', 'queue', ...$coreNames, 'jobs'],
+            'notifications' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'mail', 'push'],
             'calls' => ['support', 'database', 'queue', ...$coreNames],
             'tools' => ['support', 'database', 'queue', ...$coreNames, 'calls'],
             'services' => ['support', 'database', 'queue', ...$coreNames, 'calls'],
             'gateway' => ['support', 'database', 'queue', ...$coreNames],
             'accounts' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'mail'],
-            'kernel' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'calls', 'tools', 'services', 'gateway', 'accounts'],
-            'tenancy' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'calls', 'tools', 'services', 'gateway', 'accounts', 'kernel'],
-            'billing' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'calls', 'tools', 'services', 'gateway', 'accounts', 'kernel'],
-            'testing' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'calls', 'tools', 'services', 'gateway', 'accounts', 'kernel'],
-            'codegen' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'calls', 'tools', 'services', 'gateway', 'accounts', 'kernel'],
+            'kernel' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts'],
+            'tenancy' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'kernel'],
+            'billing' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'kernel'],
+            'testing' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'kernel'],
+            'codegen' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'kernel'],
         ],
         'sources' => [
             'packages/framework/src' => 'Tinvar\\',

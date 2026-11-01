@@ -431,6 +431,10 @@ final class AppConsole
                 ...BuildRules::checkFieldEnums($classes->fieldEnums),
                 ...ChannelRegistry::check($classes->channels),
                 ...TransferRegistry::check($classes->transfers),
+                // A notification's channels and defaults, and who may read
+                // an inbox (ADR 0150).
+                ...\Tinvar\Notifications\NotificationRegistry::check($classes->notifications),
+                ...\Tinvar\Notifications\InboxRegistry::check($classes->inboxes),
                 // The autoload map the rule finds an unlisted model in, read
                 // whole -- or a failure saying where it stopped (ADR 0122).
                 ...ApplicationClasses::fromComposer()->check(),

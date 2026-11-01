@@ -83,6 +83,15 @@ use Tinvar\Routing\Router;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Support\DevMode;
 use Tinvar\Support\StandIns;
+use Tinvar\Notifications\InboxEndpoint;
+use Tinvar\Notifications\InboxFeed;
+use Tinvar\Notifications\InboxStore;
+use Tinvar\Notifications\InboxUpdateData;
+use Tinvar\Notifications\NotificationDelivery;
+use Tinvar\Notifications\NotificationPreferences;
+use Tinvar\Notifications\NotificationRegistry;
+use Tinvar\Notifications\Notifications;
+use Tinvar\Notifications\Notifier;
 use Tinvar\Transfers\DownloadEndpoint;
 use Tinvar\Transfers\TransferEndpoint;
 use Tinvar\Transfers\TransferRunner;
@@ -171,6 +180,14 @@ final class Kernel
     public readonly ?TransferEndpoint $transfers_;
     public readonly ?DownloadEndpoint $downloads_;
     public readonly ?TransferStatus $transferStatus;
+
+    /**
+     * /_inbox (ADR 0150), and what sends notifications and reads a user's
+     * inbox: mounted only when an application supplies Notifications.
+     */
+    public readonly ?InboxEndpoint $inbox_;
+    public readonly ?Notifier $notifier;
+    public readonly ?InboxFeed $inboxFeed;
 
     /** /_vitals and /_errors, mounted only when an application asks for client telemetry. */
     public readonly ?TelemetryEndpoint $clientTelemetry_;
@@ -278,6 +295,9 @@ final class Kernel
         // Starting an export or an import: each a job, and an import a file
         // written to disk -- fewer than uploads.
         'transfers' => 10,
+        // An inbox's calls (ADR 0150): its feed on every page a signed-in
+        // user opens, and a mark read or a preference now and then.
+        'inbox' => 120,
         // /_vitals and /_errors: a vitals report when a page is left, and
         // the errors it saw, gathered -- a handful a minute from anyone
         // reading the site, and the first budget a flood of fabricated
@@ -398,6 +418,7 @@ final class Kernel
     private readonly Pipeline $uploadChunkStack;
     private readonly Pipeline $fileStack;
     private readonly Pipeline $transferStack;
+    private readonly Pipeline $inboxStack;
     private readonly Pipeline $telemetryStack;
     private readonly Pipeline $sessionlessTelemetryStack;
     private readonly Pipeline $reportsStack;
@@ -587,6 +608,11 @@ final class Kernel
      *        and the `transfers` throttle, GET /_download/{token} behind the global stack and
      *        the `files` throttle, and Transfers, TransferRunner -- which the jobs run with --
      *        and TransferStatus are in the container
+     * @param Notifications|null $notifications the application's notifications (ADR 0150): given,
+     *        POST /_inbox/{name} is mounted for each #[Inbox] behind CSRF, the `inbox` throttle
+     *        and authentication, each inbox's personal channel `inbox.{name}` is registered
+     *        with the channels, and the Notifier, the InboxFeed and NotificationDelivery --
+     *        which the jobs run with -- are in the container
      * @param bool $problemReports mount POST /_reports (ProblemReports, ADR 0093): the CSP
      *        violations, deprecations and other reports a browser sends of its own accord, with
      *        no CSRF token, answered ahead of the global stack -- no session -- behind the
@@ -669,6 +695,7 @@ final class Kernel
         ?Features $features = null,
         private readonly ?MailEventsEndpoint $mailEvents = null,
         ?Domains $domains = null,
+        ?Notifications $notifications = null,
     ) {
         $this->resolver = $resolver;
         $this->shared = $shared;
@@ -859,6 +886,16 @@ final class Kernel
         // resolve them the same way. Checked now: a panel nobody defined, or
         // a requirement nothing can hold, is refused here rather than found
         // by whoever first reaches it.
+        // Each inbox's live updates are a personal channel, let in through
+        // the inbox's own declarations as any channel is: registered before
+        // the checks below, which hold its tenant, panel and host as theirs.
+        if ($notifications !== null && $notifications->inboxes->all() !== []) {
+            $channels ??= new ChannelRegistry();
+            foreach ($notifications->inboxes->all() as $inbox) {
+                $channels->registerPersonal($inbox->class, $inbox->channel(), InboxUpdateData::class);
+            }
+        }
+
         $this->domains = self::domainsFor($domains, $this->routes, $this->actions, $this->queries, $endpoints, $panelRegistry, [
             ...array_map(static fn ($c): ?string => $c->host, $channels?->all() ?? []),
             ...array_map(static fn ($t): ?string => $t->host, $transfers?->registry->all() ?? []),
@@ -1322,6 +1359,48 @@ final class Kernel
             ...$this->throttleFor($throttle, 'transfers', $limits, byAddress: false),
             new RequireAuthentication($this->auth),
         ]);
+        // An inbox's calls read and write a user's own rows: CSRF on each,
+        // its own budget, and authentication with no opt-out. Its tenant
+        // and panel stack run inside, once the path says which inbox.
+        $this->inboxStack = new Pipeline([
+            ...$this->floodGuardFor($throttle, 'inbox', $limits),
+            ...$global,
+            new VerifyCsrfToken(tokens: $csrf),
+            ...$this->throttleFor($throttle, 'inbox', $limits, byAddress: true),
+            ...$this->throttleFor($throttle, 'inbox', $limits, byAddress: false),
+            new RequireAuthentication($this->auth),
+        ]);
+        if ($notifications === null) {
+            $this->inbox_ = null;
+            $this->notifier = null;
+            $this->inboxFeed = null;
+        } else {
+            $this->inboxFeed = new InboxFeed(
+                $notifications->inbox,
+                $this->orm,
+                $live !== null && $channels !== null ? $live->channels($channels, $this->orm, $this->report(...)) : null,
+                $notifications->inboxes->channels(),
+            );
+            $delivery = new NotificationDelivery($notifications, $this->inboxFeed, $this->orm);
+            $this->notifier = new Notifier($notifications, $this->orm, $delivery);
+            $this->inbox_ = $notifications->inboxes->all() === [] ? null : new InboxEndpoint(
+                notifications: $notifications,
+                feed: $this->inboxFeed,
+                entry: $entry,
+                auth: $this->auth,
+                orm: $this->orm,
+                middlewareResolver: self::middlewareFrom($resolver),
+                globalMiddleware: $globalMiddleware,
+            );
+            $container?->instance(Notifications::class, $notifications)
+                ->instance(NotificationRegistry::class, $notifications->registry)
+                ->instance(NotificationPreferences::class, $notifications->preferences)
+                ->instance(InboxStore::class, $notifications->inbox)
+                ->instance(InboxFeed::class, $this->inboxFeed)
+                ->instance(NotificationDelivery::class, $delivery)
+                ->instance(Notifier::class, $this->notifier);
+        }
+
         if ($transfers === null) {
             $this->transfers_ = null;
             $this->downloads_ = null;
@@ -2203,6 +2282,17 @@ final class Kernel
                 return $this->transferStack->run(
                     $request,
                     fn (Request $passed): Response => $this->transfers_->handle($passed, $rawBody),
+                );
+            }
+
+            // Counted by endpoint, never by the inbox's name in the path.
+            if ($this->inbox_ !== null && $this->inbox_->matches($request)) {
+                $this->telemetry?->route('_inbox');
+                InboxEndpoint::assertMethod($request);
+
+                return $this->inboxStack->run(
+                    $request,
+                    fn (Request $passed): Response => $this->inbox_->handle($passed, $rawBody),
                 );
             }
 

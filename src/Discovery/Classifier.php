@@ -15,9 +15,11 @@ use Tinvar\Attributes\ErrorPage;
 use Tinvar\Attributes\Export;
 use Tinvar\Attributes\FieldsOf;
 use Tinvar\Attributes\Import;
+use Tinvar\Attributes\Inbox;
 use Tinvar\Attributes\Layout;
 use Tinvar\Attributes\Listener;
 use Tinvar\Attributes\Middleware;
+use Tinvar\Attributes\Notification;
 use Tinvar\Attributes\NotRegistered;
 use Tinvar\Attributes\OutboundPolicy;
 use Tinvar\Attributes\Page;
@@ -81,7 +83,7 @@ final class Classifier
     ];
 
     /** The kinds a #[Domain] holds to a host (ADR 0149): every entry point a request reaches through its stack. */
-    private const array HOSTED = ['routes', 'queries', 'actions', 'endpoints', 'channels', 'transfers'];
+    private const array HOSTED = ['routes', 'queries', 'actions', 'endpoints', 'channels', 'transfers', 'inboxes'];
 
     /**
      * The kinds $class is, and the classes its #[Policy] attributes decide about.
@@ -165,6 +167,12 @@ final class Classifier
         }
         if (self::has($class, Webhook::class)) {
             $kinds[] = 'webhooks';
+        }
+        if (self::has($class, Notification::class)) {
+            $kinds[] = 'notifications';
+        }
+        if (self::has($class, Inbox::class)) {
+            $kinds[] = 'inboxes';
         }
 
         /** @var list<class-string> $subjects */
@@ -278,7 +286,7 @@ final class Classifier
         }
 
         return "{$class->getName()} is held to a host by #[Domain], and is " . implode(', ', $kinds) . ', which no host holds: '
-            . 'only a page, a layout, an endpoint, an action, a query, a channel or a transfer is reached by a request a host '
+            . 'only a page, a layout, an endpoint, an action, a query, a channel, a transfer or an inbox is reached by a request a host '
             . 'could hold (ADR 0149). Take it off.';
     }
 
