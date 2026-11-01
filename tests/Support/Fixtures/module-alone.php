@@ -29,7 +29,7 @@ use Tinvar\Packages\Layers;
 final class ModuleAlone
 {
     /** The modules a run can hold: the map's layers between the core and the kernel, and the queue. */
-    public const array MODULES = ['queue', 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway', 'accounts'];
+    public const array MODULES = ['queue', 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'calls', 'tools', 'services', 'gateway', 'accounts'];
 
     /** @var list<string> what was refused, in order */
     public static array $refused = [];
