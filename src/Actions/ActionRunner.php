@@ -76,6 +76,9 @@ final class ActionRunner
         // value the action changed is believed by no browser, not only the
         // one its response reaches (ADR 0074).
         ?SharedTags $sharedTags = null,
+        // Hears every action around its body -- the audit log (ADR 0150) --
+        // and may ask for the action's transaction; none unless given.
+        private readonly ?ActionObserver $observer = null,
     ) {
         $this->invalidation = new TagInvalidation($orm, $cache, $live, $static, $sharedTags);
     }
@@ -187,6 +190,11 @@ final class ActionRunner
         } else {
             $body = static fn (): mixed => $standIn(...$arguments);
         }
+        if ($this->observer !== null) {
+            $observer = $this->observer;
+            $inner = $body;
+            $body = static fn (): mixed => $observer->around($action, $arguments, $inner);
+        }
 
         $answered = function () use ($action, $uploads, $body, $answerable): ActionResult {
             [$result, $tenants] = $this->orm->tenantsEnteredBy(fn (): mixed => $this->hasUploads($uploads)
@@ -230,7 +238,11 @@ final class ActionRunner
         // where the action asked for one (ADR 0107): a location() off every
         // allowed origin was refused after the writes it followed, and they
         // stayed.
-        return $action->transaction ? $this->orm->transaction($answered) : $answered();
+        // And where what hears it writes of it, so that commits or rolls
+        // back with what the action wrote (ADR 0150).
+        return $action->transaction || $this->observer?->transactional($action) === true
+            ? $this->orm->transaction($answered)
+            : $answered();
     }
 
     /**
