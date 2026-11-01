@@ -15,7 +15,7 @@ use Shop\Http\Actions\Orders\OrderActions;
 use Shop\Auth\Account\NextPath;
 use Shop\Auth\Account\Passwords;
 use Shop\Auth\Sessions\Sessions;
-use Shop\Auth\Account\SignInThrottle;
+use Tinvar\Accounts\SignInThrottle;
 use Shop\Database\Seeders\Seeder;
 use Shop\Support\DemoAccount;
 use Shop\Kernel;
