@@ -63,11 +63,12 @@ final readonly class TransferRunner
         // What the tags an import declares do once its rows are applied (ADR
         // 0075); none, and they do nothing.
         private ?TagInvalidation $invalidation = null,
-        // The origin of the host an export is held to (ADR 0149) -- by its
-        // own #[Domain], given as the second argument, else by its panel's
-        // -- which it is downloaded on: null for none, false for one whose
-        // host takes parameters a worker cannot fill -- and no link is
-        // emailed then. None, and no export is held.
+        // The origin an export is downloaded on (ADR 0149): the host it
+        // was started on, given as the third argument, which its link is
+        // bound to; else the host it is held to -- by its own #[Domain],
+        // the second argument, else by its panel's. Null for none, false
+        // for none a link can be built on -- and no link is emailed then.
+        // None, and the application routes on no host.
         private ?\Closure $panelOrigin = null,
     ) {}
 
@@ -1112,7 +1113,10 @@ final readonly class TransferRunner
             // The export's own #[Domain] first, which /_download holds it to
             // ahead of its panel's; then its panel's.
             $host = $record->kind === CompiledTransfer::EXPORT ? $this->transfers->registry->export($record->name)?->host : null;
-            $origin = ($record->panel === '' && $host === null) || $this->panelOrigin === null ? null : ($this->panelOrigin)($record->panel, $host);
+            // The host it was started on above both: its link is bound to it.
+            $origin = $this->panelOrigin === null || ($record->host === '' && $record->panel === '' && $host === null)
+                ? null
+                : ($this->panelOrigin)($record->panel, $host, $record->host);
             $link = $record->isDownloadable($this->transfers->now()) && $origin !== false
                 ? $this->transfers->emailedLink($record, $user, $this->auth->epoch(), $origin)
                 : null;

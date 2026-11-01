@@ -138,6 +138,25 @@ it('keeps when a record last beat, and adds the column to a table made before it
         ->and(transferRecord('t-2', createdAt: 1_000)->with(['updatedAt' => 5_000])->isStale(1_000 + Tinvar\Transfers\Transfers::STALE_AFTER + 1))->toBeFalse();
 });
 
+// ADR 0149: a download link is bound to the host its export was started on.
+it('keeps the host a record was started on, and adds the column to a table made before it, once', function () {
+    $connection = PdoConnection::sqlite(':memory:', 'test');
+    $schema = new Schema($connection, Dialect::for($connection));
+    DatabaseTransferStore::define($schema);
+    $connection->execute('ALTER TABLE transfers DROP COLUMN host');
+    $connection->execute("INSERT INTO transfers (id, kind, name, format, tenant, panel, user_id, status, created_at, errors, storage_key, file_name, failure) VALUES ('t-0', 'export', 'widgets', 'csv', 'acme', 'staff', 'u-1', 'done', 1, '[]', '', '', '')");
+
+    DatabaseTransferStore::defineHost($schema);
+    DatabaseTransferStore::defineHost($schema);
+
+    $store = new DatabaseTransferStore($connection);
+    $store->add(transferRecord('t-1')->with(['host' => 'acme.shop.example']));
+    expect($store->find('t-0', 'acme', 'staff', 'u-1')?->host)->toBe('')
+        ->and($store->find('t-1', 'acme', 'staff', 'u-1')?->host)->toBe('acme.shop.example');
+    $store->update(transferRecord('t-1')->with(['host' => 'admin.shop.example']));
+    expect($store->find('t-1', 'acme', 'staff', 'u-1')?->host)->toBe('admin.shop.example');
+});
+
 // Review: fromKey() took no keepFiles, so an application made that way kept
 // every export's file the default week.
 it('keeps an export\'s file as long as fromKey() is told', function () {

@@ -153,6 +153,18 @@ final readonly class HostedWidgetsExport
     }
 }
 
+/** The same export, held to a host a parameter takes: each account's own subdomain. */
+#[Export(WidgetRow::class, name: 'account.widgets', maxRows: 1_000), Panel('staff'), Authorize('export', Widget::class), \Tinvar\Attributes\Domain('{account}.{root}')]
+final readonly class AccountWidgetsExport
+{
+    public function __construct(private Orm $orm) {}
+
+    public function __invoke(): Query
+    {
+        return Widget::query($this->orm)->orderBy('sku');
+    }
+}
+
 final readonly class StockRow extends FormRequest
 {
     public function __construct(
@@ -327,7 +339,7 @@ final class App
         $this->runner = new JobRunner($this->orm, $jobSigner, $container->resolver(), $this->auth, $panels, $registry, users: $this->users);
 
         $transfers = new TransferRegistry();
-        $transfers->registerAll([WidgetsExport::class, StockImport::class, RestockImport::class, ...($domains === null ? [] : [HostedWidgetsExport::class])]);
+        $transfers->registerAll([WidgetsExport::class, StockImport::class, RestockImport::class, ...($domains === null ? [] : [HostedWidgetsExport::class, AccountWidgetsExport::class])]);
         $this->store = new ArrayTransferStore();
         if ($databaseStore) {
             DatabaseTransferStore::define(new Schema($this->connection, Dialect::for($this->connection)));

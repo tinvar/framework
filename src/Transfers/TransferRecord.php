@@ -35,6 +35,8 @@ final readonly class TransferRecord
      *        `rows` is those written, each in the transaction that wrote it (TransferRunner::import())
      * @param int $updatedAt when its run last showed it was alive -- claimed, a page or a chunk
      *        done, paused -- or 0 for never: what staleness is measured from (isStale())
+     * @param string $host the host it was started on, as the Kernel resolved it (ADR 0149): what
+     *        its download link is bound to and built on; '' where the application routes on no host
      */
     public function __construct(
         public string $id,
@@ -57,6 +59,7 @@ final readonly class TransferRecord
         public string $failure = '',
         public int $checked = 0,
         public int $updatedAt = 0,
+        public string $host = '',
     ) {}
 
     /** @param array<string, mixed> $changes */

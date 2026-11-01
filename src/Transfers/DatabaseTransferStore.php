@@ -24,7 +24,7 @@ use Tinvar\Orm\Schema\Table;
 final readonly class DatabaseTransferStore implements TransferStore
 {
     private const string COLUMNS = 'id, kind, name, format, tenant, panel, user_id, status, created_at, row_count, '
-        . 'error_count, errors, storage_key, size, finished_at, expires_at, file_name, failure, checked_count, updated_at';
+        . 'error_count, errors, storage_key, size, finished_at, expires_at, file_name, failure, checked_count, updated_at, host';
 
     public function __construct(private Connection $connection, private string $table = 'transfers')
     {
@@ -60,6 +60,7 @@ final readonly class DatabaseTransferStore implements TransferStore
             $transfers->string('failure', 255);
             $transfers->bigInteger('checked_count')->default(0);
             $transfers->bigInteger('updated_at')->default(0);
+            $transfers->string('host', 255)->default('');
             // What a user's list asks, and what pruning asks.
             $transfers->index(['tenant', 'panel', 'user_id', 'created_at'], "{$table}_mine");
             $transfers->index(['expires_at'], "{$table}_expiry");
@@ -102,10 +103,29 @@ final readonly class DatabaseTransferStore implements TransferStore
         });
     }
 
+    /**
+     * The column the host a transfer was started on is kept in (ADR 0149),
+     * for a migration of a table define() made before it: added once, and
+     * nothing where it is there already -- as define() now makes it. A
+     * record written before reads as started on no host, and its link opens
+     * nothing where the application routes by host: it is exported again.
+     */
+    public static function defineHost(Schema $schema, string $table = 'transfers'): void
+    {
+        new self($schema->connection(), $table);
+        if ($schema->hasColumn($table, 'host')) {
+            return;
+        }
+
+        $schema->table($table, static function (Table $transfers): void {
+            $transfers->string('host', 255)->default('');
+        });
+    }
+
     public function add(TransferRecord $record): void
     {
         $this->connection->execute(
-            "INSERT INTO {$this->table} (" . self::COLUMNS . ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            "INSERT INTO {$this->table} (" . self::COLUMNS . ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             self::values($record),
         );
     }
@@ -135,7 +155,7 @@ final readonly class DatabaseTransferStore implements TransferStore
         $this->connection->execute(
             "UPDATE {$this->table} SET kind = ?, name = ?, format = ?, tenant = ?, panel = ?, user_id = ?, status = ?, "
             . 'created_at = ?, row_count = ?, error_count = ?, errors = ?, storage_key = ?, size = ?, finished_at = ?, '
-            . 'expires_at = ?, file_name = ?, failure = ?, checked_count = ?, updated_at = ? WHERE id = ?',
+            . 'expires_at = ?, file_name = ?, failure = ?, checked_count = ?, updated_at = ?, host = ? WHERE id = ?',
             [...$values, $id],
         );
     }
@@ -196,6 +216,7 @@ final readonly class DatabaseTransferStore implements TransferStore
             $record->failure,
             $record->checked,
             $record->updatedAt,
+            $record->host,
         ];
     }
 
@@ -229,6 +250,7 @@ final readonly class DatabaseTransferStore implements TransferStore
             failure: self::string($row['failure'] ?? null),
             checked: self::int($row['checked_count'] ?? 0),
             updatedAt: self::int($row['updated_at'] ?? 0),
+            host: self::string($row['host'] ?? null),
         );
     }
 

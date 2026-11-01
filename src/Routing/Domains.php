@@ -340,6 +340,20 @@ final readonly class Domains
     }
 
     /**
+     * The origin of $host, a host this application serves -- as the Kernel
+     * resolved it for a request, its parameters filled -- in this scheme
+     * and port; null for one it does not serve.
+     */
+    public function originOfHost(string $host): ?string
+    {
+        if ($host === '' || $this->match($host) === null) {
+            return null;
+        }
+
+        return $this->scheme . '://' . $host . ($this->port === null ? '' : ':' . $this->port);
+    }
+
+    /**
      * Whether $url is on one of the application's own fixed hosts, as it
      * writes its URLs -- this scheme, this port -- for an action to redirect
      * to as it redirects on its own origin (ExternalOrigins). Fixed: the

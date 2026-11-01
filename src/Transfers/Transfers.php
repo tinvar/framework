@@ -152,6 +152,7 @@ final readonly class Transfers
             // Never past the file: a link that outlived it would be a 404 anyway.
             expiresAt: min($now + $this->linkTtl, $record->expiresAt),
             issuedAt: $now,
+            host: $record->host,
         )->encode($this->signer);
     }
 

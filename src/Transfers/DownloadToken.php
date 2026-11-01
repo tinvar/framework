@@ -15,9 +15,13 @@ use Tinvar\Support\Signer;
  *
  * Bound as the spec binds every token, to what this one is about: the
  * export it was minted for (by its record's id, its name and its file's
- * key), the tenant claim and the panel the export ran in, and the user with
+ * key), the tenant claim and the panel the export ran in, the user with
  * their auth epoch, as a keyed hash -- so a role change, a membership taken
- * away or an impersonation ending, each of which moves the epoch, ends it.
+ * away or an impersonation ending, each of which moves the epoch, ends it
+ * -- and the host the export was started on (ADR 0149): a link minted on
+ * acme's subdomain opens nothing on globex's, nor on any other host. One
+ * minted before carries no host, and opens nothing where the application
+ * routes by host.
  *
  * Not bound to a session, as a /_file token is. The link is emailed, and
  * an email is opened in whatever browser the reader has, signed in by its
@@ -45,6 +49,7 @@ final readonly class DownloadToken
         public string $authHash,
         public int $expiresAt,
         public int $issuedAt,
+        public string $host = '',
     ) {}
 
     public function encode(Signer $signer): string
@@ -58,6 +63,7 @@ final readonly class DownloadToken
             'u' => $this->authHash,
             'e' => $this->expiresAt,
             'i' => $this->issuedAt,
+            'h' => $this->host,
         ]);
     }
 
@@ -84,6 +90,9 @@ final readonly class DownloadToken
             authHash: $strings['u'],
             expiresAt: \is_int($decoded['e'] ?? null) ? $decoded['e'] : 0,
             issuedAt: \is_int($decoded['i'] ?? null) ? $decoded['i'] : 0,
+            // Absent from a link minted before the host was bound: '', which
+            // is no host the Kernel resolves where it routes by host.
+            host: \is_string($decoded['h'] ?? null) ? $decoded['h'] : '',
         );
 
         if (!StorageKey::isValid($claims->key)) {

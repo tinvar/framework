@@ -16,6 +16,7 @@ use Tinvar\Http\Response;
 use Tinvar\Orm\Orm;
 use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenError;
+use Tinvar\Routing\HostMatch;
 use Tinvar\Storage\LocalStorage;
 
 /**
@@ -31,8 +32,9 @@ use Tinvar\Storage\LocalStorage;
  *      a link opened in a browser not signed in meets the panel's guard,
  *      which sends its reader to sign in first.
  *   3. The token's binding against that context: the tenant claim, the
- *      panel, and the signed-in user on their auth epoch. A link from
- *      before a role change, or forwarded to anyone else, opens nothing.
+ *      panel, the signed-in user on their auth epoch, and the host the
+ *      export was started on. A link from before a role change, forwarded
+ *      to anyone else, or opened on another host, opens nothing.
  *   4. The record: this user's, here, finished, its file still kept, and
  *      the very file the token names.
  *
@@ -115,6 +117,7 @@ final readonly class DownloadEndpoint
         // is, and can put it nowhere.
         $user = $this->auth->id();
         if ($user === null
+            || !hash_equals($token->host, HostMatch::hostOf($request))
             || TenantClaim::current($this->orm) !== $token->tenant
             || ($this->panels?->currentOrNull() ?? '') !== $token->panel
             || !hash_equals($token->authHash, $this->transfers->authHash($user, $this->auth->epoch()))) {
@@ -125,6 +128,7 @@ final readonly class DownloadEndpoint
         if ($record === null
             || !$record->isDownloadable($this->transfers->now())
             || !hash_equals($record->key, $token->key)
+            || $record->host !== $token->host
             || $record->name !== $token->name) {
             throw self::missing();
         }

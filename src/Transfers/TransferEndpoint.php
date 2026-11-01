@@ -18,6 +18,7 @@ use Tinvar\Http\UploadedFile;
 use Tinvar\Jobs\Job;
 use Tinvar\Orm\Orm;
 use Tinvar\Render\TenantClaim;
+use Tinvar\Routing\HostMatch;
 use Tinvar\Storage\StorageKey;
 use Tinvar\Support\Uuid;
 
@@ -129,7 +130,7 @@ final readonly class TransferEndpoint
         $arguments = $this->runner->arguments($transfer, self::argumentsOf($body));
         $this->runner->authorize($transfer, $arguments);
 
-        $record = $this->record($transfer, $format);
+        $record = $this->record($request, $transfer, $format);
         $this->transfers->store->add($record);
         $this->dispatchFor($record, new RunExport($record->id, $arguments));
 
@@ -153,7 +154,7 @@ final readonly class TransferEndpoint
         $body = Limits::form($request->body, $this->maxBodyBytes, $this->maxJsonDepth);
         $arguments = $this->runner->arguments($transfer, self::argumentsOf($body));
         $this->runner->authorize($transfer, $arguments);
-        $record = $this->record($transfer, 'csv');
+        $record = $this->record($request, $transfer, 'csv');
 
         $file = self::receivedFile($request);
         $size = filesize($file->path);
@@ -235,7 +236,7 @@ final readonly class TransferEndpoint
      * and panel in force, and the user -- which the job, the list a user is
      * shown and every download link are held to.
      */
-    private function record(CompiledTransfer $transfer, string $format): TransferRecord
+    private function record(Request $request, CompiledTransfer $transfer, string $format): TransferRecord
     {
         $user = $this->auth->id() ?? throw new HttpException(401, 'Sign in to start this.', 'unauthenticated');
         $tenant = TenantClaim::current($this->orm);
@@ -263,6 +264,10 @@ final readonly class TransferEndpoint
             user: $user,
             status: TransferRecord::QUEUED,
             createdAt: $now,
+            // The host it is started on, which its download link is bound to
+            // and built on: an export held to `{account}.{root}` is acme's
+            // on acme's subdomain, and globex's opens nothing of it.
+            host: HostMatch::hostOf($request),
         );
     }
 
