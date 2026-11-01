@@ -1,0 +1,25 @@
+<?php
+
+declare(strict_types=1);
+
+use Tinvar\Orm\Migrations\Migration;
+use Tinvar\Orm\Schema\Schema;
+use Tinvar\Orm\Schema\Table;
+
+/** The app's tenants (App\Database\Models\Tenant), written by `tinvar new`. */
+return new class extends Migration {
+    public function up(Schema $schema): void
+    {
+        $schema->create('tenants', function (Table $table): void {
+            $table->uuid('id')->primary();
+            $table->string('slug', 63)->unique();
+            $table->string('host', 253)->nullable()->unique();
+            $table->timestamp('created_at');
+        });
+    }
+
+    public function down(Schema $schema): void
+    {
+        $schema->drop('tenants');
+    }
+};

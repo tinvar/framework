@@ -1,0 +1,55 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Tenancy;
+
+use App\Database\Models\Tenant;
+use Tinvar\Config\FrameworkConfig;
+use Tinvar\Orm\Direction;
+use Tinvar\Orm\Orm;
+use Tinvar\Tenancy\Subdomains;
+use Tinvar\Tenancy\TenantDirectory;
+use Tinvar\Tenancy\TenantHosts;
+
+/**
+ * The app's tenants, written by `tinvar new`: which tenant a host belongs
+ * to, for an entry point that says #[TenantFrom(Host::class)], and every
+ * tenant, for a command's --tenant=. A host that is no tenant's is a 404.
+ */
+final readonly class Tenants implements TenantHosts, TenantDirectory
+{
+    public function __construct(private Orm $orm) {}
+
+    public function tenantForHost(string $host): ?string
+    {
+        // One label under the app's own host -- `acme.example.com`, or
+        // `acme.localhost` on this machine -- is the tenant whose slug it is.
+        // Exactly one: `x.acme.example.com` is nobody's (Subdomains).
+        return new Subdomains([$this->platformHost()], function (string $label): ?string {
+            $tenant = Tenant::query($this->orm)->where('slug', $label)->first();
+
+            return $tenant instanceof Tenant ? $tenant->id : null;
+        })->tenantForHost($host);
+    }
+
+    public function has(string $tenant): bool
+    {
+        return Tenant::query($this->orm)->where('id', $tenant)->count() === 1;
+    }
+
+    /** @return list<string> */
+    public function all(): array
+    {
+        return array_map(static fn (Tenant $tenant): string => $tenant->id, Tenant::query($this->orm)->orderBy('slug', Direction::Asc)->fetch());
+    }
+
+    /** The app's own host, from TINVAR_APP_DOMAIN: `localhost` where it names none. */
+    private function platformHost(): string
+    {
+        $domain = FrameworkConfig::load()->appDomain;
+        $host = $domain === null ? null : parse_url(str_contains($domain, '://') ? $domain : "http://{$domain}", PHP_URL_HOST);
+
+        return \is_string($host) && $host !== '' ? $host : 'localhost';
+    }
+}

@@ -1,0 +1,31 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Database\Models;
+
+use Carbon\CarbonImmutable;
+use Tinvar\Orm\Attributes\Column;
+use Tinvar\Orm\Attributes\Id;
+use Tinvar\Orm\Attributes\Table;
+use Tinvar\Orm\Model;
+
+/**
+ * A tenant: one customer of the app, whose rows no other tenant sees.
+ * Found by its slug under the app's domain, or by a host of its own
+ * (App\Tenancy\Tenants). Not itself tenant-scoped: the tenants are the
+ * platform's list.
+ */
+#[Table('tenants')]
+final class Tenant extends Model
+{
+    #[Id] public private(set) string $id;
+
+    /** Its subdomain, `acme` in acme.example.com: lowercase letters, digits and dashes. */
+    #[Column] public string $slug;
+
+    /** A host of its own, `shop.acme.com`, or null for none. */
+    #[Column] public ?string $host = null;
+
+    #[Column] public CarbonImmutable $createdAt;
+}

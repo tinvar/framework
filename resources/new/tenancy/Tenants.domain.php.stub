@@ -1,0 +1,42 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Tenancy;
+
+use App\Database\Models\Tenant;
+use Tinvar\Orm\Direction;
+use Tinvar\Orm\Orm;
+use Tinvar\Tenancy\TenantDirectory;
+use Tinvar\Tenancy\TenantHosts;
+
+/**
+ * The app's tenants, written by `tinvar new`: which tenant a host belongs
+ * to, for an entry point that says #[TenantFrom(Host::class)], and every
+ * tenant, for a command's --tenant=. A host that is no tenant's is a 404.
+ */
+final readonly class Tenants implements TenantHosts, TenantDirectory
+{
+    public function __construct(private Orm $orm) {}
+
+    public function tenantForHost(string $host): ?string
+    {
+        // The tenant whose own host this is, as its row keeps it. A host is a
+        // claim, not a credential: it settles whose rows a request may see,
+        // and nothing more (Tinvar\Tenancy\Host).
+        $tenant = Tenant::query($this->orm)->where('host', $host)->first();
+
+        return $tenant instanceof Tenant ? $tenant->id : null;
+    }
+
+    public function has(string $tenant): bool
+    {
+        return Tenant::query($this->orm)->where('id', $tenant)->count() === 1;
+    }
+
+    /** @return list<string> */
+    public function all(): array
+    {
+        return array_map(static fn (Tenant $tenant): string => $tenant->id, Tenant::query($this->orm)->orderBy('slug', Direction::Asc)->fetch());
+    }
+}
