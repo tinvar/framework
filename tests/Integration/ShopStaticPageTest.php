@@ -154,10 +154,21 @@ function fetch(string $url, array $headers = []): array
  * seeded database -- $database, when given -- the fragment manifest the
  * build wrote, when given, and the front controller.
  *
+ * Under $server 'frankenphp', `tinvar serve` instead -- FrankenPHP in
+ * worker mode behind the shop's Caddyfile, whose own rule sends the file --
+ * on localhost, the shop's own host (ADR 0149); skipped with no FrankenPHP
+ * binary.
+ *
  * @param \Closure(string): void $drive given the origin
+ * @param 'php -S'|'frankenphp' $server
  */
-function served(string $root, string $static, \Closure $drive, ?string $database = null, ?string $manifest = null): void
+function served(string $root, string $static, \Closure $drive, ?string $database = null, ?string $manifest = null, string $server = 'php -S'): void
 {
+    if ($server === 'frankenphp') {
+        servedByFrankenPhp($root, $static, $drive, $database, $manifest);
+
+        return;
+    }
     $renderer = Renderer::start('msgpack', 'static-served');
     $keyDir = scratch();
     $errorLog = scratch() . '/server.log';
@@ -196,6 +207,65 @@ function served(string $root, string $static, \Closure $drive, ?string $database
         proc_terminate($server);
         proc_close($server);
         $renderer->stop();
+    }
+}
+
+/**
+ * served(), under FrankenPHP.
+ *
+ * @param \Closure(string): void $drive
+ */
+function servedByFrankenPhp(string $root, string $static, \Closure $drive, ?string $database, ?string $manifest): void
+{
+    try {
+        FrankenPhp::locate($root);
+    } catch (ServeException) {
+        test()->markTestSkipped('No FrankenPHP binary (tools/frankenphp, TINVAR_FRANKENPHP or the PATH).');
+    }
+    $keyDir = scratch();
+    $serveLog = scratch() . '/serve.log';
+    $process = proc_open(
+        [PHP_BINARY, "{$root}/bin/tinvar", 'serve', "--app={$root}/examples/shop", '--workers=2', '--renderers=2'],
+        [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $serveLog, 'w']],
+        $pipes,
+        $root,
+        [
+            ...array_diff_key(getenv(), ['TINVAR_APP_KEY' => true]),
+            'TINVAR_APP_KEY_FILE' => "{$keyDir}/app.key",
+            'SHOP_DATABASE' => $database ?? Shop::database(),
+            'SHOP_STATIC_DIR' => $static,
+            ...($manifest === null ? [] : ['SHOP_FRAGMENTS' => $manifest]),
+        ],
+    );
+    stream_set_blocking($pipes[1], false);
+
+    try {
+        $printed = '';
+        $deadline = microtime(true) + 60;
+        while (microtime(true) < $deadline && preg_match('#Listening on http://127\.0\.0\.1:(\d+)#', $printed, $m) !== 1) {
+            $printed .= (string) stream_get_contents($pipes[1]);
+            if (!proc_get_status($process)['running']) {
+                break;
+            }
+            usleep(50_000);
+        }
+        expect($m[1] ?? null)->not->toBeNull("tinvar serve did not start:\n{$printed}\n" . (string) file_get_contents($serveLog));
+
+        $drive("http://localhost:{$m[1]}");
+    } finally {
+        $status = proc_get_status($process);
+        if ($status['running']) {
+            posix_kill($status['pid'], SIGTERM);
+        }
+        $deadline = microtime(true) + 20;
+        while (proc_get_status($process)['running'] && microtime(true) < $deadline) {
+            usleep(50_000);
+        }
+        if (proc_get_status($process)['running']) {
+            proc_terminate($process, 9);
+        }
+        fclose($pipes[1]);
+        proc_close($process);
     }
 }
 
@@ -343,7 +413,7 @@ describe('serving it', function () use ($root) {
     // first, which hands the visitor their session -- and load the stock as
     // it is now, changed since the build; a click is a client visit PHP
     // answers, and from then on the catalog comes from PHP.
-    it('hydrates, loads its boundaries through /_bootstrap, and navigates in Chromium', function () use ($root) {
+    it('hydrates, loads its boundaries through /_bootstrap, and navigates in Chromium', function (string $server) use ($root) {
         if (!is_file("{$root}/node_modules/playwright/package.json")) {
             $this->markTestSkipped('Playwright is not installed.');
         }
@@ -366,7 +436,9 @@ describe('serving it', function () use ($root) {
         $fresh = [['product' => $first, 'state' => 'low'], ['product' => $last, 'state' => 'sold_out']];
 
         $output = '';
-        served($root, $static, function (string $origin) use ($root, $fresh, &$output): void {
+        $served = '';
+        served($root, $static, function (string $origin) use ($root, $fresh, &$output, &$served): void {
+            $served = $origin;
             $process = proc_open(
                 ['node', "{$root}/examples/shop/e2e/static.mjs", $origin, json_encode($fresh, JSON_THROW_ON_ERROR)],
                 [1 => ['pipe', 'w'], 2 => ['redirect', 1]],
@@ -376,7 +448,7 @@ describe('serving it', function () use ($root) {
             );
             $output = (string) stream_get_contents($pipes[1]);
             proc_close($process);
-        }, $database, "{$out}/fragments.json");
+        }, $database, "{$out}/fragments.json", $server);
 
         $result = json_decode($output, true);
         expect($result)->toBeArray("the browser script failed:\n{$output}");
@@ -429,7 +501,7 @@ describe('serving it', function () use ($root) {
         expect($vitals[0]['status'] ?? null)->toBe(204)
             ->and($vitals[0]['body']['route'] ?? null)->toBe('shop.catalog')
             ->and($vitals[0]['body']['navigation'] ?? null)->toBe('document')
-            ->and($result['blocked'])->toBe(['object-src http://127.0.0.1:' . parse_url((string) ($reports[0]['body'][0]['body']['documentURL'] ?? ''), PHP_URL_PORT) . '/brand/logo.png?token=s3cret'])
+            ->and($result['blocked'])->toBe(["object-src {$served}/brand/logo.png?token=s3cret"])
             ->and($reports)->toHaveCount(1)
             ->and($reports[0]['status'])->toBe(204)
             ->and($reports[0]['type'])->toBe('application/reports+json')
@@ -438,7 +510,7 @@ describe('serving it', function () use ($root) {
             ->and($reports[0]['body'][0]['body']['effectiveDirective'] ?? null)->toBe('object-src')
             ->and($reports[0]['body'][0]['body']['blockedURL'] ?? null)->toEndWith('/brand/logo.png')
             ->and(json_encode($reports))->not->toContain('s3cret');
-    });
+    })->with(['php -S' => ['php -S'], 'FrankenPHP' => ['frankenphp']]);
 
     // The Caddyfile's rule, under FrankenPHP: the same answer, with no PHP.
     it('is served by Caddy under tinvar serve, only when SHOP_STATIC_DIR names it', function () use ($root) {

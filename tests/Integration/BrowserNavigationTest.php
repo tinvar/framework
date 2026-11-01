@@ -24,6 +24,9 @@ use Shop\Support\DemoAccount;
 use Shop\Support\StaffAccount;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;
+use Tinvar\Server\FrankenPhp;
+use Tinvar\Server\ServeException;
+use Tinvar\Support\PrivateDirectory;
 use Tinvar\Testing\Browser\BrowserTestRun;
 use Tinvar\Support\Uuid;
 
@@ -83,13 +86,26 @@ function runWithTimeout(array $command, string $cwd, int $seconds, array $env = 
  * is handed to $drive, for the script it runs, and to nothing else -- the
  * server holds only its hash.
  *
- * @param \Closure(string, string, Renderer, string): void $drive given the origin, the
- *        file the shop writes its log to (SHOP_LOG), the renderers, and the
- *        test endpoint's token ('' unless $testProfile)
+ * Under $server 'frankenphp' it is the shop as it is deployed instead:
+ * `tinvar serve`, FrankenPHP in worker mode behind the shop's Caddyfile --
+ * which answers any Host and leaves which are the shop's to PHP (ADR 0149)
+ * -- with a pool of renderers of its own; skipped where there is no
+ * FrankenPHP binary, as every FrankenPHP test is. The renderers are
+ * serve's, so $drive is handed none.
+ *
+ * @param \Closure(string, string, ?Renderer, string): void $drive given the origin, the
+ *        file the shop writes its log to (SHOP_LOG), the renderers (none under
+ *        FrankenPHP), and the test endpoint's token ('' unless $testProfile)
  * @param array<string, string> $env more of the server's environment
+ * @param 'php -S'|'frankenphp' $server
  */
-function served(string $root, \Closure $drive, array $env = [], bool $testProfile = false, bool $hosts = false): void
+function served(string $root, \Closure $drive, array $env = [], bool $testProfile = false, bool $hosts = false, string $server = 'php -S'): void
 {
+    if ($server === 'frankenphp') {
+        servedByFrankenPhp($root, $drive, $env, $testProfile, $hosts);
+
+        return;
+    }
     // On the shop's two hosts (ADR 0149): localhost and admin.localhost, at
     // a port known before php -S starts, so SHOP_URL -- which the realms
     // and every link across them are written from -- can name it. Asked of
@@ -193,6 +209,108 @@ function served(string $root, \Closure $drive, array $env = [], bool $testProfil
     // than as a missing key.
     expect($generated)->toBeTrue('no application key was generated');
 }
+
+/**
+ * served(), under FrankenPHP: `tinvar serve` on a port picked first, so
+ * SHOP_URL can name it -- localhost, the shop's own host, and
+ * admin.localhost beside it when $hosts.
+ *
+ * @param \Closure(string, string, ?Renderer, string): void $drive
+ * @param array<string, string> $env
+ */
+function servedByFrankenPhp(string $root, \Closure $drive, array $env, bool $testProfile, bool $hosts): void
+{
+    try {
+        FrankenPhp::locate($root);
+    } catch (ServeException) {
+        test()->markTestSkipped('No FrankenPHP binary (tools/frankenphp, TINVAR_FRANKENPHP or the PATH).');
+    }
+    $probe = stream_socket_server('tcp://127.0.0.1:0');
+    expect($probe)->not->toBeFalse();
+    $listen = (string) stream_socket_get_name($probe, false);
+    fclose($probe);
+    $port = (int) substr($listen, strrpos($listen, ':') + 1);
+
+    $run = null;
+    if ($testProfile) {
+        $unbuilt = Shop::ensureTestBuilt();
+        if ($unbuilt !== null) {
+            test()->markTestSkipped($unbuilt);
+        }
+        $run = BrowserTestRun::prepare();
+        $env = [
+            ...$env,
+            'TINVAR_PROFILE' => 'test',
+            'TINVAR_ENV' => 'testing',
+            'TINVAR_TEST_RUN' => $run['directory'],
+            'TINVAR_BUILD_DIR' => Shop::testBuild(),
+        ];
+    }
+    $directory = PrivateDirectory::create('tinvar-franken');
+    $serveLog = "{$directory}/serve.log";
+    $appLog = "{$directory}/app.log";
+    touch($appLog);
+    $serverEnv = [
+        ...array_diff_key(getenv(), ['TINVAR_APP_KEY' => true]),
+        'TINVAR_APP_KEY_FILE' => "{$directory}/app.key",
+        'SHOP_DATABASE' => Shop::database(),
+        'SHOP_LOG' => $appLog,
+        ...($hosts ? ['SHOP_URL' => "http://localhost:{$port}"] : []),
+        ...$env,
+    ];
+    $process = proc_open(
+        [PHP_BINARY, "{$root}/bin/tinvar", 'serve', "--app={$root}/examples/shop", "--port={$port}", '--workers=2', '--renderers=2'],
+        [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $serveLog, 'w']],
+        $pipes,
+        $root,
+        $serverEnv,
+    );
+    stream_set_blocking($pipes[1], false);
+
+    try {
+        $printed = '';
+        $deadline = microtime(true) + 60;
+        while (microtime(true) < $deadline && !str_contains($printed, 'Listening on ')) {
+            $printed .= (string) stream_get_contents($pipes[1]);
+            if (!proc_get_status($process)['running']) {
+                break;
+            }
+            usleep(50_000);
+        }
+        expect(str_contains($printed, "Listening on http://127.0.0.1:{$port}"))->toBeTrue("tinvar serve did not start:\n{$printed}\n" . (string) file_get_contents($serveLog));
+
+        // The server's environment as serve hands it to its own children,
+        // for a script that runs the shop's commands beside it.
+        $drive(
+            $hosts ? "http://localhost:{$port}" : "http://127.0.0.1:{$port}",
+            $appLog,
+            null,
+            $run['token'] ?? '',
+            [...$serverEnv, 'TINVAR_URL' => "http://127.0.0.1:{$port}"],
+        );
+    } finally {
+        $status = proc_get_status($process);
+        if ($status['running']) {
+            posix_kill($status['pid'], SIGTERM);
+        }
+        $deadline = microtime(true) + 20;
+        while (proc_get_status($process)['running'] && microtime(true) < $deadline) {
+            usleep(50_000);
+        }
+        if (proc_get_status($process)['running']) {
+            proc_terminate($process, 9);
+        }
+        fclose($pipes[1]);
+        proc_close($process);
+        if ($run !== null) {
+            BrowserTestRun::remove($run['directory']);
+        }
+        PrivateDirectory::remove($directory);
+    }
+}
+
+/** The two ways a script touching the shop's hosts is served: php -S, and FrankenPHP as deployed. */
+const SERVERS = ['php -S' => ['php -S'], 'FrankenPHP' => ['frankenphp']];
 
 it('navigates from the catalog to a product and back, through the RSC payload', function () use ($root) {
     $output = '';
@@ -627,7 +745,7 @@ it('shows the shipping panel\'s rescue slot when its fragment fails, and logs wh
 // The admin panel: its guard sending a signed-out visitor to sign in, staff
 // let in to every customer's orders, a customer refused -- and the panel in
 // the route token, so moving between it and the shop is a panel switch.
-it('lets staff into the admin panel\'s orders, and refuses a customer', function () use ($root) {
+it('lets staff into the admin panel\'s orders, and refuses a customer', function (string $server) use ($root) {
     $output = '';
     served($root, function (string $origin) use ($root, &$output): void {
         $output = runWithTimeout(
@@ -643,7 +761,7 @@ it('lets staff into the admin panel\'s orders, and refuses a customer', function
             $root,
             90,
         );
-    }, hosts: true);
+    }, hosts: true, server: $server);
 
     $result = json_decode((string) $output, true);
     expect($result)->toBeArray("the browser script failed:\n{$output}");
@@ -692,13 +810,13 @@ it('lets staff into the admin panel\'s orders, and refuses a customer', function
     // stylesheet alone, with the shared rules, whatever page refused them.
     expect($result['admin']['sheets'])->toBe([['name' => 'styles-admin', 'applied' => true]])
         ->and(array_unique($result['customerSheets']))->toBe(['index']);
-});
+})->with(SERVERS);
 
 // "Uploaded files are referenced only by a server-issued upload ticket": the
 // account page's two forms, in Chromium against the served shop. Each file
 // goes to /_upload under the page's ticket and is saved by its action; a
 // file that only claims to be an image is refused by its bytes.
-it('uploads an avatar and a receipt photo from the account page, and refuses a file posing as an image', function () use ($root) {
+it('uploads an avatar and a receipt photo from the account page, and refuses a file posing as an image', function (string $server) use ($root) {
     $storage = sys_get_temp_dir() . '/tinvar-e2e-uploads-' . bin2hex(random_bytes(4));
     $fixtures = sys_get_temp_dir() . '/tinvar-e2e-images-' . bin2hex(random_bytes(4));
     mkdir($fixtures, 0o700);
@@ -715,7 +833,7 @@ it('uploads an avatar and a receipt photo from the account page, and refuses a f
                 $root,
                 90,
             );
-        }, ['SHOP_STORAGE' => $storage]);
+        }, ['SHOP_STORAGE' => $storage, 'SHOP_DATABASE' => Shop::testDatabase()], hosts: true, server: $server);
     } finally {
         exec('rm -rf ' . escapeshellarg($storage) . ' ' . escapeshellarg($fixtures));
     }
@@ -743,12 +861,12 @@ it('uploads an avatar and a receipt photo from the account page, and refuses a f
     expect($result['fetched'])->toBe(['status' => 200, 'type' => 'image/png', 'nosniff' => 'nosniff'])
         ->and($result['elsewhere'])->toBe(404)
         ->and($result['receipts'])->toBe(1);
-});
+})->with(SERVERS);
 
 // ADR 0143, as a person meets it: a receipt photo uploading, the page
 // reloaded mid-upload, the new page offering to resume, the same file
 // chosen again -- and only the bytes the shop did not hold sent again.
-it('resumes an upload after the page is reloaded mid-upload, sending the server only the bytes it lacks', function () use ($root) {
+it('resumes an upload after the page is reloaded mid-upload, sending the server only the bytes it lacks', function (string $server) use ($root) {
     $storage = sys_get_temp_dir() . '/tinvar-e2e-uploads-' . bin2hex(random_bytes(4));
     $fixtures = sys_get_temp_dir() . '/tinvar-e2e-images-' . bin2hex(random_bytes(4));
     mkdir($fixtures, 0o700);
@@ -771,7 +889,7 @@ it('resumes an upload after the page is reloaded mid-upload, sending the server 
                 $root,
                 120,
             );
-        }, ['SHOP_STORAGE' => $storage]);
+        }, ['SHOP_STORAGE' => $storage, 'SHOP_DATABASE' => Shop::testDatabase()], hosts: true, server: $server);
         $partial = glob("{$storage}/tinvar-partial/*") ?: [];
     } finally {
         exec('rm -rf ' . escapeshellarg($storage) . ' ' . escapeshellarg($fixtures));
@@ -805,7 +923,7 @@ it('resumes an upload after the page is reloaded mid-upload, sending the server 
         ->and($result['pendingAfter'])->toBe(0)
         // Kept as a receipt, and nothing left waiting.
         ->and($partial)->toBe([]);
-});
+})->with(SERVERS);
 
 // "#[Optional] ... only when named in X-Only" (ADR 0045): the product page
 // sends a customer's own orders of it with no render until its button asks,
@@ -929,20 +1047,20 @@ it('seeds, signs in and moves the clock through the test endpoint, and to no pag
 // The emailed links' pages, which only the framework's tests drove: each
 // link asked for on its form, mailed by the shop's queue worker, opened --
 // which signs nobody in -- used by its button, and refused the second time.
-it('signs in by an emailed link, resets a password by one, and joins the staff by an invite', function () use ($root) {
+it('signs in by an emailed link, resets a password by one, and joins the staff by an invite', function (string $server) use ($root) {
     $mailDirectory = sys_get_temp_dir() . '/tinvar-e2e-mail-' . bin2hex(random_bytes(4));
     mkdir($mailDirectory, 0o700);
     $mailLog = "{$mailDirectory}/mail.log";
     $output = '';
     try {
-        served($root, function (string $origin, string $log, Renderer $renderer, string $token, array $env) use ($root, &$output): void {
+        served($root, function (string $origin, string $log, ?Renderer $renderer, string $token, array $env) use ($root, &$output): void {
             $output = runWithTimeout(
                 ['node', "{$root}/examples/shop/e2e/email-links.mjs", $origin, StaffAccount::EMAIL, StaffAccount::PASSWORD],
                 $root,
                 120,
                 [...array_filter($env, \is_string(...)), 'TINVAR_TEST_TOKEN' => $token, 'TINVAR_E2E_PHP' => PHP_BINARY],
             );
-        }, ['SHOP_DATABASE' => Shop::testDatabase(), 'SHOP_MAIL_LOG' => $mailLog], testProfile: true, hosts: true);
+        }, ['SHOP_DATABASE' => Shop::testDatabase(), 'SHOP_MAIL_LOG' => $mailLog], testProfile: true, hosts: true, server: $server);
     } finally {
         @unlink($mailLog);
         @rmdir($mailDirectory);
@@ -969,7 +1087,7 @@ it('signs in by an emailed link, resets a password by one, and joins the staff b
         ->and($result['invite']['heading'])->toBe("Join Pellwick Supply's staff")
         ->and($result['invite']['landed'])->toBe('admin.localhost/orders')
         ->and($result['invite']['again'])->toBe("This invite won't work");
-});
+})->with(SERVERS);
 
 // ADR 0116: a yes is asked of the inbox, and on once its link is used.
 it('asks the inbox when a switch is flipped on, and turns it on from the emailed link', function () use ($root) {
