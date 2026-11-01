@@ -6,6 +6,7 @@ namespace Tinvar\Http;
 
 use Tinvar\Actions\ActionRegistry;
 use Tinvar\Actions\ActionRunner;
+use Tinvar\Audit\AuditLog;
 use Tinvar\Actions\TagInvalidation;
 use Tinvar\Actions\Revalidator;
 use Tinvar\Auth\AuthContext;
@@ -634,6 +635,11 @@ final class Kernel
      *        path, and every entry point declaring #[Domain] -- or in a panel held to a
      *        host -- runs on that host alone. Without it, an entry point declaring
      *        #[Domain] is refused here
+     * @param AuditLog|null $audit the application's audit log (ADR 0150): given, it hears every
+     *        action around its body -- an #[AuditedAction] then runs in a transaction with its
+     *        entry -- is told the host, client address and id of each request it handles, is
+     *        in the container for actions and pages to record events with, and forgets what
+     *        it holds of a request with the reset contract
      */
     public function __construct(
         public readonly Orm $orm,
@@ -696,6 +702,7 @@ final class Kernel
         private readonly ?MailEventsEndpoint $mailEvents = null,
         ?Domains $domains = null,
         ?Notifications $notifications = null,
+        private readonly ?AuditLog $audit = null,
     ) {
         $this->resolver = $resolver;
         $this->shared = $shared;
@@ -843,6 +850,9 @@ final class Kernel
         }
         if ($features !== null) {
             $container?->instance(Features::class, $features)->instance(FlagReader::class, $features->reader());
+        }
+        if ($audit !== null) {
+            $container?->instance(AuditLog::class, $audit);
         }
 
         $this->panels = $panels;
@@ -1041,6 +1051,7 @@ final class Kernel
                 $staticPages,
                 $standIns === null ? null : $standIns->action(...),
                 $this->sharedTags,
+                $audit,
             ),
             maxBodyBytes: $maxBodyBytes,
             revalidator: $revalidator,
@@ -1659,6 +1670,12 @@ final class Kernel
         if ($live?->hub instanceof Mercure) {
             $this->scope->add('hub', $live->hub->endRequest(...));
         }
+
+        // Nor the request and actions the audit log was told of: an entry
+        // made after must not name this request's host or address.
+        if ($this->audit !== null) {
+            $this->scope->add('audit', $this->audit->reset(...));
+        }
     }
 
     /**
@@ -1834,6 +1851,9 @@ final class Kernel
         $this->handling = $request;
         $host = HostMatch::of($request);
         $hostBefore = $this->enterHost($host ?? false);
+        // Where each audit entry the request makes was asked for (ADR 0150).
+        $audit = $this->audit;
+        $auditDepth = $audit?->enterRequest($request, $this->telemetry?->requestId()) ?? 0;
         $failure = null;
         $ended = false;
         foreach ($this->requestBuilds as $builds) {
@@ -1864,6 +1884,7 @@ final class Kernel
             $this->toolbar?->end();
             $this->handling = $handling;
             $this->leaveHost($hostBefore);
+            $audit?->leaveRequest($auditDepth);
             $this->scope->reset();
         }
     }

@@ -177,6 +177,9 @@ return [
             // The accounts kit (ADR 0153): sign-up, sign-in, sessions with
             // rows, passkeys and two-factor, on the core, jobs and mail.
             'accounts' => ['Tinvar\\Accounts\\'],
+            // The audit log (ADR 0155): over jobs, to name the job that made
+            // a change and its starter, and services, to name a service.
+            'audit' => ['Tinvar\\Audit\\', 'Tinvar\\Attributes\\AuditedAction'],
             'kernel' => ['Tinvar\\Http\\Kernel', 'Tinvar\\Console\\', 'Tinvar\\Discovery\\', 'Tinvar\\Server\\', 'Tinvar\\Http\\TestableApplication', 'Tinvar\\Http\\BrowserTestable', 'Tinvar\\Attributes\\Command'],
             ...$above,
         ],
@@ -198,11 +201,12 @@ return [
             'services' => ['support', 'database', 'queue', ...$coreNames, 'calls'],
             'gateway' => ['support', 'database', 'queue', ...$coreNames],
             'accounts' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'mail'],
-            'kernel' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts'],
-            'tenancy' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'kernel'],
-            'billing' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'kernel'],
-            'testing' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'kernel'],
-            'codegen' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'kernel'],
+            'audit' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'calls', 'services'],
+            'kernel' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit'],
+            'tenancy' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit', 'kernel'],
+            'billing' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit', 'kernel'],
+            'testing' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit', 'kernel'],
+            'codegen' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit', 'kernel'],
         ],
         'sources' => [
             'packages/framework/src' => 'Tinvar\\',
