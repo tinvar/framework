@@ -28,6 +28,15 @@ namespace Tinvar\Http;
  * conspicuous at once, rather than handing the caller a fresh bucket.
  * Unless the peer is a pinned proxy, the peer is the address, as it was
  * before.
+ *
+ * A peer at one of this machine's own addresses is never a proxy, whatever
+ * range holds it. The shipped deployments pin a range the server's own
+ * address is in -- compose's subnet holds the container's, 10.0.0.0/8 the
+ * pod's -- and the renderers share that network namespace: a compromised
+ * renderer that connects to its own container's or pod's address arrives
+ * from it, and would otherwise name any client it liked, a throttle bucket
+ * of its own for every guess. Loopback is left to the list: a terminator
+ * on the same machine connects from there, and is pinned by name.
  */
 final readonly class TrustedProxies
 {
@@ -41,8 +50,11 @@ final readonly class TrustedProxies
      */
     public const string CADDY_ENV = 'TINVAR_TRUSTED_PROXY_RANGES';
 
-    /** @param list<array{string, int}> $networks each network's packed address and its prefix length */
-    private function __construct(private array $networks) {}
+    /**
+     * @param list<array{string, int}> $networks each network's packed address and its prefix length
+     * @param list<string> $own this machine's own addresses, packed, loopback left out: never a proxy
+     */
+    private function __construct(private array $networks, private array $own = []) {}
 
     /** No proxy: the peer is always the client. */
     public static function none(): self
@@ -52,9 +64,11 @@ final readonly class TrustedProxies
 
     /**
      * @param list<string> $entries CIDR networks, `10.0.0.0/8` or `fd00::/8`, or single addresses
+     * @param list<string>|null $own this machine's own addresses, which are never a proxy; read
+     *        from its interfaces (ownAddresses()) unless given. Loopback among them is left out.
      * @throws \InvalidArgumentException naming the first malformed entry by its place
      */
-    public static function of(array $entries): self
+    public static function of(array $entries, ?array $own = null): self
     {
         $networks = [];
         foreach ($entries as $i => $entry) {
@@ -69,8 +83,48 @@ final readonly class TrustedProxies
             }
             $networks[] = $network;
         }
+        if ($networks === []) {
+            return new self([]);
+        }
 
-        return new self($networks);
+        $packed = [];
+        foreach ($own ?? self::ownAddresses() as $address) {
+            $address = self::packed($address);
+            if ($address !== null && !self::loopback($address)) {
+                $packed[] = $address;
+            }
+        }
+
+        return new self($networks, array_values(array_unique($packed)));
+    }
+
+    /**
+     * This machine's own unicast addresses -- this network namespace's, in
+     * a container or a pod -- loopback left out; none where PHP cannot list
+     * its interfaces. Read once per process.
+     *
+     * @return list<string>
+     */
+    public static function ownAddresses(): array
+    {
+        static $own = null;
+        if ($own !== null) {
+            return $own;
+        }
+
+        $found = [];
+        $interfaces = \function_exists('net_get_interfaces') ? @net_get_interfaces() : false;
+        foreach (\is_array($interfaces) ? $interfaces : [] as $interface) {
+            foreach (\is_array($interface['unicast'] ?? null) ? $interface['unicast'] : [] as $unicast) {
+                $address = \is_array($unicast) && \is_string($unicast['address'] ?? null) ? $unicast['address'] : null;
+                $packed = $address === null ? null : self::packed($address);
+                if ($packed !== null && !self::loopback($packed)) {
+                    $found[] = (string) inet_ntop($packed);
+                }
+            }
+        }
+
+        return $own = array_values(array_unique($found));
     }
 
     /**
@@ -115,7 +169,7 @@ final readonly class TrustedProxies
         if ($packed === null) {
             return '';
         }
-        if (!$this->trustsPacked($packed)) {
+        if (!$this->trustsPeer($packed)) {
             return $peer;
         }
 
@@ -159,7 +213,7 @@ final readonly class TrustedProxies
         }
 
         $packed = self::packed($request->remoteAddress ?? '');
-        if ($packed === null || !$this->trustsPacked($packed)) {
+        if ($packed === null || !$this->trustsPeer($packed)) {
             return $host;
         }
 
@@ -170,6 +224,18 @@ final readonly class TrustedProxies
         $hops = explode(',', $forwarded);
 
         return trim($hops[\count($hops) - 1], " \t");
+    }
+
+    /** Whether a peer is a pinned proxy: in a pinned network, and not this machine itself. */
+    private function trustsPeer(string $packed): bool
+    {
+        return !\in_array($packed, $this->own, true) && $this->trustsPacked($packed);
+    }
+
+    /** Whether a packed address is loopback: 127.0.0.0/8 or ::1. */
+    private static function loopback(string $packed): bool
+    {
+        return \strlen($packed) === 4 ? $packed[0] === "\x7f" : $packed === str_repeat("\0", 15) . "\x01";
     }
 
     private function trustsPacked(string $packed): bool

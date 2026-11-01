@@ -138,3 +138,49 @@ describe('the list of proxies', function () {
         'empty' => [''],
     ]);
 });
+
+/**
+ * The shipped deployments trust a range that holds the server's own
+ * address: compose's subnet holds the container's, and 10.0.0.0/8 the
+ * pod's. The renderers share that network namespace -- the one container's
+ * interfaces, the pod's -- and nothing stops a compromised renderer
+ * connecting to its own container's or pod's address, where it arrives
+ * from that address: a trusted proxy, which then names any client it
+ * likes, a throttle bucket of its own for every guess at a password. A
+ * peer at one of this machine's own addresses connected from inside it,
+ * and is never a proxy; loopback, which a terminator on the same machine
+ * connects from, stays the list's to say.
+ */
+describe("a peer at the server's own address", function () {
+    $proxies = TrustedProxies::of(['10.0.0.0/8', '127.0.0.1', 'fd00::/8'], own: ['10.213.89.2', 'fd00::2', '127.0.0.1', '::1']);
+
+    it('is never a proxy, whatever range holds it', function () use ($proxies) {
+        expect($proxies->clientAddress(proxied('10.213.89.2', '198.51.100.1')))->toBe('10.213.89.2')
+            ->and($proxies->clientAddress(proxied('::ffff:10.213.89.2', '198.51.100.1')))->toBe('::ffff:10.213.89.2')
+            ->and($proxies->clientAddress(proxied('fd00::2', '198.51.100.1')))->toBe('fd00::2')
+            ->and($proxies->host(new Request('GET', '/', ['host' => 'shop.test', 'x-forwarded-host' => 'admin.shop.test'], remoteAddress: '10.213.89.2')))->toBe('shop.test');
+    });
+
+    it("leaves every other peer in the range a proxy, and loopback the list's to say", function () use ($proxies) {
+        expect($proxies->clientAddress(proxied('10.213.89.1', '198.51.100.1')))->toBe('198.51.100.1')
+            ->and($proxies->clientAddress(proxied('127.0.0.1', '198.51.100.1')))->toBe('198.51.100.1')
+            ->and($proxies->host(new Request('GET', '/', ['host' => 'shop.test', 'x-forwarded-host' => 'admin.shop.test'], remoteAddress: '10.213.89.1')))->toBe('admin.shop.test');
+    });
+
+    it('cannot spread its guesses over buckets of its own', function () use ($proxies) {
+        $throttle = new Throttle(new ArrayThrottleStore(), new AuthContext(), $proxies->clientAddress(...));
+
+        foreach (range(1, 3) as $i) {
+            $throttle->hitAddress('sign-in', proxied('10.213.89.2', "198.51.100.{$i}"), 3, 60);
+        }
+
+        expect($throttle->hitAddress('sign-in', proxied('10.213.89.2', '198.51.100.9'), 3, 60)->allowed)->toBeFalse();
+    });
+
+    it("is read from the machine's interfaces where none is given, loopback left out", function () {
+        $own = TrustedProxies::ownAddresses();
+
+        expect($own)->each->toBeString()
+            ->and(array_values(array_filter($own, static fn (string $a): bool => str_starts_with($a, '127.') || $a === '::1')))->toBe([]);
+    });
+});
