@@ -22,6 +22,13 @@ use Tinvar\Mail\MailWebhookDelivery;
  * `Transient`; `email.complained` a complaint; `email.delivered` a
  * delivery. The rest -- sent, opened, clicked, delayed -- are not this
  * endpoint's, and are taken and ignored.
+ *
+ * Resend names the message's readers, not the one the event is about:
+ * `data.to` is the whole To list. So an event is read for each address in
+ * it, and where the message named more than one reader -- in To, Cc or
+ * Bcc -- each bounce and complaint is ambiguous: dispatched, but nobody is
+ * suppressed, since one reader's mailbox refusing the message says nothing
+ * of the others'. Only a message to one reader is suppressed by its event.
  */
 final readonly class ResendWebhook implements MailWebhook
 {
@@ -75,12 +82,11 @@ final readonly class ResendWebhook implements MailWebhook
         $at = Payload::time($payload['created_at'] ?? null, $now);
         $bounce = Payload::map($data['bounce'] ?? null);
 
+        $to = self::addresses($data['to'] ?? null);
+        $ambiguous = \count(array_unique([...$to, ...self::addresses($data['cc'] ?? null), ...self::addresses($data['bcc'] ?? null)])) > 1;
+
         $events = [];
-        foreach (\is_array($data['to'] ?? null) ? $data['to'] : [$data['to'] ?? null] as $to) {
-            $recipient = Payload::email($to);
-            if ($recipient === null) {
-                continue;
-            }
+        foreach ($to as $recipient) {
             $event = match ($type) {
                 'email.bounced' => new MailBounced(
                     ResendTransport::NAME,
@@ -89,8 +95,9 @@ final readonly class ResendWebhook implements MailWebhook
                     $at,
                     ($bounce['type'] ?? 'Permanent') !== 'Transient',
                     Payload::text($bounce['message'] ?? null),
+                    $ambiguous,
                 ),
-                'email.complained' => new MailComplained(ResendTransport::NAME, $recipient, $messageId, $at),
+                'email.complained' => new MailComplained(ResendTransport::NAME, $recipient, $messageId, $at, ambiguous: $ambiguous),
                 'email.delivered' => new MailDelivered(ResendTransport::NAME, $recipient, $messageId, $at),
                 default => null,
             };
@@ -100,5 +107,23 @@ final readonly class ResendWebhook implements MailWebhook
         }
 
         return $events;
+    }
+
+    /**
+     * The addresses a field names, lowercased, each once: a list, or one.
+     *
+     * @return list<string>
+     */
+    private static function addresses(mixed $field): array
+    {
+        $addresses = [];
+        foreach (\is_array($field) ? $field : [$field] as $value) {
+            $address = Payload::email($value);
+            if ($address !== null) {
+                $addresses[] = $address;
+            }
+        }
+
+        return array_values(array_unique($addresses));
     }
 }

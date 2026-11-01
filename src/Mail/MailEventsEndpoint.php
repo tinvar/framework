@@ -154,9 +154,9 @@ final readonly class MailEventsEndpoint
         if ($this->suppressions === null) {
             return;
         }
-        if ($event instanceof MailBounced && $event->permanent) {
+        if ($event instanceof MailBounced && $event->permanent && !$event->ambiguous) {
             $why = SuppressionReason::Bounce;
-        } elseif ($event instanceof MailComplained) {
+        } elseif ($event instanceof MailComplained && !$event->ambiguous) {
             $why = SuppressionReason::Complaint;
         } else {
             return;

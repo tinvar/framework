@@ -122,6 +122,30 @@ describe('Resend (Svix)', function () {
             ->and($events('email.opened'))->toBe([]);
     });
 
+    it('suppresses no one for a bounce or complaint naming several readers, whose one it was is not said', function () use ($secret, $key) {
+        $suppressions = new ArraySuppressions();
+        $dispatched = [];
+        $endpoint = new MailEventsEndpoint([new ResendWebhook($secret)], new ArrayNonceStore(), $suppressions, static function (MailEvent $e) use (&$dispatched): void {
+            $dispatched[] = $e;
+        }, static fn (): int => NOW);
+        $deliver = static function (string $id, array $data) use ($endpoint, $key): void {
+            $body = json_encode(['type' => $data['type'], 'created_at' => '2027-01-15T08:00:00Z', 'data' => ['email_id' => 'e-' . $id, ...$data['data']]], JSON_THROW_ON_ERROR);
+            $endpoint->handle(post('resend', $body, ['svix-id' => $id, 'svix-timestamp' => (string) NOW, 'svix-signature' => 'v1,' . SvixSignature::sign($key, $id, NOW, $body)]), $body);
+        };
+
+        $deliver('msg_many_bounce', ['type' => 'email.bounced', 'data' => ['to' => ['ada@example.test', 'bob@example.test', 'cy@example.test'], 'bounce' => ['type' => 'Permanent', 'message' => '550 5.1.1 bob unknown']]]);
+        $deliver('msg_many_complaint', ['type' => 'email.complained', 'data' => ['to' => ['ada@example.test', 'bob@example.test']]]);
+        $deliver('msg_one_cc', ['type' => 'email.bounced', 'data' => ['to' => ['dee@example.test'], 'cc' => ['eve@example.test'], 'bounce' => ['type' => 'Permanent']]]);
+
+        expect($suppressions->held)->toBe([])
+            ->and($dispatched)->toHaveCount(6)
+            ->and(array_map(static fn (MailEvent $e): bool => $e->ambiguous, $dispatched))->toBe([true, true, true, true, true, true]);
+
+        $deliver('msg_one', ['type' => 'email.bounced', 'data' => ['to' => ['Ada@Example.test'], 'bounce' => ['type' => 'Permanent']]]);
+        expect(array_keys($suppressions->held))->toBe(['ada@example.test'])
+            ->and($dispatched[6]->ambiguous)->toBeFalse();
+    });
+
     it('refuses a secret that is not one', function () {
         expect(fn () => new ResendWebhook('not base64 at all!'))->toThrow(\InvalidArgumentException::class);
     });
