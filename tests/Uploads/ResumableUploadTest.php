@@ -658,14 +658,14 @@ describe('completing', function () {
 
     // Review: a process killed while it held a session's claim left the
     // record claimed, holding its size against the quota for ever.
-    it('prunes a session claimed by a completion that never finished, once past its expiry and the grace', function () {
+    it('prunes a session claimed by a completion that never finished, once past the lease and the grace', function () {
         $file = largePdf(UploadEndpoint::MIN_CHUNK_BYTES + 10);
         $app = new App($storage = new MemoryStorage(), quota: Tinvar\Uploads\UploadQuota::perUser(strlen($file)));
         $session = (string) beginSession($app, strlen($file))['session'];
         sendChunk($app, $session, 0, substr($file, 0, UploadEndpoint::MIN_CHUNK_BYTES));
         $app->store->claim($app->store->all()[0]->id, $app->now);
 
-        $app->now += UploadEndpoint::SESSION_TTL;
+        $app->now += Tinvar\Uploads\UploadStore::SESSION_CLAIM_LEASE;
         expect($app->uploads->prune())->toBe(0)
             ->and($app->store->all())->toHaveCount(1);
 
@@ -673,6 +673,111 @@ describe('completing', function () {
         expect($app->uploads->prune())->toBeGreaterThanOrEqual(1)
             ->and($app->store->all())->toBe([])
             ->and($storage->keys())->toBe([]);
+    });
+
+    // Review: a completion killed mid-keep left the session at 425 until it
+    // ran out a day later, and an abort while one ran did nothing, saying 204.
+    it('takes back a claim older than the lease, so a completion killed mid-keep is gone on with', function () {
+        $app = new App(new MemoryStorage());
+        $file = largePdf(UploadEndpoint::MIN_CHUNK_BYTES + 10);
+        $session = (string) beginSession($app, strlen($file))['session'];
+        sendChunk($app, $session, 0, substr($file, 0, UploadEndpoint::MIN_CHUNK_BYTES));
+        $app->store->claim($app->store->all()[0]->id, $app->now);
+        $last = substr($file, UploadEndpoint::MIN_CHUNK_BYTES);
+
+        $app->now += Tinvar\Uploads\UploadStore::SESSION_CLAIM_LEASE - 1;
+        expect(offsetOf($app, $session)->status)->toBe(425)
+            ->and(sendChunk($app, $session, UploadEndpoint::MIN_CHUNK_BYTES, $last)->status)->toBe(425);
+
+        $app->now += 1;
+        expect(json(offsetOf($app, $session))['offset'])->toBe(UploadEndpoint::MIN_CHUNK_BYTES);
+        $done = sendChunk($app, $session, UploadEndpoint::MIN_CHUNK_BYTES, $last);
+        expect($done->status)->toBe(201, $done->body());
+    });
+
+    it('answers an abort while a completion runs 425, and gives up a session whose claim outlived the lease', function () {
+        [$app, $s3] = partsApp();
+        $session = (string) beginSession($app, 1000, direct: true)['session'];
+        $app->store->claim($app->store->all()[0]->id, $app->now);
+
+        $refused = postSession($app, UploadEndpoint::SESSION_ABORT_PATH, ['session' => $session]);
+        expect($refused->status)->toBe(425)
+            ->and(json($refused)['error']['code'])->toBe('upload_completing')
+            ->and($app->store->all())->toHaveCount(1)
+            ->and($s3->uploads)->toHaveCount(1);
+
+        $app->now += Tinvar\Uploads\UploadStore::SESSION_CLAIM_LEASE;
+        $s3->now = $app->now;
+        expect(postSession($app, UploadEndpoint::SESSION_ABORT_PATH, ['session' => $session])->status)->toBe(204)
+            ->and($app->store->all())->toBe([])
+            ->and($s3->uploads)->toBe([]);
+    });
+
+    // Review: a keep that outlived its lease had the claim taken over, then
+    // released or forgot the record out from under the second, or both kept.
+    it('keeps the file once when a slow keep outlives its lease and a second request takes the claim over', function () {
+        $app = null;
+        $session = '';
+        $last = '';
+        $second = null;
+        $scans = 0;
+        $scanner = new class (static function () use (&$app, &$session, &$last, &$second, &$scans): void {
+            if (++$scans === 1) {
+                // The first keep, slow: past its lease a second request comes.
+                $app->now += Tinvar\Uploads\UploadStore::SESSION_CLAIM_LEASE;
+                $second = sendChunk($app, $session, UploadEndpoint::MIN_CHUNK_BYTES, $last);
+            }
+        }) implements Tinvar\Uploads\FileScanner {
+            public function __construct(private \Closure $during) {}
+
+            public function scan(string $path): ?string
+            {
+                ($this->during)();
+
+                return null;
+            }
+        };
+        $app = new App($storage = new MemoryStorage(), scanner: $scanner);
+        $file = largePdf(UploadEndpoint::MIN_CHUNK_BYTES + 10);
+        $session = (string) beginSession($app, strlen($file))['session'];
+        sendChunk($app, $session, 0, substr($file, 0, UploadEndpoint::MIN_CHUNK_BYTES));
+        $last = substr($file, UploadEndpoint::MIN_CHUNK_BYTES);
+
+        $first = sendChunk($app, $session, UploadEndpoint::MIN_CHUNK_BYTES, $last);
+
+        expect($second?->status)->toBe(201, (string) $second?->body())
+            ->and($app->store->all())->toHaveCount(1)
+            ->and($app->store->all()[0]->type)->toBe('application/pdf')
+            ->and($storage->keys())->toBe([$app->store->all()[0]->key])
+            // The first, refused adding the upload the second made, answers
+            // with that upload, and leaves nothing of its own behind.
+            ->and($first->status)->toBe(201)
+            ->and(json($first))->toBe(json($second))
+            ->and(json(offsetOf($app, $session))['upload']['upload'])->toBe($app->store->all()[0]->id);
+    });
+
+    it('gives the claim back, bytes kept, when the keep finds too many uploads waiting', function () {
+        $app = new App($storage = new MemoryStorage());
+        $file = largePdf(UploadEndpoint::MIN_CHUNK_BYTES + 10);
+        $session = (string) beginSession($app, strlen($file))['session'];
+        sendChunk($app, $session, 0, substr($file, 0, UploadEndpoint::MIN_CHUNK_BYTES));
+        // Uploads of the user's sent the other way while this one went on.
+        $owner = $app->store->all()[0]->ownerHash;
+        for ($n = 0; $n < UploadEndpoint::MAX_PENDING; $n++) {
+            $app->store->add(new Tinvar\Uploads\PendingUpload(sprintf('%032d', $n), "documents/{$n}.pdf", 'a', 'f', 'C', 't', 'documents', '', '', 's', 'u', 'n.pdf', 'application/pdf', 3, $app->now, $app->now + 3600, ownerHash: $owner));
+        }
+        $last = substr($file, UploadEndpoint::MIN_CHUNK_BYTES);
+
+        $waiting = sendChunk($app, $session, UploadEndpoint::MIN_CHUNK_BYTES, $last);
+        $record = array_values(array_filter($app->store->all(), static fn ($u): bool => $u->type === ''))[0] ?? null;
+        expect($waiting->status)->toBe(429)
+            ->and($record?->claimedAt)->toBeNull()
+            ->and(array_filter($storage->keys(), static fn (string $k): bool => str_starts_with($k, UploadEndpoint::PARTIAL_PREFIX . '/')))->toHaveCount(1);
+
+        for ($n = 0; $n < UploadEndpoint::MAX_PENDING; $n++) {
+            $app->store->forget(sprintf('%032d', $n));
+        }
+        expect(sendChunk($app, $session, UploadEndpoint::MIN_CHUNK_BYTES, $last)->status)->toBe(201);
     });
 
     it('tells a completion or a look in parts while another completion runs to come back', function () {

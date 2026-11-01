@@ -282,6 +282,53 @@ describe('an upload store', function () {
             ->and($store->claim('nope', 1500))->toBeFalse();
     })->with('upload stores');
 
+    it('takes a resumable session\'s claim back once it is older than the lease, and never an action\'s', function (\Closure $make) {
+        /** @var UploadStore $store */
+        $store = $make();
+        $session = new PendingUpload(str_repeat('s', 32), 'tinvar-partial/s', 'a', 'f', 'C', 't', 'avatars', '', '', 's', 'u@e1', 'n.pdf', '', 3, 1000, 1000 + 86_400, ownerHash: 'u');
+        $store->add($session);
+        $store->add(pendingUpload(str_repeat('a', 32), 1000 + 86_400));
+        $lease = UploadStore::SESSION_CLAIM_LEASE;
+
+        expect($store->claim($session->id, 1000))->toBeTrue()
+            ->and($store->claim($session->id, 1000 + $lease - 1))->toBeFalse()
+            ->and($store->claim($session->id, 1000 + $lease))->toBeTrue()
+            ->and($store->find($session->id)?->claimedAt)->toBe(1000 + $lease)
+            ->and($store->claim(str_repeat('a', 32), 1000))->toBeTrue()
+            ->and($store->claim(str_repeat('a', 32), 1000 + 2 * $lease))->toBeFalse();
+
+        // Pruning collects a session whose claim is past the lease, though
+        // it has not run out; an action's claim it never touches.
+        expect(array_map(fn (PendingUpload $u): string => $u->id, $store->expired(1000 + 2 * $lease - 1, 10)))->toBe([])
+            ->and(array_map(fn (PendingUpload $u): string => $u->id, $store->expired(1000 + 2 * $lease, 10)))->toBe([$session->id]);
+    })->with('upload stores');
+
+    it('fences a session\'s claim: a release, a renewal or a forget by the claim taken over does nothing', function (\Closure $make) {
+        /** @var UploadStore $store */
+        $store = $make();
+        $session = new PendingUpload(str_repeat('s', 32), 'tinvar-partial/s', 'a', 'f', 'C', 't', 'avatars', '', '', 's', 'u@e1', 'n.pdf', '', 3, 1000, 1000 + 86_400, ownerHash: 'u');
+        $store->add($session);
+        $lease = UploadStore::SESSION_CLAIM_LEASE;
+        $first = 1000;
+        $second = 1000 + $lease;
+
+        expect($store->claim($session->id, $first))->toBeTrue()
+            ->and($store->renew($session->id, $first, $first + 60))->toBeTrue()
+            ->and($store->find($session->id)?->claimedAt)->toBe($first + 60);
+        $first += 60;
+        // The first keep runs past its lease, and a second request takes over.
+        $second = $first + $lease;
+        expect($store->claim($session->id, $second))->toBeTrue();
+
+        $store->release($session->id, $first);
+        expect($store->find($session->id)?->claimedAt)->toBe($second)
+            ->and($store->renew($session->id, $first, $second + 1))->toBeFalse()
+            ->and($store->forget($session->id, $first))->toBeFalse()
+            ->and($store->find($session->id))->not->toBeNull()
+            ->and($store->forget($session->id, $second))->toBeTrue()
+            ->and($store->find($session->id))->toBeNull();
+    })->with('upload stores');
+
     it('counts what one owner has waiting, and lists what expired unclaimed, oldest first', function (\Closure $make) {
         $store = $make();
         $store->add(pendingUpload(str_repeat('a', 32), 3000));

@@ -457,12 +457,17 @@ describe('an action taking an upload', function () {
             public bool $secondClaimed = false;
 
             /** A second call's claim, made the moment this one's transaction is over. */
-            public function release(string $id): void
+            public function release(string $id, ?int $claimedAt = null): void
             {
                 if ($this->connection?->inTransaction() === false) {
                     $this->secondClaimed = $this->inner?->claim($id, 1_800_000_000) === true;
                 }
-                $this->inner?->release($id);
+                $this->inner?->release($id, $claimedAt);
+            }
+
+            public function renew(string $id, int $claimedAt, int $now): bool
+            {
+                return $this->inner?->renew($id, $claimedAt, $now) === true;
             }
 
             public function add(PendingUpload $upload): void
@@ -505,9 +510,9 @@ describe('an action taking an upload', function () {
                 return $this->inner?->expired($now, $limit) ?? [];
             }
 
-            public function forget(string $id): void
+            public function forget(string $id, ?int $claimedAt = null): bool
             {
-                $this->inner?->forget($id);
+                return $this->inner?->forget($id, $claimedAt) === true;
             }
 
             public function forgetClaimedBefore(int $before): int

@@ -56,11 +56,17 @@ use Tinvar\Storage\StorageKey;
  *      did not answer -- its claim is given back and its bytes kept, and the
  *      last chunk sent again, or /complete, completes it from them. While a
  *      completion runs, any other use of the session is a 425,
- *      `upload_completing`, with Retry-After. The upload made from it is
+ *      `upload_completing`, with Retry-After -- an abort too, since the
+ *      file may yet be kept. A claim holds for SESSION_CLAIM_LEASE
+ *      (UploadStore): one older was left by a process that died while
+ *      keeping, and the session is open again, to be completed, aborted
+ *      or pruned. Refused with a 429 -- too many of the user's uploads
+ *      waiting -- the claim is given back too. The upload made from it is
  *      found from the session again, so a completion whose answer was lost
  *      is answered once more, never made twice.
  *   6. /_upload/session/abort gives it up: its bytes removed -- the store's
- *      upload aborted -- and its room given back.
+ *      upload aborted -- and its room given back; a 425 while a
+ *      completion holds it.
  *
  * A session gone -- expired and pruned, abandoned, or completed and claimed
  * -- is a 404, `upload_session_gone`, and one bound to another session,
@@ -310,7 +316,7 @@ final readonly class ResumableUploads
             return UploadEndpoint::kept($this->completed($session));
         } catch (\Throwable $e) {
             if ($claimed) {
-                $this->uploads->store->release($session->id);
+                $this->uploads->store->release($session->id, $now);
             }
 
             throw $e;
@@ -320,7 +326,7 @@ final readonly class ResumableUploads
             return self::json(200, ['offset' => $held], [UploadEndpoint::OFFSET_HEADER => (string) $held]);
         }
 
-        return $this->keepWhole($session, $record, $declared, $this->fetchAppended($record, $session));
+        return $this->keepWhole($session, $record, $declared, $this->fetchAppended($record, $session), $now);
     }
 
     /**
@@ -330,23 +336,24 @@ final readonly class ResumableUploads
      */
     private function completeHeld(UploadSession $session, PendingUpload $record, Uploaded $declared): Response
     {
-        if (!$this->uploads->store->claim($session->id, $this->uploads->now())) {
+        $claimedAt = $this->uploads->now();
+        if (!$this->uploads->store->claim($session->id, $claimedAt)) {
             return UploadEndpoint::kept($this->completed($session));
         }
         try {
             $held = $this->appendable()->size($record->key) ?? 0;
         } catch (\Throwable $e) {
-            $this->uploads->store->release($session->id);
+            $this->uploads->store->release($session->id, $claimedAt);
 
             throw $e;
         }
         if ($held !== $session->size) {
-            $this->uploads->store->release($session->id);
+            $this->uploads->store->release($session->id, $claimedAt);
 
             throw self::elsewhere($held);
         }
 
-        return $this->keepWhole($session, $record, $declared, $this->fetchAppended($record, $session));
+        return $this->keepWhole($session, $record, $declared, $this->fetchAppended($record, $session), $claimedAt);
     }
 
     /** @return \Closure(string): void what fetches the bytes appended into the path it is given */
@@ -445,9 +452,7 @@ final readonly class ResumableUploads
             }
         } catch (\Throwable $e) {
             // Not complete: the session is open again, to be gone on with.
-            if ($this->uploads->store->find($session->id) !== null) {
-                $this->uploads->store->release($session->id);
-            }
+            $this->uploads->store->release($session->id, $now);
 
             throw $e;
         }
@@ -474,23 +479,28 @@ final readonly class ResumableUploads
             if (!$found) {
                 throw new HttpException(422, 'The file did not arrive.', 'upload_missing');
             }
-        });
+        }, $now);
     }
 
     private function abort(UploadSession $session): Response
     {
         $record = $this->uploads->store->find($session->id);
-        if ($record !== null && $session->names($record) && $record->claimedAt === null
-            && $this->uploads->store->claim($session->id, $this->uploads->now())) {
+        $now = $this->uploads->now();
+        if ($record !== null && $session->names($record) && $this->claimHeld($record, $now)) {
+            // A completion is keeping the file: it may yet be kept, so the
+            // abort is not done, and the browser is told to come back.
+            throw self::completing();
+        }
+        if ($record !== null && $session->names($record) && $this->uploads->store->claim($session->id, $now)) {
             try {
                 $this->removeBytes($session, $record);
             } catch (\Throwable $e) {
                 // Kept, for pruning to remove once it runs out.
-                $this->uploads->store->release($session->id);
+                $this->uploads->store->release($session->id, $now);
 
                 throw $e;
             }
-            $this->uploads->store->forget($session->id);
+            $this->uploads->store->forget($session->id, $now);
         }
 
         return Response::make(204, '', ['cache-control' => 'private, no-store', 'vary' => 'Cookie']);
@@ -505,13 +515,31 @@ final readonly class ResumableUploads
      * a store that did not answer, a 5xx -- and its claim is given back, its
      * bytes still there, for the next try to complete it.
      *
+     * The claim is fenced by $claimedAt, the time it was made: a keep that
+     * outlived its lease (UploadStore::SESSION_CLAIM_LEASE) may have had it
+     * taken over, and then gives back, renews and forgets nothing -- the
+     * session is the other request's. The lease is renewed once the file is
+     * fetched, the longest step; a keep that finds its claim taken over then
+     * stops, a 425. And the upload made has an id drawn from the session's
+     * (resultId()), so of two keeps that both get that far, one adds it: the
+     * other finds it made and ends the session, or is refused adding it.
+     *
      * @param \Closure(string): void $fetch writes the whole file to the path it is given
      */
-    private function keepWhole(UploadSession $session, PendingUpload $record, Uploaded $declared, \Closure $fetch): Response
+    private function keepWhole(UploadSession $session, PendingUpload $record, Uploaded $declared, \Closure $fetch, int $claimedAt): Response
     {
+        $resultId = self::resultId($this->uploads, $session->id);
+        $made = $this->uploads->store->find($resultId);
+        if ($made !== null && $made->type !== '') {
+            // Kept already, by a keep whose claim was taken over before it ended the session.
+            $this->end($session, $record, $claimedAt);
+
+            return UploadEndpoint::kept($made);
+        }
+
         $path = tempnam(sys_get_temp_dir(), 'tinvar-resumed-');
         if ($path === false) {
-            $this->uploads->store->release($session->id);
+            $this->uploads->store->release($session->id, $claimedAt);
 
             throw new \RuntimeException('No temporary file to gather an upload into.');
         }
@@ -523,17 +551,35 @@ final readonly class ResumableUploads
                 if (filesize($path) !== $session->size) {
                     throw new HttpException(422, 'The file did not arrive whole.', 'upload_missing');
                 }
-                $kept = $this->endpoint->keepFile($session->binding(), $declared, $path, $record->name, self::resultId($this->uploads, $session->id), $record);
+                $renewed = $this->uploads->now();
+                if (!$this->uploads->store->renew($session->id, $claimedAt, $renewed)) {
+                    // Taken over: the session is another request's now.
+                    throw new ClaimLost();
+                }
+                $claimedAt = $renewed;
+                $kept = $this->endpoint->keepFile($session->binding(), $declared, $path, $record->name, $resultId, $record);
+            } catch (ClaimLost) {
+                throw self::completing();
             } catch (\Throwable $e) {
-                if ($e instanceof HttpException && $e->status >= 400 && $e->status < 500) {
-                    $this->end($session, $record);
+                $made = $this->uploads->store->find($resultId);
+                if ($made !== null && $made->type !== '') {
+                    // Kept meanwhile by a request that took the claim over,
+                    // and this one refused adding it again: that upload.
+                    $this->end($session, $record, $claimedAt);
+
+                    return UploadEndpoint::kept($made);
+                }
+                // Refused for good: a 4xx -- but for 429, too many of the
+                // user's uploads waiting, which passes as they are claimed.
+                if ($e instanceof HttpException && $e->status >= 400 && $e->status < 500 && $e->status !== 429) {
+                    $this->end($session, $record, $claimedAt);
                 } else {
-                    $this->uploads->store->release($session->id);
+                    $this->uploads->store->release($session->id, $claimedAt);
                 }
 
                 throw $e;
             }
-            $this->end($session, $record);
+            $this->end($session, $record, $claimedAt);
 
             return UploadEndpoint::kept($kept);
         } finally {
@@ -541,15 +587,21 @@ final readonly class ResumableUploads
         }
     }
 
-    /** A claimed session over: its bytes removed, where they can be, and its record forgotten. */
-    private function end(UploadSession $session, PendingUpload $record): void
+    /**
+     * A claimed session over: its record forgotten, if the claim made at
+     * $claimedAt still holds it, and then its bytes removed, where they can
+     * be. A claim taken over leaves both to the request that holds it.
+     */
+    private function end(UploadSession $session, PendingUpload $record, int $claimedAt): void
     {
+        if (!$this->uploads->store->forget($session->id, $claimedAt)) {
+            return;
+        }
         try {
             $this->removeBytes($session, $record);
         } catch (StorageException) {
             // Removed by pruning's sweep of the prefix, or the bucket's lifecycle rule.
         }
-        $this->uploads->store->forget($session->id);
     }
 
     /** What is held of an upload, removed: the partial file, or the store's upload and whatever it completed to. */
@@ -561,14 +613,25 @@ final readonly class ResumableUploads
         $this->uploads->storage->delete($record->key);
     }
 
-    /** The session's record, if it is still open: there, as the session began it, unclaimed and unexpired. */
+    /**
+     * The session's record, if it is still open: there, as the session began
+     * it, unexpired, and unclaimed -- or claimed longer ago than the lease,
+     * by a completion whose process died holding it.
+     */
     private function openRecord(UploadSession $session): ?PendingUpload
     {
         $record = $this->uploads->store->find($session->id);
+        $now = $this->uploads->now();
 
-        return $record !== null && $session->names($record) && $record->claimedAt === null && $record->expiresAt > $this->uploads->now()
+        return $record !== null && $session->names($record) && !$this->claimHeld($record, $now) && $record->expiresAt > $now
             ? $record
             : null;
+    }
+
+    /** Whether a completion holds $record's claim: made within the lease (UploadStore::SESSION_CLAIM_LEASE). */
+    private function claimHeld(PendingUpload $record, int $now): bool
+    {
+        return $record->claimedAt !== null && $record->claimedAt > $now - UploadStore::SESSION_CLAIM_LEASE;
     }
 
     /**
@@ -586,7 +649,7 @@ final readonly class ResumableUploads
             // Claimed and not yet kept: another request is completing it,
             // and may yet fail for a reason that passes and give it back.
             $own = $this->uploads->store->find($session->id);
-            if ($own !== null && $session->names($own) && $own->claimedAt !== null && $own->expiresAt > $this->uploads->now()) {
+            if ($own !== null && $session->names($own) && $this->claimHeld($own, $this->uploads->now()) && $own->expiresAt > $this->uploads->now()) {
                 throw self::completing();
             }
 

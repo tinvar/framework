@@ -70,7 +70,7 @@ final class ArrayUploadStore implements UploadStore
     public function claim(string $id, int $now): bool
     {
         $upload = $this->uploads[$id] ?? null;
-        if ($upload === null || $upload->claimedAt !== null || $upload->expiresAt <= $now) {
+        if ($upload === null || $upload->expiresAt <= $now || ($upload->claimedAt !== null && !self::leaseRunOut($upload, $now))) {
             return false;
         }
 
@@ -79,28 +79,52 @@ final class ArrayUploadStore implements UploadStore
         return true;
     }
 
-    public function release(string $id): void
+    public function release(string $id, ?int $claimedAt = null): void
     {
         $upload = $this->uploads[$id] ?? null;
-        if ($upload !== null) {
+        if ($upload !== null && ($claimedAt === null || $upload->claimedAt === $claimedAt)) {
             $this->uploads[$id] = $upload->withClaimedAt(null);
         }
+    }
+
+    public function renew(string $id, int $claimedAt, int $now): bool
+    {
+        $upload = $this->uploads[$id] ?? null;
+        if ($upload === null || $upload->claimedAt !== $claimedAt) {
+            return false;
+        }
+        $this->uploads[$id] = $upload->withClaimedAt($now);
+
+        return true;
     }
 
     public function expired(int $now, int $limit): array
     {
         $expired = array_values(array_filter(
             $this->uploads,
-            static fn (PendingUpload $u): bool => ($u->claimedAt === null || $u->type === '') && $u->expiresAt <= $now,
+            static fn (PendingUpload $u): bool => (($u->claimedAt === null || $u->type === '') && $u->expiresAt <= $now)
+                || ($u->claimedAt !== null && self::leaseRunOut($u, $now)),
         ));
         usort($expired, static fn (PendingUpload $a, PendingUpload $b): int => $a->expiresAt <=> $b->expiresAt);
 
         return \array_slice($expired, 0, max(1, $limit));
     }
 
-    public function forget(string $id): void
+    /** Whether $upload is a resumable session whose claim has outlived its lease. */
+    private static function leaseRunOut(PendingUpload $upload, int $now): bool
     {
+        return $upload->type === '' && $upload->claimedAt !== null && $upload->claimedAt <= $now - self::SESSION_CLAIM_LEASE;
+    }
+
+    public function forget(string $id, ?int $claimedAt = null): bool
+    {
+        $upload = $this->uploads[$id] ?? null;
+        if ($upload === null || ($claimedAt !== null && $upload->claimedAt !== $claimedAt)) {
+            return false;
+        }
         unset($this->uploads[$id]);
+
+        return true;
     }
 
     public function forgetClaimedBefore(int $before): int

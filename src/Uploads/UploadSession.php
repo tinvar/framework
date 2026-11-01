@@ -25,7 +25,10 @@ use Tinvar\Support\Signer;
  *
  * For an upload sent in parts straight to an object store, it carries the
  * store's id for the multipart upload and the size of each part: PHP alone
- * signs a URL for a part, and the browser is handed the id only inside one.
+ * signs a URL for a part. The id is not a secret from the browser: a signed
+ * token's payload is readable by whoever holds it, and every presigned
+ * part URL names it too. What it cannot do is sign one: a part URL is good
+ * only for its number, its length and PART_TTL, and only PHP makes one.
  *
  * SignedToken's envelope, under its own purpose: no ticket, and no other
  * token, ever decodes as one.

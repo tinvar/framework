@@ -231,29 +231,42 @@ final readonly class DatabaseUploadStore implements UploadStore
     public function claim(string $id, int $now): bool
     {
         return $this->connection->execute(
-            "UPDATE {$this->table} SET claimed_at = ? WHERE id = ? AND claimed_at IS NULL AND expires_at > ?",
-            [$now, $id, $now],
+            // A resumable session's claim (of no type) older than the lease
+            // was left by a process that died holding it, and is taken over.
+            "UPDATE {$this->table} SET claimed_at = ? WHERE id = ? AND expires_at > ?"
+            . " AND (claimed_at IS NULL OR (type = '' AND claimed_at <= ?))",
+            [$now, $id, $now, $now - self::SESSION_CLAIM_LEASE],
         ) === 1;
     }
 
-    public function release(string $id): void
+    public function release(string $id, ?int $claimedAt = null): void
     {
-        $this->connection->execute("UPDATE {$this->table} SET claimed_at = NULL WHERE id = ?", [$id]);
+        $claimedAt === null
+            ? $this->connection->execute("UPDATE {$this->table} SET claimed_at = NULL WHERE id = ?", [$id])
+            : $this->connection->execute("UPDATE {$this->table} SET claimed_at = NULL WHERE id = ? AND claimed_at = ?", [$id, $claimedAt]);
+    }
+
+    public function renew(string $id, int $claimedAt, int $now): bool
+    {
+        return $this->connection->execute("UPDATE {$this->table} SET claimed_at = ? WHERE id = ? AND claimed_at = ?", [$now, $id, $claimedAt]) === 1;
     }
 
     public function expired(int $now, int $limit): array
     {
         $rows = $this->connection->select(
-            'SELECT ' . self::COLUMNS . " FROM {$this->table} WHERE (claimed_at IS NULL OR type = '') AND expires_at <= ? ORDER BY expires_at LIMIT " . max(1, $limit),
-            [$now],
+            'SELECT ' . self::COLUMNS . " FROM {$this->table} WHERE ((claimed_at IS NULL OR type = '') AND expires_at <= ?)"
+            . " OR (type = '' AND claimed_at IS NOT NULL AND claimed_at <= ?) ORDER BY expires_at LIMIT " . max(1, $limit),
+            [$now, $now - self::SESSION_CLAIM_LEASE],
         );
 
         return array_map(self::hydrate(...), $rows);
     }
 
-    public function forget(string $id): void
+    public function forget(string $id, ?int $claimedAt = null): bool
     {
-        $this->connection->execute("DELETE FROM {$this->table} WHERE id = ?", [$id]);
+        return ($claimedAt === null
+            ? $this->connection->execute("DELETE FROM {$this->table} WHERE id = ?", [$id])
+            : $this->connection->execute("DELETE FROM {$this->table} WHERE id = ? AND claimed_at = ?", [$id, $claimedAt])) === 1;
     }
 
     public function forgetClaimedBefore(int $before): int

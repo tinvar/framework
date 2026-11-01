@@ -193,8 +193,9 @@ final readonly class Uploads
      * store that cannot list or abort its multipart uploads leaves them to
      * the bucket's lifecycle rule and the sweep; the record goes regardless.
      * A session claimed by a completion that never finished -- its process
-     * killed -- is pruned the same way once past its expiry and the grace,
-     * so its room is given back.
+     * killed -- is pruned the same way once its claim is older than the
+     * lease (UploadStore::SESSION_CLAIM_LEASE) and the grace, or it is past
+     * its expiry and the grace, so its room is given back.
      *
      * @return int how many unclaimed uploads were removed
      */
