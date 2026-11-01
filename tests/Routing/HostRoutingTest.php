@@ -13,6 +13,8 @@ namespace Tinvar\Tests\Routing\HostRouting;
 
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Domain;
+use Tinvar\Attributes\ErrorPage;
+use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Layout;
 use Tinvar\Attributes\Page;
 use Tinvar\Auth\AllowAllGate;
@@ -266,4 +268,31 @@ it('reports in tinvar check a host nobody serves, and two spellings of one host'
         ->and((string) $twice[0])->toContain('match the same hosts')
         ->and((string) $unconfigured[0])->toContain("no domain called 'root'")
         ->and($fine)->toBe([]);
+});
+
+#[ErrorPage([404, 503], view: 'errors/app'), NoAuthorization(reason: 'an error page')]
+final class AppErrors {}
+
+#[ErrorPage([500], view: 'errors/admin'), Domain('admin.{root}'), NoAuthorization(reason: 'an error page')]
+final class AdminServerErrors {}
+
+#[ErrorPage([404], view: 'errors/admin-missing'), Domain('admin.{root}'), NoAuthorization(reason: 'an error page')]
+final class AdminMissing {}
+
+it('picks an exact-status error page over a catch-all, and a host\'s own over the application\'s at the same', function () {
+    $routes = new RouteRegistry();
+    $routes->registerAll([AppErrors::class, AdminServerErrors::class, AdminMissing::class]);
+    $view = static fn (int $status, ?string $host): ?string => $routes->errorChain($status, $host)?->page->view;
+
+    // The application's exact 503 beats the host's 500, which only catches what no page names.
+    expect($view(503, 'admin.{root}'))->toBe('errors/app')
+        // The host's catch-all still answers a 5xx no page names exactly.
+        ->and($view(502, 'admin.{root}'))->toBe('errors/admin')
+        ->and($view(500, 'admin.{root}'))->toBe('errors/admin')
+        // At the same specificity, the host's own.
+        ->and($view(404, 'admin.{root}'))->toBe('errors/admin-missing')
+        // Elsewhere, the application's.
+        ->and($view(404, null))->toBe('errors/app')
+        ->and($view(503, null))->toBe('errors/app')
+        ->and($view(502, null))->toBeNull();
 });

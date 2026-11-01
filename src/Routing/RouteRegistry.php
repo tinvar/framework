@@ -694,14 +694,18 @@ final class RouteRegistry
      * or null when the application has none for it. A page for 500 answers
      * any 5xx no other page names: a 502 or a 503 is the server's failure as
      * much as a 500 is.
+     *
+     * The page that names the status beats a catch-all, wherever each is
+     * declared; at the same specificity a host's own beats the
+     * application's (ADR 0035, 0149). So the application's 503 page answers
+     * a 503 on a host whose own page is for 500 alone, and that host's 500
+     * page still answers its 502.
      */
     public function errorChain(int $status, ?string $host = null): ?RouteChain
     {
-        // A host's own error page first, then the application's: one that
-        // declares no #[Domain] is shown on every host with none of its own.
         $own = $host === null ? [] : $this->hostErrorPages[$host] ?? [];
-        $page = $own[$status] ?? ($status >= 500 ? $own[500] ?? null : null)
-            ?? $this->errorPages[$status] ?? ($status >= 500 ? $this->errorPages[500] ?? null : null);
+        $page = $own[$status] ?? $this->errorPages[$status]
+            ?? ($status >= 500 ? $own[500] ?? $this->errorPages[500] ?? null : null);
         if ($page === null) {
             return null;
         }
