@@ -181,7 +181,8 @@ it('refuses a webhook setting that is not one, by its variable', function () {
         ->and(problems(['TINVAR_SES_WEBHOOK_TOPICS' => 'arn:aws:s3:::bucket'], true)[0])->toStartWith('TINVAR_SES_WEBHOOK_TOPICS is a comma-separated list of SNS topic ARNs')
         ->and(problems(['TINVAR_POSTMARK_WEBHOOK_USERNAME' => 'postmark', 'TINVAR_POSTMARK_WEBHOOK_PASSWORD' => 'short'], true)[0])->toStartWith('TINVAR_POSTMARK_WEBHOOK_PASSWORD must be 24 characters or more')
         ->and(problems(['TINVAR_POSTMARK_WEBHOOK_USERNAME' => 'postmark'], true)[0])->toContain('set together')
-        ->and(problems(['TINVAR_SENDGRID_WEBHOOK_PUBLIC_KEY' => 'bm90IGEga2V5'], true)[0])->toStartWith('TINVAR_SENDGRID_WEBHOOK_PUBLIC_KEY is the base64');
+        ->and(problems(['TINVAR_SENDGRID_WEBHOOK_PUBLIC_KEY' => 'bm90IGEga2V5'], true)[0])->toStartWith('TINVAR_SENDGRID_WEBHOOK_PUBLIC_KEY is the base64')
+        ->and(problems(['TINVAR_MAILGUN_WEBHOOK_SECRET' => 'x'], true))->toBe(['TINVAR_MAILGUN_WEBHOOK_SECRET must be 32 characters or more: the HTTP webhook signing key Mailgun shows.']);
 });
 
 it('declares every class by the rules config classes are held to, each variable read once', function () {

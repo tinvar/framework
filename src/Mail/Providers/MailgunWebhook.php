@@ -32,7 +32,8 @@ use Tinvar\Mail\MailWebhookDelivery;
  * event must name its id and its message's id, and the endpoint acts on it
  * only when the sent-mail log says that message went to that reader through
  * Mailgun (provesContent() is false; MailEventsEndpoint requires the log).
- * And the signing key is this endpoint's alone: shared with another app or
+ * The key is 32 characters or more (MIN_KEY), as Mailgun's are. And the
+ * signing key is this endpoint's alone: shared with another app or
  * endpoint on the account, every delivery signed for those is a triple that
  * verifies here too.
  */
@@ -40,11 +41,21 @@ final readonly class MailgunWebhook implements MailWebhook
 {
     public const int TOLERANCE = 900;
 
+    /**
+     * The shortest signing key taken. Mailgun's are 32 hex digits or more;
+     * a shorter one is a mistake, and one guessed in a few tries makes any
+     * delivery verify.
+     */
+    public const int MIN_KEY = 32;
+
     private Secret $key;
 
     public function __construct(#[\SensitiveParameter] Secret|string $key, private int $tolerance = self::TOLERANCE)
     {
         $this->key = $key instanceof Secret ? $key : new Secret($key);
+        if ($this->key->length() < self::MIN_KEY) {
+            throw new \InvalidArgumentException('A Mailgun webhook signing key is ' . self::MIN_KEY . ' characters or more: the HTTP webhook signing key Mailgun shows.');
+        }
     }
 
     public function provesContent(): bool

@@ -15,7 +15,8 @@ use Tinvar\Config\Secret;
  * `us` (the default) or `eu`, where the domain was created.
  *
  * TINVAR_MAILGUN_WEBHOOK_SECRET is the HTTP webhook signing key Mailgun
- * shows under its webhooks, which each event's HMAC is made with.
+ * shows under its webhooks, which each event's HMAC is made with: 32
+ * characters or more.
  */
 #[Config(prefix: 'TINVAR_MAILGUN_')]
 final readonly class MailgunConfig
@@ -30,6 +31,9 @@ final readonly class MailgunConfig
     ) {
         if (!isset(MailgunTransport::HOSTS[$region])) {
             throw ConfigException::invalid('TINVAR_MAILGUN_REGION', 'is us or eu');
+        }
+        if ($webhookSecret !== null && $webhookSecret->length() < MailgunWebhook::MIN_KEY) {
+            throw ConfigException::invalid('TINVAR_MAILGUN_WEBHOOK_SECRET', 'must be ' . MailgunWebhook::MIN_KEY . ' characters or more: the HTTP webhook signing key Mailgun shows');
         }
     }
 }

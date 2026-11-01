@@ -439,6 +439,11 @@ describe('Mailgun (HMAC)', function () {
         expect(refused($webhook, post('mailgun', $without), $without))->toBe(400)
             ->and(refused($webhook, post('mailgun', $noId), $noId))->toBe(400);
     });
+    it('refuses a signing key shorter than 32 characters', function () {
+        expect(fn () => new MailgunWebhook('x'))->toThrow(\InvalidArgumentException::class, '32 characters')
+            ->and(fn () => new MailgunWebhook(str_repeat('k', 31)))->toThrow(\InvalidArgumentException::class, '32 characters')
+            ->and(new MailgunWebhook(str_repeat('k', 32))->name())->toBe('mailgun');
+    });
 });
 
 describe('SendGrid (ECDSA)', function () {
