@@ -26,3 +26,23 @@ it('evicts the oldest write, not a key that was re-put since', function () {
         ->and($store->get('b'))->toBe(['hit' => false, 'value' => null])
         ->and($store->get('c'))->toBe(['hit' => true, 'value' => 'c']);
 });
+
+it('does not walk every entry for the expired on each put once it is full', function () {
+    // The clock is read once per walk, and by nothing else here: no put
+    // carries a TTL and nothing is read.
+    $walks = 0;
+    $store = new ArrayStore(function () use (&$walks): float {
+        $walks++;
+
+        return 1000.0;
+    }, maxEntries: 1_000);
+
+    for ($i = 0; $i < 2_000; $i++) {
+        $store->put("k{$i}", $i);
+    }
+
+    // A thousand puts past the cap, each of which walked all thousand
+    // entries: a full worker paid that on every miss.
+    expect($store->stats()['entries'])->toBe(1_000)
+        ->and($walks)->toBeLessThanOrEqual(20);
+});

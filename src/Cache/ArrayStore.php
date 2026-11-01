@@ -40,6 +40,9 @@ final class ArrayStore implements Store
     private int $hits = 0;
     private int $misses = 0;
 
+    /** Puts past the cap before sweep() next walks every entry for the expired; the first walks at once. */
+    private int $putsUntilWalk = 0;
+
     /**
      * @param (\Closure(): float)|null $clock injectable so a test can move time
      * @param int $maxEntries a cap, because expiry alone is read-triggered:
@@ -155,10 +158,18 @@ final class ArrayStore implements Store
             return;
         }
 
-        $now = $this->now();
-        foreach ($this->entries as $key => $entry) {
-            if ($entry['expires'] !== null && $entry['expires'] <= $now) {
-                $this->forget($key);
+        // The walk for the expired is every entry, so a full store does it
+        // once every sixteenth of its cap in puts past it, not on each one:
+        // walked on every put, a full worker paid for all its entries on
+        // every miss. Between walks the oldest goes, which is where the
+        // expired mostly are.
+        if (--$this->putsUntilWalk <= 0) {
+            $this->putsUntilWalk = max(1, intdiv($this->maxEntries, 16));
+            $now = $this->now();
+            foreach ($this->entries as $key => $entry) {
+                if ($entry['expires'] !== null && $entry['expires'] <= $now) {
+                    $this->forget($key);
+                }
             }
         }
 
