@@ -375,20 +375,32 @@ final readonly class Domains
 
     /**
      * What the client's route() builds a URL with: the scheme, the port, the
-     * configured domains, the primary host's pattern -- all of it in every
-     * URL the application hands out already, none a secret -- and the host
-     * the page is on, as $current matched it (the primary host for none),
-     * so a link on the same host stays a path and one to another is written
-     * absolute.
+     * primary host's pattern, the host the page is on, as $current matched
+     * it (the primary host for none), so a link on the same host stays a
+     * path and one to another is written absolute -- and the configured
+     * domains of the hosts the page may link to, and no other: the primary
+     * host's, its own, and $linked's. A domain is in every URL to it, but a
+     * page linking nowhere on a panel's domain of its own is not the place
+     * to hand a visitor its address.
      *
+     * @param list<string|null> $linked the host patterns of the routes the page may link to;
+     *        null for the primary host
      * @return array{scheme: string, port: string, roots: array<string, string>, primary: string, current: array{pattern: string|null, params: array<string, string>}}
      */
-    public function forClient(?HostMatch $current = null): array
+    public function forClient(?HostMatch $current = null, array $linked = []): array
     {
+        $named = [];
+        foreach ([$this->primary->pattern, $current?->pattern, ...$linked] as $pattern) {
+            $labels = $pattern === null ? [] : explode('.', $pattern);
+            if ($labels !== [] && preg_match('/^\{([A-Za-z_][A-Za-z0-9_]*)\}\z/', $labels[\count($labels) - 1], $m) === 1) {
+                $named[$m[1]] = true;
+            }
+        }
+
         return [
             'scheme' => $this->scheme,
             'port' => $this->port === null ? '' : (string) $this->port,
-            'roots' => $this->roots,
+            'roots' => array_intersect_key($this->roots, $named),
             'primary' => $this->primary->pattern,
             // An empty map crosses as a list; route() reads either as none.
             'current' => ['pattern' => $current?->pattern, 'params' => $current->parameters ?? []],

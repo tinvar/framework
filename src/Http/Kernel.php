@@ -358,6 +358,9 @@ final class Kernel
      */
     public readonly EntryContext $entry;
 
+    /** @var array<string, list<string|null>> panel ('' for none) => the host patterns its pages may link to */
+    private array $linkedHosts = [];
+
     /**
      * The stack the two endpoints run behind.
      *
@@ -1617,6 +1620,35 @@ final class Kernel
         $endpoints?->serveOn($domains);
 
         return $domains;
+    }
+
+    /**
+     * What the client's route() builds a page's URLs with (ADR 0149): the
+     * hosts Domains serves, told of the configured domains of the hosts the
+     * page may link to -- the pages in no panel, and those in its own --
+     * and no other. Null where the application routes on no host. Worked out
+     * once per panel, from the routes, which do not change.
+     *
+     * @return array{scheme: string, port: string, roots: array<string, string>, primary: string, current: array{pattern: string|null, params: array<string, string>}}|null
+     */
+    public function hostsFor(Request $request, LoadedRoute $loaded): ?array
+    {
+        if ($this->domains === null) {
+            return null;
+        }
+        $panel = $this->entry->panelForChain($loaded->chain)->name ?? '';
+        if (!isset($this->linkedHosts[$panel])) {
+            $linked = [];
+            foreach ($this->routes->pages() as $page) {
+                $in = $this->entry->panelFor($page->panels, $page->class)->name ?? '';
+                if ($in === '' || $in === $panel) {
+                    $linked[$page->domain() ?? ''] = $page->domain();
+                }
+            }
+            $this->linkedHosts[$panel] = array_values($linked);
+        }
+
+        return $this->domains->forClient(HostMatch::of($request), $this->linkedHosts[$panel]);
     }
 
     /**

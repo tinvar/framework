@@ -183,10 +183,16 @@ it('reads its domains from an origin, as an application configures its address',
         ->and($production->forClient())->toBe([
             'scheme' => 'https',
             'port' => '',
-            'roots' => ['root' => 'shop.example.com', 'admin' => 'admin-portal.example.net'],
+            // The primary host's domain alone: no page is told of a host
+            // it links nowhere on (ADR 0149).
+            'roots' => ['root' => 'shop.example.com'],
             'primary' => '{root}',
             'current' => ['pattern' => null, 'params' => []],
         ])
+        ->and($production->forClient(linked: ['{admin}', null])['roots'])
+        ->toBe(['root' => 'shop.example.com', 'admin' => 'admin-portal.example.net'])
+        ->and($production->forClient(new HostMatch('{admin}', 'admin-portal.example.net'))['roots'])
+        ->toBe(['root' => 'shop.example.com', 'admin' => 'admin-portal.example.net'])
         ->and($production->forClient(new HostMatch('{account}.{root}', 'acme.shop.example.com', ['account' => 'acme']))['current'])
         ->toBe(['pattern' => '{account}.{root}', 'params' => ['account' => 'acme']]);
 });
