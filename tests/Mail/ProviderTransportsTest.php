@@ -246,6 +246,7 @@ describe('Amazon SES', function () {
         'bad request' => [400, [], '{"__type":"com.amazonaws.sesv2#BadRequestException","message":"Missing final \'@domain\'"}', false],
         'sending paused' => [400, ['x-amzn-ErrorType' => ['SendingPausedException']], '{"message":"Sending is paused for this account."}', true],
         'too many requests' => [429, ['x-amzn-ErrorType' => ['TooManyRequestsException']], '{"message":"Maximum sending rate exceeded."}', true],
+        'configuration set not found' => [404, ['x-amzn-ErrorType' => ['NotFoundException']], '{"message":"Configuration set <transactional> does not exist."}', true],
         'signature refused' => [403, ['x-amzn-ErrorType' => ['SignatureDoesNotMatch']], '{"message":"The request signature we calculated does not match"}', true],
         'a plain 400' => [400, [], '', false],
     ]);

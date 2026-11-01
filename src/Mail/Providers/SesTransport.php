@@ -143,6 +143,10 @@ final readonly class SesTransport implements Delivers
 
     private static function retryable(OutboundResponse $response): ?bool
     {
+        // NotFoundException, a configuration set or identity not found: the transport's.
+        if ($response->status === 404) {
+            return true;
+        }
         if ($response->status !== 400) {
             return null;
         }
