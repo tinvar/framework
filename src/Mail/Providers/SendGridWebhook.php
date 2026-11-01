@@ -26,8 +26,9 @@ use Tinvar\Mail\MailWebhookDelivery;
  * rewritten into another that verifies as well, and a nonce taken from it
  * would let the same delivery in twice.
  *
- * Each delivery is a batch: `bounce` is a hard bounce, unless its `type`
- * is `blocked` -- a server refusing for now -- `spamreport` a complaint,
+ * Each delivery is a batch: `bounce` is a hard bounce when its `type` is
+ * `bounce`, and a soft one when it is `blocked` -- a server refusing for
+ * now -- or not said; `spamreport` a complaint,
  * `delivered` a delivery. The message id is SendGrid's X-Message-Id, the
  * part of `sg_message_id` before its first dot.
  */
@@ -116,7 +117,7 @@ final readonly class SendGridWebhook implements MailWebhook
             $messageId = $id === null ? null : explode('.', $id, 2)[0];
             $at = Payload::time($item['timestamp'] ?? null, $now);
             $event = match ($item['event'] ?? null) {
-                'bounce' => new MailBounced(SendGridTransport::NAME, $recipient, $messageId, $at, ($item['type'] ?? 'bounce') !== 'blocked', Payload::text($item['reason'] ?? null)),
+                'bounce' => new MailBounced(SendGridTransport::NAME, $recipient, $messageId, $at, ($item['type'] ?? null) === 'bounce', Payload::text($item['reason'] ?? null)),
                 'spamreport' => new MailComplained(SendGridTransport::NAME, $recipient, $messageId, $at),
                 'delivered' => new MailDelivered(SendGridTransport::NAME, $recipient, $messageId, $at),
                 default => null,

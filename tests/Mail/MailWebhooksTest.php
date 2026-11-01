@@ -612,6 +612,7 @@ describe('SendGrid (ECDSA)', function () {
         ['email' => 'ada@example.test', 'timestamp' => 1_800_000_002, 'event' => 'spamreport', 'sg_message_id' => 'W8x8sBGqR4mHxnfwDs1Wmw.x'],
         ['email' => 'ada@example.test', 'timestamp' => 1_800_000_003, 'event' => 'delivered', 'sg_message_id' => 'W8x8sBGqR4mHxnfwDs1Wmw.y'],
         ['email' => 'ada@example.test', 'timestamp' => 1_800_000_004, 'event' => 'open'],
+        ['email' => 'dee@example.test', 'timestamp' => 1_800_000_005, 'event' => 'bounce', 'sg_message_id' => 'W8x8sBGqR4mHxnfwDs1Wmw.z'],
     ], JSON_THROW_ON_ERROR);
 
     it('verifies a batch with the public key, and reads each event in it', function () use ($batch) {
@@ -624,6 +625,8 @@ describe('SendGrid (ECDSA)', function () {
                 new MailBounced('sendgrid', 'carol@example.test', 'W8x8sBGqR4mHxnfwDs1Wmw', 1_800_000_001, false, '421 try later'),
                 new MailComplained('sendgrid', 'ada@example.test', 'W8x8sBGqR4mHxnfwDs1Wmw', 1_800_000_002),
                 new MailDelivered('sendgrid', 'ada@example.test', 'W8x8sBGqR4mHxnfwDs1Wmw', 1_800_000_003),
+                // A bounce whose type is not said is soft, as every other provider takes one.
+                new MailBounced('sendgrid', 'dee@example.test', 'W8x8sBGqR4mHxnfwDs1Wmw', 1_800_000_005, false),
             ]);
     });
 
