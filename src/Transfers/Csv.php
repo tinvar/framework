@@ -53,7 +53,7 @@ final class Csv
     }
 
     /** Text, prefixed with `'` where a spreadsheet would read it as a formula. */
-    public static function text(string $value): string
+    private static function text(string $value): string
     {
         return $value !== '' && str_contains(self::FORMULA_START, $value[0]) ? "'" . $value : $value;
     }

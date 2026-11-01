@@ -83,12 +83,6 @@ final class TransferRegistry
         return $this->byName[CompiledTransfer::IMPORT][$name] ?? null;
     }
 
-    /** @param CompiledTransfer::EXPORT|CompiledTransfer::IMPORT $kind */
-    public function get(string $kind, string $name): ?CompiledTransfer
-    {
-        return $this->byName[$kind][$name] ?? null;
-    }
-
     /** @return list<CompiledTransfer> exports first, each kind by name */
     public function all(): array
     {
