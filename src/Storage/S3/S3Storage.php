@@ -361,9 +361,10 @@ final readonly class S3Storage implements MultipartStore, ListsKeys
     /**
      * By ListMultipartUploads, a page of up to 1000 at a time until $limit.
      * Needs `s3:ListBucketMultipartUploads` on the bucket: the store's 403
-     * is a StorageException then.
+     * is a StorageException then. Held to $begunAtOrBefore, whole pages, as
+     * keysUnder() reads them.
      */
-    public function multipartUploadsUnder(string $prefix, int $limit): array
+    public function multipartUploadsUnder(string $prefix, int $limit, ?int $begunAtOrBefore = null): array
     {
         $whole = str_ends_with($prefix, '/') ? substr($prefix, 0, -1) : $prefix;
         if (!StorageKey::isValidPrefix($whole) && !StorageKey::isValid($whole)) {
@@ -374,7 +375,8 @@ final readonly class S3Storage implements MultipartStore, ListsKeys
         $keyMarker = null;
         $idMarker = null;
         while (\count($uploads) < $limit) {
-            $query = ['uploads' => '', 'prefix' => $root . $prefix, 'max-uploads' => (string) min(1000, $limit - \count($uploads))];
+            $page = $begunAtOrBefore === null ? min(1000, $limit - \count($uploads)) : 1000;
+            $query = ['uploads' => '', 'prefix' => $root . $prefix, 'max-uploads' => (string) $page];
             if ($keyMarker !== null) {
                 $query['key-marker'] = $keyMarker;
                 $query['upload-id-marker'] = (string) $idMarker;
@@ -386,7 +388,8 @@ final readonly class S3Storage implements MultipartStore, ListsKeys
             foreach ($list->Upload as $upload) {
                 $key = (string) $upload->Key;
                 $at = self::timestamp((string) $upload->Initiated);
-                if (!str_starts_with($key, $root) || $at === null || \count($uploads) >= $limit) {
+                if (!str_starts_with($key, $root) || $at === null || \count($uploads) >= $limit
+                    || ($begunAtOrBefore !== null && $at > $begunAtOrBefore)) {
                     continue;
                 }
                 $key = substr($key, \strlen($root));
@@ -460,8 +463,12 @@ final readonly class S3Storage implements MultipartStore, ListsKeys
      * time until $limit. Needs `s3:ListBucket` on the bucket, which a policy
      * granting only objects' reads and writes leaves out: the store's 403
      * is a StorageException then.
+     *
+     * Held to $writtenAtOrBefore, it reads whole pages, the young keys on
+     * them counting for nothing, until $limit old ones or the end: the store
+     * cannot be asked to filter by age.
      */
-    public function keysUnder(string $prefix, int $limit): array
+    public function keysUnder(string $prefix, int $limit, ?int $writtenAtOrBefore = null): array
     {
         if (!StorageKey::isValidPrefix($prefix)) {
             throw new \InvalidArgumentException("'{$prefix}' is not a storage prefix to list.");
@@ -470,7 +477,8 @@ final readonly class S3Storage implements MultipartStore, ListsKeys
         $keys = [];
         $token = null;
         while (\count($keys) < $limit) {
-            $query = ['list-type' => '2', 'prefix' => $root . $prefix . '/', 'max-keys' => (string) min(1000, $limit - \count($keys))];
+            $page = $writtenAtOrBefore === null ? min(1000, $limit - \count($keys)) : 1000;
+            $query = ['list-type' => '2', 'prefix' => $root . $prefix . '/', 'max-keys' => (string) $page];
             if ($token !== null) {
                 $query['continuation-token'] = $token;
             }
@@ -481,7 +489,7 @@ final readonly class S3Storage implements MultipartStore, ListsKeys
             foreach ($list->Contents as $object) {
                 $key = (string) $object->Key;
                 $at = self::timestamp((string) $object->LastModified);
-                if (!str_starts_with($key, $root) || $at === null) {
+                if (!str_starts_with($key, $root) || $at === null || ($writtenAtOrBefore !== null && $at > $writtenAtOrBefore)) {
                     continue;
                 }
                 $key = substr($key, \strlen($root));

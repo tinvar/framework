@@ -284,6 +284,23 @@ it('sweeps the incoming prefix of what is older than any intent could still want
         ->and($s3->objects)->toHaveKey($old);
 });
 
+// Review: the listing stopped at the limit counting young files too, so
+// with that many arriving, an old one sorting after them was never reached.
+it('sweeps an old file under the incoming prefix however many young ones sort before it', function () {
+    [$app, $s3] = directApp();
+    $young = [UploadEndpoint::INCOMING_PREFIX . '/' . str_repeat('a', 32), UploadEndpoint::INCOMING_PREFIX . '/' . str_repeat('b', 32)];
+    $old = UploadEndpoint::INCOMING_PREFIX . '/' . str_repeat('c', 32);
+    $s3->objects = [$young[0] => 'y', $young[1] => 'y', $old => 'x'];
+    $s3->modified = [
+        $young[0] => $app->now,
+        $young[1] => $app->now,
+        $old => $app->now - UploadEndpoint::COMPLETE_TTL - Uploads::PRUNE_GRACE - 1,
+    ];
+
+    expect($app->uploads->prune(limit: 2))->toBe(1)
+        ->and(array_keys($s3->objects))->toBe($young);
+});
+
 it('is not there where files are kept on disk or in memory', function () {
     $app = new App(new MemoryStorage());
 

@@ -476,6 +476,32 @@ describe('straight to the store, in parts', function () {
             ->and($old)->not->toBe($young);
     });
 
+    // Review: the listing stopped at the limit counting young uploads too,
+    // so with that many going on, an old one sorting after them was never
+    // reached; nor was an old partial file after as many young ones.
+    it('sweeps an old upload under the partial prefix however many young ones sort before it', function () {
+        [$app, $s3] = partsApp();
+        $storage = $s3->storage();
+        $s3->now -= UploadEndpoint::SESSION_TTL + Uploads::PRUNE_GRACE + 1;
+        $old = $storage->beginMultipart(UploadEndpoint::PARTIAL_PREFIX . '/' . str_repeat('c', 32));
+        $s3->objects[UploadEndpoint::PARTIAL_PREFIX . '/' . str_repeat('f', 32)] = 'x';
+        $s3->modified[UploadEndpoint::PARTIAL_PREFIX . '/' . str_repeat('f', 32)] = $s3->now;
+        $s3->now = $app->now;
+        $young = [
+            $storage->beginMultipart(UploadEndpoint::PARTIAL_PREFIX . '/' . str_repeat('a', 32)),
+            $storage->beginMultipart(UploadEndpoint::PARTIAL_PREFIX . '/' . str_repeat('b', 32)),
+        ];
+        foreach (['d', 'e'] as $letter) {
+            $s3->objects[UploadEndpoint::PARTIAL_PREFIX . '/' . str_repeat($letter, 32)] = 'x';
+            $s3->modified[UploadEndpoint::PARTIAL_PREFIX . '/' . str_repeat($letter, 32)] = $s3->now;
+        }
+
+        expect($app->uploads->prune(limit: 2))->toBe(2)
+            ->and(array_keys($s3->uploads))->toBe($young)
+            ->and($s3->uploads)->not->toHaveKey($old)
+            ->and(array_keys($s3->objects))->toBe([UploadEndpoint::PARTIAL_PREFIX . '/' . str_repeat('d', 32), UploadEndpoint::PARTIAL_PREFIX . '/' . str_repeat('e', 32)]);
+    });
+
     it('holds the parts and the completion to the session\'s binding', function () {
         [$app] = partsApp();
         $session = (string) beginSession($app, 100, direct: true)['session'];

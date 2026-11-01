@@ -264,7 +264,9 @@ final readonly class Uploads
 
         if ($this->storage instanceof ListsKeys) {
             try {
-                $keys = $this->storage->keysUnder(UploadEndpoint::PARTIAL_PREFIX, $limit);
+                // Only the old ones counted against the limit: as many young
+                // ones sorting first never keep an old one from being reached.
+                $keys = $this->storage->keysUnder(UploadEndpoint::PARTIAL_PREFIX, $limit, writtenAtOrBefore: $before);
             } catch (StorageException) {
                 $keys = [];
             }
@@ -283,7 +285,7 @@ final readonly class Uploads
 
         if ($this->storage instanceof MultipartStore) {
             try {
-                $begun = $this->storage->multipartUploadsUnder(UploadEndpoint::PARTIAL_PREFIX . '/', $limit);
+                $begun = $this->storage->multipartUploadsUnder(UploadEndpoint::PARTIAL_PREFIX . '/', $limit, begunAtOrBefore: $before);
             } catch (StorageException) {
                 $begun = [];
             }
@@ -321,15 +323,17 @@ final readonly class Uploads
         if (!$this->storage instanceof ListsKeys) {
             return 0;
         }
+        $before = $now - UploadEndpoint::COMPLETE_TTL - self::PRUNE_GRACE;
         try {
-            $keys = $this->storage->keysUnder(UploadEndpoint::INCOMING_PREFIX, $limit);
+            // Only the old ones counted against the limit, as sweepPartial() lists them.
+            $keys = $this->storage->keysUnder(UploadEndpoint::INCOMING_PREFIX, $limit, writtenAtOrBefore: $before);
         } catch (StorageException) {
             return 0;
         }
 
         $removed = 0;
         foreach ($keys as $key => $written) {
-            if ($written > $now - UploadEndpoint::COMPLETE_TTL - self::PRUNE_GRACE) {
+            if ($written > $before) {
                 continue;
             }
             try {

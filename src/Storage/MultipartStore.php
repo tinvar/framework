@@ -58,8 +58,12 @@ interface MultipartStore extends ObjectStore
      * starts with $prefix -- a prefix and a slash, or one whole key -- each
      * with when it was begun, in seconds since the epoch.
      *
+     * Given $begunAtOrBefore, only uploads begun then or earlier, and the
+     * limit counts only those: a sweep for what is old is never stopped
+     * short by as many young uploads sorting before it.
+     *
      * @return list<array{key: string, uploadId: string, initiated: int}>
      * @throws StorageException when the store could not be asked
      */
-    public function multipartUploadsUnder(string $prefix, int $limit): array;
+    public function multipartUploadsUnder(string $prefix, int $limit, ?int $begunAtOrBefore = null): array;
 }

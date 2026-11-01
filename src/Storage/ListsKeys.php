@@ -18,8 +18,12 @@ interface ListsKeys
      * it was last written, in seconds since the epoch. A key not shaped as
      * the framework makes them is left out.
      *
+     * Given $writtenAtOrBefore, only keys last written then or earlier, and
+     * the limit counts only those: a sweep for what is old is never stopped
+     * short by as many young keys sorting before it.
+     *
      * @return array<string, int> key => last written
      * @throws StorageException when the store could not be listed
      */
-    public function keysUnder(string $prefix, int $limit): array;
+    public function keysUnder(string $prefix, int $limit, ?int $writtenAtOrBefore = null): array;
 }

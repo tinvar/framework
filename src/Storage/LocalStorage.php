@@ -215,7 +215,7 @@ final readonly class LocalStorage implements AppendableStorage, ListsKeys
      * The files under $prefix and when each was last written, never
      * following a link: for pruning to find what no record names.
      */
-    public function keysUnder(string $prefix, int $limit): array
+    public function keysUnder(string $prefix, int $limit, ?int $writtenAtOrBefore = null): array
     {
         if (!StorageKey::isValidPrefix($prefix)) {
             throw new \InvalidArgumentException("'{$prefix}' is not a storage prefix to list.");
@@ -246,7 +246,7 @@ final readonly class LocalStorage implements AppendableStorage, ListsKeys
                     $pending[] = $key;
                 } elseif (StorageKey::isValid($key)) {
                     $at = @filemtime($path);
-                    if ($at !== false) {
+                    if ($at !== false && ($writtenAtOrBefore === null || $at <= $writtenAtOrBefore)) {
                         $keys[$key] = $at;
                     }
                 }

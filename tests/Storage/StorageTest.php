@@ -240,6 +240,25 @@ describe('LocalStorage, appending and listing', function () {
             removeStorageTestRoot($outside);
         }
     });
+
+    it('counts only the keys written by the time it is given against its limit', function () {
+        $root = storageTestRoot();
+
+        try {
+            $storage = new LocalStorage($root);
+            foreach (['a', 'b', 'c'] as $letter) {
+                $storage->append('tinvar-partial/' . str_repeat($letter, 32), 0, 'abc');
+            }
+            $old = 'tinvar-partial/' . str_repeat('c', 32);
+            $longAgo = time() - 7200;
+            touch("{$root}/{$old}", $longAgo);
+
+            expect(array_keys($storage->keysUnder('tinvar-partial', 1)))->toBe(['tinvar-partial/' . str_repeat('a', 32)])
+                ->and($storage->keysUnder('tinvar-partial', 1, writtenAtOrBefore: $longAgo + 3600))->toBe([$old => $longAgo]);
+        } finally {
+            removeStorageTestRoot($root);
+        }
+    });
 });
 
 describe('LocalStorage', function () {
