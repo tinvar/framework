@@ -14,6 +14,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopOrderNumbers;
 
+use Shop\Support\Clock;
 use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Shop\Database\Models\Account\Customer;
@@ -62,10 +63,18 @@ function today(string $prefix): array
 /**
  * Today's prefix, with today holding one order numbered $sequence -- as a
  * day with orders seeded or placed before its counter does -- and no other.
+ *
+ * Read clear of midnight, UTC: an order placed a moment after it is numbered
+ * on the next day's counter, and the test would look for it under the day
+ * before. Within a minute of it, this waits for the new day.
  */
 function startingFrom(int $sequence): string
 {
-    $prefix = Pricing::orderNumberPrefix(new \DateTimeImmutable('now', new \DateTimeZone('UTC')));
+    $untilMidnight = 86_400 - Clock::now() % 86_400;
+    if ($untilMidnight < 60) {
+        sleep($untilMidnight + 1);
+    }
+    $prefix = Pricing::orderNumberPrefix(Clock::date());
     $connection = orm()->connection();
     $connection->execute("UPDATE orders SET number = 'seeded-' || number WHERE number >= ? AND number < ?", [$prefix, $prefix . ':']);
     $connection->execute('UPDATE orders SET number = ? WHERE id = (SELECT id FROM orders ORDER BY id LIMIT 1)', [$prefix . \sprintf('%04d', $sequence)]);
