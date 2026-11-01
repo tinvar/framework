@@ -826,6 +826,13 @@ it('lets staff into the admin panel\'s orders, and refuses a customer', function
         ->and($result['scrolled']['partials'][0]['cursor'] ?? '')->not->toBe('')
         ->and($result['scrolled']['bar'])->toBe($result['scrolled']['partials'][0]['cursor']);
 
+    // The audit log's pages (ADR 0150): the staff's sign-in is what the
+    // staff did; an order seeded behind the log's back has no activity yet.
+    expect($result['staffActivity']['heading'])->toBe('Staff activity')
+        ->and(implode('|', array_map('trim', $result['staffActivity']['lines'])))->toContain('Signed in')
+        ->and($result['orderActivity']['heading'])->toBe("Activity for {$result['orderActivity']['number']}")
+        ->and($result['orderActivity']['empty'])->toBe(1);
+
     // A customer holds no membership of the panel: the handoff on the shop's
     // host refuses them, and they never reach the admin host (ADR 0039).
     expect($result['refused']['status'])->toBe(403)
