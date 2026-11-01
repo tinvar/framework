@@ -20,8 +20,10 @@ use Tinvar\Support\KnownAttributes;
  *
  * What it reads, and nothing else:
  *
- *   - the directories the root package's `autoload` maps to the Kernel's
- *     namespace or a namespace under it -- never `autoload-dev`, never a
+ *   - the directories the application's own composer.json -- the nearest
+ *     at or above its Kernel's file -- maps in `autoload` to the Kernel's
+ *     namespace or a namespace under it, each under the directory that
+ *     file is in -- never `autoload-dev`, never a
  *     dependency's, never what Composer or npm installed, tests or
  *     fixtures (ApplicationClasses::files()), walked by namespace, so
  *     which folder a class sits in says nothing;
@@ -56,8 +58,9 @@ final class Discovery
      * @param string $namespace the application's root namespace, its Kernel's
      * @param array<string, list<string>> $psr4 the prefixes at or under it, and the directories each maps
      * @param string $manifest the build's manifest file
-     * @param string|null $root the project the map is relative to: a mapped directory under its vendor/ or node_modules/ is refused
+     * @param string|null $root the application's root, which holds its composer.json: a mapped directory outside it, or under its vendor/ or node_modules/, is refused
      * @param float $recheck seconds a scan is kept before the files are looked at again
+     * @param string|null $refused why there is no application to scan, where of() found none: every scan is refused with it
      */
     public function __construct(
         public readonly string $namespace,
@@ -66,11 +69,23 @@ final class Discovery
         private readonly ?string $root = null,
         private readonly float $recheck = 1.0,
         private readonly int $maxFiles = ApplicationClasses::MAX_FILES,
+        private readonly ?string $refused = null,
     ) {}
 
     /**
-     * The discovery of $kernel's application: its namespace, the root
-     * package's PSR-4 map under it, and the manifest in $buildDirectory.
+     * The discovery of $kernel's application: its namespace, the PSR-4 map
+     * under it that the application's own composer.json holds, and the
+     * manifest in $buildDirectory.
+     *
+     * The application's composer.json is the nearest one at or above the
+     * directory the Kernel's file is in, as Composer finds the project a
+     * file belongs to: read from the application itself, never from
+     * whichever package is the root one in this process -- a package's
+     * suite run from a project of its own (bin/package-alone) drives the
+     * shop, whose classes that project only autoloads. The directory it is
+     * in is the application's root, which every mapped directory must be
+     * under. A Kernel Composer installed -- at or under a vendor directory,
+     * or a dependency's own -- is no application's, and maps nothing.
      *
      * @param class-string $kernel
      */
@@ -78,16 +93,70 @@ final class Discovery
     {
         $slash = strrpos($kernel, '\\');
         $namespace = $slash === false ? '' : substr($kernel, 0, $slash);
-        $root = class_exists(\Composer\InstalledVersions::class)
-            ? realpath(\Composer\InstalledVersions::getRootPackage()['install_path'])
-            : false;
+        [$root, $psr4, $refused] = self::application($kernel, $namespace);
 
         return new self(
             $namespace,
-            ApplicationClasses::fromComposer()->under($namespace)->prefixes(),
+            $psr4,
             rtrim($buildDirectory, '/') . '/' . Manifest::FILE,
-            $root === false ? null : $root,
+            $root,
+            refused: $refused,
         );
+    }
+
+    /**
+     * Where $kernel's application is: its root, the map under $namespace
+     * its composer.json holds, and why there is none, where there is not.
+     *
+     * @param class-string $kernel
+     * @return array{?string, array<string, list<string>>, ?string}
+     */
+    private static function application(string $kernel, string $namespace): array
+    {
+        $file = class_exists($kernel) ? new \ReflectionClass($kernel)->getFileName() : false;
+        $directory = $file === false ? false : realpath(\dirname($file));
+        if ($directory === false) {
+            return [null, [], "{$kernel} is loaded from no file, so there is no composer.json of its application to read"];
+        }
+        $root = $directory;
+        while (!is_file("{$root}/composer.json")) {
+            $parent = \dirname($root);
+            if ($parent === $root) {
+                return [null, [], "there is no composer.json at or above {$directory}, where {$kernel} is"];
+            }
+            $root = $parent;
+        }
+        $installed = self::installedBy($root);
+        if ($installed !== null) {
+            return [$root, [], "{$kernel} is {$installed}, and discovery registers the application's own classes alone"];
+        }
+
+        return [$root, ApplicationClasses::fromComposerJson($root)->under($namespace)->prefixes(), null];
+    }
+
+    /** What installed $root, where Composer did: a vendor directory it is at or under, or the dependency it is. */
+    private static function installedBy(string $root): ?string
+    {
+        foreach (array_keys(\Composer\Autoload\ClassLoader::getRegisteredLoaders()) as $vendor) {
+            $vendor = realpath($vendor);
+            if ($vendor !== false && ($root === $vendor || str_starts_with($root, $vendor . '/'))) {
+                return "under what Composer installed in {$vendor}";
+            }
+        }
+        if (!class_exists(\Composer\InstalledVersions::class)) {
+            return null;
+        }
+        foreach (\Composer\InstalledVersions::getAllRawData() as $data) {
+            $own = $data['root']['name'];
+            foreach ($data['versions'] as $name => $package) {
+                $path = \is_string($package['install_path'] ?? null) ? realpath($package['install_path']) : false;
+                if ($name !== $own && $path === $root) {
+                    return "in {$name}, which Composer installed";
+                }
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -226,9 +295,13 @@ final class Discovery
      */
     public function scan(): DiscoveredClasses
     {
+        if ($this->refused !== null) {
+            throw new DiscoveryFailed(["There is no application to discover the classes of: {$this->refused}."]);
+        }
         $problems = [];
         if ($this->psr4 === []) {
-            $problems[] = "The root package's composer.json autoloads nothing under {$this->namespace}\\: there is nowhere to discover its classes. "
+            $where = $this->root === null ? "The application's composer.json" : "The composer.json at {$this->root}";
+            $problems[] = "{$where} autoloads nothing under {$this->namespace}\\: there is nowhere to discover its classes. "
                 . 'Map the namespace in its `autoload` psr-4.';
         }
         foreach ($this->psr4 as $prefix => $directories) {
@@ -357,7 +430,7 @@ final class Discovery
         $root = $this->root === null ? false : realpath($this->root);
         $relative = $root !== false && str_starts_with($real, $root . '/') ? substr($real, \strlen($root) + 1) : ($root === $real ? '' : null);
         if ($root !== false && $relative === null) {
-            return "outside the project at {$root}";
+            return "outside the application at {$root}";
         }
         foreach (explode('/', strtolower($relative ?? '')) as $segment) {
             if (\in_array($segment, ['vendor', 'node_modules'], true)) {

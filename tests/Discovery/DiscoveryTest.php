@@ -197,14 +197,81 @@ it('never walks vendor, node_modules, tests or fixtures, nor follows a link out'
     }
 });
 
-it('refuses a map into what Composer installed, or outside the project', function () {
+it('refuses a map into what Composer installed, or outside the application', function () {
     $app = $this->app;
     mkdir("{$app->root}/vendor/acme/pages", 0o755, true);
 
     expect(problems(fn () => $app->discovery([$app->namespace . '\\' => ["{$app->root}/app"], $app->namespace . '\\Vendored\\' => ["{$app->root}/vendor/acme/pages"]])->scan()))
         ->toContain('under what Composer or npm installed');
 
-    expect(problems(fn () => $app->discovery([$app->namespace . '\\' => [sys_get_temp_dir()]])->scan()))->toContain('outside the project');
+    expect(problems(fn () => $app->discovery([$app->namespace . '\\' => [sys_get_temp_dir()]])->scan()))->toContain('outside the application');
+});
+
+describe("the application's own composer.json", function () {
+    /** Writes $app's composer.json, mapping $psr4 (prefix => path relative to it) in its autoload. */
+    $composer = static function (FixtureApp $app, array $psr4, string $at = ''): void {
+        file_put_contents("{$app->root}{$at}/composer.json", json_encode(['autoload' => ['psr-4' => $psr4]]));
+    };
+    $kernel = static function (FixtureApp $app): string {
+        $app->write('Kernel', 'final class Kernel {}');
+        $class = $app->name('Kernel');
+        class_exists($class);
+
+        return $class;
+    };
+
+    it("is the one nearest the Kernel's file, read whatever package is the root one in this process", function () use ($composer, $kernel) {
+        $app = $this->app;
+        $class = $kernel($app);
+        $app->write('Http\\Home', "#[Page('/', 'home')] final class Home { public function __invoke(): void {} }", 'use Tinvar\\Attributes\\Page;');
+        $composer($app, [$app->namespace . '\\' => 'app/', 'Unrelated\\' => 'unrelated/']);
+
+        // The workspace -- the root package here -- maps nothing of this application's.
+        expect(ApplicationClasses::fromComposer()->under($app->namespace)->prefixes())->toBe([])
+            ->and(Discovery::of($class, "{$app->root}/dist")->scan()->routes)->toBe([$app->name('Http\\Home')]);
+    });
+
+    it('fails closed where it maps nothing under the namespace, or maps outside the application', function () use ($composer, $kernel) {
+        $app = $this->app;
+        $class = $kernel($app);
+        $composer($app, ['Unrelated\\' => 'app/']);
+        expect(problems(fn () => Discovery::of($class, "{$app->root}/dist")->scan()))
+            ->toContain("The composer.json at " . realpath($app->root) . " autoloads nothing under {$app->namespace}\\");
+
+        $outside = sys_get_temp_dir() . '/tinvar-discovery-beside-' . bin2hex(random_bytes(4));
+        mkdir($outside);
+        try {
+            $composer($app, [$app->namespace . '\\' => 'app/', $app->namespace . '\\Beside\\' => '../' . basename($outside) . '/']);
+            expect(problems(fn () => Discovery::of($class, "{$app->root}/dist")->scan()))->toContain("outside the application at " . realpath($app->root));
+        } finally {
+            rmdir($outside);
+        }
+    });
+
+    it('is never read from a Kernel Composer installed', function () use ($composer, $kernel) {
+        $app = $this->app;
+        $class = $kernel($app);
+        $composer($app, [$app->namespace . '\\' => 'app/']);
+        // As though the application's directory were a vendor directory Composer loads from.
+        $loader = new \Composer\Autoload\ClassLoader($app->root);
+        $loader->register();
+        try {
+            expect(problems(fn () => Discovery::of($class, "{$app->root}/dist")->scan()))
+                ->toContain('There is no application to discover the classes of', 'under what Composer installed');
+        } finally {
+            $loader->unregister();
+        }
+    });
+
+    it('fails closed where there is no composer.json above the Kernel', function () use ($kernel) {
+        $app = $this->app;
+        $class = $kernel($app);
+        if (is_file(\dirname($app->root) . '/composer.json') || is_file('/composer.json')) {
+            $this->markTestSkipped('The temporary directory sits under a composer.json.');
+        }
+
+        expect(problems(fn () => Discovery::of($class, "{$app->root}/dist")->scan()))->toContain('there is no composer.json at or above');
+    });
 });
 
 it("reads the root package's autoload alone, never autoload-dev, and only under the application's namespace", function () {
