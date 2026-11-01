@@ -154,7 +154,15 @@ it('turns a real spinner from a forked process, and stops it with the work', fun
     };
     Prompts::useTerminal($terminal);
 
-    Prompts::spin(static fn () => usleep(400_000), 'Waiting');
+    // The work lasts until the spinner has turned three times, however long
+    // a loaded machine takes to schedule the forked process: waiting a fixed
+    // while instead counts frames the scheduler may not have run.
+    Prompts::spin(static function () use ($file): void {
+        $deadline = microtime(true) + 30;
+        while (substr_count((string) file_get_contents($file), 'Waiting') < 4 && microtime(true) < $deadline) {
+            usleep(10_000);
+        }
+    }, 'Waiting');
     $drawn = (string) file_get_contents($file);
     usleep(200_000);
 
