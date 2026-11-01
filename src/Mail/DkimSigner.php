@@ -73,12 +73,6 @@ final readonly class DkimSigner
         return clone($this, ['headers' => array_values(array_diff(self::HEADERS, $names))]);
     }
 
-    /** The signer DkimConfig names, or null where it names none. */
-    public static function fromConfig(DkimConfig $config): ?self
-    {
-        return $config->signer();
-    }
-
     /**
      * The DKIM-Signature header line for a message whose headers are $head
      * -- CRLF-terminated lines, as MimeMessage writes them -- and whose
