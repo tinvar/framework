@@ -55,10 +55,14 @@ final readonly class ExternalOrigins
     }
 
     /** Whether $url is an https URL on one of the allowed origins. */
-    /** The application's own hosts (ADR 0149), which an action may send a browser to as to its own origin. */
+    /**
+     * The application's own fixed hosts (ADR 0149), which an action may send
+     * a browser to as to its own origin; a host a parameter takes, or a
+     * custom domain, only where Domains opts it in (Domains::owns()).
+     */
     private ?\Tinvar\Routing\Domains $own;
 
-    /** The same origins, and every host $domains serves. */
+    /** The same origins, and the hosts $domains owns. */
     public function serving(?\Tinvar\Routing\Domains $domains): self
     {
         return clone($this, ['own' => $domains]);

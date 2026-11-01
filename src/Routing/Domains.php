@@ -70,6 +70,9 @@ final readonly class Domains
      * @param bool $anyPort answer a host whatever port its request names: for a machine's own
      *        hosts alone -- localhost and below it, where a container's mapped port is not the
      *        one it listens on -- and refused for any other
+     * @param list<string> $redirectable host patterns with parameters, or the custom domains'
+     *        pattern, that an action may send a browser to, over https alone: a host a tenant or
+     *        a signed-up user controls is never a redirect target unless named here (owns())
      */
     public function __construct(
         array $roots,
@@ -82,6 +85,7 @@ final readonly class Domains
         ?string $customAs = null,
         array $patterns = [],
         public bool $anyPort = false,
+        public array $redirectable = [],
     ) {
         $normalized = [];
         foreach ($roots as $name => $host) {
@@ -204,6 +208,7 @@ final readonly class Domains
                 $this->customAs?->pattern,
                 [...$this->patterns, ...$patterns],
                 $this->anyPort,
+                $this->redirectable,
             );
         } catch (\LogicException $e) {
             throw new \InvalidArgumentException($e->getMessage(), 0, $e);
@@ -310,11 +315,15 @@ final readonly class Domains
     }
 
     /**
-     * Whether $url is on one of these hosts, as the application writes its
-     * URLs -- this scheme, this port, a host it serves by name -- for an
-     * action to redirect to one of its own hosts as it redirects on its
-     * own origin (ExternalOrigins). Nothing a browser would read another
-     * way: no userinfo, no control character, no backslash.
+     * Whether $url is on one of the application's own fixed hosts, as it
+     * writes its URLs -- this scheme, this port -- for an action to redirect
+     * to as it redirects on its own origin (ExternalOrigins). Fixed: the
+     * primary host, or a pattern with no parameters. A host a parameter
+     * takes, `{account}.example.com`, or a tenant's custom domain may be
+     * anyone's who can sign up, and is a target only when its pattern is
+     * named in $redirectable, and then over https alone. Nothing a browser
+     * would read another way: no userinfo, no control character, no
+     * backslash.
      */
     public function owns(string $url): bool
     {
@@ -329,7 +338,14 @@ final readonly class Domains
             return false;
         }
 
-        return $this->match($host) !== null;
+        $match = $this->match($host);
+        if ($match === null) {
+            return false;
+        }
+        $fixed = $match->pattern === null
+            || (self::compile($match->pattern, 'A host pattern')->parameters === [] && $match->pattern !== $this->customAs?->pattern);
+
+        return $fixed || (\in_array($match->pattern, $this->redirectable, true) && strtolower($m[1]) === 'https');
     }
 
     /**

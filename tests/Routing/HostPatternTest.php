@@ -215,3 +215,19 @@ it('answers any port only on a machine\'s own hosts, when asked to', function ()
         ->and(fn () => new Domains(['root' => 'shop.test'], anyPort: true))->toThrow(\InvalidArgumentException::class)
         ->and(new Domains(['root' => 'shop.test'], scheme: 'http')->origin(null))->toBe('http://shop.test');
 });
+
+it('lets an action send a browser to a host a parameter takes, or a custom domain, only when opted in and over https', function () {
+    $custom = static fn (string $host): ?array => $host === 'acme-store.com' ? ['tenant' => 'acme'] : null;
+    $closed = new Domains(['root' => 'example.com'], patterns: ['admin.{root}', '{account}.{root}'], custom: $custom, customAs: '{tenant}.shops.{root}');
+    $opened = new Domains(['root' => 'example.com'], patterns: ['admin.{root}', '{account}.{root}'], custom: $custom, customAs: '{tenant}.shops.{root}', redirectable: ['{account}.{root}', '{tenant}.shops.{root}']);
+    $plain = new Domains(['root' => 'example.com'], scheme: 'http', patterns: ['{account}.{root}'], redirectable: ['{account}.{root}']);
+
+    expect($closed->owns('https://admin.example.com/orders'))->toBeTrue()
+        ->and($closed->owns('https://example.com/'))->toBeTrue()
+        ->and($closed->owns('https://attacker.example.com/'))->toBeFalse()
+        ->and($closed->owns('https://acme-store.com/'))->toBeFalse()
+        ->and($opened->owns('https://attacker.example.com/'))->toBeTrue()
+        ->and($opened->owns('https://acme-store.com/'))->toBeTrue()
+        ->and($plain->owns('http://attacker.example.com/'))->toBeFalse()
+        ->and(new \Tinvar\Http\ExternalOrigins()->serving($closed)->allows('https://attacker.example.com/'))->toBeFalse();
+});
