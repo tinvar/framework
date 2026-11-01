@@ -178,6 +178,15 @@ describe('an import that fails with an error', function () {
             ->and($record->key)->toBe('')
             ->and($app->storage->keys())->toBe([]);
     });
+
+    it('keeps what a row that could not be written said, rather than writing over it', function () {
+        $app = new App();
+        expect($app->import("widget,stock\r\n" . W1 . ",10\r\n")->status)->toBe(202);
+        $app->connection->execute("CREATE TRIGGER refuse BEFORE UPDATE ON widgets BEGIN SELECT RAISE(ABORT, 'refused by trigger'); END");
+
+        expect(fn () => $app->work())->toThrow('refused by trigger');
+        expect($app->record()->failure)->toBe('A row could not be applied, so nothing was changed.');
+    });
 });
 
 // Review: pruning took an import still at work a day after it was sent for
