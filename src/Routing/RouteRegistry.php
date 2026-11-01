@@ -641,22 +641,23 @@ final class RouteRegistry
         if ($declaration->statuses === []) {
             throw new RoutingException("{$class} is an #[ErrorPage] for no status at all.");
         }
+        // Every status checked before any is kept: a page refused for one
+        // is the error page for none.
         foreach ($declaration->statuses as $status) {
             if ($status < 400 || $status > 599) {
                 throw new RoutingException("{$class} names " . var_export($status, true) . ' as an error status; an error page is for 400 to 599.');
             }
+            $taken = $host === null ? $this->errorPages[$status] ?? null : $this->hostErrorPages[$host->pattern][$status] ?? null;
+            if ($taken !== null) {
+                throw new RoutingException("Both {$taken->class} and {$class} are the error page for {$status}" . ($host === null ? '.' : " on {$host->pattern}."));
+            }
+        }
+        foreach ($declaration->statuses as $status) {
             if ($host !== null) {
-                $taken = $this->hostErrorPages[$host->pattern][$status] ?? null;
-                if ($taken !== null) {
-                    throw new RoutingException("Both {$taken->class} and {$class} are the error page for {$status} on {$host->pattern}.");
-                }
                 $this->hostErrorPages[$host->pattern][$status] = $route;
-                continue;
+            } else {
+                $this->errorPages[$status] = $route;
             }
-            if (isset($this->errorPages[$status])) {
-                throw new RoutingException("Both {$this->errorPages[$status]->class} and {$class} are the error page for {$status}.");
-            }
-            $this->errorPages[$status] = $route;
         }
 
         return $route;

@@ -336,6 +336,17 @@ describe('what an error page may not declare', function () {
         new RouteRegistry()->register(ForAnOk::class);
     })->throws(RoutingException::class, 'an error page is for 400 to 599');
 
+    // Review: each status was kept as it was checked, so a page refused for
+    // a later one stayed the error page for those before it -- in a
+    // registry `tinvar check` goes on with after a refusal.
+    it('keeps no status of a page it refuses', function () {
+        $routes = new RouteRegistry();
+
+        expect(fn () => $routes->register(PartlyOk::class))->toThrow(RoutingException::class, 'an error page is for 400 to 599')
+            ->and($routes->errorChain(404))->toBeNull()
+            ->and($routes->errorPages())->toBe([]);
+    });
+
     it('refuses two pages for one status', function () {
         new RouteRegistry()->registerAll([Errors::class, AnotherNotFound::class]);
     })->throws(RoutingException::class, 'are the error page for 404');
@@ -360,6 +371,9 @@ final class ForAnOk {}
 
 #[ErrorPage([404], view: 'errors/other')]
 final class AnotherNotFound {}
+
+#[ErrorPage([404, 200], view: 'errors/x')]
+final class PartlyOk {}
 
 #[ErrorPage([404], view: 'errors/x')]
 final class WantsAString
