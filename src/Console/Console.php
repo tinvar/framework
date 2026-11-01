@@ -23,6 +23,9 @@ use Tinvar\Queue\Coordination;
 use Tinvar\Queue\Queue;
 use Tinvar\Jobs\StopBudget;
 use Tinvar\Queue\HeldJob;
+use Tinvar\Search\ReindexCommand;
+use Tinvar\Search\Search;
+use Tinvar\Search\SearchFailed;
 use Tinvar\Support\KnownAttributes;
 
 /**
@@ -38,6 +41,8 @@ use Tinvar\Support\KnownAttributes;
  *   schedule:run           run the tasks due this minute, for cron
  *   schedule:work          run the schedule every minute until stopped
  *   schedule:list          every task and when it runs
+ *   search:reindex [opts]  build each #[Searchable] model's index again from its rows
+ *                          (Search\ReindexCommand), where the application has search
  *
  * An application command runs in the context it declares and no other: the
  * tenant its `--tenant=` names when it declares a tenant source, as the
@@ -77,6 +82,8 @@ final class Console
      *        queue:work starts holds to them (ADR 0100)
      * @param Telemetry|null $telemetry where each command and each job queue:work runs is
      *        a trace of its own (ADR 0112); the scheduler is given its own
+     * @param Search|null $search the application's full-text search, which search:reindex
+     *        builds again (ADR 0150)
      */
     public function __construct(
         array $commands,
@@ -94,6 +101,7 @@ final class Console
         private readonly array $queues = [\Tinvar\Attributes\Queue::DEFAULT],
         private readonly array $rates = [],
         private readonly ?Telemetry $telemetry = null,
+        private readonly ?Search $search = null,
     ) {
         if ($tenants !== null && !$orm->hasTenancy()) {
             throw new \InvalidArgumentException(
@@ -120,7 +128,7 @@ final class Console
         }
     }
 
-    private const array BUILT_IN = ['queue:work', 'queue:failed', 'queue:retry', 'queue:hand-back', 'queue:prune', 'schedule:run', 'schedule:work', 'schedule:list'];
+    private const array BUILT_IN = ['queue:work', 'queue:failed', 'queue:retry', 'queue:hand-back', 'queue:prune', 'schedule:run', 'schedule:work', 'schedule:list', 'search:reindex'];
 
     public function has(string $name): bool
     {
@@ -160,6 +168,7 @@ final class Console
                     'queue:prune' => $this->prune($arguments, $output),
                     'schedule:run' => $this->scheduleRun($output),
                     'schedule:work' => $this->scheduleWork($output),
+                    'search:reindex' => $this->reindex($arguments, $output),
                     default => $this->scheduleList($output),
                 };
             } catch (\InvalidArgumentException $e) {
@@ -182,6 +191,36 @@ final class Console
             $output->error($e->getMessage());
 
             return Cancelled::STATUS;
+        }
+    }
+
+    /**
+     * `search:reindex`: each #[Searchable] model's index built again, under
+     * a progress bar (Search\ReindexCommand), outside any tenant -- it reads
+     * each tenant's rows as that tenant itself.
+     *
+     * @param list<string> $arguments
+     */
+    private function reindex(array $arguments, Output $output): int
+    {
+        if ($this->search === null) {
+            throw new \LogicException('This application has no search: build Tinvar\Search\Search and hand it to its Console.');
+        }
+
+        try {
+            $input = Input::parse($arguments);
+
+            return new ReindexCommand($this->search)->run(
+                $input->option('model'),
+                $input->option('tenant'),
+                $input->flag('force'),
+                $output->line(...),
+                $output->error(...),
+            );
+        } catch (SearchFailed $e) {
+            $output->error($e->getMessage());
+
+            return 1;
         }
     }
 
