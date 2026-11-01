@@ -436,6 +436,53 @@ it('keeps what a scan found for the next process beside the build, while the fil
     expect((fn () => $this->cached($this->fingerprint()))->call($fresh))->toBeNull();
 });
 
+// The fingerprint a kept scan is believed by looked at the application's
+// files and two of the framework's: a framework upgrade that sorted classes
+// by other rules -- an attribute class, KnownAttributes -- left the dev
+// cache's old answer standing.
+it('scans again when what decides how a class is sorted changes, not only the application\'s files', function () {
+    $app = $this->app;
+    $app->write('Home', "#[Page('/', 'home')] final class Home { public function __invoke(): void {} }", 'use Tinvar\\Attributes\\Page;');
+    $discovery = $app->discovery();
+    $before = $discovery->fingerprint();
+
+    foreach ([\Tinvar\Support\KnownAttributes::class, \Tinvar\Attributes\Page::class, \Tinvar\Discovery\DiscoveredClasses::class] as $decides) {
+        $file = (string) new \ReflectionClass($decides)->getFileName();
+        $mtime = (int) filemtime($file);
+        touch($file, $mtime + 7);
+        clearstatcache(true, $file);
+        try {
+            expect($discovery->fingerprint())->not->toBe($before, $decides);
+        } finally {
+            touch($file, $mtime);
+            clearstatcache(true, $file);
+        }
+        expect($discovery->fingerprint())->toBe($before);
+    }
+});
+
+it('scans afresh inside freshly(), believing neither the scan it keeps nor the one beside the build', function () {
+    $app = $this->app;
+    $app->write('Home', "#[Page('/', 'home')] final class Home { public function __invoke(): void {} }", 'use Tinvar\\Attributes\\Page;');
+    mkdir("{$app->root}/dist");
+    $discovery = new Discovery($app->namespace, [$app->namespace . '\\' => ["{$app->root}/app"]], "{$app->root}/dist/" . Manifest::FILE, $app->root, recheck: 60.0);
+    $discovery->classes([]);
+    $cache = "{$app->root}/dist/discovery.dev.json";
+    $data = json_decode((string) file_get_contents($cache), true);
+    $data['classes']['routes'] = [];
+    file_put_contents($cache, json_encode($data));
+    $next = new Discovery($app->namespace, [$app->namespace . '\\' => ["{$app->root}/app"]], "{$app->root}/dist/" . Manifest::FILE, $app->root, recheck: 60.0);
+
+    // As another process would, trusting the cache beside the build.
+    \Closure::bind(static function (): void {
+        Discovery::$live = [];
+    }, null, Discovery::class)();
+    expect($next->classes([])->routes)->toBe([]);
+
+    expect(Discovery::freshly(static fn (): DiscoveredClasses => $next->classes([]))->routes)->toBe([$app->name('Home')])
+        ->and(Discovery::freshly(static fn (): DiscoveredClasses => $discovery->classes([]))->routes)->toBe([$app->name('Home')]);
+});
+
 it('adds classes registered by hand after the discovered ones, each once', function () {
     $classes = new DiscoveredClasses(
         routes: ['App\\Pages\\Home'],

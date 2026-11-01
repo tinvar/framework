@@ -6,6 +6,7 @@ namespace Tinvar\Discovery;
 
 use Tinvar\Attributes\NotRegistered;
 use Tinvar\Auth\ApplicationClasses;
+use Tinvar\Endpoints\EndpointRegistry;
 use Tinvar\Support\DevMode;
 use Tinvar\Support\KnownAttributes;
 
@@ -45,14 +46,18 @@ use Tinvar\Support\KnownAttributes;
  *     TINVAR_ENV or APP_ENV saying staging -- from the build's manifest
  *     alone (Manifest), never a scan; a missing manifest refuses to boot;
  *   - anywhere else, from a scan, kept for the process and made again when
- *     a file under the namespace changes: a look at each file's time and
- *     size, at most once every $recheck seconds -- as `tinvar dev` watches
- *     the sources it runs codegen for (SourceWatcher).
+ *     a file under the namespace changes, or the framework that sorts them
+ *     does: a look at each file's time and size, at most once every
+ *     $recheck seconds -- as `tinvar dev` watches the sources it runs
+ *     codegen for (SourceWatcher). `tinvar check` scans afresh (freshly()).
  */
 final class Discovery
 {
     /** @var array<string, array{float, string, DiscoveredClasses}> by namespace and map: [last look, the files' fingerprint, what the scan found] */
     private static array $live = [];
+
+    /** Whether classes() scans each time, believing no kept scan: inside freshly(). */
+    private static bool $fresh = false;
 
     /**
      * @param string $namespace the application's root namespace, its Kernel's
@@ -203,6 +208,14 @@ final class Discovery
 
         $key = $this->namespace . "\0" . serialize($this->psr4);
         $now = microtime(true);
+        if (self::$fresh) {
+            $fingerprint = $this->fingerprint();
+            $classes = $this->scan();
+            $this->cache($fingerprint, $classes);
+            self::$live[$key] = [microtime(true), $fingerprint, $classes];
+
+            return $classes;
+        }
         $kept = self::$live[$key] ?? null;
         if ($kept !== null && $now - $kept[0] < $this->recheck) {
             return $kept[2];
@@ -221,6 +234,28 @@ final class Discovery
         self::$live[$key] = [microtime(true), $fingerprint, $classes];
 
         return $classes;
+    }
+
+    /**
+     * $callback's answer, with every classes() it asks outside production
+     * scanning afresh -- neither the scan this process keeps nor the one
+     * beside the build believed, each replaced by what the scan finds.
+     * `tinvar check` asks its classes this way: a check vouches for the
+     * sources as they are, not for what a cache says they were.
+     *
+     * @template T
+     * @param \Closure(): T $callback
+     * @return T
+     */
+    public static function freshly(\Closure $callback): mixed
+    {
+        $was = self::$fresh;
+        self::$fresh = true;
+        try {
+            return $callback();
+        } finally {
+            self::$fresh = $was;
+        }
     }
 
     /** The scan cache beside the manifest, which dev's classic-mode processes share. */
@@ -274,18 +309,48 @@ final class Discovery
 
     /**
      * What a look at the files finds now: each file's path, time and size,
-     * hashed. It moves when a file is added, removed or written.
+     * hashed, with what decides how a class is sorted (rules()). It moves
+     * when a file is added, removed or written, and when the framework is.
      */
     public function fingerprint(): string
     {
         // And what decides: a class sorted by other rules is sorted afresh.
-        $stamps = [$this->namespace, (string) @filemtime(__DIR__ . '/Classifier.php'), (string) @filemtime(__FILE__)];
+        $stamps = [$this->namespace, ...self::rules()];
         foreach ($this->walk()->files() as [, $file]) {
             $stat = @stat($file);
             $stamps[] = $file . ':' . ($stat === false ? '-' : "{$stat['mtime']}:{$stat['size']}");
         }
 
         return hash('xxh128', implode("\n", $stamps));
+    }
+
+    /**
+     * What decides how a class is sorted, stamped: the framework's version
+     * as Composer installed it, and the time and size of each of its files
+     * that sort -- discovery's own, KnownAttributes, EndpointRegistry, every
+     * attribute class -- so a framework upgraded or edited in place never
+     * leaves a kept scan's old answer standing.
+     *
+     * @return list<string>
+     */
+    private static function rules(): array
+    {
+        $stamps = [];
+        if (class_exists(\Composer\InstalledVersions::class) && \Composer\InstalledVersions::isInstalled('tinvar/framework')) {
+            $stamps[] = 'tinvar/framework@' . (\Composer\InstalledVersions::getReference('tinvar/framework') ?? \Composer\InstalledVersions::getPrettyVersion('tinvar/framework') ?? '');
+        }
+        $files = [
+            ...(glob(__DIR__ . '/*.php') ?: []),
+            ...(glob(\dirname((string) new \ReflectionClass(NotRegistered::class)->getFileName()) . '/*.php') ?: []),
+            (string) new \ReflectionClass(KnownAttributes::class)->getFileName(),
+            (string) new \ReflectionClass(EndpointRegistry::class)->getFileName(),
+        ];
+        foreach ($files as $file) {
+            $stat = @stat($file);
+            $stamps[] = $file . ':' . ($stat === false ? '-' : "{$stat['mtime']}:{$stat['size']}");
+        }
+
+        return $stamps;
     }
 
     /**

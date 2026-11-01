@@ -308,9 +308,10 @@ final class AppConsole
     public function check(): int
     {
         // First what everything else is read from: the application's
-        // classes, which a refused scan leaves nothing to check by.
+        // classes, which a refused scan leaves nothing to check by -- scanned
+        // afresh, never taken from the dev cache a scan keeps beside the build.
         try {
-            $classes = $this->classes();
+            $classes = Discovery::freshly($this->classes(...));
             $stale = $this->staleManifest();
         } catch (DiscoveryFailed $e) {
             fwrite(STDERR, "Discovery failed (ADR 0146):\n  " . implode("\n  ", $e->problems) . "\n");
