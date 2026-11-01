@@ -142,6 +142,16 @@ describe('an import that is refused row by row', function () {
             ->and($app->stockOf(W1))->toBe(3);
     });
 
+    // Review: a blank line was skipped uncounted, so every row after it was
+    // named one row above the one a spreadsheet shows it on.
+    it('names a row as a spreadsheet does, a blank line before it counted', function () {
+        $app = new App();
+        $record = imported($app, "widget,stock\n\n" . W1 . ",-1\n");
+
+        expect($record->status)->toBe(TransferRecord::FAILED)
+            ->and($record->errors)->toBe([['row' => 3, 'field' => 'stock', 'message' => 'stock must be at least 0.']]);
+    });
+
     it('refuses a row with more or fewer cells than the header names', function () {
         $app = new App();
         $record = imported($app, "widget,stock\n" . W1 . ",1,extra\n");

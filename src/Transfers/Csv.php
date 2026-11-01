@@ -84,8 +84,8 @@ final class Csv
      * Every record of a CSV stream, numbered as a spreadsheet numbers its
      * rows -- the header is row 1 -- with its cells checked, as read, to be
      * UTF-8 text with no NUL and no longer than a cell may be. A blank line
-     * is no record, and is not counted. A byte-order mark at the start is
-     * skipped.
+     * is no record, but is counted, as a spreadsheet shows it as a row of
+     * its own. A byte-order mark at the start is skipped.
      *
      * @param resource $stream
      * @return \Generator<int, list<string>> row => cells
@@ -100,10 +100,12 @@ final class Csv
 
         $row = 0;
         while (($record = fgetcsv($stream, null, ',', '"', '')) !== false) {
+            // Counted before it is skipped: a spreadsheet shows a blank line
+            // as a row, and the rows after it are numbered past it.
+            $row++;
             if ($record === [null]) {
                 continue;
             }
-            $row++;
 
             $cells = [];
             foreach ($record as $cell) {
