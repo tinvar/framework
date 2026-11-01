@@ -116,7 +116,7 @@ final readonly class DomainVerifier
                 if (isset($seen[$next])) {
                     return new DomainCheck(DomainPointing::Unknown, "its aliases loop back to {$next}");
                 }
-                if ($hop + 1 >= $this->maxAliases) {
+                if ($hop + 1 > $this->maxAliases) {
                     return new DomainCheck(DomainPointing::Unknown, "its aliases go on past {$this->maxAliases}");
                 }
                 $seen[$next] = true;

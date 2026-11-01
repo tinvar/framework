@@ -120,7 +120,19 @@ describe('where a domain points', function () {
         expect($verifier->check('a.acme.example')->pointing)->toBe(DomainPointing::Unknown)
             ->and($verifier->check('a.acme.example')->reason)->toBe('its aliases loop back to a.acme.example')
             ->and($verifier->check('hop0.acme.example')->pointing)->toBe(DomainPointing::Unknown)
-            ->and(\count(array_filter($resolver->asked, static fn (string $n): bool => str_starts_with($n, 'hop'))))->toBe(8);
+            // The name, and the eight aliases it is followed through.
+            ->and(\count(array_filter($resolver->asked, static fn (string $n): bool => str_starts_with($n, 'hop'))))->toBe(9);
+    });
+
+    // Review: the chain was given up as the last alias allowed was found,
+    // before it was followed -- one alias fewer than $maxAliases -- so with
+    // one allowed, a domain aliased to a host on the platform's addresses
+    // was Unknown, and deactivated once its grace ran out.
+    it('follows as many aliases as it is told to', function () {
+        $resolver = new Dns(['shop.acme.example' => 'edge.acme.example', 'edge.acme.example' => ['203.0.113.10']]);
+        $verifier = new DomainVerifier([TARGET], ADDRESSES, $resolver, maxAliases: 1, clock: $resolver->clock());
+
+        expect($verifier->check('shop.acme.example')->pointing)->toBe(DomainPointing::Platform);
     });
 
     it('refuses a verifier with nothing to point at, or a target that is not a host name', function (array $targets, array $addresses) {
