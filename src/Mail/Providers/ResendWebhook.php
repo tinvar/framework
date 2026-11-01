@@ -17,9 +17,9 @@ use Tinvar\Mail\MailWebhookDelivery;
  * Resend's webhook: Svix-signed deliveries (SvixSignature), each within
  * five minutes of now, its `svix-id` its nonce (ADR 0147).
  *
- * `email.bounced` is a hard bounce -- Resend sends it when the reader's
- * server refused the message for good -- unless its `bounce.type` says
- * `Transient`; `email.complained` a complaint; `email.delivered` a
+ * `email.bounced` is a hard bounce when its `bounce.type` is `Permanent`,
+ * and a soft one otherwise (`Temporary`, SES's `Undetermined`, or no type
+ * at all); `email.complained` a complaint; `email.delivered` a
  * delivery. The rest -- sent, opened, clicked, delayed -- are not this
  * endpoint's, and are taken and ignored.
  *
@@ -93,7 +93,9 @@ final readonly class ResendWebhook implements MailWebhook
                     $recipient,
                     $messageId,
                     $at,
-                    ($bounce['type'] ?? 'Permanent') !== 'Transient',
+                    // Hard only when Resend says so: `Temporary`, SES's `Undetermined`
+                    // and a type missing are a soft bounce, which suppresses no one.
+                    ($bounce['type'] ?? null) === 'Permanent',
                     Payload::text($bounce['message'] ?? null),
                     $ambiguous,
                 ),

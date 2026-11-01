@@ -109,7 +109,7 @@ describe('Resend (Svix)', function () {
             ->and(refused(new ResendWebhook('whsec_' . base64_encode('another-secret-of-thirty-two-by!')), $good, $body))->toBe(401);
     });
 
-    it('reads complaints, deliveries and transient bounces, and takes the rest as nothing', function () use ($secret, $signed) {
+    it('reads complaints, deliveries and bounces, hard only when Resend says Permanent, and takes the rest as nothing', function () use ($secret, $signed) {
         $webhook = new ResendWebhook($secret);
         $events = static function (string $type, array $data = []) use ($webhook, $signed): array {
             $body = json_encode(['type' => $type, 'created_at' => '2027-01-15T08:00:00Z', 'data' => ['email_id' => 'e1', 'to' => ['ada@example.test'], ...$data]], JSON_THROW_ON_ERROR);
@@ -120,6 +120,10 @@ describe('Resend (Svix)', function () {
         expect($events('email.complained')[0])->toBeInstanceOf(MailComplained::class)
             ->and($events('email.delivered')[0])->toBeInstanceOf(MailDelivered::class)
             ->and($events('email.bounced', ['bounce' => ['type' => 'Transient']])[0]->permanent)->toBeFalse()
+            ->and($events('email.bounced', ['bounce' => ['type' => 'Temporary']])[0]->permanent)->toBeFalse()
+            ->and($events('email.bounced', ['bounce' => ['type' => 'Undetermined']])[0]->permanent)->toBeFalse()
+            ->and($events('email.bounced', ['bounce' => []])[0]->permanent)->toBeFalse()
+            ->and($events('email.bounced', ['bounce' => ['type' => 'Permanent']])[0]->permanent)->toBeTrue()
             ->and($events('email.opened'))->toBe([]);
     });
 
