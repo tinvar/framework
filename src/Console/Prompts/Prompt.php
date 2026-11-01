@@ -119,11 +119,12 @@ abstract class Prompt
         $this->lines = $lines;
         $inner = Box::inner($columns);
 
+        // What the caller or the answer gave is shown, its control characters never sent.
         return match ($this->state) {
-            self::SUBMITTED => Box::draw($style, 'gray', $this->label, [$style->gray($this->answered())], $columns),
-            self::CANCELLED => Box::draw($style, 'red', $this->label, [$style->strike($style->gray($this->answered()))], $columns, below: [$style->red('Cancelled.')]),
-            self::ERROR => Box::draw($style, 'yellow', $this->label, $this->body($style, $inner), $columns, $this->info(), $this->footer(), [$style->yellow('⚠ ' . $this->error)]),
-            default => Box::draw($style, 'cyan', $this->label, $this->body($style, $inner), $columns, $this->info(), $this->footer(), $this->hint === '' ? [] : [$style->gray($this->hint)]),
+            self::SUBMITTED => Box::draw($style, 'gray', $this->label, [$style->gray(Width::clean($this->answered()))], $columns),
+            self::CANCELLED => Box::draw($style, 'red', $this->label, [$style->strike($style->gray(Width::clean($this->answered())))], $columns, below: [$style->red('Cancelled.')]),
+            self::ERROR => Box::draw($style, 'yellow', $this->label, $this->body($style, $inner), $columns, $this->info(), $this->footer(), [$style->yellow('⚠ ' . Width::clean($this->error))]),
+            default => Box::draw($style, 'cyan', $this->label, $this->body($style, $inner), $columns, $this->info(), $this->footer(), $this->hint === '' ? [] : [$style->gray(Width::clean($this->hint))]),
         };
     }
 

@@ -50,6 +50,41 @@ final class Width
         return $width;
     }
 
+    /**
+     * $text safe to put on a terminal: each control character shown as a
+     * picture of it rather than sent -- a C0 control as its Unicode control
+     * picture (escape as ␛, carriage return as ␍), delete as ␡, a C1 control
+     * as � -- so text from outside (a table's cells, a prompt's label, an
+     * option, a job's stored error) cannot move the cursor, clear the
+     * screen, retitle the window or write the clipboard. Only Style's own
+     * output sends an escape. $keep names the controls the caller lays out
+     * itself, such as "\n" for text it wraps by line.
+     *
+     * One character for one, so a cursor's place in the text holds. Text
+     * that is not UTF-8 has each byte past ASCII shown as �, a C1 byte being
+     * a control to a terminal reading eight-bit controls.
+     */
+    public static function clean(string $text, string $keep = ''): string
+    {
+        if (preg_match('/[\x00-\x1F\x7F-\x9F]/', $text) !== 1) {
+            return $text;
+        }
+        if (preg_match('//u', $text) !== 1) {
+            $text = (string) preg_replace('/[\x80-\xFF]/', "\u{FFFD}", $text);
+        }
+
+        return (string) preg_replace_callback('/[\x00-\x1F\x7F]|\xC2[\x80-\x9F]/', static function (array $match) use ($keep): string {
+            $char = $match[0];
+
+            return match (true) {
+                \strlen($char) > 1 => "\u{FFFD}",
+                $keep !== '' && str_contains($keep, $char) => $char,
+                $char === "\x7F" => "\u{2421}",
+                default => mb_chr(0x2400 + \ord($char), 'UTF-8'),
+            };
+        }, $text);
+    }
+
     /** $text without its ANSI escape sequences. */
     public static function strip(string $text): string
     {

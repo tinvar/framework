@@ -138,7 +138,7 @@ trait ChoosesOptions
             $option = $this->options[$index];
             $prefix = $marker($option, $place === $this->highlighted);
             $room = max(1, $width - Width::of($prefix) - ($bar ? 2 : 0));
-            $label = Width::truncate($option['label'], $room);
+            $label = Width::truncate(Width::clean($option['label']), $room);
             $label = $place === $this->highlighted ? $label : $style->dim($label);
             $line = $prefix . $label;
             if ($bar) {

@@ -82,7 +82,7 @@ final class SelectPrompt extends Prompt
     {
         $rows = $this->rows($style, $width, static fn (array $option, bool $on): string => $on ? $style->cyan('› ● ') : '  ' . $style->dim('○') . ' ');
 
-        return $this->query === '' ? $rows : [$style->gray('⌕ ') . $this->query, ...$rows];
+        return $this->query === '' ? $rows : [$style->gray('⌕ ') . Width::clean($this->query), ...$rows];
     }
 
     protected function info(): string

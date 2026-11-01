@@ -109,7 +109,7 @@ final class TextareaPrompt extends Prompt
             [$line, $column] = $this->position();
             $rows = [];
             foreach (explode("\n", $this->value) as $i => $text) {
-                $rows[] = $i === $line ? self::window($style, $text, $column, $width) : Width::truncate($text, $width);
+                $rows[] = $i === $line ? self::window($style, $text, $column, $width) : Width::truncate(Width::clean($text), $width);
             }
         }
 

@@ -100,7 +100,7 @@ trait EditsText
     {
         $text = $shown ?? $this->value;
         if ($text === '' && $placeholder !== '') {
-            $chars = Width::chars($placeholder);
+            $chars = Width::chars(Width::clean($placeholder));
 
             return $style->cursor($chars[0] ?? ' ') . $style->gray(Width::truncate(implode('', \array_slice($chars, 1)), max(0, $width - 1)));
         }
@@ -108,10 +108,14 @@ trait EditsText
         return self::window($style, $text, $this->cursor, $width);
     }
 
-    /** $text in $width columns, scrolled to keep the cursor at $cursor in view, drawn on it. */
+    /**
+     * $text in $width columns, scrolled to keep the cursor at $cursor in
+     * view, drawn on it: its control characters shown, one for one, so the
+     * cursor's place holds.
+     */
     protected static function window(Style $style, string $text, int $cursor, int $width): string
     {
-        $chars = Width::chars($text);
+        $chars = Width::chars(Width::clean($text));
         $before = \array_slice($chars, 0, $cursor);
         $at = $chars[$cursor] ?? ' ';
         $after = implode('', \array_slice($chars, $cursor + 1));

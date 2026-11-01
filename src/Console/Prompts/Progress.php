@@ -150,7 +150,7 @@ final class Progress
             $info = "{$this->done}/{$this->total}";
         }
 
-        return Box::draw($style, $this->finished ? 'gray' : 'cyan', $this->label, $body, $columns, $info, below: $this->hint === '' ? [] : [$style->gray($this->hint)]);
+        return Box::draw($style, $this->finished ? 'gray' : 'cyan', $this->label, $body, $columns, $info, below: $this->hint === '' ? [] : [$style->gray(Width::clean($this->hint))]);
     }
 
     private function draw(bool $force): void

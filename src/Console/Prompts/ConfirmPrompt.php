@@ -61,8 +61,10 @@ final class ConfirmPrompt extends Prompt
 
     protected function body(Style $style, int $width): array
     {
-        $yes = ($this->yes ? $style->green('●') : $style->dim('○')) . ' ' . ($this->yes ? $this->yesLabel : $style->dim($this->yesLabel));
-        $no = (!$this->yes ? $style->green('●') : $style->dim('○')) . ' ' . (!$this->yes ? $this->noLabel : $style->dim($this->noLabel));
+        $yesLabel = Width::clean($this->yesLabel);
+        $noLabel = Width::clean($this->noLabel);
+        $yes = ($this->yes ? $style->green('●') : $style->dim('○')) . ' ' . ($this->yes ? $yesLabel : $style->dim($yesLabel));
+        $no = (!$this->yes ? $style->green('●') : $style->dim('○')) . ' ' . (!$this->yes ? $noLabel : $style->dim($noLabel));
 
         return ["{$yes} / {$no}"];
     }

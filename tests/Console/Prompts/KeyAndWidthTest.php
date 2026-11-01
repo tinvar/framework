@@ -65,3 +65,17 @@ it('pads to a width and wraps words to one', function (): void {
         ->and(Width::wrap('abcdefghijkl', 5))->toBe(['abcde', 'fghij', 'kl'])
         ->and(Width::wrap("one\ntwo", 10))->toBe(['one', 'two']);
 });
+
+it('shows a control character as a picture of it, never as itself, keeping what the caller already maps', function (): void {
+    expect(Width::clean("\e]52;c;Y3VybA==\x07"))->toBe('␛]52;c;Y3VybA==␇')
+        ->and(Width::clean("fine\rOVERWRITTEN"))->toBe('fine␍OVERWRITTEN')
+        ->and(Width::clean("\e[2J\e[Hcleared"))->toBe('␛[2J␛[Hcleared')
+        ->and(Width::clean("\0\x7f"))->toBe('␀␡')
+        // C1 controls: CSI as one code point, and as a byte that is no UTF-8.
+        ->and(Width::clean("a\u{9B}2Jb"))->toBe("a\u{FFFD}2Jb")
+        ->and(Width::clean("a\x9b2J"))->toBe("a\u{FFFD}2J")
+        ->and(Width::clean("one\ntwo"))->toBe('one␊two')
+        ->and(Width::clean("one\ntwo", "\n"))->toBe("one\ntwo")
+        ->and(Width::clean('né 日本 …'))->toBe('né 日本 …')
+        ->and(Width::of(Width::clean("a\e[31mb")))->toBe(7);
+});

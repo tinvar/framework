@@ -117,7 +117,7 @@ final class MultiSelectPrompt extends Prompt
             return ($on ? $style->cyan('› ') : '  ') . $box . ' ';
         });
 
-        return $this->query === '' ? $rows : [$style->gray('⌕ ') . $this->query, ...$rows];
+        return $this->query === '' ? $rows : [$style->gray('⌕ ') . Width::clean($this->query), ...$rows];
     }
 
     protected function info(): string

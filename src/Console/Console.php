@@ -8,6 +8,7 @@ use Tinvar\Attributes\Command as CommandName;
 use Tinvar\Attributes\TenantFrom;
 use Tinvar\Console\Prompts\Cancelled;
 use Tinvar\Console\Prompts\CannotPrompt;
+use Tinvar\Console\Prompts\Width;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\PanelRegistry;
 use Tinvar\Http\RequestScope;
@@ -324,12 +325,13 @@ final class Console
     {
         [$queue] = $this->queueParts();
         foreach ($queue->failed() as $failure) {
+            // The stored error is whatever the job's exception said: shown, its control characters never sent to the terminal.
             $output->line(\sprintf(
                 '%s  %s  %s  %s',
-                $failure->id,
-                $failure->queue,
+                Width::clean($failure->id),
+                Width::clean($failure->queue),
                 gmdate('Y-m-d H:i:s', $failure->failedAt),
-                strtok($failure->error, "\n") ?: '',
+                Width::clean(strtok($failure->error, "\n") ?: ''),
             ));
         }
 

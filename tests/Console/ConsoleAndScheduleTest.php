@@ -462,3 +462,23 @@ it('retries a failed job as of the console\'s clock, and says plainly when the a
         ->and($bare->run('schedule:list', [], $output))->toBe(1)
         ->and($err)->toBe(['This application has no queue: the console was given no Queue and JobRunner.', 'This application has no schedule: the console was given no Scheduler.']);
 });
+
+// A failed job's stored error is whatever its exception said -- text an
+// attacker may have put there -- and queue:failed printed it to the
+// terminal as it was, escape sequences and all.
+it('lists failed jobs with the control characters in their stored error shown, not sent to the terminal', function () {
+    $h = new Harness();
+    $h->queue->push(new \Tinvar\Queue\PendingJob('j1', 'default', 'payload', 100));
+    $reserved = $h->queue->reserve(['default'], 100, 60);
+    \assert($reserved !== null);
+    $h->queue->fail($reserved, "boom \e]52;c;Y3VybA==\x07\e[2J\rgone\nsecond line", 100);
+    $out = [];
+    $output = new Output(static function (string $line) use (&$out): void {
+        $out[] = $line;
+    }, static function (string $line): void {});
+    $console = new Console([], $h->orm, $h->container->resolver(), $h->scope, queue: $h->queue, runner: $h->runner);
+
+    expect($console->run('queue:failed', [], $output))->toBe(0)
+        ->and($out)->toHaveCount(1)
+        ->and($out[0])->toContain('j1  default')->toEndWith('boom ␛]52;c;Y3VybA==␇␛[2J␍gone')->not->toContain("\e");
+});

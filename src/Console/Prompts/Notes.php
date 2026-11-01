@@ -17,7 +17,7 @@ final class Notes
     public static function lines(Style $style, string $type, string $message, int $columns): array
     {
         $width = max(10, min(Box::MAX_WIDTH, $columns - 2) - 4);
-        $wrapped = Width::wrap($message, $width);
+        $wrapped = Width::wrap(Width::clean($message, "\n"), $width);
 
         if ($type === 'alert') {
             $band = static fn (string $line): string => ' ' . $style->color('alert', ' ' . Width::pad($line, $width) . ' ');

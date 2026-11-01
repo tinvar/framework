@@ -8,7 +8,8 @@ namespace Tinvar\Console\Prompts;
  * Rows in a box, each column as wide as its widest cell -- measured as a
  * terminal draws it, so a column of CJK or emoji lines up -- and, on a
  * terminal too narrow for them all, the widest columns cut, with an
- * ellipsis, until it fits.
+ * ellipsis, until it fits. A control character in a cell or header is
+ * shown, never sent (Width::clean()).
  */
 final class Table
 {
@@ -20,13 +21,14 @@ final class Table
     public static function lines(Style $style, array $headers, array $rows, int $columns): array
     {
         $cells = array_map(static fn (array $row): array => array_map(
-            static fn (mixed $cell): string => str_replace(["\r\n", "\n", "\t"], ' ', match (true) {
+            static fn (mixed $cell): string => Width::clean(str_replace(["\r\n", "\n", "\t"], ' ', match (true) {
                 $cell === null => '',
                 \is_bool($cell) => $cell ? 'true' : 'false',
                 default => (string) $cell,
-            }),
+            })),
             array_values($row),
         ), $rows);
+        $headers = array_map(static fn (string $header): string => Width::clean(str_replace(["\r\n", "\n", "\t"], ' ', $header)), $headers);
         $count = max(\count($headers), ...array_map(\count(...), $cells ?: [[]]));
         if ($count === 0) {
             return [];

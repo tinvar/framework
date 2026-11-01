@@ -228,7 +228,8 @@ final class Prompts
         $terminal = self::terminal();
         $style = self::style();
         $frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-        $line = static fn (int $tick): string => "\r " . $style->cyan($frames[$tick % \count($frames)]) . ' ' . Width::truncate($message, max(1, $terminal->columns() - 4)) . "\e[K";
+        $shown = Width::clean($message);
+        $line = static fn (int $tick): string => "\r " . $style->cyan($frames[$tick % \count($frames)]) . ' ' . Width::truncate($shown, max(1, $terminal->columns() - 4)) . "\e[K";
 
         $terminal->write(Screen::HIDE_CURSOR . $line(0));
         $child = 0;

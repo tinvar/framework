@@ -13,7 +13,10 @@ namespace Tinvar\Console\Prompts;
  *        A hint, or what is wrong with the answer
  *
  * At most 64 columns wide, and as narrow as the terminal: the title, info
- * and body are cut to fit, never wrapped out of the box.
+ * and body are cut to fit, never wrapped out of the box. The title, info
+ * and footer are plain text, their control characters shown rather than
+ * sent (Width::clean()); the body and the lines below are drawn as given,
+ * cleaned by the prompt that styles them.
  */
 final class Box
 {
@@ -43,7 +46,8 @@ final class Box
         $inner = $width - 4;
         $paint = static fn (string $text): string => $style->color($color, $text);
 
-        $info = $info === '' ? '' : Width::truncate($info, max(0, $inner - 4));
+        $title = Width::clean($title);
+        $info = $info === '' ? '' : Width::truncate(Width::clean($info), max(0, $inner - 4));
         $room = $inner - ($info === '' ? 0 : Width::of($info) + 2);
         $title = Width::truncate($title, max(1, $room));
         $rule = max(0, $width - 4 - Width::of($title) - ($info === '' ? 0 : Width::of($info) + 2));
@@ -54,7 +58,7 @@ final class Box
             $lines[] = ' ' . $paint('│') . ' ' . Width::pad($line, $inner) . ' ' . $paint('│');
         }
 
-        $footer = $footer === '' ? '' : Width::truncate($footer, max(0, $inner - 2));
+        $footer = $footer === '' ? '' : Width::truncate(Width::clean($footer), max(0, $inner - 2));
         $lines[] = $footer === ''
             ? ' ' . $paint('└' . str_repeat('─', $width - 2) . '┘')
             : ' ' . $paint('└') . ' ' . $style->gray($footer) . ' ' . $paint(str_repeat('─', max(0, $width - 4 - Width::of($footer))) . '┘');

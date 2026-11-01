@@ -252,3 +252,32 @@ it('colours what it draws only where the terminal takes colour', function (): vo
     Prompts::text('Name');
     expect(preg_match('/\e\[\d+m/', $terminal->output()))->toBe(0);
 });
+
+it('draws escape sequences in labels, options, placeholders, defaults, hints and errors as text, and answers with them as given', function (): void {
+    $clear = "\e[2J";
+    $title = "\e]0;pwned\x07";
+    $select = Prompts::fakeTerminal([Key::DOWN, Key::ENTER], colors: true);
+    expect(Prompts::select("Pick{$clear}", ["a{$title}", "b\rX", "c\u{9B}2J"], hint: "hint{$clear}"))->toBe("b\rX");
+
+    $text = Prompts::fakeTerminal([Key::ENTER, 'x', Key::ENTER], colors: true);
+    Prompts::text("Name{$title}", placeholder: "place{$clear}", validate: static fn (string $v): ?string => $v === '' ? "bad{$title}" : null);
+
+    $default = Prompts::fakeTerminal([Key::ENTER], colors: true);
+    expect(Prompts::text('Default', default: "d{$clear}"))->toBe("d{$clear}");
+
+    $confirm = Prompts::fakeTerminal([Key::ENTER], colors: true);
+    Prompts::confirm('Sure?', yes: "y{$title}", no: "n{$clear}");
+
+    $said = Prompts::fakeTerminal([], colors: true);
+    Prompts::note("note{$title}\nsecond line");
+    Prompts::table(["h{$clear}"], [["cell{$title}"]]);
+
+    foreach ([$select, $text, $default, $confirm, $said] as $terminal) {
+        expect($terminal->output())->not->toContain($clear)->not->toContain("\e]")->not->toContain("b\rX")->not->toContain("\u{9B}");
+    }
+    expect($select->output())->toContain('Pick␛[2J')->toContain('a␛]0;pwned␇')->toContain('b␍X')->toContain('hint␛[2J')
+        ->and($text->output())->toContain('Name␛]0;pwned␇')->toContain('lace␛[2J')->toContain('bad␛]0;pwned␇')
+        ->and($default->output())->toContain('d␛[2J')
+        ->and($confirm->output())->toContain('y␛]0;pwned␇')->toContain('n␛[2J')
+        ->and($said->output())->toContain('note␛]0;pwned␇')->toContain('second line')->toContain('h␛[2J')->toContain('cell␛]0;pwned␇');
+});
