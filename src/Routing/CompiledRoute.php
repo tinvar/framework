@@ -53,16 +53,6 @@ final readonly class CompiledRoute
         return $this->host?->pattern;
     }
 
-    /**
-     * Its parameters the path carries, without the host's.
-     *
-     * @return list<string>
-     */
-    public function pathParameters(): array
-    {
-        return $this->host === null ? $this->parameters : array_values(array_diff($this->parameters, $this->host->parameters));
-    }
-
     /** Whether it is served on the same hosts as $other: the same pattern shape, or both on the primary host. */
     public function sameHostAs(self $other): bool
     {
