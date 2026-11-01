@@ -135,6 +135,12 @@ it('forgets on every server what one server forgets', function () {
         return $servers;
     });
 
+    // Asked as a request on the shop's own host keys it: outside any
+    // request, where the shop routes by host, nothing is cached at all.
+    foreach ([$first, $second] as $server) {
+        $server->kernel()->cache->keyHostsBy(static fn (): string => '');
+    }
+
     $first->kernel()->cache->put('products.cached', $declaration, ['product' => 'p1'], '', ['stock' => 4]);
     expect($second->kernel()->cache->get('products.cached', $declaration, ['product' => 'p1'], ''))
         ->toBe(['hit' => true, 'value' => ['stock' => 4]]);
