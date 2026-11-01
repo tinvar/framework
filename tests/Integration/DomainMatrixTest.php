@@ -516,6 +516,16 @@ final class App
         );
     }
 
+    /** The error page for $status as Kernel::errorPage() draws it for a document on $host. */
+    public function errorPage(string $host, int $status): Response
+    {
+        return $this->kernel->errorPage(
+            new Request('GET', '/', ['host' => $host, 'accept' => 'text/html'], cookies: [SESSION_COOKIE => 'session-a']),
+            $status,
+            $this->respond(...),
+        );
+    }
+
     /** A page answered as JSON: which page, its data, its layouts, and what the page would link to. */
     private function respond(LoadedRoute $loaded, Request $request): Response
     {
@@ -941,6 +951,19 @@ describe('error pages and the 404', function () {
         'an account host, which may have none of its own' => [ACME, '/nowhere', 'errors/page'],
         'the configured domain' => [OTHER, '/nowhere', 'errors/page'],
         'an admin page asked on the primary host' => [PRIMARY, '/orders/9', 'errors/page'],
+    ]);
+
+    // Review: errorPage() read the request's host without resolving it, as
+    // handle() does, so every host was shown the application's error page
+    // and never its own.
+    it('draws each host its own error page when an application asks for one', function (string $host, string $page) {
+        $response = (new App())->errorPage($host, 404);
+
+        expect($response->status)->toBe(404)
+            ->and(json_decode($response->body(), true)['page'] ?? null)->toBe($page);
+    })->with([
+        'the primary host' => [PRIMARY, 'errors/page'],
+        'the admin host' => [ADMIN, 'admin/error'],
     ]);
 
     it('shows no host\'s error page to a host nobody serves, nor to a request naming none', function () {

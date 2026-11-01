@@ -1749,17 +1749,7 @@ final class Kernel
         // First, so everything after -- the session, the routing, a failure
         // in either, the toolbar's recording -- is under the request's id.
         $request = $this->telemetry?->begin($request) ?? $request;
-        // The host it was sent to, resolved once for everything after to
-        // read (HostMatch); one the application does not serve is left
-        // unresolved, and refused in dispatch() (ADR 0149).
-        if ($this->domains !== null && HostMatch::of($request) === null) {
-            $host = $this->domains->hostOf($request);
-            $match = $host === null ? null : $this->domains->match($host);
-            if ($match !== null) {
-                $request = $request->withAttribute(HostMatch::ATTRIBUTE, $match);
-            }
-        }
-        $request = $this->withPreviousUrl($request);
+        $request = $this->withPreviousUrl($this->withHost($request));
         $this->toolbar?->begin($request);
         $handling = $this->handling;
         $this->handling = $request;
@@ -1797,6 +1787,22 @@ final class Kernel
             $this->leaveHost($hostBefore);
             $this->scope->reset();
         }
+    }
+
+    /**
+     * The request, carrying the host it was sent to, resolved once for
+     * everything after to read (HostMatch); one the application does not
+     * serve is left unresolved, and refused in dispatch() (ADR 0149).
+     */
+    private function withHost(Request $request): Request
+    {
+        if ($this->domains === null || HostMatch::of($request) !== null) {
+            return $request;
+        }
+        $host = $this->domains->hostOf($request);
+        $match = $host === null ? null : $this->domains->match($host);
+
+        return $match === null ? $request : $request->withAttribute(HostMatch::ATTRIBUTE, $match);
     }
 
     /**
@@ -2385,13 +2391,22 @@ final class Kernel
      */
     public function errorPage(Request $request, int $status, \Closure $respond): Response
     {
+        // On its host, as handle() puts a request: that host's own error
+        // page, and the calls its render makes keyed and held by it.
+        $request = $this->withHost($request);
+        $hostBefore = $this->enterHost(HostMatch::of($request) ?? false);
+
         try {
             return $this->globalStack->run(
                 $this->withPreviousUrl($request),
                 fn (Request $passed): Response => $this->drawErrorPage($passed, Response::make($status), $respond, null),
             );
         } finally {
-            $this->scope->reset();
+            $this->leaveHost($hostBefore);
+            // Not inside a request handle() is answering: its scope is not over.
+            if ($this->handling === null) {
+                $this->scope->reset();
+            }
         }
     }
 
