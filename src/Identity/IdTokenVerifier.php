@@ -208,20 +208,32 @@ final readonly class IdTokenVerifier
             throw new IdTokenRefused(IdTokenRefused::SIGNATURE, 'The ID token\'s signature is not an Ed25519 signature\'s size.');
         }
         // The key the token names, or -- naming none -- each of the
-        // provider's that fits, until one verifies.
+        // provider's that fits, until one verifies. One that will not load
+        // -- a legacy key left in the set -- is passed over for the next,
+        // and is the refusal only when no key loaded at all.
         $verified = 0;
+        $loaded = false;
+        $unloadable = null;
         foreach ($candidates as $jwk) {
-            $verified = openssl_verify("{$encodedHeader}.{$encodedClaims}", $signature, Jwk::publicKey($jwk, $kty, $curve), $digest, $padding);
+            try {
+                $key = Jwk::publicKey($jwk, $kty, $curve);
+            } catch (IdTokenRefused $e) {
+                $unloadable ??= $e;
+                self::drainOpenSslErrors();
+
+                continue;
+            }
+            $loaded = true;
+            $verified = openssl_verify("{$encodedHeader}.{$encodedClaims}", $signature, $key, $digest, $padding);
             if ($verified === 1) {
                 break;
             }
-            while (openssl_error_string() !== false) {
-                // Drained after each key that did not verify: OpenSSL's
-                // queue is the process's, and the next caller's.
-            }
+            self::drainOpenSslErrors();
         }
         if ($verified !== 1) {
-            throw new IdTokenRefused(IdTokenRefused::SIGNATURE, 'The ID token\'s signature does not verify.');
+            throw !$loaded && $unloadable !== null
+                ? $unloadable
+                : new IdTokenRefused(IdTokenRefused::SIGNATURE, 'The ID token\'s signature does not verify.');
         }
 
         // Only now are the claims read: up to here they were anyone's.
@@ -297,5 +309,16 @@ final readonly class IdTokenVerifier
 
         /** @var array<string, mixed> $decoded */
         return $decoded;
+    }
+
+    /**
+     * Empties OpenSSL's error queue after a key that did not load or did
+     * not verify: the queue is the process's, and the next caller's.
+     */
+    private static function drainOpenSslErrors(): void
+    {
+        while (openssl_error_string() !== false) {
+            // Each read takes one off.
+        }
     }
 }

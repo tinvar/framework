@@ -268,6 +268,24 @@ describe('the ID token', function () {
         expect(failure(fn () => $client->finish(SESSION, $idp->authorize($client->start(SESSION)))))->toBe('signed in');
     });
 
+    // Review: a key of the provider's that would not load -- a legacy
+    // 1024-bit one left in its set -- refused a token naming no key before
+    // the key that signed it was tried.
+    it('is believed naming no key when a key of the provider\'s before the one that signed it will not load', function () use ($refused) {
+        expect($refused(
+            static fn (array $header, array $claims): array => [['alg' => 'RS256'], $claims, 'rsa-1'],
+            static function (FakeOidcProvider $idp): void {
+                $idp->published = ['weak-1', 'rsa-1'];
+            },
+        ))->toBe('signed in')
+            ->and($refused(
+                static fn (array $header, array $claims): array => [['alg' => 'RS256'], $claims, 'weak-1'],
+                static function (FakeOidcProvider $idp): void {
+                    $idp->published = ['weak-1'];
+                },
+            ))->toBe('id_token:key');
+    });
+
     it('is refused signed by an RSA key under 2048 bits', function () use ($refused) {
         expect($refused(
             static fn (array $header, array $claims): array => [['alg' => 'RS256', 'kid' => 'weak-1'], $claims, 'weak-1'],
