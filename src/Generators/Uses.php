@@ -10,7 +10,7 @@ namespace Tinvar\Generators;
  *
  * A class whose short name is already taken -- by the class being declared,
  * or by another import -- is imported under an alias, so a page named Rack
- * can still take the Rack model: `use Shop\Models\Rack as ModelsRack;`.
+ * can still take the Rack model: `use Shop\Database\Models\Catalog\Rack as CatalogRack;`.
  */
 final class Uses
 {
