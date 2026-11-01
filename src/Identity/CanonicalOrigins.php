@@ -97,14 +97,17 @@ final readonly class CanonicalOrigins
 
     /**
      * $origin as an emailed link's origin: https, a host, perhaps a port,
-     * nothing else; or an InvalidArgumentException.
+     * nothing else -- or, with $localHttp, http on localhost or a subdomain
+     * of it; or an InvalidArgumentException.
      */
-    public static function origin(string $origin): string
+    public static function origin(string $origin, bool $localHttp = false): string
     {
         $origin = rtrim($origin, '/');
         // One spelling per origin, as a browser serializes it, by the rule a
-        // realm is held to as well (BrowserOrigin): https alone here.
-        if (BrowserOrigin::hostOf($origin) === null) {
+        // realm is held to as well (BrowserOrigin): https alone here, but
+        // for a caller that allows http on localhost -- EmailLinks in
+        // development, which refuses to be made so in production.
+        if (BrowserOrigin::hostOf($origin, $localHttp) === null) {
             throw new \InvalidArgumentException(
                 "'{$origin}' is not an origin an emailed link is built on: https, a host and perhaps a port, such as https://shop.example.",
             );

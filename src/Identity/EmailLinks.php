@@ -9,6 +9,7 @@ use Tinvar\Auth\UserLookup;
 use Tinvar\Render\SignedToken;
 use Tinvar\Render\TokenClaims;
 use Tinvar\Render\TokenError;
+use Tinvar\Support\DevMode;
 use Tinvar\Support\Signer;
 use Tinvar\Support\Uuid;
 
@@ -68,8 +69,22 @@ final readonly class EmailLinks
      */
     public const string OPT_IN = 'opt-in';
 
+    /**
+     * Proves the holder reads the address a new account is asked for at,
+     * before any account exists (ADR 0150): about an address, as an invite
+     * is, and the account is made only when it is used.
+     */
+    public const string SIGN_UP = 'sign-up';
+
+    /**
+     * Proves the holder reads the new address an account asked to move to
+     * (ADR 0150): about the account and its epoch, with the new address kept
+     * in the link's record, never in its token.
+     */
+    public const string CHANGE_EMAIL = 'change-email';
+
     /** The purposes about an address rather than an account. */
-    public const array ADDRESSED = [self::INVITE, self::OPT_IN];
+    public const array ADDRESSED = [self::INVITE, self::OPT_IN, self::SIGN_UP];
 
     /**
      * How long each kind of link opens: fifteen minutes for one that signs
@@ -82,6 +97,8 @@ final readonly class EmailLinks
         self::PASSWORD_RESET => 900,
         self::INVITE => 604_800,
         self::OPT_IN => 604_800,
+        self::SIGN_UP => 86_400,
+        self::CHANGE_EMAIL => 3_600,
     ];
 
     /** The signer's own purpose; each link's purpose is bound into its MAC beside it. */
@@ -103,20 +120,29 @@ final readonly class EmailLinks
      * @param Signer $signer under PURPOSE
      * @param UserLookup $users finds a link's account again, at the epoch it is on now
      * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
+     * @param bool $localHttp whether a link may be built on plain http for `localhost`
+     *        and its subdomains, which resolve to this machine: development's, where the
+     *        app is served on http://localhost:PORT and no TLS stands in front. Refused
+     *        wherever the environment says production
      */
     public function __construct(
         private Signer $signer,
         private EmailLinkStore $store,
         private UserLookup $users,
         ?\Closure $clock = null,
+        private bool $localHttp = false,
     ) {
         $this->clock = $clock ?? time(...);
+        $marker = $localHttp ? DevMode::productionMarker(array_filter(getenv(), \is_string(...))) : null;
+        if ($marker !== null) {
+            throw new \InvalidArgumentException("Emailed links are built on https alone where {$marker}=production: set the app's https URL, and links are built on it.");
+        }
     }
 
     /** @param (\Closure(): int)|null $clock */
-    public static function fromKey(#[\SensitiveParameter] string $appKey, EmailLinkStore $store, UserLookup $users, ?\Closure $clock = null): self
+    public static function fromKey(#[\SensitiveParameter] string $appKey, EmailLinkStore $store, UserLookup $users, ?\Closure $clock = null, bool $localHttp = false): self
     {
-        return new self(new Signer($appKey, self::PURPOSE), $store, $users, $clock);
+        return new self(new Signer($appKey, self::PURPOSE), $store, $users, $clock, $localHttp);
     }
 
     public function now(): int
@@ -202,10 +228,10 @@ final readonly class EmailLinks
      */
     private function make(string $purpose, string $origin, string $path, string $tenant, ?Authenticatable $user, array $data, int $expiresAt): array
     {
-        $origin = CanonicalOrigins::origin($origin);
+        $origin = CanonicalOrigins::origin($origin, $this->localHttp);
         self::assertPath($path);
         if (($user === null) !== \in_array($purpose, self::ADDRESSED, true)) {
-            throw new \InvalidArgumentException('A sign-in or reset link is about an account; an invite or an opt-in is about an address and no account.');
+            throw new \InvalidArgumentException('A sign-in, reset or change-of-address link is about an account; an invite, an opt-in or a sign-up is about an address and no account.');
         }
         foreach ($data as $key => $value) {
             if (\strlen($key) > 64 || \strlen($value) > 1024) {
