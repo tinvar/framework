@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Query;
 
+use Tinvar\Validation\ValidationException;
+use Tinvar\Validation\Validator;
 use Tinvar\Attributes\Query as QueryAttribute;
 use Tinvar\Auth\Checks;
 use Tinvar\Auth\Gate;
@@ -79,7 +81,12 @@ final class QueryRunner
         private readonly ?\Closure $panels = null,
         private readonly ?\Closure $returned = null,
         private readonly ?\Closure $standIn = null,
-    ) {}
+    ) {
+        $this->validator = new Validator();
+    }
+
+    /** What a call's scalar arguments are coerced by, as an action's are. */
+    private readonly Validator $validator;
 
     /**
      * Cache tags the queries in this render depend on.
@@ -545,6 +552,24 @@ final class QueryRunner
             }
             if (!\is_string($args[$argument]) && !\is_int($args[$argument])) {
                 return "'{$name}' needs an identifier for '{$argument}'";
+            }
+        }
+
+        // A scalar or a backed enum, coerced to its declared type as an
+        // action's parameter is: a case arrives as its backing value and an
+        // int as digits from a form or a URL, and spread as they came, each
+        // was a TypeError inside the call -- a failure for the caller's
+        // mistake. A value the type has no place for is bad arguments.
+        $class = $this->registry->classFor($name) ?? $name;
+        foreach ($this->registry->scalarParametersFor($name) as $argument => $parameter) {
+            if (!\array_key_exists($argument, $args) || ($args[$argument] === null && $parameter->allowsNull())) {
+                continue;
+            }
+            try {
+                $args[$argument] = $this->validator->coerceParameter($parameter, $class, $args[$argument]);
+            } catch (ValidationException $e) {
+                return "'{$name}' was called with an '{$argument}' its type has no place for: "
+                    . implode(' ', $e->errors[$argument] ?? []);
             }
         }
 

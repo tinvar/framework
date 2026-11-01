@@ -57,6 +57,9 @@ final class QueryRegistry
     /** @var array<string, array<string, class-string<Model>>> query name => argument => model */
     private array $modelArguments = [];
 
+    /** @var array<string, array<string, \ReflectionParameter>> query name => parameter coerced to its type */
+    private array $scalars = [];
+
     /** @var array<string, object> */
     private array $instances = [];
 
@@ -182,6 +185,7 @@ final class QueryRegistry
         $this->parameters[$name] = self::parametersOf($reflection, $declaration);
         $this->nullWhenAbsent[$name] = self::nullWhenAbsentOf($reflection);
         $this->modelArguments[$name] = self::modelArgumentsOf($reflection, $declaration);
+        $this->scalars[$name] = self::scalarParametersOf($reflection);
 
         return $name;
     }
@@ -432,6 +436,46 @@ final class QueryRegistry
     public function modelArgumentsFor(string $name): array
     {
         return $this->modelArguments[$name] ?? [];
+    }
+
+    /**
+     * The parameters a call's value is coerced to before the body sees it:
+     * a plain query's int, float, bool and string parameters and its backed
+     * enums, as an action's are (Validator::coerceParameter()). JSON sends a
+     * case as its backing value and a form or a URL sends digits, and
+     * spread as they came each was a TypeError from inside the call.
+     *
+     * @return array<string, \ReflectionParameter>
+     */
+    public function scalarParametersFor(string $name): array
+    {
+        return $this->scalars[$name] ?? [];
+    }
+
+    /**
+     * @param \ReflectionClass<object> $reflection
+     * @return array<string, \ReflectionParameter>
+     */
+    private static function scalarParametersOf(\ReflectionClass $reflection): array
+    {
+        // A batch's per-call arguments are handed to loadMany() as data.
+        if (is_subclass_of($reflection->getName(), BatchQuery::class)) {
+            return [];
+        }
+
+        $scalars = [];
+        foreach ($reflection->getMethod('__invoke')->getParameters() as $parameter) {
+            $type = $parameter->getType();
+            if (!$type instanceof \ReflectionNamedType) {
+                continue;
+            }
+            $named = $type->getName();
+            if ($type->isBuiltin() ? \in_array($named, ['int', 'float', 'bool', 'string'], true) : is_subclass_of($named, \BackedEnum::class)) {
+                $scalars[$parameter->getName()] = $parameter;
+            }
+        }
+
+        return $scalars;
     }
 
     public function isBatch(string $name): bool
