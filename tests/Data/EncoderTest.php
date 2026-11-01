@@ -37,13 +37,27 @@ final readonly class RackFixture extends Data
 
 final readonly class SecretiveFixture extends Data
 {
-    public string $neverSet;   // uninitialized on purpose
-
     public function __construct(
         public string $shown = 'yes',
         private string $hidden = 'no',        // @phpstan-ignore-line
         protected string $alsoHidden = 'no',  // @phpstan-ignore-line
     ) {}
+}
+
+final readonly class UnsetFixture extends Data
+{
+    public string $neverSet;   // uninitialized on purpose
+
+    public ?string $maybe;     // uninitialized, and may be null
+
+    public function __construct(public string $shown = 'yes') {}
+}
+
+final readonly class NullableUnsetFixture extends Data
+{
+    public ?string $maybe;     // uninitialized, and may be null
+
+    public function __construct(public string $shown = 'yes') {}
 }
 
 final readonly class LazyFixture extends Data
@@ -95,8 +109,17 @@ it('includes a computed field assigned in the constructor', function () {
     expect($encoded['unitCount'])->toBe(1);
 });
 
-it('crosses only public, non-static, initialized properties', function () {
+it('crosses only public, non-static properties', function () {
     expect($this->encoder->encode(new SecretiveFixture()))->toBe(['shown' => 'yes']);
+});
+
+it('refuses a field that may not be null and was never set: its generated type says it is there', function () {
+    expect(fn () => $this->encoder->encode(new UnsetFixture()))
+        ->toThrow(DataBoundaryException::class, UnsetFixture::class . '::$neverSet');
+});
+
+it('sends a field that may be null and was never set as null', function () {
+    expect($this->encoder->encode(new NullableUnsetFixture()))->toBe(['maybe' => null, 'shown' => 'yes']);
 });
 
 it('resolves a Lazy field and encodes what it returns', function () {

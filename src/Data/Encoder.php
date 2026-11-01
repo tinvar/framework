@@ -193,10 +193,12 @@ final class Encoder
                 // says it can be. Left out, a component testing for null
                 // found undefined and a key its type promised was missing.
                 // One that may not be null has no value it could be sent
-                // as, and stays absent.
-                if ($property->getType()?->allowsNull() === true) {
-                    $out[$name] = null;
+                // as, and its generated type says the key is there: refused,
+                // rather than left out for a component to find undefined.
+                if ($property->getType()?->allowsNull() !== true) {
+                    throw DataBoundaryException::unset($value, $name, $path);
                 }
+                $out[$name] = null;
                 continue;
             }
 

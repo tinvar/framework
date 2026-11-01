@@ -36,6 +36,16 @@ final class DataBoundaryException extends \RuntimeException
         );
     }
 
+    public static function unset(Data $value, string $field, string $path): self
+    {
+        $class = $value::class;
+
+        return new self(
+            "Refused to encode {$class} at {$path}: {$class}::\${$field} was never set, and may not be null, so its "
+            . 'generated type says it is there. Set it in the constructor, give it a default, or declare it nullable.',
+        );
+    }
+
     public static function cycle(string $path, string $class): self
     {
         return new self("Refused to encode a cycle at {$path}: {$class} refers back to itself.");
