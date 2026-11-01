@@ -271,6 +271,20 @@ enum Colour: string
     case Blue = 'blue';
 }
 
+/** Carries a CarbonImmutable moment, as a model's timestamps are typed (ADR 0145). */
+final readonly class CarriesMoment implements Job
+{
+    public function __construct(
+        public \Carbon\CarbonImmutable $at,
+        public ?\Carbon\CarbonImmutable $until = null,
+    ) {}
+
+    public function handle(Journal $journal): void
+    {
+        $journal->entries[] = ['job' => $this];
+    }
+}
+
 /** Carries every kind of value a payload can. */
 final readonly class CarriesValues implements Job
 {

@@ -140,7 +140,7 @@ final class Payload
                 }
                 throw new JobRefused('payload_mismatch', "{$class} now takes \${$name}, which the payload does not carry.");
             }
-            $decoded[$name] = self::decode($arguments[$name], $orm, $depth + 1);
+            $decoded[$name] = self::asDeclared(self::decode($arguments[$name], $orm, $depth + 1), $parameter);
         }
 
         try {
@@ -150,6 +150,25 @@ final class Payload
         }
 
         return $object;
+    }
+
+    /**
+     * A date travels as its text and comes back a DateTimeImmutable, so a
+     * parameter typed by a subclass of one -- CarbonImmutable, a model
+     * moment's type (ADR 0145) -- gets the same instant as that class.
+     */
+    private static function asDeclared(mixed $value, \ReflectionParameter $parameter): mixed
+    {
+        $type = $parameter->getType();
+        if (!$value instanceof \DateTimeImmutable || !$type instanceof \ReflectionNamedType || $type->isBuiltin()) {
+            return $value;
+        }
+        $class = $type->getName();
+        if ($value instanceof $class || !is_subclass_of($class, \DateTimeImmutable::class)) {
+            return $value;
+        }
+
+        return $class::createFromInterface($value);
     }
 
     private static function decode(mixed $value, Orm $orm, int $depth): mixed

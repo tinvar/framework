@@ -26,6 +26,7 @@ use Tinvar\Tests\Jobs\Fixtures\AdminWork;
 use Tinvar\Tests\Jobs\Fixtures\AlwaysFails;
 use Tinvar\Tests\Jobs\Fixtures\AsDispatcher;
 use Tinvar\Tests\Jobs\Fixtures\CarriesClosure;
+use Tinvar\Tests\Jobs\Fixtures\CarriesMoment;
 use Tinvar\Tests\Jobs\Fixtures\CarriesValues;
 use Tinvar\Tests\Jobs\Fixtures\Colour;
 use Tinvar\Tests\Jobs\Fixtures\FailsOnce;
@@ -402,6 +403,19 @@ it('carries lists, dates, enums, floats and Queueable values, and rebuilds them 
         ->and($job->colour)->toBe(Colour::Blue)
         ->and($job->address)->toEqual(new Address('1 Main St', Colour::Red))
         ->and($job->ratio)->toBe(2.0);
+});
+
+it('rebuilds a CarbonImmutable argument as a CarbonImmutable, the type a model moment has', function () {
+    $h = new Harness();
+    $at = new \Carbon\CarbonImmutable('2026-10-24T10:11:12.345678+02:00');
+    $h->dispatcher->dispatch(new CarriesMoment($at, $at->addDay()));
+    $h->work();
+
+    $job = $h->journal()->entries[0]['job'] ?? null;
+    expect($job)->toBeInstanceOf(CarriesMoment::class)
+        ->and($job->at)->toBeInstanceOf(\Carbon\CarbonImmutable::class)
+        ->and($job->at->format('Y-m-d\TH:i:s.uP'))->toBe('2026-10-24T10:11:12.345678+02:00')
+        ->and($job->until?->format('Y-m-d\TH:i:s.uP'))->toBe('2026-10-25T10:11:12.345678+02:00');
 });
 
 it('refuses at dispatch what cannot travel: a closure, an unsaved model', function () {
