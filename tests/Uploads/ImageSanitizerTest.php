@@ -283,6 +283,44 @@ describe('AVIF', function () {
         expect(fn () => AvifContainer::read($sent))->toThrow(\UnexpectedValueException::class, 'overlaps')
             ->and(AvifContainer::read($avif)['images'])->toHaveCount(2);
     });
+
+    // The one container's /tmp is the renderers' as well (sticky, anyone's
+    // to write): a lock at a name known there is one a compromised renderer
+    // takes first and never lets go, and every AVIF upload after it hung a
+    // worker waiting for it. The limits are lowered under a lock nobody
+    // but PHP can open.
+    it('lowers the limits under no lock another user can take in the temporary directory', function () {
+        $held = fopen(sys_get_temp_dir() . '/tinvar-imagick-limits.lock', 'c');
+        expect($held)->not->toBeFalse()
+            ->and(flock($held, LOCK_EX))->toBeTrue();
+
+        // A fresh process, whose limits are ImageMagick's own and so come down.
+        $sent = file(avif(6, 4));
+        $script = '<?php require ' . var_export(\dirname(__DIR__, 4) . '/vendor/autoload.php', true) . ';'
+            . ' echo (new Tinvar\Uploads\ImageSanitizer(maxDimension: 64))->sanitize(' . var_export($sent, true) . ', "image/avif") === "" ? "no" : "drawn";';
+        $process = proc_open([\PHP_BINARY, '-d', 'memory_limit=256M'], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        fwrite($pipes[0], $script);
+        fclose($pipes[0]);
+        stream_set_blocking($pipes[1], false);
+        $out = '';
+        $deadline = microtime(true) + 10;
+        while (proc_get_status($process)['running'] && microtime(true) < $deadline) {
+            $out .= (string) stream_get_contents($pipes[1]);
+            usleep(20_000);
+        }
+        $out .= (string) stream_get_contents($pipes[1]);
+        $running = proc_get_status($process)['running'];
+        if ($running) {
+            proc_terminate($process, 9);
+        }
+        proc_close($process);
+        flock($held, LOCK_UN);
+        fclose($held);
+        @unlink(sys_get_temp_dir() . '/tinvar-imagick-limits.lock');
+
+        expect($running)->toBeFalse()
+            ->and($out)->toBe('drawn');
+    });
 });
 
 /** $avif with its first `ispe` saying $width by $height, and nothing else changed. */

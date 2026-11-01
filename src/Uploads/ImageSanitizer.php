@@ -221,7 +221,10 @@ final readonly class ImageSanitizer
             return;
         }
 
-        $lock = @fopen(sys_get_temp_dir() . '/tinvar-imagick-limits.lock', 'c');
+        // On this very file, read-only: never a name in the temporary
+        // directory, which the one container shares with the renderers and
+        // where any user may make, and hold, the lock first.
+        $lock = @fopen(__FILE__, 'r');
         if ($lock === false || !flock($lock, LOCK_EX)) {
             throw new \RuntimeException('ImageMagick\'s limits could not be lowered: no lock to lower them under.');
         }
