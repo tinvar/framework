@@ -2744,10 +2744,36 @@ final class Kernel
      * passes this as the runner's `panels`, so a query declared for a
      * stricter panel is refused, call by call, from a page that is not held
      * to it -- as the Kernel's own runner does.
+     *
+     * And a query held to a host by its #[Domain] (ADR 0149) is refused
+     * from a render on any other: over HTTP RequireHost holds it, and a
+     * render's calls never pass through that stack, so a storefront page
+     * whose allowlist named an admin host's query ran it on the storefront.
      */
     public function queryPanelRefusal(string $name): ?string
     {
-        return $this->entry->queryRefusal($this->queries, $name);
+        return $this->queryHostRefusal($name) ?? $this->entry->queryRefusal($this->queries, $name);
+    }
+
+    /**
+     * Why a call to query $name may not run on the host the request being
+     * handled was sent to, or null when it may: one holding no host of its
+     * own, or the host its #[Domain] names. With no request being handled
+     * there is no host to hold it to, and it is refused.
+     */
+    private function queryHostRefusal(string $name): ?string
+    {
+        $pattern = $this->queries->hostFor($name);
+        if ($pattern === null || $this->domains === null) {
+            return null;
+        }
+
+        $match = $this->handling === null ? null : HostMatch::of($this->handling);
+        if ($match !== null && $match->serves($pattern)) {
+            return null;
+        }
+
+        return "query '{$name}' is held to {$pattern}, and the request is on " . ($match === null ? 'no host' : $match->host);
     }
 
     /**
