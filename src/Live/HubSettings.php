@@ -95,16 +95,18 @@ final readonly class HubSettings
 
         // Keys from the environment are bound to the profile as the app key
         // is (AppKey::bound(), ADR 0090): a staging server given
-        // production's signs nothing production's hub believes. Derived keys
-        // are bound already, through the app key they come from. Bound
+        // production's signs nothing production's hub believes. Bound
         // idempotently, since `tinvar serve` hands these to its workers in
-        // the variables they were read from.
-        $subscriber = $config->liveSubscriberKey?->reveal();
-        $publisher = $config->livePublisherKey?->reveal();
+        // the variables they were read from -- the derived keys too, which
+        // are bound here for that alone: unmarked, a worker handed one bound
+        // it again, and under any profile but production signed every grant
+        // with a key the hub did not hold.
+        $subscriber = $config->liveSubscriberKey?->reveal() ?? $derived->subscriberKey;
+        $publisher = $config->livePublisherKey?->reveal() ?? $derived->publisherKey;
 
         return new self(
-            $subscriber !== null ? AppKey::bound($subscriber, $profile) : $derived->subscriberKey,
-            $publisher !== null ? AppKey::bound($publisher, $profile) : $derived->publisherKey,
+            AppKey::bound($subscriber, $profile),
+            AppKey::bound($publisher, $profile),
             $derived->audience,
             $config->liveHubUrl,
         );

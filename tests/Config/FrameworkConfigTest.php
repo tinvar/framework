@@ -150,6 +150,22 @@ it('binds the hub\'s keys from the environment to the profile, once', function (
         ->toThrow(\InvalidArgumentException::class, 'bound to the staging profile');
 });
 
+// `tinvar serve` derives the keys from the app key when nothing names
+// them, and hands them to Caddy and to its workers in the variables a
+// configured key is read from: a worker must come to the key the hub
+// checks with, under every profile, or no subscription is ever let in.
+it('hands the derived hub keys on to the workers as the keys the hub holds, under any profile', function (string $profile) {
+    $key = AppKey::forProfile('an-application-key-of-thirty-two-bytes!!', $profile);
+    $env = ['TINVAR_PROFILE' => $profile, 'TINVAR_ENV' => $profile === 'test' ? 'testing' : $profile];
+
+    $served = withEnv($env, static fn (): HubSettings => HubSettings::resolve($key));
+    $handedOn = withEnv([...$served->environment(), ...$env], static fn (): HubSettings => HubSettings::resolve($key));
+
+    expect($handedOn->subscriberKey)->toBe($served->subscriberKey)
+        ->and($handedOn->publisherKey)->toBe($served->publisherKey)
+        ->and($served->environment()['TINVAR_LIVE_SUBSCRIBER_KEY'])->toBe($served->subscriberKey);
+})->with(['production', 'staging', 'test']);
+
 it('names the renderers\' user from the config, blank as unset', function () {
     expect(withEnv(['TINVAR_RENDERER_USER' => '   '], static fn (): ?RendererUser => RendererUser::fromEnvironment()))->toBeNull()
         ->and(static fn () => withEnv(['TINVAR_RENDERER_USER' => '0'], static fn (): ?RendererUser => RendererUser::fromEnvironment()))
