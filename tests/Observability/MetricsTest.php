@@ -237,6 +237,30 @@ it('refuses a sidecar others may write, and a directory anyone may write without
     'a directory anyone may write' => ['', 0o777],
 ]);
 
+// Review: the umask was narrowed across the whole open, the wait for WAL
+// included -- and it is the process's, every FrankenPHP thread's, so their
+// new files were 0600 for as long. Only the file's own creation narrows it;
+// SQLite gives the sidecars it creates the file's mode.
+it('makes the file and its sidecars its owner\'s alone under a wide umask, and leaves the umask as it was', function () {
+    $directory = sys_get_temp_dir() . '/tinvar-metrics-' . bin2hex(random_bytes(4));
+    mkdir($directory, 0700);
+    $previous = umask(0);
+    try {
+        $store = new SqliteMetricsStore("{$directory}/m.sqlite");
+        $store->add(['k' => 1]);
+        $umaskAfter = umask();
+        clearstatcache();
+        $modes = array_map(static fn (string $f): int => fileperms($f) & 0o777, glob("{$directory}/m.sqlite*") ?: []);
+
+        expect($umaskAfter)->toBe(0)
+            ->and(\count($modes))->toBeGreaterThan(1)
+            ->and(array_filter($modes, static fn (int $mode): bool => ($mode & 0o077) !== 0))->toBe([]);
+    } finally {
+        umask($previous);
+        exec('rm -rf ' . escapeshellarg($directory));
+    }
+});
+
 // /tmp is anyone's but sticky: no one else can replace a file in it, and
 // what they plant is refused by its owner. A group's shared data directory
 // is the group's to write, as an application's often is.

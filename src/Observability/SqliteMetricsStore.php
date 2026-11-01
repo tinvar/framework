@@ -112,46 +112,49 @@ final class SqliteMetricsStore implements MetricsStore
         // Its series are read by the server and written out at /_metrics:
         // made by this user alone, and refused where anyone else may write
         // to it -- the file, and the write-ahead log, shared memory and
-        // journal SQLite reads beside it as part of it. Everything SQLite
-        // creates is created under a umask that denies everyone else, as
-        // the log is (StreamSink), so none is ever wider for a moment.
+        // journal SQLite reads beside it as part of it. The file is made
+        // here, its owner's alone, before SQLite opens it; SQLite gives each
+        // sidecar it creates the file's own mode, so none is ever wider for
+        // a moment. The umask is narrowed only for that touch: it is the
+        // process's, and under FrankenPHP every thread's, so held across
+        // the open and the wait for WAL below -- up to the busy timeout --
+        // it would make every other thread's new files 0600 too.
         $memory = $this->path === ':memory:';
         if (!$memory) {
             $this->assertPrivate();
-        }
-
-        $previous = umask();
-        umask($previous | 0o077);
-        try {
-            if (!$memory && !file_exists($this->path)) {
-                @touch($this->path);
+            if (!file_exists($this->path)) {
+                $previous = umask();
+                umask($previous | 0o077);
+                try {
+                    @touch($this->path);
+                } finally {
+                    umask($previous);
+                }
                 $this->assertPrivate();
             }
+        }
 
-            $pdo = new \Pdo\Sqlite("sqlite:{$this->path}");
-            $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
-            $pdo->exec('PRAGMA busy_timeout = ' . max(0, $this->busyTimeoutMs));
+        $pdo = new \Pdo\Sqlite("sqlite:{$this->path}");
+        $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+        $pdo->exec('PRAGMA busy_timeout = ' . max(0, $this->busyTimeoutMs));
 
-            // WAL so a scrape does not wait on a flush; NORMAL because counts
-            // lost to a power cut are a second's worth of requests.
-            $deadline = microtime(true) + max(0, $this->busyTimeoutMs) / 1000;
-            while (true) {
-                try {
-                    $statement = $pdo->prepare('PRAGMA journal_mode = WAL');
-                    $statement->execute();
-                    $statement->fetchAll();
-                    break;
-                } catch (\PDOException $e) {
-                    // SQLITE_BUSY answered without waiting, as it is when two
-                    // processes find a new file at once and both switch it.
-                    if (($e->errorInfo[1] ?? null) !== 5 || microtime(true) >= $deadline) {
-                        throw $e;
-                    }
-                    usleep(random_int(1_000, 10_000));
+        // WAL so a scrape does not wait on a flush; NORMAL because counts
+        // lost to a power cut are a second's worth of requests.
+        $deadline = microtime(true) + max(0, $this->busyTimeoutMs) / 1000;
+        while (true) {
+            try {
+                $statement = $pdo->prepare('PRAGMA journal_mode = WAL');
+                $statement->execute();
+                $statement->fetchAll();
+                break;
+            } catch (\PDOException $e) {
+                // SQLITE_BUSY answered without waiting, as it is when two
+                // processes find a new file at once and both switch it.
+                if (($e->errorInfo[1] ?? null) !== 5 || microtime(true) >= $deadline) {
+                    throw $e;
                 }
+                usleep(random_int(1_000, 10_000));
             }
-        } finally {
-            umask($previous);
         }
         $pdo->exec('PRAGMA synchronous = NORMAL');
         $pdo->exec('CREATE TABLE IF NOT EXISTS metrics (series TEXT PRIMARY KEY, value INTEGER NOT NULL) WITHOUT ROWID');
