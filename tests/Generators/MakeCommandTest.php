@@ -330,6 +330,80 @@ it('writes a model, its factory, pages, queries and actions that lint and pass t
 
 // "Typed properties are the schema": the model is all make:migration needs
 // to make its table, and the factory fills a row of it.
+// ADR 0148: an application laid out as the skeleton is -- its HTTP classes
+// under Http\, its models under Database\Models\ -- gets each class there,
+// in the domain its first segments name.
+it('writes into Http\ and Database\Models\, by domain, for an application laid out so', function () {
+    $app = $this->app;
+    mkdir("{$app->root}/app/Http", 0o755, true);
+
+    expect($app('make:model', ['Orders/Order', '--factory']))->toBe(0, implode("\n", $app->err));
+    $order = $app->class('Database\Models\Orders\Order');
+    $models = [$order];
+
+    foreach ([
+        ['make:page', ['Orders/OrderDetail', '--path=/orders/{order}']],
+        ['make:page', ['Racks/Show', '--path=/racks']],
+        ['make:query', ['Orders/OrderTotals', '--model=Order']],
+        ['make:action', ['Orders/OrderActions', 'place', '--model=Order', '--request']],
+        ['make:action', ['NoteActions', 'add', '--request']],
+    ] as [$command, $arguments]) {
+        expect($app($command, $arguments, $models))->toBe(0, "{$command}: " . implode("\n", $app->err));
+    }
+
+    expect($app->files())->toBe([
+        'app/Database/Models/Orders/Order.php',
+        'app/Http/Actions/NoteActions.php',
+        'app/Http/Actions/Orders/OrderActions.php',
+        'app/Http/Data/Orders/OrderDetailPageData.php',
+        'app/Http/Data/Orders/OrderTotalsData.php',
+        'app/Http/Data/Racks/RacksShowPageData.php',
+        'app/Http/Pages/Orders/OrderDetail.php',
+        'app/Http/Pages/Racks/Show.php',
+        'app/Http/Queries/Orders/OrderTotals.php',
+        'app/Http/Requests/AddRequest.php',
+        'app/Http/Requests/Orders/PlaceRequest.php',
+        'composer.json',
+        'database/factories/Orders/OrderFactory.php',
+        'resources/pages/orders/order-detail.tsx',
+        'resources/pages/racks/show.tsx',
+    ]);
+
+    // The route parameter is the model where it is now, and the query's wire
+    // name is its namespace under Queries, as Str::queryName() has it.
+    expect($app->read('app/Http/Pages/Orders/OrderDetail.php'))->toContain("namespace {$app->namespace}\\Http\\Pages\\Orders;")
+        ->and($app->read('app/Http/Pages/Orders/OrderDetail.php'))->toContain('Order $order')
+        ->and($app->read('app/Http/Queries/Orders/OrderTotals.php'))->toContain('orders.orderTotals: what a server component awaits');
+
+    $classes = new Discovery($app->namespace, ["{$app->namespace}\\" => ["{$app->root}/app"]], "{$app->root}/dist/discovery.php", $app->root)->scan();
+    expect($classes->models)->toBe([$order])
+        ->and($classes->queries)->toBe([$app->class('Http\Queries\Orders\OrderTotals')])
+        ->and($classes->actions)->toBe([$app->class('Http\Actions\NoteActions'), $app->class('Http\Actions\Orders\OrderActions')]);
+});
+
+it('keeps writing a kind where an older application already keeps it, flat', function () {
+    $app = $this->app;
+    mkdir("{$app->root}/app/Http", 0o755, true);
+    mkdir("{$app->root}/app/Models", 0o755, true);
+    mkdir("{$app->root}/app/Pages", 0o755, true);
+
+    expect($app('make:model', ['Rack']))->toBe(0, implode("\n", $app->err))
+        ->and($app('make:page', ['Racks/Show', '--path=/racks']))->toBe(0, implode("\n", $app->err))
+        ->and($app('make:query', ['Racks/Stats']))->toBe(0, implode("\n", $app->err));
+
+    // Models and pages where they are; queries and Data, which it keeps
+    // nowhere yet, under Http\ beside the folder it made for them.
+    expect($app->files())->toBe([
+        'app/Http/Data/Racks/RacksShowPageData.php',
+        'app/Http/Data/Racks/RacksStatsData.php',
+        'app/Http/Queries/Racks/Stats.php',
+        'app/Models/Rack.php',
+        'app/Pages/Racks/Show.php',
+        'composer.json',
+        'resources/pages/racks/show.tsx',
+    ]);
+});
+
 it('writes a model make:migration makes a table for, and a factory that fills a row of it', function () {
     $app = $this->app;
     expect($app('make:model', ['Rack', '--columns=name:string,heightU:int,load:float,active:bool,notes:?string', '--factory']))->toBe(0);

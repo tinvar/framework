@@ -174,7 +174,7 @@ final class MakeCommand
 
         $class = $this->class('Pages', $segments);
         $last = end($segments);
-        $data = $this->class('Data', [implode('', $segments) . (str_ends_with($last, 'Page') ? 'Data' : 'PageData')]);
+        $data = $this->class('Data', $this->dataPath($segments, str_ends_with($last, 'Page') ? 'Data' : 'PageData'));
         $viewFile = $this->layout->viewPath($view);
 
         // A view of another kind under the same name would be imported in
@@ -212,7 +212,7 @@ final class MakeCommand
         $model = $this->modelOption($options, $usage);
 
         $class = $this->class('Queries', $segments);
-        $data = $this->class('Data', [implode('', $segments) . 'Data']);
+        $data = $this->class('Data', $this->dataPath($segments, 'Data'));
         $wire = Names::queryName($class);
 
         $files = (new FileSet())
@@ -248,7 +248,7 @@ final class MakeCommand
         }
 
         $class = $this->class('Actions', $segments);
-        $request = isset($options['request']) ? $this->class('Requests', [ucfirst($method) . 'Request']) : null;
+        $request = isset($options['request']) ? $this->class('Requests', $this->besideDomain($segments, ucfirst($method) . 'Request')) : null;
 
         $files = (new FileSet())->add($this->layout->pathOf($class), Sources::action($class, $method, $model, $request));
         if ($request !== null) {
@@ -509,9 +509,10 @@ final class MakeCommand
         $name = ltrim($name, '\\');
         $candidates = [...$this->models];
 
-        // One the developer has just made, under the application's Models
-        // namespace, and not yet registered.
-        $conventional = "{$this->layout->namespace}\\Models\\" . ucfirst($name);
+        // One the developer has just made, under the application's models'
+        // namespace (Database\Models, or an older app's Models), and not yet
+        // registered.
+        $conventional = "{$this->layout->namespace}\\{$this->layout->area('Models')}\\" . ucfirst($name);
         if (!str_contains($name, '\\') && Str::isIdentifier($name) && class_exists($conventional) && is_subclass_of($conventional, Model::class)) {
             $candidates[] = $conventional;
         }
@@ -529,13 +530,73 @@ final class MakeCommand
     }
 
     /**
-     * A class under the application's namespace.
+     * A class under the application's namespace, in the folder its kind
+     * goes in (AppLayout::area()): App\Http\Pages\Orders\OrderDetail for
+     * the page Orders/OrderDetail.
      *
      * @param list<string> $segments
      */
     private function class(string $area, array $segments): string
     {
-        return "{$this->layout->namespace}\\{$area}\\" . implode('\\', $segments);
+        return "{$this->layout->namespace}\\{$this->layout->area($area)}\\" . implode('\\', $segments);
+    }
+
+    /**
+     * Whether the application keeps its HTTP classes split by domain under
+     * Http\, where a class written beside another goes in the same domain.
+     */
+    private function byDomain(): bool
+    {
+        return str_starts_with($this->layout->area('Data'), 'Http\\');
+    }
+
+    /**
+     * A class named $short, in the domain $segments name -- every segment but
+     * the last -- where the application is laid out by domain, and flat
+     * where it is not: the request for Orders/OrderActions::place is
+     * Http\Requests\Orders\PlaceRequest, or Requests\PlaceRequest.
+     *
+     * @param non-empty-list<string> $segments
+     * @return non-empty-list<string>
+     */
+    private function besideDomain(array $segments, string $short): array
+    {
+        return $this->byDomain() ? [...\array_slice($segments, 0, -1), $short] : [$short];
+    }
+
+    /**
+     * The Data class a page or query returns, by its segments. Flat, as
+     * before, it is every segment joined: Racks/Show's is RacksShowPageData.
+     * By domain, it goes in the page's domain, named by the segments the
+     * last does not already say -- Orders/OrderDetail's is
+     * Http\Data\Orders\OrderDetailPageData, as `Order` begins OrderDetail,
+     * and Racks/Show's Http\Data\Racks\RacksShowPageData -- so two pages of
+     * one name in two domains still give codegen two names, which it needs:
+     * it emits each Data class by its short name.
+     *
+     * @param non-empty-list<string> $segments
+     * @return non-empty-list<string>
+     */
+    private function dataPath(array $segments, string $suffix): array
+    {
+        if (!$this->byDomain()) {
+            return [implode('', $segments) . $suffix];
+        }
+
+        $named = $segments;
+        while (\count($named) > 1 && self::begins($named[1], $named[0])) {
+            array_shift($named);
+        }
+
+        return $this->besideDomain($segments, implode('', $named) . $suffix);
+    }
+
+    /** Whether $name begins with $domain, or with it less a plural's s: OrderDetail with Orders. */
+    private static function begins(string $name, string $domain): bool
+    {
+        $singular = (string) preg_replace('/s\z/', '', $domain);
+
+        return $singular !== '' && str_starts_with($name, $singular);
     }
 
     /**

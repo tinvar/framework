@@ -10,9 +10,16 @@ namespace Tinvar\Generators;
  * the renderer's pages are in.
  *
  * Read from composer.json rather than assumed, so a class is written where
- * it will be loaded from: in this workspace `Shop\` is examples/shop/app/
- * and `Shop\Database\Factories\` is examples/shop/database/factories/, and
- * the longest prefix that matches a class decides, as composer's own does.
+ * it will be loaded from: in this workspace `Shop\` is examples/shop/app/,
+ * and where an application maps a deeper prefix elsewhere -- an older
+ * skeleton's `App\Database\` to database/ -- the longest prefix that
+ * matches a class decides, as composer's own does.
+ *
+ * Which folder each kind of class goes in is read from the application too
+ * (area()): the HTTP kinds under Http\ and models under Database\Models\,
+ * as the skeleton and the shop keep them (ADR 0148), or -- for an
+ * application made before, with a Pages\ or Models\ folder of its own and
+ * none of those -- where it already keeps them.
  *
  * Only the entries under the application's namespace count, and only those
  * inside the project: a generator writes into the application, never into a
@@ -36,6 +43,53 @@ final readonly class AppLayout
         public string $types,
         private string $composer,
     ) {}
+
+    /** The kinds a generator writes that are the application's HTTP side. */
+    private const array HTTP = ['Pages', 'Queries', 'Actions', 'Requests', 'Data'];
+
+    /**
+     * The namespace, under the application's, that a kind of class goes in:
+     * `Http\Pages` for a page and `Database\Models` for a model, as the
+     * skeleton lays an application out (ADR 0148). A domain segment the
+     * developer gives follows it: Http\Pages\Orders\OrderDetail.
+     *
+     * An application already keeping a kind in the older flat folder --
+     * app/Pages/, app/Models/ -- and not in the new one keeps getting it
+     * there, so a generator never splits one kind across two folders. One
+     * keeping it in neither gets the new folder if it uses the layout at all
+     * (it has app/Http/), and the flat one otherwise. app/Database/ alone
+     * does not count: an older skeleton maps App\Database\ to database/.
+     *
+     * @param string $kind Pages, Queries, Actions, Requests, Data or Models
+     */
+    public function area(string $kind): string
+    {
+        $structured = match (true) {
+            $kind === 'Models' => 'Database\\Models',
+            \in_array($kind, self::HTTP, true) => "Http\\{$kind}",
+            default => $kind,
+        };
+        if ($structured === $kind) {
+            return $kind;
+        }
+
+        return match (true) {
+            $this->holds($structured) => $structured,
+            $this->holds($kind) => $kind,
+            $this->holds('Http') => $structured,
+            default => $kind,
+        };
+    }
+
+    /** Whether the folder a namespace under the application's maps to is there. */
+    private function holds(string $relative): bool
+    {
+        try {
+            return is_dir(\dirname($this->pathOf("{$this->namespace}\\{$relative}\\Probe")));
+        } catch (GenerationRefused) {
+            return false;
+        }
+    }
 
     /**
      * @param string $root      the project directory, holding composer.json
@@ -77,7 +131,7 @@ final readonly class AppLayout
             }
         }
 
-        // Longest first, so `Shop\Database\Factories\` wins over `Shop\`.
+        // Longest first, so `App\Database\` wins over `App\`.
         uksort($prefixes, static fn (string $a, string $b): int => \strlen($b) <=> \strlen($a));
 
         return new self($root, $namespace, $prefixes, self::resolve($pages), self::resolve($types), $composer);
