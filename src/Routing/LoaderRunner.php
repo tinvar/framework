@@ -163,7 +163,7 @@ final class LoaderRunner
             // fields it asked for -- only a partial reload's, so a full
             // render never resolves one (ADR 0045).
             context: new PayloadContext(
-                route: PayloadContext::routeOf($chain->page->class, $chain->parameters, $request->query),
+                route: PayloadContext::routeOf($chain->page->identity(), $chain->parameters, $request->query),
                 only: $partial === null ? [] : $partial->only,
                 except: $partial === null ? [] : $partial->except,
             ),
@@ -295,8 +295,10 @@ final class LoaderRunner
         $instance = ($this->resolver)($route->class);
 
         // "Loaders are optional." A class with no __invoke contributes nothing
-        // but still carries its access rules and middleware.
-        if (!method_exists($instance, '__invoke')) {
+        // but still carries its access rules and middleware. An
+        // #[AdminResource]'s pages run the resource's loader for each.
+        $loader = $route->loader;
+        if (!method_exists($instance, $loader)) {
             return null;
         }
 
@@ -305,7 +307,7 @@ final class LoaderRunner
         // "Loaders and queries run in a read-only transaction ... because
         // hovering a link runs them." Prefetch-on-hover means this body runs
         // for a page nobody has decided to visit.
-        $load = fn (): mixed => $this->orm->readOnly(static fn (): mixed => $instance(...$arguments));
+        $load = fn (): mixed => $this->orm->readOnly(static fn (): mixed => $instance->{$loader}(...$arguments));
         $run = fn (): mixed => $this->tags === null || $segment === null ? $load() : $this->tags->within($segment, $load);
         // A span of its own, named by its class: what was slow, and which
         // statements were whose. The class is the application's code; its
@@ -313,13 +315,13 @@ final class LoaderRunner
         $short = substr((string) strrchr('\\' . $route->class, '\\'), 1);
         $result = $this->telemetry === null ? $run() : $this->telemetry->span("loader {$short}", [
             'code.namespace' => $route->class,
-            'code.function' => '__invoke',
+            'code.function' => $loader,
             ...($segment === null ? [] : ['tinvar.segment' => $segment]),
         ], static fn (): mixed => $run());
 
         if ($result !== null && !$result instanceof Data) {
             throw new RoutingException(
-                "{$route->class}::__invoke() returned " . get_debug_type($result)
+                "{$route->class}::{$loader}() returned " . get_debug_type($result)
                 . '; a loader returns a Data object or null, because only Data objects cross to the renderer.',
             );
         }

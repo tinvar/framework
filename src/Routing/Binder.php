@@ -39,9 +39,9 @@ final class Binder
     public function resolveChain(RouteChain $chain, array $parameters): array
     {
         foreach ($chain->all() as $route) {
-            foreach (self::loaderParameters($route->class) as $parameter) {
-                $type = self::classTypeOf($parameter);
-                if ($type === null || !is_subclass_of($type, Model::class)) {
+            foreach (self::parametersOf($route) as $parameter) {
+                $type = self::modelTypeOf($route, $parameter);
+                if ($type === null) {
                     continue;
                 }
 
@@ -81,9 +81,8 @@ final class Binder
         $optional = [];
 
         foreach ($chain->all() as $route) {
-            foreach (self::loaderParameters($route->class) as $parameter) {
-                $type = self::classTypeOf($parameter);
-                if ($type === null || !is_subclass_of($type, Model::class)) {
+            foreach (self::parametersOf($route) as $parameter) {
+                if (self::modelTypeOf($route, $parameter) === null) {
                     continue;
                 }
                 if ($parameter->allowsNull() || $parameter->isDefaultValueAvailable()) {
@@ -112,12 +111,12 @@ final class Binder
     ): array {
         $arguments = [];
 
-        foreach (self::loaderParameters($route->class) as $parameter) {
+        foreach (self::parametersOf($route) as $parameter) {
             $name = $parameter->getName();
             $type = $parameter->getType();
             $class = self::classTypeOf($parameter);
 
-            if ($class !== null && is_subclass_of($class, Model::class)) {
+            if (self::modelTypeOf($route, $parameter) !== null) {
                 if (isset($this->models[$name])) {
                     $arguments[$name] = $this->models[$name];
                     continue;
@@ -235,7 +234,7 @@ final class Binder
      */
     public static function assertBindable(CompiledRoute $route): void
     {
-        foreach (self::loaderParameters($route->class) as $parameter) {
+        foreach (self::parametersOf($route) as $parameter) {
             $type = $parameter->getType();
 
             if ($parameter->isDefaultValueAvailable()) {
@@ -254,6 +253,14 @@ final class Binder
             $name = $type->getName();
 
             if (!$type->isBuiltin()) {
+                // The ORM's base Model, bound as the model the route names
+                // for it: an #[AdminResource]'s record (ADR 0150).
+                if ($name === Model::class && isset($route->bindings[$parameter->getName()])) {
+                    if (!$type->allowsNull()) {
+                        self::assertCarried($route, $parameter, $route->bindings[$parameter->getName()]);
+                    }
+                    continue;
+                }
                 $bindable = is_subclass_of($name, Model::class)
                     || is_subclass_of($name, Data::class)
                     || is_subclass_of($name, \BackedEnum::class)
@@ -316,7 +323,42 @@ final class Binder
             : [];
     }
 
-    /** @var array<class-string, list<\ReflectionParameter>> loaderParameters(), by class */
+    /**
+     * The parameters of the loader $route runs: its class's __invoke, or the
+     * method it names (CompiledRoute::$loader).
+     *
+     * @return list<\ReflectionParameter>
+     */
+    public static function parametersOf(CompiledRoute $route): array
+    {
+        if ($route->loader === '__invoke') {
+            return self::loaderParameters($route->class);
+        }
+        $key = "{$route->class}::{$route->loader}";
+
+        return self::$loaderParameters[$key] ??= method_exists($route->class, $route->loader)
+            ? new \ReflectionMethod($route->class, $route->loader)->getParameters()
+            : [];
+    }
+
+    /**
+     * The model a loader parameter is bound as, or null for one that takes
+     * none: its own type, where that is a model, or the model the route
+     * binds it as, where it is typed as the ORM's base Model.
+     *
+     * @return class-string<Model>|null
+     */
+    private static function modelTypeOf(CompiledRoute $route, \ReflectionParameter $parameter): ?string
+    {
+        $type = self::classTypeOf($parameter);
+        if ($type === Model::class) {
+            return $route->bindings[$parameter->getName()] ?? null;
+        }
+
+        return $type !== null && is_subclass_of($type, Model::class) ? $type : null;
+    }
+
+    /** @var array<string, list<\ReflectionParameter>> loaderParameters() by class, parametersOf() by class and method */
     private static array $loaderParameters = [];
 
     /** @return class-string|null */

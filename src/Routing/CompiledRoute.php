@@ -29,6 +29,11 @@ final readonly class CompiledRoute
      * @param list<\Tinvar\Attributes\Panel> $panels  every #[Panel] it declares
      * @param HostPattern|null $host the host its #[Domain] holds it to, or null for the
      *                               primary host (ADR 0149); its parameters lead $parameters
+     * @param string $loader the method that loads its data: `__invoke`, or for one of an
+     *                       #[AdminResource]'s pages, the resource's loader for it (ADR 0150)
+     * @param array<string, class-string<\Tinvar\Orm\Model>> $bindings loader parameters typed
+     *        as the ORM's base Model, with the model each is bound as: an #[AdminResource]'s
+     *        `record`, as its model
      */
     public function __construct(
         public RouteKind $kind,
@@ -45,7 +50,19 @@ final readonly class CompiledRoute
         public ?string $tenantFrom = null,
         public array $panels = [],
         public ?HostPattern $host = null,
+        public string $loader = '__invoke',
+        public array $bindings = [],
     ) {}
+
+    /**
+     * What tells this route from every other: its class, and the loader
+     * where that is not `__invoke` -- the four pages of an #[AdminResource]
+     * are one class (ADR 0150).
+     */
+    public function identity(): string
+    {
+        return $this->loader === '__invoke' ? $this->class : "{$this->class}::{$this->loader}";
+    }
 
     /** The #[Domain] pattern it is served on, as written; null for the primary host. */
     public function domain(): ?string

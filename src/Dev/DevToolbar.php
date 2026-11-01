@@ -298,11 +298,11 @@ final class DevToolbar implements FrameTap
      */
     private static function origin(string $slot, string $kind, CompiledRoute $route, string $data, string $routeName): array
     {
-        $loader = "{$route->class}::__invoke";
+        $loader = "{$route->class}::{$route->loader}";
         $site = '';
         if (class_exists($route->class)) {
             $reflection = new \ReflectionClass($route->class);
-            $where = $reflection->hasMethod('__invoke') ? $reflection->getMethod('__invoke') : $reflection;
+            $where = $reflection->hasMethod($route->loader) ? $reflection->getMethod($route->loader) : $reflection;
             $file = $where->getFileName();
             $site = $file === false ? '' : "{$file}:{$where->getStartLine()}";
         }
