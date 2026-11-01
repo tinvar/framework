@@ -75,6 +75,32 @@ it('says which file on disk the body is, when the store keeps it on disk', funct
     }
 });
 
+// Review: a file the server sends itself still had a handle opened on it,
+// never read, for every request.
+it('opens no handle on a file on disk until the stream is what is sent', function () {
+    $root = sys_get_temp_dir() . '/tinvar-file-endpoint-' . bin2hex(random_bytes(4));
+    $app = new App($storage = new Tinvar\Storage\LocalStorage($root));
+    $key = 'avatars/' . str_repeat('ab', 16) . '.png';
+    $stream = fopen('php://memory', 'w+b');
+    fwrite($stream, png());
+    rewind($stream);
+    $storage->put($key, $stream);
+    fclose($stream);
+
+    try {
+        $url = $app->fileUrl($key, 'image/png');
+        $open = count(get_resources('stream'));
+        $response = $app->fetch($url);
+
+        expect($response->file())->not->toBeNull()
+            ->and(count(get_resources('stream')))->toBe($open)
+            ->and($response->body())->toBe(png())
+            ->and(count(get_resources('stream')))->toBe($open);
+    } finally {
+        exec('rm -rf ' . escapeshellarg($root));
+    }
+});
+
 it('offers anything but an image as a download, under a name that cannot break the header', function () {
     $app = new App($storage = new MemoryStorage());
     $key = 'documents/' . str_repeat('cd', 16) . '.pdf';
@@ -235,6 +261,17 @@ describe('a file in an object store', function () {
             ->and($response->header('x-content-type-options'))->toBe('nosniff')
             ->and($response->header('content-security-policy'))->toBe("default-src 'none'; sandbox")
             ->and($response->header('content-disposition'))->toStartWith('attachment;');
+    });
+
+    // Review: a file gone from the store between its headers and its body
+    // was an empty 200 that said it held the whole file's length.
+    it('fails the stream, rather than ending it as if whole, when the file is gone by the time its body is read', function () {
+        [$app, $s3, $key] = appWithS3Pdf(Tinvar\Uploads\FileDelivery::Stream);
+        $response = $app->fetch($app->fileUrl($key, 'application/pdf'));
+        unset($s3->objects[$key]);
+
+        expect($response->status)->toBe(200)
+            ->and(fn () => $response->body())->toThrow(Tinvar\Storage\StorageException::class);
     });
 
     it('is sent to the store by a minute\'s presigned URL naming its type and disposition, when asked', function () {

@@ -17,6 +17,7 @@ use Tinvar\Render\TokenError;
 use Tinvar\Storage\FileTypes;
 use Tinvar\Storage\LocalStorage;
 use Tinvar\Storage\ObjectStore;
+use Tinvar\Storage\StorageException;
 
 /**
  * GET /_file/{token}
@@ -214,16 +215,31 @@ final readonly class FileEndpoint
             $key = $file->key;
 
             return Response::stream(static function (\Closure $sink) use ($storage, $key): void {
-                $storage->readTo($key, $sink);
+                if (!$storage->readTo($key, $sink)) {
+                    // Gone since its size was read: the headers promised its
+                    // length, so the stream fails rather than ending empty.
+                    throw new StorageException('A stored file was gone by the time it was sent.');
+                }
             }, 200, $headers);
         }
 
-        $stream = $storage->read($file->key);
-        if ($stream === null) {
-            throw self::missing();
+        // A file on this machine's disk is one the server can send itself,
+        // with no worker writing it to a client that may stop reading
+        // (Sapi::forServer()); the stream below is what goes otherwise, and
+        // the file is opened only then -- never for a response the server
+        // sends from the path.
+        $path = $storage instanceof LocalStorage ? $storage->path($file->key) : null;
+        $stream = null;
+        if ($path === null) {
+            $stream = $storage->read($file->key);
+            if ($stream === null) {
+                throw self::missing();
+            }
         }
+        $key = $file->key;
 
-        $response = Response::stream(static function (\Closure $sink) use ($stream): void {
+        $response = Response::stream(static function (\Closure $sink) use ($stream, $storage, $key): void {
+            $stream ??= $storage->read($key) ?? throw new StorageException('A stored file was gone by the time it was sent.');
             try {
                 while (!feof($stream)) {
                     $chunk = fread($stream, self::CHUNK);
@@ -238,11 +254,6 @@ final readonly class FileEndpoint
                 fclose($stream);
             }
         }, 200, $headers);
-
-        // A file on this machine's disk is one the server can send itself,
-        // with no worker writing it to a client that may stop reading
-        // (Sapi::forServer()). The stream above is what goes otherwise.
-        $path = $storage instanceof LocalStorage ? $storage->path($file->key) : null;
 
         return $path === null ? $response : $response->withFile($path);
     }
