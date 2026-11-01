@@ -54,7 +54,7 @@ function shopKernel(string $codec = 'msgpack'): array
 function renderCatalog(Kernel $kernel): array
 {
     $html = '';
-    $result = $kernel->render(Request::get('/', ['accept' => 'text/html']), function (string $bytes) use (&$html): void {
+    $result = $kernel->render(Request::get('/', ['host' => 'localhost', 'accept' => 'text/html']), function (string $bytes) use (&$html): void {
         $html .= $bytes;
     });
 
@@ -212,7 +212,7 @@ it('includes the renderer message when debug is on', function () {
 it('preloads the client components each page renders, and no others, under the cap, from a cold renderer', function () {
     [$kernel, $renderer] = shopKernel();
 
-    $render = static fn (string $path): RenderResult => $kernel->render(Request::get($path, ['accept' => 'text/html']), static function (): void {});
+    $render = static fn (string $path): RenderResult => $kernel->render(Request::get($path, ['host' => 'localhost', 'accept' => 'text/html']), static function (): void {});
 
     try {
         $catalog = $render('/');
@@ -246,7 +246,7 @@ it('writes one canonical link and one icon into the head', function () {
         [$catalog] = renderCatalog($kernel);
         expect(preg_match('#href="(/products/[\w-]+)"#', $catalog, $m))->toBe(1);
         $html = '';
-        $kernel->render(Request::get("{$m[1]}?ref=catalog", ['accept' => 'text/html']), function (string $bytes) use (&$html): void {
+        $kernel->render(Request::get("{$m[1]}?ref=catalog", ['host' => 'localhost', 'accept' => 'text/html']), function (string $bytes) use (&$html): void {
             $html .= $bytes;
         });
     } finally {
@@ -269,10 +269,10 @@ it('serves the document, or the payload alone for a client navigation', function
     [$kernel, $renderer] = shopKernel();
 
     try {
-        $document = $kernel->handle(Request::get('/', ['accept' => 'text/html']));
+        $document = $kernel->handle(Request::get('/', ['host' => 'localhost', 'accept' => 'text/html']));
         // With the build the page metadata names, as the router sends it:
         // once fragment support is on, the version check is too.
-        $payload = $kernel->handle(Request::get('/', ['RSC' => '1', 'X-Version' => 'dev']));
+        $payload = $kernel->handle(Request::get('/', ['host' => 'localhost', 'RSC' => '1', 'X-Version' => 'dev']));
     } finally {
         $renderer->stop();
     }
@@ -293,7 +293,7 @@ it('renders a designed page for a document that is not found', function () {
     [$kernel, $renderer] = shopKernel();
 
     try {
-        $missing = $kernel->handle(Request::get('/no-such-page', ['accept' => 'text/html']));
+        $missing = $kernel->handle(Request::get('/no-such-page', ['host' => 'localhost', 'accept' => 'text/html']));
     } finally {
         $renderer->stop();
     }
@@ -311,8 +311,8 @@ it('sends a CSP, and puts its nonce on every script in the document', function (
     [$kernel, $renderer] = shopKernel();
 
     try {
-        $document = $kernel->handle(Request::get('/', ['accept' => 'text/html']));
-        $payload = $kernel->handle(Request::get('/', ['RSC' => '1', 'X-Version' => 'dev']));
+        $document = $kernel->handle(Request::get('/', ['host' => 'localhost', 'accept' => 'text/html']));
+        $payload = $kernel->handle(Request::get('/', ['host' => 'localhost', 'RSC' => '1', 'X-Version' => 'dev']));
     } finally {
         $renderer->stop();
     }

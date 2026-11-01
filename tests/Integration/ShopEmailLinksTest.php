@@ -69,7 +69,7 @@ final class Browser
         $encoder = new Encoder();
 
         return $this->keep($this->kernel->handleWith(
-            new Request('GET', $path, ['accept' => 'text/html', ...$headers], $parsed, [], $this->cookies, $query, $this->address),
+            new Request('GET', $path, ['host' => (string) parse_url(Kernel::baseUrl(), PHP_URL_HOST), 'accept' => 'text/html', ...$headers], $parsed, [], $this->cookies, $query, $this->address),
             function (LoadedRoute $loaded, Request $passed) use ($encoder): Response {
                 $this->props = $this->kernel->orm->readOnly(static fn (): array => $loaded->encode($encoder, $passed));
 
@@ -91,13 +91,13 @@ final class Browser
         $token = (string) new CsrfTokens(
             new Signer(KEY, CsrfTokens::PURPOSE),
             static fn (Request $r): string => Kernel::sessionFrom($r->cookie(Kernel::SESSION_COOKIE), KEY) ?? '',
-        )->for(new Request('GET', '/', [], [], [], $this->cookies));
+        )->for(new Request('GET', '/', ['host' => (string) parse_url(Kernel::baseUrl(), PHP_URL_HOST)], [], [], $this->cookies));
 
         return $this->keep($this->kernel->handle(
             new Request(
                 'POST',
                 "/_action/{$name}",
-                ['content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token, ...$headers],
+                ['host' => (string) parse_url(Kernel::baseUrl(), PHP_URL_HOST), 'content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token, ...$headers],
                 [],
                 [],
                 [...$this->cookies, '__Host-XSRF-TOKEN' => $token],

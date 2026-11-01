@@ -59,7 +59,7 @@ it('clears the identity map after a request, even a failing one', function () {
     $kernel->orm->all(Product::class);
 
     try {
-        $kernel->render(Request::get('/products/' . Uuid::v7()), static fn (string $b): null => null);
+        $kernel->render(Request::get('/products/' . Uuid::v7(), ['host' => 'localhost']), static fn (string $b): null => null);
     } catch (\Throwable) {
         // No such product; the teardown is what is under test.
     }
@@ -79,7 +79,7 @@ it('surfaces the cause of a failure rather than a classified 500', function () {
     $caught = null;
 
     try {
-        $kernel->render(Request::get('/products/' . Uuid::v7()), static fn (string $b): null => null);
+        $kernel->render(Request::get('/products/' . Uuid::v7(), ['host' => 'localhost']), static fn (string $b): null => null);
     } catch (\Throwable $e) {
         $caught = $e;
     }

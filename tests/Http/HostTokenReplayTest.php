@@ -35,6 +35,7 @@ use Tinvar\Live\LiveToken;
 use Tinvar\Live\LiveUpdates;
 use Tinvar\Live\MemoryHub;
 use Tinvar\Live\TagsRead;
+use Tinvar\Observability\Probes;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
@@ -122,6 +123,7 @@ function kernel(): array
         manifest: new FragmentManifest(['admin.orders' => [['id' => 'b1', 'component' => 'Stats', 'params' => []]]]),
         live: $live,
         domains: new Domains(['root' => SHOP]),
+        probes: new Probes(),
     ), $live];
 }
 
@@ -163,6 +165,30 @@ it('refuses a host the application does not serve with a 421, before anything ru
         ->and(send($kernel, 'POST', 'evil.test', '/_action/orders.touch', '{}')->status)->toBe(421)
         ->and(send($kernel, 'GET', SHOP, '/orders')->body())->toBe('page:shop.orders')
         ->and(send($kernel, 'GET', ADMIN, '/orders')->body())->toBe('page:admin.orders');
+});
+
+it('refuses a request that names no host with a 400, and still answers a probe that names none', function () {
+    [$kernel] = kernel();
+    $page = static fn (LoadedRoute $l, Request $r): Response => Response::make(200, 'page:' . $l->chain->page->name);
+
+    $none = $kernel->handle(new Request('GET', '/orders'), $page);
+    $action = $kernel->handle(new Request('POST', '/_action/orders.touch', ['content-type' => 'application/json']), $page, '{}');
+    $probe = $kernel->handle(new Request('GET', '/_health', remoteAddress: '127.0.0.1'), $page);
+
+    expect($none->status)->toBe(400)
+        ->and($none->body())->not->toContain('page:')
+        ->and($action->status)->toBe(400)
+        ->and($probe->status)->toBe(200);
+});
+
+it('refuses a token minted with no host claim on every host, where the application routes by host', function () {
+    [$kernel] = kernel();
+    $token = new RouteToken(claims(RouteToken::PURPOSE, ''))->encode(new Signer(KEY, RouteToken::PURPOSE));
+    $body = json_encode(['_routes' => [$token]], JSON_THROW_ON_ERROR);
+
+    foreach ([ADMIN, SHOP] as $host) {
+        expect(json_decode(send($kernel, 'POST', $host, '/_action/orders.touch', $body)->body(), true)['payloads'] ?? [])->toBe([]);
+    }
 });
 
 it('re-renders a route token after an action only on the host it was minted on', function () {

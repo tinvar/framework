@@ -1865,7 +1865,7 @@ final class Kernel
             if ($this->domains !== null && HostMatch::of($request) === null) {
                 $this->telemetry?->route('_misdirected');
 
-                throw new HttpException(421, 'The request names a host this application does not serve.', 'misdirected_request');
+                throw $this->domains->refusal($request);
             }
 
             if ($this->webhooks !== null && $this->webhooks->matches($request)) {

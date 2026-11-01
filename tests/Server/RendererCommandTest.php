@@ -260,7 +260,7 @@ it('starts a pool that renders the shop, and stops it on SIGTERM', function () u
 
         $html = '';
         $kernel = Kernel::fromEnvironment($socket, database: Shop::database());
-        $kernel->render(Request::get('/', ['accept' => 'text/html']), static function (string $bytes) use (&$html): void {
+        $kernel->render(Request::get('/', ['host' => 'localhost', 'accept' => 'text/html']), static function (string $bytes) use (&$html): void {
             $html .= $bytes;
         });
     } finally {

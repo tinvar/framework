@@ -69,13 +69,13 @@ function records(string $log): array
 
 function from(string $path, string $address = '127.0.0.1'): Request
 {
-    return new Request('GET', $path, ['accept' => 'text/html'], remoteAddress: $address);
+    return new Request('GET', $path, ['host' => 'localhost', 'accept' => 'text/html'], remoteAddress: $address);
 }
 
 /** A probe as a scraper sends it: over loopback, with the probe token. */
 function probe(string $path): Request
 {
-    return new Request('GET', $path, ['authorization' => 'Bearer ' . Kernel::probeToken()], remoteAddress: '127.0.0.1');
+    return new Request('GET', $path, ['host' => 'localhost', 'authorization' => 'Bearer ' . Kernel::probeToken()], remoteAddress: '127.0.0.1');
 }
 
 it('logs a page to its file under the id the response carries, and counts its render', function () {
@@ -262,7 +262,7 @@ it('takes a vitals report from a page it served, under the route its token names
         $report = $kernel->handle(new Request(
             'POST',
             '/_vitals',
-            ['content-type' => 'application/json', 'x-xsrf-token' => $csrf],
+            ['host' => 'localhost', 'content-type' => 'application/json', 'x-xsrf-token' => $csrf],
             cookies: $cookies,
             remoteAddress: '127.0.0.1',
         ), $body);
@@ -296,7 +296,7 @@ it('names /_reports on its documents, and takes a CSP violation there with no se
         $report = $kernel->handle(new Request(
             'POST',
             '/_reports',
-            ['content-type' => 'application/reports+json'],
+            ['host' => 'localhost', 'content-type' => 'application/reports+json'],
             remoteAddress: '127.0.0.1',
         ), json_encode([[
             'type' => 'csp-violation',

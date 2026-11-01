@@ -285,7 +285,7 @@ it('checks every renderer, restarts them one at a time with no render refused, a
             $found = $pool;
             try {
                 $html = '';
-                $kernel->render(Request::get('/', ['accept' => 'text/html']), static function (string $bytes) use (&$html): void {
+                $kernel->render(Request::get('/', ['host' => 'localhost', 'accept' => 'text/html']), static function (string $bytes) use (&$html): void {
                     $html .= $bytes;
                 });
                 substr_count($html, 'data-availability=') === 24 ? $rendered++ : $failures[] = 'an incomplete catalog';

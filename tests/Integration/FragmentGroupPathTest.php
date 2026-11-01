@@ -51,18 +51,18 @@ function keep(Response $response, array &$cookies): Response
 function signedIn(Kernel $kernel): array
 {
     $cookies = [];
-    keep($kernel->handle(new Request('GET', '/sign-in', ['accept' => 'text/html'], cookies: $cookies)), $cookies);
+    keep($kernel->handle(new Request('GET', '/sign-in', ['host' => 'localhost', 'accept' => 'text/html'], cookies: $cookies)), $cookies);
 
     $csrf = (string) new CsrfTokens(
         new Signer(KEY, CsrfTokens::PURPOSE),
         static fn (Request $r): string => Kernel::sessionFrom($r->cookie(Kernel::SESSION_COOKIE), KEY) ?? '',
-    )->for(new Request('GET', '/', cookies: $cookies));
+    )->for(new Request('GET', '/', cookies: $cookies, headers: ['host' => 'localhost']));
 
     $signIn = keep($kernel->handle(
         new Request(
             'POST',
             '/_action/account.signIn',
-            ['content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $csrf],
+            ['host' => 'localhost', 'content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $csrf],
             cookies: [...$cookies, '__Host-XSRF-TOKEN' => $csrf],
         ),
         json_encode(['email' => DemoAccount::EMAIL, 'password' => DemoAccount::PASSWORD, 'next' => '/orders'], JSON_THROW_ON_ERROR),
@@ -104,6 +104,8 @@ function shippingToken(string $session, string $order, string $tenant, int $ago 
         authHash: demoAuthHash($signer),
         expiresAt: time() + 3600,
         issuedAt: time() - $ago,
+        // The host the order page is served on, which the token is bound to (ADR 0149).
+        host: 'localhost',
     )->encode($signer);
 }
 
@@ -119,7 +121,7 @@ it('renders a group in one render, as a list with a subtree per boundary', funct
         $response = $kernel->handle(new Request(
             'GET',
             FragmentEndpoint::PREFIX . shippingToken($session, $order, $tenant) . '/' . shippingToken($session, $order, $tenant, ago: 5),
-            ['rsc' => '1', 'accept' => 'text/x-component'],
+            ['host' => 'localhost', 'rsc' => '1', 'accept' => 'text/x-component'],
             cookies: $cookies,
         ));
     } finally {

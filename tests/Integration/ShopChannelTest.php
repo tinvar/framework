@@ -66,7 +66,7 @@ final class Customer
         $this->kernel = Kernel::fromEnvironment('/tmp/tinvar-shop-channel-none.sock', key: KEY, database: $database, hub: $this->hub);
         $this->id = (string) $this->kernel->orm->connection()->select('SELECT id FROM customers WHERE email = ?', [DemoAccount::EMAIL])[0]['id'];
 
-        $this->keep($this->kernel->handle(new Request('GET', '/sign-in', ['accept' => 'text/html'])));
+        $this->keep($this->kernel->handle(new Request('GET', '/sign-in', ['host' => 'localhost', 'accept' => 'text/html'])));
         $this->post('/_action/account.signIn', ['email' => DemoAccount::EMAIL, 'password' => DemoAccount::PASSWORD, 'next' => '/']);
     }
 
@@ -103,13 +103,13 @@ final class Customer
         $token = (string) new CsrfTokens(
             new Signer(KEY, CsrfTokens::PURPOSE),
             static fn (Request $r): string => Kernel::sessionFrom($r->cookie(Kernel::SESSION_COOKIE), KEY) ?? '',
-        )->for(new Request('GET', '/', [], [], [], $this->cookies));
+        )->for(new Request('GET', '/', ['host' => 'localhost'], [], [], $this->cookies));
 
         return $this->keep($this->kernel->handle(
             new Request(
                 'POST',
                 $path,
-                ['content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
+                ['host' => 'localhost', 'content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
                 [],
                 [],
                 [...$this->cookies, '__Host-XSRF-TOKEN' => $token],

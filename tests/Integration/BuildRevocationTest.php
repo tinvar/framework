@@ -77,18 +77,18 @@ function keep(Response $response, array &$cookies): Response
 function signedIn(Kernel $kernel, string $database): array
 {
     $cookies = [];
-    keep($kernel->handle(new Request('GET', '/sign-in', ['accept' => 'text/html'], cookies: $cookies)), $cookies);
+    keep($kernel->handle(new Request('GET', '/sign-in', ['host' => 'localhost', 'accept' => 'text/html'], cookies: $cookies)), $cookies);
 
     $csrf = (string) new CsrfTokens(
         new Signer(KEY, CsrfTokens::PURPOSE),
         static fn (Request $r): string => Kernel::sessionFrom($r->cookie(Kernel::SESSION_COOKIE), KEY) ?? '',
-    )->for(new Request('GET', '/', cookies: $cookies));
+    )->for(new Request('GET', '/', cookies: $cookies, headers: ['host' => 'localhost']));
 
     $signIn = keep($kernel->handle(
         new Request(
             'POST',
             '/_action/account.signIn',
-            ['content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $csrf],
+            ['host' => 'localhost', 'content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $csrf],
             cookies: [...$cookies, '__Host-XSRF-TOKEN' => $csrf],
         ),
         json_encode(['email' => DemoAccount::EMAIL, 'password' => DemoAccount::PASSWORD, 'next' => '/orders'], JSON_THROW_ON_ERROR),
@@ -129,12 +129,14 @@ function shippingToken(string $session, string $order, string $build, string $da
         authHash: demoAuthHash($signer, $database),
         expiresAt: time() + 3600,
         issuedAt: time(),
+        // The host the order page is served on, which the token is bound to (ADR 0149).
+        host: 'localhost',
     )->encode($signer);
 }
 
 function navigation(string $version): Request
 {
-    return Request::get('/', ['rsc' => '1', 'accept' => 'text/x-component', 'x-version' => $version]);
+    return Request::get('/', ['host' => 'localhost', 'rsc' => '1', 'accept' => 'text/x-component', 'x-version' => $version]);
 }
 
 it('refuses a build revoked from the CLI on the next request, without a restart', function () {
@@ -151,7 +153,7 @@ it('refuses a build revoked from the CLI on the next request, without a restart'
         $fragment = new Request(
             'GET',
             FragmentEndpoint::PREFIX . shippingToken($session, $order, 'r-old', $database, TenantClaim::current($kernel->orm)),
-            ['rsc' => '1', 'accept' => 'text/x-component'],
+            ['host' => 'localhost', 'rsc' => '1', 'accept' => 'text/x-component'],
             cookies: $cookies,
         );
 

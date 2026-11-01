@@ -48,13 +48,13 @@ final class Visitor
     public function payload(string $path): Response
     {
         return $this->keep($this->kernel->handle(
-            new Request('GET', $path, ['rsc' => '1', 'accept' => 'text/x-component', 'x-version' => 'dev'], [], [], $this->cookies, null, '127.0.0.1'),
+            new Request('GET', $path, ['host' => 'localhost', 'rsc' => '1', 'accept' => 'text/x-component', 'x-version' => 'dev'], [], [], $this->cookies, null, '127.0.0.1'),
         ));
     }
 
     public function get(string $path): Response
     {
-        return $this->keep($this->kernel->handle(new Request('GET', $path, ['accept' => '*/*'], [], [], $this->cookies, null, '127.0.0.1')));
+        return $this->keep($this->kernel->handle(new Request('GET', $path, ['host' => 'localhost', 'accept' => '*/*'], [], [], $this->cookies, null, '127.0.0.1')));
     }
 
     /** @param array<string, mixed> $body */
@@ -66,7 +66,7 @@ final class Visitor
             new Request(
                 'POST',
                 "/_action/{$name}",
-                ['content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token, 'rsc' => '1'],
+                ['host' => 'localhost', 'content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token, 'rsc' => '1'],
                 [],
                 [],
                 [...$this->cookies, '__Host-XSRF-TOKEN' => $token],
@@ -88,7 +88,7 @@ final class Visitor
             return $this->keep($this->kernel->handle(new Request(
                 'POST',
                 '/_upload',
-                ['content-type' => 'multipart/form-data; boundary=x', 'accept' => 'application/json', 'x-xsrf-token' => $token, 'rsc' => '1'],
+                ['host' => 'localhost', 'content-type' => 'multipart/form-data; boundary=x', 'accept' => 'application/json', 'x-xsrf-token' => $token, 'rsc' => '1'],
                 [],
                 ['ticket' => $ticket],
                 [...$this->cookies, '__Host-XSRF-TOKEN' => $token],
@@ -117,7 +117,7 @@ final class Visitor
             new Request(
                 'POST',
                 $path,
-                [
+                ['host' => 'localhost',
                     'content-type' => $chunk ? 'application/offset+octet-stream' : 'application/json',
                     'accept' => 'application/json',
                     'x-xsrf-token' => $token,
@@ -146,7 +146,7 @@ final class Visitor
         return (string) new CsrfTokens(
             new Signer(KEY, CsrfTokens::PURPOSE),
             static fn (Request $r): string => Kernel::sessionFrom($r->cookie(Kernel::SESSION_COOKIE), KEY) ?? '',
-        )->for(new Request('GET', '/', cookies: $this->cookies));
+        )->for(new Request('GET', '/', cookies: $this->cookies, headers: ['host' => 'localhost']));
     }
 
     private function keep(Response $response): Response

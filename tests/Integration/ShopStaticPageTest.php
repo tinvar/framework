@@ -100,17 +100,17 @@ function signIn(Kernel $kernel): array
 
         return $response;
     };
-    $keep($kernel->handle(new Request('GET', '/sign-in', ['accept' => 'text/html'])));
+    $keep($kernel->handle(new Request('GET', '/sign-in', ['host' => 'localhost', 'accept' => 'text/html'])));
     $csrf = (string) new CsrfTokens(
         new Signer(KEY, CsrfTokens::PURPOSE),
         static fn (Request $r): string => Kernel::sessionFrom($r->cookie(Kernel::SESSION_COOKIE), KEY) ?? '',
-    )->for(new Request('GET', '/', cookies: $cookies));
+    )->for(new Request('GET', '/', cookies: $cookies, headers: ['host' => 'localhost']));
 
     $signIn = $keep($kernel->handle(
         new Request(
             'POST',
             '/_action/account.signIn',
-            ['content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $csrf],
+            ['host' => 'localhost', 'content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $csrf],
             cookies: [...$cookies, '__Host-XSRF-TOKEN' => $csrf],
         ),
         json_encode(['email' => DemoAccount::EMAIL, 'password' => DemoAccount::PASSWORD, 'next' => '/'], JSON_THROW_ON_ERROR),
@@ -247,7 +247,7 @@ describe('the built catalog', function () {
             $kernel = Kernel::fromEnvironment($renderer->socketPath, key: KEY, database: Shop::database(), manifest: $manifest);
 
             $cookies = signIn($kernel);
-            $signedIn = $kernel->handle(new Request('GET', '/', ['accept' => 'text/html'], cookies: $cookies));
+            $signedIn = $kernel->handle(new Request('GET', '/', ['host' => 'localhost', 'accept' => 'text/html'], cookies: $cookies));
             new StaticBuilder($kernel->routes, $kernel->renderStatic(...))->build($out, $manifest);
         } finally {
             $renderer->stop();
@@ -269,7 +269,7 @@ describe('the built catalog', function () {
         try {
             $kernel = Kernel::fromEnvironment($renderer->socketPath, key: KEY, database: Shop::database());
 
-            expect(fn () => $kernel->renderStatic(new Request('GET', '/orders', ['accept' => 'text/html']), static fn (): string => ''))
+            expect(fn () => $kernel->renderStatic(new Request('GET', '/orders', ['host' => 'localhost', 'accept' => 'text/html']), static fn (): string => ''))
                 ->toThrow(\RuntimeException::class, 'failed with 302');
         } finally {
             $renderer->stop();
@@ -516,7 +516,7 @@ it('hands a first-time visitor their tokens on the second bootstrap request', fu
     $kernel = Kernel::fromEnvironment('/tmp/tinvar-none.sock', key: KEY, database: Shop::database(), manifest: $manifest);
     $body = json_encode(['route' => 'orders.show', 'params' => ['order' => 'o-1']], JSON_THROW_ON_ERROR);
     $post = static fn (array $cookies, array $headers = []): Response => $kernel->handle(
-        new Request('POST', BootstrapEndpoint::PATH, ['content-type' => 'application/json', 'accept' => 'application/json', ...$headers], cookies: $cookies),
+        new Request('POST', BootstrapEndpoint::PATH, ['host' => 'localhost', 'content-type' => 'application/json', 'accept' => 'application/json', ...$headers], cookies: $cookies),
         $body,
     );
 

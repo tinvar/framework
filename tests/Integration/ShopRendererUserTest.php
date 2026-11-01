@@ -69,7 +69,7 @@ it('renders nothing through a renderer of its own user, and serves its own 500 p
             $kernel = Kernel::fromEnvironment($renderer->socketPath, key: KEY, database: Shop::database(), log: function (\Throwable $e) use (&$logged): void {
                 $logged[] = $e;
             });
-            $response = $kernel->handle(new Request('GET', '/', ['accept' => 'text/html']));
+            $response = $kernel->handle(new Request('GET', '/', ['host' => 'localhost', 'accept' => 'text/html']));
 
             return [$response, new RendererHealth()->check($renderer->socketPath)['served']];
         });

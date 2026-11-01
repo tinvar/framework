@@ -115,6 +115,20 @@ final class StaticBuilder
     }
 
     /**
+     * The Host a page is requested with: the primary host's, where the
+     * application routes by host -- which refuses a request naming none,
+     * and serves a static page on that host alone (ADR 0149).
+     *
+     * @return array<string, string>
+     */
+    private function primaryHost(): array
+    {
+        $domains = $this->routes->domains();
+
+        return $domains === null ? [] : ['host' => (string) preg_replace('#^https?://#', '', $domains->origin(null))];
+    }
+
+    /**
      * The params a #[StaticPage(from: ...)] class lists; refused when the
      * class is no StaticParams, rather than built as some other class's.
      *
@@ -337,7 +351,8 @@ final class StaticBuilder
         // variant -- nor keyed by a flag, since nothing asks for it but the
         // path (ADR 0094).
         $flags = new FlagReads();
-        $html = $flags->span(fn (): string => ($this->render)(new Request('GET', $page['path'], ['accept' => 'text/html']), $minter->closure()));
+        $request = new Request('GET', $page['path'], ['accept' => 'text/html', ...$this->primaryHost()]);
+        $html = $flags->span(fn (): string => ($this->render)($request, $minter->closure()));
         if (!$flags->clean()) {
             throw new \RuntimeException(
                 "{$page['path']} read the feature flag(s) " . (implode(', ', array_keys($flags->flags())) ?: 'it cannot name')

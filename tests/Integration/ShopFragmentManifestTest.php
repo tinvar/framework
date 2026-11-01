@@ -93,7 +93,7 @@ function csrf(array $cookies): string
     return (string) new CsrfTokens(
         new Signer(KEY, CsrfTokens::PURPOSE),
         static fn (Request $r): string => Kernel::sessionFrom($r->cookie(Kernel::SESSION_COOKIE), KEY) ?? '',
-    )->for(new Request('GET', '/', cookies: $cookies));
+    )->for(new Request('GET', '/', cookies: $cookies, headers: ['host' => 'localhost']));
 }
 
 /**
@@ -104,14 +104,14 @@ function csrf(array $cookies): string
 function signedIn(Kernel $kernel): array
 {
     $cookies = [];
-    keep($kernel->handle(new Request('GET', '/sign-in', ['accept' => 'text/html'], cookies: $cookies)), $cookies);
+    keep($kernel->handle(new Request('GET', '/sign-in', ['host' => 'localhost', 'accept' => 'text/html'], cookies: $cookies)), $cookies);
     $token = csrf($cookies);
 
     $signIn = keep($kernel->handle(
         new Request(
             'POST',
             '/_action/account.signIn',
-            ['content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
+            ['host' => 'localhost', 'content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
             cookies: [...$cookies, '__Host-XSRF-TOKEN' => $token],
         ),
         json_encode(['email' => DemoAccount::EMAIL, 'password' => DemoAccount::PASSWORD, 'next' => '/orders'], JSON_THROW_ON_ERROR),
@@ -134,7 +134,7 @@ function bootstrap(Kernel $kernel, array $cookies, string $order): Response
         new Request(
             'POST',
             BootstrapEndpoint::PATH,
-            ['content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
+            ['host' => 'localhost', 'content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
             cookies: [...$cookies, '__Host-XSRF-TOKEN' => $token],
         ),
         json_encode(['route' => 'orders.show', 'params' => ['order' => $order]], JSON_THROW_ON_ERROR),
@@ -179,7 +179,7 @@ describe('the produced manifest', function () {
         try {
             $kernel = Kernel::fromEnvironment($renderer->socketPath, key: KEY, database: Shop::database());
             [$cookies, $order] = signedIn($kernel);
-            $page = $kernel->handle(new Request('GET', "/orders/{$order}", ['accept' => 'text/html'], cookies: $cookies));
+            $page = $kernel->handle(new Request('GET', "/orders/{$order}", ['host' => 'localhost', 'accept' => 'text/html'], cookies: $cookies));
         } finally {
             $renderer->stop();
         }
@@ -232,7 +232,7 @@ describe('the bootstrap endpoint', function () {
             $fragment = $kernel->handle(new Request(
                 'GET',
                 FragmentEndpoint::PREFIX . ($tokens['shipping-updates'] ?? 'none'),
-                ['rsc' => '1', 'accept' => 'text/x-component'],
+                ['host' => 'localhost', 'rsc' => '1', 'accept' => 'text/x-component'],
                 cookies: $cookies,
             ));
         } finally {

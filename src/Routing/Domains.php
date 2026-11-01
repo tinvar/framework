@@ -29,8 +29,10 @@ use Tinvar\Http\TrustedProxies;
  * held to the port configured. An address is no host name, and is answered
  * only when it is listed as an alias. A request that names no host at all
  * -- which HTTP/1.1 forbids, and a server adapter or a test may still
- * build -- is the primary host's: it can reach nothing a request naming
- * the primary host could not.
+ * build -- is refused with a 400, never read as the primary host's, so no
+ * token is minted for, or honoured on, an empty host. What builds a
+ * request itself -- a test's client, the static builder -- names the
+ * primary host.
  *
  * Configured domains are named, `root` first, so the code says
  * `admin.{root}` and the environment says what `root` is: `localhost` in
@@ -217,9 +219,9 @@ final readonly class Domains
 
     /**
      * The host $request names, normalized and held to the port configured;
-     * '' when it names none, and null when what it names is not a host this
-     * application could serve -- malformed, another port, an address that
-     * is not an alias.
+     * '' when it names none -- which match() serves no route on -- and null
+     * when what it names is not a host this application could serve:
+     * malformed, empty, another port, an address that is not an alias.
      */
     public function hostOf(Request $request): ?string
     {
@@ -259,7 +261,10 @@ final readonly class Domains
     /** The match for a normalized host, or null for one this application does not serve. */
     public function match(string $host): ?HostMatch
     {
-        if ($host === '' || \in_array($host, $this->aliases, true)) {
+        if ($host === '') {
+            return null;
+        }
+        if (\in_array($host, $this->aliases, true)) {
             return new HostMatch(null, $host);
         }
         if ($this->primary->match($host, $this->roots) !== null) {
@@ -292,7 +297,8 @@ final readonly class Domains
      * The host $request was sent to, as a match: carried on the request when
      * the Kernel has resolved it, resolved here otherwise.
      *
-     * @throws HttpException 421 for a host this application does not serve
+     * @throws HttpException 400 for a request that names no host, 421 for a
+     *         host this application does not serve
      */
     public function resolve(Request $request): HostMatch
     {
@@ -304,11 +310,20 @@ final readonly class Domains
         $host = $this->hostOf($request);
         $match = $host === null ? null : $this->match($host);
 
-        return $match ?? throw new HttpException(
-            421,
-            'The request names a host this application does not serve.',
-            'misdirected_request',
-        );
+        return $match ?? throw $this->refusal($request);
+    }
+
+    /**
+     * Why $request, which matched no host, is refused: a 400 when it names
+     * no host at all -- which HTTP/1.1 forbids, and which is never read as
+     * the primary host -- and a 421 when it names one this application
+     * does not serve.
+     */
+    public function refusal(Request $request): HttpException
+    {
+        return $this->hostOf($request) === ''
+            ? new HttpException(400, 'The request names no host.', 'missing_host')
+            : new HttpException(421, 'The request names a host this application does not serve.', 'misdirected_request');
     }
 
     /**

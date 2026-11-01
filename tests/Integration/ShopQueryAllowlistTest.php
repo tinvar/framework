@@ -112,7 +112,7 @@ function renderCalling(string $path, array $calls): array
     $pid = callingRenderer($socket, $calls);
     try {
         $kernel = Kernel::fromEnvironment($socket, key: KEY, database: Shop::database());
-        $response = $kernel->handle(new Request('GET', $path, ['accept' => 'text/html']));
+        $response = $kernel->handle(new Request('GET', $path, ['host' => 'localhost', 'accept' => 'text/html']));
     } finally {
         pcntl_waitpid($pid, $status);
         @unlink($socket);

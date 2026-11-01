@@ -117,10 +117,16 @@ it('refuses an address unless it is listed as an alias of the primary host', fun
         ->and($aliased->resolve(host('[::1]:8080'))->pattern)->toBeNull();
 });
 
-it('treats a request that names no host as the primary host', function () {
+it('refuses a request that names no host with a 400, never reading it as the primary host', function () {
     $domains = new Domains(['root' => 'shop.test'], patterns: ['admin.{root}']);
 
-    expect($domains->resolve(new Request('GET', '/'))->pattern)->toBeNull();
+    expect(fn () => $domains->resolve(new Request('GET', '/')))->toThrow(HttpException::class, 'names no host')
+        ->and($domains->match(''))->toBeNull();
+    try {
+        $domains->resolve(new Request('GET', '/'));
+    } catch (HttpException $e) {
+        expect($e->status)->toBe(400);
+    }
 });
 
 it('believes X-Forwarded-Host from a pinned proxy only, and the value nearest it', function () {

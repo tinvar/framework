@@ -40,7 +40,7 @@ function catalog(Kernel $kernel, array $headers = []): array
 {
     $payload = '';
     $result = $kernel->render(
-        Request::get('/', ['RSC' => '1', 'X-Version' => 'dev', ...$headers]),
+        Request::get('/', ['host' => 'localhost', 'RSC' => '1', 'X-Version' => 'dev', ...$headers]),
         static function (string $bytes) use (&$payload): void {
             $payload .= $bytes;
         },
@@ -105,8 +105,8 @@ it('renders the whole page when the client holds another', function () {
 
 it('says which page a payload is, and which payload is partial', function () {
     withShop(function (Kernel $kernel): void {
-        $whole = $kernel->handle(Request::get('/', ['RSC' => '1', 'X-Version' => 'dev']));
-        $part = $kernel->handle(Request::get('/', ['RSC' => '1', 'X-Version' => 'dev', 'X-Page' => 'shop/catalog', 'X-Only' => 'page']));
+        $whole = $kernel->handle(Request::get('/', ['host' => 'localhost', 'RSC' => '1', 'X-Version' => 'dev']));
+        $part = $kernel->handle(Request::get('/', ['host' => 'localhost', 'RSC' => '1', 'X-Version' => 'dev', 'X-Page' => 'shop/catalog', 'X-Only' => 'page']));
 
         expect($whole->status)->toBe(200)
             ->and($whole->header('x-page'))->toBe('shop/catalog')
@@ -119,7 +119,7 @@ it('says which page a payload is, and which payload is partial', function () {
 // The first page cannot read headers, so its view travels in the document.
 it('writes the first page\'s view into the page metadata', function () {
     withShop(function (Kernel $kernel): void {
-        $html = $kernel->handle(Request::get('/', ['accept' => 'text/html']))->body();
+        $html = $kernel->handle(Request::get('/', ['host' => 'localhost', 'accept' => 'text/html']))->body();
 
         expect(preg_match('#<script type="application/json" id="tinvar-page">(.*?)</script>#s', $html, $m))->toBe(1)
             ->and(json_decode($m[1], true, flags: JSON_THROW_ON_ERROR)['view'])->toBe('shop/catalog');

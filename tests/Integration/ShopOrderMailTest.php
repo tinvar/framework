@@ -78,7 +78,7 @@ final class Customer
 
     public function __construct(private readonly Kernel $kernel)
     {
-        $this->keep($kernel->handle(new Request('GET', '/sign-in', ['accept' => 'text/html'])));
+        $this->keep($kernel->handle(new Request('GET', '/sign-in', ['host' => (string) parse_url(Kernel::baseUrl(), PHP_URL_HOST), 'accept' => 'text/html'])));
         $this->action('account.signIn', ['email' => DemoAccount::EMAIL, 'password' => DemoAccount::PASSWORD, 'next' => '/']);
     }
 
@@ -88,13 +88,13 @@ final class Customer
         $token = (string) new CsrfTokens(
             new Signer(KEY, CsrfTokens::PURPOSE),
             static fn (Request $r): string => Kernel::sessionFrom($r->cookie(Kernel::SESSION_COOKIE), KEY) ?? '',
-        )->for(new Request('GET', '/', [], [], [], $this->cookies));
+        )->for(new Request('GET', '/', ['host' => (string) parse_url(Kernel::baseUrl(), PHP_URL_HOST)], [], [], $this->cookies));
 
         return $this->keep($this->kernel->handle(
             new Request(
                 'POST',
                 "/_action/{$name}",
-                ['content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
+                ['host' => (string) parse_url(Kernel::baseUrl(), PHP_URL_HOST), 'content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
                 [],
                 [],
                 [...$this->cookies, '__Host-XSRF-TOKEN' => $token],

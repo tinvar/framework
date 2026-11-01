@@ -66,13 +66,13 @@ final class Visitor
         $token = (string) new CsrfTokens(
             new Signer(KEY, CsrfTokens::PURPOSE),
             static fn (Request $r): string => Kernel::sessionFrom($r->cookie(Kernel::SESSION_COOKIE), KEY) ?? '',
-        )->for(new Request('GET', '/', [], [], [], $this->cookies));
+        )->for(new Request('GET', '/', ['host' => 'localhost'], [], [], $this->cookies));
 
         $this->keep($this->kernel->handle(
             new Request(
                 'POST',
                 '/_action/account.signIn',
-                ['content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
+                ['host' => 'localhost', 'content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
                 [],
                 [],
                 [...$this->cookies, '__Host-XSRF-TOKEN' => $token],
@@ -83,7 +83,7 @@ final class Visitor
 
     private function document(string $path): Request
     {
-        return new Request('GET', $path, ['accept' => 'text/html'], [], [], $this->cookies);
+        return new Request('GET', $path, ['host' => 'localhost', 'accept' => 'text/html'], [], [], $this->cookies);
     }
 
     private function keep(Response $response): Response

@@ -22,7 +22,8 @@ final readonly class HostMatch
 
     /**
      * @param string|null $pattern the #[Domain] pattern matched, as written; null for the primary host
-     * @param string $host the host as the request named it, normalized; '' for a request that named none
+     * @param string $host the host as the request named it, normalized; never '' from Domains, which
+     *        refuses a request that names none
      * @param array<string, string> $parameters what the pattern's parameters took
      */
     public function __construct(

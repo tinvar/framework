@@ -89,15 +89,15 @@ function placeOrder(Kernel $kernel): string
         $token = (string) new CsrfTokens(
             new Signer(KEY, CsrfTokens::PURPOSE),
             static fn (Request $r): string => Kernel::sessionFrom($r->cookie(Kernel::SESSION_COOKIE), KEY) ?? '',
-        )->for(new Request('GET', '/', [], [], [], $cookies));
+        )->for(new Request('GET', '/', ['host' => (string) parse_url(Kernel::baseUrl(), PHP_URL_HOST)], [], [], $cookies));
 
         return $keep($kernel->handle(
-            new Request('POST', "/_action/{$name}", ['content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token], [], [], [...$cookies, '__Host-XSRF-TOKEN' => $token]),
+            new Request('POST', "/_action/{$name}", ['host' => (string) parse_url(Kernel::baseUrl(), PHP_URL_HOST), 'content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token], [], [], [...$cookies, '__Host-XSRF-TOKEN' => $token]),
             json_encode($body, JSON_THROW_ON_ERROR),
         ));
     };
 
-    $keep($kernel->handle(new Request('GET', '/sign-in', ['accept' => 'text/html'])));
+    $keep($kernel->handle(new Request('GET', '/sign-in', ['host' => (string) parse_url(Kernel::baseUrl(), PHP_URL_HOST), 'accept' => 'text/html'])));
     $action('account.signIn', ['email' => DemoAccount::EMAIL, 'password' => DemoAccount::PASSWORD, 'next' => '/']);
     $product = (string) $kernel->orm->connection()->select('SELECT id FROM products WHERE stock > 0 LIMIT 1')[0]['id'];
     $placed = $action('orders.place', ['product' => $product, 'quantity' => 2]);

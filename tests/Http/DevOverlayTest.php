@@ -100,7 +100,7 @@ function kernel(bool $dev, array $routes = [BrokenPage::class, CatalogPage::clas
 
 function document(string $path): Request
 {
-    return new Request('GET', $path, ['accept' => 'text/html']);
+    return new Request('GET', $path, ['host' => 'localhost', 'accept' => 'text/html']);
 }
 
 /** What the renderer sends about a component that read `window`, under debug. */

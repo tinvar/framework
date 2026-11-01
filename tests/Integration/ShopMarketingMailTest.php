@@ -143,7 +143,7 @@ function oneClick(string $path, string $body = 'List-Unsubscribe=One-Click', str
     parse_str($body, $fields);
 
     return kernel()->handle(
-        new Request($method, $path, ['content-type' => 'application/x-www-form-urlencoded'], [], $fields, [], null, '203.0.113.9'),
+        new Request($method, $path, ['host' => (string) parse_url(Kernel::baseUrl(), PHP_URL_HOST), 'content-type' => 'application/x-www-form-urlencoded'], [], $fields, [], null, '203.0.113.9'),
         $body,
     );
 }
@@ -383,7 +383,7 @@ describe('the product announcement', function () {
         [$status, $lines] = console('mail:announce', [], $plain);
         // Nor does anything answer a link there: no link can have been made.
         $posted = $plain->handle(
-            new Request('POST', oneClickPath(MarketingList::Newsletter, customer()), ['content-type' => 'application/x-www-form-urlencoded'], [], ['List-Unsubscribe' => 'One-Click']),
+            new Request('POST', oneClickPath(MarketingList::Newsletter, customer()), ['host' => (string) parse_url(Kernel::baseUrl(), PHP_URL_HOST), 'content-type' => 'application/x-www-form-urlencoded'], [], ['List-Unsubscribe' => 'One-Click']),
             'List-Unsubscribe=One-Click',
         );
 
@@ -539,7 +539,7 @@ describe('drawn by the renderer', function () {
 
             // The logged link, POSTed to the shop, unsubscribes its reader.
             $response = $shop->handle(
-                new Request('POST', $m[1], ['content-type' => 'application/x-www-form-urlencoded'], [], ['List-Unsubscribe' => 'One-Click']),
+                new Request('POST', $m[1], ['host' => (string) parse_url(Kernel::baseUrl(), PHP_URL_HOST), 'content-type' => 'application/x-www-form-urlencoded'], [], ['List-Unsubscribe' => 'One-Click']),
                 'List-Unsubscribe=One-Click',
             );
             expect($response->status)->toBe(200)

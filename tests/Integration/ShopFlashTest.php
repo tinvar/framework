@@ -31,7 +31,7 @@ const KEY = 'shop-flash-test-key-of-thirty-two-b';
 function page(Kernel $kernel, array $cookies): Response
 {
     return $kernel->handleWith(
-        new Request('GET', '/sign-in', ['accept' => 'text/html'], [], [], $cookies, null, '127.0.0.1'),
+        new Request('GET', '/sign-in', ['host' => 'localhost', 'accept' => 'text/html'], [], [], $cookies, null, '127.0.0.1'),
         static fn (LoadedRoute $loaded, Request $passed): Response => Response::make(200, 'page'),
     );
 }
@@ -84,7 +84,7 @@ it('runs no write statement for a page view whose session has no flash waiting, 
 
     // One that is waiting is still read once, and gone.
     $flashes = new Flashes($kernel->orm, KEY);
-    $request = new Request('GET', '/', cookies: [Kernel::SESSION_COOKIE => $session]);
+    $request = new Request('GET', '/', cookies: [Kernel::SESSION_COOKIE => $session], headers: ['host' => 'localhost']);
     $flashes->put($request, ['flash' => ['message' => 'Saved']]);
 
     expect($flashes->pull($request))->toBe(['flash' => ['message' => 'Saved']])
@@ -104,7 +104,7 @@ it('keeps a page expired out of the table', function () {
     $response = $kernel->handle(new Request(
         'POST',
         '/_action/account.signIn',
-        ['content-type' => 'application/x-www-form-urlencoded', 'accept' => 'text/html'],
+        ['host' => 'localhost', 'content-type' => 'application/x-www-form-urlencoded', 'accept' => 'text/html'],
         [],
         ['email' => 'someone@example.com'],
         [],

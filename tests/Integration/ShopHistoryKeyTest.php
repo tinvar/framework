@@ -46,7 +46,7 @@ final class Visitor
     /** @param array<string, string> $headers */
     public function get(string $path, array $headers = ['accept' => 'text/html']): Response
     {
-        return $this->keep($this->kernel->handle(new Request('GET', $path, $headers, [], [], $this->cookies, null, '127.0.0.1')));
+        return $this->keep($this->kernel->handle(new Request('GET', $path, ['host' => 'localhost', ...$headers], [], [], $this->cookies, null, '127.0.0.1')));
     }
 
     public function payload(string $path): Response
@@ -58,13 +58,13 @@ final class Visitor
     public function action(string $name, array $body): Response
     {
         $token = (string) new CsrfTokens(new Signer(KEY, CsrfTokens::PURPOSE), self::session(...))
-            ->for(new Request('GET', '/', cookies: $this->cookies));
+            ->for(new Request('GET', '/', cookies: $this->cookies, headers: ['host' => 'localhost']));
 
         return $this->keep($this->kernel->handle(
             new Request(
                 'POST',
                 "/_action/{$name}",
-                ['content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
+                ['host' => 'localhost', 'content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
                 [],
                 [],
                 [...$this->cookies, '__Host-XSRF-TOKEN' => $token],
@@ -81,7 +81,7 @@ final class Visitor
         [$user, $epoch] = $signedIn ? demo() : ['', ''];
 
         return new HistoryKeys(new Signer(KEY, HistoryKeys::PURPOSE), self::session(...))
-            ->for(new Request('GET', '/', cookies: $this->cookies), TenantClaim::current($this->kernel->orm), user: $user, epoch: $epoch);
+            ->for(new Request('GET', '/', cookies: $this->cookies, headers: ['host' => 'localhost']), TenantClaim::current($this->kernel->orm), user: $user, epoch: $epoch);
     }
 
     private static function session(Request $r): string

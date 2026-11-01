@@ -35,7 +35,7 @@ function from(string $session, ?string $previous = null): Request
         $cookies[PreviousUrls::COOKIE] = $previous;
     }
 
-    return new Request('GET', '/', cookies: $cookies)
+    return new Request('GET', '/', cookies: $cookies, headers: ['host' => 'localhost'])
         ->withAttribute(SessionContext::ATTRIBUTE, new SessionContext((string) Kernel::sessionFrom($session, KEY)));
 }
 
@@ -106,13 +106,13 @@ describe('the store', function () {
 
         expect(recorded($urls, $forged, '/orders'))->toBeNull()
             ->and($urls->get(from($forged, $genuine[0] ?? null)))->toBeNull()
-            ->and($urls->get(new Request('GET', '/')))->toBeNull();
+            ->and($urls->get(new Request('GET', '/', ['host' => 'localhost'])))->toBeNull();
     });
 
     // Outside the pipeline there is no response for the cookie to go on.
     it('keeps nothing for a request without a session context', function () {
         $urls = new PreviousUrls(KEY);
-        $request = new Request('GET', '/', cookies: [Kernel::SESSION_COOKIE => Kernel::newSession(KEY)]);
+        $request = new Request('GET', '/', cookies: [Kernel::SESSION_COOKIE => Kernel::newSession(KEY)], headers: ['host' => 'localhost']);
 
         $urls->put($request, '/orders');
 
@@ -172,7 +172,7 @@ describe('the shop', function () {
         if (($headers['content-type'] ?? '') === 'application/x-www-form-urlencoded') {
             parse_str($body, $form);
         }
-        $response = $kernel->handle(new Request($method, $path, $headers, $parsed, $form, $cookies, $query, '127.0.0.1'), $body);
+        $response = $kernel->handle(new Request($method, $path, ['host' => 'localhost', ...$headers], $parsed, $form, $cookies, $query, '127.0.0.1'), $body);
         foreach ($response->cookies() as $name => $line) {
             if (str_contains($line, 'Max-Age=0')) {
                 unset($cookies[$name]);
@@ -187,7 +187,7 @@ describe('the shop', function () {
     /** @param array<string, string> $cookies */
     function previous(array $cookies): ?string
     {
-        return new PreviousUrls(KEY)->get(new Request('GET', '/', cookies: $cookies));
+        return new PreviousUrls(KEY)->get(new Request('GET', '/', cookies: $cookies, headers: ['host' => 'localhost']));
     }
 
     /**
@@ -277,7 +277,7 @@ describe('the shop', function () {
             $token = (string) new CsrfTokens(
                 new Signer(KEY, CsrfTokens::PURPOSE),
                 static fn (Request $r): string => Kernel::sessionFrom($r->cookie(Kernel::SESSION_COOKIE), KEY) ?? '',
-            )->for(new Request('GET', '/', cookies: $cookies));
+            )->for(new Request('GET', '/', cookies: $cookies, headers: ['host' => 'localhost']));
             $fields = ['email' => DemoAccount::EMAIL, 'password' => 'not-the-password', 'next' => '/orders', '_token' => $token];
 
             $response = send(

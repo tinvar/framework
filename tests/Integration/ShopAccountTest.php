@@ -57,7 +57,7 @@ final class Visitor
         parse_str((string) $query, $parsed);
 
         return $this->keep($this->kernel->handle(
-            new Request('GET', $path, ['accept' => 'text/html'], $parsed, [], $this->cookies, $query, $this->address),
+            new Request('GET', $path, ['host' => 'localhost', 'accept' => 'text/html'], $parsed, [], $this->cookies, $query, $this->address),
         ));
     }
 
@@ -70,7 +70,7 @@ final class Visitor
             new Request(
                 'POST',
                 "/_action/{$name}",
-                ['content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
+                ['host' => 'localhost', 'content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
                 [],
                 [],
                 [...$this->cookies, '__Host-XSRF-TOKEN' => $token],
@@ -95,7 +95,7 @@ final class Visitor
             new Request(
                 'POST',
                 "/_action/{$name}",
-                ['content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
+                ['host' => 'localhost', 'content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
                 [],
                 [],
                 $this->cookies,
@@ -127,7 +127,7 @@ final class Visitor
             new Request(
                 'POST',
                 "/_action/{$name}",
-                ['content-type' => 'application/x-www-form-urlencoded', 'accept' => 'text/html', 'referer' => $from],
+                ['host' => 'localhost', 'content-type' => 'application/x-www-form-urlencoded', 'accept' => 'text/html', 'referer' => $from],
                 [],
                 $fields,
                 [...$this->cookies, '__Host-XSRF-TOKEN' => $token],
@@ -144,7 +144,7 @@ final class Visitor
         return (string) new CsrfTokens(
             new Signer(KEY, CsrfTokens::PURPOSE),
             static fn (Request $r): string => Kernel::sessionFrom($r->cookie(Kernel::SESSION_COOKIE), KEY) ?? '',
-        )->for(new Request('GET', '/', [], [], [], $this->cookies));
+        )->for(new Request('GET', '/', ['host' => 'localhost'], [], [], $this->cookies));
     }
 
     public function sessionId(): ?string
@@ -803,7 +803,7 @@ it('does not count a prefetch as the session being used', function () {
     $seen = static fn (): int => (int) (sessionRow($pdo, $visitor->sessionId())['last_seen_at'] ?? 0);
 
     $prefetched = $visitor->kernel->handle(
-        new Request('GET', '/no-such-page', ['rsc' => '1', 'x-version' => 'dev', 'purpose' => 'prefetch'], [], [], $visitor->cookies),
+        new Request('GET', '/no-such-page', ['host' => 'localhost', 'rsc' => '1', 'x-version' => 'dev', 'purpose' => 'prefetch'], [], [], $visitor->cookies),
     );
     $afterPrefetch = $seen();
     $visitor->get('/no-such-page');
