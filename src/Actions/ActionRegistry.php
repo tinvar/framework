@@ -379,6 +379,17 @@ final class ActionRegistry
             );
         }
 
+        // Uploads' own bytes live under these, and pruning sweeps them on its
+        // own clock whatever record names a file there: a file kept under one
+        // would be deleted from under its record.
+        foreach ([\Tinvar\Uploads\UploadEndpoint::INCOMING_PREFIX, \Tinvar\Uploads\UploadEndpoint::PARTIAL_PREFIX] as $reserved) {
+            if ($declared->prefix === $reserved || str_starts_with($declared->prefix, "{$reserved}/")) {
+                throw new ActionException(
+                    "{$where}: \${$name}'s prefix '{$declared->prefix}' is under {$reserved}/, which uploads keep their own bytes under and pruning sweeps.",
+                );
+            }
+        }
+
         if ($declared->types === []) {
             throw new ActionException("{$where}: \${$name} names no types it takes.");
         }
