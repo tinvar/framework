@@ -559,6 +559,28 @@ it('shows a product page prefetched before signing in as the customer sees it, o
         ->and($result['visitsAfterSignIn'])->toBe([$result['path']]);
 });
 
+// Catalog search (ADR 0150): the header's box, the results page as a client
+// visit, a result opened, a search that finds nothing, and query syntax in
+// the address bar read as words.
+it('searches the catalog from the header, opens a result, and reads query syntax as words', function () use ($root) {
+    $output = '';
+    served($root, function (string $origin) use ($root, &$output): void {
+        $output = runWithTimeout(['node', "{$root}/examples/shop/e2e/search.mjs", $origin], $root, 60);
+    });
+
+    $result = json_decode((string) $output, true);
+    expect($result)->toBeArray("the browser script failed:\n{$output}");
+
+    expect($result['errors'])->toBe([])
+        ->and($result['url'])->toBe('/search?q=mug')
+        ->and($result['heading'])->toBe('Results for “mug”')
+        ->and($result['found'])->toBe(['Bottomless mug'])
+        ->and($result['sameDocument'])->toBeTrue()
+        ->and($result['opened'])->toStartWith('/products/')
+        ->and($result['hostileStatus'])->toBe(200)
+        ->and($result['hostileFound'])->toBe(['Bottomless mug']);
+});
+
 // "History encryption: on by default for authenticated routes, including
 // remembered form state, using `crypto.subtle` and a session-scoped key ...
 // logout calls `clearHistory()`." The product page's quantity is remembered
