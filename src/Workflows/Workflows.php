@@ -74,6 +74,12 @@ final readonly class Workflows
      * Refused where a job's dispatch is: in a loader or a query body, and
      * inside acrossTenants().
      *
+     * A unique workflow started inside a transaction, on a queue of another
+     * store, takes its lock at the commit (Dispatcher::dispatch()): when
+     * another holds it, the id returned never runs, and its record stays
+     * queued. Accepted (ADR 0119); start one outside a transaction to have
+     * the id that does the work.
+     *
      * @return string the workflow's id, which is its job's
      */
     public function start(Workflow $workflow, int $delay = 0): string
