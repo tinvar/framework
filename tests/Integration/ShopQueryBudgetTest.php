@@ -13,7 +13,7 @@ namespace Tinvar\Tests\Integration\ShopQueryBudget;
 use PHPUnit\Framework\AssertionFailedError;
 use Shop\DemoAccount;
 use Shop\Kernel;
-use Shop\Models\Customer;
+use Shop\Database\Models\Account\Customer;
 use Tinvar\Bench\Shop;
 use Tinvar\Testing\QueryBudget;
 use Tinvar\Testing\Testing;

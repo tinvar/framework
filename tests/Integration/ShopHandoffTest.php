@@ -14,10 +14,10 @@ namespace Tinvar\Tests\Integration\ShopHandoff;
 
 use Shop\Auth\AuthEpochs;
 use Shop\Auth\StaffMemberships;
-use Shop\Database\Seeder;
+use Shop\Database\Seeders\Seeder;
 use Shop\DemoAccount;
 use Shop\Kernel;
-use Shop\Models\Customer;
+use Shop\Database\Models\Account\Customer;
 use Shop\StaffAccount;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;

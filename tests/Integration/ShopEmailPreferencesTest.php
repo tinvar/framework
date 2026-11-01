@@ -16,7 +16,7 @@ namespace Tinvar\Tests\Integration\ShopEmailPreferences;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Shop\Mail\MarketingList;
-use Shop\Models\Customer;
+use Shop\Database\Models\Account\Customer;
 use Shop\Http\Pages\Marketing\EmailPreferences;
 use Tinvar\Bench\Shop;
 use Tinvar\Jobs\Envelope;

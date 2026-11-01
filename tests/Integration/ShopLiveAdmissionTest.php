@@ -17,7 +17,7 @@ namespace Tinvar\Tests\Integration\ShopLiveAdmission;
 use Shop\Auth\AuthEpochs;
 use Shop\Auth\StaffMemberships;
 use Shop\Auth\StaffPermission;
-use Shop\Database\Seeder;
+use Shop\Database\Seeders\Seeder;
 use Shop\Kernel;
 use Shop\StaffAccount;
 use Tinvar\Http\CsrfTokens;

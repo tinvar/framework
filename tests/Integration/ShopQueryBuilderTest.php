@@ -13,7 +13,7 @@ namespace Tinvar\Tests\Integration\ShopQueryBuilder;
 
 use Shop\DemoAccount;
 use Shop\Kernel;
-use Shop\Models\Customer;
+use Shop\Database\Models\Account\Customer;
 use Shop\Http\Pages\Orders\Orders;
 use Tinvar\Bench\Shop;
 use Tinvar\Testing\Testing;

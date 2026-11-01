@@ -596,12 +596,12 @@ it('writes nowhere a psr-4 entry outside the project, or a link out of the appli
 // bin/tinvar hands the generators the shop. Only refusals are run here: a
 // test never writes into the shop's committed tree.
 it('is wired into bin/tinvar, against the shop, refusing what is there', function () {
-    $product = ROOT . '/examples/shop/app/Models/Product.php';
+    $product = ROOT . '/examples/shop/app/Database/Models/Catalog/Product.php';
     $before = hash_file('sha256', $product);
 
-    [$status, $output] = tool([PHP_BINARY, ROOT . '/bin/tinvar', 'make:model', 'Product']);
+    [$status, $output] = tool([PHP_BINARY, ROOT . '/bin/tinvar', 'make:model', 'Catalog/Product']);
     expect($status)->toBe(MakeCommand::FAILED)
-        ->and($output)->toContain('examples/shop/app/Models/Product.php already exists')
+        ->and($output)->toContain('examples/shop/app/Database/Models/Catalog/Product.php already exists')
         ->and(hash_file('sha256', $product))->toBe($before);
 
     [$status, $output] = tool([PHP_BINARY, ROOT . '/bin/tinvar', 'make:page', 'Catalog', '--path=/products/{productId}']);

@@ -18,7 +18,7 @@ use Shop\Kernel;
 use Shop\Mail\Links;
 use Shop\Mail\OrderConfirmation;
 use Shop\Mail\SendOrderConfirmation;
-use Shop\Models\Order;
+use Shop\Database\Models\Orders\Order;
 use Shop\Http\Channels\Orders\OrderChanges;
 use Shop\Tasks\AdvanceShipments;
 use Tinvar\Bench\Renderer;
@@ -56,7 +56,7 @@ function shop(\Closure $work): void
 {
     $directory = \Tinvar\Support\PrivateDirectory::create('tinvar-mailshop');
     $database = "{$directory}/shop.sqlite";
-    new \Shop\Database\Seeder(PdoConnection::sqlite($database, 'shop', create: true))->run(customers: 2);
+    new \Shop\Database\Seeders\Seeder(PdoConnection::sqlite($database, 'shop', create: true))->run(customers: 2);
     $renderer = Renderer::start('msgpack', 'order-mail');
     putenv("SHOP_MAIL_LOG={$directory}/mail.log");
     putenv('SHOP_URL=https://shop.test');
@@ -225,7 +225,7 @@ it('moves orders along the shipping timeline as they age, and tells the pages sh
     $directory = \Tinvar\Support\PrivateDirectory::create('tinvar-ship');
     try {
         $connection = PdoConnection::sqlite("{$directory}/shop.sqlite", 'shop', create: true);
-        new \Shop\Database\Seeder($connection)->run(customers: 1);
+        new \Shop\Database\Seeders\Seeder($connection)->run(customers: 1);
         $orm = new Orm($connection, new IdentityMap('shop'));
         $hub = new MemoryHub();
         $changes = new OrderChanges(new Invalidator($hub, new Topics(new Signer(KEY, Topics::PURPOSE)), $orm));

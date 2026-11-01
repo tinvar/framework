@@ -18,12 +18,12 @@ use Tinvar\Orm\PdoConnection;
 function checkout(): string
 {
     $root = sys_get_temp_dir() . '/tinvar-seed-template-' . bin2hex(random_bytes(6));
-    foreach (['examples/shop/database/migrations', 'examples/shop/app/Models', 'packages/database/src/Orm'] as $directory) {
+    foreach (['examples/shop/database/migrations', 'examples/shop/app/Database/Seeders', 'examples/shop/app/Database/Models', 'packages/database/src/Orm'] as $directory) {
         mkdir("{$root}/{$directory}", 0o700, true);
     }
     file_put_contents("{$root}/examples/shop/database/migrations/2026_10_24_000001_create_notes.php", "<?php // notes\n");
-    file_put_contents("{$root}/examples/shop/database/Seeder.php", "<?php // seeds 1 note per customer\n");
-    file_put_contents("{$root}/examples/shop/app/Models/Note.php", "<?php // a note\n");
+    file_put_contents("{$root}/examples/shop/app/Database/Seeders/Seeder.php", "<?php // seeds 1 note per customer\n");
+    file_put_contents("{$root}/examples/shop/app/Database/Models/Note.php", "<?php // a note\n");
     file_put_contents("{$root}/packages/database/src/Orm/Connection.php", "<?php // the ORM\n");
 
     return $root;
@@ -105,8 +105,8 @@ it('seeds again when a seeder, a model or the ORM changes', function (string $fi
         ->and(SeedTemplate::ensure($this->root, 20_000, seed($seeded)))->not->toBe($before)
         ->and($seeded)->toBe(2);
 })->with([
-    'the seeder' => 'examples/shop/database/Seeder.php',
-    'a model' => 'examples/shop/app/Models/Note.php',
+    'the seeder' => 'examples/shop/app/Database/Seeders/Seeder.php',
+    'a model' => 'examples/shop/app/Database/Models/Note.php',
     'the ORM' => 'packages/database/src/Orm/Connection.php',
 ]);
 
@@ -171,8 +171,11 @@ it('finds what it hashes where this checkout keeps it', function () {
     expect(glob("{$root}/examples/shop/database/migrations/*.php"))->not->toBe([])
         ->and(basename(SeedTemplate::path($root, 20_000)))->toMatch('/\Aseed-20000-[0-9a-f]{16}\.sqlite\z/');
 
-    unlink("{$this->root}/examples/shop/app/Models/Note.php");
-    rmdir("{$this->root}/examples/shop/app/Models");
+    unlink("{$this->root}/examples/shop/app/Database/Models/Note.php");
+    unlink("{$this->root}/examples/shop/app/Database/Seeders/Seeder.php");
+    rmdir("{$this->root}/examples/shop/app/Database/Models");
+    rmdir("{$this->root}/examples/shop/app/Database/Seeders");
+    rmdir("{$this->root}/examples/shop/app/Database");
     expect(fn () => SeedTemplate::path($this->root, 20_000))->toThrow(\RuntimeException::class, 'No directory at');
 });
 

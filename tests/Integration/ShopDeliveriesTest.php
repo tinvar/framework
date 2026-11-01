@@ -16,7 +16,7 @@ use Shop\Auth\StaffMemberships;
 use Shop\Auth\StaffPermission;
 use Shop\DemoAccount;
 use Shop\Kernel;
-use Shop\Models\Customer;
+use Shop\Database\Models\Account\Customer;
 use Shop\Http\Pages\Admin\Deliveries as DeliveriesPage;
 use Shop\StaffAccount;
 use Tinvar\Bench\Shop;

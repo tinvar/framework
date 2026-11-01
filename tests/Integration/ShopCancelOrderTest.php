@@ -17,9 +17,9 @@ use Shop\Http\Actions\Orders\OrderActions;
 use Shop\Auth\AuthEpochs;
 use Shop\DemoAccount;
 use Shop\Kernel;
-use Shop\Models\Customer;
-use Shop\Models\Order;
-use Shop\Models\OrderStatus;
+use Shop\Database\Models\Account\Customer;
+use Shop\Database\Models\Orders\Order;
+use Shop\Database\Models\Orders\OrderStatus;
 use Tinvar\Bench\Shop;
 use Tinvar\Testing\Testing;
 

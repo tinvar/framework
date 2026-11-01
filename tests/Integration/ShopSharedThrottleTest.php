@@ -12,7 +12,7 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Integration\ShopSharedThrottle;
 
 use Shop\Auth\SignInThrottle;
-use Shop\Database\Seeder;
+use Shop\Database\Seeders\Seeder;
 use Shop\DemoAccount;
 use Shop\Kernel;
 use Tinvar\Http\CsrfTokens;

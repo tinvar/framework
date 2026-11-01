@@ -114,7 +114,7 @@ describe('the layers', function () {
         'in any case' => ['tinvar\orm\model', 'database'],
         'a name that only starts like a member' => ['Tinvar\Ormish\Thing', 'framework'],
         'a class that only starts like a member' => ['Tinvar\Data\LazyList', 'framework'],
-        'not Tinvar' => ['Shop\Models\Product', null],
+        'not Tinvar' => ['Shop\Database\Models\Catalog\Product', null],
         'nothing' => ['PDO', null],
     ]);
 

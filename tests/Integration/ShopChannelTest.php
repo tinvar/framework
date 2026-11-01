@@ -12,10 +12,10 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Integration\ShopChannel;
 
 use Shop\Http\Channels\Orders\OrderUpdates;
-use Shop\Database\Seeder;
+use Shop\Database\Seeders\Seeder;
 use Shop\DemoAccount;
 use Shop\Kernel;
-use Shop\Models\OrderStatus;
+use Shop\Database\Models\Orders\OrderStatus;
 use Shop\Http\Channels\Orders\OrderChanges;
 use Shop\Tasks\AdvanceShipments;
 use Tinvar\Channels\ChannelToken;

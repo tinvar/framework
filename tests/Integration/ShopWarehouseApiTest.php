@@ -13,7 +13,7 @@ namespace Tinvar\Tests\Integration\ShopWarehouseApi;
 
 use Shop\DemoAccount;
 use Shop\Kernel;
-use Shop\Models\Customer;
+use Shop\Database\Models\Account\Customer;
 use Shop\Http\Queries\Catalog\Availability;
 use Tinvar\Bench\Shop;
 use Tinvar\Http\Request;

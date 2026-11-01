@@ -2,13 +2,13 @@
 
 declare(strict_types=1);
 
-use Shop\Database\Factories\CustomerFactory;
+use Shop\Database\Factories\Account\CustomerFactory;
 use Shop\Database\Migrations;
-use Shop\Database\Factories\OrderFactory;
-use Shop\Database\Factories\ProductFactory;
-use Shop\Models\Customer;
-use Shop\Models\Order;
-use Shop\Models\Product;
+use Shop\Database\Factories\Orders\OrderFactory;
+use Shop\Database\Factories\Catalog\ProductFactory;
+use Shop\Database\Models\Account\Customer;
+use Shop\Database\Models\Orders\Order;
+use Shop\Database\Models\Catalog\Product;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;

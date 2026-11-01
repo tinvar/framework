@@ -19,7 +19,7 @@ namespace Tinvar\Tests\Integration\ShopSessionEnded;
 
 use Shop\DemoAccount;
 use Shop\Kernel;
-use Shop\Models\Customer;
+use Shop\Database\Models\Account\Customer;
 use Tinvar\Bench\Shop;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;

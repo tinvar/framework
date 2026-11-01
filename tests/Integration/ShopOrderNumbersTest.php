@@ -16,8 +16,8 @@ namespace Tinvar\Tests\Integration\ShopOrderNumbers;
 
 use Shop\DemoAccount;
 use Shop\Kernel;
-use Shop\Models\Customer;
-use Shop\Models\Product;
+use Shop\Database\Models\Account\Customer;
+use Shop\Database\Models\Catalog\Product;
 use Shop\Pricing;
 use Tinvar\Bench\Shop;
 use Tinvar\Orm\Orm;

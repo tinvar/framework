@@ -127,7 +127,7 @@ it('reads the root package\'s composer.json, its autoload and not its autoload-d
     // This workspace's root maps the shop under Shop\ and its benchmarks,
     // a dev-only namespace, under Tinvar\Bench\.
     expect($composer->maps(['Shop']))->toBeTrue()
-        ->and($composer->named('Order', ['Shop']))->toContain('Shop\Models\Order')
+        ->and($composer->named('Order', ['Shop']))->toContain('Shop\Database\Models\Orders\Order')
         ->and($composer->named('Shop', ['Tinvar']))->toBe([]);
 })->skip(
     \Composer\InstalledVersions::getRootPackage()['name'] !== 'tinvar/workspace',

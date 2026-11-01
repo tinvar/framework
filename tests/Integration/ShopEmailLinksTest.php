@@ -23,7 +23,7 @@ use Shop\Auth\StaffRole;
 use Shop\Clock;
 use Shop\DemoAccount;
 use Shop\Kernel;
-use Shop\Models\Customer;
+use Shop\Database\Models\Account\Customer;
 use Shop\StaffAccount;
 use Tinvar\Bench\Shop;
 use Tinvar\Console\Output;
@@ -575,7 +575,7 @@ describe('drawn by the renderer', function () {
     it('draws each link\'s email with its link in both parts, and nothing that tracks', function () {
         $directory = \Tinvar\Support\PrivateDirectory::create('tinvar-linkmail');
         $database = "{$directory}/shop.sqlite";
-        new \Shop\Database\Seeder(\Tinvar\Orm\PdoConnection::sqlite($database, 'shop', create: true))->run(customers: 1);
+        new \Shop\Database\Seeders\Seeder(\Tinvar\Orm\PdoConnection::sqlite($database, 'shop', create: true))->run(customers: 1);
         $renderer = \Tinvar\Bench\Renderer::start('msgpack', 'link-mail');
         putenv("SHOP_MAIL_LOG={$directory}/mail.log");
         putenv('SHOP_URL=https://shop.test');

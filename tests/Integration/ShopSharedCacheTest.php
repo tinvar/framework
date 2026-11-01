@@ -11,7 +11,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopSharedCache;
 
-use Shop\Database\Seeder;
+use Shop\Database\Seeders\Seeder;
 use Shop\Kernel;
 use Tinvar\Attributes\Query;
 use Tinvar\Cache\ApcuStore;

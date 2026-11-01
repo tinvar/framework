@@ -19,7 +19,7 @@ namespace Tinvar\Tests\Integration\ShopOptionalField;
 
 use Shop\DemoAccount;
 use Shop\Kernel;
-use Shop\Models\Customer;
+use Shop\Database\Models\Account\Customer;
 use Shop\Http\Pages\Catalog\ProductPage;
 use Tinvar\Bench\Shop;
 use Tinvar\Data\Encoder;

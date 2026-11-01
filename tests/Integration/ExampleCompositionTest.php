@@ -19,9 +19,9 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Integration\ExampleComposition;
 
 use Shop\Config\ServerConfig;
-use Shop\Database\Seeder;
+use Shop\Database\Seeders\Seeder;
 use Shop\Kernel;
-use Shop\Models\Product;
+use Shop\Database\Models\Catalog\Product;
 use Tinvar\Config\ConfigException;
 use Tinvar\Config\Configs;
 use Tinvar\Http\NotFoundException;

@@ -12,8 +12,8 @@ namespace Tinvar\Tests\Integration\ShopEndpoints;
 
 use Shop\DemoAccount;
 use Shop\Kernel;
-use Shop\Models\Customer;
-use Shop\Models\Order;
+use Shop\Database\Models\Account\Customer;
+use Shop\Database\Models\Orders\Order;
 use Tinvar\Bench\Shop;
 use Tinvar\Orm\Orm;
 use Tinvar\Testing\RendererPool;

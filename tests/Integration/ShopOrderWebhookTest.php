@@ -54,7 +54,7 @@ function shop(?string $url, ?OutboundHttp $outbound, \Closure $work): void
 {
     $directory = \Tinvar\Support\PrivateDirectory::create('tinvar-hookshop');
     $database = "{$directory}/shop.sqlite";
-    new \Shop\Database\Seeder(PdoConnection::sqlite($database, 'shop', create: true))->run(customers: 2);
+    new \Shop\Database\Seeders\Seeder(PdoConnection::sqlite($database, 'shop', create: true))->run(customers: 2);
     $renderer = Renderer::start('msgpack', 'order-webhook');
     putenv("SHOP_MAIL_LOG={$directory}/mail.log");
     putenv('SHOP_URL=https://shop.test');

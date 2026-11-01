@@ -48,7 +48,7 @@ function tools(string $database, array $env, string &$out, string &$err, ?string
                 mailTransport: new ArrayTransport(),
             );
         },
-        models: [\Shop\Models\Product::class, \Shop\Models\Customer::class, \Shop\Models\Order::class],
+        models: [\Shop\Database\Models\Catalog\Product::class, \Shop\Database\Models\Account\Customer::class, \Shop\Database\Models\Orders\Order::class],
         configs: Kernel::classes()->configs,
         log: $log,
         env: $env,

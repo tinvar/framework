@@ -244,8 +244,8 @@ describe('the shop', function () {
         $renderer = Renderer::start('msgpack', 'previous-url-writes');
         $database = Shop::database();
         $kernel = Kernel::fromEnvironment($renderer->socketPath, key: KEY, database: $database);
-        $customer = $kernel->orm->whereIn(\Shop\Models\Customer::class, 'email', [DemoAccount::EMAIL])[0] ?? null;
-        \assert($customer instanceof \Shop\Models\Customer);
+        $customer = $kernel->orm->whereIn(\Shop\Database\Models\Account\Customer::class, 'email', [DemoAccount::EMAIL])[0] ?? null;
+        \assert($customer instanceof \Shop\Database\Models\Account\Customer);
         $cookies = $kernel->signedIn($customer, new Request('GET', '/', ['host' => '127.0.0.1']));
         $watcher = new \PDO("sqlite:{$database}");
         $before = commits($watcher);

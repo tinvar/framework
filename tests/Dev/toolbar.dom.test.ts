@@ -494,12 +494,17 @@ describe('what the render did, and where', () => {
     ],
     lazyLoads: [
       {
-        relation: 'Shop\\Models\\Order::lines',
+        relation: 'Shop\\Database\\Models\\Orders\\Order::lines',
         parents: 1,
         batch: 'alone',
         site: '/app/Pages/Orders.php:77',
       },
-      { relation: 'Shop\\Models\\Order::customer', parents: 20, batch: 'result set', site: '' },
+      {
+        relation: 'Shop\\Database\\Models\\Orders\\Order::customer',
+        parents: 20,
+        batch: 'result set',
+        site: '',
+      },
     ],
     lazyLoadsDropped: 0,
     acrossTenants: [{ site: '/app/Queries/Stats.php:19' }],

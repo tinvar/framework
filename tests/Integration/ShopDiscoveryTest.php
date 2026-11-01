@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopDiscovery;
 
-use Shop\Database\Seeder;
+use Shop\Database\Seeders\Seeder;
 use Shop\Kernel;
 use Tinvar\Discovery\Discovery;
 use Tinvar\Discovery\DiscoveryFailed;
@@ -56,12 +56,12 @@ it('discovers every class its Kernel listed by hand, and adds the framework\'s o
         ->and($classes->transfers)->toBe([\Shop\Http\Transfers\Catalog\StockImport::class, \Shop\Http\Transfers\Orders\OrdersExport::class])
         ->and($classes->shared)->toBe([\Shop\Http\Shared\ShopShared::class])
         ->and($classes->policies)->toBe([
-            \Shop\Models\Customer::class => \Shop\Policies\CustomerPolicy::class,
-            \Shop\Models\Order::class => \Shop\Policies\OrderPolicy::class,
-            \Shop\Models\Product::class => \Shop\Policies\ProductPolicy::class,
-            \Shop\Models\Receipt::class => \Shop\Policies\ReceiptPolicy::class,
+            \Shop\Database\Models\Account\Customer::class => \Shop\Policies\CustomerPolicy::class,
+            \Shop\Database\Models\Account\Receipt::class => \Shop\Policies\ReceiptPolicy::class,
+            \Shop\Database\Models\Catalog\Product::class => \Shop\Policies\ProductPolicy::class,
+            \Shop\Database\Models\Orders\Order::class => \Shop\Policies\OrderPolicy::class,
         ])
-        ->and($classes->models)->toBe([\Shop\Models\Customer::class, \Shop\Models\Order::class, \Shop\Models\OrderLine::class, \Shop\Models\Product::class, \Shop\Models\Receipt::class])
+        ->and($classes->models)->toBe([\Shop\Database\Models\Account\Customer::class, \Shop\Database\Models\Account\Receipt::class, \Shop\Database\Models\Catalog\Product::class, \Shop\Database\Models\Orders\Order::class, \Shop\Database\Models\Orders\OrderLine::class])
         ->and($classes->commands)->toBe([\Shop\Commands\AdvanceShipmentsNow::class, \Shop\Commands\AnnounceProduct::class, \Shop\Commands\SendNewsletterIssue::class])
         ->and($classes->tasks)->toContain(\Shop\Tasks\AdvanceShipments::class, \Shop\Tasks\ScheduleNewsletter::class, \Tinvar\Jobs\PruneQueue::class)
         ->and($classes->configs)->toContain(\Shop\Config\ShopConfig::class, \Shop\Config\ServerConfig::class, \Tinvar\Config\FrameworkConfig::class, \Tinvar\Mail\DkimConfig::class)

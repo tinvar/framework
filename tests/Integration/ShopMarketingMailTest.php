@@ -32,8 +32,8 @@ use Shop\Mail\SendNewsletter;
 use Shop\Mail\SendOptInConfirmation;
 use Shop\Mail\SendProductAnnouncement;
 use Shop\Mail\Unsubscribes;
-use Shop\Models\Customer;
-use Shop\Models\Product;
+use Shop\Database\Models\Account\Customer;
+use Shop\Database\Models\Catalog\Product;
 use Shop\Http\Pages\Marketing\ConfirmMarketing;
 use Shop\Http\Pages\Marketing\OneClickUnsubscribe;
 use Shop\Tasks\ScheduleNewsletter;
@@ -501,7 +501,7 @@ describe('drawn by the renderer', function () {
     it('is drawn from @tinvar/mail\'s kit as MER-36 asks, and logged with its List-Unsubscribe headers', function () {
         $directory = \Tinvar\Support\PrivateDirectory::create('tinvar-mktshop');
         $database = "{$directory}/shop.sqlite";
-        new \Shop\Database\Seeder(PdoConnection::sqlite($database, 'shop', create: true))->run(customers: 1);
+        new \Shop\Database\Seeders\Seeder(PdoConnection::sqlite($database, 'shop', create: true))->run(customers: 1);
         $renderer = Renderer::start('msgpack', 'marketing-mail');
         putenv("SHOP_MAIL_LOG={$directory}/mail.log");
         putenv('SHOP_URL=https://shop.test');

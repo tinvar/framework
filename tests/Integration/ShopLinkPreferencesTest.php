@@ -19,7 +19,7 @@ use Shop\Kernel;
 use Shop\Mail\Links;
 use Shop\Mail\MarketingList;
 use Shop\Mail\Unsubscribes;
-use Shop\Models\Customer;
+use Shop\Database\Models\Account\Customer;
 use Shop\Http\Pages\Marketing\LinkPreferences;
 use Tinvar\Bench\Shop;
 use Tinvar\Jobs\Envelope;
