@@ -146,7 +146,7 @@ it('writes the fragment manifest and the discovery manifest into the build it ma
     try {
         $console = console(['kernel' => \Shop\Kernel::class, 'classes' => \Shop\Kernel::classes(...)]);
 
-        [$status, $out] = ran($console, 'build', '--profile=test', '--app=examples/shop', "--out={$scratch}/out");
+        [$status, $out] = ran($console, 'build', '--profile=test', '--app=' . \dirname(__DIR__, 4) . '/examples/shop', "--out={$scratch}/out");
         expect($status)->toBe(0)
             ->and($out)->toContain("wrote {$scratch}/out/fragments.json")
             ->and(json_decode((string) file_get_contents("{$scratch}/out/fragments.json"), true)['queries'] ?? null)->not->toBe([])
