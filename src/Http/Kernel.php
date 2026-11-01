@@ -1833,8 +1833,12 @@ final class Kernel
         });
     }
 
-    /** The host of the work in hand: this fiber's, else the main context's; null for none known. */
-    private function hostInHand(): ?HostMatch
+    /**
+     * The host of the work in hand: this fiber's, else the main context's;
+     * null for none known -- outside any request, as in a job. What a tool
+     * grant and a service context token are bound to (CallHosts).
+     */
+    public function hostInHand(): ?HostMatch
     {
         $fiber = \Fiber::getCurrent();
         $host = $fiber !== null && isset($this->hostsByFiber[$fiber]) ? $this->hostsByFiber[$fiber] : $this->mainHost;

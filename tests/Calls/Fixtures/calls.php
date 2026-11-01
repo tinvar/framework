@@ -173,6 +173,19 @@ final class ShowRack
     }
 }
 
+/** Held to the operations desk's host by its own #[Domain] (ADR 0149). */
+#[\Tinvar\Attributes\Domain('ops.{root}')]
+final class LabelActions
+{
+    #[Action(name: 'racks.label'), Authorize('view', 'rack'), Tool('Labels a rack.'), ServiceCall('warehouse')]
+    public function label(Rack $rack): ActionResult
+    {
+        Ran::$bodies[] = 'label';
+
+        return ActionResult::ok(new RackData($rack->id, $rack->name));
+    }
+}
+
 /** Takes the request, so nothing outside a browser can call it. */
 final class NeedsRequest
 {
@@ -235,6 +248,7 @@ final class Harness
             $this->panels,
             $this->staff,
             $this->users,
+            hosts: $this->hosts,
         );
     }
 
@@ -250,14 +264,24 @@ final class Harness
             $this->users,
             $this->spent,
             fn (): int => $this->now,
+            $this->hosts,
         );
     }
+
+    /** The hosts a call is held to; given only to a harness built with them. */
+    public ?\Tinvar\Calls\CallHosts $hosts = null;
+
+    /** The application's hosts, when built with them: shop.test, ops.shop.test, and admin.shop.test for the admin panel. */
+    public ?\Tinvar\Routing\Domains $domains = null;
+
+    /** The host of the request being answered; null outside one, as in a job. */
+    public ?\Tinvar\Routing\HostMatch $inHand = null;
     public int $now = 1_800_000_000;
 
     /** Where single-use service context tokens are spent (ADR 0119). */
     public \Tinvar\Http\ArrayNonceStore $spent;
 
-    public function __construct(?BuildRegistry $builds = null)
+    public function __construct(?BuildRegistry $builds = null, bool $hosts = false)
     {
         $this->spent = new \Tinvar\Http\ArrayNonceStore();
         Ran::$bodies = [];
@@ -272,11 +296,15 @@ final class Harness
         $resolver = static fn (string $class): object => $class === RackActions::class ? new RackActions($orm) : new $class();
 
         $this->actions = new ActionRegistry($resolver);
-        $this->actions->registerAll([RackActions::class, AuditActions::class]);
+        $this->actions->registerAll([RackActions::class, AuditActions::class, ...($hosts ? [LabelActions::class] : [])]);
         $this->queries = new QueryRegistry($resolver);
         $this->queries->registerAll([ShowRack::class]);
 
-        $registry = new PanelRegistry(new PanelDefinition('admin'));
+        $registry = new PanelRegistry(new PanelDefinition('admin', domain: $hosts ? 'admin.{root}' : null));
+        if ($hosts) {
+            $this->domains = new \Tinvar\Routing\Domains(['root' => 'shop.test'], patterns: ['ops.{root}', 'admin.{root}']);
+            $this->hosts = new \Tinvar\Calls\CallHosts($this->domains, fn (): ?\Tinvar\Routing\HostMatch => $this->inHand);
+        }
         $this->entry = new EntryContext($this->orm, $resolver, $this->panels, $registry, $this->staff, $this->auth);
         $gate = new PolicyGate(new PolicyRegistry()->register(Rack::class, RackPolicy::class), $this->auth);
         $this->runner = new CallRunner(
@@ -309,6 +337,24 @@ final class Harness
         $this->users->epochs[$user] ??= $epoch;
 
         return $this->auth->actingAs(new User($user), $work, $epoch);
+    }
+
+    /**
+     * Runs $work as a request on $host would: with it in hand.
+     *
+     * @template T
+     * @param \Closure(): T $work
+     * @return T
+     */
+    public function on(string $host, \Closure $work): mixed
+    {
+        \assert($this->domains !== null);
+        [$before, $this->inHand] = [$this->inHand, $this->domains->match($host) ?? throw new \LogicException("{$host} is not served.")];
+        try {
+            return $work();
+        } finally {
+            $this->inHand = $before;
+        }
     }
 
     /**

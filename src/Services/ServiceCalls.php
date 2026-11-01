@@ -11,6 +11,7 @@ use Tinvar\Auth\Authenticatable;
 use Tinvar\Auth\Memberships;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\UserLookup;
+use Tinvar\Calls\CallHosts;
 use Tinvar\Calls\CallResult;
 use Tinvar\Calls\CallRunner;
 use Tinvar\Calls\ContextToken;
@@ -55,6 +56,12 @@ use Tinvar\Render\TokenError;
  *     token was issued for is still there, on the same auth epoch, and still
  *     holds a membership of it meeting everything the operation's binding
  *     requires. A token issued for nobody reaches no panel's operation;
+ *   - the host the call arrives on over HTTP is the token's (ADR 0149): one
+ *     issued in a request is that host's, and one issued in a job names the
+ *     host the service will call back on (context(host:)), or carries the
+ *     no-host marker and is good only outside HTTP; and an operation held
+ *     to a host -- by its #[Domain], or its panel's -- runs on that host
+ *     alone ('host');
  *   - the call carries every argument the token was bound to, each exactly:
  *     a token issued about one record -- an order the warehouse is to
  *     collect -- says nothing of another.
@@ -98,6 +105,8 @@ final readonly class ServiceCalls
      * @param NonceStore|null $spent where single-use tokens' ids are claimed, shared by every
      *        server -- a durable DatabaseNonceStore; without it, a single-use token is refused
      * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
+     * @param CallHosts|null $hosts the hosts a token is bound to and an operation held to (ADR 0149);
+     *        none, and the application is taken to route on no host
      */
     public function __construct(
         array $operations,
@@ -110,6 +119,7 @@ final readonly class ServiceCalls
         private ?UserLookup $users = null,
         private ?NonceStore $spent = null,
         private ?\Closure $clock = null,
+        private ?CallHosts $hosts = null,
     ) {
         $byName = [];
         foreach ($operations as [$operation, $declaration]) {
@@ -149,8 +159,12 @@ final readonly class ServiceCalls
      *        spent at its first call unless so
      * @param array<string, string|int> $bound arguments a call with it must carry, each
      *        exactly: the record it is about, by its id; each an input of every operation named
+     * @param string|null $host the host the service will call back on, where the application routes
+     *        by host: named by code issuing a token outside a request -- a job -- since the token is
+     *        that host's alone; in a request, the request's host, and none other may be named.
+     *        Issued in a job naming none, the token is good only outside an HTTP request
      */
-    public function context(string $service, array $operations, ?int $ttl = null, bool $reusable = false, array $bound = []): string
+    public function context(string $service, array $operations, ?int $ttl = null, bool $reusable = false, array $bound = [], ?string $host = null): string
     {
         $user = $this->auth->user();
         if ($user instanceof Service) {
@@ -161,8 +175,9 @@ final readonly class ServiceCalls
         }
 
         $panel = $this->panels?->currentOrNull() ?? '';
+        $named = [];
         foreach ($operations as $name) {
-            [$operation, $declaration] = $this->operations[$name] ?? throw new \InvalidArgumentException("No operation named '{$name}' is marked #[ServiceCall].");
+            [$operation, $declaration] = $named[] = $this->operations[$name] ?? throw new \InvalidArgumentException("No operation named '{$name}' is marked #[ServiceCall].");
             if (!$declaration->allows($service)) {
                 throw new \InvalidArgumentException("'{$name}' is not marked #[ServiceCall] for '{$service}'.");
             }
@@ -182,7 +197,9 @@ final readonly class ServiceCalls
             }
         }
 
-        return $this->tokens->issue($service, $operations, $this->orm->tenant(), $panel, $user?->authIdentifier(), $this->auth->epoch(), $ttl, singleUse: !$reusable, bound: $bound);
+        $bindsHost = ($this->hosts ?? new CallHosts())->issuing(array_map(static fn (array $entry): Operation => $entry[0], $named), $host);
+
+        return $this->tokens->issue($service, $operations, $this->orm->tenant(), $panel, $user?->authIdentifier(), $this->auth->epoch(), $ttl, singleUse: !$reusable, bound: $bound, host: $bindsHost);
     }
 
     /** The token a request carries, in HEADER; '' for none. */
@@ -224,6 +241,9 @@ final readonly class ServiceCalls
         }
         if (($declared->panel->name ?? '') !== $claims->panel || ($claims->panel !== '' && $this->panels === null)) {
             return CallResult::refused('panel');
+        }
+        if (!($this->hosts ?? new CallHosts())->holds($declared, $claims->host)) {
+            return CallResult::refused('host');
         }
 
         return $this->orm->actAs($claims->tenant, fn (): CallResult => $this->orm->withoutSubtreeGrant(function () use ($claims, $declared, $arguments): CallResult {
@@ -270,7 +290,8 @@ final readonly class ServiceCalls
     /** Whether a token was issued to this service, for this operation, in the context the call is made in. */
     private function fits(ContextToken $claims, Service $service, string $operation): bool
     {
-        if (!hash_equals($claims->audience, $service->serviceName()) || !$claims->allows($operation)) {
+        if (!hash_equals($claims->audience, $service->serviceName()) || !$claims->allows($operation)
+            || !($this->hosts ?? new CallHosts())->admits($claims->host)) {
             return false;
         }
         if ($this->orm->isUnscoped()) {

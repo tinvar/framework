@@ -66,8 +66,9 @@ final readonly class ContextTokens
      * @param int|null $ttl seconds it lasts; this kind's default unless given, and never past its ceiling
      * @param bool $singleUse whether its id is to be spent at its first use, by whoever checks it
      * @param array<string, string|int> $bound arguments a call with it must carry, each exactly
+     * @param string $host the host it is bound to (CallHosts::issuing()); ContextToken::NO_HOST for none
      */
-    public function issue(string $audience, array $operations, string $tenant, string $panel, ?string $user, string $epoch, ?int $ttl = null, bool $singleUse = false, array $bound = []): string
+    public function issue(string $audience, array $operations, string $tenant, string $panel, ?string $user, string $epoch, ?int $ttl = null, bool $singleUse = false, array $bound = [], string $host = ContextToken::NO_HOST): string
     {
         $bound = ContextToken::boundOf($bound);
         $operations = array_values(array_unique($operations));
@@ -94,6 +95,7 @@ final readonly class ContextTokens
             expiresAt: $now + $ttl,
             singleUse: $singleUse,
             bound: $bound,
+            host: $host,
         )->toMap());
     }
 

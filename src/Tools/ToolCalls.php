@@ -10,6 +10,7 @@ use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\Memberships;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\UserLookup;
+use Tinvar\Calls\CallHosts;
 use Tinvar\Calls\CallResult;
 use Tinvar\Calls\CallRunner;
 use Tinvar\Calls\ContextToken;
@@ -51,7 +52,13 @@ use Tinvar\Render\TokenError;
  * by this build, for a quarter of an hour, naming the tools the
  * conversation may use -- every one by name, writes included, never a
  * wildcard. Every call presents it, and is refused unless it was issued for
- * the user, epoch, tenant and panel the call is made in, and names the tool.
+ * the user, epoch, tenant, panel and host the call is made in, and names the tool.
+ * A grant is bound to the host it was issued on as well (ADR 0149): one
+ * issued in a request is good on that host alone, and one issued in a job,
+ * with no request in hand, carries the no-host marker and is good only
+ * outside an HTTP request. A tool held to a host -- by its #[Domain], or
+ * its panel's -- is granted only on that host, and run over HTTP only
+ * there (CallHosts).
  * The grant is held by the code driving the conversation and never shown to
  * the model, so nothing the model reads can carry one, and a grant taken
  * from a log is good only to code already running as that user.
@@ -97,6 +104,8 @@ final readonly class ToolCalls
      * @param int $actions the hits `throttle:actions` allows a user in a window -- the
      *        kernel's limit for it, which a call is held to as a browser's action is
      * @param int $window the seconds that window lasts, as the kernel counts it
+     * @param CallHosts|null $hosts the hosts a grant is bound to and a tool held to (ADR 0149);
+     *        none, and the application is taken to route on no host
      */
     public function __construct(
         array $tools,
@@ -110,6 +119,7 @@ final readonly class ToolCalls
         private ?Throttle $throttle = null,
         private int $actions = 60,
         private int $window = 60,
+        private ?CallHosts $hosts = null,
     ) {
         // Counted against whoever another context says is signed in, it
         // would count no one: the per-user half reads its own context.
@@ -191,15 +201,18 @@ final readonly class ToolCalls
         }
 
         $panel = $this->panels?->currentOrNull() ?? '';
+        $operations = [];
         foreach ($tools as $name) {
             [$operation] = $this->tools[$name] ?? throw new \InvalidArgumentException("No tool is named '{$name}'.");
             $in = $operation->panel->name ?? '';
             if ($in !== $panel) {
                 throw new \LogicException("The tool '{$name}' is in " . Operations::describePanel($in) . ', and this grant would be for ' . Operations::describePanel($panel) . '.');
             }
+            $operations[] = $operation;
         }
+        $host = ($this->hosts ?? new CallHosts())->issuing($operations);
 
-        return $this->grants->issue('', $tools, $this->orm->tenant(), $panel, $user->authIdentifier(), $this->auth->epoch(), $ttl);
+        return $this->grants->issue('', $tools, $this->orm->tenant(), $panel, $user->authIdentifier(), $this->auth->epoch(), $ttl, host: $host);
     }
 
     /**
@@ -239,6 +252,9 @@ final readonly class ToolCalls
         if (($operation->panel->name ?? '') !== $panel) {
             return CallResult::refused('panel');
         }
+        if (!($this->hosts ?? new CallHosts())->holds($operation, $claims->host)) {
+            return CallResult::refused('host');
+        }
         if ($operation->panel !== null) {
             if ($this->memberships === null) {
                 // Without memberships a panel's requirements cannot be
@@ -258,10 +274,10 @@ final readonly class ToolCalls
         return $this->orm->withoutSubtreeGrant(fn (): CallResult => $this->runner->run($operation, $arguments));
     }
 
-    /** Whether a grant was issued for this tool, this user on this epoch, this tenant and this panel. */
+    /** Whether a grant was issued for this tool, this user on this epoch, this tenant, this panel and this host. */
     private function fits(ContextToken $claims, string $tool): bool
     {
-        if ($claims->audience !== '' || !$claims->allows($tool)) {
+        if ($claims->audience !== '' || !$claims->allows($tool) || !($this->hosts ?? new CallHosts())->admits($claims->host)) {
             return false;
         }
 

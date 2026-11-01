@@ -116,13 +116,13 @@ function fulfil(Kernel $kernel, string $order): \Tinvar\Testing\ActionResponse
  *
  * @param array<string, mixed> $arguments
  */
-function callBack(Kernel $kernel, string $operation, string $context, array $arguments, bool $signedIn = true): Response
+function callBack(Kernel $kernel, string $operation, string $context, array $arguments, bool $signedIn = true, string $host = 'admin.localhost:8080'): Response
 {
     $body = ['arguments' => $arguments];
 
     return $kernel->handle(
         new Request('POST', "/api/warehouse/calls/{$operation}", [
-            'host' => '127.0.0.1',
+            'host' => $host,
             'accept' => 'application/json',
             'content-type' => 'application/json',
             ServiceCalls::HEADER => $context,
@@ -132,15 +132,18 @@ function callBack(Kernel $kernel, string $operation, string $context, array $arg
     );
 }
 
-/** A token for the warehouse to say $operation, issued as the staff account in the admin panel. */
-function contextFor(Kernel $kernel, string $operation = FulfilmentActions::COLLECTED): string
+/**
+ * A token for the warehouse to say $operation, issued as the staff account
+ * in the admin panel, for the admin host it calls back on (ADR 0149).
+ */
+function contextFor(Kernel $kernel, string $operation = FulfilmentActions::COLLECTED, ?string $host = 'admin.localhost'): string
 {
     $staff = account($kernel, StaffAccount::EMAIL);
     $http = $kernel->kernel();
     \assert($http->panels !== null);
     $panels = $http->panels;
 
-    return $http->auth->actingAs($staff, fn (): string => $panels->within(StaffMemberships::PANEL, fn (): string => $kernel->services->context('warehouse', [$operation])), epochOf($kernel, $staff));
+    return $http->auth->actingAs($staff, fn (): string => $panels->within(StaffMemberships::PANEL, fn (): string => $kernel->services->context('warehouse', [$operation], host: $host)), epochOf($kernel, $staff));
 }
 
 describe('the fulfilment workflow', function () {
@@ -222,11 +225,13 @@ describe('the fulfilment workflow', function () {
         $sent = json_decode((string) json_decode(substr($payload, (int) strpos($payload, '.') + 1), true)['args']['body'], true);
         expect($sent['event'])->toBe('order.packed')
             ->and($sent['data']['id'])->toBe($order)
-            ->and($sent['data']['collectedPath'])->toBe('/api/warehouse/calls/orders.collected');
+            ->and($sent['data']['collectedUrl'])->toBe(ADMIN_ORIGIN . '/api/warehouse/calls/orders.collected');
         $context = $sent['data']['serviceContext'];
 
-        // Short-lived, since it waits in the jobs table: an hour.
+        // Short-lived, since it waits in the jobs table: an hour. And bound
+        // to the admin host, where the warehouse calls back (ADR 0149).
         $claims = json_decode((string) \Tinvar\Support\Signer::decode(explode('.', $context)[1]), true);
+        expect($claims['h'])->toBe('admin.localhost');
         expect($claims['e'] - $claims['i'])->toBe(\Shop\Workflows\Fulfilment\FulfilOrder::COLLECT_WITHIN)
             ->and(\Shop\Workflows\Fulfilment\FulfilOrder::COLLECT_WITHIN)->toBeLessThanOrEqual(3600);
 
@@ -309,6 +314,23 @@ describe('the warehouse\'s service calls', function () {
 
         expect($refused->status)->toBe(403)
             ->and(json_decode($refused->body(), true))->toBe(['status' => CallResult::REFUSED, 'value' => null, 'reason' => 'context'])
+            ->and(statusOf($this->kernel, $order))->toBe(OrderStatus::Packed->value);
+    });
+
+    it('are answered on the admin panel\'s host alone, with a token bound to it', function () {
+        $order = placedOrder($this->kernel);
+        $this->kernel->orm->connection()->execute('UPDATE orders SET status = ? WHERE id = ?', [OrderStatus::Packed->value, $order]);
+        $arguments = ['order' => $order, 'fulfilment' => '01900000-0000-7000-8000-000000000000'];
+
+        // Not on the storefront's host, where the admin panel is not.
+        expect(callBack($this->kernel, 'orders.collected', contextFor($this->kernel), $arguments, host: '127.0.0.1')->status)->toBe(404)
+            ->and(callBack($this->kernel, 'orders.collected', contextFor($this->kernel), $arguments, host: 'localhost:8080')->status)->toBe(404);
+
+        // A token issued with no request in hand and no host named is good
+        // only outside HTTP: over HTTP it is refused, unspent.
+        $nowhere = callBack($this->kernel, 'orders.collected', contextFor($this->kernel, host: null), $arguments);
+        expect($nowhere->status)->toBe(403)
+            ->and(json_decode($nowhere->body(), true)['reason'])->toBe('context')
             ->and(statusOf($this->kernel, $order))->toBe(OrderStatus::Packed->value);
     });
 

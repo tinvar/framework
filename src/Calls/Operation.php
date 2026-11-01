@@ -30,6 +30,8 @@ final readonly class Operation
      * @param PanelBinding|null $panel the panel it is in, by its #[Panel] or its namespace
      * @param array<string, FieldPlan> $inputs what it takes, by the name a caller sends
      * @param array<string, true> $optional inputs a call may leave out though their type is not nullable
+     * @param list<string> $hosts the host patterns a call is held to over HTTP (ADR 0149): its own
+     *        #[Domain]'s and its panel's; none, and it is answered on any host
      */
     public function __construct(
         public string $name,
@@ -38,6 +40,7 @@ final readonly class Operation
         public ?PanelBinding $panel,
         public array $inputs,
         public array $optional = [],
+        public array $hosts = [],
     ) {}
 
     /** Whether a call may change something: an action may; a query runs read-only. */

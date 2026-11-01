@@ -127,6 +127,7 @@ final class Operations
             panel: $entry->panelFor($action->panels, $holder),
             inputs: $inputs,
             optional: $action->optionalModels,
+            hosts: self::hosts($action->host?->pattern, $entry->panelDomainFor($action->panels, $holder)),
         );
     }
 
@@ -160,7 +161,19 @@ final class Operations
             class: $class,
             panel: $entry->panelFor($queries->panelsFor($name), $class),
             inputs: $inputs,
+            hosts: self::hosts($queries->hostFor($name), $entry->panelDomainFor($queries->panelsFor($name), $class)),
         );
+    }
+
+    /**
+     * The hosts a call is held to: its own #[Domain]'s and its panel's,
+     * each once, as RequireHost holds a browser's call to both.
+     *
+     * @return list<string>
+     */
+    private static function hosts(?string $own, ?string $panel): array
+    {
+        return array_values(array_unique(array_filter([$own, $panel], static fn (?string $p): bool => $p !== null)));
     }
 
     private static function refuse(string $where, string $attribute, string $why): \LogicException

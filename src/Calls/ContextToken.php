@@ -8,8 +8,8 @@ use Tinvar\Render\TokenError;
 
 /**
  * The context a call made from outside a browser may run in, as signed
- * claims: who it is for, the tenant and panel it is held to, the build that
- * issued it, how long it lasts, and the operations it may name.
+ * claims: who it is for, the tenant, panel and host it is held to, the build
+ * that issued it, how long it lasts, and the operations it may name.
  *
  * One shape for a tool grant and a service context token, each issued and
  * checked by its own module, told apart by the purpose bound into the MAC
@@ -34,6 +34,10 @@ use Tinvar\Render\TokenError;
  *     record it was issued about, so a token for one order says nothing
  *     of another. None unless issued with some; a service call holds a
  *     call to them (binds()).
+ *   - `host`: the host it was issued on (ADR 0149), or NO_HOST for one
+ *     issued with no request in hand and no host named -- good only outside
+ *     an HTTP request (CallHosts). Null in a token issued before tokens
+ *     carried one, refused wherever the application routes by host.
  */
 final readonly class ContextToken
 {
@@ -42,6 +46,9 @@ final readonly class ContextToken
 
     /** The most arguments one token may be bound to. */
     public const int MAX_BOUND = 16;
+
+    /** The host of a token issued with no request in hand: good only outside HTTP. */
+    public const string NO_HOST = '';
 
     /**
      * @param list<string> $operations
@@ -60,6 +67,7 @@ final readonly class ContextToken
         public int $expiresAt,
         public ?bool $singleUse = false,
         public array $bound = [],
+        public ?string $host = null,
     ) {}
 
     /** Whether it names $operation. */
@@ -106,6 +114,9 @@ final readonly class ContextToken
             'e' => $this->expiresAt,
             's' => $this->singleUse ?? false,
         ];
+        if ($this->host !== null) {
+            $map['h'] = $this->host;
+        }
         // Only where there are some: a token bound to nothing reads as
         // every token before tokens could be bound did.
         if ($this->bound !== []) {
@@ -147,6 +158,7 @@ final readonly class ContextToken
             expiresAt: self::int($map, 'e'),
             singleUse: \array_key_exists('s', $map) ? (\is_bool($map['s']) ? $map['s'] : throw new TokenError("field 's' is not a boolean")) : null,
             bound: \array_key_exists('g', $map) ? self::bound($map['g']) : [],
+            host: \array_key_exists('h', $map) ? self::string($map, 'h') : null,
         );
     }
 
