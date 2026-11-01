@@ -179,6 +179,42 @@ it('sends nothing more for a request whose response failed mid-way', function ()
     expect($server->sent)->toBe([]);
 });
 
+// Review: the worker counted a response as started once it was handed to
+// the SAPI, and a body that failed before a byte of it was written -- a
+// stream spooled to a file, which runs its producer before any status goes
+// out -- was answered with no 500: the server sent an empty 200.
+it('answers a 500 for a response that failed before any of it was written to the real output', function () {
+    $server = new FakeServer()->request('GET', '/stream');
+    $application = new RecordingApplication();
+    $application->answer = static fn (): Response => Response::stream(static function (\Closure $sink): void {
+        throw new \RuntimeException('the render broke before its first byte');
+    }, headers: ['content-type' => 'text/plain', 'x-failed' => 'yes'])->withCookie('__Host-failed', 'yes');
+    $worker = new Worker(
+        boot: fn (): Application => $application,
+        handleRequest: function (callable $handler) use ($server): bool {
+            $server->current = array_shift($server->queue);
+            $handler();
+
+            return false;
+        },
+        globals: fn (): array => $server->current ?? throw new \LogicException('No request.'),
+        log: static function (\Throwable $e): void {},
+    );
+
+    ob_start();
+    try {
+        $worker->run();
+    } finally {
+        $written = (string) ob_get_clean();
+        $status = http_response_code();
+        header_remove();
+        http_response_code(200);
+    }
+
+    expect($written)->toBe('Something went wrong.')
+        ->and($status)->toBe(500);
+});
+
 it('answers a path no route could hold with a 404, without the application', function () {
     $server = new FakeServer()->request('GET', '/a/%2e%2e/b');
     $application = new RecordingApplication();

@@ -403,8 +403,12 @@ final class Sapi
      * Writes a Response to the real SAPI output, flushing each chunk so it
      * streams -- as the server is to take it (forServer()), told by this
      * request's server variables whether it sends stored files itself.
+     *
+     * @param (\Closure(): void)|null $writing told once, as the first byte of
+     *        the body is written: until then nothing has left, and a failure
+     *        can still be answered with another status (Worker)
      */
-    public static function send(Response $response): void
+    public static function send(Response $response, ?\Closure $writing = null): void
     {
         $root = $_SERVER[self::FILE_ROOT] ?? null;
 
@@ -418,7 +422,11 @@ final class Sapi
                 // cookie would silently take the first one's place.
                 header("{$name}: {$value}", $name !== 'set-cookie');
             },
-            static function (string $chunk): void {
+            static function (string $chunk) use (&$writing): void {
+                if ($writing !== null && $chunk !== '') {
+                    [$told, $writing] = [$writing, null];
+                    $told();
+                }
                 echo $chunk;
                 flush();
             },

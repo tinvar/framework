@@ -40,8 +40,8 @@ final class Worker
     /** @var \Closure(): array{server: array<string, mixed>, query: array<mixed>, body: array<mixed>, cookies: array<mixed>, input: string, files?: array<mixed>} */
     private readonly \Closure $globals;
 
-    /** @var \Closure(Response): void */
-    private readonly \Closure $send;
+    /** @var (\Closure(Response): void)|null null for the real SAPI output (Sapi::send()) */
+    private readonly ?\Closure $send;
 
     /** @var \Closure(\Throwable): void */
     private readonly \Closure $log;
@@ -79,7 +79,7 @@ final class Worker
 
         $this->handleRequest = $handleRequest ?? self::frankenphp();
         $this->globals = $globals ?? self::superglobals(...);
-        $this->send = $send ?? Sapi::send(...);
+        $this->send = $send;
         $this->log = $log ?? static function (\Throwable $e): void {
             error_log('[tinvar:worker] ' . $e::class . ': ' . $e->getMessage());
         };
@@ -123,11 +123,27 @@ final class Worker
     {
         // Whether a response has started for this request: once one has, a
         // second cannot be sent, and a crash mid-stream ends the request as
-        // it stands.
+        // it stands. On the real output, only once a byte of its body is
+        // written: a body that fails before -- a stream spooled to a file,
+        // whose producer runs before any status goes out -- has sent
+        // nothing, and is answered with the 500, its own headers and cookies
+        // taken back, rather than with the empty 200 the server would send.
         $started = false;
-        $send = function (Response $response) use (&$started): void {
-            $started = true;
-            ($this->send)($response);
+        $attempted = false;
+        $send = function (Response $response) use (&$started, &$attempted): void {
+            if ($this->send !== null) {
+                $started = true;
+                ($this->send)($response);
+
+                return;
+            }
+            if ($attempted && !headers_sent()) {
+                header_remove();
+            }
+            $attempted = true;
+            Sapi::send($response, static function () use (&$started): void {
+                $started = true;
+            });
         };
 
         try {
