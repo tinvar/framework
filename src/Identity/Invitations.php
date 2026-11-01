@@ -61,14 +61,6 @@ final readonly class Invitations
             throw new HttpException(403, 'You may not invite anyone to that role.', 'forbidden');
         }
 
-        // Only those the inviter could have sent: re-inviting someone at a
-        // narrower role never takes away an invite a wider member made.
-        foreach ($this->openTo($tenant, ['panel' => $panel, 'email' => $address]) as $earlier) {
-            if ($earlier->panel === $panel && $earlier->email === $address && $this->policy->mayInvite($inviter, $tenant, $panel, $earlier->role)) {
-                $this->links->revoke($earlier->id, EmailLinks::INVITE, $tenant);
-            }
-        }
-
         $issued = $this->links->issue(EmailLinks::INVITE, $origin, $this->path, $tenant, null, [
             'email' => $address,
             'panel' => $panel,
@@ -76,6 +68,17 @@ final readonly class Invitations
             'inviter' => $inviter->authIdentifier(),
         ]);
         $invitation = Invitation::of($issued['link']) ?? throw new \LogicException('An invite was made without what it grants.');
+
+        // Once the new one is made, so an invite that cannot be -- an origin
+        // or a landing page refused -- takes none away. Only those the
+        // inviter could have sent: re-inviting someone at a narrower role
+        // never takes away an invite a wider member made.
+        foreach ($this->openTo($tenant, ['panel' => $panel, 'email' => $address]) as $earlier) {
+            if ($earlier->id !== $invitation->id && $earlier->panel === $panel && $earlier->email === $address
+                && $this->policy->mayInvite($inviter, $tenant, $panel, $earlier->role)) {
+                $this->links->revoke($earlier->id, EmailLinks::INVITE, $tenant);
+            }
+        }
 
         return ['url' => $issued['url'], 'invitation' => $invitation];
     }

@@ -320,6 +320,17 @@ describe('an invite', function () {
             ->and($this->invitations->accept($second, ORIGIN, 'acme')?->role)->toBe('manager');
     });
 
+    // Review: the earlier invites were revoked before the new one was
+    // made, and an origin or a landing page it could not be made on threw
+    // after they were gone -- every attempt took away the invite there was.
+    it('keeps the earlier invite to the address when a new one cannot be made', function () {
+        $first = tokenOf($this->invitations->invite(new User('boss'), 'x@example.com', 'acme', 'staff', 'clerk', ORIGIN)['url']);
+
+        expect(fn () => $this->invitations->invite(new User('boss'), 'x@example.com', 'acme', 'staff', 'manager', 'not an origin'))
+            ->toThrow(\InvalidArgumentException::class)
+            ->and($this->invitations->accept($first, ORIGIN, 'acme')?->role)->toBe('clerk');
+    });
+
     // The tenant's newest LIST_LIMIT invites were read and then narrowed to
     // the panel: a panel's own fell off the list behind another's, and an
     // earlier invite to the address was left open beside the new one.
