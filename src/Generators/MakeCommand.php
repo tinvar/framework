@@ -42,7 +42,11 @@ use Tinvar\Support\Str;
  * Nothing is ever replaced: if any file a command would write is there, it
  * writes none of them. Where each goes is the application's own psr-4
  * autoloading (AppLayout), and what a developer types is held to a name or
- * a route (Names) before it is part of any path.
+ * a route (Names) before it is part of any path. In an application laid
+ * out as the skeleton is (ADR 0148), each kind has its folder -- Http\Pages,
+ * Http\Data, Database\Models and the rest -- and a name's first segments
+ * are its domain: `make:page Orders/OrderDetail` writes
+ * Http\Pages\Orders\OrderDetail, and its Data in Http\Data\Orders.
  */
 final class MakeCommand
 {
@@ -567,36 +571,27 @@ final class MakeCommand
     /**
      * The Data class a page or query returns, by its segments. Flat, as
      * before, it is every segment joined: Racks/Show's is RacksShowPageData.
-     * By domain, it goes in the page's domain, named by the segments the
-     * last does not already say -- Orders/OrderDetail's is
-     * Http\Data\Orders\OrderDetailPageData, as `Order` begins OrderDetail,
-     * and Racks/Show's Http\Data\Racks\RacksShowPageData -- so two pages of
-     * one name in two domains still give codegen two names, which it needs:
-     * it emits each Data class by its short name.
+     * By domain, it goes in the page's domain under its own name --
+     * Orders/OrderDetail's is Http\Data\Orders\OrderDetailPageData -- unless
+     * a Data class of that name is already in another folder, when it is
+     * the segments joined, as flat: codegen emits each Data class by its
+     * short name, so two of one name would be refused there.
      *
      * @param non-empty-list<string> $segments
      * @return non-empty-list<string>
      */
     private function dataPath(array $segments, string $suffix): array
     {
+        $joined = implode('', $segments) . $suffix;
         if (!$this->byDomain()) {
-            return [implode('', $segments) . $suffix];
+            return [$joined];
         }
 
-        $named = $segments;
-        while (\count($named) > 1 && self::begins($named[1], $named[0])) {
-            array_shift($named);
-        }
+        $own = end($segments) . $suffix;
+        $path = $this->besideDomain($segments, $own);
+        $taken = $this->layout->namedElsewhere($this->layout->area('Data'), $own, implode('\\', $path));
 
-        return $this->besideDomain($segments, implode('', $named) . $suffix);
-    }
-
-    /** Whether $name begins with $domain, or with it less a plural's s: OrderDetail with Orders. */
-    private static function begins(string $name, string $domain): bool
-    {
-        $singular = (string) preg_replace('/s\z/', '', $domain);
-
-        return $singular !== '' && str_starts_with($name, $singular);
+        return $taken ? $this->besideDomain($segments, $joined) : $path;
     }
 
     /**

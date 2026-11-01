@@ -344,6 +344,9 @@ it('writes into Http\ and Database\Models\, by domain, for an application laid o
     foreach ([
         ['make:page', ['Orders/OrderDetail', '--path=/orders/{order}']],
         ['make:page', ['Racks/Show', '--path=/racks']],
+        // A second Show: its Data cannot be ShowPageData too, as codegen
+        // names each by its short name.
+        ['make:page', ['Units/Show', '--path=/units']],
         ['make:query', ['Orders/OrderTotals', '--model=Order']],
         ['make:action', ['Orders/OrderActions', 'place', '--model=Order', '--request']],
         ['make:action', ['NoteActions', 'add', '--request']],
@@ -357,9 +360,11 @@ it('writes into Http\ and Database\Models\, by domain, for an application laid o
         'app/Http/Actions/Orders/OrderActions.php',
         'app/Http/Data/Orders/OrderDetailPageData.php',
         'app/Http/Data/Orders/OrderTotalsData.php',
-        'app/Http/Data/Racks/RacksShowPageData.php',
+        'app/Http/Data/Racks/ShowPageData.php',
+        'app/Http/Data/Units/UnitsShowPageData.php',
         'app/Http/Pages/Orders/OrderDetail.php',
         'app/Http/Pages/Racks/Show.php',
+        'app/Http/Pages/Units/Show.php',
         'app/Http/Queries/Orders/OrderTotals.php',
         'app/Http/Requests/AddRequest.php',
         'app/Http/Requests/Orders/PlaceRequest.php',
@@ -367,6 +372,7 @@ it('writes into Http\ and Database\Models\, by domain, for an application laid o
         'database/factories/Orders/OrderFactory.php',
         'resources/pages/orders/order-detail.tsx',
         'resources/pages/racks/show.tsx',
+        'resources/pages/units/show.tsx',
     ]);
 
     // The route parameter is the model where it is now, and the query's wire
@@ -394,8 +400,8 @@ it('keeps writing a kind where an older application already keeps it, flat', fun
     // Models and pages where they are; queries and Data, which it keeps
     // nowhere yet, under Http\ beside the folder it made for them.
     expect($app->files())->toBe([
-        'app/Http/Data/Racks/RacksShowPageData.php',
-        'app/Http/Data/Racks/RacksStatsData.php',
+        'app/Http/Data/Racks/ShowPageData.php',
+        'app/Http/Data/Racks/StatsData.php',
         'app/Http/Queries/Racks/Stats.php',
         'app/Models/Rack.php',
         'app/Pages/Racks/Show.php',

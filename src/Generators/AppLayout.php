@@ -81,6 +81,27 @@ final readonly class AppLayout
         };
     }
 
+    /**
+     * Whether a class named $short is under the namespace $area (relative
+     * to the application's) anywhere but at $at, relative to $area: a file
+     * `$short.php` in its folder or one below it.
+     */
+    public function namedElsewhere(string $area, string $short, string $at): bool
+    {
+        if (!$this->holds($area)) {
+            return false;
+        }
+        $root = \dirname($this->pathOf("{$this->namespace}\\{$area}\\Probe"));
+        $mine = $this->pathOf("{$this->namespace}\\{$area}\\{$at}");
+        foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS)) as $file) {
+            if ($file instanceof \SplFileInfo && $file->getFilename() === "{$short}.php" && $file->getPathname() !== $mine) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /** Whether the folder a namespace under the application's maps to is there. */
     private function holds(string $relative): bool
     {
