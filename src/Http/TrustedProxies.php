@@ -145,6 +145,11 @@ final readonly class TrustedProxies
      * client put ahead of it -- and the Host header otherwise. Raw, as sent:
      * HostName normalizes it, and Domains holds it to the hosts the
      * application serves (ADR 0149).
+     *
+     * A header the proxy sent is its answer even when that answer is empty:
+     * `X-Forwarded-Host: shop.test, ` names the empty host, '', which is no
+     * host anyone serves -- never the Host header behind it, and never no
+     * host at all.
      */
     public function host(Request $request): ?string
     {
@@ -159,7 +164,7 @@ final readonly class TrustedProxies
         }
 
         $forwarded = $request->header('x-forwarded-host');
-        if ($forwarded === null || trim($forwarded, " \t") === '') {
+        if ($forwarded === null) {
             return $host;
         }
         $hops = explode(',', $forwarded);

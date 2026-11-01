@@ -224,8 +224,12 @@ final readonly class Domains
     public function hostOf(Request $request): ?string
     {
         $raw = $this->proxies === null ? $request->header('host') : $this->proxies->host($request);
-        if ($raw === null || trim($raw) === '') {
+        if ($raw === null) {
             return '';
+        }
+        // Named, and empty: a blank Host, or a pinned proxy's empty hop.
+        if (trim($raw) === '') {
+            return null;
         }
         $raw = strtolower(trim($raw));
 

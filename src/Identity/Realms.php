@@ -119,8 +119,11 @@ final class Realms
      */
     public function forRequest(Request $request): ?Realm
     {
-        $resolved = \Tinvar\Routing\HostMatch::of($request)?->host;
-        $host = $resolved !== null && $resolved !== '' ? $resolved : HostName::normalize($request->header('host') ?? '');
+        // Where the application routes by host, the host it resolved and
+        // nothing else -- none resolved is none, whatever the Host header
+        // behind it says (ADR 0149).
+        $resolved = \Tinvar\Routing\HostMatch::of($request);
+        $host = $resolved !== null ? ($resolved->host === '' ? null : $resolved->host) : HostName::normalize($request->header('host') ?? '');
 
         return $host === null ? null : $this->forHost($host);
     }

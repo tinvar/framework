@@ -701,6 +701,16 @@ describe('realms', function () {
         }
     });
 
+    it('read the host the application resolved alone, never the raw Host behind it', function () {
+        $realms = new Realms(Realm::platform('https://shop.test'), [Realm::platform('https://admin.shop.test', panel: 'admin')], platformPanels: ['admin']);
+        $request = new Request('GET', '/', ['host' => 'admin.shop.test']);
+
+        expect($realms->forRequest($request->withAttribute(\Tinvar\Routing\HostMatch::ATTRIBUTE, new \Tinvar\Routing\HostMatch(null, ''))))->toBeNull()
+            ->and($realms->forRequest($request->withAttribute(\Tinvar\Routing\HostMatch::ATTRIBUTE, new \Tinvar\Routing\HostMatch(null, 'shop.test')))?->origin)->toBe('https://shop.test')
+            // Where the application routes on no host, its Host header.
+            ->and($realms->forRequest($request)?->panel)->toBe('admin');
+    });
+
     it('make a custom domain name its tenant and its panel', function () {
         expect(static fn () => Realm::domain('https://acme.example', '', 'portal'))->toThrow(\InvalidArgumentException::class)
             ->and(static fn () => Realm::domain('https://acme.example', 'acme', ''))->toThrow(\InvalidArgumentException::class);

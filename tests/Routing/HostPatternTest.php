@@ -136,6 +136,13 @@ it('believes X-Forwarded-Host from a pinned proxy only, and the value nearest it
     expect($none->resolve(host('shop.test', ['x-forwarded-host' => 'admin.shop.test'], '10.1.2.3'))->pattern)->toBeNull();
 });
 
+it('refuses an empty or malformed hop a pinned proxy forwarded, never reading it as no host', function (string $forwarded) {
+    $domains = new Domains(['root' => 'shop.test'], patterns: ['admin.{root}'], proxies: TrustedProxies::of(['10.0.0.0/8']));
+
+    expect(fn () => $domains->resolve(host('admin.shop.test', ['x-forwarded-host' => $forwarded], '10.1.2.3')))
+        ->toThrow(HttpException::class);
+})->with([',', 'shop.test, ', 'shop.test,', ' ', 'shop.test, ,', 'shop test']);
+
 it('carries one resolution on the request for everything after to read', function () {
     $domains = new Domains(['root' => 'shop.test'], patterns: ['admin.{root}']);
     $request = host('evil.test')->withAttribute(HostMatch::ATTRIBUTE, new HostMatch('admin.{root}', 'admin.shop.test'));
