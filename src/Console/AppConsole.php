@@ -13,6 +13,9 @@ use Tinvar\Endpoints\EndpointRegistry;
 use Tinvar\Console\Deploy\DeployInitCommand;
 use Tinvar\Console\Doctor\Doctor;
 use Tinvar\Console\Doctor\DoctorContext;
+use Tinvar\Console\Kits\KitInstaller;
+use Tinvar\Console\Kits\KitTarget;
+use Tinvar\Console\NewApp\NewAppCommand;
 use Tinvar\Http\EntryContext;
 use Tinvar\Console\Prompts\Cancelled;
 use Tinvar\Console\Prompts\CannotPrompt;
@@ -785,6 +788,15 @@ final class AppConsole
                 },
                 $this->name,
             )->run($a))
+            ->command('new', NewAppCommand::USAGE, "Make a new app from the skeleton -- asking the database, tenancy and how a tenant is found, the mail provider, whether to include accounts, and the deploy target -- then install, migrate and seed it, its secrets in files outside it; from this repository's checkout until tinvar/skeleton is published, then from Packagist", static fn (array $a): int => new NewAppCommand(
+                static function (string $text): void {
+                    echo $text;
+                },
+                static function (string $text): void {
+                    fwrite(STDERR, $text);
+                },
+            )->run($a))
+            ->command('kit:install', 'kit:install <package>', "Install a kit Composer installed -- a package declaring extra.tinvar.kit, as tinvar/accounts -- into the app: it writes the app's own classes, migrations and views once", $this->kitInstall(...))
             ->command('key:generate', 'key:generate [--show]', "Generate the app key and the probe token into their files outside the project where neither the environment nor the file has one, saying where and never what; --show prints a new key for a platform's secret store instead, and writes nothing", $this->keyGenerate(...));
         $this->command('packages:lock', 'packages:lock', "Pin each enabled package's version and files in tinvar.lock", fn (array $a): int => $this->packagesLock())
             ->command('audit', 'audit', 'composer audit and npm audit over the lockfiles, held to the reviewed exceptions in audit-exceptions.json (network)', fn (array $a): int => $this->audit());
@@ -847,6 +859,25 @@ final class AppConsole
         }
 
         return null;
+    }
+
+    /** @param list<string> $arguments */
+    private function kitInstall(array $arguments): int
+    {
+        if (\count($arguments) !== 1 || str_starts_with($arguments[0], '-')) {
+            return $this->usage('kit:install');
+        }
+        try {
+            new KitInstaller($this->projectRoot, new KitTarget($this->root, $this->namespace, $this->name, $this->migrations), static function (string $text): void {
+                echo $text;
+            })->install($arguments[0]);
+        } catch (\RuntimeException $e) {
+            fwrite(STDERR, $e->getMessage() . "\n");
+
+            return 1;
+        }
+
+        return 0;
     }
 
     /** @param list<string> $arguments */
