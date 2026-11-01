@@ -491,7 +491,7 @@ final class Discovery
             return;
         }
         [$kinds] = Classifier::classify($reflection);
-        if ($kinds !== [] || Classifier::unclaimed($reflection, $kinds) !== []) {
+        if ($kinds !== [] || Classifier::unclaimed($reflection, $kinds) !== [] || Classifier::notInherited($reflection) !== null) {
             $problems[] = "{$other} is declared in {$file} beside {$class}, so the autoloader never loads it by its name, and discovery cannot register it: "
                 . 'give it a file of its own.';
         }
@@ -516,6 +516,12 @@ final class Discovery
                 return;
             }
             KnownAttributes::check($class);
+            $dropped = Classifier::notInherited($class);
+            if ($dropped !== null) {
+                $problems[] = $dropped;
+
+                return;
+            }
             [$kinds, $subjects] = Classifier::classify($class);
         } catch (\Throwable $e) {
             $problems[] = "{$name}: {$e->getMessage()}";

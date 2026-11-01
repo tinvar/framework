@@ -131,7 +131,7 @@ it('finds each kind of class by what it declares, in any folder, by namespace', 
     $app->write('Hooks\\Carrier', "#[Webhook('/hooks/carrier')] final class Carrier { public function __invoke(): void {} }", 'use Tinvar\\Attributes\\Webhook;');
     $app->write('Channels\\RackUpdates', 'final class RackUpdates {}', '');
     // Neither registered nor refused: a part, a helper, an enum of no field's.
-    $app->write('Parts\\Base', '#[Page(\'/x\', \'x\')] abstract class Base {}', 'use Tinvar\\Attributes\\Page;');
+    $app->write('Parts\\Base', 'abstract class Base {}');
     $app->write('Parts\\Shape', 'interface Shape {}');
     $app->write('Parts\\Mixin', 'trait Mixin {}');
     $app->write('Parts\\Colour', "enum Colour { case Red; }");
@@ -321,6 +321,34 @@ it('refuses a framework attribute nothing registers, a misspelt one, and a regis
     expect($said)->toContain($app->name('Helper') . ' carries #[Panel], #[Authorize] on go(), and nothing registers it')
         ->toContain('Paeg')
         ->toContain($app->name('Hidden') . ' is declared in');
+});
+
+it('refuses a #[Policy] on an abstract class, an interface or a trait, which would decide nothing', function () {
+    $app = $this->app;
+    $app->write('Models\\Thing', 'final class Thing extends Model {}', 'use Tinvar\\Orm\\Model;');
+    $app->write('BasePolicy', '#[Policy(Models\\Thing::class)] abstract class BasePolicy {}', 'use Tinvar\\Attributes\\Policy;');
+    $app->write('Decides', '#[Policy(Models\\Thing::class)] interface Decides {}', 'use Tinvar\\Attributes\\Policy;');
+    $app->write('Deciding', '#[Policy(Models\\Thing::class)] trait Deciding {}', 'use Tinvar\\Attributes\\Policy;');
+
+    $said = problems(fn () => $app->discovery()->scan());
+
+    expect($said)->toContain($app->name('BasePolicy') . ' is abstract and carries #[Policy]')
+        ->toContain($app->name('Decides') . ' is an interface and carries #[Policy]')
+        ->toContain($app->name('Deciding') . ' is a trait and carries #[Policy]')
+        ->toContain('put #[Policy] on the concrete policy class');
+});
+
+it('refuses on an abstract class an attribute that registers only the class it is on, and keeps one its subclasses inherit', function () {
+    $app = $this->app;
+    $app->write('BasePage', "#[Page('/base', 'base')] abstract class BasePage { public function __invoke(): void {} }", 'use Tinvar\\Attributes\\Page;');
+    $app->write('BaseTask', "#[Schedule('* * * * *')] abstract class BaseTask {}", 'use Tinvar\\Attributes\\Schedule;');
+    $app->write('AdminPages', "#[Authorize('admin'), Middleware('auth')] abstract class AdminPages {}", "use Tinvar\\Attributes\\Authorize;\nuse Tinvar\\Attributes\\Middleware;");
+
+    $said = problems(fn () => $app->discovery()->scan());
+
+    expect($said)->toContain($app->name('BasePage') . ' is abstract and carries #[Page]')
+        ->toContain($app->name('BaseTask') . ' is abstract and carries #[Schedule]')
+        ->not->toContain($app->name('AdminPages'));
 });
 
 it('writes a manifest, and says how a stale one differs from a scan', function () {

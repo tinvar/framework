@@ -5,24 +5,31 @@ declare(strict_types=1);
 namespace Tinvar\Discovery;
 
 use Tinvar\Attributes\Action;
+use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Channel;
 use Tinvar\Attributes\Command;
 use Tinvar\Attributes\Config;
+use Tinvar\Attributes\Cors;
 use Tinvar\Attributes\ErrorPage;
 use Tinvar\Attributes\Export;
 use Tinvar\Attributes\FieldsOf;
 use Tinvar\Attributes\Import;
 use Tinvar\Attributes\Layout;
 use Tinvar\Attributes\Listener;
+use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\NotRegistered;
 use Tinvar\Attributes\OutboundPolicy;
 use Tinvar\Attributes\Page;
+use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\Policy;
 use Tinvar\Attributes\Query;
+use Tinvar\Attributes\Queue;
 use Tinvar\Attributes\Scenario;
 use Tinvar\Attributes\Schedule;
 use Tinvar\Attributes\ServiceCall;
 use Tinvar\Attributes\Shared;
+use Tinvar\Attributes\TenantFrom;
+use Tinvar\Attributes\Throttle;
 use Tinvar\Attributes\Tool;
 use Tinvar\Attributes\Webhook;
 use Tinvar\Data\Data;
@@ -45,7 +52,10 @@ use Tinvar\Workflows\Workflow;
  * a sort or filter field enum (#[FieldsOf]). Attributes are read off the
  * class itself, never its parents -- an attribute on an abstract base
  * declares for its subclasses, which the registries read through
- * ClassAttributes, and does not make each of them a page.
+ * ClassAttributes, and does not make each of them a page. Only those it
+ * reads that way (a check, a middleware) may sit on a base: one that
+ * registers the class it is on -- a #[Page], a #[Policy] -- is refused
+ * there (notInherited()) rather than dropped.
  *
  * And what a class may not be: one carrying an attribute of the
  * framework's, on itself or on a public method, that none of the kinds
@@ -57,6 +67,17 @@ final class Classifier
 {
     /** The framework's attributes on a class that are no kind's, and need none: what they declare is read by name. */
     private const array UNCLAIMED_ALLOWED = [OutboundPolicy::class, NotRegistered::class];
+
+    /**
+     * The framework's class attributes a subclass takes from an abstract base,
+     * a trait or (for #[NotRegistered]) that mean the same there: what the
+     * registries read through ClassAttributes::of(). Every other one on an
+     * abstract class, an interface or a trait would be dropped (notInherited()).
+     */
+    private const array INHERITED = [
+        Authorize::class, Cors::class, Middleware::class, Panel::class, Queue::class, TenantFrom::class, Throttle::class,
+        OutboundPolicy::class, NotRegistered::class,
+    ];
 
     /**
      * The kinds $class is, and the classes its #[Policy] attributes decide about.
@@ -179,6 +200,53 @@ final class Classifier
         }
 
         return array_values(array_unique($found));
+    }
+
+    /**
+     * What is wrong with $class, an abstract class, an interface or a trait,
+     * carrying a framework attribute that registers only the class it is on:
+     * a #[Page], a #[Policy], a #[Schedule] there is read off no subclass, so
+     * it is dropped without a word -- and a #[Policy] dropped that way can
+     * leave the subject decided by a more permissive policy of its parent's
+     * (PolicyRegistry::resolve()). Null for a class that can be built, and
+     * for the attributes a subclass inherits (INHERITED).
+     *
+     * @param \ReflectionClass<object> $class
+     */
+    public static function notInherited(\ReflectionClass $class): ?string
+    {
+        if ($class->isEnum()) {
+            return null;
+        }
+        $what = match (true) {
+            $class->isInterface() => 'is an interface',
+            $class->isTrait() => 'is a trait',
+            $class->isAbstract() => 'is abstract',
+            default => null,
+        };
+        if ($what === null) {
+            return null;
+        }
+
+        $found = [];
+        foreach ($class->getAttributes() as $attribute) {
+            $name = $attribute->getName();
+            if (str_starts_with($name, 'Tinvar\\Attributes\\') && !\in_array($name, self::INHERITED, true)) {
+                $found[] = '#[' . self::short($name) . ']';
+            }
+        }
+        if ($found === []) {
+            return null;
+        }
+        $found = array_values(array_unique($found));
+        $one = \count($found) === 1;
+        $where = \in_array('#[Policy]', $found, true)
+            ? 'put #[Policy] on the concrete policy class'
+            : 'put ' . ($one ? 'it' : 'them') . ' on each concrete class';
+
+        return "{$class->getName()} {$what} and carries " . implode(', ', $found)
+            . ($one ? ', which registers only the class it is on and is' : ', which register only the class they are on and are')
+            . " inherited by nothing, so it would be dropped: {$where}.";
     }
 
     private static function framework(string $attribute): bool
