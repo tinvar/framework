@@ -308,7 +308,9 @@ final class RouteRegistry
      */
     public function match(string $path, ?HostMatch $host = null): ?RouteChain
     {
-        if (self::isFrameworkPath(CompiledRoute::split($path))) {
+        // Split once, for every page it is matched against.
+        $parts = CompiledRoute::split($path);
+        if (self::isFrameworkPath($parts)) {
             return null;
         }
 
@@ -321,7 +323,7 @@ final class RouteRegistry
             if ($page->domain() !== $host?->pattern) {
                 continue;
             }
-            $parameters = $page->match($path);
+            $parameters = $page->matchParts($parts);
             if ($parameters === null) {
                 continue;
             }

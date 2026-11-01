@@ -84,7 +84,18 @@ final readonly class CompiledRoute
      */
     public function match(string $path): ?array
     {
-        $parts = self::split($path);
+        return $this->matchParts(self::split($path));
+    }
+
+    /**
+     * Matches a request path already split into its segments (split()):
+     * what a registry matching one path against every page splits once.
+     *
+     * @param list<string> $parts
+     * @return array<string, string>|null
+     */
+    public function matchParts(array $parts): ?array
+    {
         if (\count($parts) !== \count($this->segments)) {
             return null;
         }
