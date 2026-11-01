@@ -195,6 +195,9 @@ final readonly class DatabaseTransferStore implements TransferStore
     /** @return list<mixed> in COLUMNS' order */
     private static function values(TransferRecord $record): array
     {
+        // Its failure no longer than the column it is written to.
+        $record = $record->asKept();
+
         return [
             $record->id,
             $record->kind,

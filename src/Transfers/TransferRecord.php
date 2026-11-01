@@ -24,6 +24,13 @@ final readonly class TransferRecord
     public const int MAX_ERRORS = 100;
 
     /**
+     * The longest failure a store keeps, in bytes: the column a database
+     * holds it in (DatabaseTransferStore::define()), which a database that
+     * holds a column to its length refuses to write past.
+     */
+    public const int MAX_FAILURE_BYTES = 255;
+
+    /**
      * @param CompiledTransfer::EXPORT|CompiledTransfer::IMPORT $kind
      * @param self::QUEUED|self::RUNNING|self::DONE|self::FAILED $status
      * @param list<array{row: int, field: string, message: string}> $errors an import's failing
@@ -66,6 +73,19 @@ final readonly class TransferRecord
     public function with(array $changes): self
     {
         return new self(...[...get_object_vars($this), ...$changes]);
+    }
+
+    /**
+     * As a store keeps it: its failure cut to MAX_FAILURE_BYTES, on a
+     * character -- a failure that lists every column of a wide import may
+     * run longer, and a store that refused it would leave the record
+     * running. Every store keeps the same, so none tells a user more.
+     */
+    public function asKept(): self
+    {
+        return \strlen($this->failure) <= self::MAX_FAILURE_BYTES
+            ? $this
+            : $this->with(['failure' => mb_strcut($this->failure, 0, self::MAX_FAILURE_BYTES, 'UTF-8')]);
     }
 
     /**

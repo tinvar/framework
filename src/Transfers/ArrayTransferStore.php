@@ -14,7 +14,8 @@ final class ArrayTransferStore implements TransferStore
 
     public function add(TransferRecord $record): void
     {
-        $this->records[$record->id] = $record;
+        // Kept as a table keeps it, its failure cut to its column.
+        $this->records[$record->id] = $record->asKept();
     }
 
     public function find(string $id, string $tenant, string $panel, string $user): ?TransferRecord
@@ -40,7 +41,7 @@ final class ArrayTransferStore implements TransferStore
     public function update(TransferRecord $record): void
     {
         if (isset($this->records[$record->id])) {
-            $this->records[$record->id] = $record;
+            $this->records[$record->id] = $record->asKept();
         }
     }
 

@@ -171,3 +171,22 @@ it('keeps an export\'s file as long as fromKey() is told', function () {
 
     expect($transfers->keepFiles)->toBe(2 * 86_400);
 });
+
+// Review: a failure longer than its column -- a header refusal listing
+// every column a wide import takes -- made the update throw on a database
+// that holds a column to its length, and left the record running.
+it('keeps a failure no longer than its column, cut on a character', function () {
+    foreach (transferStores() as $store) {
+        \assert($store instanceof TransferStore);
+        $store->add(transferRecord('t-1')->with(['failure' => str_repeat('é', 200)]));
+        expect($store->find('t-1', 'acme', 'staff', 'u-1')?->failure)->toBe(str_repeat('é', 127));
+
+        $store->update(transferRecord('t-1')->with([
+            'status' => TransferRecord::FAILED,
+            'failure' => str_repeat('é', 200) . ' Nothing was changed.',
+        ]));
+        $failure = (string) $store->find('t-1', 'acme', 'staff', 'u-1')?->failure;
+        expect(\strlen($failure))->toBeLessThanOrEqual(TransferRecord::MAX_FAILURE_BYTES)
+            ->and($failure)->toBe(str_repeat('é', 127));
+    }
+});
