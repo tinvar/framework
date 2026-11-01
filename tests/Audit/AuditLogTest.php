@@ -22,8 +22,10 @@ use Tinvar\Auth\AuthContext;
 use Tinvar\Config\ConfigException;
 use Tinvar\Http\Request;
 use Tinvar\Http\TrustedProxies;
+use Tinvar\Jobs\Dispatcher;
 use Tinvar\Jobs\Envelope;
 use Tinvar\Jobs\Job;
+use Tinvar\Jobs\JobRefused;
 use Tinvar\Jobs\RunningJobs;
 use Tinvar\Orm\Attributes\Audited;
 use Tinvar\Orm\Attributes\Column;
@@ -39,7 +41,9 @@ use Tinvar\Orm\ReadOnlyViolation;
 use Tinvar\Orm\Schema\Dialect;
 use Tinvar\Orm\Schema\Schema;
 use Tinvar\Orm\TenantSubtrees;
+use Tinvar\Queue\ArrayQueue;
 use Tinvar\Services\Service;
+use Tinvar\Support\Signer;
 
 const KEY = 'audit-log-test-key-of-at-least-32-bytes';
 
@@ -334,4 +338,67 @@ it('reads its retention from TINVAR_AUDIT_RETENTION_DAYS, a year unset, and refu
         ->and(new AuditConfig(30)->retentionDays())->toBe(30)
         ->and(fn () => new AuditConfig(0))->toThrow(ConfigException::class, 'TINVAR_AUDIT_RETENTION_DAYS')
         ->and(fn () => log(retentionDays: 0))->toThrow(\InvalidArgumentException::class);
+});
+
+it('keeps a request\'s host, id and address only in their own forms, and hashes any bytes it is given without refusing', function () {
+    [$orm, $audit, $auth] = log();
+
+    // A Host and an id that are no text, an address that is none: dropped,
+    // and the change they came with is made and recorded all the same.
+    $request = new Request('POST', '/_action/x', ['host' => "sh\xC3\x28op.test", 'x-forwarded-for' => 'not-an-address'], remoteAddress: '10.0.0.1');
+    $depth = $audit->enterRequest($request, "req-\xFF");
+    $auth->login(new Person("u-\xFF"));
+    $note = $orm->actAs('acme', fn (): Note => note($orm, "body \xFE"));
+    $orm->actAs('acme', fn () => $audit->event('note.flagged', $note, ['reason' => "bad \xC0 bytes"]));
+    $audit->leaveRequest($depth);
+
+    $entries = $orm->actAs('acme', fn (): array => $audit->trail()->forSubject($note));
+    expect($entries)->toHaveCount(2)
+        ->and($entries[0]->request)->toBeNull()
+        ->and($entries[0]->actor->id)->toBe("u-?")
+        ->and($entries[0]->data['reason'])->toBe("bad \u{FFFD} bytes")
+        ->and($entries[1]->changes['body'])->toBe([null, "body \u{FFFD}"])
+        ->and($audit->verify('acme')->intact)->toBeTrue();
+
+    // A well-formed host is kept, lower-cased, with its port; an IPv6 one in brackets.
+    $kept = $audit->enterRequest(new Request('GET', '/', ['host' => 'Admin.Shop.Test:8080'], remoteAddress: '::1'));
+    expect($audit->actor()->kind)->toBe(ActorKind::User);
+    $orm->actAs('acme', fn () => $audit->event('note.read'));
+    $audit->leaveRequest($kept);
+    $read = $orm->actAs('acme', fn () => $audit->trail()->recent(1)[0]);
+    expect($read->request?->host)->toBe('admin.shop.test:8080')
+        ->and($read->request?->ip)->toBe('::1');
+});
+
+it('carries who was impersonating a job\'s starter into its entries, sealed, and opens a payload sealed without one', function () {
+    [$orm, $audit, $auth, , , $jobs] = log();
+    $signer = new Signer(KEY, Envelope::PURPOSE);
+    $queue = new ArrayQueue();
+    $dispatcher = new Dispatcher($queue, $orm, $signer, $auth, running: $jobs, impersonator: static fn (): ?string => 'staff-9');
+
+    $auth->login(new Person('u-1'));
+    $id = $orm->actAs('acme', fn (): string => $dispatcher->dispatch(new Nightly()));
+    $auth->login(null);
+    $envelope = Envelope::open((string) $queue->payload($id), $signer);
+    expect($envelope->startedBy)->toBe('u-1')
+        ->and($envelope->startedByImpersonator)->toBe('staff-9');
+
+    $actor = $jobs->within($envelope, fn () => $audit->actor());
+    expect($actor->kind)->toBe(ActorKind::Job)
+        ->and($actor->startedBy)->toBe('u-1')
+        ->and($actor->impersonator)->toBe('staff-9');
+
+    // A job the job dispatches, with nobody signed in, carries both on.
+    $next = $jobs->within($envelope, fn (): string => $orm->actAs('acme', fn (): string => $dispatcher->dispatch(new Nightly())));
+    $opened = Envelope::open((string) $queue->payload($next), $signer);
+    expect([$opened->startedBy, $opened->startedByImpersonator])->toBe(['u-1', 'staff-9']);
+
+    // Inside the MAC: changed, the payload is refused.
+    $sealed = $envelope->seal($signer);
+    expect(fn () => Envelope::open(str_replace('"si":"staff-9"', '"si":"staff-1"', $sealed), $signer))->toThrow(JobRefused::class);
+
+    // One sealed before impersonators were reads as it did, naming none.
+    $old = new Envelope('job-0', Nightly::class, [], 'acme', startedBy: 'u-1');
+    expect($old->seal($signer))->not->toContain('"si"')
+        ->and(Envelope::open($old->seal($signer), $signer)->startedByImpersonator)->toBeNull();
 });
