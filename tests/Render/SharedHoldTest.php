@@ -32,6 +32,7 @@ function holder(array $overrides = [], string $key = HOLD_KEY, ?\Closure $stamp 
         'session' => 'session-a',
         'user' => 'u-1',
         'epoch' => '3',
+        'host' => 'admin.shop.test',
         ...$overrides,
     ];
 
@@ -44,6 +45,7 @@ function holder(array $overrides = [], string $key = HOLD_KEY, ?\Closure $stamp 
         user: $binding['user'],
         authEpoch: (string) $binding['epoch'],
         stamp: $stamp,
+        host: (string) $binding['host'],
     );
 }
 
@@ -103,6 +105,9 @@ it('proves nothing once anything it is bound to has changed', function (array $c
     'another tenant' => [['tenant' => 'globex']],
     'another panel' => [['panel' => '']],
     'another build' => [['build' => 'build-2']],
+    // ADR 0149: every token a page mints is its host's.
+    'another host' => [['host' => 'shop.test']],
+    'no host, where it was minted on one' => [['host' => '']],
 ]);
 
 it('proves nothing for a key this render does not read once', function () {
@@ -130,7 +135,7 @@ it('proves nothing signed by another key, or for another purpose', function () {
     $claims = [
         'n' => 'admin', 'y' => 'acme', 'b' => 'build-1',
         's' => TokenClaims::hashSession($signer, 'session-a'),
-        'u' => TokenClaims::hashAuth($signer, 'u-1', '3'),
+        'u' => TokenClaims::hashAuth($signer, 'u-1', '3'), 'h' => 'admin.shop.test',
         'k' => 'motd', 'v' => '', 'i' => HOLD_NOW, 'e' => HOLD_NOW + 600,
     ];
     $routeToken = SignedToken::encode($signer, RouteToken::PURPOSE, $claims);
@@ -146,7 +151,7 @@ it('proves nothing for claims it was never minted with', function (array $claims
     $forged = SignedToken::encode($signer, SharedHold::PURPOSE, [
         'n' => 'admin', 'y' => 'acme', 'b' => 'build-1',
         's' => TokenClaims::hashSession($signer, 'session-a'),
-        'u' => TokenClaims::hashAuth($signer, 'u-1', '3'),
+        'u' => TokenClaims::hashAuth($signer, 'u-1', '3'), 'h' => 'admin.shop.test',
         'k' => 'motd', 'v' => '', 'i' => HOLD_NOW, 'e' => HOLD_NOW + 600,
         ...$claims,
     ]);
@@ -159,6 +164,7 @@ it('proves nothing for claims it was never minted with', function (array $claims
     'a key that is not a string' => [['k' => ['motd']]],
     'an expiry that is not a number' => [['e' => (string) (HOLD_NOW + 600)]],
     'no user binding' => [['u' => null]],
+    'no host binding, as a hold minted before it carried one' => [['h' => null]],
     'no tag stamp' => [['v' => null]],
 ]);
 

@@ -17,7 +17,7 @@ use Tinvar\Support\Signer;
  * route token of the page on screen (ADR 0020). A shared value is not a
  * page's, so a hold carries its own binding, and names its key: the
  * session hash, the user and their auth epoch as one hash, the tenant, the
- * panel and the build it was sent under, and when it was. Each is compared
+ * panel, the build and the host it was sent under, and when it was. Each is compared
  * with the request reading it, and any difference -- a sign-out or a
  * sign-in, a role change or an impersonation that kept the session, a
  * tenant switched, a panel left, a deploy -- and the key is produced
@@ -68,6 +68,11 @@ final readonly class SharedHold
         // for a key with none, null when it cannot be read. Without one,
         // every key is stamped ''.
         private ?\Closure $stamp = null,
+        // The host it was sent on, normalized (HostMatch); '' where the
+        // application routes on no host. Every token a page mints is its
+        // host's (ADR 0149): a hold sent on admin.example.com proves nothing
+        // on example.com.
+        private string $host = '',
     ) {
         if ($this->sessionId === '') {
             // A constant session hash would make every visitor's hold
@@ -140,7 +145,7 @@ final readonly class SharedHold
      * within its time, is one of $once and its tags are as they were; null
      * otherwise.
      *
-     * @param array{n: string, y: string, b: string, s: string, u: string} $ours
+     * @param array{n: string, y: string, b: string, s: string, u: string, h: string} $ours
      * @param list<string> $once
      */
     private function keyOf(string $token, array $ours, int $at, array $once): ?string
@@ -200,7 +205,7 @@ final readonly class SharedHold
      * session and the user, never either id, since a hold is readable by
      * whatever runs in the page.
      *
-     * @return array{n: string, y: string, b: string, s: string, u: string}
+     * @return array{n: string, y: string, b: string, s: string, u: string, h: string}
      */
     private function binding(): array
     {
@@ -210,6 +215,7 @@ final readonly class SharedHold
             'b' => $this->build,
             's' => TokenClaims::hashSession($this->signer, $this->sessionId),
             'u' => TokenClaims::hashAuth($this->signer, $this->user, $this->authEpoch),
+            'h' => $this->host,
         ];
     }
 }

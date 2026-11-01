@@ -2662,7 +2662,7 @@ final class Kernel
 
     /**
      * What once-shared values are held by for this request, as it stands:
-     * its session, user and auth epoch, tenant, panel and build. Null
+     * its session, user and auth epoch, tenant, panel, build and host. Null
      * without a session or a route signer -- there is nothing to bind a
      * hold to, so a once value is sent to be shown, never kept.
      */
@@ -2686,6 +2686,7 @@ final class Kernel
             user: $this->auth->id(),
             authEpoch: $this->auth->epoch(),
             stamp: $this->tagStamps(),
+            host: HostMatch::hostOf($request),
         );
     }
 
