@@ -582,6 +582,74 @@ describe('completing', function () {
         'anything else that fails' => [new \RuntimeException('the disk blinked'), 500],
     ]);
 
+    /** Storage whose first reads of a partial upload find nothing, as LocalStorage::read() reports an fopen that failed. */
+    function storageThatCannotReadPartials(MemoryStorage $held, int $failures = 1): Tinvar\Storage\AppendableStorage
+    {
+        return new class ($held, $failures) implements Tinvar\Storage\AppendableStorage {
+            public function __construct(private MemoryStorage $held, private int $failures) {}
+
+            public function put(string $key, mixed $stream): void
+            {
+                $this->held->put($key, $stream);
+            }
+
+            public function read(string $key): mixed
+            {
+                if (str_starts_with($key, UploadEndpoint::PARTIAL_PREFIX . '/') && $this->failures-- > 0) {
+                    return null;
+                }
+
+                return $this->held->read($key);
+            }
+
+            public function exists(string $key): bool
+            {
+                return $this->held->exists($key);
+            }
+
+            public function size(string $key): ?int
+            {
+                return $this->held->size($key);
+            }
+
+            public function delete(string $key): void
+            {
+                $this->held->delete($key);
+            }
+
+            public function writer(string $key): Tinvar\Storage\StorageWriter
+            {
+                return $this->held->writer($key);
+            }
+
+            public function append(string $key, int $offset, string $bytes, ?\Closure $guard = null): int
+            {
+                return $this->held->append($key, $offset, $bytes, $guard);
+            }
+        };
+    }
+
+    // Review: a partial the record said was whole, unreadable for a moment,
+    // was a 422 that ended the session and deleted every byte sent.
+    it('keeps a session whose bytes held could not be read back, a fault of the server\'s, and keeps it on the next try', function () {
+        $app = new App(storageThatCannotReadPartials($storage = new MemoryStorage()));
+        $file = largePdf(UploadEndpoint::MIN_CHUNK_BYTES + 10);
+        $session = (string) beginSession($app, strlen($file))['session'];
+        sendChunk($app, $session, 0, substr($file, 0, UploadEndpoint::MIN_CHUNK_BYTES));
+        $last = substr($file, UploadEndpoint::MIN_CHUNK_BYTES);
+
+        $failed = sendChunk($app, $session, UploadEndpoint::MIN_CHUNK_BYTES, $last);
+        expect($failed->status)->toBeGreaterThanOrEqual(500)
+            ->and($storage->keys())->toHaveCount(1)
+            ->and($app->store->all())->toHaveCount(1)
+            ->and($app->store->all()[0]->claimedAt)->toBeNull();
+
+        $done = sendChunk($app, $session, UploadEndpoint::MIN_CHUNK_BYTES, $last);
+        expect($done->status)->toBe(201, $done->body());
+        $kept = $app->store->find((string) json($done)['upload']);
+        expect($storage->contents((string) $kept?->key))->toBe($file);
+    });
+
     it('completes a session held whole after a failed keep through /complete too', function () {
         $app = new App(new MemoryStorage(), scanner: flakyScanner(new Tinvar\Uploads\ScanFailed('down')));
         $file = largePdf(UploadEndpoint::MIN_CHUNK_BYTES + 10);

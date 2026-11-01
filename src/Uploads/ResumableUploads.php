@@ -364,7 +364,11 @@ final readonly class ResumableUploads
         return static function (string $path) use ($storage, $record, $session): void {
             $in = $storage->read($record->key);
             if ($in === null) {
-                throw new HttpException(422, 'The file did not arrive.', 'upload_missing');
+                // The length was just found whole at this key: a store that
+                // cannot open it now -- out of descriptors, a permission
+                // blinked -- is the server's fault, a 5xx that gives the claim
+                // back and keeps the bytes, never a 4xx that ends the session.
+                throw new StorageException('A partial upload held whole could not be opened.');
             }
             try {
                 self::copy($in, $path, $session->size);
@@ -471,13 +475,20 @@ final readonly class ResumableUploads
                     if ($bytes > $session->size) {
                         throw UploadEndpoint::tooLarge();
                     }
-                    fwrite($out, $chunk);
+                    if (fwrite($out, $chunk) !== \strlen($chunk)) {
+                        // A temporary disk full: the server's fault, the parts kept.
+                        throw new StorageException('An upload could not be fetched whole into a temporary file.');
+                    }
                 });
             } finally {
                 fclose($out);
             }
             if (!$found) {
-                throw new HttpException(422, 'The file did not arrive.', 'upload_missing');
+                // Assembled at this key a moment ago, or found there whole:
+                // gone from under the read is the store's fault, a 5xx that
+                // keeps the session -- the next try finds out whether the
+                // store still has it, and ends the session if not.
+                throw new StorageException('An upload assembled in the store could not be read.');
             }
         }, $now);
     }
@@ -549,7 +560,10 @@ final readonly class ResumableUploads
                 $fetch($path);
                 clearstatcache(true, $path);
                 if (filesize($path) !== $session->size) {
-                    throw new HttpException(422, 'The file did not arrive whole.', 'upload_missing');
+                    // Every byte was found held before it was fetched: a
+                    // temporary file short of them is the server's fault, a
+                    // 5xx that keeps the session, not a refusal that ends it.
+                    throw new StorageException('An upload was not fetched whole into a temporary file.');
                 }
                 $renewed = $this->uploads->now();
                 if (!$this->uploads->store->renew($session->id, $claimedAt, $renewed)) {
@@ -761,6 +775,12 @@ final readonly class ResumableUploads
             }
             if ($copied > $limit) {
                 throw UploadEndpoint::tooLarge();
+            }
+            if ($copied < $limit) {
+                // Less than was found held -- a read cut short, a temporary
+                // disk full: the server's fault, and the bytes kept for the
+                // next try.
+                throw new StorageException('A partial upload could not be copied whole.');
             }
         } finally {
             fclose($out);
