@@ -50,7 +50,16 @@ function build(string $profile): string
     return $directory;
 }
 
-const STAGING = ['TINVAR_PROFILE' => 'staging', 'TINVAR_ENV' => 'staging', 'APP_ENV' => null, 'TINVAR_TEST_RUN' => null, 'TINVAR_DEV' => null];
+// Staging sends its mail somewhere, as production does: here an SMTP host
+// nothing connects to, since nothing is sent.
+const STAGING = [
+    'TINVAR_PROFILE' => 'staging', 'TINVAR_ENV' => 'staging', 'APP_ENV' => null, 'TINVAR_TEST_RUN' => null, 'TINVAR_DEV' => null,
+    'TINVAR_MAIL_PROVIDER' => 'smtp', 'TINVAR_SMTP_HOST' => 'smtp.example.test',
+];
+
+it('refuses a staging server with no mail provider, as production', function () {
+    serving([...STAGING, 'TINVAR_MAIL_PROVIDER' => null, 'TINVAR_BUILD_DIR' => build('staging')]);
+})->throws(\Tinvar\Config\ConfigException::class, 'TINVAR_MAIL_PROVIDER is required where TINVAR_ENV=staging');
 
 it('serves a staging build under the staging profile, with no test endpoint', function () {
     $application = serving([...STAGING, 'TINVAR_BUILD_DIR' => build('staging')]);

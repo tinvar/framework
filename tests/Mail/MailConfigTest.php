@@ -93,6 +93,33 @@ it('takes the application\'s default where no provider is named', function () {
         ->and(problems([]))->toBe(['TINVAR_MAIL_LOG is required for the log provider, as an absolute path.']);
 });
 
+it('refuses production or staging with no provider, or one that sends nowhere', function (array $where, string $named) {
+    $env = [...$where, ...($named === '' ? [] : ['TINVAR_MAIL_PROVIDER' => $named])];
+
+    expect(problems($env))->toHaveCount(1)
+        ->and(problems($env)[0])->toStartWith('TINVAR_MAIL_PROVIDER')
+        ->and(problems($env)[0])->toContain(array_key_first($where));
+})->with([
+    'TINVAR_ENV=production, unset' => [['TINVAR_ENV' => 'production'], ''],
+    'APP_ENV=production, unset' => [['APP_ENV' => 'production'], ''],
+    'NODE_ENV=production, log' => [['NODE_ENV' => 'production'], 'log'],
+    'TINVAR_ENV=staging, log' => [['TINVAR_ENV' => 'staging'], 'log'],
+    'APP_ENV=staging, array' => [['APP_ENV' => 'staging'], 'array'],
+    'TINVAR_PROFILE=production, array' => [['TINVAR_PROFILE' => 'production'], 'array'],
+    'TINVAR_PROFILE=staging, unset' => [['TINVAR_PROFILE' => 'staging'], ''],
+    'production, a failover ending in log' => [['TINVAR_ENV' => 'production', 'TINVAR_SMTP_HOST' => 'smtp.example.test'], 'smtp,log'],
+]);
+
+it('sends to a real provider in production, and keeps the log default everywhere else', function () {
+    $smtp = ['TINVAR_MAIL_PROVIDER' => 'smtp', 'TINVAR_SMTP_HOST' => 'smtp.example.test'];
+
+    expect(transports()->transport(['TINVAR_ENV' => 'production', ...$smtp]))->toBeInstanceOf(SmtpTransport::class)
+        ->and(transports()->transport(['TINVAR_PROFILE' => 'staging', 'TINVAR_ENV' => 'staging', ...$smtp]))->toBeInstanceOf(SmtpTransport::class)
+        ->and(transports('/tmp/never-written.log')->transport(['TINVAR_ENV' => 'local']))->toBeInstanceOf(LogTransport::class)
+        ->and(transports('/tmp/never-written.log')->transport(['TINVAR_ENV' => 'testing', 'TINVAR_PROFILE' => 'test']))->toBeInstanceOf(LogTransport::class)
+        ->and(transports()->transport(['APP_ENV' => 'development', 'TINVAR_MAIL_PROVIDER' => 'array']))->toBeInstanceOf(ArrayTransport::class);
+});
+
 it('refuses an unknown provider, one named twice, or an unknown strategy', function () {
     expect(problems(['TINVAR_MAIL_PROVIDER' => 'brevo']))->toHaveCount(1)
         ->and(problems(['TINVAR_MAIL_PROVIDER' => 'brevo'])[0])->toContain('TINVAR_MAIL_PROVIDER')

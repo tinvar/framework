@@ -252,6 +252,9 @@ it('refuses fakes where the environment says production', function () {
     putenv('TINVAR_ENV=production');
     // A production build has its discovery manifest (ADR 0146).
     putenv('TINVAR_BUILD_DIR=' . Shop::productionBuild());
+    // And a provider that sends mail, which production must name.
+    putenv('TINVAR_MAIL_PROVIDER=smtp');
+    putenv('TINVAR_SMTP_HOST=smtp.example.test');
 
     try {
         expect(fn () => new BodyFakes())->toThrow(\LogicException::class, 'TINVAR_ENV=production')
@@ -259,6 +262,8 @@ it('refuses fakes where the environment says production', function () {
     } finally {
         putenv('TINVAR_ENV');
         putenv('TINVAR_BUILD_DIR');
+        putenv('TINVAR_MAIL_PROVIDER');
+        putenv('TINVAR_SMTP_HOST');
     }
 });
 

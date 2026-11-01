@@ -23,6 +23,8 @@ use Tinvar\Mail\Providers\SesConfig;
 use Tinvar\Mail\Providers\SesTransport;
 use Tinvar\Mail\Providers\SesWebhook;
 use Tinvar\Outbound\OutboundHttp;
+use Tinvar\Support\BuildProfile;
+use Tinvar\Support\DevMode;
 
 /**
  * The transport -- and the webhooks -- the environment names (ADR 0147):
@@ -40,6 +42,13 @@ use Tinvar\Outbound\OutboundHttp;
  * OutboundHttp. The DkimSigner signs what SMTP, SES and Mailgun send as
  * MIME; Resend, Postmark and SendGrid take no MIME of ours, and sign with
  * the domain each has verified.
+ *
+ * Production -- and staging, production's build -- sends mail somewhere:
+ * where TINVAR_ENV, APP_ENV or NODE_ENV says production, TINVAR_ENV or
+ * APP_ENV says staging, or TINVAR_PROFILE names either, a TINVAR_MAIL_PROVIDER that is unset, or names `log` or
+ * `array`, stops the boot. Neither is a default there: a shop whose
+ * password-reset mail went quietly into a file, or into memory, is broken
+ * in a way nothing reports. The log default stays for development and tests.
  *
  * The explicit constructors -- new SesTransport(...), new ResendTransport(...)
  * -- are there for an application that wires mail in code instead.
@@ -64,6 +73,7 @@ final readonly class MailTransports
     public function transport(?array $env = null, MailProvider $default = MailProvider::Log): Transport
     {
         $config = Configs::load(MailConfig::class, $env);
+        self::refuseNowhereInProduction($config->provider, $env);
         $providers = $config->provider === [] ? [$default] : $config->provider;
 
         $transports = [];
@@ -84,6 +94,61 @@ final readonly class MailTransports
         }
 
         return $config->strategy === MailStrategy::RoundRobin ? new RoundRobinTransport($transports) : new FailoverTransport($transports);
+    }
+
+    /** The providers that keep mail on this machine: a file, or memory. */
+    private const array NOWHERE = [MailProvider::Log, MailProvider::Array];
+
+    /**
+     * Refuses, where the environment says production or staging, a provider
+     * list that is empty or names one of NOWHERE.
+     *
+     * @param list<MailProvider> $providers
+     * @param array<string, string>|null $env
+     * @throws ConfigException
+     */
+    private static function refuseNowhereInProduction(array $providers, ?array $env): void
+    {
+        $marker = self::productionMarker($env ?? array_filter(getenv(), \is_string(...)));
+        if ($marker === null) {
+            return;
+        }
+
+        if ($providers === []) {
+            throw new ConfigException(["TINVAR_MAIL_PROVIDER is required where {$marker}: name the provider that sends the application's mail (smtp, ses, postmark, mailgun, resend or sendgrid)."]);
+        }
+        foreach ($providers as $provider) {
+            if (\in_array($provider, self::NOWHERE, true)) {
+                throw new ConfigException(["TINVAR_MAIL_PROVIDER names {$provider->value}, which sends nothing, and {$marker}: name the provider that sends the application's mail (smtp, ses, postmark, mailgun, resend or sendgrid)."]);
+            }
+        }
+    }
+
+    /**
+     * What says this is production or staging -- `TINVAR_ENV=production`,
+     * `TINVAR_PROFILE=staging` -- or null. The markers that rule dev mode
+     * out (DevMode: TINVAR_ENV, APP_ENV or NODE_ENV saying production),
+     * TINVAR_ENV or APP_ENV saying staging, as Discovery reads them, and
+     * TINVAR_PROFILE where it is set. An unset profile is not read as
+     * production here, as BuildProfile reads it: a developer's machine sets
+     * none.
+     *
+     * @param array<string, string> $env
+     */
+    private static function productionMarker(array $env): ?string
+    {
+        $marker = DevMode::productionMarker($env);
+        if ($marker !== null) {
+            return "{$marker}=production";
+        }
+        foreach (['TINVAR_ENV', 'APP_ENV', BuildProfile::ENV] as $variable) {
+            $value = strtolower(trim($env[$variable] ?? ''));
+            if (\in_array($value, [BuildProfile::PRODUCTION, BuildProfile::STAGING], true)) {
+                return "{$variable}={$value}";
+            }
+        }
+
+        return null;
     }
 
     /**
