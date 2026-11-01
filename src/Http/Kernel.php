@@ -812,6 +812,14 @@ final class Kernel
         // A caching failure answers the call uncached, and is logged where a
         // failed request is -- never kept for the worker's life.
         $cache->reportTo($this->report(...));
+        // Keyed apart by the host where a parameter took part of it: one
+        // `{account}.{root}` is many hosts, and none answers from another's
+        // entry (ADR 0149).
+        $cache->keyHostsBy(function (): string {
+            $match = $this->handling === null ? null : HostMatch::of($this->handling);
+
+            return $match === null || $match->parameters === [] ? '' : $match->host;
+        });
         // Each lookup and each flag read, for the toolbar's Cache and Flags
         // panels (ADR 0112); a Kernel not built for dev has no toolbar.
         if ($this->toolbar !== null) {
