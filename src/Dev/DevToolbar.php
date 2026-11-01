@@ -343,7 +343,7 @@ final class DevToolbar implements FrameTap
             return $response;
         }
 
-        $binding = ToolbarToken::for($this->signer, $session, $auth->id(), $auth->epoch(), $this->build);
+        $binding = ToolbarToken::for($this->signer, $session, $auth->id(), $auth->epoch(), $this->build, $request->header('host') ?? '');
         $this->store->save($recording->finish($response->status, $binding->sessionHash, $binding->authHash));
 
         return $this->drawn($request, $response, $binding, $recording->id);
@@ -390,7 +390,7 @@ final class DevToolbar implements FrameTap
         } catch (TokenError) {
             return self::json(403, ['error' => 'invalid_token']);
         }
-        $current = ToolbarToken::for($this->signer, $session, $auth->id(), $auth->epoch(), $this->build);
+        $current = ToolbarToken::for($this->signer, $session, $auth->id(), $auth->epoch(), $this->build, $request->header('host') ?? '');
         if (!$presented->admits($current)) {
             return self::json(403, ['error' => 'invalid_token']);
         }

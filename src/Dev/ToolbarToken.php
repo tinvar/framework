@@ -16,11 +16,12 @@ use Tinvar\Support\Signer;
  * Signed with the key `tinvar dev` made for this run (DevToolbar), so a
  * token from an earlier run, or one any other process wrote, does not
  * verify. Bound as every token is (TokenClaims): the session and the
- * signed-in user with their auth epoch, as keyed hashes, and the build --
- * read when the page was drawn, and checked against the request presenting
- * it. A token taken from one browser's page reads nothing in another; and
- * signing in, signing out or an impersonation that keeps the session id
- * stops the old page's token from reading what the new one is shown.
+ * signed-in user with their auth epoch, as keyed hashes, the build, and
+ * the host the page was drawn on (ADR 0149) -- read when the page was
+ * drawn, and checked against the request presenting it. A token taken
+ * from one browser's page reads nothing in another, nor on another host;
+ * and signing in, signing out or an impersonation that keeps the session
+ * id stops the old page's token from reading what the new one is shown.
  *
  * Not bound to a tenant or a panel: the endpoint runs behind the global
  * middleware alone, where neither is resolved -- they are per entry point --
@@ -40,6 +41,7 @@ final readonly class ToolbarToken
         public string $build,
         public int $expiresAt,
         public int $issuedAt,
+        public string $host,
     ) {}
 
     /** The binding of a request as it stands: what a page is given, and what a presented token must match. */
@@ -50,6 +52,7 @@ final readonly class ToolbarToken
         ?string $user,
         string $epoch,
         string $build,
+        string $host,
         ?int $now = null,
     ): self {
         $at = $now ?? time();
@@ -60,6 +63,7 @@ final readonly class ToolbarToken
             $build,
             $at + self::TTL,
             $at,
+            self::hostOf($host),
         );
     }
 
@@ -71,6 +75,7 @@ final readonly class ToolbarToken
             'b' => $this->build,
             'e' => $this->expiresAt,
             'i' => $this->issuedAt,
+            'h' => $this->host,
         ]);
     }
 
@@ -78,7 +83,9 @@ final readonly class ToolbarToken
     public static function decode(string $token, Signer $signer, ?int $now = null): self
     {
         $decoded = SignedToken::decode($token, $signer, self::PURPOSE);
-        foreach (['s', 'u', 'b'] as $field) {
+        // The host with the rest: a token from before it was bound carries
+        // none, and is refused -- the page it was drawn into is drawn again.
+        foreach (['s', 'u', 'b', 'h'] as $field) {
             if (!\is_string($decoded[$field] ?? null) || $decoded[$field] === '') {
                 throw new TokenError("field '{$field}' is missing or not a string");
             }
@@ -97,8 +104,8 @@ final readonly class ToolbarToken
             throw new TokenError('token claims a longer life than one is issued for');
         }
 
-        /** @var array{s: string, u: string, b: string} $decoded */
-        return new self($decoded['s'], $decoded['u'], $decoded['b'], $expiresAt, $issuedAt);
+        /** @var array{s: string, u: string, b: string, h: string} $decoded */
+        return new self($decoded['s'], $decoded['u'], $decoded['b'], $expiresAt, $issuedAt, $decoded['h']);
     }
 
     /** Whether this token was issued for the binding $current describes. */
@@ -106,6 +113,24 @@ final readonly class ToolbarToken
     {
         return hash_equals($current->sessionHash, $this->sessionHash)
             && hash_equals($current->authHash, $this->authHash)
-            && hash_equals($current->build, $this->build);
+            && hash_equals($current->build, $this->build)
+            && $current->host !== ''
+            && hash_equals($current->host, $this->host);
+    }
+
+    /**
+     * The host a token is bound to: the Host header as the request named it,
+     * port and all -- the toolbar answers before any host is resolved, and a
+     * page and its toolbar's reads share one origin -- lowercased, with no
+     * trailing dot.
+     */
+    public static function hostOf(string $header): string
+    {
+        $host = strtolower(trim($header));
+        if (preg_match('/^(.*?)\.?(:\d{1,5})?\z/', $host, $m) === 1) {
+            $host = $m[1] . ($m[2] ?? '');
+        }
+
+        return $host;
     }
 }

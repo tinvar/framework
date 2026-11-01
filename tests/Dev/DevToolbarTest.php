@@ -450,6 +450,20 @@ it('draws itself and answers on a name under localhost, as the overlay does', fu
         ->and($response->status)->toBe(200);
 });
 
+// Every token is its host's (ADR 0149): one drawn into a page on
+// admin.localhost reads nothing presented on localhost, the session behind
+// it the same.
+it('reads nothing with a token drawn on another host', function () {
+    $toolbar = toolbar(run());
+    $kernel = kernel($toolbar);
+    $token = tokenIn($kernel->handle(local('/catalog', headers: ['host' => 'admin.localhost:6123']), respond($toolbar)));
+
+    expect(read($kernel, DevToolbar::PATH, $token, headers: ['host' => 'localhost:6123'])[0])->toBe(403)
+        ->and(read($kernel, DevToolbar::PATH, $token, headers: ['host' => 'admin.localhost:6124'])[0])->toBe(403)
+        ->and(read($kernel, DevToolbar::PATH, $token, headers: ['host' => 'ADMIN.localhost:6123'])[0])->toBe(200)
+        ->and(read($kernel, DevToolbar::PATH, $token, headers: ['host' => 'admin.localhost:6123'])[0])->toBe(200);
+});
+
 it('is not there for a peer that is not loopback, or a request naming another host', function (string $remote, string $host) {
     $toolbar = toolbar(run());
     $kernel = kernel($toolbar);
@@ -523,13 +537,13 @@ it('answers as JSON no cache keeps, and records none of its own requests', funct
 
 it('refuses a token past its expiry, or claiming a longer life than one is issued for', function () {
     $signer = new Signer(str_repeat('k', 64), ToolbarToken::PURPOSE);
-    $issued = ToolbarToken::for($signer, 'session-a', null, '', 'dev', now: 1_000_000);
+    $issued = ToolbarToken::for($signer, 'session-a', null, '', 'dev', 'localhost:6123', now: 1_000_000);
 
     expect(ToolbarToken::decode($issued->encode($signer), $signer, now: 1_000_100)->admits($issued))->toBeTrue()
         ->and(fn () => ToolbarToken::decode($issued->encode($signer), $signer, now: 1_000_000 + ToolbarToken::TTL))
         ->toThrow(TokenError::class, 'expired');
 
-    $forever = new ToolbarToken($issued->sessionHash, $issued->authHash, 'dev', PHP_INT_MAX, 1_000_000);
+    $forever = new ToolbarToken($issued->sessionHash, $issued->authHash, 'dev', PHP_INT_MAX, 1_000_000, 'localhost:6123');
     expect(fn () => ToolbarToken::decode($forever->encode($signer), $signer, now: 1_000_100))
         ->toThrow(TokenError::class, 'longer life');
 });
