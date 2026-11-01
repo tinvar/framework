@@ -58,6 +58,26 @@ final class DispatchingQuery
     }
 }
 
+/** Fails its one try, and its failed() hook then hangs, as one waiting on a dead server does. */
+#[\Tinvar\Attributes\Queue(tries: 1, timeout: 1)]
+final readonly class HangsInFailed implements \Tinvar\Jobs\Job
+{
+    public function handle(): void
+    {
+        throw new \RuntimeException('the try failed');
+    }
+
+    public function failed(\Throwable $error, \Tinvar\Tests\Jobs\Fixtures\Journal $journal): void
+    {
+        $journal->entries[] = ['failed' => 'started'];
+        $until = microtime(true) + 3;
+        while (microtime(true) < $until) {
+            usleep(20_000);
+        }
+        $journal->entries[] = ['failed' => 'finished'];
+    }
+}
+
 function arrayQueue(Harness $h): ArrayQueue
 {
     \assert($h->queue instanceof ArrayQueue);
@@ -284,6 +304,25 @@ it('stops a job at its timeout and counts the try as failed', function () {
 
     expect($h->journal()->entries)->toBe([])
         ->and(arrayQueue($h)->failed()[0]->error)->toContain('ran past its 1s timeout');
+});
+
+it('holds a failed() hook to the job\'s timeout, so one that hangs does not hold the worker for good', function () {
+    $h = new Harness();
+    $reported = [];
+    $h->worker = new \Tinvar\Jobs\Worker($h->queue, $h->runner, $h->scope, report: function (\Throwable $e) use (&$reported): void {
+        $reported[] = $e::class;
+    }, clock: fn (): int => $h->now, graceSeconds: 1);
+    $h->dispatcher->dispatch(new HangsInFailed());
+
+    withAlarm($h, function () use ($h): void {
+        $started = microtime(true);
+        $h->work();
+        expect(microtime(true) - $started)->toBeLessThan(2.5);
+    });
+
+    expect($h->journal()->entries)->toBe([['failed' => 'started']])
+        ->and($reported)->toBe([\RuntimeException::class, \Tinvar\Jobs\JobTimedOut::class])
+        ->and(arrayQueue($h)->failed()[0]->error)->toContain('the try failed');
 });
 
 it('fails a job that swallows its timeout, and gives up the process to one that will not stop', function () {

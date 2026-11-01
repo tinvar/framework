@@ -551,26 +551,41 @@ final class Worker
         // past its count, a workflow step whose result its checkpoint
         // cannot keep -- in the context that ran it.
         if ($envelope !== null && (!$error instanceof JobRefused || \in_array($error->reason, ['attempts', 'releases', 'checkpoint'], true))) {
-            try {
-                $this->runner->failed($envelope, $error);
-            } catch (\Throwable $e) {
-                $this->reportFailure($e);
-            } finally {
-                $this->resetScope();
-            }
+            $this->hook($envelope, $options, fn () => $this->runner->failed($envelope, $error));
         } elseif ($envelope !== null) {
             // A refusal's, outside that context: its refused() hook, told
             // where the verified payload says it came from (ADR 0107).
-            try {
-                $this->runner->refused($envelope, $error);
-            } catch (\Throwable $e) {
-                $this->reportFailure($e);
-            } finally {
-                $this->resetScope();
-            }
+            $this->hook($envelope, $options, fn () => $this->runner->refused($envelope, $error));
         }
 
         return 'failed';
+    }
+
+    /**
+     * Runs a job's failed() or refused() hook, held to the job's timeout as
+     * handle() is: a hook waiting on a server that never answers would
+     * otherwise hold the worker until whatever started it gave up and
+     * killed it. What it throws -- JobTimedOut among it -- is reported, and
+     * the boundary runs after it as after the job.
+     *
+     * @param \Closure(): void $hook
+     */
+    private function hook(Envelope $envelope, ?QueueOptions $options, \Closure $hook): void
+    {
+        try {
+            $this->arm($envelope->class, $options->timeout ?? $this->reservedFor);
+            try {
+                $hook();
+            } finally {
+                $this->disarm();
+                $this->timedOut = false;
+                $this->interrupted = false;
+            }
+        } catch (\Throwable $e) {
+            $this->reportFailure($e);
+        } finally {
+            $this->resetScope();
+        }
     }
 
     /**
