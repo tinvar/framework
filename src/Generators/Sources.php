@@ -335,13 +335,13 @@ final class Sources
     }
 
     /** `a` or `an`, by the first letter: an Order, a Rack, a Unit; a rule, not a dictionary. */
-    private static function article(string $noun): string
+    public static function article(string $noun): string
     {
         return preg_match('/^[AEIO]/i', $noun) === 1 ? 'an' : 'a';
     }
 
     /** Prose as docblock lines, wrapped at $width. */
-    private static function wrap(string $text, int $width = 74, string $prefix = ' * '): string
+    public static function wrap(string $text, int $width = 74, string $prefix = ' * '): string
     {
         return implode('', array_map(
             static fn (string $line): string => rtrim($prefix . $line) . "\n",
@@ -349,7 +349,7 @@ final class Sources
         ));
     }
 
-    private static function namespaceOf(string $class): string
+    public static function namespaceOf(string $class): string
     {
         return substr($class, 0, (int) strrpos($class, '\\'));
     }

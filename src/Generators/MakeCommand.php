@@ -24,6 +24,11 @@ use Tinvar\Support\Str;
  *   tinvar make:model <Name> [--table=racks] [--columns=name:string,heightU:int,notes:?string] [--factory] [--migration]
  *       a #[Table] model, its typed factory, and the migration make:migration
  *       writes for its table
+ *   tinvar make:resource <Name> --fields="title:string,status:enum(Draft,Published),customer:belongsTo" [--path=/orders]
+ *       all of it at once, for one model: the model, its enums, factory and
+ *       migration; its Data, list and detail queries, form request and
+ *       create, update and delete actions; its index, show, create and edit
+ *       pages, their views and client components; its policy; its tests
  *
  * Where a person is there to ask (Prompts::canAsk()), what a command needs
  * and was not given is asked: the name, the route, the method. Run bare --
@@ -56,14 +61,21 @@ final class MakeCommand
     /** Exit status for a run refused before anything was written. */
     public const int FAILED = 1;
 
-    public const array COMMANDS = ['make:page', 'make:query', 'make:action', 'make:model'];
+    public const array COMMANDS = ['make:page', 'make:query', 'make:action', 'make:model', 'make:resource'];
 
     private const array USAGES = [
         'make:page' => 'tinvar make:page <Name> --path=/racks/{rack} [--view=racks/show]',
         'make:query' => 'tinvar make:query <Name> [--model=Rack]',
         'make:action' => 'tinvar make:action <Class> <method> [--model=Rack] [--request]',
         'make:model' => 'tinvar make:model <Name> [--table=racks] [--columns=name:string,heightU:int,notes:?string] [--factory] [--migration]',
+        'make:resource' => 'tinvar make:resource <Name> --fields="title:string,status:enum(Draft,Published),price:int,customer:belongsTo" [--path=/orders]',
     ];
+
+    /**
+     * What a resource's name may not make its route parameter: a variable
+     * the classes it writes already use for something else.
+     */
+    private const array TAKEN_VARIABLES = ['request', 'orm', 'page', 'found', 'list', 'show', 'options', 'n', 'field', 'value', 'moment', 'user', 'chosen', 'rows', 'case', 'kernel', 'row', 'next'];
 
     /** What --columns may type a column as: what the ORM casts and make:migration maps. */
     private const array COLUMN_TYPES = ['string', 'int', 'float', 'bool'];
@@ -88,6 +100,8 @@ final class MakeCommand
      * @param (\Closure(string): int)|null $migrate runs make:migration with the name it is
      *        given, in a process that loads the model just registered; with none,
      *        make:model --migration says to
+     * @param string|null $migrations the application's migrations directory, which
+     *        make:resource writes its table's migration into; with none, it says to make one
      */
     public function __construct(
         private readonly AppLayout $layout,
@@ -96,6 +110,7 @@ final class MakeCommand
         ?\Closure $err = null,
         private readonly Registrations $registrations = new Registrations(),
         private readonly ?\Closure $migrate = null,
+        private readonly ?string $migrations = null,
     ) {
         $this->out = $out ?? static function (string $line): void {
             fwrite(STDOUT, $line . "\n");
@@ -120,6 +135,7 @@ final class MakeCommand
                 'make:page' => $this->page($positional, $options, $usage),
                 'make:query' => $this->query($positional, $options, $usage),
                 'make:action' => $this->action($positional, $options, $usage),
+                'make:resource' => $this->resource($positional, $options, $usage),
                 default => $this->model($positional, $options, $usage),
             };
 
@@ -127,8 +143,15 @@ final class MakeCommand
                 ($this->out)('wrote ' . $this->layout->relative($path));
             }
             // Discovered once written (ADR 0146); a page's view registered in
-            // the route table, or what could not be made said.
-            [$done, $left] = $this->registrations->register(...$registered);
+            // the route table, or what could not be made said: a resource's
+            // four pages' views.
+            $done = [];
+            $left = [];
+            foreach ($registered as $registration) {
+                [$madeHere, $leftHere] = $this->registrations->register(...$registration);
+                $done = [...$done, ...$madeHere];
+                $left = [...$left, ...$leftHere];
+            }
             foreach ($done as $line) {
                 ($this->out)($line);
             }
@@ -151,7 +174,7 @@ final class MakeCommand
     /**
      * @param list<string> $positional
      * @param array<string, string|true> $options
-     * @return array{FileSet, list<string>, array{string, string, AppLayout, string}}
+     * @return array{FileSet, list<string>, list<array{string, string, AppLayout, string|null}>}
      */
     private function page(array $positional, array $options, string $usage): array
     {
@@ -200,13 +223,13 @@ final class MakeCommand
             $next[] = "Until a policy with a view() ability is registered for {$class}, every request to the page is refused.";
         }
 
-        return [$files, $next, ['page', $class, $this->layout, $view]];
+        return [$files, $next, [['page', $class, $this->layout, $view]]];
     }
 
     /**
      * @param list<string> $positional
      * @param array<string, string|true> $options
-     * @return array{FileSet, list<string>, array{string, string, AppLayout}}
+     * @return array{FileSet, list<string>, list<array{0: string, 1: string, 2: AppLayout, 3?: string|null}>}
      */
     private function query(array $positional, array $options, string $usage): array
     {
@@ -232,13 +255,13 @@ final class MakeCommand
             $next[] = "Until a policy with a view() ability is registered for {$class}, every call to the query is refused.";
         }
 
-        return [$files, $next, ['query', $class, $this->layout]];
+        return [$files, $next, [['query', $class, $this->layout]]];
     }
 
     /**
      * @param list<string> $positional
      * @param array<string, string|true> $options
-     * @return array{FileSet, list<string>, array{string, string, AppLayout}}
+     * @return array{FileSet, list<string>, list<array{0: string, 1: string, 2: AppLayout, 3?: string|null}>}
      */
     private function action(array $positional, array $options, string $usage): array
     {
@@ -265,13 +288,13 @@ final class MakeCommand
             $next[] = "Until a policy with a {$method}() ability is registered for {$class}, every call to the action is refused.";
         }
 
-        return [$files, $next, ['action', $class, $this->layout]];
+        return [$files, $next, [['action', $class, $this->layout]]];
     }
 
     /**
      * @param list<string> $positional
      * @param array<string, string|true> $options
-     * @return array{FileSet, list<string>, array{string, string, AppLayout}}
+     * @return array{FileSet, list<string>, list<array{0: string, 1: string, 2: AppLayout, 3?: string|null}>}
      */
     private function model(array $positional, array $options, string $usage): array
     {
@@ -306,11 +329,394 @@ final class MakeCommand
         if (isset($options['migration']) && $this->migrate !== null) {
             $this->migration = $migration;
 
-            return [$files, [], ['model', $class, $this->layout]];
+            return [$files, [], [['model', $class, $this->layout]]];
         }
 
         return [$files, ['Next: run'
-            . " `tinvar make:migration {$migration}` for its table."], ['model', $class, $this->layout]];
+            . " `tinvar make:migration {$migration}` for its table."], [['model', $class, $this->layout]]];
+    }
+
+    /**
+     * A resource: a model and everything that lists, shows, makes, changes
+     * and deletes its rows, in one run -- the model with its enums, factory
+     * and migration; its Data, list and detail queries, form request and
+     * actions; its index, show, create and edit pages and their views and
+     * client components; its policy; and its tests. Each in the folder its
+     * kind goes in, in the resource's domain, found by discovery once it is
+     * there.
+     *
+     * Everything is decided -- every field read, every name held to a
+     * shape, every file and route checked free -- before the first file is
+     * written, and FileSet writes all of them or none.
+     *
+     * @param list<string> $positional
+     * @param array<string, string|true> $options
+     * @return array{FileSet, list<string>, list<array{string, string, AppLayout, string|null}>}
+     */
+    private function resource(array $positional, array $options, string $usage): array
+    {
+        self::only($options, ['fields', 'path'], $usage);
+        [$name] = self::positional($positional, 1, $usage);
+        $segments = Names::classPath($name, 'resource name', 'Orders/Order');
+        $short = end($segments);
+        $fieldsOption = $options['fields'] ?? throw new \InvalidArgumentException(
+            'make:resource needs its fields. Pass them, as in --fields="title:string,status:enum(Draft,Published),price:int,customer:belongsTo", '
+            . 'or run it on a terminal to be asked for each.',
+        );
+        if ($fieldsOption === true) {
+            throw new \InvalidArgumentException("--fields takes a value, as in --fields=\"title:string,price:int\". Usage: {$usage}");
+        }
+        $fields = ResourceFields::parse($fieldsOption, $this->findModel(...));
+
+        // What the views and components are named after, and take their
+        // rows as: past this, a name is a sentence.
+        if (\strlen($short) > 24) {
+            throw new \InvalidArgumentException("{$short} is " . \strlen($short) . " characters long; a resource's name is at most 24. Its domain says the rest: Fulfilment/Shipment.");
+        }
+        $parameter = lcfirst($short);
+        if (\in_array($parameter, self::TAKEN_VARIABLES, true) || Names::isReserved($parameter)) {
+            throw new \InvalidArgumentException("A resource named {$short} would take its rows as \${$parameter}, which the classes it writes use for something else. Name it differently.");
+        }
+        if ($this->findModel($short) !== null) {
+            throw new GenerationRefused("The app has a model named {$short} already. Nothing was written: make:resource writes the model too. Choose another name, or write the rest with make:page, make:query and make:action.");
+        }
+
+        // The domain is every segment but the last, or -- in an application
+        // split by domain -- the plural of a name given without one: Order's
+        // classes go in Orders.
+        $plural = Names::plural($short);
+        $domain = \count($segments) > 1 ? \array_slice($segments, 0, -1) : ($this->byDomain() ? [$plural] : []);
+        $table = Names::table(Names::plural(Str::snake($short)));
+        foreach ($this->models as $model) {
+            $declared = (new \ReflectionClass($model))->getAttributes(\Tinvar\Orm\Attributes\Table::class)[0] ?? null;
+            if ($declared !== null && strcasecmp((string) ($declared->getArguments()[0] ?? $declared->getArguments()['name'] ?? ''), $table) === 0) {
+                throw new GenerationRefused("{$model} is the {$table} table already. Nothing was written. Choose another name for the resource.");
+            }
+        }
+
+        // orders, or catalog/products: the domain's segments, then the
+        // plural, said once where the domain is the plural.
+        $kebab = array_map(Names::kebab(...), $domain);
+        if (end($kebab) !== Names::kebab($plural)) {
+            $kebab[] = Names::kebab($plural);
+        }
+        $viewPrefix = Names::view(implode('/', $kebab));
+        $basePath = match (true) {
+            !isset($options['path']) => '/' . $viewPrefix,
+            $options['path'] === true => throw new \InvalidArgumentException("--path takes a path, as in --path=/orders. Usage: {$usage}"),
+            default => rtrim($options['path'], '/'),
+        };
+        if ($basePath === '' || Names::routeParameters($basePath) !== []) {
+            throw new \InvalidArgumentException("--path is where the list is, a path with no {parameter}, as in --path=/orders: the rest go under it.");
+        }
+        $routePrefix = implode('.', array_map(Names::camel(...), $kebab));
+
+        $enums = [];
+        foreach ($fields as $field) {
+            if ($field->kind === 'enum') {
+                $enums[$field->name] = $this->class('Models', [...$domain, $short . ucfirst($field->name)]);
+            }
+        }
+
+        // Each Data class by its own name, which codegen emits it by: two of
+        // one short name would be refused there.
+        $dataClass = function (string $suffix) use ($domain, $short): string {
+            $path = $this->besideDomain([...$domain, $short], $short . $suffix);
+            if ($this->layout->namedElsewhere($this->layout->area('Data'), $short . $suffix, implode('\\', $path))) {
+                throw new GenerationRefused("A Data class named {$short}{$suffix} is in the app already: codegen names each by its short name, so two of one name are refused there. Nothing was written. Name the resource differently.");
+            }
+
+            return $this->class('Data', $path);
+        };
+
+        $choiceLabels = [];
+        $relatedFactories = [];
+        foreach ($fields as $field) {
+            if ($field->kind !== 'belongsTo') {
+                continue;
+            }
+            $related = $field->model ?? throw new \LogicException("{$field->name} is a relation to no model.");
+            if (\Tinvar\Orm\Metadata::for($related)->idProperty !== 'id') {
+                throw new GenerationRefused("{$related}'s key is not \$id, which the form's choices of it are read by. Nothing was written.");
+            }
+            $choiceLabels[$field->name] = self::choiceLabel($related);
+            $relatedFactories[$field->name] = $this->factoryOf($related);
+        }
+
+        $test = $this->testClass([...$domain, "{$short}ResourceTest"], $relatedFactories);
+        $components = implode('/', $kebab);
+
+        $plan = new ResourcePlan(
+            short: $short,
+            plural: $plural,
+            table: $table,
+            fields: $fields,
+            model: $this->class('Models', [...$domain, $short]),
+            enums: $enums,
+            factory: $this->class('Database\\Factories', [...$domain, "{$short}Factory"]),
+            record: $dataClass('Data'),
+            list: $dataClass('ListData'),
+            form: $dataClass('FormData'),
+            option: $dataClass('OptionData'),
+            listQuery: $this->class('Queries', [...$domain, "List{$plural}"]),
+            showQuery: $this->class('Queries', [...$domain, "Show{$short}"]),
+            formOptions: $this->class('Pages', [...$domain, "{$short}FormOptions"]),
+            actions: $this->class('Actions', [...$domain, "{$short}Actions"]),
+            request: $this->class('Requests', $this->besideDomain([...$domain, $short], "Save{$short}Request")),
+            policy: "{$this->layout->namespace}\\Policies\\" . implode('\\', $this->besideDomain([...$domain, $short], "{$short}Policy")),
+            indexPage: $this->class('Pages', [...$domain, "{$short}Index"]),
+            showPage: $this->class('Pages', [...$domain, "{$short}Show"]),
+            createPage: $this->class('Pages', [...$domain, "{$short}Create"]),
+            editPage: $this->class('Pages', [...$domain, "{$short}Edit"]),
+            basePath: $basePath,
+            parameter: $parameter,
+            viewPrefix: $viewPrefix,
+            routePrefix: $routePrefix,
+            formComponent: "{$short}Form",
+            deleteComponent: "{$short}DeleteForm",
+            formComponentPath: $this->layout->componentPath("{$components}/{$short}Form"),
+            deleteComponentPath: $this->layout->componentPath("{$components}/{$short}DeleteForm"),
+            typesFromComponents: AppLayout::importBetween($this->layout->componentPath("{$components}/{$short}Form"), $this->layout->generatedTypes()),
+            choiceLabels: $choiceLabels,
+            relatedFactories: $relatedFactories,
+            test: $test,
+            testPath: $test === null ? null : $this->layout->inProject('tests/' . str_replace('\\', '/', substr($test, \strlen('Tests\\'))) . '.php'),
+            appNamespace: $this->layout->namespace,
+        );
+
+        $screens = ['index' => '', 'show' => "/{{$parameter}}", 'create' => '/new', 'edit' => "/{{$parameter}}/edit"];
+        $collisions = $this->registrations->collisions(
+            array_values(array_map(static fn (string $rest): string => $basePath . $rest, $screens)),
+            array_map($plan->route(...), array_keys($screens)),
+        );
+        if ($collisions !== []) {
+            throw new GenerationRefused(implode('; ', $collisions) . '. Nothing was written: give the resource another --path or name.');
+        }
+
+        $migrationPath = null;
+        if ($this->migrations !== null) {
+            $directory = $this->layout->inProject(rtrim($this->migrations, '/') . '/x');
+            $existing = glob(\dirname($directory) . "/*_create_{$table}.php") ?: [];
+            if ($existing !== []) {
+                throw GenerationRefused::exists(array_map($this->layout->relative(...), $existing));
+            }
+            // After every migration there, so it runs after the tables it
+            // references: two resources made in one second keep their order.
+            $at = time();
+            foreach (glob(\dirname($directory) . '/*.php') ?: [] as $file) {
+                $made = \DateTimeImmutable::createFromFormat('!Y_m_d_His', substr(basename($file), 0, 17), new \DateTimeZone('UTC'));
+                if ($made !== false && $made->getTimestamp() >= $at) {
+                    $at = $made->getTimestamp() + 1;
+                }
+            }
+            $migrationPath = \dirname($directory) . '/' . gmdate('Y_m_d_His', $at) . "_create_{$table}.php";
+        }
+
+        $files = (new FileSet())->add($this->layout->pathOf($plan->model), ResourceSources::model($plan));
+        foreach ($fields as $field) {
+            if ($field->kind === 'enum') {
+                $files->add($this->layout->pathOf($enums[$field->name]), ResourceSources::enum($plan, $field));
+            }
+        }
+        $files->add($this->layout->pathOf($plan->factory), ResourceSources::factory($plan));
+        if ($migrationPath !== null) {
+            $files->add($migrationPath, ResourceSources::migration($plan));
+        }
+        $files->add($this->layout->pathOf($plan->record), ResourceSources::record($plan))
+            ->add($this->layout->pathOf($plan->list), ResourceSources::listData($plan))
+            ->add($this->layout->pathOf($plan->option), ResourceSources::option($plan))
+            ->add($this->layout->pathOf($plan->form), ResourceSources::formData($plan))
+            ->add($this->layout->pathOf($plan->listQuery), ResourceSources::listQuery($plan))
+            ->add($this->layout->pathOf($plan->showQuery), ResourceSources::showQuery($plan))
+            ->add($this->layout->pathOf($plan->request), ResourceSources::request($plan))
+            ->add($this->layout->pathOf($plan->actions), ResourceSources::actions($plan))
+            ->add($this->layout->pathOf($plan->formOptions), ResourceSources::formOptions($plan))
+            ->add($this->layout->pathOf($plan->indexPage), ResourceSources::page($plan, 'index'))
+            ->add($this->layout->pathOf($plan->showPage), ResourceSources::page($plan, 'show'))
+            ->add($this->layout->pathOf($plan->createPage), ResourceSources::page($plan, 'create'))
+            ->add($this->layout->pathOf($plan->editPage), ResourceSources::page($plan, 'edit'))
+            ->add($this->layout->pathOf($plan->policy), ResourceSources::policy($plan));
+
+        $views = [];
+        foreach (array_keys($screens) as $screen) {
+            $view = $plan->view($screen);
+            $views[$screen] = $this->layout->viewPath($view);
+            FileSet::assertAbsent(
+                array_map(fn (string $extension): string => $this->layout->viewPath($view, $extension), ['ts', 'jsx', 'js']),
+                $this->layout->relative(...),
+            );
+        }
+        $files->add($views['index'], ResourceSources::indexView($plan, $this->layout->typesImport($plan->view('index'))))
+            ->add($views['show'], ResourceSources::showView($plan, $this->layout->typesImport($plan->view('show')), AppLayout::importBetween($views['show'], substr($plan->deleteComponentPath, 0, -4))))
+            ->add($views['create'], ResourceSources::formView($plan, 'create', $this->layout->typesImport($plan->view('create')), AppLayout::importBetween($views['create'], substr($plan->formComponentPath, 0, -4))))
+            ->add($views['edit'], ResourceSources::formView($plan, 'edit', $this->layout->typesImport($plan->view('edit')), AppLayout::importBetween($views['edit'], substr($plan->formComponentPath, 0, -4))))
+            ->add($plan->formComponentPath, ResourceSources::formComponent($plan, $plan->typesFromComponents))
+            ->add($plan->deleteComponentPath, ResourceSources::deleteComponent($plan));
+        if ($plan->testPath !== null) {
+            $files->add($plan->testPath, ResourceSources::test($plan));
+        }
+
+        $next = [$this->registrations->none()
+            ? "Next: add the views {$plan->view('index')}, {$plan->view('show')}, {$plan->view('create')} and {$plan->view('edit')} to the renderer's route table, and run `tinvar codegen`."
+            : 'Next: run `tinvar codegen` for their PageProps, `@queries` and `@actions/' . Names::short($plan->actions) . '`.'];
+        $next[] = $migrationPath === null
+            ? "Then `tinvar make:migration create_{$table}` for its table, and `tinvar migrate`."
+            : 'Then `tinvar migrate` for its table.';
+        $next[] = Names::short($plan->policy) . " lets anyone signed in do anything with any {$parameter}, and a guest nothing: say there who may before it ships.";
+        if ($test === null) {
+            $next[] = $this->whyNoTest($relatedFactories);
+        }
+
+        $registered = [
+            ['page', $plan->indexPage, $this->layout, $plan->view('index')],
+            ['page', $plan->showPage, $this->layout, $plan->view('show')],
+            ['page', $plan->createPage, $this->layout, $plan->view('create')],
+            ['page', $plan->editPage, $this->layout, $plan->view('edit')],
+        ];
+
+        return [$files, $next, $registered];
+    }
+
+    /**
+     * The fields of a resource, asked one at a time: its name, what it is,
+     * an enum's values or the model a relation belongs to, and whether it
+     * may be left empty -- each held to what --fields would take, and the
+     * list read again as a whole once it is done.
+     */
+    private function askFields(): string
+    {
+        $kinds = ResourceField::KINDS;
+        if ($this->models === []) {
+            unset($kinds['belongsTo']);
+        }
+        $specs = [];
+        $names = [];
+        while (\count($specs) < ResourceFields::MAX_FIELDS) {
+            $name = Prompts::text(
+                $specs === [] ? 'What is its first field called?' : 'And the next? Leave it empty when that is all of them.',
+                placeholder: $specs === [] ? 'title' : '',
+                required: $specs === [],
+                validate: self::verdict(static function (string $name) use ($names): void {
+                    if ($name === '') {
+                        return;
+                    }
+                    Names::property($name);
+                    if (\in_array($name, $names, true)) {
+                        throw new \InvalidArgumentException("{$name} is a field already.");
+                    }
+                }),
+                hint: 'A property name, in lower camel case: the id, createdAt and updatedAt are written already.',
+                name: 'field',
+            );
+            if ($name === '') {
+                break;
+            }
+            $kind = (string) Prompts::select("What is {$name}?", $kinds, default: 'string', name: 'type');
+            $argument = '';
+            if ($kind === 'enum') {
+                $cases = Prompts::text("Which values may {$name} take?", placeholder: 'Draft,Published', required: true, validate: self::verdict(fn (string $cases) => ResourceFields::parse("{$name}:enum({$cases})", $this->findModel(...))), hint: 'Capitalised names, split by commas.', name: 'cases');
+                $argument = "({$cases})";
+            }
+            if ($kind === 'belongsTo') {
+                $choices = [];
+                foreach ($this->models as $model) {
+                    $choices[$model] = Str::shortName($model);
+                }
+                $default = self::tried(fn (): ?string => $this->findModel($name));
+                $argument = '(' . (string) Prompts::select("Which model does {$name} belong to?", $choices, default: $default, name: 'model') . ')';
+            }
+            $nullable = Prompts::confirm("May {$name} be left empty?", default: false, name: 'nullable');
+            $spec = "{$name}:" . ($nullable ? '?' : '') . $kind . $argument;
+            try {
+                ResourceFields::parse(implode(',', [...$specs, $spec]), $this->findModel(...));
+            } catch (\InvalidArgumentException $e) {
+                Prompts::error($e->getMessage() . ' That field was left out; name it again.');
+                continue;
+            }
+            $specs[] = $spec;
+            $names[] = $name;
+        }
+
+        return implode(',', $specs);
+    }
+
+    /**
+     * The property a related model's choices are labelled and ordered by:
+     * its name, title or the like where it has one, any line of text
+     * otherwise, and its id where it has none.
+     *
+     * @param class-string<Model> $model
+     */
+    private static function choiceLabel(string $model): string
+    {
+        $candidates = [];
+        foreach ((new \ReflectionClass($model))->getProperties(\ReflectionProperty::IS_PUBLIC) as $property) {
+            $type = $property->getType();
+            if ($property->getAttributes(\Tinvar\Orm\Attributes\Column::class) !== [] && $type instanceof \ReflectionNamedType && $type->getName() === 'string' && !$type->allowsNull()) {
+                $candidates[] = $property->getName();
+            }
+        }
+        foreach (['name', 'title', 'label', 'email', 'number', 'sku', 'code'] as $preferred) {
+            if (\in_array($preferred, $candidates, true)) {
+                return $preferred;
+            }
+        }
+
+        return $candidates[0] ?? 'id';
+    }
+
+    /**
+     * The factory make:model writes for $model, where it has one: what a
+     * resource's test makes a related row with.
+     *
+     * @param class-string<Model> $model
+     */
+    private function factoryOf(string $model): ?string
+    {
+        $models = "{$this->layout->namespace}\\{$this->layout->area('Models')}\\";
+        if (!str_starts_with($model, $models)) {
+            return null;
+        }
+        $factory = "{$this->layout->namespace}\\Database\\Factories\\" . substr($model, \strlen($models)) . 'Factory';
+
+        return class_exists($factory) && is_subclass_of($factory, \Tinvar\Orm\Factory::class) ? $factory : null;
+    }
+
+    /**
+     * The resource's test class, where the application's tests can run it
+     * as the skeleton's run: a tests/ directory, a Kernel built by
+     * fromEnvironment(database:, telemetry:), a Database\Migrations that
+     * migrates, and a factory for each related model. Null otherwise.
+     *
+     * @param non-empty-list<string> $segments
+     * @param array<string, string|null> $relatedFactories
+     */
+    private function testClass(array $segments, array $relatedFactories): ?string
+    {
+        $kernel = "{$this->layout->namespace}\\Kernel";
+        $migrations = "{$this->layout->namespace}\\Database\\Migrations";
+        if (!is_dir("{$this->layout->root}/tests") || \in_array(null, $relatedFactories, true)
+            || !class_exists($kernel) || !method_exists($kernel, 'fromEnvironment')
+            || !class_exists($migrations) || !method_exists($migrations, 'migrate')) {
+            return null;
+        }
+        $parameters = array_map(static fn (\ReflectionParameter $parameter): string => $parameter->getName(), (new \ReflectionMethod($kernel, 'fromEnvironment'))->getParameters());
+        if (!\in_array('database', $parameters, true) || !\in_array('telemetry', $parameters, true)) {
+            return null;
+        }
+
+        return 'Tests\\Feature\\' . implode('\\', $segments);
+    }
+
+    /** @param array<string, string|null> $relatedFactories */
+    private function whyNoTest(array $relatedFactories): string
+    {
+        $missing = array_keys(array_filter($relatedFactories, static fn (?string $factory): bool => $factory === null));
+        if ($missing !== []) {
+            return 'No test was written: ' . implode(' and ', $missing) . ' belong' . (\count($missing) === 1 ? 's' : '') . ' to a model with no factory to make a row with (`tinvar make:model --factory`).';
+        }
+
+        return 'No test was written: the app has no tests/ directory, or no Kernel::fromEnvironment(database:, telemetry:) and Database\\Migrations to build one with, as the skeleton has.';
     }
 
     /**
@@ -364,6 +770,14 @@ final class MakeCommand
                     if (Prompts::confirm('Write a form request for its input?', default: false, name: 'request')) {
                         $options['request'] = true;
                     }
+                }
+                break;
+            case 'make:resource':
+                if ($positional === []) {
+                    $positional[] = Prompts::text('What is the resource called?', placeholder: 'Orders/Order', required: true, validate: self::verdict(static fn (string $name) => Names::classPath($name, 'resource name', 'Orders/Order')), hint: "Its model's name; a segment before it is its domain.", name: 'name');
+                }
+                if (!isset($options['fields']) && \count($positional) === 1) {
+                    $options['fields'] = $this->askFields();
                 }
                 break;
             case 'make:model':

@@ -186,8 +186,37 @@ final readonly class AppLayout
      */
     public function typesImport(string $view): string
     {
-        $from = explode('/', \dirname($this->viewPath($view)));
-        $to = explode('/', "{$this->types}/generated");
+        return self::importBetween($this->viewPath($view), "{$this->types}/generated");
+    }
+
+    /**
+     * A client component of the application's, beside its pages:
+     * resources/components/orders/OrderForm.tsx for orders/OrderForm.
+     *
+     * @param string $name its path under the components directory, without .tsx, every
+     *        segment already checked as a name
+     */
+    public function componentPath(string $name): string
+    {
+        $resources = \dirname($this->pages);
+
+        return $this->inside($resources, "{$resources}/components/{$name}.tsx");
+    }
+
+    /** Where codegen writes generated.ts, without its extension: what a component imports its types from. */
+    public function generatedTypes(): string
+    {
+        return "{$this->types}/generated";
+    }
+
+    /**
+     * How the file $from imports $to, a module named without its
+     * extension: `../../types/generated`, or `./OrderForm` beside it.
+     */
+    public static function importBetween(string $from, string $to): string
+    {
+        $from = explode('/', \dirname($from));
+        $to = explode('/', $to);
 
         $common = 0;
         while ($common < \count($from) && $common < \count($to) && $from[$common] === $to[$common]) {

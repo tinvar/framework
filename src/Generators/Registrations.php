@@ -84,6 +84,46 @@ final readonly class Registrations
     }
 
     /**
+     * What among the application's pages already answers one of $paths on
+     * the primary host, or is named one of $names: a page a new one would
+     * collide with, which registration would refuse once both are there.
+     * Said before anything is written, so a run that would make a route
+     * table no boot accepts writes nothing. Nothing is said where the
+     * routes do not register as they are -- that is theirs to fix first,
+     * and the boot says so.
+     *
+     * @param list<string> $paths route templates, as /orders/{order}
+     * @param list<string> $names route names, as orders.show
+     * @return list<string> a line for each collision
+     */
+    public function collisions(array $paths, array $names): array
+    {
+        if ($this->routes === []) {
+            return [];
+        }
+        $registry = new RouteRegistry();
+        try {
+            $registry->registerAll($this->routes);
+        } catch (RoutingException|\LogicException) {
+            return [];
+        }
+
+        $shape = static fn (string $template): string => (string) preg_replace('/\{[^}\/]*\}/', '{}', rtrim($template, '/') === '' ? '/' : rtrim($template, '/'));
+        $wanted = array_map($shape, $paths);
+        $found = [];
+        foreach ($registry->pages() as $page) {
+            if ($page->host === null && \in_array($shape($page->template), $wanted, true)) {
+                $found[] = "{$page->class} already answers {$page->template}";
+            }
+            if ($page->name !== null && \in_array($page->name, $names, true)) {
+                $found[] = "{$page->class} is already named '{$page->name}'";
+            }
+        }
+
+        return array_values(array_unique($found));
+    }
+
+    /**
      * The layout keys PHP will render $page in, outermost first.
      *
      * @return list<string>
