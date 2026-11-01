@@ -62,6 +62,9 @@ final readonly class JobRunner
         private ?PanelRegistry $registry = null,
         private ?Memberships $memberships = null,
         private ?UserLookup $users = null,
+        // Told of each job while it runs, for the audit log to read who
+        // made a change (ADR 0150); nothing is told without it.
+        private ?RunningJobs $running = null,
     ) {}
 
     /**
@@ -182,7 +185,8 @@ final readonly class JobRunner
         $this->orm->withoutSubtreeGrant(fn () => $this->orm->actAs($envelope->tenant, function () use ($envelope, $refusal): void {
             $this->auth->actingAs(null, function () use ($envelope, $refusal): void {
                 $work = function () use ($envelope, $refusal): void {
-                    $this->call($this->job($envelope), 'refused', $this->control($envelope), $refusal);
+                    $call = fn () => $this->call($this->job($envelope), 'refused', $this->control($envelope), $refusal);
+                    $this->running === null ? $call() : $this->running->within($envelope, $call);
                 };
                 $panels = $this->panels;
                 $panels === null ? $work() : $this->outsidePanels(static fn () => $panels->grantedWithin(null, $work));
@@ -193,6 +197,11 @@ final readonly class JobRunner
     /** @param \Closure(): void $work */
     private function within(Envelope $envelope, \Closure $work): void
     {
+        if ($this->running !== null) {
+            $running = $this->running;
+            $inner = $work;
+            $work = static fn () => $running->within($envelope, $inner);
+        }
         // Never with the subtree granted (ADR 0047): a sync job runs inside
         // the request that dispatched it, whose panel may have granted it.
         // Nor with that request's membership check in force: the query cache

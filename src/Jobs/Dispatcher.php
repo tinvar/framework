@@ -62,6 +62,9 @@ final readonly class Dispatcher
         private ?PanelContext $panels = null,
         private ?PanelRegistry $registry = null,
         private ?\Closure $clock = null,
+        // The job running now, if this dispatch is made from one: its
+        // starter is the starter of what it dispatches (ADR 0150).
+        private ?RunningJobs $running = null,
     ) {}
 
     /**
@@ -427,6 +430,10 @@ final readonly class Dispatcher
             chain: $chain,
             unique: $unique,
             catch: $catch,
+            // Who started the work, sealed whether or not the job runs as
+            // them, for the audit log to name: whoever is signed in, or the
+            // starter of the job dispatching this one.
+            startedBy: $this->auth->id() ?? $this->running?->current()?->startedBy,
         );
     }
 

@@ -71,6 +71,10 @@ final readonly class Envelope
      *                                         fails for good
      * @param string|null          $member what its batch counts it as: its chain's first job's id,
      *                                         for a later job of a chain inside a batch; its own otherwise
+     * @param string|null          $startedBy who started the work, whether or not the job runs as
+     *                                         them: the user signed in where it was dispatched, or the
+     *                                         starter of the job that dispatched it -- what the audit log
+     *                                         says a job was started by (ADR 0150)
      */
     public function __construct(
         public string $id,
@@ -89,6 +93,7 @@ final readonly class Envelope
         public ?string $unique = null,
         public ?array $catch = null,
         public ?string $member = null,
+        public ?string $startedBy = null,
     ) {}
 
     /** What its batch counts it as: the chain it is part of, by the chain's first job, or itself. */
@@ -125,6 +130,7 @@ final readonly class Envelope
             unique: $this->unique,
             catch: $this->catch,
             member: $this->member,
+            startedBy: $this->startedBy,
         );
     }
 
@@ -154,6 +160,7 @@ final readonly class Envelope
             chain: \array_slice($this->chain, 1),
             catch: $this->catch,
             member: $this->batch === null ? null : $this->batchMember(),
+            startedBy: $this->startedBy,
         );
     }
 
@@ -179,6 +186,7 @@ final readonly class Envelope
             epoch: $this->epoch,
             dispatchedAt: $now,
             declaredBy: $this->catch['by'],
+            startedBy: $this->startedBy,
         );
     }
 
@@ -229,6 +237,9 @@ final readonly class Envelope
         if ($this->member !== null) {
             $fields['bm'] = $this->member;
         }
+        if ($this->startedBy !== null) {
+            $fields['sb'] = $this->startedBy;
+        }
         $json = json_encode($fields, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION);
 
         return Signer::encode($signer->sign($json)) . '.' . $json;
@@ -268,6 +279,7 @@ final readonly class Envelope
             || !(!\array_key_exists('batch', $data) || \is_string($data['batch']))
             || !(!\array_key_exists('uq', $data) || \is_string($data['uq']))
             || !(!\array_key_exists('bm', $data) || \is_string($data['bm']))
+            || !(!\array_key_exists('sb', $data) || \is_string($data['sb']))
             || !(!\array_key_exists('catch', $data) || \is_array($data['catch']))
             || !(!\array_key_exists('chain', $data) || \is_array($data['chain']))) {
             throw new JobRefused('payload_unsigned', 'The job\'s payload is not an envelope this version wrote.');
@@ -292,6 +304,7 @@ final readonly class Envelope
         $chain = self::chainFrom($data['chain'] ?? []);
         $catch = \array_key_exists('catch', $data) ? self::chainFrom([$data['catch']])[0] : null;
         $member = $data['bm'] ?? null;
+        $startedBy = $data['sb'] ?? null;
 
         return new self(
             id: $data['id'],
@@ -310,6 +323,7 @@ final readonly class Envelope
             unique: $unique,
             catch: $catch,
             member: $member,
+            startedBy: $startedBy,
         );
     }
 
