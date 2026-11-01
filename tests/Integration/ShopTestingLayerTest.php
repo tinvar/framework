@@ -128,6 +128,19 @@ function orderOf(Customer $customer): Order
 
 // ------------------------------------------------- pages, no renderer
 
+it('hands Carbon back to the system at forget(), whatever use() came after a clock was given', function () {
+    $kernel = Testing::client()->app;
+    Testing::use($kernel, clock: new \Tinvar\Testing\TestClock(1_000_000_000));
+    expect(\Carbon\CarbonImmutable::now()->getTimestamp())->toBe(1_000_000_000);
+
+    // A second use(), with no clock: Carbon reads the system's again, and
+    // forget() leaves it there.
+    Testing::use($kernel);
+    expect(\Carbon\CarbonImmutable::now()->getTimestamp())->toBeGreaterThanOrEqual(time() - 5);
+    Testing::forget();
+    expect(\Carbon\CarbonImmutable::now()->getTimestamp())->toBeGreaterThanOrEqual(time() - 5);
+});
+
 it('asserts what a page sent to React, and what it shares, through the whole request path', function () {
     get('/')
         ->assertOk()
