@@ -22,7 +22,9 @@ use Tinvar\Data\Data;
 use Tinvar\Http\Kernel;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
+use Tinvar\Jobs\Rate;
 use Tinvar\Jobs\Worker;
+use Tinvar\Jobs\WorkerOptions;
 use Tinvar\Mail\Address;
 use Tinvar\Mail\ArrayTransport;
 use Tinvar\Mail\Email;
@@ -49,6 +51,8 @@ use Tinvar\Outbound\FakeOutboundHttp;
 use Tinvar\Outbound\OutboundRequest;
 use Tinvar\Outbound\TracedHttp;
 use Tinvar\Query\QueryRegistry;
+use Tinvar\Queue\ArrayQueue;
+use Tinvar\Queue\ReservedJob;
 use Tinvar\Render\RendererException;
 use Tinvar\Render\RenderFailed;
 use Tinvar\Routing\LoadedRoute;
@@ -208,6 +212,29 @@ describe('work outside a request', function () {
         expect($text)->toContain("tinvar_jobs_total{queue=\"default\",job=\"{$class}\",outcome=\"done\"} 2")
             ->and($text)->toContain("tinvar_job_duration_seconds_count{queue=\"default\",job=\"{$class}\"} 2")
             ->and($text)->not->toContain('ada@example.com');
+    });
+
+    it('counts a job lost before it starts, and one its tenant\'s rate holds back, as outcomes of their own', function () {
+        $shared = new \Tinvar\Observability\ArrayMetricsStore();
+        $telemetry = new Telemetry(new Logger(new MemorySink()), new Metrics($shared));
+        $h = new Harness();
+        $h->worker = new Worker($h->queue, $h->runner, $h->scope, clock: fn (): int => $h->now, telemetry: $telemetry);
+        $lost = $h->dispatcher->dispatch(new RecordContext(note: 'lost'));
+        \assert($h->queue instanceof ArrayQueue);
+        $payload = (string) $h->queue->payload($lost);
+
+        // A reservation another worker has taken since: not this one's to start.
+        expect($h->worker->process(new ReservedJob($lost, 'default', $payload, 1, 'not-the-token')))->toBe('lost');
+
+        $h->dispatcher->dispatch(new RecordContext(note: 'second'));
+        $h->worker->run(new WorkerOptions(stopWhenEmpty: true, signals: false, rates: ['default' => Rate::perTenant(1, 60)]));
+
+        $server = new Telemetry(new Logger(new MemorySink()), new Metrics(new \Tinvar\Observability\ArrayMetricsStore(), readAlso: [$shared]));
+        $text = (string) $server->metrics?->exposition();
+        $class = str_replace('\\', '\\\\', RecordContext::class);
+        expect($text)->toContain("tinvar_jobs_total{queue=\"default\",job=\"{$class}\",outcome=\"lost\"} 1")
+            ->and($text)->toContain("tinvar_jobs_total{queue=\"default\",job=\"{$class}\",outcome=\"done\"} 1")
+            ->and($text)->toContain("tinvar_jobs_total{queue=\"default\",job=\"{$class}\",outcome=\"throttled\"} 1");
     });
 
     it('runs a scheduled task as a trace, with what it logs under the trace\'s id', function () {

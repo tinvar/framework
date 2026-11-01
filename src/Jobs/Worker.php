@@ -380,7 +380,7 @@ final class Worker
             if (!$this->queue->extend($job, $this->now() + $hold)) {
                 $this->say("{$envelope->class} {$job->id} lost: its reservation was taken before it could start");
 
-                return 'lost';
+                return $this->counted($job, $envelope, 'lost', $began, $span);
             }
 
             // Asked to stop while it was being taken: back untouched, for the
@@ -408,10 +408,9 @@ final class Worker
             $wait = $skipped ? 0 : $this->tenantStart($job, $envelope);
             if ($wait > 0) {
                 $outcome = $this->queue->requeue($job, $this->now() + $wait) ? 'throttled' : 'lost';
-                $span?->set('tinvar.job.outcome', $outcome);
                 $this->say("{$envelope->class} {$job->id} {$outcome} (its tenant's starts are spent for {$wait}s)");
 
-                return $outcome;
+                return $this->counted($job, $envelope, $outcome, $began, $span);
             }
 
             if (!$skipped) {
@@ -452,10 +451,7 @@ final class Worker
         if ($skipped && $outcome === 'done') {
             $outcome = 'skipped';
         }
-        $span?->set('tinvar.job.outcome', $outcome);
-        // Counted as it ran, by the class its verified payload names: the
-        // trace's end flushes it to a store the server's scrape reads.
-        $this->telemetry?->jobFinished($job->queue, $envelope?->class, $outcome, (hrtime(true) - $began) / 1e9);
+        $this->counted($job, $envelope, $outcome, $began, $span);
         if ($error !== null && $outcome !== 'paused') {
             $span?->set('error.type', $error::class)->fail($error::class);
         }
@@ -471,6 +467,24 @@ final class Worker
             (hrtime(true) - $began) / 1e6,
             $error === null ? '' : ': ' . $error::class . ': ' . $error->getMessage(),
         ));
+
+        return $outcome;
+    }
+
+    /**
+     * The outcome on the job's span and in its counts, by the class its
+     * verified payload names: the trace's end flushes it to a store the
+     * server's scrape reads. Every outcome, the ones decided before the job
+     * starts -- lost, throttled -- as much as the ones after it ran.
+     *
+     * @template T of string
+     * @param T $outcome
+     * @return T
+     */
+    private function counted(ReservedJob $job, ?Envelope $envelope, string $outcome, int $began, ?Span $span): string
+    {
+        $span?->set('tinvar.job.outcome', $outcome);
+        $this->telemetry?->jobFinished($job->queue, $envelope?->class, $outcome, (hrtime(true) - $began) / 1e9);
 
         return $outcome;
     }
