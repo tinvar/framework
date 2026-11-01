@@ -222,6 +222,24 @@ it('exits 130 when a prompt is cancelled, and 64 when nobody is there to answer 
     expect(ran($console, 'ask', '--no-interaction')[0])->toBe(64);
 });
 
+it('draws no progress bar to roll back nothing', function () {
+    $dir = sys_get_temp_dir() . '/tinvar-app-rollback-' . bin2hex(random_bytes(4));
+    mkdir("{$dir}/migrations", 0o755, true);
+    $environment = getenv('TINVAR_ENV');
+    putenv('TINVAR_ENV=testing');
+    try {
+        $console = console(['database' => static fn (): string => "{$dir}/app.sqlite", 'migrations' => "{$dir}/migrations"]);
+        expect(ran($console, 'migrate')[0])->toBe(0);
+
+        $terminal = Prompts::fakeTerminal();
+        expect(ran($console, 'migrate:rollback')[0])->toBe(0)
+            ->and($terminal->screen())->not->toContain('Rolling back');
+    } finally {
+        putenv($environment === false ? 'TINVAR_ENV' : "TINVAR_ENV={$environment}");
+        exec('rm -rf ' . escapeshellarg($dir));
+    }
+});
+
 it('confirms migrate:fresh on a terminal, and runs the migrations under a progress bar', function () {
     $dir = sys_get_temp_dir() . '/tinvar-app-migrate-' . bin2hex(random_bytes(4));
     mkdir("{$dir}/migrations", 0o755, true);

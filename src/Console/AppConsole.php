@@ -651,6 +651,11 @@ final class AppConsole
             ask: static fn (string $question): bool => Prompts::confirm($question, default: false),
             progress: static function (string $direction, int $done, int $total, string $name) use ($running): void {
                 if ($done === 0) {
+                    // Nothing to run -- a rollback with nothing to roll
+                    // back is still told so -- draws no bar.
+                    if ($total === 0) {
+                        return;
+                    }
                     $running->bar = Prompts::progress($direction === 'up' ? 'Migrating' : 'Rolling back', $total)->start();
 
                     return;
