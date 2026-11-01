@@ -18,6 +18,7 @@ use Tinvar\Jobs\JobControl;
 use Tinvar\Jobs\JobRefused;
 use Tinvar\Jobs\Refusal;
 use Tinvar\Jobs\WorkerStopping;
+use Tinvar\Orm\InvalidCursor;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\Query;
@@ -408,6 +409,14 @@ final readonly class TransferRunner
                 [$rows, $pausedAt] = $this->write($transfer, $record->format, $arguments, $stream, $from, $rows, $control, $beat);
             } catch (TooManyRows) {
                 $this->fail($record, "It has more than {$transfer->maxRows} rows. Narrow it and start it again.", $control);
+
+                return;
+            } catch (InvalidCursor) {
+                // The next page's cursor opens for the query it was made for
+                // and the row it reached alone: that row deleted since, or a
+                // query that reads differently now -- a binding taken from
+                // the clock, say -- leaves no place to go on from.
+                $this->fail($record, 'Its rows changed while it was paused or between two pages: the row it had reached is gone, or its query reads differently now. Start it again.', $control);
 
                 return;
             }
@@ -1003,6 +1012,7 @@ final readonly class TransferRunner
      * @param (\Closure(): void)|null $beat run between pages, outside their read-only scope
      * @return array{int, string|null} the rows written in all, and the next page's cursor if it stopped before it
      * @throws TooManyRows
+     * @throws InvalidCursor when the row its cursor reached is gone, or its query reads differently
      * @throws WorkerStopping when the worker's stop cuts it off, anywhere
      */
     private function write(CompiledTransfer $transfer, string $format, array $arguments, mixed $stream, ?string $from = null, int $rows = 0, ?JobControl $control = null, ?\Closure $beat = null): array

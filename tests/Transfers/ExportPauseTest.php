@@ -257,3 +257,20 @@ it('fails its record when its file cannot be stored, finished or paused', functi
         ->and($record->key)->toBe('')
         ->and($app->storage->keys())->toBe([]);
 })->with(['finished' => [false], 'paused' => [true]]);
+
+// Review: a paused export whose rows changed under it -- the row it stopped
+// at deleted, or a query that reads differently on the next run -- failed
+// with only "The file could not be written.", saying nothing of why.
+it('fails a paused export whose rows changed under it, saying so', function () {
+    $app = manyWidgets(TransferRunner::PAGE + 1);
+    $app->export();
+    expect(runOnce($app, static fn (): bool => true))->not->toBeNull();
+    $app->connection->execute('DELETE FROM widgets');
+
+    runOnce($app, static fn (): bool => false);
+    $record = $app->record();
+    expect($record->status)->toBe(TransferRecord::FAILED)
+        ->and($record->failure)->toContain('changed while it was paused')
+        ->and($record->key)->toBe('')
+        ->and($app->storage->keys())->toBe([]);
+});
