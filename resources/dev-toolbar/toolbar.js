@@ -212,6 +212,9 @@
         const { request } = await read(`/${id}`);
         if (selected !== id) return;
         detail = request;
+        // Which request the view is of: the list says which is chosen at
+        // once, the view only once that request has been read.
+        view.setAttribute('data-request', id);
         show();
       } catch (error) {
         view.replaceChildren(
