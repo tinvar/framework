@@ -45,10 +45,13 @@ final class ExceptionHandler
             return $this->respond(422, ['errors' => $e->errors], $request);
         }
 
+        // Classified as normalize() says; logged and digested as itself, so
+        // the line names what failed and where, and the digest finds it.
+        $original = $e;
         $e = self::normalize($e);
 
         if ($e instanceof HttpException) {
-            $this->log($e, $digest = self::digest($e));
+            $this->log($original, $digest = self::digest($original));
 
             $response = $this->respond($e->status, [
                 'error' => [
@@ -91,9 +94,9 @@ final class ExceptionHandler
             return new HttpError(422, 'unprocessable', self::reason(422), self::digest($e));
         }
 
-        $e = self::normalize($e);
-        $status = $e instanceof HttpException ? $e->status : 500;
-        $code = $e instanceof HttpException && $e->code_ !== '' ? $e->code_ : self::codeFor($status);
+        $classified = self::normalize($e);
+        $status = $classified instanceof HttpException ? $classified->status : 500;
+        $code = $classified instanceof HttpException && $classified->code_ !== '' ? $classified->code_ : self::codeFor($status);
 
         return new HttpError($status, $code, self::reason($status), self::digest($e));
     }
@@ -103,8 +106,8 @@ final class ExceptionHandler
      * force. Classified rather than left a bare 500, because it is not
      * always a bug -- a page reached on a host, or by a session, that names
      * no tenant is a request for something that is not there -- and it says
-     * nothing more than that. The message, naming the model, goes to the log
-     * with the digest like any other.
+     * nothing more than that. What it is answered as: the failure itself,
+     * naming the model, goes to the log under its own digest like any other.
      */
     private static function normalize(\Throwable $e): \Throwable
     {
