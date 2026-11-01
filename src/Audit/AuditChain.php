@@ -28,6 +28,9 @@ final readonly class AuditChain
     /** The purpose the key is derived for. */
     public const string PURPOSE = 'audit-chain';
 
+    /** How the chain encodes, and how the log encodes an entry's changes and data. */
+    public const int JSON = JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_INVALID_UTF8_SUBSTITUTE;
+
     private Signer $signer;
 
     public function __construct(#[\SensitiveParameter] string $key)
@@ -49,7 +52,10 @@ final readonly class AuditChain
      */
     public function link(string $previous, array $fields): string
     {
-        return bin2hex($this->signer->sign($previous . "\n" . json_encode($fields, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)));
+        // Encoded as the entry's own JSON is, bytes that are no text
+        // replaced rather than refused: a hash that could throw would take
+        // the change it describes down with it.
+        return bin2hex($this->signer->sign($previous . "\n" . json_encode($fields, self::JSON)));
     }
 
     /** The MAC over where pruning left a tenant's log: the last entry taken away, and its hash. */

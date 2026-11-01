@@ -78,6 +78,9 @@ final class AuditLog implements ModelChanges, ActionObserver
     /** How deep an event's data may nest. */
     public const int MAX_DATA_DEPTH = 8;
 
+    /** A host as an entry keeps one: a name or a bracketed IPv6 address, and a port. */
+    private const string HOST = '/^(?:[a-z0-9_](?:[a-z0-9_.-]{0,252})|\[[0-9a-f:.]{2,45}\])(?::\d{1,5})?\z/';
+
     /** Kept a year unless the application says otherwise (AuditConfig). */
     public const int DEFAULT_RETENTION_DAYS = 365;
 
@@ -223,12 +226,16 @@ final class AuditLog implements ModelChanges, ActionObserver
      */
     public function enterRequest(Request $request, ?string $requestId = null): int
     {
-        $host = $this->proxies->host($request);
+        // Each held to the form it has, and dropped when it has another:
+        // what a client sent is not the log's to keep as sent, and bytes
+        // that are no text would otherwise reach the chain's hash.
+        $host = strtolower((string) $this->proxies->host($request));
         $ip = $this->proxies->clientAddress($request);
+        $requestId ??= '';
         $this->requests[] = new AuditRequest(
-            $host === null || $host === '' ? null : mb_strcut(strtolower($host), 0, 255, 'UTF-8'),
-            $ip === '' ? null : substr($ip, 0, 45),
-            $requestId === null || $requestId === '' ? null : substr($requestId, 0, 64),
+            preg_match(self::HOST, $host) === 1 && \strlen($host) <= 255 ? $host : null,
+            filter_var($ip, FILTER_VALIDATE_IP) !== false ? $ip : null,
+            preg_match('/^[A-Za-z0-9._:-]{1,64}\z/', $requestId) === 1 ? $requestId : null,
         );
 
         return \count($this->requests);
@@ -256,7 +263,7 @@ final class AuditLog implements ModelChanges, ActionObserver
 
         $job = $this->jobs?->current();
         if ($job !== null) {
-            return new Actor(ActorKind::Job, $user?->authIdentifier(), null, $job->class, $job->id, $job->startedBy);
+            return new Actor(ActorKind::Job, $user?->authIdentifier(), $job->startedByImpersonator, $job->class, $job->id, $job->startedBy);
         }
         if ($user !== null) {
             $impersonator = $this->impersonator === null ? null : ($this->impersonator)();
@@ -444,8 +451,8 @@ final class AuditLog implements ModelChanges, ActionObserver
     private function append(string $tenant, string $event, ?string $subjectType, ?string $subjectId, ?array $changes, ?array $data): void
     {
         $this->orm->refuseWriteOf('An audit entry');
-        if (\strlen($tenant) > AuditTable::NAME) {
-            throw new \LengthException('A tenant named in the audit log is at most ' . AuditTable::NAME . ' bytes.');
+        if (\strlen($tenant) > AuditTable::NAME || !mb_check_encoding($tenant, 'UTF-8')) {
+            throw new \LengthException('A tenant named in the audit log is UTF-8 of at most ' . AuditTable::NAME . ' bytes.');
         }
 
         $actor = $this->actor();
@@ -456,7 +463,7 @@ final class AuditLog implements ModelChanges, ActionObserver
             'tenant' => $tenant,
             'sequence' => 0,
             'occurred_at' => $this->orm->timestampStorage()->format($now),
-            'event' => $event,
+            'event' => self::cut($event, 64),
             'subject_type' => $subjectType === null ? null : self::cut($subjectType, AuditTable::NAME),
             'subject_id' => $subjectId === null ? null : self::cut($subjectId, 64),
             'actor_type' => $actor->kind->value,
@@ -466,10 +473,10 @@ final class AuditLog implements ModelChanges, ActionObserver
             'job_id' => $actor->jobId === null ? null : self::cut($actor->jobId, 64),
             'started_by' => $actor->startedBy === null ? null : self::cut($actor->startedBy, AuditTable::NAME),
             'action' => $this->actions === [] ? null : self::cut($this->actions[array_key_last($this->actions)], AuditTable::NAME),
-            'panel' => $this->panels?->currentOrNull(),
-            'host' => $request?->host,
-            'request_id' => $request?->requestId,
-            'ip' => $request?->ip,
+            'panel' => self::cutOrNull($this->panels?->currentOrNull(), 64),
+            'host' => self::cutOrNull($request?->host, 255),
+            'request_id' => self::cutOrNull($request?->requestId, 64),
+            'ip' => self::cutOrNull($request?->ip, 45),
             'changes' => $changes === null ? null : self::json($changes),
             'data' => $data === null || $data === [] ? null : self::json($data),
         ];
@@ -643,12 +650,25 @@ final class AuditLog implements ModelChanges, ActionObserver
     /** @param array<array-key, mixed> $value */
     private static function json(array $value): string
     {
-        return json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_INVALID_UTF8_SUBSTITUTE);
+        return json_encode($value, AuditChain::JSON);
     }
 
+    /**
+     * Free text as an entry holds it: valid UTF-8 -- bytes that are no text
+     * replaced, so a header, an id or a name with them can never make the
+     * chain's hash refuse, and the change it describes with it -- and no
+     * longer than its column.
+     */
     private static function cut(string $value, int $bytes): string
     {
+        $value = mb_scrub($value, 'UTF-8');
+
         return \strlen($value) <= $bytes ? $value : mb_strcut($value, 0, $bytes, 'UTF-8');
+    }
+
+    private static function cutOrNull(?string $value, int $bytes): ?string
+    {
+        return $value === null ? null : self::cut($value, $bytes);
     }
 
     /** A stored moment in the one form the chain hashes, whatever form the database keeps it in. */
