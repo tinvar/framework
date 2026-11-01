@@ -359,7 +359,7 @@ describe('the built catalog', function () {
         $products = array_column(array_column($boundaries, 'props'), 'product');
 
         expect($manifest->hasAny())->toBeTrue()
-            ->and($manifest->routes())->toEqualCanonicalizing(['orders.show', 'shop.catalog'])
+            ->and($manifest->routes())->toEqualCanonicalizing(['orders.show', 'shop.catalog', 'shop.search'])
             ->and($manifest->componentsFor('shop.catalog'))->toBe(['Availability'])
             ->and($boundaries)->toHaveCount(24)
             ->and(array_unique(array_column($boundaries, 'component')))->toBe(['Availability'])
@@ -640,7 +640,7 @@ describe('tinvar build:static', function () use ($root) {
         expect($status)->toBe(0, $output)
             ->and($output)->toContain('built   /')
             ->and(is_file("{$out}/static/index.html"))->toBeTrue()
-            ->and(FragmentManifest::fromFile("{$out}/fragments.json")->routes())->toEqualCanonicalizing(['orders.show', 'shop.catalog'])
+            ->and(FragmentManifest::fromFile("{$out}/fragments.json")->routes())->toEqualCanonicalizing(['orders.show', 'shop.catalog', 'shop.search'])
             ->and(FragmentManifest::fromFile("{$out}/fragments.json")->boundariesFor('shop.catalog'))->toHaveCount(24);
     });
 

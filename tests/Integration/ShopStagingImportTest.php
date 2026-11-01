@@ -139,8 +139,9 @@ it('re-encrypts a column production sealed, under staging\'s key', function () {
         }
     }
     $replanned->drop(...$plan->dropped());
-    $replanned->ignore('tinvar_migrations', because: 'staging\'s own')->ignore('tinvar_build_history', because: 'staging\'s own')
-        ->ignore('schedule_runs', because: 'staging\'s own');
+    foreach ($plan->ignored() as $table) {
+        $replanned->ignore($table, because: 'staging\'s own');
+    }
 
     [$status, $said] = import(["--from={$production}", "--to={$staging}"], plan: $replanned);
     expect($status)->toBe(0, $said);

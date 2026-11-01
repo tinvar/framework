@@ -156,7 +156,7 @@ describe('the produced manifest', function () {
             // And each route's query allowlist (ShopQueryAllowlistTest).
             ->and($output)->toContain('queries orders.show (orders.shipments)')
             ->and($output)->toContain('queries shop.signIn (none)')
-            ->and($manifest->routes())->toEqualCanonicalizing(['orders.show', 'shop.catalog'])
+            ->and($manifest->routes())->toEqualCanonicalizing(['orders.show', 'shop.catalog', 'shop.search'])
             ->and($manifest->componentsFor('orders.show'))->toBe(['ShippingUpdates'])
             ->and($manifest->componentsFor('shop.catalog'))->toBe(['Availability'])
             ->and($manifest->defersOn('shop.product'))->toBeFalse()

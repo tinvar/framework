@@ -138,6 +138,8 @@ describe('the lists the build gives the routes', function () {
 
         expect($manifest->queriesFor('shop.catalog'))->toBe(['products.availability'])
             ->and($manifest->queriesFor('shop.product'))->toBe(['products.availability'])
+            // Its results are the catalog's cards, each awaiting its availability.
+            ->and($manifest->queriesFor('shop.search'))->toBe(['products.availability'])
             ->and($manifest->queriesFor('orders.index'))->toBe([])
             // Through the shipping updates' <Deferred>: its fragment renders
             // under this route's list, though the page imports none of it.
@@ -147,7 +149,7 @@ describe('the lists the build gives the routes', function () {
     it('allow every other route nothing', function () {
         $manifest = built();
         $kernel = Kernel::fromEnvironment('/tmp/tinvar-allow-none.sock', key: KEY, database: Shop::database());
-        $listed = ['shop.catalog', 'shop.product', 'orders.index', 'orders.show'];
+        $listed = ['shop.catalog', 'shop.product', 'shop.search', 'orders.index', 'orders.show'];
 
         foreach ($kernel->routes->pages() as $page) {
             if ($page->name !== null && !\in_array($page->name, $listed, true)) {
