@@ -34,6 +34,17 @@ final class Misses
 
     public function note(string $key, int $clock): void
     {
+        // The earliest miss still waiting for its put, where two are: two
+        // requests a worker interleaves can miss one key before either
+        // puts, and the first put is the first miss's answer -- read before
+        // a forget that landed between the two misses, which the later
+        // clock would vouch for. One whose put never came costs the key's
+        // next put at most, refused where a tag moved since: the safe way.
+        $earlier = $this->at[$key] ?? null;
+        if ($earlier !== null && $earlier < $clock) {
+            $clock = $earlier;
+        }
+
         // Moved to the end, so the oldest is first.
         unset($this->at[$key]);
         $this->at[$key] = $clock;

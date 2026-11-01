@@ -239,6 +239,29 @@ it('keeps nothing read before a forget that landed after the miss', function (st
     });
 })->with(DRIVERS);
 
+// Two requests a worker interleaves miss the same key, a write lands
+// between the misses, and the first puts what it read before the write:
+// the second miss, noted over the first, must not vouch for it.
+it('keeps nothing read before a forget that landed between two misses of one key', function (string $driver) {
+    $missing = missing($driver);
+    if ($missing !== null) {
+        $this->markTestSkipped($missing);
+    }
+
+    onDriver($driver, function (\PDO $pdo, \Closure $another, string $table): void {
+        $reader = installed($pdo, $table);
+        $writer = new PdoStore($another(), $table);
+        $reader->put('q:warm', 'warm', 60, ['racks']);
+
+        expect($reader->get('q:a')['hit'])->toBeFalse();
+        $writer->forgetTags(['racks']);
+        expect($reader->get('q:a')['hit'])->toBeFalse();
+        $reader->put('q:a', 'from before the write', 60, ['racks']);
+
+        expect($writer->get('q:a')['hit'])->toBeFalse();
+    });
+})->with(DRIVERS);
+
 // The table is a trust boundary: whoever can write it must not choose what
 // a read hands back beyond what a put could have.
 it('refuses a payload that is not one it wrote, as a miss, and deletes it', function (string $driver, \Closure $payload) {
