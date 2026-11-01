@@ -258,7 +258,7 @@ final class EndpointHandler
             return null;
         }
 
-        $matched = $this->registry->matchMethod($request->path, $method);
+        $matched = $this->registry->matchAs($request, $method);
         $endpoint = $matched['endpoint'] ?? null;
         $cors = $endpoint?->cors;
         if ($endpoint === null || $cors === null || !$cors->allows($origin)

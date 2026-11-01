@@ -7,6 +7,7 @@ namespace Tinvar\Endpoints;
 use Tinvar\Actions\TagInvalidation;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Cors;
+use Tinvar\Attributes\Domain;
 use Tinvar\Attributes\Endpoint;
 use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\NoAuthorization;
@@ -23,6 +24,9 @@ use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Orm\Model;
 use Tinvar\Routing\CompiledRoute;
+use Tinvar\Routing\Domains;
+use Tinvar\Routing\HostMatch;
+use Tinvar\Routing\HostPattern;
 use Tinvar\Routing\PathTemplate;
 use Tinvar\Routing\PathTemplateRefused;
 use Tinvar\Routing\RouteRegistry;
@@ -64,6 +68,8 @@ final class EndpointRegistry
      *        tenant-scoped-ids-must-be-typed reads as each class registers (ADR 0105)
      */
     public function __construct(private readonly array $models = []) {}
+
+    private ?Domains $domains = null;
 
     /**
      * @param class-string $class
@@ -149,6 +155,19 @@ final class EndpointRegistry
         }
 
         [$template, $segments, $parameters] = self::compilePath($where, $declaration->path);
+
+        // Its host's parameters are inputs as its path's are (ADR 0149).
+        try {
+            $host = Domain::declaredOn($class, $method->getName());
+        } catch (\InvalidArgumentException $e) {
+            throw new EndpointException("{$where}: {$e->getMessage()}", 0, $e);
+        }
+        foreach ($host?->parameters ?? [] as $hostParameter) {
+            if (\in_array($hostParameter, $parameters, true)) {
+                throw new EndpointException("{$where}: '{$hostParameter}' is in both its host and its path; a parameter comes from one place.");
+            }
+        }
+        $parameters = [...($host?->parameters ?? []), ...$parameters];
 
         $checks = Authorize::declaredOn($class, $method->getName());
         $inherited = Authorize::classLevelCount($class);
@@ -355,6 +374,7 @@ final class EndpointRegistry
             throttle: $throttle,
             cors: $cors,
             revalidates: $declaration->revalidates,
+            host: $host,
         );
     }
 
@@ -502,7 +522,60 @@ final class EndpointRegistry
      */
     public function match(Request $request): ?array
     {
-        return $this->matchMethod($request->path, $request->method);
+        return $this->matchMethod($request->path, $request->method, $this->hostOf($request));
+    }
+
+    /**
+     * match(), for a method other than the request's own, on the request's
+     * host: what a CORS preflight asks about.
+     *
+     * @return array{endpoint: CompiledEndpoint, parameters: array<string, string>}|array{allow: list<string>}|null
+     */
+    public function matchAs(Request $request, string $method): ?array
+    {
+        return $this->matchMethod($request->path, $method, $this->hostOf($request));
+    }
+
+    /** Tells the registry which hosts the application serves (ADR 0149); the Kernel does, once. */
+    public function serveOn(Domains $domains): void
+    {
+        $this->domains = $domains;
+    }
+
+    /**
+     * Every #[Domain] pattern an endpoint declares, once each.
+     *
+     * @return list<HostPattern>
+     */
+    public function hostPatterns(): array
+    {
+        $patterns = [];
+        foreach ($this->ordered as $endpoint) {
+            if ($endpoint->host !== null) {
+                $patterns[$endpoint->host->pattern] = $endpoint->host;
+            }
+        }
+
+        return array_values($patterns);
+    }
+
+    /**
+     * The host a request is for: the Kernel's resolution, or -- asked before
+     * it, as whether a request opens a session is -- resolved here; null
+     * where the application routes on no host, and for a host it does not
+     * serve, which nothing here then matches.
+     */
+    private function hostOf(Request $request): ?HostMatch
+    {
+        if ($this->domains === null) {
+            return null;
+        }
+
+        try {
+            return $this->domains->resolve($request);
+        } catch (\Tinvar\Http\HttpException) {
+            return new HostMatch("\0unserved", '');
+        }
     }
 
     /**
@@ -511,7 +584,7 @@ final class EndpointRegistry
      *
      * @return array{endpoint: CompiledEndpoint, parameters: array<string, string>}|array{allow: list<string>}|null
      */
-    public function matchMethod(string $path, string $method): ?array
+    public function matchMethod(string $path, string $method, ?HostMatch $host = null): ?array
     {
         $first = CompiledRoute::split($path)[0] ?? '';
         if (str_starts_with($first, '_')) {
@@ -522,10 +595,15 @@ final class EndpointRegistry
 
         $allow = [];
         foreach ($this->ordered as $endpoint) {
+            // On its own host only; the primary host for one declaring none.
+            if ($endpoint->host?->pattern !== $host?->pattern) {
+                continue;
+            }
             $parameters = $endpoint->match($path);
             if ($parameters === null) {
                 continue;
             }
+            $parameters = [...($host === null ? [] : $host->parameters), ...$parameters];
             if ($endpoint->answers($method)) {
                 return ['endpoint' => $endpoint, 'parameters' => $parameters];
             }
@@ -556,7 +634,7 @@ final class EndpointRegistry
         $violations = [];
         foreach ($this->all() as $endpoint) {
             foreach ($routes->pages() as $page) {
-                if ($endpoint->overlaps($page->segments)) {
+                if ($endpoint->host?->shape() === $page->host?->shape() && $endpoint->overlaps($page->segments)) {
                     $violations[] = new Violation(
                         self::PATHS_MUST_NOT_OVERLAP_PAGES,
                         $endpoint->where(),

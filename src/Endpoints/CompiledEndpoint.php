@@ -74,6 +74,7 @@ final readonly class CompiledEndpoint
         public ?Throttle $throttle = null,
         public ?Cors $cors = null,
         public array $revalidates = [],
+        public ?\Tinvar\Routing\HostPattern $host = null,
     ) {}
 
     /**
@@ -129,7 +130,7 @@ final readonly class CompiledEndpoint
      */
     public function shape(): string
     {
-        return '/' . implode('/', array_map(
+        return ($this->host === null ? '' : $this->host->shape()) . '/' . implode('/', array_map(
             static fn (string $segment): string => CompiledRoute::isParameter($segment) ? '{}' : $segment,
             $this->segments,
         ));

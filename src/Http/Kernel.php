@@ -1702,7 +1702,7 @@ final class Kernel
 
         $asked = $request->method === 'OPTIONS' ? $request->header('access-control-request-method') : null;
         if ($asked !== null && isset($registry->match($request)['allow'])) {
-            $matched = $registry->matchMethod($request->path, $asked);
+            $matched = $registry->matchAs($request, $asked);
 
             return isset($matched['endpoint']) && $matched['endpoint']->sessionless;
         }
