@@ -7,6 +7,7 @@ namespace Tinvar\Console\Doctor\Checks;
 use Tinvar\Console\Doctor\DoctorCheck;
 use Tinvar\Console\Doctor\DoctorContext;
 use Tinvar\Console\Doctor\Finding;
+use Tinvar\Console\Doctor\SafeFix;
 
 /**
  * Who may read and write what holds a secret or the data: the app key's
@@ -40,7 +41,7 @@ final readonly class PermissionsCheck implements DoctorCheck
         $driver = strtolower($context->variable('APP_DATABASE_DRIVER') ?? 'sqlite');
         if ($driver === 'sqlite' && $database !== ':memory:') {
             if (is_file($database)) {
-                $findings = [...$findings, ...self::unreadableByOthers($database)];
+                $findings = [...$findings, ...self::unreadableByOthers($database, $context->production())];
                 if (!is_writable($database)) {
                     $findings[] = Finding::problem("{$database} is not writable by this user: every write fails.", "chown it to the user the server runs as, and `chmod 600 {$database}`.");
                 }
@@ -75,13 +76,30 @@ final readonly class PermissionsCheck implements DoctorCheck
         return $findings;
     }
 
-    /** @return list<Finding> */
-    private static function unreadableByOthers(string $path): array
+    /**
+     * The database open to other users: a problem on a server, where they
+     * are not the developer's; on a developer's machine, where SQLite made
+     * the file under the shell's umask, a warning --fix closes.
+     *
+     * @return list<Finding>
+     */
+    private static function unreadableByOthers(string $path, ?string $production): array
     {
         $mode = fileperms($path) & 0o777;
+        if (($mode & 0o007) === 0) {
+            return [];
+        }
+        $message = \sprintf('%s is mode %04o: any user on this machine may read every row.', $path, $mode);
+        if ($production !== null) {
+            return [Finding::problem($message, "`chmod 600 {$path}`, as the user the server runs as.")];
+        }
 
-        return ($mode & 0o007) !== 0
-            ? [Finding::problem(\sprintf('%s is mode %04o: any user on this machine may read every row.', $path, $mode), "`chmod 600 {$path}`.")]
-            : [];
+        return [Finding::warning($message, "`chmod 600 {$path}`, or `doctor --fix`.", new SafeFix("close {$path} to other users", static function () use ($path): string {
+            if (!chmod($path, 0o600)) {
+                throw new \RuntimeException("chmod refused; run `chmod 600 {$path}` yourself.");
+            }
+
+            return "made {$path} this user's alone (0600)";
+        }))];
     }
 }

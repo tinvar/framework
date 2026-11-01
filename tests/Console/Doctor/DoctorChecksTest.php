@@ -332,10 +332,13 @@ describe('the build, the renderers and production', function () {
         $findings = new PermissionsCheck()->run(context($root, [], ['keyFile' => "{$root}/state/app.key"]));
         $fixes = array_map(static fn (Finding $f): ?string => $f->fix, $findings);
 
-        expect(severities($findings))->toBe(['problem', 'problem', 'problem'])
+        expect(severities($findings))->toBe(['problem', 'problem', 'warning'])
             ->and($fixes)->toContain("`chmod 600 {$root}/state/app.key`.")
             ->and($fixes)->toContain("`chmod 700 {$root}/state`.")
-            ->and($fixes)->toContain("`chmod 600 {$root}/database/app.sqlite`.");
+            ->and($fixes)->toContain("`chmod 600 {$root}/database/app.sqlite`, or `doctor --fix`.");
+        (fixOf($findings[2])->apply)();
+        expect(fileperms("{$root}/database/app.sqlite") & 0o777)->toBe(0o600)
+            ->and(severities(new PermissionsCheck()->run(context($root, ['TINVAR_ENV' => 'production'], ['keyFile' => "{$root}/state/app.key"]))))->toBe(['problem', 'problem']);
     });
 });
 
