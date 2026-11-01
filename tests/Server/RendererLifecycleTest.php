@@ -208,6 +208,30 @@ function forkedRender(string $socket): array
 }
 
 /**
+ * Waits until the pool's renderer says a render is in flight: the forked
+ * render has connected and sent its frame. A fixed wait instead lets a
+ * loaded machine stop the pool before the fork has built its fixture and
+ * connected, which is no render in flight but none at all
+ * (renderer_unreachable).
+ */
+function untilRendering(string $root, string $socket): void
+{
+    $deadline = microtime(true) + 30;
+    do {
+        [$command, $out] = lifecycle($root);
+        $command->run('renderer:check', ["--socket={$socket}"]);
+        foreach ($out as $line) {
+            if (preg_match('/  [1-9]\d* rendering  /', $line) === 1) {
+                return;
+            }
+        }
+        usleep(20_000);
+    } while (microtime(true) < $deadline);
+
+    throw new \RuntimeException('The forked render never reached the renderer.');
+}
+
+/**
  * How the forked render went, once it is done.
  *
  * @param array{int, resource} $render
@@ -310,7 +334,7 @@ it('waits for a render in flight before a graceful stop is done', function () us
 
     try {
         $render = forkedRender($socket);
-        usleep(400_000);
+        untilRendering($root, $socket);
 
         [$command] = lifecycle($root);
         $started = microtime(true);
@@ -334,7 +358,7 @@ it('stops at once without --graceful, and the render in flight fails as incomple
 
     try {
         $render = forkedRender($socket);
-        usleep(400_000);
+        untilRendering($root, $socket);
 
         [$command] = lifecycle($root);
         $started = microtime(true);
