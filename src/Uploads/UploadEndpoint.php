@@ -493,7 +493,7 @@ final class UploadEndpoint
                         if ($bytes > $intent->size) {
                             throw self::tooLarge();
                         }
-                        fwrite($out, $chunk);
+                        self::writeWhole($out, $chunk);
                     });
                 } finally {
                     fclose($out);
@@ -516,6 +516,12 @@ final class UploadEndpoint
             }
             if (!$found || $bytes !== $intent->size) {
                 throw new HttpException(422, 'The file did not arrive.', 'upload_missing');
+            }
+            clearstatcache(true, $path);
+            if (filesize($path) !== $intent->size) {
+                // Every byte arrived from the store, and fewer are on disk:
+                // never kept truncated.
+                throw new StorageException('An upload was not fetched whole into a temporary file.');
             }
 
             return $this->keep($ticket, $declared, $path, $intent->name);
@@ -876,6 +882,22 @@ final class UploadEndpoint
             UPLOAD_ERR_PARTIAL => throw new HttpException(400, 'The file arrived only in part.', 'upload_partial'),
             default => throw new \RuntimeException("PHP could not receive an upload (error {$file->error})."),
         };
+    }
+
+    /**
+     * $chunk written to $out whole, or a StorageException: a disk that fills
+     * part way takes less than it was handed, and a file fetched from the
+     * store is never counted as there when only some of it reached disk.
+     *
+     * @internal for ResumableUploads
+     * @param resource $out
+     * @throws StorageException
+     */
+    public static function writeWhole(mixed $out, string $chunk): void
+    {
+        if (fwrite($out, $chunk) !== \strlen($chunk)) {
+            throw new StorageException('An upload could not be written whole to a temporary file.');
+        }
     }
 
     /** @internal for ResumableUploads */

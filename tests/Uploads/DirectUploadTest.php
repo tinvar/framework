@@ -289,3 +289,41 @@ it('is not there where files are kept on disk or in memory', function () {
 
     expect(postDirect($app, UploadEndpoint::DIRECT_PATH, ['ticket' => $app->ticket($app->profile(P1)), 'size' => 10])->status)->toBe(404);
 });
+
+/** A stream that takes no more than $room bytes of all written to it, as a disk that fills up does. */
+final class ShortWriteStream
+{
+    public static int $room = 0;
+
+    /** @var resource|null */
+    public $context;
+
+    public function stream_open(string $path, string $mode, int $options, ?string &$opened): bool
+    {
+        return true;
+    }
+
+    public function stream_write(string $data): int
+    {
+        $taken = min(strlen($data), self::$room);
+        self::$room -= $taken;
+
+        return $taken;
+    }
+}
+
+// Review: the fetch counted the bytes the store sent, not what reached the
+// temporary file, so a disk that filled kept a truncated file with a 201.
+it('refuses to go on with a chunk the temporary file took only part of', function () {
+    stream_wrapper_register('tinvar-short-write', ShortWriteStream::class);
+    try {
+        ShortWriteStream::$room = 3;
+        $out = fopen('tinvar-short-write://temporary', 'wb');
+        expect($out)->not->toBeFalse();
+
+        UploadEndpoint::writeWhole($out, 'abc');
+        UploadEndpoint::writeWhole($out, 'def');
+    } finally {
+        stream_wrapper_unregister('tinvar-short-write');
+    }
+})->throws(Tinvar\Storage\StorageException::class);

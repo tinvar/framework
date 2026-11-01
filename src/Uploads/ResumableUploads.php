@@ -475,10 +475,8 @@ final readonly class ResumableUploads
                     if ($bytes > $session->size) {
                         throw UploadEndpoint::tooLarge();
                     }
-                    if (fwrite($out, $chunk) !== \strlen($chunk)) {
-                        // A temporary disk full: the server's fault, the parts kept.
-                        throw new StorageException('An upload could not be fetched whole into a temporary file.');
-                    }
+                    // A temporary disk full is the server's fault: a 5xx, the parts kept.
+                    UploadEndpoint::writeWhole($out, $chunk);
                 });
             } finally {
                 fclose($out);
