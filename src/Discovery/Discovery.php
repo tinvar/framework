@@ -32,7 +32,10 @@ use Tinvar\Support\KnownAttributes;
  *     class -- parsed first, so a file that does not parse is said and
  *     never run -- loaded through the autoloader, and held to having been
  *     loaded from that very file. A class the application did not write
- *     is never registered, whatever its name.
+ *     is never registered, whatever its name. Loading includes the file
+ *     whole: code it holds outside its class runs then, at the scan, as it
+ *     would whenever the application autoloads the class. A file declaring
+ *     no class its path names is never run.
  *
  * Fail closed: a file that does not parse or load, one declaring a class
  * its path does not name, a framework attribute misspelt (KnownAttributes)
@@ -400,7 +403,7 @@ final class Discovery
                 continue;
             }
             if ($declared === []) {
-                continue; // A script, not a class: never run.
+                continue; // A script declaring no class: never included, so never run.
             }
             $class = null;
             foreach ($declared as $candidate) {

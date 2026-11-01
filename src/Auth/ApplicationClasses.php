@@ -23,7 +23,10 @@ namespace Tinvar\Auth;
  * are walked once, by file name, and only a file whose name a bare id
  * names, and whose tokens declare a class of that name in the namespace
  * its path says, is handed back to be loaded and asked whether it is a
- * #[TenantScoped] model -- a script named like a class is never run. A
+ * #[TenantScoped] model. A file named like a class that declares no such
+ * class is never run; one that does is included whole, so whatever code
+ * it holds outside the class runs when it is loaded, as it would when the
+ * application autoloads it. A
  * walk follows no symbolic link out of the tree, walks no directory of
  * what Composer or npm installed, of tests or of fixtures, and stops at
  * MAX_FILES: saying so once, as a warning, and to `tinvar check`, which
