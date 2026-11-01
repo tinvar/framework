@@ -355,6 +355,20 @@ it('claims a task\'s minute once across schedulers sharing a database', function
         ->and($store->claim('Other', 600))->toBeTrue();
 });
 
+it('keeps a claim in memory a day, as the database keeps its, and no longer', function () {
+    $store = new ArrayScheduleStore();
+    $later = 600 + DatabaseScheduleStore::KEEP_SECONDS + 60;
+
+    expect($store->claim('Task', 600))->toBeTrue()
+        ->and($store->claim('Task', 600))->toBeFalse()
+        ->and($store->claim('Task', $later - 60))->toBeTrue()
+        ->and($store->claim('Task', 600))->toBeFalse('a day on, still kept')
+        ->and($store->claim('Task', $later))->toBeTrue()
+        // Forgotten, as a long-running schedule:work forgets every minute
+        // past a day rather than holding each one it was ever due in.
+        ->and($store->claim('Task', 600))->toBeTrue();
+});
+
 // schedule:work looked at the minute it turned to and no other: a task that
 // ran past its minute held the loop past the next ones, and a task due in
 // one of them was skipped without a word.
