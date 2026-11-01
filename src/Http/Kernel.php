@@ -386,9 +386,6 @@ final class Kernel
      * class first did, meant CSRF, authentication and every global middleware
      * covered the page path and nothing else: an unauthenticated,
      * token-less POST reached an action body.
-     *
-     * Throttling is not here, because there is no throttler yet; the README
-     * says so rather than this implying otherwise.
      */
     private readonly Pipeline $actionStack;
     private readonly Pipeline $queryStack;
@@ -1583,24 +1580,6 @@ final class Kernel
     }
 
     /**
-     * One request, start to finish.
-     *
-     * Everything that can be thrown is classified here rather than escaping,
-     * and the scope is reset in a finally so the next request on this worker
-     * does not inherit this one's user, identity map or policy instances.
-     *
-     * A document request that fails is answered with the application's
-     * #[ErrorPage] for its status, rendered here -- before the reset, so the
-     * session the global middleware opened, and with it the signed-in user,
-     * is still in place for the error page's layouts even when no route
-     * matched at all.
-     *
-     * @param \Closure(LoadedRoute, Request): Response $respond renders a matched route,
-     *        and an error page
-     * @param bool $errorPage false for a caller that wants the failure as the
-     *        framework answers it -- a benchmark, a build step -- not a page
-     */
-    /**
      * The application's Domains, serving every host pattern its entry points
      * and panels declare -- or a refusal, for a #[Domain] with no Domains to
      * read it by, two patterns that match one host, or one naming a domain
@@ -1744,6 +1723,24 @@ final class Kernel
         }
     }
 
+    /**
+     * One request, start to finish.
+     *
+     * Everything that can be thrown is classified here rather than escaping,
+     * and the scope is reset in a finally so the next request on this worker
+     * does not inherit this one's user, identity map or policy instances.
+     *
+     * A document request that fails is answered with the application's
+     * #[ErrorPage] for its status, rendered here -- before the reset, so the
+     * session the global middleware opened, and with it the signed-in user,
+     * is still in place for the error page's layouts even when no route
+     * matched at all.
+     *
+     * @param \Closure(LoadedRoute, Request): Response $respond renders a matched route,
+     *        and an error page
+     * @param bool $errorPage false for a caller that wants the failure as the
+     *        framework answers it -- a benchmark, a build step -- not a page
+     */
     public function handle(Request $request, \Closure $respond, string $rawBody = '', bool $errorPage = true): Response
     {
         // First, so everything after -- the session, the routing, a failure
