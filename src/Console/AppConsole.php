@@ -521,7 +521,8 @@ final class AppConsole
 
     /**
      * `build`: Vite's build for a profile, then -- for this application --
-     * the discovery manifest beside it, which production boots from.
+     * the fragment manifest and the discovery manifest beside it, which
+     * production boots from.
      *
      * @param list<string> $arguments
      */
@@ -541,7 +542,17 @@ final class AppConsole
             return $status; // Another application's build: its own console discovers it.
         }
 
-        return $this->discover(['--build=' . ($env[BuildProfile::BUILD_DIR_ENV] ?? "{$this->root}/dist")]);
+        // The fragment manifest, by the command registered under its name --
+        // an application's own in the built-in's place -- since a build is
+        // served from its directory alone, and with none there no render of
+        // it may mint a boundary or call a query.
+        $build = '--build=' . ($env[BuildProfile::BUILD_DIR_ENV] ?? "{$this->root}/dist");
+        $fragments = ($this->commands['build:fragments']['run'])([$build]);
+        if ($fragments !== 0) {
+            return $fragments;
+        }
+
+        return $this->discover([$build]);
     }
 
     /**
@@ -688,7 +699,7 @@ final class AppConsole
                 // console over a workspace's apps, where it was run from.
                 workingDirectory: $this->projectRoot === $this->root ? $this->root : null,
             )->run($a))
-            ->command('build', 'build [--profile=production|staging|test] [--app=DIR] [--out=DIR]', 'The Vite build, made for a profile: production unless --profile says; each is served only under its own TINVAR_PROFILE. Then the discovery manifest beside it, which production boots from', $this->build(...))
+            ->command('build', 'build [--profile=production|staging|test] [--app=DIR] [--out=DIR]', 'The Vite build, made for a profile: production unless --profile says; each is served only under its own TINVAR_PROFILE. Then the fragment manifest and the discovery manifest beside it, which production boots from', $this->build(...))
             ->command('discover', 'discover [--check] [--build=DIR]', "Write every class the app registers, discovered under its namespace, to the build's manifest, which production boots from without a scan; with --check, write nothing and fail where the manifest is missing or stale", $this->discover(...))
             ->command('build:fragments', 'build:fragments [--build=DIR]', "Write the fragment manifest -- which routes may defer, and what each route's renders may query -- from the build and the routes", $this->fragments(...));
         foreach (['build:current' => 'build:current [<id>] | build:revoke <id> [--force] | build:floor <id> [--force] | build:list | build:prune [--keep=N]', 'build:revoke' => '', 'build:floor' => '', 'build:list' => '', 'build:prune' => ''] as $name => $usage) {

@@ -131,6 +131,33 @@ it('writes the discovery manifest into the build, and refuses a stale one in dis
     }
 });
 
+// `tinvar build --out=DIR` is how a test or staging build is made, and is
+// served from DIR alone: with no fragment manifest beside it, no render of
+// it could mint a boundary or call a query.
+it('writes the fragment manifest and the discovery manifest into the build it made', function () {
+    $scratch = sys_get_temp_dir() . '/tinvar-build-' . bin2hex(random_bytes(4));
+    mkdir("{$scratch}/bin", 0o777, true);
+    // Vite, as far as this console can tell: the build's deferred.json.
+    file_put_contents("{$scratch}/bin/npx", "#!/bin/sh\nmkdir -p \"\$TINVAR_BUILD_DIR/rsc\" && cp \"\$TINVAR_TEST_DEFERRED\" \"\$TINVAR_BUILD_DIR/rsc/deferred.json\"\n");
+    chmod("{$scratch}/bin/npx", 0o755);
+    $path = (string) getenv('PATH');
+    putenv("PATH={$scratch}/bin:{$path}");
+    putenv('TINVAR_TEST_DEFERRED=' . \dirname(__DIR__, 4) . '/examples/shop/dist/rsc/deferred.json');
+    try {
+        $console = console(['kernel' => \Shop\Kernel::class, 'classes' => \Shop\Kernel::classes(...)]);
+
+        [$status, $out] = ran($console, 'build', '--profile=test', '--app=examples/shop', "--out={$scratch}/out");
+        expect($status)->toBe(0)
+            ->and($out)->toContain("wrote {$scratch}/out/fragments.json")
+            ->and(json_decode((string) file_get_contents("{$scratch}/out/fragments.json"), true)['queries'] ?? null)->not->toBe([])
+            ->and(Manifest::read("{$scratch}/out/discovery.php", 'Shop')->routes)->toBe(\Shop\Kernel::classes()->routes);
+    } finally {
+        putenv("PATH={$path}");
+        putenv('TINVAR_TEST_DEFERRED');
+        exec('rm -rf ' . escapeshellarg($scratch));
+    }
+});
+
 it('stops a command that needs the classes where discovery refuses them, saying why', function () {
     $console = console(['classes' => static fn (): DiscoveredClasses => throw new DiscoveryFailed(['Broken.php does not parse'])]);
 
