@@ -25,12 +25,25 @@ final readonly class HostMatch
      * @param string $host the host as the request named it, normalized; never '' from Domains, which
      *        refuses a request that names none
      * @param array<string, string> $parameters what the pattern's parameters took
+     * @param bool $custom whether the host is a tenant's custom domain, served as its pattern
      */
     public function __construct(
         public ?string $pattern,
         public string $host,
         public array $parameters = [],
+        public bool $custom = false,
     ) {}
+
+    /**
+     * Whether the host is one the application keeps for itself: the primary
+     * host or an alias of it, or a host a pattern names exactly
+     * (`admin.{root}`). No tenant's -- a tenant's host is one a parameter
+     * takes, or its custom domain -- whatever a tenant named its slug.
+     */
+    public function isFixed(): bool
+    {
+        return !$this->custom && $this->parameters === [];
+    }
 
     /** The match carried on $request, or null when none was resolved. */
     public static function of(Request $request): ?self

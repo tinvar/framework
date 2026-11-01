@@ -286,7 +286,7 @@ final readonly class Domains
                     return null;
                 }
 
-                return new HostMatch($this->customAs->pattern, $host, array_map('strval', $parameters));
+                return new HostMatch($this->customAs->pattern, $host, array_map('strval', $parameters), custom: true);
             }
         }
 
