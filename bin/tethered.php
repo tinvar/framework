@@ -16,12 +16,25 @@ declare(strict_types=1);
  *
  * SIGINT, SIGTERM and SIGHUP are passed on, and this exits as the command
  * did, so to whoever started it this is the command.
+ *
+ *   php tethered.php --kill-after=<seconds> <command> [arguments...]
+ *
+ * And the command is killed if it is still running that long after a stop
+ * this passed on: serve gives FrankenPHP so long to stop and then kills
+ * this outright, which passes nothing on -- a server held open past them by
+ * a stream it was still sending kept serving the port as an orphan. Given
+ * less than serve gives, the command is gone before this is.
  */
 
 $arguments = $_SERVER['argv'] ?? [];
 $command = \is_array($arguments) ? array_values(array_filter(array_slice($arguments, 1), \is_string(...))) : [];
-if ($command === []) {
-    fwrite(STDERR, "usage: tethered.php <command> [arguments...]\n");
+$killAfter = null;
+if (str_starts_with($command[0] ?? '', '--kill-after=')) {
+    $seconds = substr(array_shift($command), \strlen('--kill-after='));
+    $killAfter = preg_match('/^[1-9]\d{0,5}\z/', $seconds) === 1 ? (int) $seconds : -1;
+}
+if ($command === [] || $killAfter === -1) {
+    fwrite(STDERR, "usage: tethered.php [--kill-after=<seconds>] <command> [arguments...]\n");
     exit(64);
 }
 
@@ -32,10 +45,16 @@ if (!is_resource($child)) {
 }
 $pid = proc_get_status($child)['pid'];
 
+// When a stop passed on has had its time: null until one is.
+$killAt = null;
+
 pcntl_async_signals(true);
 foreach ([SIGINT, SIGTERM, SIGHUP] as $signal) {
-    pcntl_signal($signal, static function (int $signal) use ($pid): void {
+    pcntl_signal($signal, static function (int $signal) use ($pid, $killAfter, &$killAt): void {
         posix_kill($pid, $signal);
+        if ($killAfter !== null) {
+            $killAt ??= microtime(true) + $killAfter;
+        }
     });
 }
 
@@ -47,6 +66,11 @@ for (;;) {
     $status = proc_get_status($child);
     if (!$status['running']) {
         exit($status['signaled'] ? 128 + $status['termsig'] : $status['exitcode']);
+    }
+
+    if ($killAt !== null && microtime(true) >= $killAt) {
+        posix_kill($pid, SIGKILL);
+        $killAt = null;
     }
 
     // A signal interrupts the wait, which is fine: the loop looks again.

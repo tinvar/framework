@@ -547,6 +547,7 @@ final class ServeCommand
                 [
                     ...PhpCommand::prefix(),
                     __DIR__ . '/../../bin/tethered.php',
+                    '--kill-after=' . self::tetherKillAfter(self::STOP_SECONDS),
                     $plan['frankenphp'],
                     'run',
                     '--config',
@@ -706,7 +707,21 @@ final class ServeCommand
             $environment[HeldJob::ENV] = $this->held;
         }
 
-        return $this->spawn([...$php, __DIR__ . '/../../bin/tethered.php', ...$php, $this->console, $command], $app, $environment);
+        return $this->spawn(
+            [...$php, __DIR__ . '/../../bin/tethered.php', '--kill-after=' . self::tetherKillAfter($this->stopBudget), ...$php, $this->console, $command],
+            $app,
+            $environment,
+        );
+    }
+
+    /**
+     * How long a tether gives its command after a stop before it kills it:
+     * inside the $seconds serve gives it before killing the tether, which
+     * can then pass nothing on, so the command never outlives it.
+     */
+    public static function tetherKillAfter(int $seconds): int
+    {
+        return max(1, $seconds - 2);
     }
 
     /** @param resource $process */
