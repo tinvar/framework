@@ -148,7 +148,7 @@ final readonly class ServiceCalls
      * @param bool $reusable whether it may be called with more than once, until it expires;
      *        spent at its first call unless so
      * @param array<string, string|int> $bound arguments a call with it must carry, each
-     *        exactly: the record it is about, by its id
+     *        exactly: the record it is about, by its id; each an input of every operation named
      */
     public function context(string $service, array $operations, ?int $ttl = null, bool $reusable = false, array $bound = []): string
     {
@@ -171,6 +171,14 @@ final readonly class ServiceCalls
             }
             if ($operation->panel !== null && $user === null) {
                 throw new \LogicException("'{$name}' is in a panel, and a token for it is issued for the member it acts for: nobody is signed in.");
+            }
+            // A call carries only what its operation takes, so a token bound
+            // to anything else could never be called with: every call would
+            // be refused as `context`. Caught here, where the name is a typo.
+            foreach (array_keys($bound) as $argument) {
+                if (!isset($operation->inputs[$argument])) {
+                    throw new \InvalidArgumentException("The token is bound to '{$argument}', which '{$name}' does not take.");
+                }
             }
         }
 

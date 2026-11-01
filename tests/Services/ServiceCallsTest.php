@@ -175,6 +175,18 @@ it('holds a call to the arguments its token was bound to, before spending it', f
         ->toThrow(\InvalidArgumentException::class);
 });
 
+// Review: a bound name no operation takes was issued without a word, and
+// made a token every call with it was refused as `context` -- a call cannot
+// carry a field its operation does not take.
+it('issues no token bound to an argument one of its operations does not take', function () {
+    $h = new Harness();
+
+    expect(fn () => $h->services->context('warehouse', ['racks.rename'], bound: ['rack_id' => $h->rack(0)]))
+        ->toThrow(\InvalidArgumentException::class, "'rack_id'")
+        ->and(fn () => $h->services->context('warehouse', ['racks.rename', 'racks.show'], bound: ['name' => 'B-1']))
+        ->toThrow(\InvalidArgumentException::class, "'racks.show'");
+});
+
 it('lets a token issued reusable be called with until it expires', function () {
     $h = new Harness();
     $token = $h->services->context('warehouse', ['racks.rename'], reusable: true);
