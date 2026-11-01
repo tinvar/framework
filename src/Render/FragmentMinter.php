@@ -140,6 +140,10 @@ final class FragmentMinter implements Minter
             throw new FragmentTokenError('more fragment tokens requested than one render may mint');
         }
 
+        // One reading of the clock: two could straddle a second, and give
+        // the token a second more than its lifetime.
+        $now = time();
+
         return (new FragmentToken(
             component: $component,
             props: $props,
@@ -152,8 +156,8 @@ final class FragmentMinter implements Minter
             build: $this->build,
             sessionHash: FragmentToken::hashSession($this->signer, $this->sessionId),
             authHash: TokenClaims::hashAuth($this->signer, $this->user, $this->authEpoch),
-            expiresAt: time() + $this->ttl,
-            issuedAt: time(),
+            expiresAt: $now + $this->ttl,
+            issuedAt: $now,
             host: $this->host,
         ))->encode($this->signer);
     }

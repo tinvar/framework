@@ -78,13 +78,15 @@ describe('what the renderer may not choose', function () {
     });
 
     it('gives every token the framework expiry', function () {
+        // Bracketed, not read once beforehand: a second could tick between
+        // the test's clock and the minter's.
         $signer = minterSigner();
-        $at = time();
-
+        $before = time();
         $token = FragmentToken::decode(minter($signer)->mint('X', []), $signer);
+        $after = time();
 
-        expect($token->expiresAt - $at)->toBeLessThanOrEqual(FragmentToken::DEFAULT_TTL)
-            ->and($token->expiresAt)->toBeGreaterThan($at);
+        expect($token->issuedAt)->toBeGreaterThanOrEqual($before)->toBeLessThanOrEqual($after)
+            ->and($token->expiresAt - $token->issuedAt)->toBe(FragmentToken::DEFAULT_TTL);
     });
 
     // Minting a token bound to a constant hash would make every anonymous
