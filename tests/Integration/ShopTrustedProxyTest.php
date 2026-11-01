@@ -127,3 +127,51 @@ it('counted everyone behind the terminator as one caller without it', function (
 it('stops the boot on a list it cannot read', function () {
     expect(static fn () => shop('10.213.89.0/24,proxy.internal'))->toThrow(ConfigException::class);
 });
+
+/**
+ * A request through the terminator, to the host it names in
+ * X-Forwarded-Host, with the Host header a proxy that rewrites it sends:
+ * the upstream's own name, the same for every host it fronts.
+ *
+ * @param array<string, string> $cookies
+ */
+function proxied(string $method, string $path, string $host, array $cookies = [], array $headers = []): Request
+{
+    return new Request(
+        $method,
+        $path,
+        ['host' => 'pellwick-shop:8080', 'x-forwarded-host' => $host, 'x-forwarded-for' => '198.51.100.7', 'accept' => 'text/html', ...$headers],
+        [],
+        [],
+        $cookies,
+        null,
+        PROXY,
+    );
+}
+
+it('binds a session to the host the terminator names, not the Host header a rewriting proxy sends', function () {
+    $kernel = withEnv(['SHOP_URL' => 'https://shop.test'], static fn (): Kernel => shop(PROXY));
+
+    $cookie = Kernel::newSession(KEY);
+    $token = (string) new CsrfTokens(new Signer(KEY, CsrfTokens::PURPOSE), static fn (): string => (string) Kernel::sessionFrom($cookie, KEY))
+        ->for(Request::get('/'));
+    $signedIn = $kernel->handle(
+        proxied('POST', '/_action/account.signIn', 'shop.test', [Kernel::SESSION_COOKIE => $cookie, '__Host-XSRF-TOKEN' => $token], [
+            'content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token,
+        ]),
+        json_encode(['email' => DemoAccount::EMAIL, 'password' => DemoAccount::PASSWORD, 'next' => '/'], JSON_THROW_ON_ERROR),
+    );
+    expect($signedIn->status)->toBe(303);
+    $line = $signedIn->cookies()[Kernel::SESSION_COOKIE] ?? '';
+    expect(preg_match('/^' . preg_quote(Kernel::SESSION_COOKIE, '/') . '=([^;]+)/', $line, $m))->toBe(1);
+    $session = [Kernel::SESSION_COOKIE => rawurldecode($m[1])];
+
+    // Signed in on the storefront: the customer's orders are theirs to see.
+    expect($kernel->handle(proxied('GET', '/orders/none/receipt.txt', 'shop.test', $session))->status)->toBe(404);
+
+    // The same cookie, carried to the admin host, is no session there: the
+    // panel sends its visitor to sign in rather than refusing a customer.
+    $admin = $kernel->handle(proxied('GET', '/deliveries', 'admin.shop.test', $session));
+    expect($admin->status)->not->toBe(403, 'the storefront\'s session signed the visitor in on the admin host')
+        ->and($admin->status)->toBeIn([302, 303]);
+});
