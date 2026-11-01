@@ -499,6 +499,24 @@ describe('a rate-limited queue', function () {
             ->and(steps($h))->toBe(['limited']);
     })->with(queues());
 
+    it('writes nothing while it has nothing waiting: an idle worker takes no write lock on its window (ADR 0107)', function () {
+        $fixture = new TenantFixture();
+        $queue = databaseQueue($fixture->connection);
+        DatabaseQueue::defineCoordination(schemaOf($fixture->connection));
+        $h = new Harness($queue, $fixture);
+        $writes = [];
+        \assert($fixture->connection instanceof \Tinvar\Orm\ObservesStatements);
+        $fixture->connection->observeStatements(static function (string $sql) use (&$writes): void {
+            if (preg_match('/^\s*(INSERT|UPDATE|DELETE|BEGIN)/i', $sql) === 1) {
+                $writes[] = $sql;
+            }
+        });
+
+        $options = new WorkerOptions(stopWhenEmpty: true, signals: false, rates: ['default' => new Rate(1, 60)]);
+        expect($h->worker->run($options))->toBe(0)
+            ->and($writes)->toBe([]);
+    });
+
     it('is at least one start in a window of a second to a day', function () {
         expect(fn () => new Rate(0))->toThrow(\InvalidArgumentException::class)
             ->and(fn () => new Rate(1, Rate::MAX_PER + 1))->toThrow(\InvalidArgumentException::class);

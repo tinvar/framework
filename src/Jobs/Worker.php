@@ -278,6 +278,12 @@ final class Worker
             // (process()); here only a rate per queue is.
             $rate = $options->rates[$queue] ?? null;
             $rate = $rate?->perTenant === true ? null : $rate;
+            // Nothing on it, so no start to take: a start is a write, and an
+            // idle worker that took one and gave it back on every poll held
+            // the store's write lock twice a second for nothing (ADR 0107).
+            if ($rate !== null && $this->queue->size($queue) === 0) {
+                continue;
+            }
             if ($rate !== null && $this->queue->slot($rate->key($queue), $rate->runs, $rate->per, $now, $rate->sliding) !== 0) {
                 continue;
             }
