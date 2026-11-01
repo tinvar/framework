@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Workflows;
 
+use Tinvar\Attributes\Queue as QueueOptions;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Jobs\Dispatcher;
@@ -81,19 +82,29 @@ final readonly class Workflows
             throw new \LogicException($workflow::class . ' has no run() to take its steps in.');
         }
 
-        $id = $this->dispatcher->dispatch(new RunWorkflow($workflow), $delay);
-        if ($this->store !== null && $this->orm !== null && $this->auth !== null) {
-            // Written beside the job -- in the transaction it waits for,
-            // where the store shares the application's connection. A unique
-            // workflow already running answers with its id, whose record is
-            // kept already.
+        if ($this->store === null || $this->orm === null || $this->auth === null) {
+            return $this->dispatcher->dispatch(new RunWorkflow($workflow), $delay);
+        }
+
+        // The job and its record in one transaction, so no run of it can
+        // come before the record it writes its progress to: a job on a queue
+        // of the same connection commits with the record, one on any other
+        // -- the sync queue's, which runs it at the push -- is pushed once
+        // the record has committed. Not a unique workflow's: one already
+        // running answers with its id, whose record is kept already, and
+        // only a lock taken now can say so -- inside a transaction on
+        // another store it is taken at the commit, and the id returned
+        // would be one that may never run.
+        [$store, $orm, $auth] = [$this->store, $this->orm, $this->auth];
+        $start = function () use ($workflow, $delay, $store, $orm, $auth): string {
+            $id = $this->dispatcher->dispatch(new RunWorkflow($workflow), $delay);
             $now = $this->now();
-            $this->store->start(new WorkflowRecord(
+            $store->start(new WorkflowRecord(
                 id: $id,
                 workflow: $workflow::class,
-                tenant: $this->orm->tenant(),
+                tenant: $orm->tenant(),
                 panel: $this->panels?->currentOrNull() ?? '',
-                user: $this->auth->id() ?? '',
+                user: $auth->id() ?? '',
                 status: WorkflowRecord::QUEUED,
                 step: null,
                 steps: 0,
@@ -101,9 +112,13 @@ final readonly class Workflows
                 startedAt: $now,
                 updatedAt: $now,
             ));
-        }
 
-        return $id;
+            return $id;
+        };
+
+        // Inside a loader or query body the dispatch refuses it, as it
+        // refuses a job, rather than the transaction around it.
+        return $orm->isReadOnly() || QueueOptions::of($workflow::class)->unique > 0 ? $start() : $orm->transaction($start);
     }
 
     /**

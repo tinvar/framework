@@ -183,6 +183,20 @@ it('cannot wait on the sync queue, which runs it here and now', function () {
     expect(fn () => $workflows->start(new AwaitsCollection()))->toThrow(\LogicException::class, 'waits on a signal');
 });
 
+it('keeps its record before its first run can write to it, as on the sync queue, where that run is the start', function () {
+    $h = harness();
+    $sync = new SyncQueue($h->runner);
+    $dispatcher = new \Tinvar\Jobs\Dispatcher($sync, $h->orm, $h->signer, $h->auth, $h->panels, $h->registry, fn (): int => $h->now);
+    $workflows = new Workflows($dispatcher, $h->container->resolver(), new \Tinvar\Workflows\ArrayWorkflowStore(), $h->orm, $h->auth, $h->panels);
+    $h->container->instance(Workflows::class, $workflows);
+
+    $id = $workflows->start(new ThreeSteps());
+
+    // Run to its end inside start(): the record says so, not "queued".
+    expect(array_column(Seen::$steps, 'step'))->toBe(['first', 'second', 'third'])
+        ->and($workflows->progress($id)?->status)->toBe(WorkflowRecord::FINISHED);
+});
+
 it('keeps its records in the database, signals once a name, and forgets the ended ones', function () {
     $connection = \Tinvar\Orm\PdoConnection::sqlite(':memory:', 'workflows');
     \Tinvar\Workflows\DatabaseWorkflowStore::define(\Tinvar\Tests\Jobs\Fixtures\schemaOf($connection));
