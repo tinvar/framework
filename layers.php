@@ -22,6 +22,7 @@ declare(strict_types=1);
 // framework names them.
 $above = [
     'tenancy' => ['Tinvar\\Tenancy\\'],
+    'billing' => ['Tinvar\\Billing\\'],
     'testing' => ['Tinvar\\Testing\\'],
     'codegen' => ['Tinvar\\Codegen\\'],
 ];
@@ -113,6 +114,7 @@ return [
             'database' => ['support'],
             'framework' => ['support', 'database'],
             'tenancy' => ['support', 'database', 'framework'],
+            'billing' => ['support', 'database', 'framework'],
             'testing' => ['support', 'database', 'framework'],
             'codegen' => ['support', 'database', 'framework'],
         ],
@@ -123,6 +125,7 @@ return [
             'packages/database/src/Orm' => 'Tinvar\\Orm\\',
             'packages/framework/src' => 'Tinvar\\',
             'packages/tenancy/src/Tenancy' => 'Tinvar\\Tenancy\\',
+            'packages/billing/src/Billing' => 'Tinvar\\Billing\\',
             'packages/testing/src/Testing' => 'Tinvar\\Testing\\',
             'packages/codegen/src' => 'Tinvar\\Codegen\\',
         ],
@@ -131,6 +134,7 @@ return [
             'packages/database/src' => 'database',
             'packages/framework/src' => 'framework',
             'packages/tenancy/src' => 'tenancy',
+            'packages/billing/src' => 'billing',
             'packages/testing/src' => 'testing',
             'packages/codegen/src' => 'codegen',
         ],
@@ -181,6 +185,7 @@ return [
             'gateway' => ['support', 'database', 'queue', ...$coreNames],
             'kernel' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway'],
             'tenancy' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway', 'kernel'],
+            'billing' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway', 'kernel'],
             'testing' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway', 'kernel'],
             'codegen' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway', 'kernel'],
         ],

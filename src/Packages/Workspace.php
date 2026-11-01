@@ -32,7 +32,7 @@ namespace Tinvar\Packages;
  *   - it carries no `extra.tinvar`, which marks an application's packages
  *     for the allowlist (PackagePolicy) and would take a split package for
  *     one;
- *   - it names no package an application opts into -- tenancy -- in its
+ *   - it names no package an application opts into -- tenancy, billing -- in its
  *     require or its require-dev, so no package's own suite runs with one
  *     installed (ADR 0056).
  *
@@ -60,13 +60,14 @@ final readonly class Workspace
     /**
      * @param list<string> $optIn the packages, by directory, an application
      *        opts into rather than gets with the framework: tenancy (ADR 0056)
+     *        and billing (ADR 0150)
      * @param list<string> $apps the applications in packages/, by directory:
      *        the skeleton (ADR 0082)
      */
     public function __construct(
         private string $root,
         private Layers $layers,
-        private array $optIn = ['tenancy'],
+        private array $optIn = ['tenancy', 'billing'],
         private array $apps = ['skeleton'],
     ) {}
 
