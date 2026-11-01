@@ -29,6 +29,10 @@ use Tinvar\Http\Request;
  * a segment that is re-rendered anyway is sent with it, because sending more
  * than was asked is always correct, and less never is.
  *
+ * An empty `X-Only` -- the client's `only: []` -- names no segment and is
+ * still a partial reload: only the #[Always] segments are rendered (ADR
+ * 0015), never every segment, as no `X-Only` at all would be.
+ *
  * Two field marks reach past the segment (ADR 0045). A field path names an
  * #[Optional] field too, which is resolved only when named so -- the paths
  * are kept for the encoder. And a segment whose data has an #[Always] field

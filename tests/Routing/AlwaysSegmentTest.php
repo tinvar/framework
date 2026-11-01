@@ -183,6 +183,23 @@ function ask(string $path, array $headers): array
 
 const THREAD = ['RSC' => '1', 'X-Page' => 'inbox/thread'];
 
+describe('an empty X-Only, the client\'s `only: []`', function () {
+    it('renders the #[Always] segments and nothing else', function () {
+        [$loaded, $encoded] = ask('/inbox/thread', [...THREAD, 'X-Only' => '']);
+
+        expect($loaded->segments)->toBe(['inbox'])
+            ->and($encoded['layouts'])->toBe(['inbox' => ['unread' => 3]]);
+    });
+
+    it('reads a list of blanks as empty: the page alone, where only its data is #[Always]', function () {
+        [$loaded, $encoded] = ask('/stamped', ['RSC' => '1', 'X-Page' => 'app/stamped', 'X-Only' => ' , ']);
+
+        expect($loaded->segments)->toBe(['page'])
+            ->and($encoded['layouts'])->toBe([])
+            ->and($encoded['page'])->toBe(['stamp' => 'now']);
+    });
+});
+
 describe('a segment with an #[Always] field', function () {
     it('is rendered when the #[Always] field is in Data its loader\'s Data holds', function () {
         [$loaded, $encoded] = ask('/desk/today', ['RSC' => '1', 'X-Page' => 'desk/today', 'X-Only' => 'page.stamp']);
