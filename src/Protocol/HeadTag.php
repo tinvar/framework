@@ -17,9 +17,6 @@ namespace Tinvar\Protocol;
  */
 final readonly class HeadTag
 {
-    /** What a fallback tag is marked with, as the components read it. */
-    public const string MARK = 'data-tinvar-head="fallback"';
-
     /** @param array<string, string> $attributes */
     private function __construct(
         public string $tag,
@@ -56,19 +53,5 @@ final readonly class HeadTag
         return $this->text === null
             ? ['tag' => $this->tag, 'attributes' => $this->attributes]
             : ['tag' => $this->tag, 'attributes' => $this->attributes, 'text' => $this->text];
-    }
-
-    /** The tag as markup, marked, for a document PHP writes itself. */
-    public function toHtml(): string
-    {
-        $e = static fn (string $value): string => htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-        $attributes = '';
-        foreach ($this->attributes as $name => $value) {
-            $attributes .= " {$name}=\"{$e($value)}\"";
-        }
-
-        return $this->tag === 'title'
-            ? '<title ' . self::MARK . '>' . $e((string) $this->text) . '</title>'
-            : "<meta{$attributes} " . self::MARK . '>';
     }
 }
