@@ -72,7 +72,17 @@ function node(array $ca, string $id, string $environment = ENV): array
 }
 
 /**
- * A command issued to node-7 at time(), and the pieces that check its
+ * Now, a few seconds ahead of the wall clock: openssl_csr_sign starts a
+ * certificate at the second it runs, and a test that makes one after reading
+ * the time would see it not yet valid whenever the second ticked between.
+ */
+function clock(): int
+{
+    return time() + 5;
+}
+
+/**
+ * A command issued to node-7 at clock(), and the pieces that check its
  * result: the CA, node-7's certificate, the outbox, and the results.
  *
  * @return array{NodeCommand, array{string, \OpenSSLCertificate, \OpenSSLAsymmetricKey}, array{string, \OpenSSLCertificate, \OpenSSLAsymmetricKey}, CommandResults, ArrayNonceStore}
@@ -91,7 +101,7 @@ function issued(int $now): array
 
 describe('spent once', function () {
     it('runs a command once, however often the bus relays it, and remembers nothing it refused', function () {
-        $now = time();
+        $now = clock();
         $outbox = new ArrayCommandOutbox();
         $orm = new Orm(PdoConnection::sqlite(':memory:'), new IdentityMap('gateway-spend'));
         new NodeCommands(NodeCommands::key(APP_KEY, ENV), $outbox, $orm, static fn (): int => $now)->issue('node-7', 'vm.stop');
@@ -105,7 +115,7 @@ describe('spent once', function () {
     });
 
     it('opens a console once for a ticket', function () {
-        $now = time();
+        $now = clock();
         $auth = new AuthContext();
         $orm = new Orm(PdoConnection::sqlite(':memory:'), new IdentityMap('gateway-ticket'));
         $tickets = new ConsoleTickets(APP_KEY, ConsoleTickets::key(APP_KEY, ENV), $auth, $orm, new BuildRegistry('build-1'), new PanelContext(), static fn (): int => $now);
@@ -121,7 +131,7 @@ describe('spent once', function () {
 
 describe('a command\'s result', function () {
     it('is believed from the node that ran it, signed with its certificate\'s key, carrying the command as PHP signed it', function () {
-        $now = time();
+        $now = clock();
         [$command, , $node, $results] = issued($now);
         $sealed = CommandResults::sign($command, CommandResult::SUCCEEDED, ['uptime' => 42], $node[2], $now + 5);
 
@@ -136,7 +146,7 @@ describe('a command\'s result', function () {
     });
 
     it('is taken once: a replay, or a second result for the command, is refused', function () {
-        $now = time();
+        $now = clock();
         [$command, , $node, $results] = issued($now);
         $first = CommandResults::sign($command, CommandResult::SUCCEEDED, [], $node[2], $now);
         $second = CommandResults::sign($command, CommandResult::FAILED, ['why' => 'changed its mind'], $node[2], $now + 1);
@@ -147,7 +157,7 @@ describe('a command\'s result', function () {
     });
 
     it('is refused from another node, under another node\'s key, or from a certificate another CA signed', function () {
-        $now = time();
+        $now = clock();
         [$command, $ca, $node, $results] = issued($now);
         $other = node($ca, 'node-8');
         $stranger = node(certificate('Another CA', [NodeAuthority::ENVIRONMENT_URN . ENV], true), 'node-7');
@@ -167,7 +177,7 @@ describe('a command\'s result', function () {
     });
 
     it('is refused for a command PHP never issued, or edited after the node signed it', function () {
-        $now = time();
+        $now = clock();
         [$command, , $node, $results] = issued($now);
         $made = new NodeCommand('01900000-0000-7000-8000-000000000000', 'node-7', ENV, 'acme', 'vm.start', [], $now, $now + 60);
         $sealed = CommandResults::sign($command, CommandResult::FAILED, ['code' => 1], $node[2], $now);
@@ -181,7 +191,7 @@ describe('a command\'s result', function () {
     });
 
     it('is refused when stale, from before its command, or long past the command\'s life', function () {
-        $now = time();
+        $now = clock();
         [$command, , $node, $results] = issued($now);
 
         expect(fn () => $results->verify(CommandResults::sign($command, CommandResult::SUCCEEDED, [], $node[2], $now - CommandResults::FRESH_FOR - 1), $node[0]))->toThrow(TokenError::class, 'last few minutes')
@@ -200,7 +210,7 @@ describe('a command\'s result', function () {
     });
 
     it('holds an agent\'s output to plain data, and its outcome to succeeded or failed', function () {
-        $now = time();
+        $now = clock();
         [$command, , $node] = issued($now);
 
         expect(fn () => CommandResults::sign($command, 'maybe', [], $node[2], $now))->toThrow(\InvalidArgumentException::class)
@@ -229,7 +239,7 @@ it('prints this environment\'s public keys for gateway:keys, and nothing secret'
 // Review: with no store given, open() took a replay as the first sight of
 // it. Fail closed: a store, or replays allowed by name.
 it('refuses to open a command or a ticket with nowhere to spend it, unless replays are allowed by name', function () {
-    $now = time();
+    $now = clock();
     $outbox = new ArrayCommandOutbox();
     $orm = new Orm(PdoConnection::sqlite(':memory:'), new IdentityMap('gateway-replay'));
     new NodeCommands(NodeCommands::key(APP_KEY, ENV), $outbox, $orm, static fn (): int => $now)->issue('node-7', 'vm.stop');
