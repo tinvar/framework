@@ -16,6 +16,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopMarketingMail;
 
+use Carbon\CarbonImmutable;
 use Shop\Http\Actions\Marketing\MarketingLinkActions;
 use Shop\Support\DemoAccount;
 use Shop\Kernel;
@@ -735,17 +736,17 @@ describe('the scheduled newsletter', function () {
     it('queues the month\'s issue once, however many times it runs, from nine on the first', function () {
         $task = new ScheduleNewsletter();
 
-        expect($task->run(issues(), new \DateTimeImmutable('2026-11-01T08:59:00Z')))->toBeNull()
-            ->and($task->run(issues(), new \DateTimeImmutable('2026-11-01T09:23:00Z')))->toBe(1)
-            ->and($task->run(issues(), new \DateTimeImmutable('2026-11-01T10:23:00Z')))->toBeNull()
-            ->and($task->run(issues(), new \DateTimeImmutable('2026-11-17T10:23:00Z')))->toBeNull()
+        expect($task->run(issues(), CarbonImmutable::parse('2026-11-01T08:59:00Z')))->toBeNull()
+            ->and($task->run(issues(), CarbonImmutable::parse('2026-11-01T09:23:00Z')))->toBe(1)
+            ->and($task->run(issues(), CarbonImmutable::parse('2026-11-01T10:23:00Z')))->toBeNull()
+            ->and($task->run(issues(), CarbonImmutable::parse('2026-11-17T10:23:00Z')))->toBeNull()
             ->and(orm()->connection()->select('SELECT month, title, queued FROM newsletter_issues'))->toBe([['month' => '2026-11', 'title' => 'November 2026', 'queued' => 1]]);
         Fakes::$queue->assertPushedCount(1, SendNewsletter::class)->assertPushed(
             SendNewsletter::class,
             fn (SendNewsletter $job): bool => $job->customer->email === DemoAccount::EMAIL && $job->issue === 'November 2026',
         );
 
-        expect($task->run(issues(), new \DateTimeImmutable('2026-12-02T00:23:00Z')))->toBe(1);
+        expect($task->run(issues(), CarbonImmutable::parse('2026-12-02T00:23:00Z')))->toBe(1);
     });
 
     it('is listed among the shop\'s tasks, hourly', function () {
@@ -758,7 +759,7 @@ describe('the scheduled newsletter', function () {
     it('claims nothing where the shop has no https address, so a later run sends it', function () {
         $issues = new NewsletterIssues(orm(), kernel()->jobs, new MarketingPreferences(orm()), new Unsubscribes(KEY, new Links('http://shop.example'), []));
 
-        expect(new ScheduleNewsletter()->run($issues, new \DateTimeImmutable('2026-11-03T12:00:00Z')))->toBeNull()
+        expect(new ScheduleNewsletter()->run($issues, CarbonImmutable::parse('2026-11-03T12:00:00Z')))->toBeNull()
             ->and(orm()->connection()->select('SELECT month FROM newsletter_issues'))->toBe([]);
         Fakes::$queue->assertNotPushed(SendNewsletter::class);
     });
