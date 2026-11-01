@@ -102,6 +102,17 @@ describe('/_upload', function () {
             ->and($pending?->expiresAt)->toBe($app->now + Uploads::PENDING_TTL);
     });
 
+    // The action's own #[Domain] holds its upload as it holds a call (ADR
+    // 0149): a ticket a storefront page minted for an admin action stores
+    // nothing on the storefront.
+    it('runs the upload on the host its action is held to, and on no other', function () {
+        $app = new App(new MemoryStorage(), domains: new \Tinvar\Routing\Domains(['root' => 'shop.test']));
+        $ticket = static fn (string $host): string => $app->ticket($app->profile(P1), action: 'profiles.hostedAvatar', host: $host);
+
+        expect($app->upload($ticket('shop.test'), png(), headers: ['host' => 'shop.test'])->status)->toBe(404)
+            ->and($app->upload($ticket('admin.shop.test'), png(), headers: ['host' => 'admin.shop.test'])->status)->toBe(201);
+    });
+
     // A few bytes declaring a hundred thousand pixels a side: refused from
     // its header, and nothing stored.
     it('refuses an image declaring more pixels than images may have, and keeps nothing', function () {

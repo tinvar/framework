@@ -268,9 +268,9 @@ final class UploadEndpoint
     }
 
     /**
-     * Runs $then inside the action's own context: its tenant and panel
-     * stack, then its own middleware, as ActionEndpoint puts them around a
-     * call.
+     * Runs $then inside the action's own context: its host, as its own
+     * #[Domain] holds it (ADR 0149), its tenant and panel stack, then its
+     * own middleware, as ActionEndpoint puts them around a call.
      *
      * @internal for ResumableUploads
      * @param \Closure(Request): Response $then
@@ -279,7 +279,7 @@ final class UploadEndpoint
     {
         $panels = $this->entry->panelFor($action->panels, $action->class);
         $stack = [
-            ...$this->entry->stackFor($action->tenantFrom, $panels),
+            ...$this->entry->stackFor($action->tenantFrom, $panels, $action->host->pattern ?? false),
             ...array_map(
                 fn (string $class): Middleware => ($this->middlewareResolver)($class),
                 array_values(array_diff($action->middleware, $this->globalMiddleware)),

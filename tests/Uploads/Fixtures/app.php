@@ -137,6 +137,24 @@ final readonly class ProfilePhoto extends \Tinvar\Validation\FormRequest
     ) {}
 }
 
+/** An upload action held to the admin host by its own #[Domain] (ADR 0149). */
+final class HostedProfileActions
+{
+    public function __construct(private readonly Orm $orm) {}
+
+    #[Action(name: 'profiles.hostedAvatar'), Authorize('update', 'profile'), \Tinvar\Attributes\Domain('admin.{root}')]
+    public function hostedAvatar(
+        Profile $profile,
+        #[Uploaded(to: 'profile', prefix: 'avatars', types: ['image/png', 'image/jpeg'], maxBytes: 4096)]
+        Upload $avatar,
+    ): ActionResult {
+        $profile->avatarKey = $avatar->key;
+        $this->orm->save($profile);
+
+        return ActionResult::ok(['key' => $avatar->key]);
+    }
+}
+
 final class ProfileActions
 {
     /** What the last form-request body was handed. */
@@ -276,6 +294,8 @@ final class App
         ?\Tinvar\Uploads\FileScanner $scanner = null,
         // Counted by a throttle of two uploads, and sixty actions, a minute.
         bool $throttled = false,
+        // The hosts it serves, and an upload action held to one of them.
+        ?\Tinvar\Routing\Domains $domains = null,
     ) {
         $connection = PdoConnection::sqlite(':memory:', 'test');
         $connection->execute('CREATE TABLE profiles (id TEXT PRIMARY KEY, owner TEXT NOT NULL, avatar_key TEXT NULL)');
@@ -296,6 +316,9 @@ final class App
 
         $actions = new ActionRegistry($this->container->resolver());
         $actions->register(ProfileActions::class);
+        if ($domains !== null) {
+            $actions->register(HostedProfileActions::class);
+        }
 
         $this->uploads = Uploads::fromKey(
             KEY,
@@ -325,6 +348,7 @@ final class App
             limits: $throttled ? ['uploads' => 2, 'actions' => 60] : Kernel::DEFAULT_LIMITS,
             panels: $this->panels = new PanelContext(),
             panelRegistry: new PanelRegistry(new PanelDefinition('staff')),
+            domains: $domains,
         );
     }
 
@@ -341,11 +365,15 @@ final class App
         string $field = 'avatar',
         string $epoch = 'e1',
         string $tenant = '',
+        ?string $host = null,
     ): string {
         $this->auth->login(new User($user), $epoch);
+        $request = new Request('GET', '/', cookies: [SESSION_COOKIE => $session]);
+        // On the host its page was drawn on, as the Kernel resolved it.
+        $request = $host === null ? $request : $request->withAttribute(\Tinvar\Routing\HostMatch::ATTRIBUTE, $this->kernel->domains?->resolve(new Request('GET', '/', ['host' => $host])));
         try {
             return $this->orm->actAs($tenant, fn (): string => (string) $this->kernel->uploadTickets?->issue(
-                new Request('GET', '/', cookies: [SESSION_COOKIE => $session]),
+                $request,
                 $action,
                 $field,
                 $target,
