@@ -3180,8 +3180,8 @@ final class Kernel
      * be drawn with the last session's content in it. So the list counts
      * only beside `X-Once-Binding`, the route token of a page the content
      * was kept with, and only when that token verifies and names the same
-     * session, user and auth epoch, tenant, panel and build as the token this
-     * response carries. The user and epoch because a role change or an
+     * session, user and auth epoch, host, tenant, panel and build as the
+     * token this response carries. The user and epoch because a role change or an
      * impersonation can keep the session id: what was drawn under the old
      * role is not to be claimed under the new one.
      * Without a token of its own a response honours nothing: the browser
@@ -3213,6 +3213,7 @@ final class Kernel
 
         $same = hash_equals($ours->sessionHash, $theirs->sessionHash)
             && hash_equals($ours->authHash, $theirs->authHash)
+            && hash_equals($ours->host, $theirs->host)
             && $ours->tenant === $theirs->tenant
             && $ours->panel === $theirs->panel
             && $ours->build === $theirs->build;

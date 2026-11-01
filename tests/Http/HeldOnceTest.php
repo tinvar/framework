@@ -280,6 +280,30 @@ describe('a once field is sent whole', function () {
         expect(totals($data))->toHaveKey('value');
     });
 
+    // ADR 0149: every token a page is handed is its host's, and what was
+    // kept under a page of another host is not this one's to claim.
+    it('beside a token minted on another host', function () {
+        $kernel = kernel();
+        $signer = new Signer(KEY, RouteToken::PURPOSE);
+        $ours = RouteToken::decode(tokenFor($kernel, 'session-a'), $signer)->claims;
+        $elsewhere = new RouteToken(new \Tinvar\Render\TokenClaims(
+            route: $ours->route,
+            params: $ours->params,
+            panel: $ours->panel,
+            tenant: $ours->tenant,
+            build: $ours->build,
+            sessionHash: $ours->sessionHash,
+            expiresAt: $ours->expiresAt,
+            issuedAt: $ours->issuedAt,
+            authHash: $ours->authHash,
+            host: 'admin.shop.test',
+        ));
+
+        [$data] = visit($kernel, ['RSC' => '1', 'X-Test-Session' => 'session-a', 'X-Have-Once' => 'account.totals', 'X-Once-Binding' => $elsewhere->encode($signer)]);
+
+        expect(totals($data))->toHaveKey('value');
+    });
+
     // The client files once content under the binding a response carries;
     // one with none could not be filled from anything it kept.
     it('to a visitor with no session, who gets no route token', function () {
