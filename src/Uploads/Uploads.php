@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Uploads;
 
 use Tinvar\Http\Request;
+use Tinvar\Routing\HostMatch;
 use Tinvar\Render\TokenClaims;
 use Tinvar\Storage\ListsKeys;
 use Tinvar\Storage\MultipartStore;
@@ -149,10 +150,17 @@ final readonly class Uploads
         return $this->clock === null ? time() : ($this->clock)();
     }
 
-    /** The request's session id, or '' for none. */
+    /** The request's session id, bound to its host where there is one (ADR 0149), or '' for none. */
     public function sessionOf(Request $request): string
     {
-        return ($this->sessionId)($request);
+        $session = ($this->sessionId)($request);
+        $host = HostMatch::hostOf($request);
+
+        // With the host it was asked on, where the application routes by
+        // host: every file token and upload ticket hashes this, so one
+        // minted on admin.example.com is nothing on example.com, whoever's
+        // session sends it (ADR 0149). A session id holds no NUL.
+        return $session === '' || $host === '' ? $session : "{$host}\0{$session}";
     }
 
     /** The session binding, as every token keeps it: a keyed hash, never the id. */
