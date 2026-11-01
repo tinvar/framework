@@ -227,6 +227,14 @@ it('answers a path no route could hold with a 404, without the application', fun
 
 // After enough requests the loop ends and FrankenPHP starts a fresh worker,
 // so whatever leaks a little per request cannot grow without bound.
+// Review: a worker told to stop is handed no request, and was counted as
+// having served one.
+it('counts no request when the server stops it without one', function () {
+    $served = new FakeServer()->worker(fn (): Application => new RecordingApplication())->run();
+
+    expect($served)->toBe(0);
+});
+
 it('recycles after its request limit', function () {
     $server = new FakeServer();
     for ($i = 0; $i < 10; $i++) {

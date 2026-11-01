@@ -101,10 +101,11 @@ final class Worker
         $served = 0;
 
         while ($served < $this->maxRequests && !$this->poisoned) {
-            $more = ($this->handleRequest)(function () use ($application): void {
+            // Counted as it is served: a worker told to stop is handed none.
+            $more = ($this->handleRequest)(function () use ($application, &$served): void {
+                $served++;
                 $this->serve($application);
             });
-            $served++;
 
             // Cycles a request made are collected between requests, not
             // during one, where the pause would land on a visitor.
