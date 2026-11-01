@@ -38,6 +38,10 @@ use Tinvar\Support\KnownAttributes;
  *      (409): a captured delivery cannot be sent again inside it -- nor to
  *      another tenant that shares its secret (claim()).
  *
+ * A webhook whose sender signs another way names a WebhookVerifier on its
+ * attribute, which steps 3 and 4 ask in its place (ADR 0150); the nonce is
+ * the one the verifier proved, claimed here as any other.
+ *
  * Then the handler runs as the tenant, in the panel the class declares,
  * as nobody. If it throws, the nonce is released for this tenant, so the
  * sender's retry of the same delivery is not taken for a replay.
@@ -56,6 +60,9 @@ final class WebhookEndpoint
 
     /** @var array<string, class-string> path => handler */
     private array $paths = [];
+
+    /** @var array<class-string, class-string<WebhookVerifier>> handler => the verifier it declares */
+    private array $verifiers = [];
 
     /**
      * @param list<class-string> $webhooks
@@ -90,7 +97,16 @@ final class WebhookEndpoint
             if ($attribute === null || !method_exists($class, '__invoke')) {
                 throw new \InvalidArgumentException("{$class} is registered as a webhook, and is not a #[Webhook] class with an __invoke().");
             }
-            $path = $attribute->newInstance()->path;
+            $declared = $attribute->newInstance();
+            $path = $declared->path;
+            if ($declared->verifier !== null) {
+                if (!is_subclass_of($declared->verifier, WebhookVerifier::class)) {
+                    throw new \InvalidArgumentException(
+                        "{$class} names {$declared->verifier} as its verifier, which is no " . WebhookVerifier::class . ': name the class that checks its sender\'s signature.',
+                    );
+                }
+                $this->verifiers[$class] = $declared->verifier;
+            }
             if (isset($this->paths[$path])) {
                 throw new \InvalidArgumentException("Two webhooks answer {$path}.");
             }
@@ -132,34 +148,22 @@ final class WebhookEndpoint
         }
 
         $tenant = $this->tenantFor($class, $request);
-        $secret = $this->secrets->secretFor($class, $tenant);
-        if ($secret === null || $secret === '') {
-            throw new HttpException(404, "{$class} is not set up for this tenant.", 'not_found');
-        }
-
-        $signature = WebhookSignature::parse($request->header(WebhookSignature::HEADER));
-        if ($signature === null) {
-            throw self::unsigned('The delivery carries no signature this endpoint can read.');
-        }
-        [$timestamp, $nonce, $mac] = $signature;
-        $expected = WebhookSignature::mac($secret, $timestamp, $nonce, $request->method, self::target($request), $rawBody);
-        if (!hash_equals($expected, $mac)) {
-            throw self::unsigned('The delivery\'s signature does not verify.');
-        }
-
         $now = $this->now();
-        if (abs($now - $timestamp) > self::TOLERANCE) {
-            throw self::unsigned('The delivery\'s timestamp is outside the tolerance: sent too long ago, or by a clock far off.');
-        }
+        $verifier = $this->verifiers[$class] ?? null;
+        $delivery = $verifier === null
+            ? $this->verifyOwn($class, $tenant, $request, $rawBody, $now)
+            : $this->verifierFor($verifier)->verify($class, $tenant, $request, $rawBody, $now);
+        $nonce = $delivery->nonce;
+        $timestamp = $delivery->timestamp;
 
-        [$own, $retry] = $this->claim($class, $tenant, $secret, $nonce, $timestamp + self::TOLERANCE, $now);
+        [$own, $retry] = $this->claim($class, $tenant, $delivery->signer, $nonce, $delivery->expiresAt, $now);
 
-        $call = new WebhookCall($request, $rawBody, $tenant, $nonce, $timestamp);
+        $call = new WebhookCall($request, $rawBody, $tenant, $nonce, $timestamp, $verifier);
         try {
             $response = $this->orm->actAs($tenant, fn (): mixed => $this->inPanel($class, fn (): mixed => $this->invoke($class, $call)));
         } catch (\Throwable $e) {
             // The sender's retry is this tenant's to make, and no other's.
-            $this->nonces->claim($retry, $nonce, $timestamp + self::TOLERANCE, $now);
+            $this->nonces->claim($retry, $nonce, $delivery->expiresAt, $now);
             $this->nonces->release($own, $nonce);
 
             throw $e;
@@ -186,9 +190,8 @@ final class WebhookEndpoint
      *
      * @return array{string, string} the tenant's own scope, and its failed-try scope
      */
-    private function claim(string $class, string $tenant, #[\SensitiveParameter] string $secret, string $nonce, int $expiresAt, int $now): array
+    private function claim(string $class, string $tenant, string $key, string $nonce, int $expiresAt, int $now): array
     {
-        $key = hash_hmac('sha256', 'tinvar-webhook-nonce-scope', $secret);
         $own = $class . "\n" . $tenant;
         $shared = $class . "\nkey:" . $key;
         $retry = $shared . "\nfailed:" . $tenant;
@@ -210,6 +213,48 @@ final class WebhookEndpoint
         }
 
         return [$own, $retry];
+    }
+
+    /**
+     * Tinvar's own signature (WebhookSignature): the secret the application
+     * keeps for this webhook and tenant, an HMAC over the timestamp, nonce,
+     * method, target and body, and the timestamp within TOLERANCE.
+     *
+     * @param class-string $class
+     */
+    private function verifyOwn(string $class, string $tenant, Request $request, string $rawBody, int $now): VerifiedDelivery
+    {
+        $secret = $this->secrets->secretFor($class, $tenant);
+        if ($secret === null || $secret === '') {
+            throw new HttpException(404, "{$class} is not set up for this tenant.", 'not_found');
+        }
+
+        $signature = WebhookSignature::parse($request->header(WebhookSignature::HEADER));
+        if ($signature === null) {
+            throw self::unsigned('The delivery carries no signature this endpoint can read.');
+        }
+        [$timestamp, $nonce, $mac] = $signature;
+        $expected = WebhookSignature::mac($secret, $timestamp, $nonce, $request->method, self::target($request), $rawBody);
+        if (!hash_equals($expected, $mac)) {
+            throw self::unsigned('The delivery\'s signature does not verify.');
+        }
+
+        if (abs($now - $timestamp) > self::TOLERANCE) {
+            throw self::unsigned('The delivery\'s timestamp is outside the tolerance: sent too long ago, or by a clock far off.');
+        }
+
+        return new VerifiedDelivery($timestamp, $nonce, $timestamp + self::TOLERANCE, VerifiedDelivery::signerOf($secret));
+    }
+
+    /** @param class-string<WebhookVerifier> $class */
+    private function verifierFor(string $class): WebhookVerifier
+    {
+        $verifier = ($this->resolver)($class);
+        if (!$verifier instanceof WebhookVerifier) {
+            throw new \LogicException("The resolver built {$class} as " . get_debug_type($verifier) . ', not a ' . WebhookVerifier::class . '.');
+        }
+
+        return $verifier;
     }
 
     /** @param class-string $class */
