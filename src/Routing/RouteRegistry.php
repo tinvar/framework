@@ -134,7 +134,7 @@ final class RouteRegistry
 
         $host = self::hostOf($class);
         $pathParameters = self::parametersOf($declaration->path, $segments);
-        foreach ($host?->parameters ?? [] as $parameter) {
+        foreach ($host->parameters ?? [] as $parameter) {
             if (\in_array($parameter, $pathParameters, true)) {
                 throw new RoutingException(
                     "{$class} takes '{$parameter}' from both its host ({$host?->pattern}) and its path ({$declaration->path}). "
@@ -152,7 +152,7 @@ final class RouteRegistry
             segments: $segments,
             // The host's first, then the path's: both bind by name, the
             // host's typed as the path's are (Binder).
-            parameters: [...($host?->parameters ?? []), ...$pathParameters],
+            parameters: [...($host->parameters ?? []), ...$pathParameters],
             // The class's declarations and its loader's, read the way
             // BuildRules reads them. Only the class's used to reach the
             // chain, so an #[Authorize] or #[Middleware] written on __invoke
@@ -416,7 +416,7 @@ final class RouteRegistry
         if ($page->domain() !== $host->pattern) {
             throw new RoutingException("The route '{$page->name}' is not served on this host.");
         }
-        foreach ($page->host?->parameters ?? [] as $parameter) {
+        foreach ($page->host->parameters ?? [] as $parameter) {
             if (($parameters[$parameter] ?? null) !== ($host->parameters[$parameter] ?? null)) {
                 throw new RoutingException("The route '{$page->name}' was rendered for another host.");
             }
@@ -797,7 +797,7 @@ final class RouteRegistry
 
         $here = $from === null ? null : HostMatch::of($from);
         $same = $here !== null && $here->pattern === $page->domain();
-        foreach ($page->host?->parameters ?? [] as $parameter) {
+        foreach ($page->host->parameters ?? [] as $parameter) {
             $same = $same && (string) ($parameters[$parameter] ?? '') === ($here->parameters[$parameter] ?? null);
         }
 

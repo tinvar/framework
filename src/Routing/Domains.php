@@ -54,10 +54,10 @@ final readonly class Domains
     public ?HostPattern $customAs;
 
     /**
-     * @param array<string, string> $roots the configured domains, by name: `['root' => 'shop.example.com']`
+     * @param array<array-key, string> $roots the configured domains, by name: `['root' => 'shop.example.com']`
      * @param string $primary the pattern of the host a route declaring no #[Domain] is served on
-     * @param string $scheme how URLs to another host are written: https, or http when every
-     *        host is localhost or below it, which never leaves the machine
+     * @param string $scheme how URLs to another host are written: https in production; http
+     *        on localhost, or behind something that terminates TLS for every host
      * @param int|null $port the one port a request's Host may name; null for the scheme's default
      * @param list<string> $aliases hosts -- names, or addresses such as 127.0.0.1 -- answered as the
      *        primary host, and never written into a URL
@@ -67,6 +67,9 @@ final readonly class Domains
      *        active domains only (CustomDomainVerification)
      * @param string|null $customAs the pattern a custom domain is served as: `{tenant}.{root}`, say
      * @param list<HostPattern|string> $patterns the patterns entry points declare; see serving()
+     * @param bool $anyPort answer a host whatever port its request names: for a machine's own
+     *        hosts alone -- localhost and below it, where a container's mapped port is not the
+     *        one it listens on -- and refused for any other
      */
     public function __construct(
         array $roots,
@@ -78,18 +81,20 @@ final readonly class Domains
         private ?\Closure $custom = null,
         ?string $customAs = null,
         array $patterns = [],
+        public bool $anyPort = false,
     ) {
         $normalized = [];
         foreach ($roots as $name => $host) {
             if (!\is_string($name) || preg_match('/^[A-Za-z_][A-Za-z0-9_]*\z/', $name) !== 1) {
                 throw new \InvalidArgumentException('A configured domain is named by an identifier, as root or admin.');
             }
-            if (HostName::normalize($host) !== strtolower(rtrim($host, '.')) || HostName::normalize($host) === null) {
+            $normal = HostName::normalize($host);
+            if ($normal === null || $normal !== strtolower(rtrim($host, '.'))) {
                 throw new \InvalidArgumentException(
                     "The configured domain '{$name}' is not a host name: a name, with no port, scheme or address.",
                 );
             }
-            $normalized[$name] = (string) HostName::normalize($host);
+            $normalized[$name] = $normal;
         }
         $this->roots = $normalized;
 
@@ -140,13 +145,12 @@ final readonly class Domains
         usort($compiled, fn (HostPattern $a, HostPattern $b): int => $a->beats($b, $this->roots));
         $this->patterns = $compiled;
 
-        if ($scheme === 'http') {
+        if ($anyPort) {
             foreach ([$this->primary, ...$compiled] as $pattern) {
-                $resolved = $pattern->resolved($this->roots);
-                if ($resolved[0] !== 'localhost') {
+                if ($pattern->resolved($this->roots)[0] !== 'localhost') {
                     throw new \InvalidArgumentException(
-                        "Domains write http only for hosts that never leave the machine, and '{$pattern->pattern}' is "
-                        . 'not localhost or below it.',
+                        "Domains answer any port only for hosts that never leave the machine, and '{$pattern->pattern}' "
+                        . 'is not localhost or below it.',
                     );
                 }
             }
@@ -161,7 +165,7 @@ final readonly class Domains
      * @param array<string, string> $roots further configured domains, by name
      * @param list<string> $aliases
      */
-    public static function fromUrl(string $url, array $roots = [], array $aliases = [], ?TrustedProxies $proxies = null): self
+    public static function fromUrl(string $url, array $roots = [], array $aliases = [], ?TrustedProxies $proxies = null, bool $anyPort = false): self
     {
         if (preg_match('#^(?:(https?)://)?([^/:?\#]+)(?::(\d{1,5}))?/?\z#i', trim($url), $m) !== 1) {
             throw new \InvalidArgumentException('An application\'s domain is a host, with a scheme and a port if it needs them.');
@@ -169,12 +173,12 @@ final readonly class Domains
         $host = strtolower($m[2]);
         $local = $host === 'localhost' || str_ends_with($host, '.localhost');
         $scheme = $m[1] !== '' ? strtolower($m[1]) : ($local ? 'http' : 'https');
-        $port = isset($m[3]) && $m[3] !== '' ? (int) $m[3] : null;
+        $port = isset($m[3]) ? (int) $m[3] : null;
         if ($port === ($scheme === 'https' ? 443 : 80)) {
             $port = null;
         }
 
-        return new self(['root' => $host, ...$roots], scheme: $scheme, port: $port, aliases: $aliases, proxies: $proxies);
+        return new self(['root' => $host, ...$roots], scheme: $scheme, port: $port, aliases: $aliases, proxies: $proxies, anyPort: $anyPort);
     }
 
     /**
@@ -199,6 +203,7 @@ final readonly class Domains
                 $this->custom,
                 $this->customAs?->pattern,
                 [...$this->patterns, ...$patterns],
+                $this->anyPort,
             );
         } catch (\LogicException $e) {
             throw new \InvalidArgumentException($e->getMessage(), 0, $e);
@@ -224,7 +229,7 @@ final readonly class Domains
             [$raw, $port] = [$m[1], (int) $m[2]];
         }
         $default = $this->scheme === 'https' ? 443 : 80;
-        if ($port !== null && $port !== ($this->port ?? $default)) {
+        if ($port !== null && !$this->anyPort && $port !== ($this->port ?? $default)) {
             return null;
         }
 
@@ -328,19 +333,24 @@ final readonly class Domains
     }
 
     /**
-     * What the client's route() builds an absolute URL with: the scheme, the
-     * port, the configured domains and the primary host's pattern. All of it
-     * is in every URL the application hands out already; none is a secret.
+     * What the client's route() builds a URL with: the scheme, the port, the
+     * configured domains, the primary host's pattern -- all of it in every
+     * URL the application hands out already, none a secret -- and the host
+     * the page is on, as $current matched it (the primary host for none),
+     * so a link on the same host stays a path and one to another is written
+     * absolute.
      *
-     * @return array{scheme: string, port: string, roots: array<string, string>, primary: string}
+     * @return array{scheme: string, port: string, roots: array<string, string>, primary: string, current: array{pattern: string|null, params: array<string, string>}}
      */
-    public function forClient(): array
+    public function forClient(?HostMatch $current = null): array
     {
         return [
             'scheme' => $this->scheme,
             'port' => $this->port === null ? '' : (string) $this->port,
             'roots' => $this->roots,
             'primary' => $this->primary->pattern,
+            // An empty map crosses as a list; route() reads either as none.
+            'current' => ['pattern' => $current?->pattern, 'params' => $current->parameters ?? []],
         ];
     }
 

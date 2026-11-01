@@ -420,10 +420,10 @@ final class ActionRegistry
     }
 
     /**
-     * An action's #[TenantFrom]: its method's, or its holder's.
+     * An action's #[Domain]: its method's, or its holder's, the nearest
+     * winning (ADR 0149).
      *
      * @param class-string $class
-     * @return class-string|null
      */
     private static function hostOf(string $where, string $class, string $method): ?\Tinvar\Routing\HostPattern
     {
@@ -434,6 +434,12 @@ final class ActionRegistry
         }
     }
 
+    /**
+     * An action's #[TenantFrom]: its method's, or its holder's.
+     *
+     * @param class-string $class
+     * @return class-string|null
+     */
     private static function tenantFromOf(string $where, string $class, string $method): ?string
     {
         try {

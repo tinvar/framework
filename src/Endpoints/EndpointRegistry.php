@@ -162,12 +162,12 @@ final class EndpointRegistry
         } catch (\InvalidArgumentException $e) {
             throw new EndpointException("{$where}: {$e->getMessage()}", 0, $e);
         }
-        foreach ($host?->parameters ?? [] as $hostParameter) {
+        foreach ($host->parameters ?? [] as $hostParameter) {
             if (\in_array($hostParameter, $parameters, true)) {
                 throw new EndpointException("{$where}: '{$hostParameter}' is in both its host and its path; a parameter comes from one place.");
             }
         }
-        $parameters = [...($host?->parameters ?? []), ...$parameters];
+        $parameters = [...($host->parameters ?? []), ...$parameters];
 
         $checks = Authorize::declaredOn($class, $method->getName());
         $inherited = Authorize::classLevelCount($class);

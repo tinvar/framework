@@ -45,7 +45,7 @@ final readonly class HostMatch
      */
     public static function hostOf(Request $request): string
     {
-        return self::of($request)?->host ?? '';
+        return self::of($request)->host ?? '';
     }
 
     /** Whether this is the host a route declaring $pattern (null: none) is served on. */

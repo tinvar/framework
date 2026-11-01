@@ -51,6 +51,7 @@ final readonly class ExternalOrigins
         }
 
         $this->allowed = $allowed;
+        $this->own = null;
     }
 
     /** Whether $url is an https URL on one of the allowed origins. */

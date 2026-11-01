@@ -149,8 +149,8 @@ it('refuses a pattern naming a domain nobody configured', function () {
     new Domains(['root' => 'shop.test'])->serving(['admin.{admn}']);
 })->throws(\InvalidArgumentException::class, "configures no domain called 'admn'");
 
-it('writes http only for hosts that never leave the machine', function () {
-    new Domains(['root' => 'shop.test'], scheme: 'http');
+it('answers any port only for hosts that never leave the machine', function () {
+    new Domains(['root' => 'shop.test'], scheme: 'http', anyPort: true);
 })->throws(\InvalidArgumentException::class);
 
 it('reads its domains from an origin, as an application configures its address', function () {
@@ -166,7 +166,10 @@ it('reads its domains from an origin, as an application configures its address',
             'port' => '',
             'roots' => ['root' => 'shop.example.com', 'admin' => 'admin-portal.example.net'],
             'primary' => '{root}',
-        ]);
+            'current' => ['pattern' => null, 'params' => []],
+        ])
+        ->and($production->forClient(new HostMatch('{account}.{root}', 'acme.shop.example.com', ['account' => 'acme']))['current'])
+        ->toBe(['pattern' => '{account}.{root}', 'params' => ['account' => 'acme']]);
 });
 
 it('serves a tenant\'s custom domain as the pattern it names, with the parameters its lookup gives', function () {
@@ -203,4 +206,12 @@ it('lets an action send a browser to one of the application\'s own hosts, and to
         ->and($origins->allows('http://127.0.0.1:8080/'))->toBeFalse()
         ->and($origins->allows('http://x@admin.localhost:8080/'))->toBeFalse()
         ->and(new \Tinvar\Http\ExternalOrigins()->allows('http://admin.localhost:8080/orders'))->toBeFalse();
+});
+
+it('answers any port only on a machine\'s own hosts, when asked to', function () {
+    $local = Domains::fromUrl('http://localhost:8080', anyPort: true);
+
+    expect($local->resolve(host('localhost:51234'))->pattern)->toBeNull()
+        ->and(fn () => new Domains(['root' => 'shop.test'], anyPort: true))->toThrow(\InvalidArgumentException::class)
+        ->and(new Domains(['root' => 'shop.test'], scheme: 'http')->origin(null))->toBe('http://shop.test');
 });
