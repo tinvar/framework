@@ -621,14 +621,14 @@ final class AppConsole
             ->command('build', 'build [--profile=production|staging|test] [--app=DIR] [--out=DIR]', 'The Vite build, made for a profile: production unless --profile says; each is served only under its own TINVAR_PROFILE. Then the discovery manifest beside it, which production boots from', $this->build(...))
             ->command('discover', 'discover [--check] [--build=DIR]', "Write every class the app registers, discovered under its namespace, to the build's manifest, which production boots from without a scan; with --check, write nothing and fail where the manifest is missing or stale", $this->discover(...))
             ->command('build:fragments', 'build:fragments [--build=DIR]', "Write the fragment manifest -- which routes may defer, and what each route's renders may query -- from the build and the routes", $this->fragments(...));
-        foreach (['build:current' => 'build:current [<id>] | build:revoke <id> | build:floor <id> | build:list | build:prune [--keep=N]', 'build:revoke' => '', 'build:floor' => '', 'build:list' => '', 'build:prune' => ''] as $name => $usage) {
+        foreach (['build:current' => 'build:current [<id>] | build:revoke <id> [--force] | build:floor <id> [--force] | build:list | build:prune [--keep=N]', 'build:revoke' => '', 'build:floor' => '', 'build:list' => '', 'build:prune' => ''] as $name => $usage) {
             $this->command($name, $usage, $usage === '' ? '' : 'The build history: what is released, and what is refused', fn (array $a): int => new BuildCommand(($this->buildStore)())->run($name, $a));
         }
         foreach (['renderer:start' => 'renderer:start | renderer:stop | renderer:check | renderer:restart', 'renderer:stop' => '', 'renderer:check' => '', 'renderer:restart' => ''] as $name => $usage) {
             $this->command($name, $usage, $usage === '' ? '' : 'The renderer pool, by hand', fn (array $a): int => new RendererCommand($this->projectRoot)->run($name, $a));
         }
         foreach ([
-            'migrate' => ['migrate | migrate:rollback [--step=N] | migrate:status | migrate:fresh --force', 'The migrations, against the app\'s database (or --database=PATH)'],
+            'migrate' => ['migrate | migrate:rollback [--step=N] [--force] | migrate:status | migrate:fresh --force', 'The migrations, against the app\'s database (or --database=PATH)'],
             'migrate:rollback' => ['', ''],
             'migrate:status' => ['', ''],
             'migrate:fresh' => ['', ''],
