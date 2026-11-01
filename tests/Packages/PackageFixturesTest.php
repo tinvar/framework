@@ -65,7 +65,7 @@ function normalize(string $path): string
 
 it('loads no other package\'s file by a path out of its own tests', function (string $package) {
     expect(crossings(ROOT, $package))->toBe([]);
-})->with(['support', 'database', 'framework', 'tenancy', 'testing', 'codegen']);
+})->with(['support', 'database', 'framework', 'tenancy', 'billing', 'testing', 'codegen']);
 
 it('finds a path out of a package however it is written', function () {
     $root = sys_get_temp_dir() . '/tinvar-fixtures-' . bin2hex(random_bytes(4));

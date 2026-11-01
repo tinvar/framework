@@ -33,7 +33,7 @@ function manifest(string $path): array
 
 it('knows every package there is', function () {
     expect(packages())->toEqualCanonicalizing([
-        'codegen', 'database', 'devtools-extension', 'framework', 'react',
+        'billing', 'codegen', 'database', 'devtools-extension', 'framework', 'react',
         'mail', 'renderer', 'skeleton', 'support', 'tenancy', 'testing',
     ]);
 });

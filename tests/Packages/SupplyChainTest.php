@@ -996,10 +996,10 @@ describe('workflows', function () {
 
         expect($workflow['on'])->toBe(['push' => ['branches' => ['main'], 'tags' => ['v*']]])
             ->and($workflow['permissions'])->toBe(['contents' => 'read'])
-            ->and(array_column($workflow['jobs']['split']['strategy']['matrix']['include'], 'package'))->toBe(['support', 'database', 'framework', 'tenancy', 'testing', 'codegen', 'skeleton'])
+            ->and(array_column($workflow['jobs']['split']['strategy']['matrix']['include'], 'package'))->toBe(['support', 'database', 'framework', 'tenancy', 'billing', 'testing', 'codegen', 'skeleton'])
             ->and(array_column($workflow['jobs']['split']['strategy']['matrix']['include'], 'key'))->toBe([
                 'TINVAR_SPLIT_KEY_SUPPORT', 'TINVAR_SPLIT_KEY_DATABASE', 'TINVAR_SPLIT_KEY_FRAMEWORK',
-                'TINVAR_SPLIT_KEY_TENANCY', 'TINVAR_SPLIT_KEY_TESTING', 'TINVAR_SPLIT_KEY_CODEGEN',
+                'TINVAR_SPLIT_KEY_TENANCY', 'TINVAR_SPLIT_KEY_BILLING', 'TINVAR_SPLIT_KEY_TESTING', 'TINVAR_SPLIT_KEY_CODEGEN',
                 'TINVAR_SPLIT_KEY_SKELETON',
             ])
             ->and($script)->toContain('refs/heads/main) target=refs/heads/main')

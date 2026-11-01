@@ -121,7 +121,7 @@ describe('the layers', function () {
     it('lets a layer use itself and the layers below it it names, never one above or beside it', function () {
         $layers = Layers::framework();
 
-        expect($layers->names())->toBe(['support', 'database', 'framework', 'tenancy', 'testing', 'codegen'])
+        expect($layers->names())->toBe(['support', 'database', 'framework', 'tenancy', 'billing', 'testing', 'codegen'])
             ->and($layers->mayUse('database', 'support'))->toBeTrue()
             ->and($layers->mayUse('database', 'database'))->toBeTrue()
             ->and($layers->mayUse('framework', 'database'))->toBeTrue()
@@ -197,7 +197,7 @@ describe('the modules', function () {
     it('lets a module use the core and jobs, never one beside it, and only the kernel use them all', function () {
         $modules = Layers::modules();
 
-        expect($modules->names())->toBe(['support', 'database', 'queue', ...CORE, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway', 'kernel', 'tenancy', 'testing', 'codegen'])
+        expect($modules->names())->toBe(['support', 'database', 'queue', ...CORE, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'calls', 'tools', 'services', 'gateway', 'kernel', 'tenancy', 'billing', 'testing', 'codegen'])
             ->and($modules->mayUse('queue', 'database'))->toBeTrue()
             ->and($modules->mayUse('queue', 'http'))->toBeFalse()
             ->and($modules->mayUse('queue', 'jobs'))->toBeFalse()
