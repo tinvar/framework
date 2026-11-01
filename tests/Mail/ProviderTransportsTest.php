@@ -339,6 +339,14 @@ describe('SendGrid', function () {
 });
 
 describe('every provider', function () {
+    it('is never handed a tag and a metadata key of one name, which Resend and SES would send as two tags of that name', function () {
+        $message = static fn (array $tags, array $metadata): Message => new Message(new Address('o@pellwick.example'), [new Address('ada@example.test')], 'S', '<p>x</p>', 'x', tags: $tags, metadata: $metadata);
+
+        expect(fn () => $message(['order'], ['order' => '1042']))->toThrow(\InvalidArgumentException::class, 'order')
+            ->and(fn () => $message(['order', 'order'], []))->toThrow(\InvalidArgumentException::class, 'order')
+            ->and($message(['order'], ['order_id' => '1042'])->tags)->toBe(['order']);
+    });
+
     it('takes a 429 or a 5xx as retryable, a 401 as the transport\'s, and a 400 or 422 as the message\'s', function (\Closure $make, string $secret, int $status, bool $retryable) {
         $e = thrown($make(fake(static fn (): OutboundResponse => new OutboundResponse($status, [], '{"message":"Refused."}'))));
 

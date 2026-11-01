@@ -121,8 +121,10 @@ final readonly class Message
     }
 
     /**
-     * Refuses tags or metadata a provider would: too many, or anything but
-     * letters, digits, `_` and `-`.
+     * Refuses tags or metadata a provider would: too many, anything but
+     * letters, digits, `_` and `-`, or one name twice -- a tag repeated, or
+     * a tag and a metadata key alike, which Resend and SES each send as two
+     * tags of that name.
      *
      * @param array<array-key, mixed> $tags
      * @param array<array-key, mixed> $metadata
@@ -143,6 +145,11 @@ final readonly class Message
         foreach ($metadata as $key => $value) {
             if (!\is_string($key) || preg_match(self::TAG, $key) !== 1 || !\is_string($value) || preg_match(self::TAG, $value) !== 1) {
                 throw new \InvalidArgumentException('Metadata is key => value, each 1 to 128 letters, digits, _ or -.');
+            }
+        }
+        foreach (array_count_values([...$tags, ...array_keys($metadata)]) as $name => $times) {
+            if ($times > 1) {
+                throw new \InvalidArgumentException("An email names '{$name}' twice among its tags and metadata keys.");
             }
         }
     }
