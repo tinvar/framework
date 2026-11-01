@@ -27,6 +27,13 @@ final readonly class ChannelTopics
 {
     public const string PURPOSE = 'live-channel-topic';
 
+    /**
+     * The key a personal channel's user is worked into its topic under:
+     * no parameter can be named so, since a pattern's parameters are
+     * identifiers, so no channel's parameters can spell a personal one's.
+     */
+    public const string USER = '@user';
+
     public function __construct(private Signer $signer) {}
 
     public static function fromKey(#[\SensitiveParameter] string $appKey): self
@@ -48,5 +55,27 @@ final readonly class ChannelTopics
         $subject = json_encode([$tenant, $channel, array_keys($params), array_values($params)], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
 
         return 'tinvar:' . Signer::encode(substr($this->signer->sign($subject), 0, 16));
+    }
+
+    /**
+     * The topic of $channel's subscription or publish, as the server holds
+     * it: a personal channel's with its user worked in beside the
+     * parameters -- the signed-in user's when a client subscribes, the one
+     * named when PHP publishes -- and any other channel's with its
+     * parameters alone.
+     *
+     * @param array<string, string> $params
+     * @throws \LogicException for a personal channel with no user to work in
+     */
+    public function forChannel(string $tenant, CompiledChannel $channel, array $params, ?string $user): string
+    {
+        if (!$channel->personal) {
+            return $this->for($tenant, $channel->name, $params);
+        }
+        if ($user === null || $user === '') {
+            throw new \LogicException("{$channel->where()} is personal, and its topic is a user's: name the user it is for.");
+        }
+
+        return $this->for($tenant, $channel->name, [...$params, self::USER => $user]);
     }
 }

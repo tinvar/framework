@@ -133,6 +133,12 @@ final class ChannelEndpoint
             if (!TokenClaims::carries($resolved)) {
                 throw new HttpException(404, 'No channel by those parameters.', 'not_found');
             }
+            // A personal channel is the signed-in user's own: its topic is
+            // worked out with their id, which the token never carries -- it
+            // is bound to them already, and read again on every trade.
+            if ($channel->personal && $this->auth->id() === null) {
+                throw new HttpException(401, 'A personal channel is heard by the user signed in, and nobody is.', 'unauthenticated');
+            }
 
             $tenant = TenantClaim::current($this->orm);
             $at = $now ?? time();
@@ -147,7 +153,7 @@ final class ChannelEndpoint
                 issuedAt: $at,
                 authHash: TokenClaims::hashAuth($this->live->signer, $this->auth->id(), $this->auth->epoch()),
                 host: \Tinvar\Routing\HostMatch::hostOf($inner),
-            ), $this->topics->for($tenant, $channel->name, $resolved));
+            ), $this->topics->forChannel($tenant, $channel, $resolved, $this->auth->id()));
 
             return Response::make(
                 200,
@@ -190,7 +196,12 @@ final class ChannelEndpoint
             }
 
             $resolved = $this->runner->admit($channel, $claims->params);
-            if (!hash_equals($token->topic, $this->topics->for($tenant, $channel->name, $resolved))) {
+            if ($channel->personal && $this->auth->id() === null) {
+                throw new HttpException(404, 'A personal channel is heard by the user signed in, and nobody is.', 'live_unavailable');
+            }
+            // A personal channel's topic is the signed-in user's, worked out
+            // again: one minted for anyone else names another topic.
+            if (!hash_equals($token->topic, $this->topics->forChannel($tenant, $channel, $resolved, $this->auth->id()))) {
                 throw new HttpException(404, 'The token names another topic than its channel.', 'live_unavailable');
             }
 

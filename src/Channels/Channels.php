@@ -66,6 +66,9 @@ final readonly class Channels
     {
         $compiled = $this->registry->forClass($channel::class)
             ?? throw new \LogicException($channel::class . ' is not a channel the application registered.');
+        if ($compiled->personal) {
+            throw new \LogicException("{$compiled->where()} is personal: publish to it for one user, with publishTo().");
+        }
 
         if (!$message instanceof $compiled->message) {
             throw new \LogicException(\sprintf(
@@ -94,8 +97,41 @@ final readonly class Channels
             }
         }
 
-        $topic = $this->topics->for(TenantClaim::current($this->orm), $compiled->name, $params);
+        $this->send($compiled, $this->topics->for(TenantClaim::current($this->orm), $compiled->name, $params), $message);
+    }
 
+    /**
+     * Publishes $message to the personal channel named $channel for $user
+     * alone (ChannelRegistry::registerPersonal()): heard only by a
+     * subscription that user made, signed in, in the tenant in force. As
+     * publish(): a Data object of the channel's class, after the commit,
+     * never inside acrossTenants() or withinSubtree().
+     *
+     * @throws \LogicException for a name no personal channel has, a message of another class,
+     *         a widened scope, no user, or a message too large
+     */
+    public function publishTo(string $user, string $channel, Data $message): void
+    {
+        $compiled = $this->registry->has($channel) ? $this->registry->get($channel) : null;
+        if ($compiled === null || !$compiled->personal) {
+            throw new \LogicException("'{$channel}' is no personal channel the application registered.");
+        }
+        if (!$message instanceof $compiled->message) {
+            throw new \LogicException(\sprintf('%s carries %s, and was handed %s.', $compiled->where(), $compiled->message, $message::class));
+        }
+        if ($this->orm->isWidened()) {
+            throw new \LogicException(
+                "{$compiled->where()} was published to inside acrossTenants() or withinSubtree(). Publish in the tenant "
+                . 'whose user it is for, with actAs().',
+            );
+        }
+
+        $this->send($compiled, $this->topics->forChannel(TenantClaim::current($this->orm), $compiled, [], $user), $message);
+    }
+
+    /** Encodes $message, and sends it to $topic once the transaction commits. */
+    private function send(CompiledChannel $compiled, string $topic, Data $message): void
+    {
         $encoded = $this->orm->readOnly(fn (): mixed => $this->encoder->encode($message));
         $data = json_encode(
             // The topic, so the client knows which subscription this is for --

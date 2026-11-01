@@ -37,6 +37,11 @@ final readonly class CompiledChannel
         // The #[Domain] pattern it is held to (ADR 0149); null for none, and
         // heard on any host the application serves, unless its panel's is one.
         public ?string $host = null,
+        // A personal channel (ChannelRegistry::registerPersonal()): its topic
+        // is worked out with the signed-in user's id beside its parameters,
+        // so each user hears their own and nobody else's, and it is
+        // published to for one user by name (Channels::publishTo()).
+        public bool $personal = false,
     ) {}
 
     public function where(): string

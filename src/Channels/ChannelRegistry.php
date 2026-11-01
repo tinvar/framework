@@ -92,6 +92,83 @@ final class ChannelRegistry
     }
 
     /**
+     * A personal channel: one each signed-in user hears for themselves
+     * alone, published to for one user by name (Channels::publishTo()).
+     * For a module that declares its own entry point -- a notification
+     * inbox -- rather than a #[Channel] class, and let in as any channel
+     * is, through the stack $class declares: its #[TenantFrom], #[Panel],
+     * #[Domain] and #[Middleware], and authentication with no opt-out. It
+     * takes no parameters, and needs no #[Authorize]: its topic is worked
+     * out from the signed-in user's id (ChannelTopics::forChannel()), so
+     * there is nobody else's to ask for.
+     *
+     * @param class-string $class the class whose declarations are its entry point's
+     * @param class-string<Data> $message the Data class every message is
+     * @throws ChannelException for a name taken or malformed, a message that is no Data
+     *         class, or a class that is #[PublicAccess] or #[WithoutSession]
+     */
+    public function registerPersonal(string $class, string $name, string $message): CompiledChannel
+    {
+        if (!class_exists($class)) {
+            throw new ChannelException("{$class} is named as a personal channel's entry point and is no class.");
+        }
+        if (!Str::isDottedIdentifier($name)) {
+            throw new ChannelException("{$class}: '{$name}' is not a channel name: dot-separated identifiers, as in inbox.customers.");
+        }
+        if (!class_exists($message) || !is_subclass_of($message, Data::class)) {
+            throw new ChannelException("{$class}: a personal channel carries one Data class, and '{$message}' is none.");
+        }
+        $reflection = new \ReflectionClass($class);
+        if (PublicAccess::declaredOn($class)) {
+            throw new ChannelException(
+                "{$class} is #[PublicAccess], and its channel '{$name}' is a signed-in user's own. Take #[PublicAccess] off: "
+                . 'a visitor has no user to hear it as.',
+            );
+        }
+        if ($reflection->getAttributes(WithoutSession::class) !== []) {
+            throw new ChannelException("{$class} is #[WithoutSession]. A subscription is bound to a session, so its channel has one.");
+        }
+
+        try {
+            $tenantFrom = TenantFrom::declaredOn($class);
+            $panels = Panel::declaredOn($class);
+            PanelBinding::of($panels);
+            $host = \Tinvar\Attributes\Domain::declaredOn($class)?->pattern;
+        } catch (\LogicException|\InvalidArgumentException $e) {
+            throw new ChannelException("{$class}: {$e->getMessage()}", 0, $e);
+        }
+
+        $compiled = new CompiledChannel(
+            name: $name,
+            class: $class,
+            pattern: $name,
+            parameters: [],
+            models: [],
+            scalars: [],
+            checks: [],
+            exempt: true,
+            middleware: Middleware::declaredOn($class),
+            tenantFrom: $tenantFrom,
+            panels: $panels,
+            publicAccess: false,
+            message: $message,
+            host: $host,
+            personal: true,
+        );
+
+        $existing = $this->byName[$name] ?? null;
+        if ($existing !== null) {
+            throw new ChannelException("Both {$existing->class} and {$class} are the channel '{$name}'.");
+        }
+        $this->byName[$name] = $compiled;
+        // Found by its class too, when it is no #[Channel] of its own, so
+        // Channels::publish() refuses it by name rather than as unknown.
+        $this->byClass[$class] ??= $compiled;
+
+        return $compiled;
+    }
+
+    /**
      * @param list<class-string> $classes
      * @return list<CompiledChannel>
      */
