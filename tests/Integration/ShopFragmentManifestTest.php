@@ -15,7 +15,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopFragmentManifest;
 
-use Shop\DemoAccount;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;

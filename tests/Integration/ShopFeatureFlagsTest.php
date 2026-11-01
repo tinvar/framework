@@ -11,8 +11,8 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Integration\ShopFeatureFlags;
 
 use Shop\Http\Data\Orders\ShippingUpdatesData;
-use Shop\DemoAccount;
-use Shop\Flags;
+use Shop\Support\DemoAccount;
+use Shop\Support\Flags;
 use Shop\Kernel;
 use Shop\Database\Models\Account\Customer;
 use Shop\Database\Models\Orders\Order;

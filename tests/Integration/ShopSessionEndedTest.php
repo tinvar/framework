@@ -17,7 +17,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopSessionEnded;
 
-use Shop\DemoAccount;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Shop\Database\Models\Account\Customer;
 use Tinvar\Bench\Shop;
@@ -129,7 +129,7 @@ it('keeps a signed-out session, and its grant', function () {
 // it is not mistaken for one the server ended.
 it('keeps the session a sign-out issues', function () {
     $session = signedIn($this->kernel, $this->customer);
-    $context = new \Shop\Auth\SessionContext((string) Kernel::sessionFrom($session, KEY), '127.0.0.1', $this->customer);
+    $context = new \Shop\Auth\Sessions\SessionContext((string) Kernel::sessionFrom($session, KEY), '127.0.0.1', $this->customer);
     $this->kernel->sessions->signOut($context);
     $signedOut = (string) $context->replacement();
 

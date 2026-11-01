@@ -18,8 +18,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Server\ServeDev;
 
-use Shop\DemoAccount;
-use Shop\StaffAccount;
+use Shop\Support\DemoAccount;
+use Shop\Support\StaffAccount;
 use Tinvar\Bench\Shop;
 use Tinvar\Server\FrankenPhp;
 use Tinvar\Server\ServeException;

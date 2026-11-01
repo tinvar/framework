@@ -16,7 +16,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopStaticPage;
 
-use Shop\DemoAccount;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Shop\Http\Queries\Catalog\Availability;
 use Tinvar\Bench\Renderer;

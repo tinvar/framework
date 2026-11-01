@@ -13,9 +13,9 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopTrustedProxy;
 
-use Shop\Auth\SignInThrottle;
+use Shop\Auth\Account\SignInThrottle;
 use Shop\Database\Seeders\Seeder;
-use Shop\DemoAccount;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Tinvar\Config\ConfigException;
 use Tinvar\Config\Configs;

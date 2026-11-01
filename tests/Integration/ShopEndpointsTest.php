@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopEndpoints;
 
-use Shop\DemoAccount;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Shop\Database\Models\Account\Customer;
 use Shop\Database\Models\Orders\Order;

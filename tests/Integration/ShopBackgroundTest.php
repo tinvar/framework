@@ -18,7 +18,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopBackground;
 
-use Shop\DemoAccount;
+use Shop\Support\DemoAccount;
 use Tinvar\Bench\Shop;
 use Tinvar\Live\HubSettings;
 use Tinvar\Mail\LogTransport;

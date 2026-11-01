@@ -12,15 +12,15 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopTransfers;
 
-use Shop\Auth\AuthEpochs;
-use Shop\Auth\StaffMemberships;
-use Shop\Auth\StaffPermission;
-use Shop\DemoAccount;
+use Shop\Auth\Sessions\AuthEpochs;
+use Shop\Auth\Admin\StaffMemberships;
+use Shop\Auth\Admin\StaffPermission;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Shop\Database\Models\Account\Customer;
 use Shop\Http\Queries\Catalog\Availability;
 use Shop\Http\Pages\Admin\Transfers as TransfersPage;
-use Shop\StaffAccount;
+use Shop\Support\StaffAccount;
 use Tinvar\Bench\Shop;
 use Tinvar\Console\Output;
 use Tinvar\Http\CsrfTokens;

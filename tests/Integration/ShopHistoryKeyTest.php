@@ -11,8 +11,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopHistoryKey;
 
-use Shop\Auth\AuthEpochs;
-use Shop\DemoAccount;
+use Shop\Auth\Sessions\AuthEpochs;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;

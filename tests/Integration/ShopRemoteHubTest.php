@@ -23,8 +23,8 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Integration\ShopRemoteHub;
 
 use Shop\Http\Actions\Orders\OrderActions;
-use Shop\DemoAccount;
-use Shop\StaffAccount;
+use Shop\Support\DemoAccount;
+use Shop\Support\StaffAccount;
 use Tinvar\Bench\Shop;
 use Tinvar\Http\Response;
 use Tinvar\Live\HubSettings;

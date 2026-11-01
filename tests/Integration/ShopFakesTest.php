@@ -16,7 +16,7 @@ namespace Tinvar\Tests\Integration\ShopFakes;
 use Shop\Http\Actions\Orders\OrderActions;
 use Shop\Http\Data\Catalog\AvailabilityData;
 use Shop\Http\Data\Orders\ShippingUpdatesData;
-use Shop\DemoAccount;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Shop\Database\Models\Account\Customer;
 use Shop\Database\Models\Orders\Order;

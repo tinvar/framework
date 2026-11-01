@@ -56,14 +56,14 @@ it('discovers every class its Kernel listed by hand, and adds the framework\'s o
         ->and($classes->transfers)->toBe([\Shop\Http\Transfers\Catalog\StockImport::class, \Shop\Http\Transfers\Orders\OrdersExport::class])
         ->and($classes->shared)->toBe([\Shop\Http\Shared\ShopShared::class])
         ->and($classes->policies)->toBe([
-            \Shop\Database\Models\Account\Customer::class => \Shop\Policies\CustomerPolicy::class,
-            \Shop\Database\Models\Account\Receipt::class => \Shop\Policies\ReceiptPolicy::class,
-            \Shop\Database\Models\Catalog\Product::class => \Shop\Policies\ProductPolicy::class,
-            \Shop\Database\Models\Orders\Order::class => \Shop\Policies\OrderPolicy::class,
+            \Shop\Database\Models\Account\Customer::class => \Shop\Policies\Account\CustomerPolicy::class,
+            \Shop\Database\Models\Account\Receipt::class => \Shop\Policies\Account\ReceiptPolicy::class,
+            \Shop\Database\Models\Catalog\Product::class => \Shop\Policies\Catalog\ProductPolicy::class,
+            \Shop\Database\Models\Orders\Order::class => \Shop\Policies\Orders\OrderPolicy::class,
         ])
         ->and($classes->models)->toBe([\Shop\Database\Models\Account\Customer::class, \Shop\Database\Models\Account\Receipt::class, \Shop\Database\Models\Catalog\Product::class, \Shop\Database\Models\Orders\Order::class, \Shop\Database\Models\Orders\OrderLine::class])
-        ->and($classes->commands)->toBe([\Shop\Commands\AdvanceShipmentsNow::class, \Shop\Commands\AnnounceProduct::class, \Shop\Commands\SendNewsletterIssue::class])
-        ->and($classes->tasks)->toContain(\Shop\Tasks\AdvanceShipments::class, \Shop\Tasks\ScheduleNewsletter::class, \Tinvar\Jobs\PruneQueue::class)
+        ->and($classes->commands)->toBe([\Shop\Console\Commands\Fulfilment\AdvanceShipmentsNow::class, \Shop\Console\Commands\Marketing\AnnounceProduct::class, \Shop\Console\Commands\Marketing\SendNewsletterIssue::class])
+        ->and($classes->tasks)->toContain(\Shop\Console\Tasks\Fulfilment\AdvanceShipments::class, \Shop\Console\Tasks\Marketing\ScheduleNewsletter::class, \Tinvar\Jobs\PruneQueue::class)
         ->and($classes->configs)->toContain(\Shop\Config\ShopConfig::class, \Shop\Config\ServerConfig::class, \Tinvar\Config\FrameworkConfig::class, \Tinvar\Mail\DkimConfig::class)
         ->and($classes->scenarios)->toBe([\Shop\Database\Scenarios\DemoCustomer::class, \Shop\Database\Scenarios\LoadCustomers::class, \Shop\Database\Scenarios\NewCustomer::class])
         ->and($classes->fieldEnums)->toBe([\Shop\Http\Data\Catalog\CatalogSort::class])

@@ -13,9 +13,9 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopEmailPreferences;
 
-use Shop\DemoAccount;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
-use Shop\Mail\MarketingList;
+use Shop\Mail\Marketing\MarketingList;
 use Shop\Database\Models\Account\Customer;
 use Shop\Http\Pages\Marketing\EmailPreferences;
 use Tinvar\Bench\Shop;

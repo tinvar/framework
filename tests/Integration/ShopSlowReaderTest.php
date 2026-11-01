@@ -30,7 +30,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopSlowReader;
 
-use Shop\DemoAccount;
+use Shop\Support\DemoAccount;
 use Tinvar\Bench\Shop;
 use Tinvar\Bench\SlowReader;
 use Tinvar\Server\FrankenPhp;

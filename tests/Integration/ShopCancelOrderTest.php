@@ -14,8 +14,8 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Integration\ShopCancelOrder;
 
 use Shop\Http\Actions\Orders\OrderActions;
-use Shop\Auth\AuthEpochs;
-use Shop\DemoAccount;
+use Shop\Auth\Sessions\AuthEpochs;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Shop\Database\Models\Account\Customer;
 use Shop\Database\Models\Orders\Order;

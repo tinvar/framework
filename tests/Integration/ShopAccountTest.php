@@ -12,12 +12,12 @@ namespace Tinvar\Tests\Integration\ShopAccount;
 
 use Shop\Http\Actions\Account\AccountActions;
 use Shop\Http\Actions\Orders\OrderActions;
-use Shop\Auth\NextPath;
-use Shop\Auth\Passwords;
-use Shop\Auth\Sessions;
-use Shop\Auth\SignInThrottle;
+use Shop\Auth\Account\NextPath;
+use Shop\Auth\Account\Passwords;
+use Shop\Auth\Sessions\Sessions;
+use Shop\Auth\Account\SignInThrottle;
 use Shop\Database\Seeders\Seeder;
-use Shop\DemoAccount;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Shop\Database\Models\Account\Customer;
 use Shop\Http\Pages\Account\SignIn;

@@ -13,16 +13,16 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Integration\ShopFulfilment;
 
 use Shop\Http\Actions\Fulfilment\FulfilmentActions;
-use Shop\Auth\AuthEpochs;
-use Shop\Auth\StaffMemberships;
-use Shop\Auth\StaffPermission;
-use Shop\DemoAccount;
+use Shop\Auth\Sessions\AuthEpochs;
+use Shop\Auth\Admin\StaffMemberships;
+use Shop\Auth\Admin\StaffPermission;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Shop\Database\Models\Account\Customer;
 use Shop\Database\Models\Orders\Order;
 use Shop\Database\Models\Orders\OrderStatus;
 use Shop\Http\Pages\Admin\Orders as AdminOrders;
-use Shop\StaffAccount;
+use Shop\Support\StaffAccount;
 use Tinvar\Bench\Shop;
 use Tinvar\Calls\CallResult;
 use Tinvar\Console\Output;
@@ -224,8 +224,8 @@ describe('the fulfilment workflow', function () {
 
         // Short-lived, since it waits in the jobs table: an hour.
         $claims = json_decode((string) \Tinvar\Support\Signer::decode(explode('.', $context)[1]), true);
-        expect($claims['e'] - $claims['i'])->toBe(\Shop\Workflows\FulfilOrder::COLLECT_WITHIN)
-            ->and(\Shop\Workflows\FulfilOrder::COLLECT_WITHIN)->toBeLessThanOrEqual(3600);
+        expect($claims['e'] - $claims['i'])->toBe(\Shop\Workflows\Fulfilment\FulfilOrder::COLLECT_WITHIN)
+            ->and(\Shop\Workflows\Fulfilment\FulfilOrder::COLLECT_WITHIN)->toBeLessThanOrEqual(3600);
 
         // Never kept to be sent again (ADR 0096): the token is not left at
         // rest in webhook_events, and no resend replays it past its hour.

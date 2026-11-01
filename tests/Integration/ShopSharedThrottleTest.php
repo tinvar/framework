@@ -11,9 +11,9 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopSharedThrottle;
 
-use Shop\Auth\SignInThrottle;
+use Shop\Auth\Account\SignInThrottle;
 use Shop\Database\Seeders\Seeder;
-use Shop\DemoAccount;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Tinvar\Http\CsrfTokens;
 use Tinvar\Http\PdoThrottleStore;

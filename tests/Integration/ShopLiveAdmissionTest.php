@@ -14,12 +14,12 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopLiveAdmission;
 
-use Shop\Auth\AuthEpochs;
-use Shop\Auth\StaffMemberships;
-use Shop\Auth\StaffPermission;
+use Shop\Auth\Sessions\AuthEpochs;
+use Shop\Auth\Admin\StaffMemberships;
+use Shop\Auth\Admin\StaffPermission;
 use Shop\Database\Seeders\Seeder;
 use Shop\Kernel;
-use Shop\StaffAccount;
+use Shop\Support\StaffAccount;
 use Tinvar\Http\CsrfTokens;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;

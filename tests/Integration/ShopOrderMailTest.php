@@ -13,14 +13,14 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopOrderMail;
 
-use Shop\DemoAccount;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Shop\Mail\Links;
-use Shop\Mail\OrderConfirmation;
-use Shop\Mail\SendOrderConfirmation;
+use Shop\Mail\Orders\OrderConfirmation;
+use Shop\Jobs\Orders\SendOrderConfirmation;
 use Shop\Database\Models\Orders\Order;
 use Shop\Http\Channels\Orders\OrderChanges;
-use Shop\Tasks\AdvanceShipments;
+use Shop\Console\Tasks\Fulfilment\AdvanceShipments;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;
 use Tinvar\Console\Output;

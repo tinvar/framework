@@ -14,7 +14,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopOrderWebhook;
 
-use Shop\DemoAccount;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Shop\Http\Webhooks\Warehouse\OrderEvent;
 use Shop\Http\Webhooks\Warehouse\OrderWebhook;

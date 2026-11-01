@@ -14,11 +14,11 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopOrderNumbers;
 
-use Shop\DemoAccount;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Shop\Database\Models\Account\Customer;
 use Shop\Database\Models\Catalog\Product;
-use Shop\Pricing;
+use Shop\Support\Pricing;
 use Tinvar\Bench\Shop;
 use Tinvar\Orm\Orm;
 use Tinvar\Testing\RendererPool;

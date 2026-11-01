@@ -13,7 +13,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopFlash;
 
-use Shop\Auth\Flashes;
+use Shop\Auth\Sessions\Flashes;
 use Shop\Kernel;
 use Tinvar\Bench\Shop;
 use Tinvar\Http\Flash;

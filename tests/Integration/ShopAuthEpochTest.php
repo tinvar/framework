@@ -11,12 +11,12 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopAuthEpoch;
 
-use Shop\Auth\AuthEpochs;
-use Shop\Auth\Sessions;
+use Shop\Auth\Sessions\AuthEpochs;
+use Shop\Auth\Sessions\Sessions;
 use Shop\Http\Middleware\StartSession;
 use Shop\Database\Migrations;
 use Shop\Database\Seeders\Seeder;
-use Shop\DemoAccount;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Shop\Database\Models\Account\Customer;
 use Tinvar\Auth\AuthContext;

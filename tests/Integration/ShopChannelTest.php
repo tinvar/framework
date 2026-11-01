@@ -13,11 +13,11 @@ namespace Tinvar\Tests\Integration\ShopChannel;
 
 use Shop\Http\Channels\Orders\OrderUpdates;
 use Shop\Database\Seeders\Seeder;
-use Shop\DemoAccount;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Shop\Database\Models\Orders\OrderStatus;
 use Shop\Http\Channels\Orders\OrderChanges;
-use Shop\Tasks\AdvanceShipments;
+use Shop\Console\Tasks\Fulfilment\AdvanceShipments;
 use Tinvar\Channels\ChannelToken;
 use Tinvar\Http\CsrfTokens;
 use Tinvar\Http\Request;

@@ -11,7 +11,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopWarehouseApi;
 
-use Shop\DemoAccount;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Shop\Database\Models\Account\Customer;
 use Shop\Http\Queries\Catalog\Availability;

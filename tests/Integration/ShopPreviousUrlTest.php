@@ -11,9 +11,9 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopPreviousUrl;
 
-use Shop\Auth\PreviousUrls;
-use Shop\Auth\SessionContext;
-use Shop\DemoAccount;
+use Shop\Auth\Sessions\PreviousUrls;
+use Shop\Auth\Sessions\SessionContext;
+use Shop\Support\DemoAccount;
 use Shop\Kernel;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;

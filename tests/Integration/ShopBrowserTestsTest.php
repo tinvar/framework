@@ -14,9 +14,9 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Integration\ShopBrowserTests;
 
-use Shop\Clock;
+use Shop\Support\Clock;
 use Shop\Kernel;
-use Shop\StaffAccount;
+use Shop\Support\StaffAccount;
 use Tinvar\Bench\Shop;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
