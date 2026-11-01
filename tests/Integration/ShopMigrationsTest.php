@@ -33,7 +33,7 @@ const KEY = 'shop-migrations-test-key-32-bytes!!!';
 
 const TABLES = [
     'auth_epochs', 'customers', 'email_links', 'failed_jobs', 'flashes', 'handoff_nonces', 'job_batch_ends', 'job_batches', 'job_locks', 'job_rates', 'jobs',
-    'mail_event_nonces', 'mail_sent', 'mail_suppressions', 'marketing_opt_in_sends', 'marketing_opt_ins', 'marketing_preferences', 'newsletter_issues', 'order_lines', 'order_numbers', 'orders', 'products', 'receipts', 'schedule_runs',
+    'mail_event_nonces', 'mail_sent', 'mail_suppressions', 'marketing_opt_in_sends', 'marketing_opt_ins', 'marketing_preferences', 'newsletter_issues', 'notification_inbox', 'notification_preferences', 'order_lines', 'order_numbers', 'orders', 'products', 'receipts', 'schedule_runs',
     // The search index (ADR 0154): its documents, and FTS5's table and its shadows.
     'search_documents', 'search_documents_text', 'search_documents_text_config', 'search_documents_text_content', 'search_documents_text_data',
     'search_documents_text_docsize', 'search_documents_text_idx', 'sessions', 'spent_tokens', 'staff',
@@ -122,6 +122,7 @@ it('makes every table the shop uses, and leaves nothing the models describe for 
         '2026_10_31_000132_write_marketing_and_newsletter_times_as_the_orm_stores_them',
         '2026_11_01_000140_bind_transfers_to_their_host',
         '2026_11_01_000150_create_search_documents',
+        '2026_11_01_000151_create_notification_inbox_and_preferences',
     ])
         ->and(tables($connection))->toBe(TABLES)
         ->and(($generator = new MigrationGenerator($connection, new SqliteDialect()))->generate([Product::class, Customer::class, Order::class, OrderLine::class, Receipt::class], '2026-10-24'))->toBeNull()
@@ -275,6 +276,7 @@ it('gives an uploads table made before uploads had an owner one, counting by it'
         '2026_10_31_000132_write_marketing_and_newsletter_times_as_the_orm_stores_them',
         '2026_11_01_000140_bind_transfers_to_their_host',
         '2026_11_01_000150_create_search_documents',
+        '2026_11_01_000151_create_notification_inbox_and_preferences',
     ]);
 
     $columns = array_column($connection->select('SELECT name FROM pragma_table_info(?)', ['uploads']), 'name');
