@@ -16,8 +16,8 @@ use Tinvar\Attributes\ClassAttributes;
  * attribute's middleware needs the attribute too, so it is listed by a
  * reference to where the attribute is written:
  *
- *     Tinvar\Billing\RequiresPlan@App\Http\Pages\Reports#0                 // on the class, its ancestors or traits
- *     Tinvar\Billing\RequiresPlan@App\Http\Actions\Exports::download#0     // on the method
+ *     Acme\Billing\RequiresPlan@App\Http\Pages\Reports#0                 // on the class, its ancestors or traits
+ *     Acme\Billing\RequiresPlan@App\Http\Actions\Exports::download#0     // on the method
  *
  * the attribute's class, then the entry point's class (and method), then
  * which of its middleware attributes it is, counted as on() counts them. A
@@ -85,10 +85,7 @@ final class DeclaredMiddleware
         if ($found === null || strcasecmp($found->getName(), $attributeClass) !== 0) {
             throw new \LogicException("'{$reference}' points at no #[{$attributeClass}] there now: rebuild what compiled it.");
         }
-        $attribute = $found->newInstance();
-        \assert($attribute instanceof MiddlewareAttribute);
-
-        return self::$attributes[$reference] = $attribute;
+        return self::$attributes[$reference] = $found->newInstance();
     }
 
     /**
@@ -142,7 +139,7 @@ final class DeclaredMiddleware
         }
 
         return $class->hasMethod($method)
-            ? array_values($class->getMethod($method)->getAttributes(MiddlewareAttribute::class, \ReflectionAttribute::IS_INSTANCEOF))
+            ? $class->getMethod($method)->getAttributes(MiddlewareAttribute::class, \ReflectionAttribute::IS_INSTANCEOF)
             : [];
     }
 }

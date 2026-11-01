@@ -53,7 +53,7 @@ final class ChannelEndpoint
     public const int MAX_BODY_BYTES = 4_096;
 
     /**
-     * @param \Closure(class-string): Middleware $middlewareResolver builds a channel's own #[Middleware]
+     * @param \Closure(string): Middleware $middlewareResolver builds a channel's own #[Middleware]
      * @param list<class-string> $globalMiddleware already run by the stack around this endpoint
      */
     public function __construct(

@@ -33,7 +33,7 @@ final class Router
     public const string PARTIAL_HEADER = 'x-partial';
 
     /**
-     * @param \Closure(class-string): Middleware $middlewareResolver
+     * @param \Closure(string): Middleware $middlewareResolver
      * @param list<class-string<Middleware>>     $globalMiddleware
      * @param bool $partialReloads whether X-Only and X-Except are honoured. Off
      *        unless the application says its renderer renders a frame's

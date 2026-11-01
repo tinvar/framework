@@ -20,7 +20,7 @@ final readonly class CompiledRoute
      * @param class-string                 $class
      * @param list<string>                 $segments  'racks' or '{rack}'
      * @param list<string>                 $parameters
-     * @param list<class-string>           $middleware
+     * @param list<string>                 $middleware
      * @param list<Authorize>              $checks
      * @param bool|null                    $encryptHistory a page's #[EncryptHistory], or null
      *                                                    for the default (ADR 0019)

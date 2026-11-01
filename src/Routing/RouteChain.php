@@ -37,7 +37,7 @@ final readonly class RouteChain
      * Middleware for the whole chain, outer to inner, deduplicated so a class
      * listed on both a layout and its page runs once.
      *
-     * @return list<class-string>
+     * @return list<string> each a middleware class, or a middleware attribute's reference (DeclaredMiddleware)
      */
     public function middleware(): array
     {

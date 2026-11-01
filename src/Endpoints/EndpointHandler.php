@@ -46,7 +46,7 @@ final class EndpointHandler
     public const string MATCHED = 'tinvar.endpoint';
 
     /**
-     * @param \Closure(class-string): Middleware $middlewareResolver builds an
+     * @param \Closure(string): Middleware $middlewareResolver builds an
      *        endpoint's own #[Middleware]
      * @param list<class-string> $globalMiddleware already run by the stack, so
      *        not run a second time

@@ -118,7 +118,7 @@ final class QueryRunner
     /**
      * The #[Middleware] a query declares, for an HTTP call to run around it.
      *
-     * @return list<class-string<\Tinvar\Http\Middleware>>
+     * @return list<string>
      */
     public function middlewareFor(string $name): array
     {

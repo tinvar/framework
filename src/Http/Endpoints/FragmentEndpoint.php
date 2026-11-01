@@ -85,7 +85,7 @@ final class FragmentEndpoint
      *        (ADR 0065): made here, behind the route's whole chain, for the
      *        same reason.
      * @param \Closure(Request): string $sessionId
-     * @param \Closure(class-string): Middleware $middlewareResolver
+     * @param \Closure(string): Middleware $middlewareResolver
      * @param list<class-string> $globalMiddleware
      * @param list<Middleware> $extraGlobal already-built middleware to run outermost
      * @param list<Middleware> $extraInner  already-built middleware to run AFTER the

@@ -2980,7 +2980,7 @@ final class Kernel
      * TypeError from deep inside a request.
      *
      * @param \Closure(class-string): object $resolver
-     * @return \Closure(class-string): Middleware
+     * @return \Closure(string): Middleware
      */
     private static function middlewareFrom(\Closure $resolver): \Closure
     {

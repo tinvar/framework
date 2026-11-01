@@ -38,7 +38,7 @@ final readonly class Middleware
      * its #[Middleware], as references DeclaredMiddleware builds (ADR 0150).
      *
      * @param class-string $class
-     * @return list<class-string<\Tinvar\Http\Middleware>>
+     * @return list<string> each a middleware's class, or a reference to a middleware attribute (DeclaredMiddleware)
      */
     public static function declaredOn(string $class, ?string $method = null): array
     {

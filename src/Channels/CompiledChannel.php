@@ -15,7 +15,7 @@ final readonly class CompiledChannel
      * @param array<string, class-string<\Tinvar\Orm\Model>> $models parameter => model
      * @param array<string, string> $scalars parameter => its declared type, a builtin or a backed enum
      * @param list<Authorize> $checks every #[Authorize] it declares
-     * @param list<class-string> $middleware its #[Middleware]
+     * @param list<string> $middleware its #[Middleware]
      * @param class-string|null $tenantFrom what its #[TenantFrom] names
      * @param list<\Tinvar\Attributes\Panel> $panels every #[Panel] it declares
      * @param class-string<\Tinvar\Data\Data> $message the Data class each message is

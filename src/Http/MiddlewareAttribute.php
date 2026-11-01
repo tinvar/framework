@@ -8,7 +8,7 @@ namespace Tinvar\Http;
  * An attribute that guards the entry point it is on with a middleware of
  * its own, handed the attribute and so its arguments:
  *
- *     #[RequiresPlan(Plan::Pro)]   // tinvar/billing's: refuses a tenant not on Pro
+ *     #[RequiresPlan(Pro::class)]   // a billing package's: refuses a payer not on Pro
  *
  * It goes wherever #[Middleware] goes -- a page, a layout, an action, a
  * query, an endpoint, a channel, an export or import, on the class or its

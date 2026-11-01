@@ -66,7 +66,7 @@ final readonly class TransferEndpoint
     private const int ENVELOPE_BYTES = 65_536;
 
     /**
-     * @param \Closure(class-string): Middleware $middlewareResolver builds a transfer's own middleware
+     * @param \Closure(string): Middleware $middlewareResolver builds a transfer's own middleware
      * @param list<class-string> $globalMiddleware already run around this endpoint
      */
     public function __construct(

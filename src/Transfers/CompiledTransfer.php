@@ -32,7 +32,7 @@ final readonly class CompiledTransfer implements DeclaredEntryPoint
      * @param array<string, true> $optionalModels those of them that may be left out
      * @param array<string, \ReflectionParameter> $scalars start arguments that are not
      * @param array<string, class-string<Model>> $rowModels an import row's model-typed fields
-     * @param list<class-string<\Tinvar\Http\Middleware>> $middleware
+     * @param list<string> $middleware
      * @param list<Panel> $panels
      * @param bool $mapsRows an export declares row(), which maps each model to its row
      * @param list<string> $revalidates an import's tags, invalidated when its rows are applied (ADR 0075)

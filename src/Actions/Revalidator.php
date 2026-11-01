@@ -65,7 +65,7 @@ final class Revalidator
      *        response whose body is the payload and whose `x-live-token` is
      *        the live token it minted with the request's
      *        RequestAttributes::LIVE_MINTER, as a page render answers
-     * @param \Closure(class-string): Middleware $middlewareResolver required,
+     * @param \Closure(string): Middleware $middlewareResolver required,
      *        not optional: null meant "run no middleware", which is silently
      *        the pre-fix behaviour for anyone constructing this directly
      * @param list<class-string> $globalMiddleware already applied by the action

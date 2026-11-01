@@ -92,7 +92,7 @@ final class ActionRunner
      * None for a name that is not registered: that is answered with a 404
      * by run(), and there is no middleware to have declared.
      *
-     * @return list<class-string>
+     * @return list<string>
      */
     public function middlewareFor(string $name): array
     {

@@ -20,7 +20,7 @@ final readonly class CompiledAction
      *        being edited" read this, so it has to be a declared choice rather
      *        than whichever model happened to be first in a map.
      * @param array<string, true> $optionalModels model inputs that may be absent
-     * @param list<class-string>          $middleware
+     * @param list<string>                $middleware
      * @param int $classLevelChecks how many of $checks, at the front, the holder
      *        class declared. They run like the method's own but do not decide
      *        for it -- see Checks::undecided().

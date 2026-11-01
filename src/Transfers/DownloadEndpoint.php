@@ -59,7 +59,7 @@ final readonly class DownloadEndpoint
     ];
 
     /**
-     * @param \Closure(class-string): Middleware $middlewareResolver builds an export's own middleware
+     * @param \Closure(string): Middleware $middlewareResolver builds an export's own middleware
      * @param list<class-string> $globalMiddleware already run around this endpoint
      */
     public function __construct(

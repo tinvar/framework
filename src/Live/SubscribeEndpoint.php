@@ -102,7 +102,7 @@ final class SubscribeEndpoint
     public const int CHANNEL_GRANT_SECONDS = 120;
 
     /**
-     * @param \Closure(class-string): Middleware $middlewareResolver builds a route's own middleware
+     * @param \Closure(string): Middleware $middlewareResolver builds a route's own middleware
      * @param list<class-string<Middleware>> $globalMiddleware already run around this endpoint,
      *        so left out of a route's when it is run again here
      */

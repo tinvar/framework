@@ -41,7 +41,7 @@ final class ActionEndpoint
     /**
      * @param (\Closure(Request): string)|null $sessionId needed only to verify
      *        the route tokens a client sends for re-rendering
-     * @param (\Closure(class-string): Middleware)|null $middlewareResolver builds
+     * @param (\Closure(string): Middleware)|null $middlewareResolver builds
      *        an action's own #[Middleware]; required once any action declares one
      * @param list<class-string> $globalMiddleware already run by the stack this
      *        endpoint is mounted in, so not run a second time

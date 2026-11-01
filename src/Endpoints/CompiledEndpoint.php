@@ -35,7 +35,7 @@ final readonly class CompiledEndpoint
      * @param array<string, class-string<\Tinvar\Validation\FormRequest>> $formRequests parameter => form request
      * @param array<string, class-string<\Tinvar\Orm\Model>> $nestedModels form-request field => model
      * @param array<string, true> $optionalModels form-request model fields that may be left out
-     * @param list<class-string> $middleware its #[Middleware], the holder's first
+     * @param list<string> $middleware its #[Middleware], the holder's first
      * @param class-string|null $tenantFrom what its #[TenantFrom] names
      * @param list<\Tinvar\Attributes\Panel> $panels every #[Panel] it declares, the holder's first
      * @param bool $sessionless #[WithoutSession]: no global stack, so no session and no CSRF token

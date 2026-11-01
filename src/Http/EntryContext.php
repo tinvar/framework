@@ -198,7 +198,7 @@ final readonly class EntryContext
      * navigation was a way round what a route enforces in middleware.
      *
      * @param list<string> $globalMiddleware
-     * @param \Closure(class-string): Middleware $middlewareResolver
+     * @param \Closure(string): Middleware $middlewareResolver
      * @param list<Middleware> $before
      */
     public static function routePipeline(?self $entry, RouteChain $chain, array $globalMiddleware, \Closure $middlewareResolver, array $before = []): Pipeline
@@ -222,9 +222,9 @@ final readonly class EntryContext
      * guard the other ran.
      *
      * @param array{list<Panel>, class-string}|null $panels its #[Panel]s and its class, as the runner answers them
-     * @param list<class-string> $middleware its own #[Middleware]
+     * @param list<string> $middleware its own #[Middleware], and its middleware attributes' references
      * @param list<string> $globalMiddleware
-     * @param (\Closure(class-string): Middleware)|null $resolver
+     * @param (\Closure(string): Middleware)|null $resolver
      * @param string $what what the call is, for the refusal of a #[Middleware] nothing can build
      * @param \Closure(Request): Response $then
      */

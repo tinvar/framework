@@ -36,7 +36,7 @@ final class QueryRegistry
     /** @var array<string, int> how many of each query's checks, at the front, its class declared */
     private array $classLevelChecks = [];
 
-    /** @var array<string, list<class-string<\Tinvar\Http\Middleware>>> */
+    /** @var array<string, list<string>> */
     private array $middleware = [];
 
     /** @var array<string, class-string|null> */
@@ -236,7 +236,7 @@ final class QueryRegistry
      * None for a name that is not registered: the runner refuses that name,
      * and there is nothing to have declared.
      *
-     * @return list<class-string<\Tinvar\Http\Middleware>>
+     * @return list<string>
      */
     public function middlewareFor(string $name): array
     {
