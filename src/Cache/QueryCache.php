@@ -117,7 +117,7 @@ final class QueryCache
     /** @var (\Closure(string, bool, string): void)|null told of each lookup: the dev toolbar's */
     private ?\Closure $observer = null;
 
-    /** @var (\Closure(): string)|null the host a key names, where it must name one: see keyHostsBy() */
+    /** @var (\Closure(): ?string)|null the host a key names, where it must name one: see keyHostsBy() */
     private ?\Closure $host = null;
 
     /**
@@ -128,9 +128,12 @@ final class QueryCache
      * subdomain, through anything the application put behind the host, is
      * not globex's: their keys differ by the host. A fixed host is one host,
      * and a tenant's custom domain is keyed by its tenant already; keys on
-     * them are what they were. The Kernel gives its own.
+     * them are what they were. Null where the host cannot be known -- the
+     * application routes by host, and the call is made outside any request
+     * -- and the call is neither looked up nor kept: never keyed as no
+     * host's. The Kernel gives its own.
      *
-     * @param (\Closure(): string)|null $host
+     * @param (\Closure(): ?string)|null $host
      */
     public function keyHostsBy(?\Closure $host): void
     {
@@ -441,7 +444,7 @@ final class QueryCache
     {
         try {
             return $this->key($name, $declaration, $arguments, $tenant, $subtree);
-        } catch (\JsonException) {
+        } catch (\JsonException|HostUnknown) {
             return null;
         }
     }
@@ -481,7 +484,7 @@ final class QueryCache
 
         // The host, where a parameter took part of it: keyHostsBy(). Only
         // then, so every other key is the one it was.
-        $host = $this->host === null ? '' : ($this->host)();
+        $host = $this->host === null ? '' : (($this->host)() ?? throw new HostUnknown('No host is known for this call, and its key must name one.'));
         if ($host !== '') {
             $parts['h'] = $host;
         }

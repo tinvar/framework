@@ -304,6 +304,21 @@ final class Kernel
     /** The request handle() is answering: what a failed boundary's RenderFailed names. */
     private ?Request $handling = null;
 
+    /**
+     * The host of the work in hand (ADR 0149), as the request it is for was
+     * resolved: set by handle() for as long as it answers, and around a
+     * streamed body for as long as it is sent -- per fiber, as the tenant,
+     * the user and the panel are, so requests a server interleaves in
+     * fibers never read one another's. What the query cache keys a call by,
+     * and a render's call to a query held to a host is held to.
+     *
+     * @var \WeakMap<object, HostMatch|false>
+     */
+    private \WeakMap $hostsByFiber;
+
+    /** The host of the work in hand outside any fiber; false for none known. */
+    private HostMatch|false $mainHost = false;
+
     /** Whether a failed render escapes handle() rather than becoming an error page. */
     private readonly bool $throwOnRenderError;
 
@@ -660,6 +675,7 @@ final class Kernel
     ) {
         $this->resolver = $resolver;
         $this->shared = $shared;
+        $this->hostsByFiber = new \WeakMap();
         $this->sharedTags = $tagVersions === null ? null : new SharedTags($tagVersions, $orm, $this->report(...));
 
         // Half registered is neither: entry points would run as tenants the
@@ -814,11 +830,17 @@ final class Kernel
         $cache->reportTo($this->report(...));
         // Keyed apart by the host where a parameter took part of it: one
         // `{account}.{root}` is many hosts, and none answers from another's
-        // entry (ADR 0149).
-        $cache->keyHostsBy(function (): string {
-            $match = $this->handling === null ? null : HostMatch::of($this->handling);
+        // entry (ADR 0149). Read off the work in hand, carried through a
+        // streamed body and kept per fiber (hostInHand()); none known where
+        // the application routes by host, and the call is not cached at all.
+        $routesByHost = $domains !== null;
+        $cache->keyHostsBy(function () use ($routesByHost): ?string {
+            if (!$routesByHost) {
+                return '';
+            }
+            $match = $this->hostInHand();
 
-            return $match === null || $match->parameters === [] ? '' : $match->host;
+            return $match === null ? null : ($match->parameters === [] ? '' : $match->host);
         });
         // Each lookup and each flag read, for the toolbar's Cache and Flags
         // panels (ADR 0112); a Kernel not built for dev has no toolbar.
@@ -1738,6 +1760,8 @@ final class Kernel
         $this->toolbar?->begin($request);
         $handling = $this->handling;
         $this->handling = $request;
+        $host = HostMatch::of($request);
+        $hostBefore = $this->enterHost($host ?? false);
         $failure = null;
         $ended = false;
         foreach ($this->requestBuilds as $builds) {
@@ -1758,7 +1782,7 @@ final class Kernel
             $response = $this->telemetry?->end($response, $failure) ?? $response;
             $ended = true;
 
-            return $handling === null ? $this->resetAfterStream($response) : $response;
+            return $handling === null ? $this->resetAfterStream($response, $host) : $response;
         } finally {
             // A failure that escaped -- throw_on_error's, say -- is still a
             // request that was answered, with a 500 by whoever caught it.
@@ -1767,6 +1791,7 @@ final class Kernel
             }
             $this->toolbar?->end();
             $this->handling = $handling;
+            $this->leaveHost($hostBefore);
             $this->scope->reset();
         }
     }
@@ -1781,7 +1806,7 @@ final class Kernel
      * this worker to inherit. Not for a nested handle(): its producer runs
      * inside the request around it, whose scope is not over.
      */
-    private function resetAfterStream(Response $response): Response
+    private function resetAfterStream(Response $response, ?HostMatch $host): Response
     {
         if (!$response->isStreaming()) {
             return $response;
@@ -1789,13 +1814,57 @@ final class Kernel
 
         $scope = $this->scope;
 
-        return $response->aroundBody(static function (\Closure $produce, \Closure $sink) use ($scope): void {
+        // The host the request was for, around the body as it is sent: a
+        // call it makes is keyed and held by that host, not by none.
+        return $response->aroundBody(function (\Closure $produce, \Closure $sink) use ($scope, $host): void {
+            $before = $this->enterHost($host ?? false);
             try {
                 $produce($sink);
             } finally {
+                $this->leaveHost($before);
                 $scope->reset();
             }
         });
+    }
+
+    /** The host of the work in hand: this fiber's, else the main context's; null for none known. */
+    private function hostInHand(): ?HostMatch
+    {
+        $fiber = \Fiber::getCurrent();
+        $host = $fiber !== null && isset($this->hostsByFiber[$fiber]) ? $this->hostsByFiber[$fiber] : $this->mainHost;
+
+        return $host === false ? null : $host;
+    }
+
+    /**
+     * Makes $host the host of the work in hand, in this fiber or outside
+     * any, answering what was there before for leaveHost() to put back:
+     * null where this fiber had none of its own.
+     */
+    private function enterHost(HostMatch|false $host): HostMatch|false|null
+    {
+        $fiber = \Fiber::getCurrent();
+        if ($fiber === null) {
+            [$before, $this->mainHost] = [$this->mainHost, $host];
+
+            return $before;
+        }
+        $before = $this->hostsByFiber[$fiber] ?? null;
+        $this->hostsByFiber[$fiber] = $host;
+
+        return $before;
+    }
+
+    private function leaveHost(HostMatch|false|null $before): void
+    {
+        $fiber = \Fiber::getCurrent();
+        if ($fiber === null) {
+            $this->mainHost = $before ?? false;
+        } elseif ($before === null) {
+            unset($this->hostsByFiber[$fiber]);
+        } else {
+            $this->hostsByFiber[$fiber] = $before;
+        }
     }
 
     /**
@@ -2788,7 +2857,7 @@ final class Kernel
             return null;
         }
 
-        $match = $this->handling === null ? null : HostMatch::of($this->handling);
+        $match = $this->hostInHand();
         if ($match !== null && $match->serves($pattern)) {
             return null;
         }
