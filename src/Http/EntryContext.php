@@ -177,7 +177,7 @@ final readonly class EntryContext
     {
         $page = $chain->page;
         $hostParameters = [];
-        foreach ($page->host?->parameters ?? [] as $name) {
+        foreach ($page->host->parameters ?? [] as $name) {
             $hostParameters[$name] = (string) ($chain->parameters[$name] ?? '');
         }
 
@@ -249,6 +249,20 @@ final readonly class EntryContext
         }
 
         return new Pipeline([...$stack, ...($resolver === null ? [] : array_map($resolver, $own))])->run($request, $then);
+    }
+
+    /**
+     * The host an entry point's panel lives on (PanelDefinition::$domain,
+     * ADR 0149), as #[Domain] writes it; null for none, or no panel.
+     *
+     * @param list<Panel> $declared
+     * @param class-string $class
+     */
+    public function panelDomainFor(array $declared, string $class): ?string
+    {
+        $panel = $this->panelFor($declared, $class);
+
+        return $panel === null ? null : $this->registry?->definition($panel->name)?->domain;
     }
 
     /** A route chain's panel: its page's and layouts' declarations, or its page's namespace. */
