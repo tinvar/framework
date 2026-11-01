@@ -187,6 +187,28 @@ it('lays the overlay over a page only for a request that names this machine', fu
     'a name ending like localhost' => ['evil-localhost:8000', false],
 ]);
 
+// Dev may listen beyond loopback -- a container's port, a LAN address -- and
+// a peer elsewhere can name `localhost`, or nothing, as easily as anything.
+// Its address is the one thing it cannot choose: one known and not loopback
+// is shown no failure, whatever it names. One unknown -- a server adapter
+// that reports none -- is held to the name alone, as before.
+it('lays the overlay over a page only for a peer on this machine, or one no address is known for', function (?string $remote, ?string $host, bool $shown) {
+    $headers = ['accept' => 'text/html', ...($host === null ? [] : ['host' => $host])];
+    $body = kernel(dev: true)->handle(new Request('GET', '/broken', $headers, remoteAddress: $remote), respond())->body();
+
+    expect(str_contains($body, 'id="' . DevOverlay::ID . '"'))->toBe($shown)
+        ->and(str_contains($body, 'SKU-14'))->toBe($shown)
+        ->and(str_contains($body, __FILE__))->toBe($shown);
+})->with([
+    'another machine naming localhost' => ['10.0.0.7', 'localhost:8000', false],
+    'another machine naming nothing' => ['192.168.1.20', null, false],
+    'another machine over IPv6' => ['2001:db8::7', 'localhost', false],
+    'loopback over IPv6' => ['::1', 'localhost:8000', true],
+    'loopback naming nothing' => ['127.0.0.1', null, true],
+    'an unknown peer naming localhost' => [null, 'localhost:8000', true],
+    'an unknown peer naming another host' => [null, 'rebound.attacker.example', false],
+]);
+
 it('lays nothing over an answer: a 404 is not a bug', function () {
     $body = kernel(dev: true)->handle(document('/nowhere'), respond())->body();
 

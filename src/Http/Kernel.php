@@ -2316,9 +2316,16 @@ final class Kernel
         // Dev listens on loopback, and a page that points a name of its own
         // at 127.0.0.1 -- DNS rebinding -- reaches it same-origin from its
         // visitor's machine: the raw failure goes only to a request naming
-        // this machine, or naming nothing, as a client on it may.
+        // this machine, or naming nothing, as a client on it may. And only
+        // to a peer on this machine, where its address is known: dev may
+        // listen beyond loopback, and a peer elsewhere names `localhost`, or
+        // nothing, as easily as anything -- its address it cannot choose.
+        // An adapter that reports no address leaves the name to decide.
         $host = $request->header('host');
-        $overlaid = $this->dev && $failure !== null && DevOverlay::shows($failure) && ($host === null || Loopback::name($host));
+        $peer = $request->remoteAddress;
+        $overlaid = $this->dev && $failure !== null && DevOverlay::shows($failure)
+            && ($peer === null || $peer === '' || Loopback::address($peer))
+            && ($host === null || Loopback::name($host));
         $chain = $this->routes->errorChain($response->status, HostMatch::of($request)?->pattern);
         if ($chain === null && !$overlaid) {
             return $response;
