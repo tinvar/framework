@@ -100,6 +100,8 @@ final class QueryEndpoint
             "Query {$name}",
             $request,
             fn (Request $r): Response => $this->dispatch($r, $name, $rawBody),
+            // Its #[Domain]: answered on that host alone (ADR 0149).
+            $this->runner->hostFor($name),
         );
     }
 

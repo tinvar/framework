@@ -71,7 +71,7 @@ it('builds the host back from its parameters, and refuses a value that is not on
 
     expect(HostPattern::compile('{account}.{root}')->host(['account' => 'acme'], $roots))->toBe('acme.shop.test');
     HostPattern::compile('{account}.{root}')->host(['account' => 'evil.com/x'], $roots);
-})->throws(\Tinvar\Routing\RoutingException::class);
+})->throws(HostPatternRefused::class);
 
 it('answers a listed host, and refuses any other with a 421', function () {
     $domains = new Domains(['root' => 'shop.test'], patterns: ['admin.{root}', '{account}.{root}']);

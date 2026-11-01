@@ -111,6 +111,15 @@ final class ActionRunner
     }
 
     /**
+     * The host an action's #[Domain] holds it to, or null for none -- or for
+     * a name that is not registered (ADR 0149).
+     */
+    public function hostFor(string $name): ?string
+    {
+        return $this->registry->has($name) ? $this->registry->get($name)->host?->pattern : null;
+    }
+
+    /**
      * An action's #[Panel] declarations, with its holder class -- whose
      * namespace places it when it declares none.
      *

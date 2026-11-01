@@ -74,6 +74,7 @@ use Tinvar\Data\SharedProviders;
 use Tinvar\Data\SharedReads;
 use Tinvar\Data\SharedRegistry;
 use Tinvar\Routing\CompiledRoute;
+use Tinvar\Routing\Domains;
 use Tinvar\Routing\HostMatch;
 use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\LoadedRoute;
@@ -154,6 +155,9 @@ final class Kernel
 
     /** An application with #[Channel]s and no hub: /_channel answers that there is nothing to hear. */
     private readonly bool $channelsUnheard;
+
+    /** The hosts the application serves (ADR 0149); null where it routes on no host. */
+    public readonly ?Domains $domains;
 
     /** /_upload and /_file, mounted only when an application supplies Uploads. */
     public readonly ?UploadEndpoint $uploads_;
@@ -583,6 +587,12 @@ final class Kernel
      *        complaints, deliveries (ADR 0147): mounted at /_mail/events/*, beside webhooks
      *        and as they are, with no session and none of the global stack; each provider's
      *        own signature is what a session is to a page
+     * @param Domains|null $domains the hosts the application serves (ADR 0149): given, a
+     *        request naming any other is refused with a 421 before anything but the probes
+     *        and Caddy's TLS ask runs for it, pages and endpoints are matched on host and
+     *        path, and every entry point declaring #[Domain] -- or in a panel held to a
+     *        host -- runs on that host alone. Without it, an entry point declaring
+     *        #[Domain] is refused here
      */
     public function __construct(
         public readonly Orm $orm,
@@ -643,6 +653,7 @@ final class Kernel
         bool $problemReports = false,
         ?Features $features = null,
         private readonly ?MailEventsEndpoint $mailEvents = null,
+        ?Domains $domains = null,
     ) {
         $this->resolver = $resolver;
         $this->shared = $shared;
@@ -812,7 +823,11 @@ final class Kernel
         // resolve them the same way. Checked now: a panel nobody defined, or
         // a requirement nothing can hold, is refused here rather than found
         // by whoever first reaches it.
-        $entry = new EntryContext($this->orm, $resolver, $panels, $panelRegistry, $memberships, $this->auth, $realms ?? $handoff?->realms, $tenants);
+        $this->domains = self::domainsFor($domains, $this->routes, $this->actions, $this->queries, $endpoints, $panelRegistry);
+        $entry = new EntryContext($this->orm, $resolver, $panels, $panelRegistry, $memberships, $this->auth, $realms ?? $handoff?->realms, $tenants, $this->domains);
+        if ($this->domains !== null) {
+            self::assertPanelHosts($entry, $panelRegistry, $this->routes, $endpoints);
+        }
         $entry->check($this->routes, $this->actions, $this->queries, $endpoints, $channels, $transfers?->registry->all() ?? []);
         // And every endpoint's path against the pages': a path both match
         // would be answered by whichever the dispatch happened to ask first.
@@ -1545,11 +1560,101 @@ final class Kernel
      * @param bool $errorPage false for a caller that wants the failure as the
      *        framework answers it -- a benchmark, a build step -- not a page
      */
+    /**
+     * The application's Domains, serving every host pattern its entry points
+     * and panels declare -- or a refusal, for a #[Domain] with no Domains to
+     * read it by, two patterns that match one host, or one naming a domain
+     * nobody configured. Given to the registries, which match on host and
+     * build links across hosts with it.
+     */
+    private static function domainsFor(
+        ?Domains $domains,
+        RouteRegistry $routes,
+        ActionRegistry $actions,
+        QueryRegistry $queries,
+        ?EndpointRegistry $endpoints,
+        ?PanelRegistry $panels,
+    ): ?Domains {
+        $declared = [
+            ...array_map(static fn ($p): string => $p->pattern, $routes->hostPatterns()),
+            ...array_map(static fn ($p): string => $p->pattern, $endpoints?->hostPatterns() ?? []),
+            ...$queries->hostPatterns(),
+        ];
+        foreach ($actions->all() as $action) {
+            if ($action->host !== null) {
+                $declared[] = $action->host->pattern;
+            }
+        }
+        foreach ($panels?->all() ?? [] as $definition) {
+            if ($definition->domain !== null) {
+                $declared[] = $definition->domain;
+            }
+        }
+        $declared = array_values(array_unique($declared));
+
+        if ($domains === null) {
+            if ($declared !== []) {
+                throw new \InvalidArgumentException(
+                    "An entry point or a panel is held to the host '{$declared[0]}', and the Kernel was given no Domains to "
+                    . 'say which hosts the application serves (ADR 0149).',
+                );
+            }
+
+            return null;
+        }
+
+        $domains = $domains->serving($declared);
+        $routes->serveOn($domains);
+        $endpoints?->serveOn($domains);
+
+        return $domains;
+    }
+
+    /**
+     * Refuses a page, a layout or an endpoint in a panel held to a host that
+     * does not declare that host: matched on its own host, it would be
+     * refused by its panel's on every request, and its author believed it
+     * was on one of them.
+     */
+    private static function assertPanelHosts(EntryContext $entry, ?PanelRegistry $panels, RouteRegistry $routes, ?EndpointRegistry $endpoints): void
+    {
+        if ($panels === null) {
+            return;
+        }
+        $held = [];
+        foreach ([...$routes->layouts(), ...$routes->pages()] as $route) {
+            $held[] = [$route->class, $route->panels, $route->class, $route->domain()];
+        }
+        foreach ($endpoints?->all() ?? [] as $endpoint) {
+            $held[] = [$endpoint->where(), $endpoint->panels, $endpoint->class, $endpoint->host?->pattern];
+        }
+        foreach ($held as [$where, $declared, $class, $domain]) {
+            $panel = $entry->panelFor($declared, $class);
+            $host = $panel === null ? null : $panels->definition($panel->name)?->domain;
+            if ($host !== null && $host !== $domain) {
+                throw new \InvalidArgumentException(
+                    "{$where} is in panel '{$panel->name}', which lives on {$host}, and declares "
+                    . ($domain === null ? 'no #[Domain]' : "#[Domain('{$domain}')]") . ". Declare #[Domain('{$host}')] on it.",
+                );
+            }
+        }
+    }
+
     public function handle(Request $request, \Closure $respond, string $rawBody = '', bool $errorPage = true): Response
     {
         // First, so everything after -- the session, the routing, a failure
         // in either, the toolbar's recording -- is under the request's id.
         $request = $this->telemetry?->begin($request) ?? $request;
+        // The host it was sent to, resolved once for everything after to
+        // read (HostMatch); one the application does not serve is left
+        // unresolved, and refused in dispatch() (ADR 0149).
+        if ($this->domains !== null && HostMatch::of($request) === null) {
+            $host = $this->domains->hostOf($request);
+            $match = $host === null ? null : $this->domains->match($host);
+            if ($match !== null) {
+                $request = $request->withAttribute(HostMatch::ATTRIBUTE, $match);
+            }
+        }
         $request = $this->withPreviousUrl($request);
         $this->toolbar?->begin($request);
         $handling = $this->handling;
@@ -1752,6 +1857,15 @@ final class Kernel
                 return Loopback::local($request)
                     ? $this->globalStack->run($request, fn (Request $passed): Response => $this->toolbar->respond($passed, $this->auth))
                     : throw new NotFoundException();
+            }
+
+            // Fail closed on the host: past the probes, Caddy's TLS ask and
+            // the dev toolbar's own loopback check, nothing runs for a host
+            // the application does not serve (ADR 0149).
+            if ($this->domains !== null && HostMatch::of($request) === null) {
+                $this->telemetry?->route('_misdirected');
+
+                throw new HttpException(421, 'The request names a host this application does not serve.', 'misdirected_request');
             }
 
             if ($this->webhooks !== null && $this->webhooks->matches($request)) {
@@ -2604,6 +2718,7 @@ final class Kernel
             user: $this->auth->id(),
             authEpoch: $this->auth->epoch(),
             loaders: $loaders,
+            host: HostMatch::hostOf($request),
         );
     }
 
@@ -3078,6 +3193,7 @@ final class Kernel
             sessionId: $session,
             user: $this->auth->id(),
             authEpoch: $this->auth->epoch(),
+            host: HostMatch::hostOf($request),
         ))->mint($loaded->chain);
     }
 }

@@ -8,6 +8,7 @@ use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\Query;
+use Tinvar\Attributes\Domain;
 use Tinvar\Attributes\TenantFrom;
 use Tinvar\Auth\BuildRules;
 use Tinvar\Auth\PanelBinding;
@@ -40,6 +41,9 @@ final class QueryRegistry
 
     /** @var array<string, class-string|null> */
     private array $tenantFrom = [];
+
+    /** @var array<string, string> query name => the #[Domain] pattern it is held to */
+    private array $hosts = [];
 
     /** @var array<string, list<Panel>> */
     private array $panels = [];
@@ -165,6 +169,10 @@ final class QueryRegistry
         $this->classLevelChecks[$name] = Authorize::classLevelCount($class);
         $this->middleware[$name] = Middleware::declaredOn($class, Query::entryMethodOf($class));
         $this->tenantFrom[$name] = TenantFrom::declaredOn($class, Query::entryMethodOf($class));
+        $host = Domain::declaredOn($class, Query::entryMethodOf($class));
+        if ($host !== null) {
+            $this->hosts[$name] = $host->pattern;
+        }
         $this->panels[$name] = Panel::declaredOn($class, Query::entryMethodOf($class));
         try {
             PanelBinding::of($this->panels[$name]);
@@ -241,6 +249,22 @@ final class QueryRegistry
     public function tenantSourceFor(string $name): ?string
     {
         return $this->tenantFrom[$name] ?? null;
+    }
+
+    /**
+     * The host a query's #[Domain] holds a call over HTTP to, or null for
+     * none: then any host the application serves, unless its panel holds it
+     * to one (ADR 0149).
+     */
+    public function hostFor(string $name): ?string
+    {
+        return $this->hosts[$name] ?? null;
+    }
+
+    /** @return list<string> every #[Domain] pattern a query declares */
+    public function hostPatterns(): array
+    {
+        return array_values(array_unique($this->hosts));
     }
 
     /**

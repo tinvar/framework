@@ -112,10 +112,15 @@ final class Realms
         return $realm;
     }
 
-    /** The realm a request's Host header names, read as HostName reads it -- never X-Forwarded-Host. */
+    /**
+     * The realm a request's host names: the host the application resolved
+     * (HostMatch, ADR 0149) where it routes by host, else its Host header,
+     * read as HostName reads it -- never a client's X-Forwarded-Host.
+     */
     public function forRequest(Request $request): ?Realm
     {
-        $host = HostName::normalize($request->header('host') ?? '');
+        $resolved = \Tinvar\Routing\HostMatch::of($request)?->host;
+        $host = $resolved !== null && $resolved !== '' ? $resolved : HostName::normalize($request->header('host') ?? '');
 
         return $host === null ? null : $this->forHost($host);
     }

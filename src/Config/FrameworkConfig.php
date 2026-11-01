@@ -214,6 +214,23 @@ final readonly class FrameworkConfig
         return TrustedProxies::of($this->trustedProxies);
     }
 
+    /**
+     * The hosts the application serves (ADR 0149): TINVAR_APP_DOMAIN the
+     * primary host, as Domains::fromUrl() reads it; TINVAR_DOMAINS further
+     * configured domains, `admin=admin.example.net`; TINVAR_HOST_ALIASES the
+     * hosts answered as the primary; TINVAR_TRUSTED_PROXIES the proxies
+     * whose X-Forwarded-Host is believed. Null without TINVAR_APP_DOMAIN: an
+     * application that names no host routes on none.
+     */
+    public function domains(): ?Domains
+    {
+        if ($this->appDomain === null || trim($this->appDomain) === '') {
+            return null;
+        }
+
+        return Domains::fromUrl($this->appDomain, $this->domains, $this->hostAliases, $this->proxies());
+    }
+
     /** The renderers' own user as named, or null where none is. */
     public function rendererUserName(): ?string
     {

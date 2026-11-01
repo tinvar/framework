@@ -46,6 +46,9 @@ $core = [
         'Tinvar\\', 'Tinvar\\Http\\', 'Tinvar\\Http\\Middleware', 'Tinvar\\Http\\Endpoints\\Limits', 'Tinvar\\Console\\Cron',
         'Tinvar\\Console\\Prompts', 'Tinvar\\Console\\Prompts\\',
         'Tinvar\\Attributes\\ClassAttributes', 'Tinvar\\Attributes\\Authorize', 'Tinvar\\Attributes\\Panel', 'Tinvar\\Attributes\\PublicAccess',
+        // Which host a request is for (ADR 0149): read from the request
+        // alone, below everything that routes, mints or checks by it.
+        'Tinvar\\Routing\\HostPattern', 'Tinvar\\Routing\\HostPatternRefused', 'Tinvar\\Routing\\HostMatch', 'Tinvar\\Routing\\Domains',
     ],
     // Who is asking: the user, the panel, the gates and the policies, the
     // middleware that reads them, and the throttle keyed by them.

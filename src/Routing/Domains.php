@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tinvar\Routing;
 
-use Tinvar\Config\FrameworkConfig;
 use Tinvar\Http\HostName;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Request;
@@ -176,23 +175,6 @@ final readonly class Domains
         }
 
         return new self(['root' => $host, ...$roots], scheme: $scheme, port: $port, aliases: $aliases, proxies: $proxies);
-    }
-
-    /**
-     * The framework's own variables (FrameworkConfig): TINVAR_APP_DOMAIN the
-     * primary host, as fromUrl() reads it; TINVAR_DOMAINS any further
-     * configured domains, `admin=admin.example.net`; TINVAR_HOST_ALIASES the
-     * aliases; TINVAR_TRUSTED_PROXIES the proxies. Null without
-     * TINVAR_APP_DOMAIN: an application that names no host routes on none.
-     */
-    public static function fromEnvironment(?FrameworkConfig $config = null): ?self
-    {
-        $config ??= FrameworkConfig::load();
-        if ($config->appDomain === null || trim($config->appDomain) === '') {
-            return null;
-        }
-
-        return self::fromUrl($config->appDomain, $config->domains, $config->hostAliases, $config->proxies());
     }
 
     /**

@@ -124,6 +124,12 @@ final class QueryRunner
         return $this->registry->tenantSourceFor($name);
     }
 
+    /** See QueryRegistry::hostFor(). */
+    public function hostFor(string $name): ?string
+    {
+        return $this->registry->hostFor($name);
+    }
+
     /**
      * A query's #[Panel] declarations, with its class -- whose namespace
      * places it when it declares none; see QueryRegistry::panelsFor().

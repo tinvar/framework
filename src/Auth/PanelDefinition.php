@@ -47,6 +47,10 @@ final readonly class PanelDefinition
      * @param string|null $permission one every membership here must hold
      * @param bool $subtree whether a membership here lets the request read across its
      *        tenant's subtree (Orm::withinSubtree()): a reseller's customers
+     * @param string|null $domain the host the panel lives on, as #[Domain] writes it
+     *        (`admin.{root}`): every page, layout and endpoint in it declares that host,
+     *        and every request into it -- an action or a query's too -- is refused on
+     *        any other (ADR 0149)
      */
     public function __construct(
         public string $name,
@@ -56,7 +60,16 @@ final readonly class PanelDefinition
         public \UnitEnum|string|null $requires = null,
         public ?string $permission = null,
         public bool $subtree = false,
+        public ?string $domain = null,
     ) {
+        if ($domain !== null) {
+            try {
+                \Tinvar\Routing\HostPattern::compile($domain);
+            } catch (\Tinvar\Routing\HostPatternRefused $e) {
+                throw new \InvalidArgumentException("Panel '{$name}': {$e->getMessage()}", 0, $e);
+            }
+        }
+
         // The same rules the attribute holds itself to: an empty name is no
         // panel, and an empty requirement is one nobody could tell was there.
         new Panel($name, $requires, $permission);

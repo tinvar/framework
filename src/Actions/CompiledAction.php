@@ -52,6 +52,7 @@ final readonly class CompiledAction
         public array $uploads = [],
         public array $optionalUploads = [],
         public bool $transaction = false,
+        public ?\Tinvar\Routing\HostPattern $host = null,
     ) {}
 
     /**

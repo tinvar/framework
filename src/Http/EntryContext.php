@@ -17,12 +17,14 @@ use Tinvar\Channels\ChannelRegistry;
 use Tinvar\Endpoints\EndpointRegistry;
 use Tinvar\Http\Middleware\EnterPanel;
 use Tinvar\Http\Middleware\EnterTenant;
+use Tinvar\Http\Middleware\RequireHost;
 use Tinvar\Http\Middleware\RequirePanelMembership;
 use Tinvar\Http\Middleware\RequirePlatformHost;
 use Tinvar\Identity\Realms;
 use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Render\TenantClaim;
+use Tinvar\Routing\Domains;
 use Tinvar\Routing\RouteChain;
 use Tinvar\Routing\RouteRegistry;
 
@@ -57,6 +59,8 @@ final readonly class EntryContext
      *        only the platform's hosts may carry is refused on any other
      * @param TenantResolver|null $tenants the tenancy registered (tinvar/tenancy); without it,
      *        an entry point declaring #[TenantFrom] is refused
+     * @param Domains|null $domains the hosts the application serves; given, an entry point
+     *        declared on a host, or in a panel held to one, runs on that host alone (ADR 0149)
      */
     public function __construct(
         private Orm $orm,
@@ -67,6 +71,7 @@ final readonly class EntryContext
         private ?AuthContext $auth = null,
         private ?Realms $realms = null,
         private ?TenantResolver $tenants = null,
+        private ?Domains $domains = null,
     ) {}
 
     /**
@@ -74,15 +79,29 @@ final readonly class EntryContext
      *
      * @param string|null $tenantSource what its #[TenantFrom] names
      * @param PanelBinding|null $panel the panel it resolved to; see panelFor()
+     * @param string|false|null $domain the #[Domain] pattern it is held to, null for the primary
+     *        host, or false for an entry point holding no host of its own
+     * @param array<string, string> $hostParameters the host parameters it was rendered with
      * @return list<Middleware>
      */
-    public function stackFor(?string $tenantSource, ?PanelBinding $panel = null): array
+    public function stackFor(?string $tenantSource, ?PanelBinding $panel = null, string|false|null $domain = false, array $hostParameters = []): array
     {
         // The host before anything else, the tenant included: a page of the
-        // admin panel on a tenant's domain is not there, whoever asks.
-        $stack = $panel !== null && $this->realms?->isPlatformPanel($panel->name) === true
-            ? [new RequirePlatformHost($this->realms, $panel->name)]
-            : [];
+        // admin panel on a tenant's domain is not there, whoever asks; nor
+        // is a page of admin.example.com on example.com (ADR 0149).
+        $stack = [];
+        if ($this->domains !== null) {
+            if ($domain !== false) {
+                $stack[] = new RequireHost($this->domains, $domain, $hostParameters);
+            }
+            $held = $panel === null ? null : $this->registry?->definition($panel->name)?->domain;
+            if ($held !== null && $held !== $domain) {
+                $stack[] = new RequireHost($this->domains, $held);
+            }
+        }
+        if ($panel !== null && $this->realms?->isPlatformPanel($panel->name) === true) {
+            $stack[] = new RequirePlatformHost($this->realms, $panel->name);
+        }
         if ($tenantSource !== null) {
             $stack[] = new EnterTenant($this->orm, $this->tenants($tenantSource), $tenantSource);
         }
@@ -156,7 +175,13 @@ final readonly class EntryContext
      */
     public function stackForChain(RouteChain $chain): array
     {
-        return $this->stackFor($chain->tenantSource(), $this->panelForChain($chain));
+        $page = $chain->page;
+        $hostParameters = [];
+        foreach ($page->host?->parameters ?? [] as $name) {
+            $hostParameters[$name] = (string) ($chain->parameters[$name] ?? '');
+        }
+
+        return $this->stackFor($chain->tenantSource(), $this->panelForChain($chain), $page->domain(), $hostParameters);
     }
 
     /**
@@ -212,8 +237,9 @@ final readonly class EntryContext
         string $what,
         Request $request,
         \Closure $then,
+        ?string $domain = null,
     ): Response {
-        $stack = $entry === null ? [] : $entry->stackFor($tenantSource, $panels === null ? null : $entry->panelFor(...$panels));
+        $stack = $entry === null ? [] : $entry->stackFor($tenantSource, $panels === null ? null : $entry->panelFor(...$panels), $domain ?? false);
         $own = array_values(array_diff($middleware, $globalMiddleware));
         if ($stack === [] && $own === []) {
             return $then($request);
@@ -387,7 +413,7 @@ final readonly class EntryContext
                 continue;
             }
 
-            $chain = $routes->chainFor($page->name, array_fill_keys($page->parameters, ''));
+            $chain = $routes->declaredChain($page->name);
             $routePanel = $this->panelForChain($chain);
 
             foreach ($allowedQueries($page->name) as $name) {
@@ -462,7 +488,7 @@ final readonly class EntryContext
             if ($page->name === null) {
                 continue;
             }
-            $panel = $this->panelForChain($routes->chainFor($page->name, array_fill_keys($page->parameters, '')));
+            $panel = $this->panelForChain($routes->declaredChain($page->name));
 
             foreach ($actionsOf($page->name) as $name) {
                 if (!$actions->has($name)) {

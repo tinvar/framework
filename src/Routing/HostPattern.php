@@ -194,7 +194,7 @@ final readonly class HostPattern
      *
      * @param array<string, string|int> $parameters
      * @param array<string, string> $roots configured name => host
-     * @throws RoutingException for a missing parameter, or one that is not one label
+     * @throws HostPatternRefused for a missing parameter, or one that is not one label
      */
     public function host(array $parameters, array $roots): string
     {
@@ -213,11 +213,11 @@ final readonly class HostPattern
 
             $name = substr($label, 1, -1);
             if (!\array_key_exists($name, $parameters)) {
-                throw RoutingException::missingParameter($this->pattern, $name);
+                throw new HostPatternRefused($this->pattern, "needs a value for its parameter '{$name}'");
             }
             $value = (string) $parameters[$name];
             if (preg_match(self::LABEL, $value) !== 1) {
-                throw RoutingException::badParameterValue($this->pattern, $name, $value);
+                throw new HostPatternRefused($this->pattern, "cannot take '{$value}' as its parameter '{$name}': a parameter is one label");
             }
             $out[] = $value;
         }

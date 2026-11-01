@@ -349,6 +349,7 @@ final class ActionRegistry
             uploads: $uploads,
             optionalUploads: $optionalUploads,
             transaction: $declaration->transaction,
+            host: self::hostOf($where, $class, $method->getName()),
         );
     }
 
@@ -424,6 +425,15 @@ final class ActionRegistry
      * @param class-string $class
      * @return class-string|null
      */
+    private static function hostOf(string $where, string $class, string $method): ?\Tinvar\Routing\HostPattern
+    {
+        try {
+            return \Tinvar\Attributes\Domain::declaredOn($class, $method);
+        } catch (\InvalidArgumentException $e) {
+            throw new ActionException("{$where}: {$e->getMessage()}", 0, $e);
+        }
+    }
+
     private static function tenantFromOf(string $where, string $class, string $method): ?string
     {
         try {
