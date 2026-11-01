@@ -180,3 +180,13 @@ it('serves a tenant\'s custom domain as the pattern it names, with the parameter
         ->and($domains->resolve(host('acme-store.com'))->pattern)->toBe('{tenant}.{root}')
         ->and(fn () => $domains->resolve(host('other.com')))->toThrow(HttpException::class);
 });
+
+it('sends route() the hosts with every render, and the page its copy', function () {
+    $hosts = Domains::fromUrl('http://localhost:8080')->forClient();
+    $frame = \Tinvar\Protocol\Frame::render('shop/orders', [], [], 'rid', 'nonce', [], new \Tinvar\Protocol\PageMetadata('/orders', 'b1'), hosts: $hosts);
+    $payload = \Tinvar\Protocol\Frame::render('shop/orders', [], [], 'rid', 'nonce', []);
+
+    expect($frame['hosts'])->toBe($hosts)
+        ->and($frame['page']['hosts'])->toBe($hosts)
+        ->and($payload)->not->toHaveKey('hosts');
+});

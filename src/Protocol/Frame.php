@@ -120,6 +120,10 @@ final class Frame
      *                                   flash -- see FlashStore
      * @param list<HeadTag>        $head the application's fallback title and meta
      *                                   tags, which a component's own replace
+     * @param array<string, mixed>|null $hosts what route() writes absolute URLs with
+     *                                   where the application routes by host
+     *                                   (Domains::forClient(), ADR 0149): sent with
+     *                                   every render, and in the page's metadata
      * @return array<string, mixed>
      */
     public static function render(
@@ -134,6 +138,7 @@ final class Frame
         ?string $csrfToken = null,
         array $flash = [],
         array $head = [],
+        ?array $hosts = null,
     ): array {
         $frame = [
             't' => self::RENDER,
@@ -147,6 +152,15 @@ final class Frame
 
         if ($page !== null) {
             $frame['page'] = $page->toArray();
+        }
+
+        // Absent rather than null, as the rest: an application that routes
+        // on no host sends what it always sent.
+        if ($hosts !== null) {
+            $frame['hosts'] = $hosts;
+            if (isset($frame['page'])) {
+                $frame['page']['hosts'] = $hosts;
+            }
         }
 
         if ($segments !== null) {
