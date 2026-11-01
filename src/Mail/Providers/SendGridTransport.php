@@ -78,10 +78,10 @@ final readonly class SendGridTransport implements Delivers
             'personalizations' => [$personalization],
             'from' => self::person($message->from),
             'subject' => $message->subject,
-            'content' => [
-                ['type' => 'text/plain', 'value' => $message->text],
-                ['type' => 'text/html', 'value' => $message->html],
-            ],
+            // SendGrid refuses an empty content value: a message with no HTML is its text alone.
+            'content' => $message->html === ''
+                ? [['type' => 'text/plain', 'value' => $message->text]]
+                : [['type' => 'text/plain', 'value' => $message->text], ['type' => 'text/html', 'value' => $message->html]],
         ];
         if ($message->replyTo !== null) {
             $payload['reply_to'] = self::person($message->replyTo);

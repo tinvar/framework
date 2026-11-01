@@ -329,6 +329,13 @@ describe('SendGrid', function () {
             ]);
     });
 
+    it('sends a message with no HTML as its text alone, as every other provider does', function () {
+        $http = fake(static fn (): OutboundResponse => new OutboundResponse(202));
+        new SendGridTransport(SENDGRID_KEY, $http)->deliver(new Message(new Address('o@pellwick.example'), [new Address('ada@example.test')], 'S', '', 'Just text.'));
+
+        expect(body($http->sent[0])['content'])->toBe([['type' => 'text/plain', 'value' => 'Just text.']]);
+    });
+
     it('goes to the EU API for an EU account', function () {
         $http = fake(static fn (): OutboundResponse => new OutboundResponse(202));
         new SendGridTransport(SENDGRID_KEY, $http, 'eu')->deliver(full());
