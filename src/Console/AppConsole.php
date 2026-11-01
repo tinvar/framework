@@ -33,6 +33,7 @@ use Tinvar\Packages\PackageLock;
 use Tinvar\Packages\PackagePolicy;
 use Tinvar\Packages\SupplyChain;
 use Tinvar\Render\FragmentManifestProducer;
+use Tinvar\Routing\Domains;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Server\BuildCommand;
 use Tinvar\Server\CaddyfileRules;
@@ -86,6 +87,9 @@ use Tinvar\Transfers\TransferRegistry;
  */
 final class AppConsole
 {
+    /** The rule `tinvar check` reports a host no Domains serves under (ADR 0149). */
+    public const string HOSTS_MUST_BE_SERVED = 'hosts-must-be-served';
+
     /** @var array<string, array{usage: string, about: string, run: \Closure(list<string>): int}> */
     private array $commands = [];
 
@@ -300,6 +304,67 @@ final class AppConsole
     }
 
     /**
+     * The hosts the application's Kernel configures, by its static
+     * domains() where it has one (ADR 0149); null for none.
+     */
+    private function domains(): ?Domains
+    {
+        if ($this->kernel === null || !method_exists($this->kernel, 'domains')) {
+            return null;
+        }
+        $domains = ($this->kernel)::domains();
+
+        return $domains instanceof Domains ? $domains : null;
+    }
+
+    /**
+     * What `tinvar check` reports of hosts: a page, layout or endpoint
+     * declaring a #[Domain] the application configures no Domains for, one
+     * naming a configured domain that does not exist, and two patterns that
+     * match one host. A malformed pattern, and two routes of one host and
+     * one path, are refused as each registers, under the build rules.
+     *
+     * @param list<class-string> $routes
+     * @param list<class-string> $endpoints
+     * @param list<class-string<\Tinvar\Orm\Model>> $models
+     * @return list<Violation>
+     */
+    public static function hostViolations(array $routes, array $endpoints, array $models, ?Domains $domains): array
+    {
+        $registry = new RouteRegistry($models);
+        RouteRegistry::check($routes, $registry);
+        $patterns = array_map(static fn ($p): string => $p->pattern, $registry->hostPatterns());
+        $holders = array_values(array_filter($endpoints, EndpointRegistry::holdsEndpoints(...)));
+        if ($holders !== []) {
+            $endpointRegistry = new EndpointRegistry($models);
+            foreach ($holders as $class) {
+                try {
+                    $endpointRegistry->register($class);
+                } catch (\RuntimeException|\LogicException) {
+                    // Reported by the endpoints' own check.
+                }
+            }
+            $patterns = [...$patterns, ...array_map(static fn ($p): string => $p->pattern, $endpointRegistry->hostPatterns())];
+        }
+        $patterns = array_values(array_unique($patterns));
+
+        if ($patterns === []) {
+            return [];
+        }
+        if ($domains === null) {
+            return [new Violation(self::HOSTS_MUST_BE_SERVED, $patterns[0], 'is a host a route declares, and the Kernel configures no Domains: give it a static domains() (ADR 0149).')];
+        }
+
+        try {
+            $domains->serving($patterns);
+        } catch (\InvalidArgumentException $e) {
+            return [new Violation(self::HOSTS_MUST_BE_SERVED, 'Domains', $e->getMessage())];
+        }
+
+        return [];
+    }
+
+    /**
      * Discovery and its manifest, the build rules over every entry point
      * and payload, the config classes, the supply chain and the Caddyfile,
      * and the application's own checks; every failure named, under its
@@ -339,6 +404,10 @@ final class AppConsole
                 // compiles them and each path held apart from every page's
                 // (ADR 0067).
                 ...self::endpointViolations($classes->endpoints, $classes->routes, $classes->models),
+                // Every host an entry point declares, served by the hosts
+                // the application configures, no two of them one host
+                // (ADR 0149).
+                ...self::hostViolations($classes->routes, $classes->endpoints, $classes->models, $this->domains()),
                 // Sort and filter field enums held to their Data (ADR 0057);
                 // who may subscribe to a channel (ADR 0069); a transfer's row
                 // and body (ADR 0070).

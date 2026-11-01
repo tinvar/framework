@@ -254,3 +254,16 @@ it('routes on no host at all where the application configures none', function ()
     expect($routes->match('/orders')?->page->class)->toBe(ShopOrders::class)
         ->and($routes->href('shop.orders'))->toBe('/orders');
 });
+
+it('reports in tinvar check a host nobody serves, and two spellings of one host', function () {
+    $none = \Tinvar\Console\AppConsole::hostViolations([AdminOrders::class], [], [], null);
+    $twice = \Tinvar\Console\AppConsole::hostViolations([AccountDashboard::class, OtherAccountSpelling::class], [], [], new Domains(['root' => 'shop.test']));
+    $unconfigured = \Tinvar\Console\AppConsole::hostViolations([AdminOrders::class], [], [], new Domains(['admin' => 'admin.test'], primary: '{admin}'));
+    $fine = \Tinvar\Console\AppConsole::hostViolations(PAGES, [], [], new Domains(['root' => 'shop.test']));
+
+    expect($none)->toHaveCount(1)
+        ->and($none[0]->rule)->toBe(\Tinvar\Console\AppConsole::HOSTS_MUST_BE_SERVED)
+        ->and((string) $twice[0])->toContain('match the same hosts')
+        ->and((string) $unconfigured[0])->toContain("no domain called 'root'")
+        ->and($fine)->toBe([]);
+});
