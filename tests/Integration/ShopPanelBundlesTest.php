@@ -47,7 +47,7 @@ it('keeps the admin panel\'s views, as the routes put them, to chunks of the pan
     $routes->registerAll(Kernel::classes()->routes);
     $report = report();
 
-    expect($report['panels']['admin']['views'])->toBe(['admin/deliveries', 'admin/layout', 'admin/orders', 'admin/resources/form', 'admin/resources/index', 'admin/resources/show', 'admin/staff', 'admin/transfers'])
+    expect($report['panels']['admin']['views'])->toBe(['admin/deliveries', 'admin/layout', 'admin/order-activity', 'admin/orders', 'admin/resources/form', 'admin/resources/index', 'admin/resources/show', 'admin/staff', 'admin/staff-activity', 'admin/transfers'])
         ->and(fn () => PanelBundles::check($routes, Kernel::panels(), Shop::root() . '/dist/rsc/panels.json'))
         ->not->toThrow(\RuntimeException::class)
         ->and(array_intersect($report['panels']['admin']['chunks'], $report['shared']))->toBe([]);
