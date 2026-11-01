@@ -183,6 +183,45 @@ describe('reading results again through the ORM', function () {
             ->and($gate->asked)->toContain('view Secret recipe');
     });
 
+    // The total is an authorization side channel if it counts what the
+    // reader was refused: "3 results" for a confidential word, showing none.
+    it('never counts in its total a row the policy or the filter hid', function () {
+        $gate = new class implements Gate {
+            public function allows(Authorize $check, array $arguments): bool
+            {
+                $note = $arguments[$check->argument ?? ''];
+                \assert($note instanceof Note);
+
+                return !str_starts_with($note->title, 'Confidential');
+            }
+        };
+        [$orm, $search] = sqliteSearch(null, null, null, $gate);
+        foreach (range(1, 3) as $i) {
+            note($orm, "Confidential merger {$i}");
+        }
+        note($orm, 'Public merger notes');
+        $archived = note($orm, 'Archived merger');
+        $archived->archived = true;
+        $orm->save($archived);
+
+        $hidden = $search->for(Note::class)->query('confidential')->authorize('view')->paginate();
+        $some = $search->for(Note::class)->query('merger')->authorize('view')->paginate(1, 1);
+        $filtered = $search->for(Note::class)->query('merger')->authorize('view')
+            ->filter(static fn (Query $q): Query => $q->where('archived', false))->paginate();
+
+        expect($hidden->items)->toBe([])
+            ->and($hidden->total)->toBe(0)
+            ->and($hidden->lastPage())->toBeLessThanOrEqual(1)
+            ->and(names($some->items))->toHaveCount(1)
+            ->and($some->total)->toBe(2)
+            ->and($some->lastPage())->toBe(2)
+            ->and(names($search->for(Note::class)->query('merger')->authorize('view')->paginate(2, 1)->items))->toHaveCount(1)
+            ->and(names($filtered->items))->toBe(['Public merger notes'])
+            ->and($filtered->total)->toBe(1)
+            // Unfiltered, the index's count stands: every match is the reader's to see.
+            ->and($search->for(Note::class)->query('merger')->paginate()->total)->toBe(5);
+    });
+
     it('refuses to authorize without a Gate, and a model that is not searchable', function () {
         [$orm, $search] = sqliteSearch();
         note($orm, 'Anything');

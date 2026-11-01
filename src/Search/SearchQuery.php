@@ -28,13 +28,26 @@ use Tinvar\Orm\Query;
  * so never show a row the reader could not read: a key since deleted, or
  * one the constraint or the policy refuses, is dropped from the page.
  *
- * A page's total is the index's count of matches, before the constraint
- * and the policy: a page may hold fewer than it says.
+ * A page's total never counts a row the reader cannot see. With neither a
+ * constraint nor an ability, it is the index's count of matches, which the
+ * index already holds to the reader's tenants; a page may then hold fewer
+ * only for a row deleted since it was indexed. With either, the index's
+ * count would say how many matches the constraint or the policy hid -- "3
+ * results" for a confidential word, showing none -- so the matches are
+ * read back, best first, at most MAX_SCANNED of them, and the total is how
+ * many of those passed: past MAX_SCANNED matches, a filtered search finds
+ * and counts only among the best MAX_SCANNED.
  */
 final readonly class SearchQuery
 {
     /** The most results one page holds. */
     public const int MAX_PER_PAGE = 100;
+
+    /** The most matches a filtered or authorized search reads back, to count what passes. */
+    public const int MAX_SCANNED = 1000;
+
+    /** Matches read back at a time while counting. */
+    private const int SCAN_BATCH = 200;
 
     /**
      * @param (\Closure(Query<Model>): Query<Model>)|null $constraint
@@ -96,8 +109,9 @@ final readonly class SearchQuery
     }
 
     /**
-     * One page of results, best first, with the index's count of matches.
-     * A page past the last, and a search with no words, is empty.
+     * One page of results, best first, with how many the reader can see
+     * (see the class's note on totals). A page past the last, and a search
+     * with no words, is empty.
      *
      * @return Page<Model>
      * @throws SearchFailed
@@ -119,9 +133,28 @@ final readonly class SearchQuery
             return new Page([], $page, $perPage, 0);
         }
 
-        $hits = $this->search->backend()->search($this->model, $this->terms, $tenants, $perPage, ($page - 1) * $perPage);
+        if ($this->constraint === null && $this->ability === null) {
+            $hits = $this->search->backend()->search($this->model, $this->terms, $tenants, $perPage, ($page - 1) * $perPage);
 
-        return new Page($this->readBack($hits->ids), $page, $perPage, $hits->total);
+            return new Page($this->readBack($hits->ids), $page, $perPage, $hits->total);
+        }
+
+        // Filtered: counted from what passes, never from the index.
+        $visible = [];
+        $scanned = 0;
+        while ($scanned < self::MAX_SCANNED) {
+            $hits = $this->search->backend()->search($this->model, $this->terms, $tenants, min(self::SCAN_BATCH, self::MAX_SCANNED - $scanned), $scanned);
+            if ($hits->ids === []) {
+                break;
+            }
+            array_push($visible, ...$this->readBack($hits->ids));
+            $scanned += \count($hits->ids);
+            if ($scanned >= $hits->total) {
+                break;
+            }
+        }
+
+        return new Page(\array_slice($visible, ($page - 1) * $perPage, $perPage), $page, $perPage, \count($visible));
     }
 
     /**
