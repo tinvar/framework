@@ -1,0 +1,395 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * The accounts kit's flows (ADR 0150) over an application's own users table
+ * -- `members`, through the AccountUsers contract -- on SQLite and, where
+ * one is there, Postgres: sessions with rows and their realms, the second
+ * factor, passkeys end to end with a software authenticator, emailed links
+ * and what the queue worker sends.
+ *
+ * The whole request path -- middleware, CSRF, actions -- is the skeleton's
+ * own suite (packages/skeleton/tests/Feature/AccountsTest.php) and its
+ * browser test; this holds the kit to its rules with nothing in between.
+ */
+
+namespace Tinvar\Tests\Accounts\Kit;
+
+use Tinvar\Accounts\AccountLinks;
+use Tinvar\Accounts\Accounts;
+use Tinvar\Accounts\AccountsKit;
+use Tinvar\Accounts\Passkeys\Base64Url;
+use Tinvar\Accounts\SessionState;
+use Tinvar\Accounts\SignInResult;
+use Tinvar\Accounts\TwoFactor\Base32;
+use Tinvar\Accounts\TwoFactor\Totp;
+use Tinvar\Http\HttpException;
+use Tinvar\Http\Request;
+use Tinvar\Identity\EmailLinks;
+use Tinvar\Orm\PdoConnection;
+use Tinvar\Orm\Schema\Dialect;
+use Tinvar\Orm\Schema\Schema;
+use Tinvar\Tests\Accounts\Fixtures\MemberApp;
+use Tinvar\Tests\Accounts\Fixtures\Members;
+use Tinvar\Tests\Accounts\Fixtures\SoftwareAuthenticator;
+use Tinvar\Tests\Support\Fixtures\Databases;
+use Tinvar\Validation\ValidationException;
+
+require_once __DIR__ . '/Fixtures/SoftwareAuthenticator.php';
+require_once __DIR__ . '/Fixtures/Members.php';
+require_once __DIR__ . '/../Support/Fixtures/databases.php';
+
+const PASSWORD = 'correct horse battery staple';
+
+/** A browser of one: its session cookie, the host it talks to, and the kit. */
+final class Visitor
+{
+    public string $cookie;
+
+    public function __construct(public readonly MemberApp $app, public string $host = 'app.example', public string $address = '203.0.113.5')
+    {
+        $this->cookie = $app->kit->cookie->issue();
+    }
+
+    /**
+     * Runs $work as one request would, with the session opened as the
+     * middleware opens it, and keeps the cookie a rotation set.
+     *
+     * @template T
+     * @param \Closure(Accounts, Request): T $work
+     * @return T
+     */
+    public function do(\Closure $work): mixed
+    {
+        $request = $this->request();
+        $state = $this->app->kit->sessions->open($request);
+        try {
+            return $work($this->app->kit->accounts, $request->withAttribute(SessionState::ATTRIBUTE, $state));
+        } finally {
+            $this->cookie = $state->replacement() ?? $this->cookie;
+        }
+    }
+
+    public function state(): SessionState
+    {
+        return $this->app->kit->sessions->open($this->request());
+    }
+
+    public function who(): ?string
+    {
+        return $this->state()->user()?->accountEmail();
+    }
+
+    private function request(): Request
+    {
+        return new Request('POST', '/_action/x', ['host' => $this->host], cookies: [$this->app->kit->cookie->name => $this->cookie], remoteAddress: $this->address);
+    }
+}
+
+/** @param \Closure(MemberApp): void $test */
+function onDriver(string $driver, \Closure $test): void
+{
+    $run = static function (PdoConnection $connection) use ($test): void {
+        $schema = new Schema($connection, Dialect::for($connection));
+        Members::define($schema);
+        AccountsKit::migrate($schema, \Tinvar\Tests\Accounts\Fixtures\Member::class);
+        $test(new MemberApp($connection));
+    };
+    if ($driver === 'sqlite') {
+        $run(PdoConnection::sqlite(':memory:', 'accounts'));
+
+        return;
+    }
+    $missing = Databases::postgresMissing();
+    if ($missing !== null) {
+        test()->markTestSkipped($missing);
+    }
+    \Tinvar\Tests\Orm\Fixtures\Databases::inScratchSchema('pgsql', static fn (\PDO $pdo): mixed => $run(new PdoConnection($pdo, 'accounts')));
+}
+
+/** Signs $email up through the link, and returns the browser, signed in. */
+function member(MemberApp $app, string $email = 'ada@example.com'): Visitor
+{
+    $visitor = new Visitor($app);
+    $visitor->do(static fn (Accounts $a, Request $r) => $a->requestSignUp($r, $email, 'Ada'));
+    $app->work();
+    $url = $app->links('sign-up', $email)[0] ?? throw new \LogicException('No sign-up link was sent.');
+    $visitor->do(static fn (Accounts $a, Request $r) => $a->completeSignUp($r, token($url), PASSWORD));
+
+    return $visitor;
+}
+
+function token(string $url): string
+{
+    parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+
+    return (string) $query[EmailLinks::PARAMETER];
+}
+
+/** A credential as the browser's toJSON() writes it. */
+function credential(SoftwareAuthenticator $authenticator, array $response, ?string $userHandle = null): string
+{
+    $encoded = [];
+    foreach ($response as $field => $bytes) {
+        $name = ['clientDataJson' => 'clientDataJSON', 'authData' => null][$field] ?? $field;
+        if ($name !== null) {
+            $encoded[$name] = Base64Url::encode($bytes);
+        }
+    }
+    if ($userHandle !== null) {
+        $encoded['userHandle'] = Base64Url::encode($userHandle);
+    }
+    $id = Base64Url::encode($authenticator->credentialId);
+
+    return json_encode(['id' => $id, 'rawId' => $id, 'type' => 'public-key', 'response' => $encoded], JSON_THROW_ON_ERROR);
+}
+
+/** @return array<string, mixed> */
+function refused(\Closure $work): array
+{
+    try {
+        $work();
+    } catch (ValidationException $e) {
+        return $e->errors;
+    }
+
+    throw new \LogicException('It was not refused.');
+}
+
+dataset('drivers', ['sqlite' => ['sqlite'], 'pgsql' => ['pgsql']]);
+
+it('makes an account only from a link to its address, and signs that browser in', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $visitor = member($app, 'ada@example.com');
+        expect($visitor->who())->toBe('ada@example.com')
+            ->and($app->orm->connection()->select('SELECT COUNT(*) AS n FROM members')[0]['n'])->toBe(1);
+
+        // Again for the same address: the owner is told, and no second account.
+        $other = new Visitor($app);
+        $other->do(static fn (Accounts $a, Request $r) => $a->requestSignUp($r, 'Ada@Example.com', 'Impostor'));
+        $app->work();
+        expect($app->links('already-registered', 'ada@example.com'))->toHaveCount(1)
+            ->and($app->links('sign-up', 'ada@example.com'))->toHaveCount(1);
+    });
+})->with('drivers');
+
+it('rotates the session on sign-in, binds it to its host, and ends it everywhere', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        member($app);
+        $laptop = new Visitor($app);
+        $before = $laptop->cookie;
+        expect($laptop->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD)))->toBe(SignInResult::SignedIn)
+            ->and($laptop->cookie)->not->toBe($before)
+            ->and($laptop->who())->toBe('ada@example.com');
+
+        // The same cookie on another host signs nobody in there.
+        $elsewhere = clone $laptop;
+        $elsewhere->host = 'evil.example';
+        expect($elsewhere->who())->toBeNull();
+
+        $phone = new Visitor($app);
+        $phone->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        $epoch = $phone->state()->epoch();
+        $laptop->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r));
+        expect($phone->who())->toBeNull()
+            ->and($laptop->who())->toBeNull()
+            ->and($app->kit->epochs->of((string) $app->orm->connection()->select('SELECT id FROM members')[0]['id']))->not->toBe($epoch);
+    });
+})->with('drivers');
+
+it('holds a sign-in at the second factor, and takes each code once', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $setup = $app->kit->accounts->beginTwoFactor($user);
+        $secret = (string) Base32::decode($setup['secret']);
+        expect($setup['uri'])->toStartWith('otpauth://totp/Test%20app:ada%40example.com?secret=');
+
+        expect(refused(static fn () => $owner->do(static fn (Accounts $a, Request $r) => $a->confirmTwoFactor($r, $user, '000000'))))->toHaveKey('code');
+        $codes = $owner->do(static fn (Accounts $a, Request $r) => $a->confirmTwoFactor($r, $user, Totp::at($secret, $app->now)));
+        expect($codes)->toHaveCount(10);
+
+        $phone = new Visitor($app);
+        expect($phone->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD)))->toBe(SignInResult::SecondFactor)
+            ->and($phone->who())->toBeNull()
+            ->and($phone->state()->pending()?->accountEmail())->toBe('ada@example.com');
+
+        // The step that confirmed is spent; the next one is not.
+        expect(refused(static fn () => $phone->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, Totp::at($secret, $app->now)))))->toHaveKey('code');
+        $app->now += Totp::PERIOD;
+        $phone->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, Totp::at($secret, $app->now)));
+        expect($phone->who())->toBe('ada@example.com');
+
+        // A waiting sign-in lapses after ten minutes.
+        $late = new Visitor($app);
+        $late->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        $app->now += 601;
+        expect($late->state()->pending())->toBeNull()
+            ->and(refused(static fn () => $late->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, $codes[0]))))->toBe(['code' => [Accounts::SECOND_FACTOR_EXPIRED]]);
+    });
+})->with('drivers');
+
+it('counts second-factor guesses per account, five to a window', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $secret = (string) Base32::decode($app->kit->accounts->beginTwoFactor($user)['secret']);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->confirmTwoFactor($r, $user, Totp::at($secret, $app->now)));
+
+        $guesser = new Visitor($app, address: '198.51.100.3');
+        $guesser->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        for ($i = 0; $i < 5; $i++) {
+            refused(static fn () => $guesser->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, sprintf('%06d', $i))));
+        }
+        expect(static fn () => $guesser->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, '123456')))->toThrow(HttpException::class);
+    });
+});
+
+it('adds a passkey and signs in with it, for this host and this session alone', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $authenticator = SoftwareAuthenticator::es256();
+
+        $options = $owner->do(static fn (Accounts $a, Request $r) => $a->passkeyRegistrationOptions($r, $user));
+        expect($options['rp'])->toBe(['id' => 'app.example', 'name' => 'Test app'])
+            ->and($options['authenticatorSelection']['userVerification'])->toBe('required');
+        $challenge = (string) Base64Url::decode($options['challenge']);
+        $handle = (string) Base64Url::decode($options['user']['id']);
+        $made = $authenticator->register($challenge);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->registerPasskey($r, $user, credential($authenticator, $made), 'Laptop'));
+        expect($app->kit->accounts->passkeys($user))->toHaveCount(1);
+
+        // The challenge was spent with it: the same answer again finds none.
+        expect(refused(static fn () => $owner->do(static fn (Accounts $a, Request $r) => $a->registerPasskey($r, $user, credential($authenticator, $made), 'Again'))))->toHaveKey('credential');
+
+        $visitor = new Visitor($app);
+        $signIn = $visitor->do(static fn (Accounts $a, Request $r) => $a->passkeySignInOptions($r));
+        expect($signIn['rpId'])->toBe('app.example')->and($signIn['allowCredentials'])->toBe([]);
+        $answer = $authenticator->assert((string) Base64Url::decode($signIn['challenge']));
+
+        // Another session cannot use this session's challenge.
+        $thief = new Visitor($app);
+        expect(refused(static fn () => $thief->do(static fn (Accounts $a, Request $r) => $a->signInWithPasskey($r, credential($authenticator, $answer, $handle)))))->toHaveKey('credential');
+
+        $visitor->do(static fn (Accounts $a, Request $r) => $a->signInWithPasskey($r, credential($authenticator, $answer, $handle)));
+        expect($visitor->who())->toBe('ada@example.com');
+
+        // A replay of the same answer, with a fresh challenge it did not sign, is refused.
+        $replay = new Visitor($app);
+        $replay->do(static fn (Accounts $a, Request $r) => $a->passkeySignInOptions($r));
+        expect(refused(static fn () => $replay->do(static fn (Accounts $a, Request $r) => $a->signInWithPasskey($r, credential($authenticator, $answer, $handle)))))->toHaveKey('credential');
+
+        // A counter that goes back says the key was copied.
+        $cloned = new Visitor($app);
+        $c = (string) Base64Url::decode($cloned->do(static fn (Accounts $a, Request $r) => $a->passkeySignInOptions($r))['challenge']);
+        $back = $authenticator->assert($c, ['signCount' => 1]);
+        expect(refused(static fn () => $cloned->do(static fn (Accounts $a, Request $r) => $a->signInWithPasskey($r, credential($authenticator, $back, $handle)))))->toHaveKey('credential');
+
+        // A user handle that is not the passkey's account's is refused.
+        $wrong = new Visitor($app);
+        $c = (string) Base64Url::decode($wrong->do(static fn (Accounts $a, Request $r) => $a->passkeySignInOptions($r))['challenge']);
+        $forged = $authenticator->assert($c);
+        expect(refused(static fn () => $wrong->do(static fn (Accounts $a, Request $r) => $a->signInWithPasskey($r, credential($authenticator, $forged, random_bytes(32))))))->toHaveKey('credential');
+
+        // On another host, no ceremony starts.
+        $other = new Visitor($app, 'other.example');
+        expect(refused(static fn () => $other->do(static fn (Accounts $a, Request $r) => $a->passkeySignInOptions($r))))->toBe(['credential' => [Accounts::WRONG_HOST]]);
+    });
+})->with('drivers');
+
+it('removes a passkey for its own account alone', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $ada = member($app, 'ada@example.com');
+        $bob = member($app, 'bob@example.com');
+        $adaUser = $ada->state()->user();
+        $bobUser = $bob->state()->user();
+        \assert($adaUser !== null && $bobUser !== null);
+        $authenticator = SoftwareAuthenticator::rs256();
+        $options = $ada->do(static fn (Accounts $a, Request $r) => $a->passkeyRegistrationOptions($r, $adaUser));
+        $passkey = $ada->do(static fn (Accounts $a, Request $r) => $a->registerPasskey($r, $adaUser, credential($authenticator, $authenticator->register((string) Base64Url::decode($options['challenge']))), 'Key'));
+
+        expect($app->kit->accounts->removePasskey($bobUser, $passkey->id))->toBeFalse()
+            ->and($app->kit->accounts->removePasskey($adaUser, $passkey->id))->toBeTrue()
+            ->and($app->kit->accounts->passkeys($adaUser))->toBe([]);
+    });
+});
+
+it('sends a reset to an address with an account and nothing to one without, answering both the same', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $asker = new Visitor($app);
+        $asker->do(static fn (Accounts $a, Request $r) => $a->requestPasswordReset($r, 'ada@example.com'));
+        $asker->do(static fn (Accounts $a, Request $r) => $a->requestPasswordReset($r, 'nobody@example.com'));
+        $app->work();
+        expect($app->links('password-reset', 'ada@example.com'))->toHaveCount(1)
+            ->and($app->links('password-reset', 'nobody@example.com'))->toBe([]);
+
+        $url = $app->links('password-reset', 'ada@example.com')[0];
+        expect($url)->toStartWith('https://app.example/password/reset?token=');
+        $asker->do(static fn (Accounts $a, Request $r) => $a->resetPassword($r, token($url), 'a brand new passphrase'));
+        expect($asker->who())->toBe('ada@example.com')
+            ->and($owner->who())->toBeNull();
+        // Used: the link opens nothing again.
+        expect($app->kit->accounts->resetOffer(token($url)))->toBeNull();
+    });
+})->with('drivers');
+
+it('ends every emailed link when the account\'s epoch moves', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $owner = member($app);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->requestPasswordReset($r, 'ada@example.com'));
+        $app->work();
+        $url = $app->links('password-reset', 'ada@example.com')[0];
+        expect($app->kit->accounts->resetOffer(token($url)))->not->toBeNull();
+
+        $owner->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r));
+        expect($app->kit->accounts->resetOffer(token($url)))->toBeNull();
+    });
+});
+
+it('moves an address only by a link to the new one, and keeps one account per address', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $ada = member($app, 'ada@example.com');
+        member($app, 'bob@example.com');
+        $user = $ada->state()->user();
+        \assert($user !== null);
+
+        expect(refused(static fn () => $ada->do(static fn (Accounts $a, Request $r) => $a->requestEmailChange($r, $user, 'ada@example.com', PASSWORD))))->toBe(['email' => [Accounts::SAME_ADDRESS]]);
+        $ada->do(static fn (Accounts $a, Request $r) => $a->requestEmailChange($r, $user, 'ADA@new.example', PASSWORD));
+        $ada->do(static fn (Accounts $a, Request $r) => $a->requestEmailChange($r, $user, 'bob@example.com', PASSWORD));
+        $app->work();
+        expect($app->links('email-change', 'bob@example.com'))->toBe([]);
+
+        $url = $app->links('email-change', 'ada@new.example')[0];
+        expect($app->kit->accounts->emailChangeOffer(token($url))['email'] ?? null)->toBe('ada@new.example');
+        $ada->do(static fn (Accounts $a, Request $r) => $a->confirmEmailChange($r, token($url)));
+        $app->work();
+        expect($ada->who())->toBe('ada@new.example')
+            ->and($app->links('email-changed', 'ada@example.com'))->toHaveCount(1);
+    });
+})->with('drivers');
+
+it('builds links on the configured https origin, stands in on localhost only outside production, and fails closed in it', function () {
+    expect(AccountLinks::origin('https://app.example/', env: []))->toBe('https://app.example')
+        ->and(AccountLinks::origin(null, 'http://127.0.0.1:6123', []))->toBe('http://localhost:6123')
+        ->and(AccountLinks::origin(null, null, []))->toBe('http://localhost')
+        ->and(static fn () => AccountLinks::origin(null, 'http://127.0.0.1:6123', ['TINVAR_ENV' => 'production']))->toThrow(\InvalidArgumentException::class, 'APP_URL is not set')
+        ->and(static fn () => AccountLinks::origin('http://localhost:8080', null, ['TINVAR_ENV' => 'production']))->toThrow(\InvalidArgumentException::class)
+        ->and(static fn () => AccountLinks::origin('https://app.example/path', null, []))->toThrow(\InvalidArgumentException::class);
+});
+
+it('refuses to build links on plain http where the environment says production', function () {
+    $previous = getenv('TINVAR_ENV');
+    putenv('TINVAR_ENV=production');
+    try {
+        expect(static fn (): MemberApp => new MemberApp(PdoConnection::sqlite(':memory:', 'accounts'), 'http://localhost:8080'))
+            ->toThrow(\InvalidArgumentException::class, 'https alone');
+    } finally {
+        putenv($previous === false ? 'TINVAR_ENV' : "TINVAR_ENV={$previous}");
+    }
+});
