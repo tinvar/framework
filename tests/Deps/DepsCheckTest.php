@@ -586,3 +586,21 @@ describe('HTTPS', function () {
         expect(fn () => CurlHttp::resolve('https://github.com/a', 'http://evil.example/'))->toThrow(DepsException::class);
     });
 });
+
+describe('the weekly workflow', function () {
+    it('lets its proposal touch every file the pins are written in, and nothing else', function () {
+        // The propose job refuses a patch touching a path its case does not
+        // name: a pinned file left out of it fails every week a pin there moves.
+        $root = \dirname(__DIR__, 4);
+        $workflow = (string) file_get_contents("{$root}/.github/workflows/deps.yml");
+        expect(preg_match('/^ *case "\$path" in\n(.*?)^ *esac$/ms', $workflow, $case))->toBe(1);
+        expect(preg_match_all('/^ *([^\n()]+?)\) ;;$/m', $case[1], $arms))->toBeGreaterThan(0);
+        $allowed = array_map('trim', explode('|', implode('|', $arms[1])));
+
+        foreach (PinnedFiles::load($root)->paths() as $path) {
+            $matched = array_filter($allowed, static fn (string $pattern): bool => fnmatch($pattern, $path));
+            expect($matched)->not->toBe([], "{$path} is a pinned file the proposal would refuse");
+        }
+        expect(array_filter($allowed, static fn (string $pattern): bool => !str_contains($pattern, '*') && !is_file("{$root}/{$pattern}")))->toBe([]);
+    });
+});
