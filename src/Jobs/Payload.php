@@ -226,7 +226,13 @@ final class Payload
             throw new JobRefused('payload_mismatch', 'A payload holds an enum it could not have been encoded as.');
         }
 
-        return $class::tryFrom($case)
+        // A deploy between dispatch and run may have changed the enum's
+        // backing type: a case of the old type is no case of the new one,
+        // refused as one that is gone rather than a TypeError from tryFrom().
+        $backing = (string) new \ReflectionEnum($class)->getBackingType();
+        $found = ($backing === 'int') === \is_int($case) ? $class::tryFrom($case) : null;
+
+        return $found
             ?? throw new JobRefused('payload_mismatch', "{$class} no longer has the case the payload names.");
     }
 

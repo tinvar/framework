@@ -443,3 +443,19 @@ it('opens only payloads this application sealed', function () {
     expect(fn () => $h->runner->open('not a payload'))->toThrow(JobRefused::class)
         ->and(fn () => $h->runner->open('AAAA.{"v":1}'))->toThrow(JobRefused::class, 'does not verify');
 });
+
+// A deploy between dispatch and run that changed an enum's backing type:
+// the payload's case is the old type's, and the job is refused for it as
+// for a case that is gone -- never a TypeError the worker did not expect.
+it('refuses a job whose enum changed its backing type since it was dispatched', function (int|string $case) {
+    $h = new Harness();
+    $arguments = [
+        'list' => ['a' => []],
+        'at' => ['d' => '2026-10-24T10:11:12.345678+02:00'],
+        'colour' => ['e' => [Colour::class, $case]],
+        'address' => ['o' => [Address::class, ['line' => '1 Main St', 'colour' => ['e' => [Colour::class, 'red']]]]],
+    ];
+
+    expect(fn () => \Tinvar\Jobs\Payload::construct(CarriesValues::class, $arguments, $h->orm))
+        ->toThrow(JobRefused::class, 'no longer has the case the payload names');
+})->with([1, 0]);
