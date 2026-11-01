@@ -63,6 +63,11 @@ final readonly class TransferRunner
         // What the tags an import declares do once its rows are applied (ADR
         // 0075); none, and they do nothing.
         private ?TagInvalidation $invalidation = null,
+        // The origin of the host a panel is held to (ADR 0149), which an
+        // export of it is downloaded on: null for a panel on no host of its
+        // own, false for one whose host takes parameters a worker cannot
+        // fill -- and no link is emailed then. None, and no panel is held.
+        private ?\Closure $panelOrigin = null,
     ) {}
 
     /**
@@ -1103,8 +1108,9 @@ final readonly class TransferRunner
         }
 
         try {
-            $link = $record->isDownloadable($this->transfers->now())
-                ? $this->transfers->emailedLink($record, $user, $this->auth->epoch())
+            $origin = $record->panel === '' || $this->panelOrigin === null ? null : ($this->panelOrigin)($record->panel);
+            $link = $record->isDownloadable($this->transfers->now()) && $origin !== false
+                ? $this->transfers->emailedLink($record, $user, $this->auth->epoch(), $origin)
                 : null;
             $notifier->finished($record, $user, $link);
         } catch (\Throwable $e) {

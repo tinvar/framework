@@ -47,9 +47,9 @@ final class Staff
     /** @var array<string, string> */
     public array $cookies;
 
-    public function __construct(public readonly Kernel $kernel, public readonly Customer $customer)
+    public function __construct(public readonly Kernel $kernel, public readonly Customer $customer, private readonly string $host = 'admin.localhost:8080')
     {
-        $this->cookies = $kernel->signedIn($customer, new Request('GET', '/', ['host' => 'admin.localhost:8080']));
+        $this->cookies = $kernel->signedIn($customer, new Request('GET', '/', ['host' => $host]));
     }
 
     /** @param array<string, mixed> $body */
@@ -82,9 +82,15 @@ final class Staff
         }
     }
 
-    public function download(string $path): Response
+    /** A download link: a path on the admin host, or a whole URL, followed to the host it names as a browser would. */
+    public function download(string $link): Response
     {
-        return $this->kernel->handle(new Request('GET', $path, ['host' => 'admin.localhost:8080'], [], [], $this->cookies));
+        $host = 'admin.localhost:8080';
+        if (preg_match('#^https?://([^/]+)(/.*)\z#', $link, $m) === 1) {
+            [$host, $link] = [$m[1], $m[2]];
+        }
+
+        return $this->kernel->handle(new Request('GET', $link, ['host' => $host], [], [], $this->cookies));
     }
 
     /**
@@ -93,7 +99,7 @@ final class Staff
      */
     private function headers(array $extra): array
     {
-        return ['host' => 'admin.localhost:8080', 'accept' => 'application/json', 'x-xsrf-token' => $this->token(), ...$extra];
+        return ['host' => $this->host, 'accept' => 'application/json', 'x-xsrf-token' => $this->token(), ...$extra];
     }
 
     /** @return array<string, string> */
@@ -113,7 +119,20 @@ final class Staff
 
 beforeEach(function () {
     $this->database = Shop::testDatabase();
-    $this->mail = new MailFake();
+    // Each message's link policy, as the renderer is handed it: what the
+    // mail kit would let a link in it go to.
+    $this->drawn = new class implements \Tinvar\Mail\MailRenderer {
+        /** @var list<array{string, array<string, mixed>, ?\Tinvar\Mail\LinkPolicy}> */
+        public array $drawn = [];
+
+        public function render(string $template, array $props, ?\Tinvar\Mail\LinkPolicy $links = null): \Tinvar\Mail\RenderedMail
+        {
+            $this->drawn[] = [$template, $props, $links];
+
+            return new \Tinvar\Mail\RenderedMail("<p>{$template}</p>", $template);
+        }
+    };
+    $this->mail = new MailFake($this->drawn);
     $this->kernel = Kernel::fromEnvironment(
         '/tmp/tinvar-shop-transfers-none.sock',
         key: KEY,
@@ -182,12 +201,18 @@ it('exports every order as a CSV the staff member downloads, and emails the link
         ->and($record->rows)->toBe($orders)
         ->and($record->panel)->toBe(StaffMemberships::PANEL);
 
-    // The email: a link on the shop's canonical https address, never the
-    // Host of the request that started it.
-    $this->mail->assertSent('export-ready', static fn (\Tinvar\Testing\Fakes\SentMail $mail): bool => str_starts_with((string) $mail->props['downloadUrl'], 'https://pellwick.test/_download/') && $mail->isTo(StaffAccount::EMAIL));
+    // The email: a link on the host the admin panel is held to, where the
+    // download's stack lets it open -- never the Host of the request that
+    // started it, nor the storefront's (ADR 0149).
+    $this->mail->assertSent('export-ready', static fn (\Tinvar\Testing\Fakes\SentMail $mail): bool => str_starts_with((string) $mail->props['downloadUrl'], ADMIN_ORIGIN . '/_download/') && $mail->isTo(StaffAccount::EMAIL));
     $link = (string) $this->mail->sent('export-ready')[0]->props['downloadUrl'];
 
-    $response = $staff->download(substr($link, \strlen('https://pellwick.test')));
+    // A link its message's policy lets the mail kit draw.
+    [, , $policy] = array_values(array_filter($this->drawn->drawn, static fn (array $d): bool => $d[0] === 'export-ready'))[0];
+    expect($policy?->allowsLink($link))->toBeTrue();
+
+    // Followed whole, to the host it names.
+    $response = $staff->download($link);
     expect($response->status)->toBe(200)
         ->and($response->header('content-type'))->toBe('text/csv; charset=utf-8');
     $body = $response->body();
@@ -197,7 +222,27 @@ it('exports every order as a CSV the staff member downloads, and emails the link
 
     // A customer opening the forwarded link sees nothing.
     $customer = new Staff($this->kernel, account($this->kernel, DemoAccount::EMAIL));
-    expect($customer->download(substr($link, \strlen('https://pellwick.test')))->status)->toBeIn([403, 404]);
+    expect($customer->download($link)->status)->toBeIn([403, 404]);
+});
+
+it('emails the link on the admin host\'s https origin in production, and it opens there', function () {
+    putenv('SHOP_URL=https://shop.test');
+    try {
+        $kernel = Kernel::fromEnvironment('/tmp/tinvar-shop-transfers-none.sock', key: KEY, database: $this->database, mailTransport: $this->mail, mailRenderer: $this->mail);
+        $account = account($kernel, StaffAccount::EMAIL);
+        $staff = new Staff($kernel, $account, 'admin.shop.test');
+
+        expect($staff->export(['format' => 'csv'])->status)->toBe(202);
+        work($kernel);
+
+        $link = (string) $this->mail->sent('export-ready')[0]->props['downloadUrl'];
+        expect($link)->toStartWith('https://admin.shop.test/_download/')
+            ->and($staff->download($link)->status)->toBe(200)
+            // The storefront's host refuses it: the panel lives on admin.
+            ->and($staff->download(str_replace('https://admin.shop.test', 'https://shop.test', $link))->status)->not->toBe(200);
+    } finally {
+        putenv('SHOP_URL');
+    }
 });
 
 it('lists the staff member\'s own transfers on the page, with a link minted for them', function () {

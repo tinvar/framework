@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Transfers;
 
 use Tinvar\Auth\Authenticatable;
+use Tinvar\Identity\BrowserOrigin;
 use Tinvar\Identity\CanonicalOrigins;
 use Tinvar\Jobs\Job;
 use Tinvar\Render\TokenClaims;
@@ -157,8 +158,19 @@ final readonly class Transfers
     /**
      * The link to email: the download path on the user's canonical https
      * origin, or null where there is none to build it on.
+     *
+     * An export of a panel held to a host of its own (ADR 0149) is
+     * downloaded on that host alone -- /_download runs the panel's stack,
+     * which refuses every other -- so its link is built on $hostOrigin, the
+     * origin of that host, never the canonical one: https, or http on
+     * localhost and below it, which never leaves the machine; no link on any
+     * other. Still none where the application gave no canonical origin: it
+     * emails no links at all.
+     *
+     * @param string|null $hostOrigin the origin of the host the export's panel is held to;
+     *        null for a panel on no host of its own
      */
-    public function emailedLink(TransferRecord $record, Authenticatable $user, string $epoch): ?string
+    public function emailedLink(TransferRecord $record, Authenticatable $user, string $epoch, ?string $hostOrigin = null): ?string
     {
         $origin = match (true) {
             $this->canonicalOrigin === null => null,
@@ -168,7 +180,14 @@ final readonly class Transfers
         if ($origin === null) {
             return null;
         }
-        self::assertOrigin($origin);
+        if ($hostOrigin !== null) {
+            if (BrowserOrigin::hostOf($hostOrigin, localHttp: true) === null) {
+                return null;
+            }
+            $origin = $hostOrigin;
+        } else {
+            self::assertOrigin($origin);
+        }
 
         return rtrim($origin, '/') . $this->downloadPath($record, $user->authIdentifier(), $epoch);
     }

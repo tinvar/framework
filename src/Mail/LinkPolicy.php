@@ -19,7 +19,9 @@ namespace Tinvar\Mail;
  * The origin is the one CanonicalOrigins answers for the reader -- https,
  * the tenant's own domain or the platform's -- so one tenant's message is
  * checked against its own origin and no other's. Plain http is an origin
- * only on this machine, for an application `tinvar serve` serves in dev.
+ * only on this machine -- localhost and below it, which every browser
+ * resolves to it, or a loopback address -- for an application `tinvar
+ * serve` serves in dev, on `admin.localhost` as on `localhost` (ADR 0149).
  *
  * Two kinds of image are allowed only by name (ADR 0116). An image the
  * message carries inline is `cid:` one of the content ids its attachments
@@ -39,7 +41,7 @@ final readonly class LinkPolicy
 {
     private const string HTTPS_ORIGIN = '#^https://(?:[^/:?\#@\[\]\s]+|\[[0-9a-f:.]+\])(?::[1-9][0-9]{0,4})?\z#i';
 
-    private const string LOOPBACK_ORIGIN = '#^http://(?:localhost|127(?:\.[0-9]{1,3}){3}|\[::1\])(?::[1-9][0-9]{0,4})?\z#';
+    private const string LOOPBACK_ORIGIN = '#^http://(?:(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*localhost|127(?:\.[0-9]{1,3}){3}|\[::1\])(?::[1-9][0-9]{0,4})?\z#';
 
     /** Whitespace and control characters, which no URL in an email holds: a browser drops some inside a scheme. */
     private const string UNSAFE = '/[\s\x00-\x1f\x7f]|\xc2[\x80-\x9f]|\xe2\x80[\xa8\xa9]/';

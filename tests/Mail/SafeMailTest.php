@@ -76,6 +76,17 @@ describe('a link policy', function () {
             ->and($links->allowsLink('mailto:help@acme.test?subject=Help'))->toBeTrue();
     });
 
+    // localhost's subdomains are this machine too: a dev admin host's own
+    // links (ADR 0149), and never a name that only ends in the word.
+    it('takes plain http on localhost and below it as an origin, and nowhere else', function () {
+        $links = new LinkPolicy('http://admin.localhost:8080');
+
+        expect($links->allowsLink('http://admin.localhost:8080/_download/x'))->toBeTrue()
+            ->and($links->allowsLink('http://localhost:8080/x'))->toBeFalse()
+            ->and(static fn () => new LinkPolicy('http://localhost.evil.test'))->toThrow(\InvalidArgumentException::class)
+            ->and(static fn () => new LinkPolicy('http://evil-localhost'))->toThrow(\InvalidArgumentException::class);
+    });
+
     it('refuses every other link', function (string $href) {
         expect(new LinkPolicy('http://127.0.0.1:8000')->allowsLink($href))->toBeFalse();
     })->with([
