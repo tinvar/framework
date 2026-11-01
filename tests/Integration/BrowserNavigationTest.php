@@ -90,12 +90,14 @@ function runWithTimeout(array $command, string $cwd, int $seconds, array $env = 
  * `tinvar serve`, FrankenPHP in worker mode behind the shop's Caddyfile --
  * which answers any Host and leaves which are the shop's to PHP (ADR 0149)
  * -- with a pool of renderers of its own; skipped where there is no
- * FrankenPHP binary, as every FrankenPHP test is. The renderers are
- * serve's, so $drive is handed none.
+ * FrankenPHP binary, as every FrankenPHP test is. Those renderers are
+ * serve's alone, so $drive is handed one beside them, for the commands a
+ * script runs as the server's environment says -- its queue worker,
+ * rendering mail.
  *
- * @param \Closure(string, string, ?Renderer, string): void $drive given the origin, the
- *        file the shop writes its log to (SHOP_LOG), the renderers (none under
- *        FrankenPHP), and the test endpoint's token ('' unless $testProfile)
+ * @param \Closure(string, string, Renderer, string): void $drive given the origin, the
+ *        file the shop writes its log to (SHOP_LOG), the renderers, and the
+ *        test endpoint's token ('' unless $testProfile)
  * @param array<string, string> $env more of the server's environment
  * @param 'php -S'|'frankenphp' $server
  */
@@ -215,7 +217,7 @@ function served(string $root, \Closure $drive, array $env = [], bool $testProfil
  * SHOP_URL can name it -- localhost, the shop's own host, and
  * admin.localhost beside it when $hosts.
  *
- * @param \Closure(string, string, ?Renderer, string): void $drive
+ * @param \Closure(string, string, Renderer, string): void $drive
  * @param array<string, string> $env
  */
 function servedByFrankenPhp(string $root, \Closure $drive, array $env, bool $testProfile, bool $hosts): void
@@ -246,6 +248,8 @@ function servedByFrankenPhp(string $root, \Closure $drive, array $env, bool $tes
             'TINVAR_BUILD_DIR' => Shop::testBuild(),
         ];
     }
+    // The renderer beside serve's, for the script's own commands.
+    $renderer = Renderer::start('msgpack', 'browser-e2e-side', $testProfile ? Shop::testBuild() . '/rsc/index.js' : null);
     $directory = PrivateDirectory::create('tinvar-franken');
     $serveLog = "{$directory}/serve.log";
     $appLog = "{$directory}/app.log";
@@ -284,9 +288,9 @@ function servedByFrankenPhp(string $root, \Closure $drive, array $env, bool $tes
         $drive(
             $hosts ? "http://localhost:{$port}" : "http://127.0.0.1:{$port}",
             $appLog,
-            null,
+            $renderer,
             $run['token'] ?? '',
-            [...$serverEnv, 'TINVAR_URL' => "http://127.0.0.1:{$port}"],
+            [...$serverEnv, 'TINVAR_URL' => "http://127.0.0.1:{$port}", 'TINVAR_SOCKET' => $renderer->socketPath],
         );
     } finally {
         $status = proc_get_status($process);
@@ -302,6 +306,7 @@ function servedByFrankenPhp(string $root, \Closure $drive, array $env, bool $tes
         }
         fclose($pipes[1]);
         proc_close($process);
+        $renderer->stop();
         if ($run !== null) {
             BrowserTestRun::remove($run['directory']);
         }
@@ -1053,7 +1058,7 @@ it('signs in by an emailed link, resets a password by one, and joins the staff b
     $mailLog = "{$mailDirectory}/mail.log";
     $output = '';
     try {
-        served($root, function (string $origin, string $log, ?Renderer $renderer, string $token, array $env) use ($root, &$output): void {
+        served($root, function (string $origin, string $log, Renderer $renderer, string $token, array $env) use ($root, &$output): void {
             $output = runWithTimeout(
                 ['node', "{$root}/examples/shop/e2e/email-links.mjs", $origin, StaffAccount::EMAIL, StaffAccount::PASSWORD],
                 $root,
