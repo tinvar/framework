@@ -64,6 +64,11 @@ final class Prompts
     /** @var array{has: bool, previous: mixed, back: bool, asked: int, lines: int}|null the form step being asked */
     private static ?array $step = null;
 
+    /** @var (\Closure(): void)|null what takes the spinner running now off, at shutdown */
+    private static ?\Closure $spinning = null;
+
+    private static bool $spinShutdownRegistered = false;
+
     /** @param (\Closure(mixed): (string|bool|null))|null $validate given the answer, returns what is wrong with it */
     public static function text(string $label, string $placeholder = '', string $default = '', bool|string $required = false, ?\Closure $validate = null, string $hint = '', ?string $name = null): string
     {
@@ -208,7 +213,9 @@ final class Prompts
      * Runs $callback with a spinner beside $message, and returns what it
      * returns. The spinner turns from a process of its own, forked where
      * pcntl is loaded, since the callback holds this one; elsewhere it is
-     * drawn once and stands still. Nobody there, nothing is drawn.
+     * drawn once and stands still. Nobody there, nothing is drawn. The
+     * spinner is stopped and the cursor shown again however the work ends:
+     * returning, throwing, or a signal, exit() or a fatal error inside it.
      *
      * @template T
      * @param \Closure(): T $callback
@@ -231,16 +238,38 @@ final class Prompts
         $shown = Width::clean($message);
         $line = static fn (int $tick): string => "\r " . $style->cyan($frames[$tick % \count($frames)]) . ' ' . Width::truncate($shown, max(1, $terminal->columns() - 4)) . "\e[K";
 
-        $terminal->write(Screen::HIDE_CURSOR . $line(0));
-        $child = 0;
-        if ($terminal->animates()) {
-            $parent = getmypid();
-            $child = pcntl_fork();
-            if ($child === 0) {
+        $parent = (int) getmypid();
+        // The spinner's process, once forked, and whether it is stopped.
+        $spinner = new class {
+            public int $child = 0;
+
+            public bool $done = false;
+        };
+        // Kills the spinner's process and shows the cursor again, once, in
+        // this process alone: by the finally below, or -- where the work
+        // never returns into it -- at a signal, exit() or a fatal error.
+        $stop = static function () use ($terminal, $spinner, $parent): void {
+            if ($spinner->done || getmypid() !== $parent) {
+                return;
+            }
+            $spinner->done = true;
+            if ($spinner->child > 0) {
+                posix_kill($spinner->child, SIGKILL);
+                pcntl_waitpid($spinner->child, $status);
+            }
+            $terminal->write("\r\e[K" . Screen::SHOW_CURSOR);
+        };
+        $trapped = self::trapSpin($stop, $parent);
+
+        try {
+            $terminal->write(Screen::HIDE_CURSOR . $line(0));
+            if ($terminal->animates() && ($spinner->child = pcntl_fork()) === 0) {
                 // The spinner's process: draws until killed, or until its
                 // parent is gone. It never returns into the caller's code,
                 // and dies by SIGKILL, so no destructor or shutdown function
-                // of the parent's runs twice.
+                // of the parent's runs twice -- nor, at a signal, the
+                // parent's handlers.
+                self::untrapSpin($trapped, child: true);
                 for ($tick = 1; ; ++$tick) {
                     usleep(80_000);
                     if (posix_getppid() !== $parent) {
@@ -250,16 +279,74 @@ final class Prompts
                 }
                 posix_kill((int) getmypid(), SIGKILL);
             }
-        }
 
-        try {
             return $callback();
         } finally {
-            if ($child > 0) {
-                posix_kill($child, SIGKILL);
-                pcntl_waitpid($child, $status);
-            }
-            $terminal->write("\r\e[K" . Screen::SHOW_CURSOR);
+            self::untrapSpin($trapped);
+            $stop();
+        }
+    }
+
+    /**
+     * Has $stop run however the process ends while a spinner is up: at
+     * shutdown, after exit() or a fatal error, and on SIGINT, SIGTERM,
+     * SIGHUP or SIGQUIT where pcntl is loaded, which then exit with 128 and
+     * the signal, as StreamTerminal::raw() does. A signal taken in the
+     * spinner's own process, before it puts the default back, kills it.
+     *
+     * @param \Closure(): void $stop
+     * @return array{?\Closure, bool|null, array<int, mixed>} what it replaced: the spinner before, async signals, the handlers
+     */
+    private static function trapSpin(\Closure $stop, int $parent): array
+    {
+        $before = self::$spinning;
+        self::$spinning = $stop;
+        if (!self::$spinShutdownRegistered) {
+            self::$spinShutdownRegistered = true;
+            register_shutdown_function(static function (): void {
+                if (self::$spinning !== null) {
+                    (self::$spinning)();
+                }
+            });
+        }
+        if (!\function_exists('pcntl_signal')) {
+            return [$before, null, []];
+        }
+
+        $async = pcntl_async_signals(true);
+        $handlers = [];
+        foreach ([SIGINT, SIGTERM, SIGHUP, SIGQUIT] as $signal) {
+            $handlers[$signal] = pcntl_signal_get_handler($signal);
+            pcntl_signal($signal, static function (int $signal) use ($stop, $parent): void {
+                if (getmypid() !== $parent) {
+                    posix_kill((int) getmypid(), SIGKILL);
+                }
+                $stop();
+                exit(128 + $signal);
+            });
+        }
+
+        return [$before, $async, $handlers];
+    }
+
+    /**
+     * Puts back what trapSpin() replaced; in the spinner's own process, the
+     * default for each signal, so a ctrl-c sent to the whole group simply
+     * ends it.
+     *
+     * @param array{?\Closure, bool|null, array<int, mixed>} $trapped
+     */
+    private static function untrapSpin(array $trapped, bool $child = false): void
+    {
+        [$before, $async, $handlers] = $trapped;
+        if (!$child) {
+            self::$spinning = $before;
+        }
+        foreach ($handlers as $signal => $handler) {
+            pcntl_signal($signal, !$child && (\is_callable($handler) || \is_int($handler)) ? $handler : SIG_DFL);
+        }
+        if ($async !== null && !$child) {
+            pcntl_async_signals($async);
         }
     }
 

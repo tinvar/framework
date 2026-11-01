@@ -102,6 +102,53 @@ it('takes the spinner off when the work throws', function (): void {
         ->and($terminal->screen())->toBe('');
 });
 
+// spin() showed the cursor again in a finally, which a signal, exit() or a
+// fatal error never reaches: ctrl-c during a spinner left the shell with no
+// cursor.
+it('shows the cursor again and stops the spinner when a signal, exit() or a fatal error ends the work', function (string $how, int $code): void {
+    if (!\function_exists('pcntl_signal') || !\function_exists('posix_kill')) {
+        $this->markTestSkipped('pcntl and posix are not loaded.');
+    }
+    $process = proc_open([\PHP_BINARY, __DIR__ . '/Fixtures/spin-interrupted.php', $how], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    \assert(\is_resource($process));
+    fclose($pipes[0]);
+    $out = (string) stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    $exit = proc_close($process);
+
+    expect($out)->toStartWith(Prompts\Screen::HIDE_CURSOR)
+        ->and(str_ends_with($out, "\r\e[K" . Prompts\Screen::SHOW_CURSOR))->toBeTrue()
+        ->and(substr_count($out, Prompts\Screen::SHOW_CURSOR))->toBe(1)
+        ->and($out)->not->toContain('returned')
+        ->and($exit)->toBe($code);
+})->with([
+    'ctrl-c' => ['sigint', 130],
+    'SIGTERM' => ['sigterm', 143],
+    'exit()' => ['exit', 3],
+    'a fatal error' => ['fatal', 255],
+]);
+
+it('puts back the signal handlers spin() replaced once the work is done', function (): void {
+    if (!\function_exists('pcntl_signal')) {
+        $this->markTestSkipped('pcntl is not loaded.');
+    }
+    Prompts::fakeTerminal();
+    $mine = static function (): void {};
+    pcntl_signal(SIGINT, $mine);
+    $before = [SIGINT => pcntl_signal_get_handler(SIGINT), SIGTERM => pcntl_signal_get_handler(SIGTERM)];
+
+    try {
+        $during = Prompts::spin(static fn (): array => [SIGINT => pcntl_signal_get_handler(SIGINT), SIGTERM => pcntl_signal_get_handler(SIGTERM)], 'Working');
+
+        expect($during[SIGINT])->toBeInstanceOf(Closure::class)->not->toBe($mine)
+            ->and($during[SIGTERM])->toBeInstanceOf(Closure::class)
+            ->and([SIGINT => pcntl_signal_get_handler(SIGINT), SIGTERM => pcntl_signal_get_handler(SIGTERM)])->toBe($before);
+    } finally {
+        pcntl_signal(SIGINT, SIG_DFL);
+    }
+});
+
 it('turns a real spinner from a forked process, and stops it with the work', function (): void {
     if (!\function_exists('pcntl_fork')) {
         $this->markTestSkipped('pcntl is not loaded.');
