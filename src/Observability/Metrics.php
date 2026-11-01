@@ -25,15 +25,17 @@ namespace Tinvar\Observability;
  * Every metric is declared before it is used, with its labels: a label
  * nobody declared is a bug, and so is one left out. A label's values are
  * the caller's to keep few -- a route's name, never its path -- and as a
- * guard, a metric past MAX_SERIES label sets in one process files the rest
- * under `_other` rather than growing without end.
+ * guard, a metric past MAX_SERIES label sets in one worker files the rest
+ * under `_other` rather than growing without end. The count is this
+ * instance's, and an instance is a worker's own -- one per thread under
+ * FrankenPHP -- so a process of N workers may store up to N times that.
  */
 final class Metrics
 {
     /** Prometheus's default buckets, in seconds. */
     public const array SECONDS = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0];
 
-    /** Label sets one metric may reach in one process before the rest are filed as `_other`. */
+    /** Label sets one metric may reach in one worker (this instance) before the rest are filed as `_other`. */
     public const int MAX_SERIES = 500;
 
     /** The text format's media type. */
@@ -50,7 +52,7 @@ final class Metrics
     /** @var array<string, int> series key => millionths not yet in the store */
     private array $pending = [];
 
-    /** @var array<string, array<string, true>> metric => label sets seen in this process */
+    /** @var array<string, array<string, true>> metric => label sets seen by this worker */
     private array $series = [];
 
     /** @var list<Collector> */
