@@ -219,7 +219,10 @@ describe('the built catalog', function () {
             // history key, which are a session's.
             // What its reports are filed under, with no token to name it
             // (ADR 0129).
-            ->and($metadata)->toBe(['url' => '/', 'version' => 'dev', 'routeToken' => null, 'view' => 'shop/catalog', 'route' => 'shop.catalog'])
+            ->and(array_diff_key($metadata, ['hosts' => true]))->toBe(['url' => '/', 'version' => 'dev', 'routeToken' => null, 'view' => 'shop/catalog', 'route' => 'shop.catalog'])
+            // And the hosts route() writes links across with: built for the
+            // storefront's host, so its own links stay paths (ADR 0149).
+            ->and($metadata['hosts']['current'] ?? null)->toBe(['pattern' => null, 'params' => []])
             // No token of any kind, no CSRF value, no cookie's name.
             ->and(preg_match('/v1\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/', $html))->toBe(0)
             ->and($html)->not->toContain('__Host-')

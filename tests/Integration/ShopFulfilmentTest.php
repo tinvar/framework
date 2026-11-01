@@ -36,6 +36,9 @@ use Tinvar\Workflows\WorkflowRecord;
 
 use function Tinvar\Testing\actingAs;
 
+/** The admin panel's host (ADR 0149): admin. in front of the shop's, localhost in a test. */
+const ADMIN_ORIGIN = 'http://admin.localhost:8080';
+
 const KEY = 'shop-fulfilment-test-key-of-32-bytes!';
 const TOKEN = 'warehouse-token-of-at-least-32-characters';
 
@@ -145,10 +148,10 @@ describe('the fulfilment workflow', function () {
         $staff = account($this->kernel, StaffAccount::EMAIL);
         $offered = static fn (bool $may) => static fn (AssertablePage $page) => $page->where('canFulfil', $may)->etc();
 
-        actingAs($staff, epochOf($this->kernel, $staff))->get('/admin/orders')->assertOk()->assertPage(AdminOrders::class, $offered(true));
+        actingAs($staff, epochOf($this->kernel, $staff))->get(ADMIN_ORIGIN . '/orders')->assertOk()->assertPage(AdminOrders::class, $offered(true));
 
         new StaffMemberships($this->kernel->orm)->grant($staff->id, [StaffPermission::ViewAllOrders]);
-        actingAs($staff, epochOf($this->kernel, $staff))->get('/admin/orders')->assertOk()->assertPage(AdminOrders::class, $offered(false));
+        actingAs($staff, epochOf($this->kernel, $staff))->get(ADMIN_ORIGIN . '/orders')->assertOk()->assertPage(AdminOrders::class, $offered(false));
     });
 
     it('packs a placed order on the worker, as the staff member who started it', function () {

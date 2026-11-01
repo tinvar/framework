@@ -33,6 +33,9 @@ use Tinvar\Webhooks\DeliverWebhook;
 
 use function Tinvar\Testing\actingAs;
 
+/** The admin panel's host (ADR 0149): admin. in front of the shop's, localhost in a test. */
+const ADMIN_ORIGIN = 'http://admin.localhost:8080';
+
 const KEY = 'shop-deliveries-test-key-of-32-bytes';
 
 const SECRET = 'pellwick-fulfilment-secret-of-32-bytes';
@@ -45,7 +48,7 @@ final class Browser
 
     public function __construct(public readonly Kernel $kernel, Customer $customer)
     {
-        $this->cookies = $kernel->signedIn($customer, new Request('GET', '/', ['host' => '127.0.0.1']));
+        $this->cookies = $kernel->signedIn($customer, new Request('GET', '/', ['host' => 'admin.localhost:8080']));
     }
 
     /** @param array<string, mixed> $body */
@@ -57,7 +60,7 @@ final class Browser
         )->for(new Request('GET', '/', [], [], [], $this->cookies));
 
         return $this->kernel->handle(
-            new Request('POST', "/_action/{$name}", ['host' => '127.0.0.1', 'content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token], [], [], [...$this->cookies, '__Host-XSRF-TOKEN' => $token]),
+            new Request('POST', "/_action/{$name}", ['host' => 'admin.localhost:8080', 'content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token], [], [], [...$this->cookies, '__Host-XSRF-TOKEN' => $token]),
             json_encode($body, JSON_THROW_ON_ERROR),
         );
     }
@@ -105,7 +108,7 @@ function work(Kernel $kernel): void
 it('lists each delivery\'s latest try for staff, and none of what the receiver said', function () {
     $id = delivered($this->kernel);
 
-    actingAs(account($this->kernel, StaffAccount::EMAIL))->get('/admin/deliveries')
+    actingAs(account($this->kernel, StaffAccount::EMAIL))->get(ADMIN_ORIGIN . '/deliveries')
         ->assertOk()
         ->assertPage(DeliveriesPage::class, fn (AssertablePage $page) => $page
             ->where('configured', true)
@@ -142,7 +145,7 @@ it('sends a delivery again as a new one, recording which it repeats and who aske
     expect(array_column($bodies, 'id'))->toContain($again)
         ->and(array_unique(array_column($bodies, 'event')))->toBe(['order.placed']);
 
-    actingAs($staff)->get('/admin/deliveries')
+    actingAs($staff)->get(ADMIN_ORIGIN . '/deliveries')
         ->assertOk()
         ->assertPage(DeliveriesPage::class, fn (AssertablePage $page) => $page
             ->has('deliveries', 2)
@@ -156,13 +159,13 @@ it('refuses a customer and staff without the permission, and sends nothing again
     $id = delivered($this->kernel);
 
     expect(new Browser($this->kernel, account($this->kernel, DemoAccount::EMAIL))->action('deliveries.resend', ['delivery' => $id])->status)->toBe(403);
-    actingAs(account($this->kernel, DemoAccount::EMAIL))->get('/admin/deliveries')->assertStatus(403);
+    actingAs(account($this->kernel, DemoAccount::EMAIL))->get(ADMIN_ORIGIN . '/deliveries')->assertStatus(403);
 
     $staff = account($this->kernel, StaffAccount::EMAIL);
     new StaffMemberships($this->kernel->orm)->grant($staff->id, [StaffPermission::ViewAllOrders]);
     $staff = account($this->kernel, StaffAccount::EMAIL);
     expect(new Browser($this->kernel, $staff)->action('deliveries.resend', ['delivery' => $id])->status)->toBe(403);
-    actingAs($staff)->get('/admin/deliveries')->assertStatus(403);
+    actingAs($staff)->get(ADMIN_ORIGIN . '/deliveries')->assertStatus(403);
 
     expect($this->kernel->orm->connection()->select('SELECT COUNT(*) AS n FROM webhook_events')[0]['n'])->toBe(1);
 });

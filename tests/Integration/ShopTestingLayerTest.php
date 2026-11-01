@@ -204,11 +204,11 @@ it('shares the open orders count once, and reads it as held while the browser ha
 it('signs in for the host a request goes to', function () {
     $demo = customer();
 
-    actingAs($demo)->withHeaders(['host' => 'shop.test'])->get('/orders')->assertPage(Orders::class);
+    actingAs($demo)->withHeaders(['host' => 'localhost:8080'])->get('/orders')->assertPage(Orders::class);
 
     $elsewhere = new \Tinvar\Testing\Client(testing()->app)
-        ->withCookies(testing()->app->signedIn($demo, \Tinvar\Http\Request::get('/', ['host' => 'admin.shop.test'])))
-        ->withHeaders(['host' => 'shop.test']);
+        ->withCookies(testing()->app->signedIn($demo, \Tinvar\Http\Request::get('/', ['host' => 'admin.localhost:8080'])))
+        ->withHeaders(['host' => 'localhost:8080']);
     $elsewhere->get('/orders')->assertRedirect('/sign-in?next=%2Forders');
 });
 

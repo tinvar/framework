@@ -88,8 +88,21 @@ function runWithTimeout(array $command, string $cwd, int $seconds, array $env = 
  *        test endpoint's token ('' unless $testProfile)
  * @param array<string, string> $env more of the server's environment
  */
-function served(string $root, \Closure $drive, array $env = [], bool $testProfile = false): void
+function served(string $root, \Closure $drive, array $env = [], bool $testProfile = false, bool $hosts = false): void
 {
+    // On the shop's two hosts (ADR 0149): localhost and admin.localhost, at
+    // a port known before php -S starts, so SHOP_URL -- which the realms
+    // and every link across them are written from -- can name it. Asked of
+    // the system, then let go and bound again by php -S, which says so when
+    // it has; a port taken in between fails that wait, out loud.
+    $listen = '127.0.0.1:0';
+    if ($hosts) {
+        $probe = stream_socket_server('tcp://127.0.0.1:0');
+        expect($probe)->not->toBeFalse();
+        $listen = (string) stream_socket_get_name($probe, false);
+        fclose($probe);
+        $env = [...$env, 'SHOP_URL' => 'http://localhost:' . substr($listen, strrpos($listen, ':') + 1)];
+    }
     $run = null;
     if ($testProfile) {
         $unbuilt = Shop::ensureTestBuilt();
@@ -129,7 +142,7 @@ function served(string $root, \Closure $drive, array $env = [], bool $testProfil
         // only this suite -- and php -S, failing to bind it, exited only
         // after a check that it was still running had passed, so the browser
         // drove the stranger and the shop's own key was never generated.
-        [PHP_BINARY, '-S', '127.0.0.1:0', "{$root}/examples/shop/public/index.php"],
+        [PHP_BINARY, '-S', $listen, "{$root}/examples/shop/public/index.php"],
         [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', $errorLog, 'w']],
         $pipes,
         $root,
@@ -152,7 +165,7 @@ function served(string $root, \Closure $drive, array $env = [], bool $testProfil
 
         // And the server's environment, for a script that runs the shop's
         // own commands beside it -- its queue worker.
-        $drive("http://127.0.0.1:{$port}", $appLog, $renderer, $run['token'] ?? '', $serverEnv);
+        $drive($hosts ? "http://localhost:{$port}" : "http://127.0.0.1:{$port}", $appLog, $renderer, $run['token'] ?? '', $serverEnv);
     } finally {
         proc_terminate($server);
         proc_close($server);
@@ -630,17 +643,25 @@ it('lets staff into the admin panel\'s orders, and refuses a customer', function
             $root,
             90,
         );
-    });
+    }, hosts: true);
 
     $result = json_decode((string) $output, true);
     expect($result)->toBeArray("the browser script failed:\n{$output}");
 
+    // Asked for on the admin host signed out, the panel hands the visitor
+    // to the shop's own host to sign in (ADR 0039, 0149): the admin host
+    // keeps a session of its own, made by the handoff and no shared cookie.
     expect($result['errors'])->toBe([])
-        ->and($result['redirected'])->toBe(['path' => '/sign-in', 'next' => '/admin/orders']);
+        ->and($result['redirected']['host'])->toStartWith('localhost:')
+        ->and($result['redirected']['path'])->toBe('/sign-in')
+        ->and($result['redirected']['next'])->toStartWith('/_handoff/');
 
     // Every customer's orders, the newest fifty of them, in the admin panel;
     // the catalog after it, in none.
     expect($result['admin']['heading'])->toBe('All orders')
+        ->and($result['admin']['host'])->toStartWith('admin.localhost:')
+        ->and($result['moved']['host'])->toBe($result['admin']['host'])
+        ->and($result['moved']['path'])->toBe('/staff')
         ->and($result['admin']['rows'])->toBe(\Shop\Http\Pages\Admin\Orders::LIMIT)
         ->and($result['admin']['customers'])->toBeGreaterThan(1)
         ->and($result['admin']['panel'])->not->toBe([])
@@ -660,8 +681,11 @@ it('lets staff into the admin panel\'s orders, and refuses a customer', function
         ->and($result['scrolled']['partials'][0]['cursor'] ?? '')->not->toBe('')
         ->and($result['scrolled']['bar'])->toBe($result['scrolled']['partials'][0]['cursor']);
 
-    // A customer holds no membership of the panel: the shop's own 403 page.
-    expect($result['refused'])->toBe(['status' => 403, 'heading' => 'This page is not open to your account']);
+    // A customer holds no membership of the panel: the handoff on the shop's
+    // host refuses them, and they never reach the admin host (ADR 0039).
+    expect($result['refused']['status'])->toBe(403)
+        ->and($result['refused']['host'])->toStartWith('localhost:')
+        ->and($result['refused']['path'])->toBe('/_handoff/authorize');
 
     // The panel's StyleX rules in a sheet of its own (ADR 0109): applied on
     // its page, and never fetched by a customer's -- who loads the document's
@@ -918,7 +942,7 @@ it('signs in by an emailed link, resets a password by one, and joins the staff b
                 120,
                 [...array_filter($env, \is_string(...)), 'TINVAR_TEST_TOKEN' => $token, 'TINVAR_E2E_PHP' => PHP_BINARY],
             );
-        }, ['SHOP_DATABASE' => Shop::testDatabase(), 'SHOP_MAIL_LOG' => $mailLog], testProfile: true);
+        }, ['SHOP_DATABASE' => Shop::testDatabase(), 'SHOP_MAIL_LOG' => $mailLog], testProfile: true, hosts: true);
     } finally {
         @unlink($mailLog);
         @rmdir($mailDirectory);
@@ -943,7 +967,7 @@ it('signs in by an emailed link, resets a password by one, and joins the staff b
         ->and($result['reset']['signedInWithIt'])->not->toBe('/sign-in')
         ->and($result['invite']['listed'])->toBeTrue()
         ->and($result['invite']['heading'])->toBe("Join Pellwick Supply's staff")
-        ->and($result['invite']['landed'])->toBe('/admin/orders')
+        ->and($result['invite']['landed'])->toBe('admin.localhost/orders')
         ->and($result['invite']['again'])->toBe("This invite won't work");
 });
 

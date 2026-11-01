@@ -289,16 +289,18 @@ it('runs on what its migrations make: signing in, the epoch moved, and the admin
         return $response;
     };
 
-    $keep($kernel->handle(new Request('GET', '/sign-in', ['accept' => 'text/html'], [], [], $cookies)));
+    // On the admin host throughout, whose realm the session is made in (ADR 0149).
+    $admin = ['host' => 'admin.localhost:8080'];
+    $keep($kernel->handle(new Request('GET', '/orders', ['accept' => 'text/html', ...$admin], [], [], $cookies)));
     $token = (string) new CsrfTokens(
         new Signer(KEY, CsrfTokens::PURPOSE),
         static fn (Request $r): string => Kernel::sessionFrom($r->cookie(Kernel::SESSION_COOKIE), KEY) ?? '',
     )->for(new Request('GET', '/', [], [], [], $cookies));
     $signIn = $keep($kernel->handle(
-        new Request('POST', '/_action/account.signIn', ['content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token], [], [], [...$cookies, '__Host-XSRF-TOKEN' => $token]),
+        new Request('POST', '/_action/account.signIn', ['content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token, ...$admin], [], [], [...$cookies, '__Host-XSRF-TOKEN' => $token]),
         json_encode(['email' => DemoAccount::EMAIL, 'password' => DemoAccount::PASSWORD, 'next' => '/'], JSON_THROW_ON_ERROR),
     ));
-    $admin = $kernel->handle(new Request('GET', '/admin/orders', ['accept' => 'text/html'], [], [], $cookies));
+    $admin = $kernel->handle(new Request('GET', '/orders', ['accept' => 'text/html', ...$admin], [], [], $cookies));
     $connection = PdoConnection::sqlite($database);
 
     expect($signIn->status)->toBeLessThan(400)

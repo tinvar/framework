@@ -31,6 +31,7 @@ use Tinvar\Identity\Realms;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
+use Tinvar\Routing\Domains;
 use Tinvar\Support\Signer;
 
 const KEY = 'shop-handoff-test-key-of-32-bytes!!!!';
@@ -71,7 +72,8 @@ function realms(): Realms
 
 function kernel(string $database, string $socket = '/tmp/tinvar-shop-handoff-none.sock'): Kernel
 {
-    return Kernel::fromEnvironment($socket, key: KEY, database: $database, realms: realms());
+    // The shop's two hosts, as SHOP_URL=https://shop.test gives them (ADR 0149).
+    return Kernel::fromEnvironment($socket, key: KEY, database: $database, realms: realms(), domains: Domains::fromUrl(SHOP));
 }
 
 /** A browser: a cookie jar per host, following redirects between them. */
@@ -189,7 +191,7 @@ it('hands staff signed in on the shop\'s host to the admin host, where the admin
         $epoch = new AuthEpochs($orm)->of(staffId($orm));
         $browser->trail = [];
 
-        $page = $browser->follow(ADMIN . '/admin/orders');
+        $page = $browser->follow(ADMIN . '/orders');
     } finally {
         $renderer->stop();
     }
@@ -198,13 +200,13 @@ it('hands staff signed in on the shop\'s host to the admin host, where the admin
         ->and($page->body())->toContain(DemoAccount::EMAIL)
         ->and($browser->trail)->toBe([
             // The admin host's guard: no session here, so a handoff.
-            'admin.shop.test/admin/orders',
+            'admin.shop.test/orders',
             'admin.shop.test/_handoff/start',
             // Signed in on the shop's host already, so a code at once: the
             // admin host is the shop's own, and no consent is asked for it.
             'shop.test/_handoff/authorize',
             'admin.shop.test/_handoff/callback',
-            'admin.shop.test/admin/orders',
+            'admin.shop.test/orders',
         ])
         // Two sessions, one per host, neither the other's cookie.
         ->and($browser->sessionAt('admin.shop.test'))->not->toBe('')
@@ -219,13 +221,13 @@ it('hands staff signed in on the shop\'s host to the admin host, where the admin
 it('sends someone signed in nowhere from the admin host to sign in on the shop\'s host, and back after', function () {
     $browser = new Browser(kernel(database()));
 
-    $start = $browser->get(ADMIN . '/admin/orders');
+    $start = $browser->get(ADMIN . '/orders');
     $toAuthority = $browser->get('https://admin.shop.test' . $start->header('location'));
     $authorize = (string) $toAuthority->header('location');
     $toSignIn = $browser->get($authorize);
     $next = (string) parse_url($authorize, PHP_URL_PATH) . '?' . parse_url($authorize, PHP_URL_QUERY);
 
-    expect($start->header('location'))->toBe('/_handoff/start?return=%2Fadmin%2Forders')
+    expect($start->header('location'))->toBe('/_handoff/start?return=%2Forders')
         ->and($authorize)->toStartWith(SHOP . HandoffEndpoint::AUTHORIZE . '?')
         // Credentials typed on the shop's host, with the handoff to come back to.
         ->and($toSignIn->header('location'))->toBe('/sign-in?next=' . rawurlencode($next));
@@ -239,7 +241,7 @@ it('sends someone signed in nowhere from the admin host to sign in on the shop\'
 
     expect($callback->header('location'))->toStartWith(ADMIN . HandoffEndpoint::CALLBACK . '?code=')
         ->and($arrived->status)->toBe(303)
-        ->and($arrived->header('location'))->toBe('/admin/orders')
+        ->and($arrived->header('location'))->toBe('/orders')
         ->and($arrived->cookies())->toHaveKey(Kernel::SESSION_COOKIE);
 });
 
@@ -248,7 +250,7 @@ it('refuses a customer the admin panel would refuse, and makes no session on the
     $browser = new Browser(kernel($database));
     $browser->signIn(DemoAccount::EMAIL, DemoAccount::PASSWORD);
 
-    $refused = $browser->follow(ADMIN . '/admin/orders');
+    $refused = $browser->follow(ADMIN . '/orders');
 
     expect($refused->status)->toBe(403)
         ->and(end($browser->trail))->toBe('shop.test/_handoff/authorize')
@@ -258,7 +260,7 @@ it('refuses a customer the admin panel would refuse, and makes no session on the
 it('keeps each session to its host: neither host\'s cookie signs anyone in on the other', function () {
     $browser = new Browser(kernel(database()));
     $browser->signIn(StaffAccount::EMAIL, StaffAccount::PASSWORD);
-    $start = $browser->get(ADMIN . '/_handoff/start?return=%2Fadmin%2Forders');
+    $start = $browser->get(ADMIN . '/_handoff/start?return=%2Forders');
     $authorize = $browser->get((string) $start->header('location'));
     $browser->get((string) $authorize->header('location'));
 
@@ -268,14 +270,14 @@ it('keeps each session to its host: neither host\'s cookie signs anyone in on th
     // Each is a visitor with no session on the other host: the shop's host
     // asks them to sign in, the admin host starts a handoff.
     expect($swapped->get(SHOP . '/orders')->header('location'))->toBe('/sign-in?next=%2Forders')
-        ->and($swapped->get(ADMIN . '/admin/orders')->header('location'))->toBe('/_handoff/start?return=%2Fadmin%2Forders');
+        ->and($swapped->get(ADMIN . '/orders')->header('location'))->toBe('/_handoff/start?return=%2Forders');
 });
 
 it('redeems a code once, across every worker the database is shared by, and ends the session it made when it comes back', function () {
     $database = database();
     $browser = new Browser(kernel($database));
     $browser->signIn(StaffAccount::EMAIL, StaffAccount::PASSWORD);
-    $start = $browser->get(ADMIN . '/_handoff/start?return=%2Fadmin%2Forders');
+    $start = $browser->get(ADMIN . '/_handoff/start?return=%2Forders');
     $arrivedWith = $browser->jar['admin.shop.test'];
     $callback = (string) $browser->get((string) $start->header('location'))->header('location');
 
@@ -295,33 +297,33 @@ it('redeems a code once, across every worker the database is shared by, and ends
         // The code was copied, so the session its redemption made is ended:
         // the browser that redeemed it is sent to hand off again.
         ->and(orm($database)->connection()->select($sessions))->toBe([['n' => 0]])
-        ->and($browser->get(ADMIN . '/admin/orders')->header('location'))->toBe('/_handoff/start?return=%2Fadmin%2Forders')
+        ->and($browser->get(ADMIN . '/orders')->header('location'))->toBe('/_handoff/start?return=%2Forders')
         // And no other: the shop's host still knows them.
         ->and(orm($database)->connection()->select("SELECT COUNT(*) AS n FROM sessions WHERE realm = 'shop.test'"))->toBe([['n' => 1]]);
 });
 
-it('stays on one host, with nothing mounted, unless SHOP_ADMIN_URL names the admin host', function () {
-    $previous = getenv('SHOP_ADMIN_URL');
+// The admin panel lives on admin. in front of the shop's address, whatever
+// that is (ADR 0149): two realms always, read from SHOP_URL -- or, on
+// loopback, from the address `tinvar serve` names, as localhost.
+it('keeps the admin panel on admin. in front of the shop\'s own host, as two realms', function () {
     $previousUrl = getenv('SHOP_URL');
-    putenv('SHOP_ADMIN_URL');
 
     try {
-        expect(Kernel::realms())->toBeNull();
-
-        putenv('SHOP_ADMIN_URL=http://admin.localhost:8080/');
         putenv('SHOP_URL=http://localhost:8080');
-        $realms = Kernel::realms();
+        $local = Kernel::realms();
+        putenv('SHOP_URL=http://127.0.0.1:9090');
+        $loopback = Kernel::realms();
+        putenv('SHOP_URL=https://shop.example.com');
+        $production = Kernel::realms();
     } finally {
-        putenv($previous === false ? 'SHOP_ADMIN_URL' : "SHOP_ADMIN_URL={$previous}");
         putenv($previousUrl === false ? 'SHOP_URL' : "SHOP_URL={$previousUrl}");
     }
 
-    expect($realms?->authority->origin)->toBe('http://localhost:8080')
-        ->and($realms?->forHost('admin.localhost')?->panel)->toBe(StaffMemberships::PANEL);
-
-    $browser = new Browser(Kernel::fromEnvironment('/tmp/tinvar-shop-handoff-none.sock', key: KEY, database: database()));
-
-    expect($browser->get(ADMIN . '/_handoff/start')->status)->toBe(404);
+    expect($local->authority->origin)->toBe('http://localhost:8080')
+        ->and($local->forHost('admin.localhost')?->panel)->toBe(StaffMemberships::PANEL)
+        ->and($loopback->authority->origin)->toBe('http://localhost:9090')
+        ->and($loopback->forHost('admin.localhost')?->origin)->toBe('http://admin.localhost:9090')
+        ->and($production->forHost('admin.shop.example.com')?->origin)->toBe('https://admin.shop.example.com');
 });
 
 // The shop has no custom domain to be asked about, so its screen is drawn

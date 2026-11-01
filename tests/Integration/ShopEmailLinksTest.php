@@ -41,6 +41,9 @@ use Tinvar\Testing\Fakes\SentMail;
 const KEY = 'shop-email-links-test-key-of-32-bytes!';
 const ORIGIN = 'https://pellwick.test';
 
+/** The admin panel's host (ADR 0149): admin. in front of the shop's, localhost in a test. */
+const ADMIN_HOST = 'admin.localhost:8080';
+
 /** A browser of one: a cookie jar, an address, and the Kernel it talks to. */
 final class Browser
 {
@@ -303,10 +306,15 @@ describe('a sign-in link', function () {
     });
 
     // "Every emailed link ... is built from the user's canonical domain,
-    // never from the request's Host header."
+    // never from the request's Host header." A host the shop does not serve
+    // is refused before anything runs (ADR 0149); any it serves -- whatever
+    // X-Forwarded-Host a client adds -- builds the link on the same origin.
     it('is built on the canonical origin whatever Host the request names', function () {
         $browser = new Browser($this->kernel);
-        foreach (['evil.example', 'pellwick.test.evil.example', '127.0.0.1:8080'] as $host) {
+        foreach (['evil.example', 'pellwick.test.evil.example'] as $host) {
+            expect($browser->action('account.requestSignInLink', ['email' => DemoAccount::EMAIL], ['host' => $host])->status)->toBe(421);
+        }
+        foreach (['127.0.0.1:8080', 'localhost:8080', 'admin.localhost:8080'] as $host) {
             $browser->action('account.requestSignInLink', ['email' => DemoAccount::EMAIL], ['host' => $host, 'x-forwarded-host' => 'evil.example']);
         }
         work($this->kernel);
@@ -423,14 +431,16 @@ describe('a password reset', function () {
 });
 
 describe('a staff invite', function () {
+    // Staff on the admin host, signed in there: it keeps a session of its
+    // own (ADR 0149), which a browser reaches by the handoff.
     beforeEach(function () {
         $this->staff = new Browser($this->kernel, '203.0.113.60');
-        $this->staff->action('account.signIn', ['email' => StaffAccount::EMAIL, 'password' => StaffAccount::PASSWORD]);
+        $this->staff->action('account.signIn', ['email' => StaffAccount::EMAIL, 'password' => StaffAccount::PASSWORD], ['host' => ADMIN_HOST]);
     });
 
     it('joins a new account to the staff with its role and no more, once', function () {
-        expect($this->staff->get('/admin/staff')->status)->toBe(200)
-            ->and($this->staff->action('staff.invite', ['email' => 'New.Hire@Example.com', 'role' => 'orders'])->status)->toBe(200);
+        expect($this->staff->get('/staff', ['host' => ADMIN_HOST])->status)->toBe(200)
+            ->and($this->staff->action('staff.invite', ['email' => 'New.Hire@Example.com', 'role' => 'orders'], ['host' => ADMIN_HOST])->status)->toBe(200);
         work($this->kernel);
         $url = linkIn($this->mail, 'staff-invitation', 'new.hire@example.com');
         expect($url)->toStartWith(ORIGIN . '/invites/accept?token=');
@@ -452,12 +462,15 @@ describe('a staff invite', function () {
             'permissions' => 'staff.invite',
         ]);
         expect($accepted->status)->toBe(303)
-            ->and($accepted->header('location'))->toBe('/admin/orders');
+            ->and($accepted->header('location'))->toBe('http://' . ADMIN_HOST . '/orders');
         $hire = customer($this->kernel, 'new.hire@example.com');
         $membership = new StaffMemberships($this->kernel->orm)->membership($hire, StaffMemberships::PANEL, '');
         expect($membership?->permissions)->toBe(array_map(static fn (StaffPermission $p): string => $p->value, StaffRole::Orders->permissions()))
-            ->and(signedInAs($this->kernel, $invitee))->toBe($hire->id)
-            ->and($invitee->get('/admin/staff')->status)->toBe(403);
+            ->and(signedInAs($this->kernel, $invitee))->toBe($hire->id);
+        // On the admin host, which keeps a session of its own: signed in
+        // there, the new hire may not open what their role does not cover.
+        $invitee->action('account.signIn', ['email' => 'new.hire@example.com', 'password' => 'a long enough password'], ['host' => ADMIN_HOST]);
+        expect($invitee->get('/staff', ['host' => ADMIN_HOST])->status)->toBe(403);
 
         expect(errors(new Browser($this->kernel, '198.51.100.61')->action('staff.acceptInvite', ['token' => tokenOf($url), 'name' => 'X', 'password' => 'a long enough password'])))
             ->toBe(['token' => [EmailLinkActions::LINK_REFUSED]]);
@@ -467,30 +480,30 @@ describe('a staff invite', function () {
         // The staff account narrowed to the order desk, still able to invite.
         $staffId = customer($this->kernel, StaffAccount::EMAIL)->id;
         new StaffMemberships($this->kernel->orm)->grant($staffId, [StaffPermission::ViewAllOrders, StaffPermission::InviteStaff]);
-        $this->staff->action('account.signIn', ['email' => StaffAccount::EMAIL, 'password' => StaffAccount::PASSWORD]);
+        $this->staff->action('account.signIn', ['email' => StaffAccount::EMAIL, 'password' => StaffAccount::PASSWORD], ['host' => ADMIN_HOST]);
 
-        $wider = $this->staff->action('staff.invite', ['email' => 'x@example.com', 'role' => 'stock']);
+        $wider = $this->staff->action('staff.invite', ['email' => 'x@example.com', 'role' => 'stock'], ['host' => ADMIN_HOST]);
         expect($wider->status)->toBe(422)
             ->and(errors($wider))->toBe(['role' => ['You can only invite someone to a role with no more access than your own.']]);
 
         // And without InviteStaff, not at all.
         new StaffMemberships($this->kernel->orm)->grant($staffId, [StaffPermission::ViewAllOrders]);
-        $this->staff->action('account.signIn', ['email' => StaffAccount::EMAIL, 'password' => StaffAccount::PASSWORD]);
-        expect($this->staff->action('staff.invite', ['email' => 'x@example.com', 'role' => 'orders'])->status)->toBe(403);
+        $this->staff->action('account.signIn', ['email' => StaffAccount::EMAIL, 'password' => StaffAccount::PASSWORD], ['host' => ADMIN_HOST]);
+        expect($this->staff->action('staff.invite', ['email' => 'x@example.com', 'role' => 'orders'], ['host' => ADMIN_HOST])->status)->toBe(403);
 
         work($this->kernel);
         expect($this->mail->sent('staff-invitation'))->toBe([]);
     });
 
     it('is refused once revoked, or once its inviter can no longer give its role', function () {
-        $this->staff->action('staff.invite', ['email' => 'revoked@example.com', 'role' => 'stock']);
-        $this->staff->action('staff.invite', ['email' => 'orphaned@example.com', 'role' => 'stock']);
+        $this->staff->action('staff.invite', ['email' => 'revoked@example.com', 'role' => 'stock'], ['host' => ADMIN_HOST]);
+        $this->staff->action('staff.invite', ['email' => 'orphaned@example.com', 'role' => 'stock'], ['host' => ADMIN_HOST]);
         work($this->kernel);
         $revoked = tokenOf(linkIn($this->mail, 'staff-invitation', 'revoked@example.com'));
         $orphaned = tokenOf(linkIn($this->mail, 'staff-invitation', 'orphaned@example.com'));
 
         $pending = $this->kernel->orm->connection()->select("SELECT id, data FROM email_links WHERE purpose = 'invite' AND data LIKE '%revoked@%'");
-        expect($this->staff->action('staff.revokeInvite', ['id' => (string) $pending[0]['id']])->status)->toBe(200);
+        expect($this->staff->action('staff.revokeInvite', ['id' => (string) $pending[0]['id']], ['host' => ADMIN_HOST])->status)->toBe(200);
 
         // The inviter loses RESTOCK: an invite to "stock" is theirs no longer to give.
         new StaffMemberships($this->kernel->orm)->grant(customer($this->kernel, StaffAccount::EMAIL)->id, [StaffPermission::ViewAllOrders, StaffPermission::InviteStaff]);
@@ -504,7 +517,7 @@ describe('a staff invite', function () {
     });
 
     it('joins an existing account without signing anyone in', function () {
-        $this->staff->action('staff.invite', ['email' => 'customer1@shop.test', 'role' => 'orders']);
+        $this->staff->action('staff.invite', ['email' => 'customer1@shop.test', 'role' => 'orders'], ['host' => ADMIN_HOST]);
         work($this->kernel);
         $token = tokenOf(linkIn($this->mail, 'staff-invitation', 'customer1@shop.test'));
 
@@ -544,8 +557,8 @@ describe('an address in another case', function () {
 
     it('joins an invite to the account it is, and makes no second one', function () {
         $staff = new Browser($this->kernel, '203.0.113.92');
-        $staff->action('account.signIn', ['email' => StaffAccount::EMAIL, 'password' => StaffAccount::PASSWORD]);
-        $staff->action('staff.invite', ['email' => 'customer1@SHOP.test', 'role' => 'orders']);
+        $staff->action('account.signIn', ['email' => StaffAccount::EMAIL, 'password' => StaffAccount::PASSWORD], ['host' => ADMIN_HOST]);
+        $staff->action('staff.invite', ['email' => 'customer1@SHOP.test', 'role' => 'orders'], ['host' => ADMIN_HOST]);
         work($this->kernel);
         $token = tokenOf(linkIn($this->mail, 'staff-invitation', 'customer1@shop.test'));
 
@@ -586,8 +599,9 @@ describe('drawn by the renderer', function () {
             $browser->action('account.requestSignInLink', ['email' => DemoAccount::EMAIL]);
             $browser->action('account.requestPasswordReset', ['email' => DemoAccount::EMAIL]);
             $staff = new Browser($shop, '203.0.113.61');
-            $staff->action('account.signIn', ['email' => StaffAccount::EMAIL, 'password' => StaffAccount::PASSWORD]);
-            $staff->action('staff.invite', ['email' => 'hire@example.com', 'role' => 'orders']);
+            // On the admin host in front of SHOP_URL's.
+            $staff->action('account.signIn', ['email' => StaffAccount::EMAIL, 'password' => StaffAccount::PASSWORD], ['host' => 'admin.shop.test']);
+            $staff->action('staff.invite', ['email' => 'hire@example.com', 'role' => 'orders'], ['host' => 'admin.shop.test']);
             work($shop);
 
             $sent = \Tinvar\Mail\LogTransport::read("{$directory}/mail.log");

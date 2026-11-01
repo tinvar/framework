@@ -36,6 +36,9 @@ use Tinvar\Transfers\Transfers;
 
 use function Tinvar\Testing\actingAs;
 
+/** The admin panel's host (ADR 0149): admin. in front of the shop's, localhost in a test. */
+const ADMIN_ORIGIN = 'http://admin.localhost:8080';
+
 const KEY = 'shop-transfers-test-key-of-32-bytes!';
 
 /** A browser signed in as one customer: its session cookie, and the session's CSRF token. */
@@ -46,7 +49,7 @@ final class Staff
 
     public function __construct(public readonly Kernel $kernel, public readonly Customer $customer)
     {
-        $this->cookies = $kernel->signedIn($customer, new Request('GET', '/', ['host' => '127.0.0.1']));
+        $this->cookies = $kernel->signedIn($customer, new Request('GET', '/', ['host' => 'admin.localhost:8080']));
     }
 
     /** @param array<string, mixed> $body */
@@ -81,7 +84,7 @@ final class Staff
 
     public function download(string $path): Response
     {
-        return $this->kernel->handle(new Request('GET', $path, ['host' => '127.0.0.1'], [], [], $this->cookies));
+        return $this->kernel->handle(new Request('GET', $path, ['host' => 'admin.localhost:8080'], [], [], $this->cookies));
     }
 
     /**
@@ -90,7 +93,7 @@ final class Staff
      */
     private function headers(array $extra): array
     {
-        return ['host' => '127.0.0.1', 'accept' => 'application/json', 'x-xsrf-token' => $this->token(), ...$extra];
+        return ['host' => 'admin.localhost:8080', 'accept' => 'application/json', 'x-xsrf-token' => $this->token(), ...$extra];
     }
 
     /** @return array<string, string> */
@@ -202,7 +205,7 @@ it('lists the staff member\'s own transfers on the page, with a link minted for 
     expect(new Staff($this->kernel, $account)->export()->status)->toBe(202);
     work($this->kernel);
 
-    actingAs($account)->get('/admin/transfers')
+    actingAs($account)->get(ADMIN_ORIGIN . '/transfers')
         ->assertOk()
         ->assertPage(TransfersPage::class, fn (AssertablePage $page) => $page
             ->where('stockColumns', ['sku', 'stock'])

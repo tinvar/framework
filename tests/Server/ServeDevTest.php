@@ -206,7 +206,7 @@ it('serves the shop from source, and shows an edited component without a reload'
             $port = (string) parse_url($url, PHP_URL_PORT);
             [$rebound] = fetch("{$url}/sign-in", ['Accept: text/html', "Host: rebound.attacker.example:{$port}"]);
             [$reboundModule] = fetch("{$url}/_vite/@vite/client", ["Host: rebound.attacker.example:{$port}"]);
-            [$named] = fetch("{$url}/sign-in", ['Accept: text/html', "Host: shop.localhost:{$port}"]);
+            [$named] = fetch("{$url}/sign-in", ['Accept: text/html', "Host: localhost:{$port}"]);
             $output = runWithTimeout(['node', "{$root}/examples/shop/e2e/dev-hmr.mjs", $url, $copy], $root, 150);
             // Live updates through the dev Caddyfile's hub, as from a build.
             $live = runWithTimeout(

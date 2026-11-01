@@ -88,7 +88,7 @@ function signIn(Kernel $kernel, string $visitor, string $password): int
             'POST',
             '/_action/account.signIn',
             [
-                'host' => 'shop.test', 'content-type' => 'application/json', 'accept' => 'application/json',
+                'host' => 'localhost:8080', 'content-type' => 'application/json', 'accept' => 'application/json',
                 'x-xsrf-token' => $token, 'x-forwarded-for' => $visitor,
             ],
             [],

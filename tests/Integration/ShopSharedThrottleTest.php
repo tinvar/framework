@@ -84,7 +84,7 @@ function signIn(Kernel $kernel, string $password): int
         new Request(
             'POST',
             '/_action/account.signIn',
-            ['host' => 'shop.test', 'content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
+            ['host' => 'localhost:8080', 'content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
             [],
             [],
             [Kernel::SESSION_COOKIE => $cookie, '__Host-XSRF-TOKEN' => $token],

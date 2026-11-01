@@ -65,6 +65,9 @@ final class Staff
     public readonly Orm $orm;
     public readonly string $id;
 
+    /** The admin panel's host (ADR 0149). */
+    public const string HOST = 'admin.localhost:8080';
+
     public function __construct(string $database)
     {
         $this->hub = new MemoryHub();
@@ -72,7 +75,9 @@ final class Staff
         $this->orm = new Orm(PdoConnection::sqlite($database, 'shop'), new IdentityMap('shop'));
         $this->id = (string) $this->orm->connection()->select('SELECT id FROM customers WHERE email = ?', [StaffAccount::EMAIL])[0]['id'];
 
-        $this->keep($this->kernel->handle(new Request('GET', '/sign-in', ['accept' => 'text/html'])));
+        // On the admin host, whose realm the session is made in and whose
+        // route the tokens name (ADR 0149).
+        $this->keep($this->kernel->handle(new Request('GET', '/orders', ['accept' => 'text/html', 'host' => self::HOST])));
         $this->post('/_action/account.signIn', ['email' => StaffAccount::EMAIL, 'password' => StaffAccount::PASSWORD, 'next' => '/']);
     }
 
@@ -92,6 +97,7 @@ final class Staff
             sessionId: (string) Kernel::sessionFrom($this->cookies[Kernel::SESSION_COOKIE] ?? null, KEY),
             user: $this->id,
             authEpoch: new AuthEpochs($this->orm)->of($this->id),
+            host: 'admin.localhost',
         )->mint(["\0orders"]);
     }
 
@@ -121,7 +127,7 @@ final class Staff
             new Request(
                 'POST',
                 $path,
-                ['content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token],
+                ['content-type' => 'application/json', 'accept' => 'application/json', 'x-xsrf-token' => $token, 'host' => self::HOST],
                 [],
                 [],
                 [...$this->cookies, '__Host-XSRF-TOKEN' => $token],

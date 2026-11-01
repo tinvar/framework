@@ -174,7 +174,7 @@ it('updates another tab and staff\'s list when an order is placed, without a rel
         ->and($result['admin']['sameDocument'])->toBeTrue()
         ->and($result['admin']['documents'])->toBe(0)
         ->and($result['admin']['refetches'])->toHaveCount(1)
-        ->and($result['admin']['refetches'][0])->toMatchArray(['path' => '/admin/orders', 'only' => 'page']);
+        ->and($result['admin']['refetches'][0])->toMatchArray(['path' => '/orders', 'only' => 'page']);
 
     // The hub's access token is a cookie for its path alone, which script
     // cannot read.

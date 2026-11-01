@@ -42,6 +42,9 @@ use function Tinvar\Testing\get;
 
 const KEY = 'shop-admin-test-key-of-32-bytes!!!!';
 
+/** The admin panel's host (ADR 0149): admin. in front of the shop's, localhost in a test. */
+const ADMIN_ORIGIN = 'http://admin.localhost:8080';
+
 beforeEach(function () {
     $this->database = Shop::testDatabase();
     Testing::use(Kernel::fromEnvironment('/tmp/tinvar-shop-admin-none.sock', key: KEY, database: $this->database));
@@ -73,14 +76,16 @@ it('puts the admin pages in the admin panel by their namespace, behind the custo
         ->and($panels->panelOf(\Shop\Http\Pages\Orders\Orders::class))->toBeNull();
 });
 
+// On the admin host, a visitor who is not signed in is handed to the shop's
+// own host to sign in, and back (ADR 0039, 0149).
 it('sends a visitor who is not signed in to sign in, and back', function () {
-    get('/admin/orders')->assertRedirect('/sign-in?next=%2Fadmin%2Forders');
+    get(ADMIN_ORIGIN . '/orders')->assertRedirect('/_handoff/start?return=%2Forders');
 });
 
 // A customer is signed in, and holds no membership of the panel. The 403 is
 // the panel's, before the page's loader runs.
 it('refuses a signed-in customer with a 403', function () {
-    actingAs(shopper(DemoAccount::EMAIL))->get('/admin/orders')->assertForbidden();
+    actingAs(shopper(DemoAccount::EMAIL))->get(ADMIN_ORIGIN . '/orders')->assertForbidden();
 });
 
 it('makes the seeded staff account a member holding the permission the page needs, and customers none', function () {
@@ -119,7 +124,7 @@ it('lists every customer\'s newest orders, with whose each is', function () {
         'SELECT o.number, c.email FROM orders o JOIN customers c ON c.id = o.customer_id ORDER BY o.placed_at DESC, o.id DESC LIMIT 1',
     )[0];
 
-    actingAs(shopper(StaffAccount::EMAIL))->get('/admin/orders')
+    actingAs(shopper(StaffAccount::EMAIL))->get(ADMIN_ORIGIN . '/orders')
         ->assertOk()
         ->assertPage(Orders::class, fn (AssertablePage $page) => $page
             ->where('total', $total)
@@ -154,7 +159,7 @@ it('reports how many orders are in each status, and what they came to', function
     }
     $expected = array_values(array_filter(array_map(static fn (OrderStatus $status): ?array => $expected[$status->value] ?? null, OrderStatus::cases())));
 
-    actingAs(shopper(StaffAccount::EMAIL))->get('/admin/orders')
+    actingAs(shopper(StaffAccount::EMAIL))->get(ADMIN_ORIGIN . '/orders')
         ->assertOk()
         ->assertPage(Orders::class, fn (AssertablePage $page) => $page
             ->where('statuses', $expected)
@@ -197,7 +202,7 @@ it('pages back through every order by cursor, for the session the cursors were s
     $total = (int) $orm->connection()->select('SELECT COUNT(*) AS n FROM orders')[0]['n'];
 
     $numbers = static fn ($response): array => array_column($response->recorded()->encoded['page']['orders']['items'], 'number');
-    $first = actingAs(shopper(StaffAccount::EMAIL))->get('/admin/orders');
+    $first = actingAs(shopper(StaffAccount::EMAIL))->get(ADMIN_ORIGIN . '/orders');
     $page = $first->recorded()->encoded['page']['orders'];
     expect($page['previous'])->toBeNull()
         ->and($page['cursor'])->toBeNull()
@@ -207,7 +212,7 @@ it('pages back through every order by cursor, for the session the cursors were s
     $client = $first->then();
     $older = $page['next'];
     while ($older !== null) {
-        $next = $client->get('/admin/orders?cursor=' . rawurlencode($older));
+        $next = $client->get(ADMIN_ORIGIN . '/orders?cursor=' . rawurlencode($older));
         // Each page says the cursor it was read at: what the browser places it by.
         expect($next->recorded()->encoded['page']['orders']['cursor'])->toBe($older);
         $seen = [...$seen, ...$numbers($next)];
@@ -217,12 +222,31 @@ it('pages back through every order by cursor, for the session the cursors were s
 
     expect($seen)->toHaveCount($total)->and(array_unique($seen))->toHaveCount($total);
 
-    $elsewhere = actingAs(shopper(StaffAccount::EMAIL))->get('/admin/orders?cursor=' . rawurlencode($page['next']));
-    $tampered = $first->then()->get('/admin/orders?cursor=' . rawurlencode('x' . substr($page['next'], 1)));
+    $elsewhere = actingAs(shopper(StaffAccount::EMAIL))->get(ADMIN_ORIGIN . '/orders?cursor=' . rawurlencode($page['next']));
+    $tampered = $first->then()->get(ADMIN_ORIGIN . '/orders?cursor=' . rawurlencode('x' . substr($page['next'], 1)));
 
     // The newest page, read at no cursor: never the one it was handed.
     expect($numbers($elsewhere))->toBe($numbers($first))
         ->and($elsewhere->recorded()->encoded['page']['orders']['cursor'])->toBeNull()
         ->and($numbers($tampered))->toBe($numbers($first))
         ->and($tampered->recorded()->encoded['page']['orders']['cursor'])->toBeNull();
+});
+
+// The panel moved to a host of its own (ADR 0149): its old addresses on the
+// shop's host send a browser on, query and all, and nothing else there is
+// the panel's any more.
+it('sends the panel\'s old addresses on the shop\'s host to the admin host', function () {
+    $moved = get('/admin/orders?cursor=abc');
+    $root = get('/admin');
+
+    expect($moved->response->status)->toBe(301)
+        ->and($moved->response->header('location'))->toBe(ADMIN_ORIGIN . '/orders?cursor=abc')
+        ->and($root->response->header('location'))->toBe(ADMIN_ORIGIN . '/orders')
+        ->and(get('/admin/secrets')->response->status)->toBe(404);
+});
+
+it('serves the storefront\'s pages on the shop\'s host alone, and no host it does not list', function () {
+    expect(get(ADMIN_ORIGIN . '/products')->response->status)->toBe(404)
+        ->and(get('http://evil.test/')->response->status)->toBe(421)
+        ->and(get('http://localhost:8080/')->response->status)->toBe(200);
 });
