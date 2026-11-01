@@ -1193,3 +1193,48 @@ it('asks the inbox when a switch is flipped on, and turns it on from the emailed
         ->and($result['confirmed'])->toBeTrue()
         ->and($result['restored'])->toBeFalse();
 });
+
+// The admin panel's products screens (ADR 0150): an admin resource, so the
+// framework's pages and actions drawn by the panel's resource views, each
+// behind the panel's guard, membership and host, ProductPolicy, CSRF and
+// validation. Staff sort, search, add -- refused once, beside the field --
+// edit, restock in bulk and delete a product; a customer is refused the list.
+it('keeps the catalog on the admin host\'s products screens', function (string $server) use ($root) {
+    $database = Shop::testDatabase();
+
+    $output = '';
+    served($root, function (string $origin) use ($root, &$output): void {
+        $output = runWithTimeout(
+            ['node', "{$root}/examples/shop/e2e/admin-products.mjs", $origin, StaffAccount::EMAIL, StaffAccount::PASSWORD, DemoAccount::EMAIL, DemoAccount::PASSWORD],
+            $root,
+            120,
+        );
+    }, ['SHOP_DATABASE' => $database], hosts: true, server: $server);
+
+    $result = json_decode((string) $output, true);
+    expect($result)->toBeArray("the browser script failed:\n{$output}");
+
+    expect($result['errors'])->toBe([])
+        ->and($result['list']['host'])->toStartWith('admin.localhost:')
+        ->and($result['list']['heading'])->toBe('Products')
+        ->and($result['list']['rows'])->toBeGreaterThan(1)
+        ->and($result['list']['tab'])->toBe('Products');
+
+    // Sorted in the same document, by the heading's link.
+    expect($result['sorted']['search'])->toBe('?sort=priceCents&direction=asc')
+        ->and($result['sorted']['ascending'])->toBeTrue()
+        ->and($result['sorted']['sameDocument'])->toBeTrue()
+        ->and($result['searched']['rows'])->toBeGreaterThan(0)
+        ->and($result['searched']['matching'])->toBeTrue();
+
+    // Refused once, beside the field; then saved and shown; then edited.
+    expect($result['created']['refusedPrice'])->toBeTrue()
+        ->and($result['created']['path'])->toMatch('#^/products/[0-9a-f-]{36}$#')
+        ->and($result['created']['heading'])->toBe('E2E Lantern')
+        ->and($result['created']['price'])->toBeTrue()
+        ->and($result['edited']['stock'])->toBeTrue()
+        ->and($result['restocked'])->toBeTrue()
+        ->and($result['deleted'])->toBeTrue();
+
+    expect($result['refused']['status'])->toBe(403);
+})->with(SERVERS);
