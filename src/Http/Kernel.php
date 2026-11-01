@@ -1652,22 +1652,22 @@ final class Kernel
     }
 
     /**
-     * The origin of the host each panel is held to (ADR 0149), for a link
-     * built where there is no request to read one from -- an export's,
-     * emailed from a worker: null for a panel on no host of its own, false
-     * for one whose host takes parameters, which nothing but a request
-     * names.
+     * The origin of the host an export is held to (ADR 0149), for a link
+     * built where there is no request to read one from -- emailed from a
+     * worker: its own #[Domain] pattern when it has one, else its panel's;
+     * null for neither, false for one whose host takes parameters, which
+     * nothing but a request names.
      *
-     * @return (\Closure(string): (string|false|null))|null
+     * @return (\Closure(string, ?string): (string|false|null))|null
      */
     private static function panelOrigins(?Domains $domains, ?PanelRegistry $panels): ?\Closure
     {
-        if ($domains === null || $panels === null) {
+        if ($domains === null) {
             return null;
         }
 
-        return static function (string $panel) use ($domains, $panels): string|false|null {
-            $pattern = $panels->definition($panel)?->domain;
+        return static function (string $panel, ?string $host = null) use ($domains, $panels): string|false|null {
+            $pattern = $host ?? ($panel === '' ? null : $panels?->definition($panel)?->domain);
             if ($pattern === null) {
                 return null;
             }
