@@ -195,7 +195,7 @@ final readonly class ToolCalls
             [$operation] = $this->tools[$name] ?? throw new \InvalidArgumentException("No tool is named '{$name}'.");
             $in = $operation->panel->name ?? '';
             if ($in !== $panel) {
-                throw new \LogicException("The tool '{$name}' is in " . self::describe($in) . ', and this grant would be for ' . self::describe($panel) . '.');
+                throw new \LogicException("The tool '{$name}' is in " . Operations::describePanel($in) . ', and this grant would be for ' . Operations::describePanel($panel) . '.');
             }
         }
 
@@ -282,10 +282,5 @@ final readonly class ToolCalls
         return !$this->orm->isUnscoped()
             && hash_equals($claims->tenant, $this->orm->tenant())
             && hash_equals($claims->panel, $this->panels?->currentOrNull() ?? '');
-    }
-
-    private static function describe(string $panel): string
-    {
-        return $panel === '' ? 'no panel' : "panel '{$panel}'";
     }
 }

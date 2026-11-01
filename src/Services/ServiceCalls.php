@@ -167,7 +167,7 @@ final readonly class ServiceCalls
                 throw new \InvalidArgumentException("'{$name}' is not marked #[ServiceCall] for '{$service}'.");
             }
             if (($operation->panel->name ?? '') !== $panel) {
-                throw new \LogicException("'{$name}' is in " . self::describe($operation->panel->name ?? '') . ', and this token would be for ' . self::describe($panel) . '.');
+                throw new \LogicException("'{$name}' is in " . Operations::describePanel($operation->panel->name ?? '') . ', and this token would be for ' . Operations::describePanel($panel) . '.');
             }
             if ($operation->panel !== null && $user === null) {
                 throw new \LogicException("'{$name}' is in a panel, and a token for it is issued for the member it acts for: nobody is signed in.");
@@ -323,10 +323,5 @@ final readonly class ServiceCalls
         }
 
         return null;
-    }
-
-    private static function describe(string $panel): string
-    {
-        return $panel === '' ? 'no panel' : "panel '{$panel}'";
     }
 }

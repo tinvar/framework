@@ -25,6 +25,12 @@ use Tinvar\Validation\FieldPlan;
  */
 final class Operations
 {
+    /** A panel by name, as an error issuing a grant or a token for it says: '' is no panel. */
+    public static function describePanel(string $panel): string
+    {
+        return $panel === '' ? 'no panel' : "panel '{$panel}'";
+    }
+
     /**
      * Every registered action and query carrying $attribute, with the
      * attribute.
