@@ -1,0 +1,10 @@
+# Caddy in front of my-app, written by `bin/tinvar deploy:init vps-compose`:
+# TLS for app.example.com, and the proof the app takes it for its proxy by. Caddy
+# sets X-Forwarded-For to the client it was connected from, never what a
+# client sent, and header_up overwrites any X-Tinvar-Proxy a client sent
+# (ADR 0134).
+app.example.com {
+	reverse_proxy app:8080 {
+		header_up X-Tinvar-Proxy {env.TINVAR_TRUSTED_PROXY_SECRET}
+	}
+}

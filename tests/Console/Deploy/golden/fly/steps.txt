@@ -1,0 +1,11 @@
+# Create the app from fly.toml, without deploying it yet.
+fly launch --no-deploy --copy-config --name my-app
+# The SQLite database's volume, in the region fly.toml names.
+fly volumes create app_data --size 1 --region iad
+# The app key and the probe token, read from their files outside the project, into fly secrets.
+printf 'TINVAR_APP_KEY=%s\nTINVAR_PROBE_TOKEN=%s\n' "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.fly.key')" "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.fly.probe-token')" | fly secrets import
+# Mail: no provider that sends is named. Once the app sends mail, set TINVAR_MAIL_PROVIDER (smtp, ses, postmark, mailgun, resend or sendgrid) and its variables: production refuses log and array.
+# Pin the app's own addresses: `fly ips list`, then add each to TINVAR_TRUSTED_PROXIES in fly.toml.
+fly deploy
+# Check it, through /_health with the probe token:
+printf 'Authorization: Bearer %s\n' "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.fly.probe-token')" | curl --fail --header @- https://my-app.fly.dev/_health

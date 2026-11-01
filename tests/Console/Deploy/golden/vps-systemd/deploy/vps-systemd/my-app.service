@@ -1,0 +1,36 @@
+# my-app under systemd, written by `bin/tinvar deploy:init vps-systemd`
+# (ADR 0150 in the framework's repository): the app's image, run as its
+# compose file runs it, behind the host's Caddy. No secret is in this
+# file: they are in /etc/my-app/app.env, root's alone.
+[Unit]
+Description=my-app: the Tinvar app's image, FrankenPHP and the renderers
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+# A network pinned to 10.213.92.0/24, so the gateway Caddy's connection to the
+# published port arrives from is a range TINVAR_TRUSTED_PROXIES can name.
+ExecStartPre=-/usr/bin/docker network create --subnet 10.213.92.0/24 my-app
+ExecStartPre=-/usr/bin/docker rm --force my-app
+ExecStart=/usr/bin/docker run --rm --name my-app --network my-app \
+  --publish 127.0.0.1:8080:8080 \
+  --env-file /etc/my-app/app.env \
+  --env TINVAR_TRUSTED_PROXIES=10.213.92.0/24 \
+  --env TINVAR_APP_DOMAIN=https://app.example.com \
+  --env TINVAR_PROBE_TRUST_LOOPBACK=0 \
+  --read-only \
+  --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \
+  --tmpfs /run/tinvar-renderer:rw,nosuid,nodev,noexec,uid=10002,gid=10003,mode=0750 \
+  --volume my-app-data:/var/lib/app/data \
+  --cap-drop ALL --cap-add SETUID --cap-add SETGID --cap-add SETPCAP \
+  --security-opt no-new-privileges:true \
+  my-app:latest
+# FrankenPHP finishes its requests (up to 10 s), then the renderers drain
+# theirs (up to 75 s).
+ExecStop=/usr/bin/docker stop --time 120 my-app
+TimeoutStopSec=130
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

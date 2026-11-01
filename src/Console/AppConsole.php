@@ -10,6 +10,7 @@ use Tinvar\Auth\Violation;
 use Tinvar\Channels\ChannelRegistry;
 use Tinvar\Config\Configs;
 use Tinvar\Endpoints\EndpointRegistry;
+use Tinvar\Console\Deploy\DeployInitCommand;
 use Tinvar\Console\Doctor\Doctor;
 use Tinvar\Console\Doctor\DoctorContext;
 use Tinvar\Http\EntryContext;
@@ -773,6 +774,17 @@ final class AppConsole
             );
         }
         $this->command('doctor', 'doctor [--fix]', "Check everything the app needs to boot and serve -- PHP, Node, the key and probe token, config, proxies, hosts, mail, the database, the build, the renderers, file permissions and production's refusals -- and report every problem at once, each with its fix; --fix does the safe ones (a dev secret, a dev migration)", $this->doctor(...))
+            ->command('deploy:init', DeployInitCommand::USAGE, "Write a deployment for Fly.io, Render, Railway or a VPS (systemd or Docker Compose): the platform's config with its edge's trusted-proxy ranges, the probes, the database and mail; generate its secrets into files outside the project, and print the steps that put them in the platform's secret store", fn (array $a): int => new DeployInitCommand(
+                $this->root,
+                array_filter(getenv(), \is_string(...)),
+                static function (string $text): void {
+                    echo $text;
+                },
+                static function (string $text): void {
+                    fwrite(STDERR, $text);
+                },
+                $this->name,
+            )->run($a))
             ->command('key:generate', 'key:generate [--show]', "Generate the app key and the probe token into their files outside the project where neither the environment nor the file has one, saying where and never what; --show prints a new key for a platform's secret store instead, and writes nothing", $this->keyGenerate(...));
         $this->command('packages:lock', 'packages:lock', "Pin each enabled package's version and files in tinvar.lock", fn (array $a): int => $this->packagesLock())
             ->command('audit', 'audit', 'composer audit and npm audit over the lockfiles, held to the reviewed exceptions in audit-exceptions.json (network)', fn (array $a): int => $this->audit());

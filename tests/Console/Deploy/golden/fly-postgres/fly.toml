@@ -1,0 +1,45 @@
+# Fly.io, written by `bin/tinvar deploy:init fly` (ADR 0150 in the
+# framework's repository). No secret is in this file: the app key and the
+# probe token are in `fly secrets`, set from files outside the project.
+app = "my-app"
+primary_region = "iad"
+
+# FrankenPHP finishes its requests (up to 10 s), then the renderers drain
+# theirs (up to 75 s), as the image's compose file gives it 120 s.
+kill_timeout = 120
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # fly-proxy's network, and the app's own addresses, which Fly.io names last
+  # in X-Forwarded-For.
+  TINVAR_TRUSTED_PROXIES = "172.16.0.0/12,66.241.124.10/32,2a09:8280:1::4c:1/128"
+  TINVAR_APP_DOMAIN = "https://app.example.com"
+  APP_DATABASE_DRIVER = "postgres"
+  APP_DATABASE_HOST = "CHANGE-ME.flycast"
+  APP_DATABASE_PORT = "5432"
+  APP_DATABASE_NAME = "my_app"
+  APP_DATABASE_USER = "my_app"
+  TINVAR_MAIL_PROVIDER = "resend"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+# By TCP: Fly.io's checks send no Authorization header, and /_health,
+# /_ready and /_metrics answer only the probe token (TINVAR_PROBE_TOKEN).
+# Point a monitor of your own at them with `Authorization: Bearer <token>`.
+[checks.alive]
+  type = "tcp"
+  port = 8080
+  interval = "15s"
+  timeout = "5s"
+  grace_period = "60s"
+
+[[vm]]
+  memory = "1gb"
+  cpus = 1

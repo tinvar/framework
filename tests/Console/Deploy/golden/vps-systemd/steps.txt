@@ -1,0 +1,13 @@
+# On the server: Docker and Caddy installed (caddyserver.com/docs/install), this project at /srv/my-app, and app.example.com pointing at it.
+ssh SERVER 'cd /srv/my-app && docker build --tag my-app:latest .'
+# The secrets, from their files on this machine into root's on the server; nothing is printed:
+printf 'TINVAR_APP_KEY=%s\nTINVAR_PROBE_TOKEN=%s\nTINVAR_TRUSTED_PROXY_SECRET=%s\n' "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.vps-systemd.key')" "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.vps-systemd.probe-token')" "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.vps-systemd.proxy-secret')" | ssh SERVER 'sudo sh -c "umask 077 && mkdir -p /etc/my-app && cat > /etc/my-app/app.env"'
+printf 'TINVAR_TRUSTED_PROXY_SECRET=%s\n' "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.vps-systemd.proxy-secret')" | ssh SERVER 'sudo sh -c "umask 077 && mkdir -p /etc/my-app && cat > /etc/my-app/proxy.env"'
+# Mail: no provider that sends is named. Once the app sends mail, set TINVAR_MAIL_PROVIDER (smtp, ses, postmark, mailgun, resend or sendgrid) and its variables: production refuses log and array.
+# Then, on the server, from /srv/my-app:
+sudo install -m 0644 deploy/vps-systemd/my-app.service /etc/systemd/system/my-app.service
+sudo install -D -m 0644 deploy/vps-systemd/caddy.conf /etc/systemd/system/caddy.service.d/my-app.conf
+sudo install -m 0644 deploy/vps-systemd/Caddyfile /etc/caddy/Caddyfile
+sudo systemctl daemon-reload && sudo systemctl enable --now my-app && sudo systemctl restart caddy
+# Check it, through /_health with the probe token:
+printf 'Authorization: Bearer %s\n' "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.vps-systemd.probe-token')" | curl --fail --header @- https://app.example.com/_health

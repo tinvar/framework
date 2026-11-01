@@ -1,0 +1,12 @@
+# On the server: Docker with compose, this project at /srv/my-app, and app.example.com pointing at it.
+# The secrets, from their files on this machine into root's on the server; nothing is printed:
+printf 'TINVAR_APP_KEY=%s\nTINVAR_PROBE_TOKEN=%s\nTINVAR_TRUSTED_PROXY_SECRET=%s\n' "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.vps-compose.key')" "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.vps-compose.probe-token')" "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.vps-compose.proxy-secret')" | ssh SERVER 'sudo sh -c "umask 077 && mkdir -p /etc/my-app && cat > /etc/my-app/app.env"'
+printf 'TINVAR_TRUSTED_PROXY_SECRET=%s\n' "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.vps-compose.proxy-secret')" | ssh SERVER 'sudo sh -c "umask 077 && mkdir -p /etc/my-app && cat > /etc/my-app/proxy.env"'
+# Add TINVAR_SMTP_HOST=... (your provider's) to /etc/my-app/app.env on the server.
+# Add TINVAR_SMTP_PORT=... (your provider's) to /etc/my-app/app.env on the server.
+# Add TINVAR_SMTP_USERNAME=... (your provider's) to /etc/my-app/app.env on the server.
+# Add APP_DATABASE_PASSWORD=... (your provider's) to /etc/my-app/app.env on the server.
+# Add TINVAR_SMTP_PASSWORD=... (your provider's) to /etc/my-app/app.env on the server.
+ssh SERVER 'cd /srv/my-app && sudo docker compose -f deploy/vps-compose/compose.yaml up -d --build'
+# Check it, through /_health with the probe token:
+printf 'Authorization: Bearer %s\n' "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.vps-compose.probe-token')" | curl --fail --header @- https://app.example.com/_health
