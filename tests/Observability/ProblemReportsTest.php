@@ -85,7 +85,7 @@ function kernel(array $more = []): array
         'allowedQueries' => static fn (Request $r): array => [],
         'globalMiddleware' => [StartSession::class],
         'csrf' => new CsrfTokens(new Signer(str_repeat('k', 32), CsrfTokens::PURPOSE), static fn (Request $r): string => $r->cookie('sid') ?? ''),
-        'throttle' => new Throttle(new ArrayThrottleStore(), $auth, static fn (Request $r): string => $r->remoteAddress ?? ''),
+        'throttle' => new Throttle(new ArrayThrottleStore(throttleClock()), $auth, static fn (Request $r): string => $r->remoteAddress ?? ''),
         'telemetry' => new Telemetry(new Logger($sink, level: 'debug'), $metrics),
         'problemReports' => true,
         ...$more,

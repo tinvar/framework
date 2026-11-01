@@ -207,7 +207,7 @@ describe('who a limit is keyed to', function () {
      * immediately, where a random key would hide it forever.
      */
     it('puts unidentifiable callers in one bucket rather than none', function () {
-        $throttle = new Throttle(new ArrayThrottleStore(), new AuthContext(), static fn (Request $r): string => '');
+        $throttle = new Throttle(new ArrayThrottleStore(throttleClock()), new AuthContext(), static fn (Request $r): string => '');
         $request = Request::post('/_action/x');
 
         throttleHit($throttle, 'actions', $request, 2, 60);

@@ -53,3 +53,16 @@ if (\function_exists('apcu_enabled') && apcu_enabled()) {
         apcu_clear_cache();
     })->in(\dirname(__DIR__, 2));
 }
+
+/*
+ * A throttle store's clock, held at the moment it is asked for. The stores
+ * count in windows aligned to the clock, so a test that spends a budget and
+ * expects the refusal after it failed whenever its hits fell either side of
+ * a minute's turn; on this clock every hit a test makes is in one window.
+ */
+function throttleClock(): \Closure
+{
+    $at = time();
+
+    return static fn (): int => $at;
+}

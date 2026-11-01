@@ -56,7 +56,7 @@ function hardenedKernel(array $limits = [], ?AuthContext $throttleAuth = null): 
         policies: (new PolicyRegistry())->registerAll([Rack::class => A\RecordingRackPolicy::class, Site::class => A\RecordingSitePolicy::class]),
         resolver: static fn (string $class): object => new $class(),
         allowedQueries: static fn (Request $r): array => [],
-        throttle: new Throttle(new ArrayThrottleStore(), $throttleAuth ?? $auth, static fn (Request $r): string => $r->remoteAddress ?? ''),
+        throttle: new Throttle(new ArrayThrottleStore(throttleClock()), $throttleAuth ?? $auth, static fn (Request $r): string => $r->remoteAddress ?? ''),
         limits: $limits,
     );
 

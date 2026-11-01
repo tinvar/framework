@@ -123,7 +123,7 @@ function throttledKernel(int $limit = 2): array
         resolver: static fn (string $class): object => new $class(),
         allowedQueries: static fn (Request $r): array => [],
         throttle: new Throttle(
-            new ArrayThrottleStore(),
+            new ArrayThrottleStore(throttleClock()),
             $auth,
             static fn (Request $r): string => '10.0.0.1',
         ),

@@ -43,7 +43,7 @@ describe('redirect targets', function () {
 
 describe('throttling by address', function () {
     /** @param \Closure(Request): string $addressOf */
-    $throttle = static fn (\Closure $addressOf): Throttle => new Throttle(new ArrayThrottleStore(), new AuthContext(), $addressOf);
+    $throttle = static fn (\Closure $addressOf): Throttle => new Throttle(new ArrayThrottleStore(throttleClock()), new AuthContext(), $addressOf);
 
     // One IPv6 subscriber holds a whole /64; per-address counting gave each
     // of them 2^64 budgets.

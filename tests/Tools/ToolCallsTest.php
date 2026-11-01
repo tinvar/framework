@@ -206,7 +206,7 @@ it('refuses to make a tool of an action that takes the Request', function () {
 // ADR 0119: a model looping on a tool spends the user's own action budget.
 it('counts each call that fits its grant against the user\'s throttle:actions, and refuses past it', function () {
     $h = new Harness();
-    $store = new \Tinvar\Http\ArrayThrottleStore();
+    $store = new \Tinvar\Http\ArrayThrottleStore(throttleClock());
     $throttle = new \Tinvar\Http\Throttle($store, $h->auth, static fn (): string => '127.0.0.1');
     $tools = new ToolCalls(
         ToolCalls::discover($h->actions, $h->queries, $h->entry),
@@ -237,7 +237,7 @@ it('counts each call that fits its grant against the user\'s throttle:actions, a
 
 it('refuses a throttle that counts another context\'s user', function () {
     $h = new Harness();
-    $other = new \Tinvar\Http\Throttle(new \Tinvar\Http\ArrayThrottleStore(), new \Tinvar\Auth\AuthContext(), static fn (): string => '');
+    $other = new \Tinvar\Http\Throttle(new \Tinvar\Http\ArrayThrottleStore(throttleClock()), new \Tinvar\Auth\AuthContext(), static fn (): string => '');
 
     expect(fn () => new ToolCalls([], $h->runner, ToolCalls::grants(KEY, $h->builds), $h->auth, $h->orm, throttle: $other))
         ->toThrow(\InvalidArgumentException::class);

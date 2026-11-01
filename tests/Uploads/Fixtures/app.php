@@ -344,7 +344,7 @@ final class App
             globalMiddleware: [SignIn::class],
             container: $this->container,
             uploads: $this->uploads,
-            throttle: $throttled ? new \Tinvar\Http\Throttle(new \Tinvar\Http\ArrayThrottleStore(), $this->auth, static fn (Request $r): string => $r->remoteAddress ?? '') : null,
+            throttle: $throttled ? new \Tinvar\Http\Throttle(new \Tinvar\Http\ArrayThrottleStore(throttleClock()), $this->auth, static fn (Request $r): string => $r->remoteAddress ?? '') : null,
             limits: $throttled ? ['uploads' => 2, 'actions' => 60] : Kernel::DEFAULT_LIMITS,
             panels: $this->panels = new PanelContext(),
             panelRegistry: new PanelRegistry(new PanelDefinition('staff')),

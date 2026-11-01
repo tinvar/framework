@@ -73,7 +73,7 @@ describe('the client address', function () {
     });
 
     it('charges every visitor behind the proxy a bucket of their own, and the unreadable one bucket', function () use ($proxies) {
-        $throttle = new Throttle(new ArrayThrottleStore(), new AuthContext(), $proxies->clientAddress(...));
+        $throttle = new Throttle(new ArrayThrottleStore(throttleClock()), new AuthContext(), $proxies->clientAddress(...));
 
         foreach (range(1, 3) as $_) {
             $throttle->hitAddress('sign-in', proxied('10.1.2.3', '198.51.100.1'), 3, 60);
@@ -168,7 +168,7 @@ describe("a peer at the server's own address", function () {
     });
 
     it('cannot spread its guesses over buckets of its own', function () use ($proxies) {
-        $throttle = new Throttle(new ArrayThrottleStore(), new AuthContext(), $proxies->clientAddress(...));
+        $throttle = new Throttle(new ArrayThrottleStore(throttleClock()), new AuthContext(), $proxies->clientAddress(...));
 
         foreach (range(1, 3) as $i) {
             $throttle->hitAddress('sign-in', proxied('10.213.89.2', "198.51.100.{$i}"), 3, 60);
@@ -225,7 +225,7 @@ describe('a proxy secret', function () {
     ]);
 
     it('cannot spread guesses over buckets without it', function () use ($proxies, $from) {
-        $throttle = new Throttle(new ArrayThrottleStore(), new AuthContext(), $proxies->clientAddress(...));
+        $throttle = new Throttle(new ArrayThrottleStore(throttleClock()), new AuthContext(), $proxies->clientAddress(...));
 
         foreach (range(1, 3) as $i) {
             $throttle->hitAddress('sign-in', $from('10.244.0.1', null, "198.51.100.{$i}"), 3, 60);

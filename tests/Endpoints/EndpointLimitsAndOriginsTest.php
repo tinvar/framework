@@ -301,7 +301,7 @@ function gapsKernel(array $endpoints, Orm $orm, array $limits = [], bool $thrott
         },
         allowedQueries: static fn (Request $r): array => [],
         globalMiddleware: [CookieSession::class],
-        throttle: $throttled ? new Throttle(new ArrayThrottleStore(), $auth, static fn (Request $r): string => $r->remoteAddress ?? '') : null,
+        throttle: $throttled ? new Throttle(new ArrayThrottleStore(throttleClock()), $auth, static fn (Request $r): string => $r->remoteAddress ?? '') : null,
         limits: [...Kernel::DEFAULT_LIMITS, ...$limits],
         tenants: null,
         endpoints: $registry,

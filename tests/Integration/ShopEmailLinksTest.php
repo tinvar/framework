@@ -132,8 +132,8 @@ function shop(MailFake $mail): Kernel
         database: Shop::testDatabase(),
         mailTransport: $mail,
         mailRenderer: $mail,
-        throttleStore: new ArrayThrottleStore(),
-        signInStore: new ArrayThrottleStore(),
+        throttleStore: new ArrayThrottleStore(throttleClock()),
+        signInStore: new ArrayThrottleStore(throttleClock()),
     );
 }
 
@@ -594,7 +594,7 @@ describe('drawn by the renderer', function () {
         putenv('SHOP_URL=https://shop.test');
 
         try {
-            $shop = Kernel::fromEnvironment($renderer->socketPath, key: KEY, database: $database, throttleStore: new ArrayThrottleStore(), signInStore: new ArrayThrottleStore());
+            $shop = Kernel::fromEnvironment($renderer->socketPath, key: KEY, database: $database, throttleStore: new ArrayThrottleStore(throttleClock()), signInStore: new ArrayThrottleStore(throttleClock()));
             $browser = new Browser($shop);
             $browser->action('account.requestSignInLink', ['email' => DemoAccount::EMAIL]);
             $browser->action('account.requestPasswordReset', ['email' => DemoAccount::EMAIL]);

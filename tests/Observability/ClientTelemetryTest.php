@@ -83,7 +83,7 @@ function kernel(array $more = []): array
         'resolver' => static fn (string $class): object => new $class(),
         'allowedQueries' => static fn (Request $r): array => [],
         'csrf' => tokens(),
-        'throttle' => new Throttle(new ArrayThrottleStore(), $auth, static fn (Request $r): string => $r->remoteAddress ?? ''),
+        'throttle' => new Throttle(new ArrayThrottleStore(throttleClock()), $auth, static fn (Request $r): string => $r->remoteAddress ?? ''),
         'telemetry' => new Telemetry(new Logger($sink, level: 'debug'), $metrics),
         'clientTelemetry' => true,
         ...$more,
