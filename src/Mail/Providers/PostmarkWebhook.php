@@ -63,6 +63,11 @@ final readonly class PostmarkWebhook implements MailWebhook
         return false;
     }
 
+    public function namesReader(): bool
+    {
+        return true;
+    }
+
     public function name(): string
     {
         return PostmarkTransport::NAME;

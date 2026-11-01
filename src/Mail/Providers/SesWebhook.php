@@ -88,6 +88,11 @@ final readonly class SesWebhook implements MailWebhook
         return true;
     }
 
+    public function namesReader(): bool
+    {
+        return true;
+    }
+
     public function name(): string
     {
         return SesTransport::NAME;

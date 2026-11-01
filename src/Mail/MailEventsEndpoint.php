@@ -129,6 +129,9 @@ final readonly class MailEventsEndpoint
             $delivery->events,
             fn (MailEvent $event): bool => $event->messageId() !== null && $this->sent->wasSent($event->provider(), (string) $event->messageId(), $event->recipient(), $now),
         ));
+        if ($this->sent !== null && !$webhook->namesReader()) {
+            $events = array_map(fn (MailEvent $event): MailEvent => $this->weighed($event, $now), $events);
+        }
 
         try {
             foreach ($events as $event) {
@@ -146,6 +149,22 @@ final readonly class MailEventsEndpoint
         }
 
         return self::ok('Received.');
+    }
+
+    /**
+     * A bounce or complaint from a webhook that does not name the reader it
+     * is about, made ambiguous where the log knows its message had more
+     * than one reader: one Resend names alone may have had a Bcc.
+     */
+    private function weighed(MailEvent $event, int $now): MailEvent
+    {
+        $several = fn (): bool => $this->sent !== null && $this->sent->readers($event->provider(), (string) $event->messageId(), $now) > 1;
+
+        return match (true) {
+            $event instanceof MailBounced && !$event->ambiguous && $several() => new MailBounced($event->provider, $event->recipient, $event->messageId, $event->at, $event->permanent, $event->reason, true),
+            $event instanceof MailComplained && !$event->ambiguous && $several() => new MailComplained($event->provider, $event->recipient, $event->messageId, $event->at, $event->reason, true),
+            default => $event,
+        };
     }
 
     /** A hard bounce or a complaint, onto the suppression list. */

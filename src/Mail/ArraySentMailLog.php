@@ -27,6 +27,17 @@ final class ArraySentMailLog implements SentMailLog
         return $at !== null && $now - $at <= self::RETENTION;
     }
 
+    public function readers(string $provider, string $messageId, int $now): int
+    {
+        $prefix = $provider . "\n" . $messageId . "\n";
+
+        return \count(array_filter(
+            $this->sent,
+            static fn (int $at, string $key): bool => str_starts_with($key, $prefix) && $now - $at <= self::RETENTION,
+            ARRAY_FILTER_USE_BOTH,
+        ));
+    }
+
     private static function key(string $provider, string $messageId, string $recipient): string
     {
         return $provider . "\n" . $messageId . "\n" . hash('sha256', strtolower($recipient));

@@ -29,6 +29,11 @@ use Tinvar\Mail\MailWebhookDelivery;
  * Bcc -- each bounce and complaint is ambiguous: dispatched, but nobody is
  * suppressed, since one reader's mailbox refusing the message says nothing
  * of the others'. Only a message to one reader is suppressed by its event.
+ *
+ * Resend's payload carries no Cc or Bcc, though: a message To one reader
+ * and Bcc another looks like a message to one. So this webhook does not
+ * name its readers (namesReader()), and where a sent-mail log is given,
+ * MailEventsEndpoint asks it how many readers the message had.
  */
 final readonly class ResendWebhook implements MailWebhook
 {
@@ -47,6 +52,11 @@ final readonly class ResendWebhook implements MailWebhook
     public function provesContent(): bool
     {
         return true;
+    }
+
+    public function namesReader(): bool
+    {
+        return false;
     }
 
     public function name(): string

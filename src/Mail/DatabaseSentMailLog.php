@@ -83,4 +83,14 @@ final readonly class DatabaseSentMailLog implements SentMailLog
             [$provider, $messageId, hash('sha256', strtolower($recipient)), $now - self::RETENTION],
         ) !== [];
     }
+
+    public function readers(string $provider, string $messageId, int $now): int
+    {
+        $rows = $this->connection->select(
+            "SELECT COUNT(*) AS readers FROM {$this->table} WHERE provider = ? AND message_id = ? AND sent_at >= ?",
+            [$provider, $messageId, $now - self::RETENTION],
+        );
+
+        return (int) ($rows[0]['readers'] ?? 0);
+    }
 }

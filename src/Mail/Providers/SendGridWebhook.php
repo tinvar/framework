@@ -51,6 +51,11 @@ final readonly class SendGridWebhook implements MailWebhook
         return true;
     }
 
+    public function namesReader(): bool
+    {
+        return true;
+    }
+
     public function name(): string
     {
         return SendGridTransport::NAME;

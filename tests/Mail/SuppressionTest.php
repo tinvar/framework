@@ -235,6 +235,11 @@ it('records each id a provider hands back against the readers, and fails no send
         {
             return false;
         }
+
+        public function readers(string $provider, string $messageId, int $now): int
+        {
+            return 0;
+        }
     };
     $array = new ArrayTransport();
     expect(new Mailer($array, new PlainRenderer(), new Address('shop@shop.test'), sentLog: $broken)->deliver(new Note([new Address('a@example.test')]))->messageId)->toBe('array-1')

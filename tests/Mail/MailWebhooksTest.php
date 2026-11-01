@@ -151,6 +151,32 @@ describe('Resend (Svix)', function () {
             ->and($dispatched[6]->ambiguous)->toBeFalse();
     });
 
+    it('suppresses no one for a bounce from a message with a reader Resend does not name, where the sent-mail log knows of one', function () use ($secret, $key) {
+        // Resend's payload carries To alone: a message To one reader and Bcc
+        // another looks like a message to one. The log knows better.
+        $log = new ArraySentMailLog();
+        $log->record(new SentMessage(new Message(new Address('o@pellwick.example'), [new Address('dee@example.test')], 'S', '<p>x</p>', 'x', bcc: [new Address('eve@example.test')]), 'e-bcc', 'resend'), NOW);
+        $log->record(new SentMessage(new Message(new Address('o@pellwick.example'), [new Address('fay@example.test')], 'S', '<p>x</p>', 'x'), 'e-one', 'resend'), NOW);
+        $suppressions = new ArraySuppressions();
+        $dispatched = [];
+        $endpoint = new MailEventsEndpoint([new ResendWebhook($secret)], new ArrayNonceStore(), $suppressions, static function (MailEvent $e) use (&$dispatched): void {
+            $dispatched[] = $e;
+        }, static fn (): int => NOW, $log);
+        $deliver = static function (string $id, string $type, string $emailId, string $to) use ($endpoint, $key): void {
+            $body = json_encode(['type' => $type, 'created_at' => '2027-01-15T08:00:00Z', 'data' => ['email_id' => $emailId, 'to' => [$to], 'bounce' => ['type' => 'Permanent']]], JSON_THROW_ON_ERROR);
+            $endpoint->handle(post('resend', $body, ['svix-id' => $id, 'svix-timestamp' => (string) NOW, 'svix-signature' => 'v1,' . SvixSignature::sign($key, $id, NOW, $body)]), $body);
+        };
+
+        $deliver('msg_bcc_bounce', 'email.bounced', 'e-bcc', 'dee@example.test');
+        $deliver('msg_bcc_complaint', 'email.complained', 'e-bcc', 'dee@example.test');
+        expect($suppressions->held)->toBe([])
+            ->and(array_map(static fn (MailEvent $e): bool => $e->ambiguous, $dispatched))->toBe([true, true]);
+
+        $deliver('msg_one_bounce', 'email.bounced', 'e-one', 'fay@example.test');
+        expect(array_keys($suppressions->held))->toBe(['fay@example.test'])
+            ->and($dispatched[2]->ambiguous)->toBeFalse();
+    });
+
     it('refuses a secret that is not one', function () {
         expect(fn () => new ResendWebhook('not base64 at all!'))->toThrow(\InvalidArgumentException::class);
     });
@@ -642,6 +668,11 @@ describe('the endpoint', function () {
             return true;
         }
 
+        public function namesReader(): bool
+        {
+            return true;
+        }
+
         public function receive(Request $request, string $rawBody, int $now): MailWebhookDelivery
         {
             return new MailWebhookDelivery($this->nonce, $now + 300, $this->events);
@@ -790,7 +821,10 @@ describe('the endpoint', function () {
             ->and($log->wasSent('resend', 'id-1', 'audit@pellwick.example', NOW))->toBeTrue()
             ->and($log->wasSent('resend', 'id-1', 'grace@example.test', NOW))->toBeFalse()
             ->and($log->wasSent('ses', 'id-1', 'ada@example.test', NOW))->toBeFalse()
-            ->and($log->wasSent('resend', 'id-1', 'ada@example.test', NOW + SentMailLog::RETENTION + 1))->toBeFalse();
+            ->and($log->wasSent('resend', 'id-1', 'ada@example.test', NOW + SentMailLog::RETENTION + 1))->toBeFalse()
+            ->and($log->readers('resend', 'id-1', NOW))->toBe(2)
+            ->and($log->readers('ses', 'id-1', NOW))->toBe(0)
+            ->and($log->readers('resend', 'id-1', NOW + SentMailLog::RETENTION + 1))->toBe(0);
     })->with([
         'in memory' => fn (): SentMailLog => new ArraySentMailLog(),
         'in the database' => function (): SentMailLog {

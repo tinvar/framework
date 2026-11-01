@@ -33,6 +33,16 @@ interface MailWebhook
     public function provesContent(): bool;
 
     /**
+     * Whether each event names the reader it is about, of all the
+     * message's readers: SES's `bouncedRecipients`, Postmark's `Email`,
+     * Mailgun's `recipient`, SendGrid's `email`. Resend's does not -- its
+     * `data.to` is the To list, with no Cc or Bcc -- so where a sent-mail
+     * log knows the message had more than one reader, MailEventsEndpoint
+     * takes its bounces and complaints as ambiguous.
+     */
+    public function namesReader(): bool;
+
+    /**
      * The delivery, verified: its nonce, until when a replay of it would
      * still verify, and the events it reports.
      *

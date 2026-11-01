@@ -32,4 +32,7 @@ interface SentMailLog
 
     /** Whether $provider took a message with $messageId for $recipient, within the retention. */
     public function wasSent(string $provider, string $messageId, string $recipient, int $now): bool;
+
+    /** How many readers $provider took the message with $messageId for, within the retention. */
+    public function readers(string $provider, string $messageId, int $now): int;
 }
