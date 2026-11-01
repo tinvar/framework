@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Routing;
 
 use Tinvar\Attributes\Authorize;
+use Tinvar\Attributes\Domain;
 use Tinvar\Attributes\EncryptHistory;
 use Tinvar\Attributes\ErrorPage;
 use Tinvar\Attributes\Layout;
@@ -17,6 +18,7 @@ use Tinvar\Auth\PanelBinding;
 use Tinvar\Auth\Violation;
 use Tinvar\Data\Data;
 use Tinvar\Http\HttpError;
+use Tinvar\Http\NotFoundException;
 use Tinvar\Http\Request;
 use Tinvar\Support\Str;
 use Tinvar\Support\KnownAttributes;
@@ -51,6 +53,12 @@ final class RouteRegistry
 
     /** @var array<int, CompiledRoute> status => the #[ErrorPage] shown for it */
     private array $errorPages = [];
+
+    /** @var array<string, array<int, CompiledRoute>> #[Domain] pattern => status => its own error page */
+    private array $hostErrorPages = [];
+
+    /** The hosts the application serves, once the Kernel has said (ADR 0149). */
+    private ?Domains $domains = null;
 
     /**
      * Marks an error page declared within no path, so under no layout at
@@ -124,6 +132,17 @@ final class RouteRegistry
             throw RoutingException::frameworkPath($class, $declaration->path);
         }
 
+        $host = self::hostOf($class);
+        $pathParameters = self::parametersOf($declaration->path, $segments);
+        foreach ($host?->parameters ?? [] as $parameter) {
+            if (\in_array($parameter, $pathParameters, true)) {
+                throw new RoutingException(
+                    "{$class} takes '{$parameter}' from both its host ({$host?->pattern}) and its path ({$declaration->path}). "
+                    . 'A parameter comes from one place.',
+                );
+            }
+        }
+
         $route = new CompiledRoute(
             kind: $kind,
             class: $class,
@@ -131,7 +150,9 @@ final class RouteRegistry
             view: $declaration->view,
             name: $name,
             segments: $segments,
-            parameters: self::parametersOf($declaration->path, $segments),
+            // The host's first, then the path's: both bind by name, the
+            // host's typed as the path's are (Binder).
+            parameters: [...($host?->parameters ?? []), ...$pathParameters],
             // The class's declarations and its loader's, read the way
             // BuildRules reads them. Only the class's used to reach the
             // chain, so an #[Authorize] or #[Middleware] written on __invoke
@@ -142,6 +163,7 @@ final class RouteRegistry
             encryptHistory: $encryptHistory,
             tenantFrom: self::tenantFromOf($class),
             panels: self::panelsOf($class),
+            host: $host,
         );
 
         // A loader parameter the router cannot bind is a developer error that
@@ -206,7 +228,7 @@ final class RouteRegistry
         $existing = $route->kind === RouteKind::Page ? $this->pages : $this->layouts;
         foreach ($existing as $other) {
             if ($other->shape() === $route->shape()) {
-                throw RoutingException::duplicate($route->template, $other->class, $route->class);
+                throw RoutingException::duplicate(($route->domain() ?? '') . $route->template, $other->class, $route->class);
             }
         }
 
@@ -275,7 +297,7 @@ final class RouteRegistry
      * (`/_export/orders` without transfers, `/_test/seed` outside a test
      * build) with a page of the application's (ADR 0075).
      */
-    public function match(string $path): ?RouteChain
+    public function match(string $path, ?HostMatch $host = null): ?RouteChain
     {
         if (self::isFrameworkPath(CompiledRoute::split($path))) {
             return null;
@@ -284,10 +306,17 @@ final class RouteRegistry
         $this->sort();
 
         foreach ($this->pages as $page) {
+            // Host and path: the same path is another page on another host,
+            // and a page is matched only on the host it declares -- the
+            // primary host, for one declaring none (ADR 0149).
+            if ($page->domain() !== $host?->pattern) {
+                continue;
+            }
             $parameters = $page->match($path);
             if ($parameters === null) {
                 continue;
             }
+            $parameters = [...($host === null ? [] : $host->parameters), ...$parameters];
 
             // Only the layout list is cached. A RouteChain carries the
             // parameters of the request that produced it, so caching the whole
@@ -295,7 +324,7 @@ final class RouteRegistry
             // request's parameters -- in a worker that is a cross-request data
             // leak and an authorization bypass, since the chain's checks would
             // run against someone else's row.
-            $layouts = $this->layoutCache[$page->template] ??= $this->layoutsFor($page);
+            $layouts = $this->layoutCache[self::cacheKey($page)] ??= $this->layoutsFor($page);
 
             return new RouteChain(page: $page, layouts: $layouts, parameters: $parameters);
         }
@@ -321,9 +350,25 @@ final class RouteRegistry
      *
      * @param array<string, string> $parameters
      */
-    public function chainFor(string $name, array $parameters): RouteChain
+    public function chainFor(string $name, array $parameters, ?HostMatch $host = null): RouteChain
     {
         $page = $this->named($name);
+
+        // A token names its route; the request it comes back on names a
+        // host. Re-rendered from a request on another host -- a token
+        // minted on admin.example.com replayed on example.com, or one
+        // minted on acme's subdomain replayed on another tenant's -- the
+        // route is not there, as navigating would find (ADR 0149).
+        if ($host !== null) {
+            if ($page->domain() !== $host->pattern) {
+                throw new NotFoundException('The route is not served on this host.');
+            }
+            foreach ($page->host?->parameters ?? [] as $parameter) {
+                if (($parameters[$parameter] ?? null) !== ($host->parameters[$parameter] ?? null)) {
+                    throw new NotFoundException('The route was rendered for another host.');
+                }
+            }
+        }
 
         // Every parameter the template declares has to be present, or the
         // chain would authorize against a model nobody named.
@@ -335,7 +380,7 @@ final class RouteRegistry
 
         return new RouteChain(
             page: $page,
-            layouts: $this->layoutCache[$page->template] ??= $this->layoutsFor($page),
+            layouts: $this->layoutCache[self::cacheKey($page)] ??= $this->layoutsFor($page),
             parameters: $parameters,
         );
     }
@@ -373,6 +418,16 @@ final class RouteRegistry
     {
         if (!$layout->wraps($page)) {
             return;
+        }
+
+        if ($layout->host !== null && $page->host !== null && $layout->host->parameters !== $page->host->parameters) {
+            throw new RoutingException(\sprintf(
+                '%s (%s) and %s (%s) inside it name their host\'s parameters differently; a layout binds what its pages call the same thing.',
+                $layout->class,
+                $layout->host->pattern,
+                $page->class,
+                $page->host->pattern,
+            ));
         }
 
         $mismatch = $layout->parameterNameMismatch($page);
@@ -517,6 +572,11 @@ final class RouteRegistry
 
         self::assertErrorLoaderBindable($class);
 
+        $host = self::hostOf($class);
+        if ($host !== null && $host->parameters !== []) {
+            throw new RoutingException("{$class} is an error page on {$host->pattern}, which has parameters; an error page's host is one host.");
+        }
+
         $route = new CompiledRoute(
             kind: RouteKind::Page,
             class: $class,
@@ -528,6 +588,7 @@ final class RouteRegistry
             middleware: [],
             checks: [],
             layoutKey: $declaration->within === null ? self::NO_LAYOUTS : '',
+            host: $host,
         );
 
         if ($declaration->statuses === []) {
@@ -536,6 +597,14 @@ final class RouteRegistry
         foreach ($declaration->statuses as $status) {
             if ($status < 400 || $status > 599) {
                 throw new RoutingException("{$class} names " . var_export($status, true) . ' as an error status; an error page is for 400 to 599.');
+            }
+            if ($host !== null) {
+                $taken = $this->hostErrorPages[$host->pattern][$status] ?? null;
+                if ($taken !== null) {
+                    throw new RoutingException("Both {$taken->class} and {$class} are the error page for {$status} on {$host->pattern}.");
+                }
+                $this->hostErrorPages[$host->pattern][$status] = $route;
+                continue;
             }
             if (isset($this->errorPages[$status])) {
                 throw new RoutingException("Both {$this->errorPages[$status]->class} and {$class} are the error page for {$status}.");
@@ -576,14 +645,18 @@ final class RouteRegistry
      * any 5xx no other page names: a 502 or a 503 is the server's failure as
      * much as a 500 is.
      */
-    public function errorChain(int $status): ?RouteChain
+    public function errorChain(int $status, ?string $host = null): ?RouteChain
     {
-        $page = $this->errorPages[$status] ?? ($status >= 500 ? $this->errorPages[500] ?? null : null);
+        // A host's own error page first, then the application's: one that
+        // declares no #[Domain] is shown on every host with none of its own.
+        $own = $host === null ? [] : $this->hostErrorPages[$host] ?? [];
+        $page = $own[$status] ?? ($status >= 500 ? $own[500] ?? null : null)
+            ?? $this->errorPages[$status] ?? ($status >= 500 ? $this->errorPages[500] ?? null : null);
         if ($page === null) {
             return null;
         }
 
-        $layouts = $page->layoutKey === self::NO_LAYOUTS ? [] : ($this->layoutCache["error:{$page->template}"] ??= $this->layoutsFor($page));
+        $layouts = $page->layoutKey === self::NO_LAYOUTS ? [] : ($this->layoutCache['error:' . self::cacheKey($page)] ??= $this->layoutsFor($page));
 
         return new RouteChain(page: $page, layouts: $layouts, parameters: []);
     }
@@ -596,7 +669,7 @@ final class RouteRegistry
     public function errorPages(): array
     {
         $pages = [];
-        foreach ($this->errorPages as $page) {
+        foreach ([...array_values($this->errorPages), ...array_merge([], ...array_map('array_values', array_values($this->hostErrorPages)))] as $page) {
             $pages[$page->class] = $page;
         }
 
@@ -615,21 +688,82 @@ final class RouteRegistry
      */
     public function assertErrorPagesRenderable(): void
     {
-        foreach (array_unique(array_keys($this->errorPages)) as $status) {
-            $chain = $this->errorChain($status);
-            if ($chain === null) {
-                continue;
-            }
-            foreach ($chain->layouts as $layout) {
-                if ($layout->middleware !== [] || $layout->panels !== [] || $layout->tenantFrom !== null) {
-                    throw new RoutingException(
-                        "{$chain->page->class} is the error page for {$status}, within {$layout->class}, which runs "
-                        . 'middleware, in a panel or for a tenant. An error page runs none of those, so it cannot sit '
-                        . 'within that layout: put it within a path whose layouts declare none.',
-                    );
+        $statuses = [[null, array_keys($this->errorPages)]];
+        foreach ($this->hostErrorPages as $pattern => $pages) {
+            $statuses[] = [$pattern, array_keys($pages)];
+        }
+        foreach ($statuses as [$pattern, $codes]) {
+            foreach ($codes as $status) {
+                $chain = $this->errorChain($status, $pattern);
+                if ($chain === null) {
+                    continue;
+                }
+                foreach ($chain->layouts as $layout) {
+                    if ($layout->middleware !== [] || $layout->panels !== [] || $layout->tenantFrom !== null) {
+                        throw new RoutingException(
+                            "{$chain->page->class} is the error page for {$status}, within {$layout->class}, which runs "
+                            . 'middleware, in a panel or for a tenant. An error page runs none of those, so it cannot sit '
+                            . 'within that layout: put it within a path whose layouts declare none.',
+                        );
+                    }
                 }
             }
         }
+    }
+
+    /** Tells the registry which hosts the application serves (ADR 0149); the Kernel does, once. */
+    public function serveOn(Domains $domains): void
+    {
+        $this->domains = $domains;
+    }
+
+    public function domains(): ?Domains
+    {
+        return $this->domains;
+    }
+
+    /**
+     * Every #[Domain] pattern a page, a layout or an error page declares,
+     * once each, for the Kernel to hand Domains::serving().
+     *
+     * @return list<HostPattern>
+     */
+    public function hostPatterns(): array
+    {
+        $patterns = [];
+        foreach ([...$this->pages, ...$this->layouts, ...$this->errorPages()] as $route) {
+            if ($route->host !== null) {
+                $patterns[$route->host->pattern] = $route->host;
+            }
+        }
+
+        return array_values($patterns);
+    }
+
+    /**
+     * A link to the page named $name, for a request on $from's host: its
+     * path where the page is on the same host, and an absolute URL on its
+     * own host where it is not -- the scheme, host and port Domains
+     * configures, with the host's parameters out of $parameters. Without
+     * Domains, the path.
+     *
+     * @param array<string, string|int> $parameters
+     */
+    public function href(string $name, array $parameters = [], ?Request $from = null): string
+    {
+        $page = $this->named($name);
+        $path = $page->url($parameters);
+        if ($this->domains === null) {
+            return $path;
+        }
+
+        $here = $from === null ? null : HostMatch::of($from);
+        $same = $here !== null && $here->pattern === $page->domain();
+        foreach ($page->host?->parameters ?? [] as $parameter) {
+            $same = $same && (string) ($parameters[$parameter] ?? '') === ($here->parameters[$parameter] ?? null);
+        }
+
+        return $same ? $path : $this->domains->origin($page->domain(), $parameters) . $path;
     }
 
     public function named(string $name): CompiledRoute
@@ -776,5 +910,25 @@ final class RouteRegistry
     private static function normalizeTemplate(string $template): string
     {
         return PathTemplate::normalize($template);
+    }
+
+    /** The layouts a page sits in are a page's on one host: keyed by both. */
+    private static function cacheKey(CompiledRoute $page): string
+    {
+        return ($page->domain() ?? '') . '|' . $page->template;
+    }
+
+    /**
+     * A route's #[Domain], its loader's or its class's, the nearest winning.
+     *
+     * @param class-string $class
+     */
+    private static function hostOf(string $class): ?HostPattern
+    {
+        try {
+            return Domain::declaredOn($class, '__invoke');
+        } catch (\InvalidArgumentException $e) {
+            throw new RoutingException("{$class}: {$e->getMessage()}", 0, $e);
+        }
     }
 }

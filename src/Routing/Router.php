@@ -71,7 +71,12 @@ final class Router
         ));
 
         return $global->run($request, function (Request $passed) use ($respond): Response {
-            $chain = $this->routes->match($passed->path)
+            // Host and path (ADR 0149): the host the Kernel resolved, or --
+            // for a router driven without one -- resolved here, a host the
+            // application does not serve refused with a 421.
+            $domains = $this->routes->domains();
+            $host = $domains === null ? null : $domains->resolve($passed);
+            $chain = $this->routes->match($passed->path, $host)
                 ?? throw new NotFoundException('No route matches this path.');
             if ($this->matched !== null) {
                 ($this->matched)($chain);

@@ -27,6 +27,8 @@ final readonly class CompiledRoute
      * @param class-string|null $tenantFrom the source its
      *                                                    #[TenantFrom] names, or null for none
      * @param list<\Tinvar\Attributes\Panel> $panels  every #[Panel] it declares
+     * @param HostPattern|null $host the host its #[Domain] holds it to, or null for the
+     *                               primary host (ADR 0149); its parameters lead $parameters
      */
     public function __construct(
         public RouteKind $kind,
@@ -42,7 +44,30 @@ final readonly class CompiledRoute
         public ?bool $encryptHistory = null,
         public ?string $tenantFrom = null,
         public array $panels = [],
+        public ?HostPattern $host = null,
     ) {}
+
+    /** The #[Domain] pattern it is served on, as written; null for the primary host. */
+    public function domain(): ?string
+    {
+        return $this->host?->pattern;
+    }
+
+    /**
+     * Its parameters the path carries, without the host's.
+     *
+     * @return list<string>
+     */
+    public function pathParameters(): array
+    {
+        return $this->host === null ? $this->parameters : array_values(array_diff($this->parameters, $this->host->parameters));
+    }
+
+    /** Whether it is served on the same hosts as $other: the same pattern shape, or both on the primary host. */
+    public function sameHostAs(self $other): bool
+    {
+        return $this->host?->shape() === $other->host?->shape();
+    }
 
     public function depth(): int
     {
@@ -56,7 +81,7 @@ final readonly class CompiledRoute
      */
     public function shape(): string
     {
-        return '/' . implode('/', array_map(
+        return ($this->host === null ? '' : $this->host->shape()) . '/' . implode('/', array_map(
             static fn (string $segment): string => self::isParameter($segment) ? '{}' : $segment,
             $this->segments,
         ));
@@ -109,7 +134,9 @@ final readonly class CompiledRoute
      */
     public function wraps(self $page): bool
     {
-        if ($this->depth() > $page->depth()) {
+        // A layout wraps only the pages on its own host: the same path is
+        // another page on another host, under that host's layouts.
+        if ($this->depth() > $page->depth() || !$this->sameHostAs($page)) {
             return false;
         }
 

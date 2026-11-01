@@ -74,6 +74,7 @@ use Tinvar\Data\SharedProviders;
 use Tinvar\Data\SharedReads;
 use Tinvar\Data\SharedRegistry;
 use Tinvar\Routing\CompiledRoute;
+use Tinvar\Routing\HostMatch;
 use Tinvar\Routing\LoaderRunner;
 use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\RouteChain;
@@ -2138,7 +2139,7 @@ final class Kernel
         // this machine, or naming nothing, as a client on it may.
         $host = $request->header('host');
         $overlaid = $this->dev && $failure !== null && DevOverlay::shows($failure) && ($host === null || Loopback::name($host));
-        $chain = $this->routes->errorChain($response->status);
+        $chain = $this->routes->errorChain($response->status, HostMatch::of($request)?->pattern);
         if ($chain === null && !$overlaid) {
             return $response;
         }
