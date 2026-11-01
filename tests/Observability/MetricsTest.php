@@ -316,6 +316,44 @@ it('reports a store that fails, keeps the counts, and still writes the rest', fu
         ->and(array_sum($failing->values))->toBe(1_000_000);
 });
 
+it('tries a store that fails at most once every flushEvery, not after every request', function () {
+    $failing = new class implements \Tinvar\Observability\MetricsStore {
+        public int $attempts = 0;
+
+        public function add(array $deltas): void
+        {
+            $this->attempts++;
+
+            throw new \RuntimeException('database is locked');
+        }
+
+        public function all(): array
+        {
+            return [];
+        }
+    };
+    $reported = 0;
+    $metrics = metrics($failing, flushEvery: 0.05);
+    $metrics->reportTo(static function () use (&$reported): void {
+        $reported++;
+    });
+
+    // Two requests inside one interval: the store is tried, and reported, once.
+    $metrics->increment('shop_orders_total', ['channel' => 'web']);
+    $metrics->flush();
+    $metrics->increment('shop_orders_total', ['channel' => 'web']);
+    $metrics->flush();
+    $triedWithinTheInterval = [$failing->attempts, $reported];
+
+    // Once the interval has passed, the next request tries it again.
+    usleep(60_000);
+    $metrics->increment('shop_orders_total', ['channel' => 'web']);
+    $metrics->flush();
+
+    expect($triedWithinTheInterval)->toBe([1, 1])
+        ->and([$failing->attempts, $reported])->toBe([2, 2]);
+});
+
 it('writes each collector\'s gauges and counters, and skips one that fails or clashes', function () {
     $metrics = metrics();
     $metrics->collect(new class implements Collector {

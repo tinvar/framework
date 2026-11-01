@@ -159,8 +159,9 @@ final class Metrics
 
     /**
      * Adds what this process counted to the store -- when `flushEvery` has
-     * passed since the last time, or now when forced. A store that fails
-     * keeps the counts for the next flush and is reported.
+     * passed since the last attempt, or now when forced. A store that fails
+     * keeps the counts for the next flush, a `flushEvery` later, and is
+     * reported.
      */
     public function flush(bool $force = false): void
     {
@@ -181,10 +182,15 @@ final class Metrics
             return;
         }
 
+        // The attempt starts the interval, whether or not the store takes
+        // the counts: a store that fails -- SQLite busy for its whole
+        // timeout, APCu full -- is tried, and reported, at most once every
+        // `flushEvery`, never after every request.
+        $this->flushedAt = microtime(true);
+
         try {
             $this->store->add($this->pending);
             $this->pending = [];
-            $this->flushedAt = microtime(true);
         } catch (MetricsNotStored $e) {
             // Counted in part: only the rest is the next flush's, or what
             // the store took would be counted twice.
