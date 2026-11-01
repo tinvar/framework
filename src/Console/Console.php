@@ -347,8 +347,13 @@ final class Console
         $ids = $arguments === ['all']
             ? array_map(static fn ($failure): string => $failure->id, $queue->failed())
             : $arguments;
-        if ($ids === []) {
+        if ($arguments === []) {
             throw new \InvalidArgumentException('Usage: tinvar queue:retry <id>... | all [--force]');
+        }
+        if ($ids === []) {
+            $output->error('No failed jobs to retry.');
+
+            return 0;
         }
         // Every failed job back on its queue at once, to fail again if what
         // failed them is not fixed: asked where a person is there to say.

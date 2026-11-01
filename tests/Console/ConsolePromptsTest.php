@@ -126,6 +126,16 @@ it('retries all without asking given --force, or with nobody there, as scripts a
         ->and($queue->failed())->toBe([]);
 });
 
+it('retries all with none failed as nothing to do, not a usage error a script would fail on', function (): void {
+    [$console, $output, , $read] = console(failed: 0);
+    $prompts = Prompts::fake();
+
+    expect($console->run('queue:retry', ['all'], $output))->toBe(0)
+        ->and($read()[1])->toBe(['No failed jobs to retry.']);
+    $prompts->assertNothingAsked();
+    expect($console->run('queue:retry', [], $output))->toBe(64);
+});
+
 it('asks nothing to retry jobs named one by one', function (): void {
     [$console, $output, $queue] = console(failed: 2);
     $prompts = Prompts::fake();
