@@ -69,6 +69,8 @@ final class FragmentMinter implements Minter
         // under one role is not rendered under another (ADR 0019).
         private readonly ?string $user = null,
         private readonly string $authEpoch = '',
+        // The host the page is on (ADR 0149): every token it mints is that host's.
+        private readonly string $host = '',
     ) {
         // decode() hard-rejects an expiry further out than DEFAULT_TTL, so a
         // configured TTL above it would mint tokens that fail verification
@@ -152,6 +154,7 @@ final class FragmentMinter implements Minter
             authHash: TokenClaims::hashAuth($this->signer, $this->user, $this->authEpoch),
             expiresAt: time() + $this->ttl,
             issuedAt: time(),
+            host: $this->host,
         ))->encode($this->signer);
     }
 

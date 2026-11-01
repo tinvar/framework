@@ -135,7 +135,7 @@ final class BootstrapEndpoint
         // the caller, the oracle FragmentManifest::boundariesFor() returns
         // empty specifically to avoid.
         try {
-            $chain = $this->routes->chainFor($route, $params);
+            $chain = $this->routes->chainFor($route, $params, $request);
         } catch (RoutingException) {
             return self::json(['tokens' => []]);
         }

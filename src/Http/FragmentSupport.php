@@ -130,6 +130,7 @@ final readonly class FragmentSupport
             components: $components,
             user: $this->auth?->id(),
             authEpoch: $this->auth?->epoch() ?? '',
+            host: \Tinvar\Routing\HostMatch::hostOf($request),
         );
     }
 }

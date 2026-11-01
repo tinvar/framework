@@ -89,8 +89,8 @@ describe('a page whose params are not text', function () {
             sessionId: 'session-abc',
         );
 
-        expect($minter->mint($routes->chainFor('surface.search', ['q' => "\xFF"])))->toBeNull()
-            ->and($minter->mint($routes->chainFor('surface.search', ['q' => 'bolts'])))->toBeString();
+        expect($minter->mint($routes->chainFor('surface.search', ['q' => "\xFF"], \Tinvar\Http\Request::get('/'))))->toBeNull()
+            ->and($minter->mint($routes->chainFor('surface.search', ['q' => 'bolts'], \Tinvar\Http\Request::get('/'))))->toBeString();
     });
 });
 

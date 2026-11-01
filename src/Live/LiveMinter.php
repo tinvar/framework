@@ -44,6 +44,8 @@ final readonly class LiveMinter
         private string $authEpoch = '',
         private ?TagsRead $loaders = null,
         private int $ttl = LiveToken::DEFAULT_TTL,
+        // The host the page is on (ADR 0149).
+        private string $host = '',
     ) {
         if ($this->sessionId === '') {
             // One constant hash would make every visitor's token every
@@ -109,6 +111,7 @@ final readonly class LiveMinter
             expiresAt: $now + $this->ttl,
             issuedAt: $now,
             authHash: TokenClaims::hashAuth($this->signer, $this->user, $this->authEpoch),
+            host: $this->host,
         ), $topics)->encode($this->signer);
     }
 }

@@ -639,7 +639,7 @@ describe('minting a route token', function () {
         $chain = $routes->chainFor('racks.show', [
             'site' => $fixture->ids['sites'][0],
             'rack' => $fixture->ids['racks'][0],
-        ]);
+        ], \Tinvar\Http\Request::get('/'));
 
         $minter = new Tinvar\Render\RouteMinter(
             signer: $signer,

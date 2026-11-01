@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Render;
 
+use Tinvar\Http\Request;
+use Tinvar\Routing\HostMatch;
 use Tinvar\Support\Signer;
 
 /**
@@ -40,6 +42,9 @@ final readonly class TokenClaims
         public int $expiresAt,
         public int $issuedAt,
         public string $authHash = '',
+        // The host it was minted on, normalized (HostMatch); '' where the
+        // application routes on no host (ADR 0149).
+        public string $host = '',
     ) {}
 
     /**
@@ -123,7 +128,9 @@ final readonly class TokenClaims
             'i' => $this->issuedAt,
         ];
 
-        return $this->authHash === '' ? $map : [...$map, 'u' => $this->authHash];
+        $map = $this->authHash === '' ? $map : [...$map, 'u' => $this->authHash];
+
+        return $this->host === '' ? $map : [...$map, 'h' => $this->host];
     }
 
     /**
@@ -146,6 +153,7 @@ final readonly class TokenClaims
             // Absent from a token minted before tokens carried it; '' then,
             // which no minted user binding ever is.
             authHash: \is_string($decoded['u'] ?? null) ? $decoded['u'] : '',
+            host: \is_string($decoded['h'] ?? null) ? $decoded['h'] : '',
         );
     }
 
@@ -185,6 +193,18 @@ final readonly class TokenClaims
         }
     }
 
+    /**
+     * Whether the request it came back on is on the host it was minted on.
+     * A session cookie is `__Host-`, so a browser keeps one per host; this
+     * holds the token itself to its host too, so one lifted from a page on
+     * admin.example.com is nothing on example.com, whoever's session sends
+     * it (ADR 0149).
+     */
+    public function boundToHost(Request $request): bool
+    {
+        return hash_equals($this->host, HostMatch::hostOf($request));
+    }
+
     public function belongsTo(Signer $signer, #[\SensitiveParameter] string $sessionId): bool
     {
         return hash_equals($this->sessionHash, self::hashSession($signer, $sessionId));
@@ -219,6 +239,7 @@ final readonly class TokenClaims
             expiresAt: min($at + $ttl, $deadline),
             issuedAt: $this->issuedAt,
             authHash: $this->authHash,
+            host: $this->host,
         );
     }
 

@@ -146,6 +146,7 @@ final class ChannelEndpoint
                 expiresAt: $at + ChannelToken::DEFAULT_TTL,
                 issuedAt: $at,
                 authHash: TokenClaims::hashAuth($this->live->signer, $this->auth->id(), $this->auth->epoch()),
+                host: \Tinvar\Routing\HostMatch::hostOf($inner),
             ), $this->topics->for($tenant, $channel->name, $resolved));
 
             return Response::make(

@@ -88,6 +88,8 @@ final readonly class FragmentToken
         // Who was signed in, at which auth epoch (TokenClaims::hashAuth()),
         // as a route token says; '' for a token minted before tokens said.
         public string $authHash = '',
+        // The host it was minted on (TokenClaims::$host, ADR 0149).
+        public string $host = '',
     ) {}
 
     /** @see TokenClaims::hashSession() -- one implementation, both tokens. */
@@ -175,6 +177,7 @@ final readonly class FragmentToken
             expiresAt: $this->expiresAt,
             issuedAt: $this->issuedAt,
             authHash: $this->authHash,
+            host: $this->host,
         );
     }
 
@@ -193,6 +196,7 @@ final readonly class FragmentToken
             expiresAt: $claims->expiresAt,
             issuedAt: $claims->issuedAt,
             authHash: $claims->authHash,
+            host: $claims->host,
         );
     }
 }

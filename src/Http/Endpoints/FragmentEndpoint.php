@@ -199,7 +199,7 @@ final class FragmentEndpoint
             // out would make it a 500, which breaks the one-status rule and
             // tells a caller whether the route still exists.
             try {
-                $chain = $this->routes->chainFor($token->route, $token->params);
+                $chain = $this->routes->chainFor($token->route, $token->params, $passed);
             } catch (RoutingException $e) {
                 throw self::refuse($e->getMessage());
             }
@@ -433,7 +433,7 @@ final class FragmentEndpoint
 
         $tokens = [];
         foreach ($parts as $part) {
-            $tokens[] = $this->verifyOne($part, $session);
+            $tokens[] = $this->verifyOne($part, $session, $request);
         }
 
         // One page's boundaries: everything that decides who may use a token
@@ -459,7 +459,7 @@ final class FragmentEndpoint
     }
 
     /** One token, verified exactly as a lone one always was. */
-    private function verifyOne(string $raw, #[\SensitiveParameter] string $session): FragmentToken
+    private function verifyOne(string $raw, #[\SensitiveParameter] string $session, Request $request): FragmentToken
     {
         if ($raw === '' || \strlen($raw) > self::MAX_TOKEN_BYTES) {
             throw self::refuse('token missing or over the size cap');
@@ -474,6 +474,11 @@ final class FragmentEndpoint
 
         if (!$token->belongsTo($this->signer, $session)) {
             throw self::refuse('token belongs to another session');
+        }
+
+        // Minted on one host, sent to another: nothing here (ADR 0149).
+        if (!$token->claims()->boundToHost($request)) {
+            throw self::refuse('token was minted on another host');
         }
 
         if (!$this->builds->accepts($token->build)) {

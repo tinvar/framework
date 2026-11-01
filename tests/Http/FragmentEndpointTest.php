@@ -215,7 +215,7 @@ describe('a token is not a capability', function () {
         $chain = $routes->chainFor('racks.show', [
             'site' => $fixture->ids['sites'][0],
             'rack' => $fixture->ids['racks'][0],
-        ]);
+        ], \Tinvar\Http\Request::get('/'));
 
         expect($chain->page->name)->toBe('racks.show')
             ->and($chain->checks())->not->toBe([], 'the originating chain carries its own checks');

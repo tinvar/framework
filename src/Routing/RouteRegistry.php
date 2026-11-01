@@ -18,7 +18,7 @@ use Tinvar\Auth\PanelBinding;
 use Tinvar\Auth\Violation;
 use Tinvar\Data\Data;
 use Tinvar\Http\HttpError;
-use Tinvar\Http\NotFoundException;
+use Tinvar\Http\HttpException;
 use Tinvar\Http\Request;
 use Tinvar\Support\Str;
 use Tinvar\Support\KnownAttributes;
@@ -350,7 +350,7 @@ final class RouteRegistry
      *
      * @param array<string, string> $parameters
      */
-    public function chainFor(string $name, array $parameters, ?HostMatch $host = null): RouteChain
+    public function chainFor(string $name, array $parameters, Request $request): RouteChain
     {
         $page = $this->named($name);
 
@@ -358,17 +358,10 @@ final class RouteRegistry
         // host. Re-rendered from a request on another host -- a token
         // minted on admin.example.com replayed on example.com, or one
         // minted on acme's subdomain replayed on another tenant's -- the
-        // route is not there, as navigating would find (ADR 0149).
-        if ($host !== null) {
-            if ($page->domain() !== $host->pattern) {
-                throw new NotFoundException('The route is not served on this host.');
-            }
-            foreach ($page->host?->parameters ?? [] as $parameter) {
-                if (($parameters[$parameter] ?? null) !== ($host->parameters[$parameter] ?? null)) {
-                    throw new NotFoundException('The route was rendered for another host.');
-                }
-            }
-        }
+        // route is not there, as navigating would find (ADR 0149). The
+        // request is required, and its host read here, so no caller
+        // rebuilding a chain by name can leave the host out.
+        $this->assertServedOn($page, $parameters, $request);
 
         // Every parameter the template declares has to be present, or the
         // chain would authorize against a model nobody named.
@@ -383,6 +376,51 @@ final class RouteRegistry
             layouts: $this->layoutCache[self::cacheKey($page)] ??= $this->layoutsFor($page),
             parameters: $parameters,
         );
+    }
+
+    /**
+     * The chain a named page is declared in, with every parameter empty: for
+     * the checks a Kernel makes when it is built, which ask what a page's
+     * declarations put around it and serve no request. Never a request's:
+     * chainFor() is, and holds the request's host.
+     */
+    public function declaredChain(string $name): RouteChain
+    {
+        $page = $this->named($name);
+
+        return new RouteChain(
+            page: $page,
+            layouts: $this->layoutCache[self::cacheKey($page)] ??= $this->layoutsFor($page),
+            parameters: array_fill_keys($page->parameters, ''),
+        );
+    }
+
+    /**
+     * Refuses a page asked for by name on a host it is not served on, or
+     * with host parameters other than the request's host gives.
+     *
+     * @param array<string, string> $parameters
+     * @throws RoutingException as for a route that does not exist
+     */
+    private function assertServedOn(CompiledRoute $page, array $parameters, Request $request): void
+    {
+        if ($this->domains === null) {
+            return;
+        }
+
+        try {
+            $host = $this->domains->resolve($request);
+        } catch (HttpException) {
+            throw new RoutingException('The request names a host this application does not serve.');
+        }
+        if ($page->domain() !== $host->pattern) {
+            throw new RoutingException("The route '{$page->name}' is not served on this host.");
+        }
+        foreach ($page->host?->parameters ?? [] as $parameter) {
+            if (($parameters[$parameter] ?? null) !== ($host->parameters[$parameter] ?? null)) {
+                throw new RoutingException("The route '{$page->name}' was rendered for another host.");
+            }
+        }
     }
 
     /** @return list<CompiledRoute> outermost first */

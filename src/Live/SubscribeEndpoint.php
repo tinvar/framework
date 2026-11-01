@@ -194,6 +194,12 @@ final class SubscribeEndpoint
                 return $this->ended('session_changed');
             }
 
+            // A page's topics are its host's: a token minted on another host
+            // subscribes to nothing here (ADR 0149).
+            if (!$claims->boundToHost($request)) {
+                continue;
+            }
+
             if ($this->builds !== null && !$this->builds->accepts($claims->build)) {
                 continue;
             }
@@ -293,7 +299,7 @@ final class SubscribeEndpoint
     private function admits(TokenClaims $claims, Request $request): bool
     {
         try {
-            $chain = $this->routes->chainFor($claims->route, $claims->params);
+            $chain = $this->routes->chainFor($claims->route, $claims->params, $request);
         } catch (RoutingException) {
             // Renamed or removed since: a page this server no longer has.
             return false;

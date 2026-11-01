@@ -143,6 +143,11 @@ function at(string $host): HostMatch
     return $routes->domains()->resolve(new Request('GET', '/', ['host' => $host]));
 }
 
+function on(string $host): Request
+{
+    return new Request('GET', '/', ['host' => $host]);
+}
+
 function serve(string $host, string $path, ?Fixture $fixture = null): string
 {
     $fixture ??= new Fixture(racks: 0, unitsPerRack: 0);
@@ -221,12 +226,12 @@ it('refuses, once the hosts are known, two spellings of one host', function () {
 it('re-renders a token\'s route only on the host it was minted on', function () {
     $routes = routes();
 
-    expect($routes->chainFor('admin.orders', [], at('admin.shop.test'))->page->class)->toBe(AdminOrders::class)
-        ->and(fn () => $routes->chainFor('admin.orders', [], at('shop.test')))->toThrow(NotFoundException::class)
-        ->and(fn () => $routes->chainFor('shop.orders', [], at('admin.shop.test')))->toThrow(NotFoundException::class)
+    expect($routes->chainFor('admin.orders', [], on('admin.shop.test'))->page->class)->toBe(AdminOrders::class)
+        ->and(fn () => $routes->chainFor('admin.orders', [], on('shop.test')))->toThrow(RoutingException::class)
+        ->and(fn () => $routes->chainFor('shop.orders', [], on('admin.shop.test')))->toThrow(RoutingException::class)
         // Minted on acme's host, replayed on another tenant's.
-        ->and($routes->chainFor('accounts.dashboard', ['account' => 'acme'], at('acme.shop.test'))->parameters)->toBe(['account' => 'acme'])
-        ->and(fn () => $routes->chainFor('accounts.dashboard', ['account' => 'acme'], at('globex.shop.test')))->toThrow(NotFoundException::class);
+        ->and($routes->chainFor('accounts.dashboard', ['account' => 'acme'], on('acme.shop.test'))->parameters)->toBe(['account' => 'acme'])
+        ->and(fn () => $routes->chainFor('accounts.dashboard', ['account' => 'acme'], on('globex.shop.test')))->toThrow(RoutingException::class);
 });
 
 it('links within a host by path, and to another host by its absolute URL', function () {

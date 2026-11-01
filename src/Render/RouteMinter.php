@@ -40,6 +40,8 @@ final readonly class RouteMinter
         // cleared on a role change or impersonation the session id survives.
         private ?string $user = null,
         private string $authEpoch = '',
+        // The host the page is on (ADR 0149).
+        private string $host = '',
     ) {
         if ($this->sessionId === '') {
             // One constant hash would make every visitor's token
@@ -80,6 +82,7 @@ final readonly class RouteMinter
             expiresAt: $now + $this->ttl,
             issuedAt: $now,
             authHash: TokenClaims::hashAuth($this->signer, $this->user, $this->authEpoch),
+            host: $this->host,
         )))->encode($this->signer);
     }
 }

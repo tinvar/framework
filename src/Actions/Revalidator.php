@@ -269,6 +269,11 @@ final class Revalidator
             return null;
         }
 
+        // Re-rendered only on the host it was minted on (ADR 0149).
+        if (!$token->claims->boundToHost($request)) {
+            return null;
+        }
+
         // And to whoever was signed in, at their auth epoch, as every other
         // consumer of a token holds it: the signature, the session and the
         // build were checked and the user the token was minted for was not.
@@ -315,7 +320,7 @@ final class Revalidator
 
         $run = function () use ($route, $params, $request, $claims): ?array {
             try {
-                $chain = $this->routes->chainFor($route, $params);
+                $chain = $this->routes->chainFor($route, $params, $request);
             } catch (RoutingException) {
                 // The route was renamed or removed since the page loaded.
                 // Ordinary deploy skew, not a failure of the action.
@@ -367,6 +372,11 @@ final class Revalidator
                 [],
                 $request->cookies,
             ))->withAttribute(RequestAttributes::ACTION_RERENDER, true);
+            // On the host the action was sent to, as resolved for it (ADR 0149).
+            $resolved = \Tinvar\Routing\HostMatch::of($request);
+            if ($resolved !== null) {
+                $asGet = $asGet->withAttribute(\Tinvar\Routing\HostMatch::ATTRIBUTE, $resolved);
+            }
 
             try {
                 // Response is the pipeline's currency; the payload is
