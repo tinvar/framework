@@ -25,6 +25,7 @@ use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Render\TenantClaim;
 use Tinvar\Routing\Domains;
+use Tinvar\Routing\HostPattern;
 use Tinvar\Routing\RouteChain;
 use Tinvar\Routing\RouteRegistry;
 
@@ -356,6 +357,11 @@ final readonly class EntryContext
             }
         }
 
+        $refusals = self::tenantHostRefusals($routes, $endpoints, $actions, $queries, $channels);
+        if ($refusals !== []) {
+            throw new \InvalidArgumentException($refusals[0]);
+        }
+
         foreach ($declared as $where => $panels) {
             foreach ($panels as $panel) {
                 if ($this->registry?->has($panel->name) !== true) {
@@ -389,6 +395,75 @@ final readonly class EntryContext
                 );
             }
         }
+    }
+
+    /** The host parameter that names a tenant: an entry point on it must read its tenant from the host. */
+    public const string TENANT_PARAMETER = 'tenant';
+
+    /**
+     * Every entry point on a host whose `{tenant}` parameter names a tenant
+     * that does not read its tenant from that host (TenantFromHost): one
+     * line each, saying how to fix it.
+     *
+     * Such a route runs as whatever tenant the request already holds -- the
+     * session's, placed by the application's own middleware -- or as the one
+     * another source names, so acme's subdomain would draw globex's data for
+     * a session held in globex. Refused when the Kernel is built (check())
+     * and by `tinvar check`. A page reads its tenant from its own
+     * #[TenantFrom] or the nearest layout's above it, as its chain does.
+     *
+     * @return list<string>
+     */
+    public static function tenantHostRefusals(
+        RouteRegistry $routes,
+        ?EndpointRegistry $endpoints = null,
+        ?ActionRegistry $actions = null,
+        ?QueryRegistry $queries = null,
+        ?ChannelRegistry $channels = null,
+    ): array {
+        $held = [];
+        $layouts = $routes->layouts();
+        foreach ($routes->pages() as $page) {
+            $source = $page->tenantFrom;
+            if ($source === null) {
+                $wrapping = array_values(array_filter($layouts, static fn ($layout): bool => $layout->tenantFrom !== null && $layout->wraps($page)));
+                usort($wrapping, static fn ($a, $b): int => $b->depth() <=> $a->depth());
+                $source = $wrapping === [] ? null : $wrapping[0]->tenantFrom;
+            }
+            $held[] = [$page->class, $page->host, $source];
+        }
+        foreach ($endpoints?->all() ?? [] as $endpoint) {
+            $held[] = [$endpoint->where(), $endpoint->host, $endpoint->tenantFrom];
+        }
+        foreach ($actions?->all() ?? [] as $action) {
+            $held[] = [$action->where(), $action->host, $action->tenantFrom];
+        }
+        if ($queries !== null) {
+            foreach ($queries->names() as $name) {
+                $held[] = [$queries->classFor($name) ?? $name, $queries->hostFor($name), $queries->tenantSourceFor($name)];
+            }
+        }
+        foreach ($channels?->all() ?? [] as $channel) {
+            $held[] = [$channel->where(), $channel->host, $channel->tenantFrom];
+        }
+
+        $refusals = [];
+        foreach ($held as [$where, $host, $source]) {
+            if ($host === null) {
+                continue;
+            }
+            $host = $host instanceof HostPattern ? $host : HostPattern::compile($host);
+            if (!\in_array(self::TENANT_PARAMETER, $host->parameters, true)
+                || ($source !== null && is_a($source, TenantFromHost::class, true))) {
+                continue;
+            }
+            $refusals[] = "{$where} is on {$host->pattern}, whose {" . self::TENANT_PARAMETER . '} names the tenant, and it reads its tenant from '
+                . ($source === null ? 'nowhere, so it runs as the tenant the session holds' : $source)
+                . ": another tenant's data would be drawn under this tenant's subdomain. Declare #[TenantFrom(Host::class)] (tinvar/tenancy) on it"
+                . ' or a layout above it, or name the host parameter something else if it is not the tenant.';
+        }
+
+        return $refusals;
     }
 
     /**

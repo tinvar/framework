@@ -10,6 +10,7 @@ use Tinvar\Auth\Violation;
 use Tinvar\Channels\ChannelRegistry;
 use Tinvar\Config\Configs;
 use Tinvar\Endpoints\EndpointRegistry;
+use Tinvar\Http\EntryContext;
 use Tinvar\Console\Prompts\Cancelled;
 use Tinvar\Console\Prompts\CannotPrompt;
 use Tinvar\Console\Prompts\Progress;
@@ -89,6 +90,9 @@ final class AppConsole
 {
     /** The rule `tinvar check` reports a host no Domains serves under (ADR 0149). */
     public const string HOSTS_MUST_BE_SERVED = 'hosts-must-be-served';
+
+    /** The rule `tinvar check` reports a route on a `{tenant}` host reading its tenant from elsewhere under. */
+    public const string TENANT_HOST_READS_HOST = 'tenant-host-reads-host';
 
     /** @var array<string, array{usage: string, about: string, run: \Closure(list<string>): int}> */
     private array $commands = [];
@@ -320,8 +324,10 @@ final class AppConsole
     /**
      * What `tinvar check` reports of hosts: a page, layout or endpoint
      * declaring a #[Domain] the application configures no Domains for, one
-     * naming a configured domain that does not exist, and two patterns that
-     * match one host. A malformed pattern, and two routes of one host and
+     * naming a configured domain that does not exist, two patterns that
+     * match one host, and a page, layout or endpoint on a `{tenant}` host
+     * reading its tenant from anything but that host
+     * (EntryContext::tenantHostRefusals()). A malformed pattern, and two routes of one host and
      * one path, are refused as each registers, under the build rules.
      *
      * @param list<class-string> $routes
@@ -335,6 +341,7 @@ final class AppConsole
         RouteRegistry::check($routes, $registry);
         $patterns = array_map(static fn ($p): string => $p->pattern, $registry->hostPatterns());
         $holders = array_values(array_filter($endpoints, EndpointRegistry::holdsEndpoints(...)));
+        $endpointRegistry = null;
         if ($holders !== []) {
             $endpointRegistry = new EndpointRegistry($models);
             foreach ($holders as $class) {
@@ -348,6 +355,13 @@ final class AppConsole
         }
         $patterns = array_values(array_unique($patterns));
 
+        $tenantHosts = array_map(
+            static fn (string $refusal): Violation => new Violation(self::TENANT_HOST_READS_HOST, substr($refusal, 0, (int) strpos($refusal, ' is on ')), substr($refusal, (int) strpos($refusal, ' is on ') + 1)),
+            EntryContext::tenantHostRefusals($registry, $endpointRegistry),
+        );
+        if ($tenantHosts !== []) {
+            return $tenantHosts;
+        }
         if ($patterns === []) {
             return [];
         }
