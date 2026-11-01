@@ -318,7 +318,9 @@ final class TransferRegistry
         if ($reflection->hasMethod('row')) {
             $map = $reflection->getMethod('row');
             $parameters = $map->getParameters();
-            $type = $parameters[0]->getType() ?? null;
+            // Its one parameter's type, where it has exactly one: a row()
+            // with none or more is refused below, never read past its end.
+            $type = \count($parameters) === 1 ? $parameters[0]->getType() : null;
             $returns = $map->getReturnType();
             if (!$map->isPublic() || $map->isStatic() || \count($parameters) !== 1
                 || !$type instanceof \ReflectionNamedType || !is_a($type->getName(), Model::class, true)

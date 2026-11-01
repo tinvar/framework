@@ -101,6 +101,21 @@ final readonly class RowlessImport
     public function __invoke(): void {}
 }
 
+/** A row() that maps nothing: no model parameter at all. */
+#[Export(WidgetRow::class), Authorize('export', Widget::class)]
+final readonly class ArglessMapExport
+{
+    public function __invoke(): Query
+    {
+        throw new \LogicException('never run');
+    }
+
+    public function row(): WidgetRow
+    {
+        throw new \LogicException('never run');
+    }
+}
+
 /** A start argument and a row field both named `widget`: one check could not say which it is about. */
 #[Import, Authorize('restock', Widget::class), Authorize('update', 'widget')]
 final readonly class CollidingImport
@@ -149,6 +164,15 @@ describe('registration', function () {
         expect(fn () => (new TransferRegistry())->register(LeakyExport::class))->toThrow(\InvalidArgumentException::class, 'a column holds a scalar')
             ->and(fn () => (new TransferRegistry())->register(ArrayExport::class))->toThrow(\InvalidArgumentException::class, 'a page at a time')
             ->and(fn () => (new TransferRegistry())->register(RowlessImport::class))->toThrow(\InvalidArgumentException::class, "an import's row");
+    });
+
+    // Review: a row() with no parameter threw an Error reading its first,
+    // which tinvar check -- catching only the refusals -- crashed on.
+    it('refuses a row() with no model parameter, as a violation tinvar check reports', function () {
+        expect(fn () => (new TransferRegistry())->register(ArglessMapExport::class))
+            ->toThrow(\InvalidArgumentException::class, 'maps one model')
+            ->and(array_map(static fn ($v): string => $v->where, TransferRegistry::check([ArglessMapExport::class])))
+            ->toBe([ArglessMapExport::class]);
     });
 
     it('refuses two of a kind under one name', function () {
