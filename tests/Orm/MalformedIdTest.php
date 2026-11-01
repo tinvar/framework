@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * A malformed id looked up by the id column.
+ * A malformed id looked up by the id column, or by a foreign key.
  *
  * Every key is a UUIDv7 the Orm minted, and on Postgres the id column is a
  * uuid: a value that is not one is refused outright, with an error quoting it,
@@ -46,7 +46,7 @@ final class UuidColumns implements Connection
 
     public function select(string $sql, array $bindings = []): array
     {
-        if (str_contains($sql, '"id" IN (')) {
+        if (str_contains($sql, '"id" IN (') || str_contains($sql, '"site_id" IN (')) {
             foreach ($bindings as $binding) {
                 if (!\is_string($binding) || !Uuid::isValid($binding)) {
                     throw new \PDOException(
@@ -121,6 +121,11 @@ final readonly class PickSiteRequest extends FormRequest
     public function __construct(#[Exists(Site::class)] public string $siteRef) {}
 }
 
+final readonly class PickRackSiteRequest extends FormRequest
+{
+    public function __construct(#[Exists(Rack::class, 'site_id')] public string $siteRef) {}
+}
+
 final readonly class ClaimSiteRequest extends FormRequest
 {
     public function __construct(#[Unique(Site::class)] public string $siteRef) {}
@@ -185,4 +190,19 @@ it('drops malformed ids from a whereIn on the id column and keeps the rest', fun
     $racks = $orm->whereIn(Rack::class, 'id', ['nope', $fixture->ids['racks'][1], 3]);
 
     expect(array_map(static fn (Rack $r): string => $r->id, $racks))->toBe([$fixture->ids['racks'][1]]);
+});
+
+it('fails Exists on a malformed id in a foreign key column without asking the database', function () {
+    [$orm] = strictOrm(racks: 1);
+
+    expect(fn () => (new Validator($orm))->validate(PickRackSiteRequest::class, ['siteRef' => 'nope']))
+        ->toThrow(ValidationException::class);
+});
+
+it('drops malformed ids from a whereIn on a foreign key column and keeps the rest', function () {
+    [$orm, $fixture] = strictOrm(racks: 1);
+
+    $racks = $orm->whereIn(Rack::class, 'site_id', ['nope', $fixture->ids['sites'][0]]);
+
+    expect($racks)->toHaveCount(1);
 });
