@@ -114,4 +114,14 @@ final readonly class Email
             throw new \InvalidArgumentException("'{$template}' is not a template name: lowercase words joined by '-'.");
         }
     }
+
+    /**
+     * This email with $unsubscribe as its List-Unsubscribe headers, and its
+     * category as it was: a notification's email is still transactional
+     * once its reader can turn that kind off with one click (ADR 0150).
+     */
+    public function withUnsubscribe(Unsubscribe $unsubscribe): self
+    {
+        return clone($this, ['unsubscribe' => $unsubscribe]);
+    }
 }
