@@ -33,9 +33,11 @@ final class ClassAttributes
      * @template T of object
      * @param class-string|\ReflectionClass<object> $class
      * @param class-string<T>                      $attribute
+     * @param int                                  $flags \ReflectionAttribute::IS_INSTANCEOF to take
+     *                                                    every attribute that is an $attribute, an interface's included
      * @return list<\ReflectionAttribute<T>>
      */
-    public static function of(string|\ReflectionClass $class, string $attribute): array
+    public static function of(string|\ReflectionClass $class, string $attribute, int $flags = 0): array
     {
         $reflection = $class instanceof \ReflectionClass ? $class : new \ReflectionClass($class);
 
@@ -49,9 +51,9 @@ final class ClassAttributes
         $out = [];
         foreach ($lineage as $level) {
             foreach (self::traitsOf($level, $seen) as $trait) {
-                $out = [...$out, ...$trait->getAttributes($attribute)];
+                $out = [...$out, ...$trait->getAttributes($attribute, $flags)];
             }
-            $out = [...$out, ...$level->getAttributes($attribute)];
+            $out = [...$out, ...$level->getAttributes($attribute, $flags)];
         }
 
         return $out;

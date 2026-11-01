@@ -2985,6 +2985,10 @@ final class Kernel
     private static function middlewareFrom(\Closure $resolver): \Closure
     {
         return static function (string $class) use ($resolver): Middleware {
+            // A middleware attribute's (ADR 0150): built with the attribute it enforces.
+            if (DeclaredMiddleware::isReference($class)) {
+                return DeclaredMiddleware::build($class, $resolver);
+            }
             if (!class_exists($class)) {
                 throw new \LogicException("No middleware class {$class}.");
             }

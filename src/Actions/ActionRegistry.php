@@ -81,7 +81,6 @@ final class ActionRegistry
         // "The class" includes its ancestors and traits. PHP does not inherit
         // class attributes, so a holder extending an #[Authorize]- and
         // #[Middleware]-carrying base ran with neither.
-        $classMiddleware = Middleware::declaredOn($class);
         $classDeclares = Authorize::classLevelCount($class) > 0
             || $reflection->getAttributes(NoAuthorization::class) !== [];
 
@@ -116,7 +115,7 @@ final class ActionRegistry
                 throw ActionException::classLevelDeclaration($class, $method->getName());
             }
 
-            $compiled[] = $this->add($this->compile($reflection, $method, $attribute->newInstance(), $classMiddleware));
+            $compiled[] = $this->add($this->compile($reflection, $method, $attribute->newInstance()));
         }
 
         return $compiled;
@@ -136,15 +135,11 @@ final class ActionRegistry
         return $out;
     }
 
-    /**
-     * @param \ReflectionClass<object> $reflection
-     * @param list<class-string>       $classMiddleware
-     */
+    /** @param \ReflectionClass<object> $reflection */
     private function compile(
         \ReflectionClass $reflection,
         \ReflectionMethod $method,
         Action $declaration,
-        array $classMiddleware,
     ): CompiledAction {
         $class = $reflection->getName();
         $where = "{$class}::{$method->getName()}()";
@@ -339,7 +334,7 @@ final class ActionRegistry
             models: $models,
             formRequests: $formRequests,
             nestedModels: $nestedModels,
-            middleware: array_values(array_unique([...$classMiddleware, ...self::middlewareOf($method->getAttributes(Middleware::class))])),
+            middleware: Middleware::declaredOn($class, $method->getName()),
             exempt: $exempt,
             subjectArgument: $subjectArgument,
             optionalModels: $optional,
@@ -600,23 +595,5 @@ final class ActionRegistry
         }
 
         return $fields;
-    }
-
-    /**
-     * @param list<\ReflectionAttribute<Middleware>> $attributes
-     * @return list<class-string>
-     */
-    private static function middlewareOf(array $attributes): array
-    {
-        $out = [];
-        foreach ($attributes as $attribute) {
-            foreach ($attribute->newInstance()->classes as $class) {
-                if (!\in_array($class, $out, true)) {
-                    $out[] = $class;
-                }
-            }
-        }
-
-        return $out;
     }
 }
