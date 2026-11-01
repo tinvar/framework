@@ -162,6 +162,10 @@ final class NewAppCommand
             DatabaseDriver::Mysql->value => 'MySQL',
         ], DatabaseDriver::Sqlite);
         $identifier = trim((string) preg_replace('/[^a-z0-9]+/', '_', basename($absolute)), '_');
+        // Postgres keeps every role named pg_... for itself.
+        if (str_starts_with($identifier, 'pg_')) {
+            $identifier = "app_{$identifier}";
+        }
         $host = $flags->option('database-host') ?? '127.0.0.1';
         $name = $flags->option('database-name') ?? $identifier;
         $user = $flags->option('database-user') ?? $identifier;
