@@ -102,6 +102,12 @@ it('normalizes case and a trailing dot, and holds a port to the one configured',
         ->and(fn () => $domains->resolve(host('localhost:9999')))->toThrow(HttpException::class);
 });
 
+it('refuses a host that names a second port behind the one it is held to', function (string $sent) {
+    $domains = new Domains(['root' => 'shop.test'], patterns: ['admin.{root}']);
+
+    expect(fn () => $domains->resolve(host($sent)))->toThrow(HttpException::class);
+})->with(['shop.test:8443:443', 'admin.shop.test:1:443', 'shop.test:8443:', 'shop.test::443', 'shop.test:']);
+
 it('refuses an address unless it is listed as an alias of the primary host', function () {
     $plain = Domains::fromUrl('http://localhost:8080');
     $aliased = Domains::fromUrl('http://localhost:8080', aliases: ['127.0.0.1', '::1']);

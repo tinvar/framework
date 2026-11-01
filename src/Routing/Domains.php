@@ -237,6 +237,12 @@ final readonly class Domains
         if ($port !== null && !$this->anyPort && $port !== ($this->port ?? $default)) {
             return null;
         }
+        // One port, split off once: a colon left over is a second port
+        // behind the one held to the pin -- `shop.test:8443:443` -- or a
+        // stray one, and no host. Only an IPv6 address, bracketed, has any.
+        if (str_contains($raw, ':') && !(str_starts_with($raw, '[') && str_ends_with($raw, ']'))) {
+            return null;
+        }
 
         $alias = self::aliasOf($raw);
         if ($alias !== null && \in_array($alias, $this->aliases, true)) {
