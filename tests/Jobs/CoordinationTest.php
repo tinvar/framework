@@ -158,6 +158,22 @@ function queues(): array
 
             return $queue;
         }],
+        // Where a Postgres server runs, as CI's does: the queue's locks,
+        // windows and batches in a schema of their own, dropped when the
+        // run ends, so each tenant's are held apart in Postgres's own SQL.
+        ...(Databases::postgresMissing() === null ? ['Postgres' => [static function (TenantFixture $f): JobQueue {
+            $pdo = Databases::another('pgsql');
+            $schema = 'tinvar_coordination_' . bin2hex(random_bytes(6));
+            $pdo->exec("CREATE SCHEMA {$schema}");
+            $pdo->exec("SET search_path TO {$schema}");
+            register_shutdown_function(static fn () => $pdo->exec("DROP SCHEMA IF EXISTS {$schema} CASCADE"));
+            $connection = new \Tinvar\Orm\PdoConnection($pdo, 'pgsql');
+            $queue = databaseQueue($connection);
+            DatabaseQueue::defineCoordination(schemaOf($connection));
+            DatabaseQueue::defineSlidingRates(schemaOf($connection));
+
+            return $queue;
+        }]] : []),
         // Where a Redis server runs, as CI's does (ADR 0118).
         ...(Databases::redisMissing() === null ? ['Redis' => [static fn (TenantFixture $f): JobQueue => new RedisQueue(
             Databases::redisClient(),
