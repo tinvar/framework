@@ -227,6 +227,7 @@ describe('the actions', function () {
         expect($response->status)->toBe(409, $response->body() . implode("\n", App::$failures))
             ->and($ticket)->toBeInstanceOf(Ticket::class)
             ->and($response->header('x-redirect'))->toBe("/tickets/{$ticket?->id}")
+            ->and($response->header('x-invalidated-tags'))->toBe('tickets')
             ->and($ticket?->status)->toBe(TicketStatus::InProgress)
             ->and($ticket?->urgent)->toBeTrue()
             ->and($ticket?->dueAt?->toIso8601ZuluString())->toBe('2026-11-20T09:30:00Z')

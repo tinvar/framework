@@ -217,6 +217,11 @@ final class TicketResource extends Resource
         return [BulkAction::delete(), BulkAction::make('escalate', 'Escalate', ability: 'update', method: 'escalate')];
     }
 
+    public static function revalidates(): array
+    {
+        return ['tickets'];
+    }
+
     public static function sort(): Sort
     {
         return Sort::asc('title');

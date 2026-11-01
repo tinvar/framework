@@ -104,6 +104,18 @@ abstract class Resource
         return [];
     }
 
+    /**
+     * The tags every write of the resource invalidates -- its forms, its
+     * delete button, its bulk actions -- as an action's withTags() does: the
+     * cached queries and live pages that read them, and the static pages.
+     *
+     * @return list<string>
+     */
+    public static function revalidates(): array
+    {
+        return [];
+    }
+
     /** The list's order until a heading is clicked; newest first by default, as ids are made. */
     public static function sort(): ?Sort
     {
@@ -348,7 +360,7 @@ abstract class Resource
         $this->orm->save($record);
         $this->written($record, ResourceOperation::Created);
 
-        return ActionResult::redirect($this->url('/' . $record->primaryKey()));
+        return ActionResult::redirect($this->url('/' . $record->primaryKey()))->withTags(...static::revalidates());
     }
 
     /** Saves the form to the record, and shows it. */
@@ -360,7 +372,7 @@ abstract class Resource
         $this->orm->save($record);
         $this->written($record, ResourceOperation::Updated);
 
-        return ActionResult::redirect($this->url('/' . $record->primaryKey()));
+        return ActionResult::redirect($this->url('/' . $record->primaryKey()))->withTags(...static::revalidates());
     }
 
     /** Deletes the record, and goes back to the list. */
@@ -370,7 +382,7 @@ abstract class Resource
         $this->written($record, ResourceOperation::Deleted);
         $this->orm->delete($record);
 
-        return ActionResult::redirect($this->url(''));
+        return ActionResult::redirect($this->url(''))->withTags(...static::revalidates());
     }
 
     /**
@@ -419,7 +431,7 @@ abstract class Resource
             $this->written($record, ResourceOperation::Updated);
         }
 
-        return ActionResult::revalidate("{$definition->attribute->panel}.{$definition->attribute->slug()}.index");
+        return ActionResult::revalidate("{$definition->attribute->panel}.{$definition->attribute->slug()}.index")->withTags(...static::revalidates());
     }
 
     /** The resource's declarations, read and checked once a worker. */
