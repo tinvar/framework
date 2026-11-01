@@ -690,6 +690,26 @@ it('gives a reply its timeout as a whole, however it trickles in', function () {
         ->and(microtime(true) - $started)->toBeLessThan(2.5);
 });
 
+it('names itself smtp on every refusal, a server it cannot reach as much as one that answers no', function () {
+    $server = stream_socket_server('tcp://127.0.0.1:0');
+    $port = (int) substr((string) stream_socket_get_name($server, false), strrpos((string) stream_socket_get_name($server, false), ':') + 1);
+    fclose($server);
+
+    // The refused connect's warning, which the transport silences, kept out of the run's report.
+    set_error_handler(static fn (): bool => true);
+    try {
+        new SmtpTransport('127.0.0.1', $port, encryption: SmtpTransport::NONE, timeout: 1)->send(message());
+        $thrown = null;
+    } catch (MailTransportException $e) {
+        $thrown = $e;
+    } finally {
+        restore_error_handler();
+    }
+
+    expect($thrown?->getMessage())->toContain('Cannot reach the SMTP server')
+        ->and($thrown?->transport)->toBe('smtp');
+});
+
 it('names Cc and Bcc readers on the envelope once each, writes no Bcc header, and signs with DKIM when given a key', function () {
     if (!\function_exists('pcntl_fork')) {
         test()->markTestSkipped('pcntl is not available.');

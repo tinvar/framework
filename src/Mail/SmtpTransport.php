@@ -53,7 +53,7 @@ final readonly class SmtpTransport implements Transport
         $scheme = $this->encryption === self::TLS ? 'tls' : 'tcp';
         $socket = @stream_socket_client("{$scheme}://{$this->host}:{$this->port}", $errno, $error, $this->timeout);
         if ($socket === false) {
-            throw new MailTransportException("Cannot reach the SMTP server at {$this->host}:{$this->port}: {$error}");
+            throw new MailTransportException("Cannot reach the SMTP server at {$this->host}:{$this->port}: {$error}", transport: 'smtp');
         }
         stream_set_timeout($socket, (int) ceil($this->timeout));
 
@@ -64,7 +64,7 @@ final readonly class SmtpTransport implements Transport
             if ($this->encryption === self::STARTTLS) {
                 $this->command($socket, 'STARTTLS', [220]);
                 if (stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT | STREAM_CRYPTO_METHOD_TLSv1_3_CLIENT) !== true) {
-                    throw new MailTransportException('The SMTP server\'s TLS handshake failed.');
+                    throw new MailTransportException('The SMTP server\'s TLS handshake failed.', transport: 'smtp');
                 }
                 $extensions = $this->ehlo($socket);
             }
@@ -135,7 +135,7 @@ final readonly class SmtpTransport implements Transport
             return;
         }
 
-        throw new MailTransportException('The SMTP server offers no authentication this transport speaks (PLAIN or LOGIN).');
+        throw new MailTransportException('The SMTP server offers no authentication this transport speaks (PLAIN or LOGIN).', transport: 'smtp');
     }
 
     /**
@@ -162,7 +162,7 @@ final readonly class SmtpTransport implements Transport
         for ($written = 0; $written < \strlen($bytes);) {
             $n = @fwrite($socket, substr($bytes, $written));
             if ($n === false || $n === 0) {
-                throw new MailTransportException('The SMTP connection closed while writing.');
+                throw new MailTransportException('The SMTP connection closed while writing.', transport: 'smtp');
             }
             $written += $n;
         }
@@ -201,7 +201,7 @@ final readonly class SmtpTransport implements Transport
                 if ($byte === false || $byte === '') {
                     throw stream_get_meta_data($socket)['timed_out']
                         ? $this->unanswered($after)
-                        : new MailTransportException("The SMTP connection closed, after {$after}.");
+                        : new MailTransportException("The SMTP connection closed, after {$after}.", transport: 'smtp');
                 }
                 $line .= $byte;
             }
@@ -223,6 +223,6 @@ final readonly class SmtpTransport implements Transport
 
     private function unanswered(string $after): MailTransportException
     {
-        return new MailTransportException("The SMTP server did not answer within {$this->timeout}s, after {$after}.");
+        return new MailTransportException("The SMTP server did not answer within {$this->timeout}s, after {$after}.", transport: 'smtp');
     }
 }
