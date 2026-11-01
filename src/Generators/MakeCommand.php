@@ -589,9 +589,18 @@ final class MakeCommand
 
         $own = end($segments) . $suffix;
         $path = $this->besideDomain($segments, $own);
-        $taken = $this->layout->namedElsewhere($this->layout->area('Data'), $own, implode('\\', $path));
+        if (!$this->layout->namedElsewhere($this->layout->area('Data'), $own, implode('\\', $path))) {
+            return $path;
+        }
+        // The joined name is the way round, unless it is the same name -- one
+        // segment -- or taken as well.
+        $fallback = $this->besideDomain($segments, $joined);
+        if ($joined === $own || $this->layout->namedElsewhere($this->layout->area('Data'), $joined, implode('\\', $fallback))) {
+            throw new GenerationRefused("A Data class named {$own} is in the app already, and so is one named {$joined}: codegen names each by its short name, "
+                . 'so two of one name are refused there. Nothing was written. Name it differently.');
+        }
 
-        return $taken ? $this->besideDomain($segments, $joined) : $path;
+        return $fallback;
     }
 
     /**

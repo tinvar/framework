@@ -387,6 +387,29 @@ it('writes into Http\ and Database\Models\, by domain, for an application laid o
         ->and($classes->actions)->toBe([$app->class('Http\Actions\NoteActions'), $app->class('Http\Actions\Orders\OrderActions')]);
 });
 
+// The joined name is the way round a short name taken; where it is the same
+// name, or taken too, there is none, and two Data classes of one short name
+// would be written for codegen to refuse.
+it('refuses a Data class whose short name and joined name are both taken, writing nothing', function () {
+    $app = $this->app;
+    mkdir("{$app->root}/app/Http", 0o755, true);
+
+    expect($app('make:page', ['Orders/Show', '--path=/orders']))->toBe(0, implode("\n", $app->err));
+    $before = $app->files();
+
+    expect($app('make:page', ['Show', '--path=/show']))->toBe(MakeCommand::FAILED)
+        ->and(implode("\n", $app->err))->toContain('ShowPageData')
+        ->and($app->files())->toBe($before);
+
+    // Racks/Show's short name is Orders/Show's, and its joined name
+    // Admin/RacksShow's.
+    expect($app('make:page', ['Admin/RacksShow', '--path=/admin/racks']))->toBe(0, implode("\n", $app->err));
+    $before = $app->files();
+    expect($app('make:page', ['Racks/Show', '--path=/racks']))->toBe(MakeCommand::FAILED)
+        ->and(implode("\n", $app->err))->toContain('RacksShowPageData')
+        ->and($app->files())->toBe($before);
+});
+
 it('keeps writing a kind where an older application already keeps it, flat', function () {
     $app = $this->app;
     mkdir("{$app->root}/app/Http", 0o755, true);
