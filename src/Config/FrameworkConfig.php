@@ -6,7 +6,9 @@ namespace Tinvar\Config;
 
 use Tinvar\Attributes\Config;
 use Tinvar\Attributes\ListOf;
+use Tinvar\Attributes\MapOf;
 use Tinvar\Http\TrustedProxies;
+use Tinvar\Routing\Domains;
 use Tinvar\Support\AppKey;
 use Tinvar\Support\BuildProfile;
 use Tinvar\Support\DevMode;
@@ -63,6 +65,11 @@ final readonly class FrameworkConfig
      *        the editor does
      * @param list<string> $trustedProxies the networks of the proxies in front of this server, whose
      *        X-Forwarded-For names the client the throttles count (TrustedProxies, ADR 0134)
+     * @param string|null $appDomain the application's primary host, `shop.example.com` or
+     *        `http://localhost:8080`, which Domains routes by host from (ADR 0149)
+     * @param array<string, string> $domains further configured domains a #[Domain] pattern
+     *        may end in, `admin=admin.example.net`
+     * @param list<string> $hostAliases hosts, or addresses, answered as the primary host
      */
     public function __construct(
         public ?string $dev = null,
@@ -86,6 +93,11 @@ final readonly class FrameworkConfig
         public array $editorPaths = [],
         #[ListOf('string')]
         public array $trustedProxies = [],
+        public ?string $appDomain = null,
+        #[MapOf('string')]
+        public array $domains = [],
+        #[ListOf('string')]
+        public array $hostAliases = [],
     ) {
         $problems = [];
 
@@ -93,6 +105,15 @@ final readonly class FrameworkConfig
             TrustedProxies::of($trustedProxies);
         } catch (\InvalidArgumentException $e) {
             $problems[] = $e->getMessage();
+        }
+
+        if ($appDomain !== null && trim($appDomain) !== '') {
+            try {
+                Domains::fromUrl($appDomain, $domains, $hostAliases);
+            } catch (\InvalidArgumentException) {
+                $problems[] = 'TINVAR_APP_DOMAIN must be a host name, with a scheme and a port if it needs them; each of '
+                    . 'TINVAR_DOMAINS a name and a host name; each of TINVAR_HOST_ALIASES a host name or an address.';
+            }
         }
 
         try {

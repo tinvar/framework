@@ -138,6 +138,35 @@ final readonly class TrustedProxies
         return '';
     }
 
+    /**
+     * The Host a request was sent to: X-Forwarded-Host when the peer is a
+     * pinned proxy and sent one, read from the right as X-Forwarded-For is
+     * -- the value the proxy nearest this server wrote, never one the
+     * client put ahead of it -- and the Host header otherwise. Raw, as sent:
+     * HostName normalizes it, and Domains holds it to the hosts the
+     * application serves (ADR 0149).
+     */
+    public function host(Request $request): ?string
+    {
+        $host = $request->header('host');
+        if ($this->networks === []) {
+            return $host;
+        }
+
+        $packed = self::packed($request->remoteAddress ?? '');
+        if ($packed === null || !$this->trustsPacked($packed)) {
+            return $host;
+        }
+
+        $forwarded = $request->header('x-forwarded-host');
+        if ($forwarded === null || trim($forwarded, " \t") === '') {
+            return $host;
+        }
+        $hops = explode(',', $forwarded);
+
+        return trim($hops[\count($hops) - 1], " \t");
+    }
+
     private function trustsPacked(string $packed): bool
     {
         foreach ($this->networks as [$network, $prefix]) {
