@@ -54,6 +54,10 @@ use Tinvar\Tests\Support\Fixtures\Sources;
 require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenant.php';
 require_once __DIR__ . '/../Support/Fixtures/tenants.php';
 
+// Through the Kernel, which mounts the inbox and its channel: modules wired
+// together, run in the whole suite only (bin/module-alone).
+pest()->group('wired');
+
 const KEY = 'inbox-kernel-test-application-key-0123456789';
 const SESSION_COOKIE = '__Host-test_session';
 
