@@ -479,7 +479,7 @@ it('refuses a table name that is not a plain identifier', function (string $tabl
         ->toThrow(\InvalidArgumentException::class)
         ->and(fn () => PdoStore::schema('pgsql', $table))
         ->toThrow(\InvalidArgumentException::class);
-})->with(['', 'cache; DROP TABLE users', 'a.b.c', '"quoted"', '1st', 'a_table_name_long_enough_to_overflow_its_tag_table']);
+})->with(['', 'cache; DROP TABLE users', 'a.b.c', '"quoted"', '1st', 'a_table_name_long_enough_to_overflow_its_tag_table', "cache\n"]);
 
 it('names the drivers it keeps entries in', function () {
     expect(fn () => PdoStore::schema('sqlsrv'))->toThrow(\InvalidArgumentException::class, 'Postgres, MySQL or SQLite')

@@ -563,7 +563,7 @@ final class PdoStore implements Store
      */
     private static function assertIdentifier(string $table): void
     {
-        if (preg_match('/^([A-Za-z_][A-Za-z0-9_]{0,62}\.)?[A-Za-z_][A-Za-z0-9_]{0,39}$/', $table) !== 1) {
+        if (preg_match('/^([A-Za-z_][A-Za-z0-9_]{0,62}\.)?[A-Za-z_][A-Za-z0-9_]{0,39}$/D', $table) !== 1) {
             throw new \InvalidArgumentException("'{$table}' is not a table name a cache store will use.");
         }
     }
