@@ -437,6 +437,34 @@ describe('userinfo (ADR 0124)', function () {
     });
 });
 
+// Review: a provider that could not be reached escaped as the HTTP
+// client's own failure, where every failure of a sign-in is documented as
+// OidcSignInFailed -- an application catching it as told answered an
+// outage with a 500. And a refresh that could not reach the provider is no
+// word from it that the grant is over.
+describe('a provider that cannot be reached', function () {
+    it('fails a sign-in as the provider\'s, whichever endpoint is down', function (string $endpoint) {
+        $idp = new FakeOidcProvider();
+        $client = client($idp);
+        $url = $client->start(SESSION);
+        $answer = $idp->authorize($url);
+        $idp->down = [$endpoint];
+
+        // Another worker's client, which has not read the document yet.
+        expect(failure(fn () => client($idp)->finish(SESSION, $answer)))->toBe('provider');
+    })->with(['the discovery document' => ['/.well-known/openid-configuration'], 'the token endpoint' => ['/token']]);
+
+    it('fails a refresh and userinfo as the provider\'s, not as the grant\'s end', function () {
+        $idp = new FakeOidcProvider();
+        $client = client($idp);
+        $signIn = $client->finish(SESSION, $idp->authorize($client->start(SESSION)));
+        $idp->down = ['/token', '/userinfo'];
+
+        expect(failure(fn () => $client->refresh($signIn->tokens->refreshToken ?? throw new \LogicException(), $signIn->idToken)))->toBe('provider')
+            ->and(failure(fn () => $client->userinfo($signIn->tokens->accessToken, $signIn->idToken)))->toBe('provider');
+    });
+});
+
 describe('a refresh (ADR 0124)', function () {
     it('trades the refresh token for new ones, the ID token verified as the same person\'s', function () {
         $idp = new FakeOidcProvider();

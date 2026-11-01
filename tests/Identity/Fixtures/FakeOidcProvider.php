@@ -62,6 +62,9 @@ final class FakeOidcProvider
     /** Shapes a refresh's ID token, as $shape a sign-in's. */
     public ?\Closure $refreshShape = null;
 
+    /** @var list<string> the endpoints that time out, by path: '/token', '/jwks' */
+    public array $down = [];
+
     public readonly FakeOutboundHttp $http;
 
     public function __construct()
@@ -145,6 +148,9 @@ final class FakeOidcProvider
     private function answer(OutboundRequest $request): OutboundResponse
     {
         $json = static fn (mixed $body, int $status = 200): OutboundResponse => new OutboundResponse($status, ['content-type' => ['application/json']], (string) json_encode($body));
+        if (\in_array(substr($request->url, \strlen(self::ISSUER)), $this->down, true)) {
+            throw new \Tinvar\Outbound\OutboundFailed(\Tinvar\Outbound\OutboundFailed::TIMEOUT, "{$request->url} did not answer in time.");
+        }
 
         return match ($request->url) {
             self::ISSUER . '/.well-known/openid-configuration' => $json(array_merge([

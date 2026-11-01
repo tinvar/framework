@@ -8,8 +8,11 @@ use Tinvar\Config\Secret;
 use Tinvar\Http\NonceStore;
 use Tinvar\Http\Response;
 use Tinvar\Outbound\Destinations;
+use Tinvar\Outbound\OutboundFailed;
 use Tinvar\Outbound\OutboundHttp;
+use Tinvar\Outbound\OutboundRefused;
 use Tinvar\Outbound\OutboundRequest;
+use Tinvar\Outbound\OutboundResponse;
 use Tinvar\Render\SignedToken;
 use Tinvar\Render\TokenError;
 use Tinvar\Support\Signer;
@@ -131,7 +134,7 @@ final class OidcClient
         if ($sessionId === '') {
             throw new \InvalidArgumentException('A sign-in is begun by a session: there is none to bind it to.');
         }
-        $provider = $this->discovery->discover($this->issuer);
+        $provider = $this->reach(fn (): OidcProvider => $this->discovery->discover($this->issuer));
         if (!$provider->supportsPkce()) {
             throw new OidcSignInFailed(OidcSignInFailed::PROVIDER, "{$this->issuer} does not take PKCE's S256; a sign-in without it is not begun.");
         }
@@ -214,7 +217,7 @@ final class OidcClient
             throw new OidcSignInFailed(OidcSignInFailed::TOKEN, 'The answer carries no code.');
         }
 
-        $provider = $this->discovery->discover($this->issuer);
+        $provider = $this->reach(fn (): OidcProvider => $this->discovery->discover($this->issuer));
         $tokens = $this->grant($provider, [
             'grant_type' => 'authorization_code',
             'code' => $code,
@@ -229,7 +232,7 @@ final class OidcClient
             $verified = $this->verifier->verify(
                 $tokens->idToken->reveal(),
                 $provider,
-                fn (bool $refresh): array => $this->discovery->keys($provider, $refresh),
+                fn (bool $refresh): array => $this->reach(fn (): array => $this->discovery->keys($provider, $refresh)),
                 $this->clientId,
                 $this->nonce($id, $sessionId),
                 $now,
@@ -256,7 +259,7 @@ final class OidcClient
      */
     public function userinfo(Secret $accessToken, IdToken $idToken): array
     {
-        $provider = $this->discovery->discover($this->issuer);
+        $provider = $this->reach(fn (): OidcProvider => $this->discovery->discover($this->issuer));
         if ($provider->userinfoEndpoint === null) {
             throw new OidcSignInFailed(OidcSignInFailed::PROVIDER, "{$this->issuer} names no userinfo endpoint.");
         }
@@ -264,14 +267,15 @@ final class OidcClient
             throw new OidcSignInFailed(OidcSignInFailed::USERINFO, 'The ID token is another provider\'s.');
         }
 
-        $response = $this->http->send(new OutboundRequest(
+        $endpoint = $provider->userinfoEndpoint;
+        $response = $this->reach(fn (): OutboundResponse => $this->http->send(new OutboundRequest(
             'GET',
-            $provider->userinfoEndpoint,
+            $endpoint,
             ['accept' => 'application/json', 'authorization' => 'Bearer ' . $accessToken->reveal()],
             timeout: OidcDiscovery::TIMEOUT * 2,
             maxResponseBytes: self::MAX_TOKEN_RESPONSE,
-            destinations: Destinations::originOf($provider->userinfoEndpoint),
-        ));
+            destinations: Destinations::originOf($endpoint),
+        )));
         if ($response->status !== 200) {
             throw new OidcSignInFailed(OidcSignInFailed::USERINFO, "{$this->issuer}'s userinfo endpoint answered {$response->status}.");
         }
@@ -314,7 +318,7 @@ final class OidcClient
             throw new OidcSignInFailed(OidcSignInFailed::REFRESH, 'The sign-in being renewed was another provider\'s.');
         }
         $now = ($this->clock)();
-        $provider = $this->discovery->discover($this->issuer);
+        $provider = $this->reach(fn (): OidcProvider => $this->discovery->discover($this->issuer));
         $tokens = $this->grant($provider, [
             'grant_type' => 'refresh_token',
             'refresh_token' => $refreshToken->reveal(),
@@ -326,7 +330,7 @@ final class OidcClient
                 $idToken = $this->verifier->verifyRefreshed(
                     $tokens->idToken->reveal(),
                     $provider,
-                    fn (bool $refresh): array => $this->discovery->keys($provider, $refresh),
+                    fn (bool $refresh): array => $this->reach(fn (): array => $this->discovery->keys($provider, $refresh)),
                     $this->clientId,
                     $signedIn,
                     $now,
@@ -359,7 +363,7 @@ final class OidcClient
      */
     public function logoutUrl(?Secret $idTokenHint = null): string
     {
-        $provider = $this->discovery->discover($this->issuer);
+        $provider = $this->reach(fn (): OidcProvider => $this->discovery->discover($this->issuer));
         if ($provider->endSessionEndpoint === null) {
             throw new OidcSignInFailed(OidcSignInFailed::PROVIDER, "{$this->issuer} names no end-session endpoint.");
         }
@@ -374,6 +378,27 @@ final class OidcClient
 
         return $provider->endSessionEndpoint . (str_contains($provider->endSessionEndpoint, '?') ? '&' : '?')
             . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+    }
+
+    /**
+     * What $call answers, a provider that could not be reached -- its
+     * discovery document, its keys, or an endpoint unanswered, refused or
+     * out of time -- failing as the provider's (`provider`): every failure
+     * here is an OidcSignInFailed, as its callers are told, and a refresh
+     * that never reached the provider is no word from it that the grant
+     * is over.
+     *
+     * @template T
+     * @param \Closure(): T $call
+     * @return T
+     */
+    private function reach(\Closure $call): mixed
+    {
+        try {
+            return $call();
+        } catch (OidcDiscoveryFailed|OutboundFailed|OutboundRefused $e) {
+            throw new OidcSignInFailed(OidcSignInFailed::PROVIDER, "{$this->issuer} could not be reached: {$e->getMessage()}", $e);
+        }
     }
 
     /**
@@ -393,7 +418,7 @@ final class OidcClient
             $form['client_id'] = $this->clientId;
         }
 
-        $response = $this->http->send(new OutboundRequest(
+        $response = $this->reach(fn (): OutboundResponse => $this->http->send(new OutboundRequest(
             'POST',
             $provider->tokenEndpoint,
             $headers,
@@ -401,7 +426,7 @@ final class OidcClient
             timeout: OidcDiscovery::TIMEOUT * 2,
             maxResponseBytes: self::MAX_TOKEN_RESPONSE,
             destinations: Destinations::originOf($provider->tokenEndpoint),
-        ));
+        )));
         if ($response->status !== 200) {
             throw new OidcSignInFailed($reason, "{$this->issuer}'s token endpoint answered {$response->status}.");
         }

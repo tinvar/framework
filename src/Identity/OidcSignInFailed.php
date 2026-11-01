@@ -12,7 +12,10 @@ namespace Tinvar\Identity;
  * with the IdTokenRefused as its previous). Afterwards: userinfo that did
  * not answer for the same person (`userinfo`), or a refresh not granted or
  * not believed (`refresh`) -- which the application takes as the person
- * signed out at the provider.
+ * signed out at the provider. And a provider that could not be reached --
+ * its document, its keys or an endpoint unanswered, refused or out of time
+ * (`provider`) -- which, for a refresh, says nothing of the grant: the
+ * person is still signed in, and the refresh is tried again later.
  *
  * Every one is the same answer to the browser -- sign in again -- and the
  * reason is for the log alone, as a handoff's refusals are.
