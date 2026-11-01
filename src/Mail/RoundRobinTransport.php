@@ -24,13 +24,14 @@ final class RoundRobinTransport implements Delivers
      * @param int $retryAfter seconds a failed transport is passed over
      * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
      * @param int|null $start the first message's transport, for tests; random unless given
+     * @param float $deadline seconds one message's failover is given (FailoverTransport::DEADLINE)
      */
-    public function __construct(array $transports, int $retryAfter = 60, ?\Closure $clock = null, ?int $start = null)
+    public function __construct(array $transports, int $retryAfter = 60, ?\Closure $clock = null, ?int $start = null, float $deadline = FailoverTransport::DEADLINE)
     {
         if (\count($transports) < 2) {
             throw new \InvalidArgumentException('A round robin is two transports or more.');
         }
-        $this->failover = new FailoverTransport($transports, $retryAfter, $clock);
+        $this->failover = new FailoverTransport($transports, $retryAfter, $clock, $deadline);
         $this->next = $start ?? random_int(0, \count($transports) - 1);
     }
 

@@ -19,10 +19,13 @@ use Tinvar\Jobs\JobRefused;
  * reader -- fails the job at once (JobRefused), since every retry would be
  * refused the same way, and spend the provider's patience doing it.
  */
-#[Queue(self::QUEUE, tries: 5, backoff: [10, 60, 300, 900], timeout: 60)]
+#[Queue(self::QUEUE, tries: 5, backoff: [10, 60, 300, 900], timeout: self::TIMEOUT)]
 final readonly class SendMail implements Job
 {
     public const string QUEUE = 'mail';
+
+    /** Seconds a send is given: a failover's deadline fits inside it (FailoverTransport::DEADLINE). */
+    public const int TIMEOUT = 60;
 
     /** JobRefused::$reason for a message a transport refused for good. */
     public const string REFUSED = 'mail_refused';

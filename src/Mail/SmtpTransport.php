@@ -20,7 +20,7 @@ namespace Tinvar\Mail;
  * domain as it is written; the key stays in this process, and is never the
  * renderer's.
  */
-final readonly class SmtpTransport implements Transport
+final readonly class SmtpTransport implements Bounded
 {
     public const string NONE = 'none';
     public const string STARTTLS = 'starttls';
@@ -29,6 +29,10 @@ final readonly class SmtpTransport implements Transport
     /** The longest reply line read as one; RFC 5321 allows 512 bytes. */
     private const int LONGEST_LINE = 4096;
 
+    /**
+     * @param float|null $until when the whole send ends, on microtime()'s clock; null when
+     *        nothing holds it. A failover sets it through within()
+     */
     public function __construct(
         private string $host,
         private int $port = 587,
@@ -39,6 +43,7 @@ final readonly class SmtpTransport implements Transport
         private float $timeout = 10.0,
         private string $localDomain = 'localhost',
         private ?DkimSigner $dkim = null,
+        private ?float $until = null,
     ) {
         if (!\in_array($encryption, [self::NONE, self::STARTTLS, self::TLS], true)) {
             throw new \InvalidArgumentException("'{$encryption}' is not an SMTP encryption: none, starttls or tls.");
@@ -48,14 +53,27 @@ final readonly class SmtpTransport implements Transport
         }
     }
 
+    /**
+     * The same, its whole send ended $seconds from now: each reply is still
+     * given the timeout, or what is left, whichever is less.
+     */
+    public function within(float $seconds): static
+    {
+        return clone($this, ['until' => microtime(true) + $seconds]);
+    }
+
     public function send(Message $message): void
     {
+        $budget = $this->budget();
+        if ($budget <= 0) {
+            throw $this->unanswered('nothing: no time was left');
+        }
         $scheme = $this->encryption === self::TLS ? 'tls' : 'tcp';
-        $socket = @stream_socket_client("{$scheme}://{$this->host}:{$this->port}", $errno, $error, $this->timeout);
+        $socket = @stream_socket_client("{$scheme}://{$this->host}:{$this->port}", $errno, $error, $budget);
         if ($socket === false) {
             throw new MailTransportException("Cannot reach the SMTP server at {$this->host}:{$this->port}: {$error}", transport: 'smtp');
         }
-        stream_set_timeout($socket, (int) ceil($this->timeout));
+        stream_set_timeout($socket, (int) ceil($budget));
 
         try {
             $this->expect($socket, [220]);
@@ -187,7 +205,7 @@ final readonly class SmtpTransport implements Transport
      */
     private function expect($socket, array $accepted, string $after = 'connecting'): array
     {
-        $deadline = microtime(true) + $this->timeout;
+        $deadline = microtime(true) + $this->budget();
         $lines = [];
         do {
             $line = '';
@@ -219,6 +237,12 @@ final readonly class SmtpTransport implements Transport
         }
 
         return $lines;
+    }
+
+    /** Seconds the next wait is given: the timeout, or what within() left, whichever is less. */
+    private function budget(): float
+    {
+        return $this->until === null ? $this->timeout : min($this->timeout, $this->until - microtime(true));
     }
 
     private function unanswered(string $after): MailTransportException

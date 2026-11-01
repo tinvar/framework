@@ -7,6 +7,7 @@ namespace Tinvar\Mail\Providers;
 use Tinvar\Aws\AwsCredentials;
 use Tinvar\Aws\SigV4;
 use Tinvar\Mail\Address;
+use Tinvar\Mail\Bounded;
 use Tinvar\Mail\Delivers;
 use Tinvar\Mail\DkimSigner;
 use Tinvar\Mail\Message;
@@ -38,7 +39,7 @@ use Tinvar\Outbound\OutboundResponse;
  * domain not verified or a configuration set not found are the
  * transport's, and retryable.
  */
-final readonly class SesTransport implements Delivers
+final readonly class SesTransport implements Delivers, Bounded
 {
     public const string NAME = 'ses';
 
@@ -75,6 +76,11 @@ final readonly class SesTransport implements Delivers
         $this->signer = new SigV4($credentials, $region, 'ses');
         $this->dkim = $dkim?->excluding('date', 'message-id');
         $this->http = new ProviderHttp($http, self::NAME, 'Amazon SES', [$this->host], $timeout, $credentials->redact(...));
+    }
+
+    public function within(float $seconds): static
+    {
+        return clone($this, ['http' => $this->http->within($seconds)]);
     }
 
     public function send(Message $message): void

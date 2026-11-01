@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Mail\Providers;
 
 use Tinvar\Config\Secret;
+use Tinvar\Mail\Bounded;
 use Tinvar\Mail\Delivers;
 use Tinvar\Mail\DkimSigner;
 use Tinvar\Mail\Message;
@@ -29,7 +30,7 @@ use Tinvar\Outbound\OutboundResponse;
  * A 404 is a domain Mailgun does not have under this key, or not in this
  * region: the configuration, retryable as a 401 is.
  */
-final readonly class MailgunTransport implements Delivers
+final readonly class MailgunTransport implements Delivers, Bounded
 {
     public const string NAME = 'mailgun';
 
@@ -66,6 +67,11 @@ final readonly class MailgunTransport implements Delivers
         }
         $this->host = self::HOSTS[$region] ?? throw new \InvalidArgumentException("'{$region}' is not a Mailgun region: us or eu.");
         $this->http = new ProviderHttp($http, self::NAME, 'Mailgun', [$this->host], $timeout);
+    }
+
+    public function within(float $seconds): static
+    {
+        return clone($this, ['http' => $this->http->within($seconds)]);
     }
 
     public function send(Message $message): void

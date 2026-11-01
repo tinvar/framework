@@ -17,7 +17,11 @@ use Tinvar\Outbound\OutboundResponse;
  * How a mail provider's API is called: through the application's one
  * OutboundHttp, held to the provider's own origin, within a timeout, and
  * following no redirect -- a 3xx from an API is a failure, never somewhere
- * else to send a key to.
+ * else to send a key to. And a permanent one: an API that redirects its
+ * send endpoint is a misconfiguration -- a wrong host or region, a proxy in
+ * the way -- that the same request will meet again, later or retried, so
+ * no backoff spends the provider's patience on it, and a failover, which
+ * goes on only for the transport's passing trouble, stops there.
  *
  * And how it fails. A request refused before it left, or one that did not
  * finish -- a timeout, a refused connection, TLS -- is retryable: nothing
@@ -64,6 +68,15 @@ final readonly class ProviderHttp
     ) {
         $this->destinations = Destinations::hosts($hosts);
         $this->redactor = new Redactor(traces: false);
+    }
+
+    /**
+     * The same, given $seconds at most: its own timeout when that is
+     * shorter. What a failover holds a provider to (Bounded).
+     */
+    public function within(float $seconds): self
+    {
+        return clone($this, ['timeout' => min($this->timeout, $seconds)]);
     }
 
     /**

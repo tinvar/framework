@@ -7,6 +7,7 @@ namespace Tinvar\Mail\Providers;
 use Tinvar\Config\Secret;
 use Tinvar\Mail\Address;
 use Tinvar\Mail\Attachment;
+use Tinvar\Mail\Bounded;
 use Tinvar\Mail\Delivers;
 use Tinvar\Mail\Message;
 use Tinvar\Mail\SentMessage;
@@ -28,7 +29,7 @@ use Tinvar\Outbound\OutboundHttp;
  * SendGrid answers 202 with no body; the message's id is its X-Message-Id
  * header.
  */
-final readonly class SendGridTransport implements Delivers
+final readonly class SendGridTransport implements Delivers, Bounded
 {
     public const string NAME = 'sendgrid';
 
@@ -56,6 +57,11 @@ final readonly class SendGridTransport implements Delivers
         }
         $this->host = self::HOSTS[$region] ?? throw new \InvalidArgumentException("'{$region}' is not a SendGrid region: global or eu.");
         $this->http = new ProviderHttp($http, self::NAME, 'SendGrid', [$this->host], $timeout);
+    }
+
+    public function within(float $seconds): static
+    {
+        return clone($this, ['http' => $this->http->within($seconds)]);
     }
 
     public function send(Message $message): void

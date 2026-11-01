@@ -17,6 +17,7 @@ use Tinvar\Aws\AwsCredentials;
 use Tinvar\Aws\SigV4;
 use Tinvar\Mail\Address;
 use Tinvar\Mail\Attachment;
+use Tinvar\Mail\Bounded;
 use Tinvar\Mail\Delivers;
 use Tinvar\Mail\DkimKey;
 use Tinvar\Mail\DkimSigner;
@@ -382,9 +383,23 @@ describe('every provider', function () {
             ->and((string) $e)->not->toContain($secret);
     })->with(transports());
 
-    it('refuses to follow a redirect to anywhere', function (\Closure $make, string $secret) {
+    it('refuses to follow a redirect to anywhere, and takes it as permanent: a misconfiguration no retry or failover mends', function (\Closure $make, string $secret) {
         $e = thrown($make(fake(static fn (): OutboundResponse => new OutboundResponse(302, ['Location' => ['https://evil.example/steal']]))));
 
         expect($e->status)->toBe(302)->and($e->retryable)->toBeFalse();
+    })->with(transports());
+
+    it('is held to what is left of a failover\'s deadline, and never given longer than its own timeout', function (\Closure $make, string $secret) {
+        $http = fake(static fn (): OutboundResponse => new OutboundResponse(500));
+        $transport = $make($http);
+        expect($transport)->toBeInstanceOf(Bounded::class);
+        \assert($transport instanceof Bounded && $transport instanceof Delivers);
+
+        foreach ([$transport->within(4.5), $transport->within(90.0), $transport] as $held) {
+            \assert($held instanceof Delivers);
+            thrown($held);
+        }
+
+        expect(array_map(static fn (OutboundRequest $r): ?float => $r->timeout, $http->sent))->toBe([4.5, 15.0, 15.0]);
     })->with(transports());
 });

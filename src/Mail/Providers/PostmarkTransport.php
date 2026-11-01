@@ -6,6 +6,7 @@ namespace Tinvar\Mail\Providers;
 
 use Tinvar\Config\Secret;
 use Tinvar\Mail\Attachment;
+use Tinvar\Mail\Bounded;
 use Tinvar\Mail\Delivers;
 use Tinvar\Mail\Message;
 use Tinvar\Mail\SentMessage;
@@ -30,7 +31,7 @@ use Tinvar\Outbound\OutboundResponse;
  * recipient (406), an address it will not take (300) or anything else
  * about the message is not.
  */
-final readonly class PostmarkTransport implements Delivers
+final readonly class PostmarkTransport implements Delivers, Bounded
 {
     public const string NAME = 'postmark';
 
@@ -61,6 +62,11 @@ final readonly class PostmarkTransport implements Delivers
             throw new \InvalidArgumentException("'{$stream}' is not a Postmark message stream's id.");
         }
         $this->http = new ProviderHttp($http, self::NAME, 'Postmark', [self::HOST], $timeout);
+    }
+
+    public function within(float $seconds): static
+    {
+        return clone($this, ['http' => $this->http->within($seconds)]);
     }
 
     public function send(Message $message): void

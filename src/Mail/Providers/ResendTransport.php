@@ -6,6 +6,7 @@ namespace Tinvar\Mail\Providers;
 
 use Tinvar\Config\Secret;
 use Tinvar\Mail\Attachment;
+use Tinvar\Mail\Bounded;
 use Tinvar\Mail\Delivers;
 use Tinvar\Mail\Message;
 use Tinvar\Mail\SentMessage;
@@ -25,7 +26,7 @@ use Tinvar\Outbound\OutboundHttp;
  * The key is a Secret: a dump of this shows `[redacted]`, and every error
  * has it cut out. The id Resend answers with is the SentMessage's.
  */
-final readonly class ResendTransport implements Delivers
+final readonly class ResendTransport implements Delivers, Bounded
 {
     public const string NAME = 'resend';
 
@@ -42,6 +43,11 @@ final readonly class ResendTransport implements Delivers
             throw new \InvalidArgumentException('A Resend API key is printable ASCII, with no space.');
         }
         $this->http = new ProviderHttp($http, self::NAME, 'Resend', [self::HOST], $timeout);
+    }
+
+    public function within(float $seconds): static
+    {
+        return clone($this, ['http' => $this->http->within($seconds)]);
     }
 
     public function send(Message $message): void
