@@ -16,6 +16,7 @@ use Tinvar\Config\FrameworkConfig;
 use Tinvar\Config\Secret;
 use Tinvar\Jobs\StopBudget;
 use Tinvar\Live\HubSettings;
+use Tinvar\Http\Request;
 use Tinvar\Render\RendererUser;
 use Tinvar\Support\AppKey;
 use Tinvar\Support\BuildProfile;
@@ -210,4 +211,18 @@ it('reads the trusted proxies as a list of networks, refusing a malformed one by
         ->and($e->problems[0])->toStartWith("TINVAR_TRUSTED_PROXIES's 2nd entry is not a network")
         ->and($e->getMessage())->not->toContain('proxy.internal')
         ->and($everyone->problems[0])->toStartWith("TINVAR_TRUSTED_PROXIES's 1st entry is not a network");
+});
+
+it('holds a pinned proxy to the secret it must send, and refuses one too short or with no proxy', function () {
+    $secret = str_repeat('k', 40);
+    $config = Configs::load(FrameworkConfig::class, ['TINVAR_TRUSTED_PROXIES' => '10.0.0.0/8', 'TINVAR_TRUSTED_PROXY_SECRET' => $secret]);
+    $request = static fn (array $headers): Request => new Request('GET', '/', ['x-forwarded-for' => '198.51.100.1', ...$headers], remoteAddress: '10.1.2.3');
+    $short = refusal(['TINVAR_TRUSTED_PROXIES' => '10.0.0.0/8', 'TINVAR_TRUSTED_PROXY_SECRET' => 'short']);
+    $alone = refusal(['TINVAR_TRUSTED_PROXY_SECRET' => $secret]);
+
+    expect($config->proxies()->clientAddress($request(['x-tinvar-proxy' => $secret])))->toBe('198.51.100.1')
+        ->and($config->proxies()->clientAddress($request([])))->toBe('10.1.2.3')
+        ->and($short->problems[0])->toStartWith('TINVAR_TRUSTED_PROXY_SECRET is 32 characters or more')
+        ->and($short->getMessage())->not->toContain('short')
+        ->and($alone->problems[0])->toContain('pins no proxy');
 });

@@ -70,6 +70,8 @@ final readonly class FrameworkConfig
      * @param array<string, string> $domains further configured domains a #[Domain] pattern
      *        may end in, `admin=admin.example.net`
      * @param list<string> $hostAliases hosts, or addresses, answered as the primary host
+     * @param Secret|null $trustedProxySecret what a pinned proxy must also send, in X-Tinvar-Proxy,
+     *        to be taken for one (TrustedProxies, ADR 0134)
      */
     public function __construct(
         public ?string $dev = null,
@@ -98,11 +100,13 @@ final readonly class FrameworkConfig
         public array $domains = [],
         #[ListOf('string')]
         public array $hostAliases = [],
+        #[\SensitiveParameter]
+        public ?Secret $trustedProxySecret = null,
     ) {
         $problems = [];
 
         try {
-            TrustedProxies::of($trustedProxies);
+            TrustedProxies::of($trustedProxies, [], $trustedProxySecret?->reveal());
         } catch (\InvalidArgumentException $e) {
             $problems[] = $e->getMessage();
         }
@@ -211,7 +215,7 @@ final readonly class FrameworkConfig
      */
     public function proxies(): TrustedProxies
     {
-        return TrustedProxies::of($this->trustedProxies);
+        return TrustedProxies::of($this->trustedProxies, secret: $this->trustedProxySecret?->reveal());
     }
 
     /**

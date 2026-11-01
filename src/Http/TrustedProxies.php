@@ -37,6 +37,18 @@ namespace Tinvar\Http;
  * from it, and would otherwise name any client it liked, a throttle bucket
  * of its own for every guess. Loopback is left to the list: a terminator
  * on the same machine connects from there, and is pinned by name.
+ *
+ * A range is not proof of a proxy, though: the ranges a deployment can pin
+ * hold more than its ingress -- the node's own address, which the kubelet's
+ * probes and every hostNetwork pod connect from and most network plugins
+ * let through any NetworkPolicy, the bridge or node address a pod's
+ * connection to its own Service comes back from (hairpin), compose's
+ * gateway, which a published port's userland proxy connects from. Given a
+ * secret (`TINVAR_TRUSTED_PROXY_SECRET`), a peer in the range is a proxy
+ * only when it also sends that secret in `X-Tinvar-Proxy`, which the
+ * deployment's own proxy is set to send and to overwrite whatever a client
+ * sent in it. The renderers hold no secret, and nothing else on the node
+ * knows it.
  */
 final readonly class TrustedProxies
 {
@@ -50,11 +62,21 @@ final readonly class TrustedProxies
      */
     public const string CADDY_ENV = 'TINVAR_TRUSTED_PROXY_RANGES';
 
+    /** The variable the proof a proxy sends is read from (FrameworkConfig). */
+    public const string SECRET_ENV = 'TINVAR_TRUSTED_PROXY_SECRET';
+
+    /** The request header a pinned proxy proves itself with, when a secret is set. */
+    public const string SECRET_HEADER = 'x-tinvar-proxy';
+
+    /** The shortest secret taken: long enough not to be guessed. */
+    public const int MIN_SECRET = 32;
+
     /**
      * @param list<array{string, int}> $networks each network's packed address and its prefix length
      * @param list<string> $own this machine's own addresses, packed, loopback left out: never a proxy
+     * @param string|null $secretHash the SHA-256 of the secret a proxy must send, or null for none
      */
-    private function __construct(private array $networks, private array $own = []) {}
+    private function __construct(private array $networks, private array $own = [], private ?string $secretHash = null) {}
 
     /** No proxy: the peer is always the client. */
     public static function none(): self
@@ -66,10 +88,17 @@ final readonly class TrustedProxies
      * @param list<string> $entries CIDR networks, `10.0.0.0/8` or `fd00::/8`, or single addresses
      * @param list<string>|null $own this machine's own addresses, which are never a proxy; read
      *        from its interfaces (ownAddresses()) unless given. Loopback among them is left out.
-     * @throws \InvalidArgumentException naming the first malformed entry by its place
+     * @param string|null $secret what a peer in a pinned network must also send in SECRET_HEADER to be
+     *        taken for a proxy; null or '' for none, the range alone deciding
+     * @throws \InvalidArgumentException naming the first malformed entry by its place, or for a
+     *         secret too short to hold, or one given with no network for it to prove
      */
-    public static function of(array $entries, ?array $own = null): self
+    public static function of(array $entries, ?array $own = null, #[\SensitiveParameter] ?string $secret = null): self
     {
+        $secret = $secret === null || $secret === '' ? null : $secret;
+        if ($secret !== null && \strlen($secret) < self::MIN_SECRET) {
+            throw new \InvalidArgumentException(self::SECRET_ENV . ' is ' . self::MIN_SECRET . ' characters or more.');
+        }
         $networks = [];
         foreach ($entries as $i => $entry) {
             $network = self::network($entry);
@@ -84,6 +113,10 @@ final readonly class TrustedProxies
             $networks[] = $network;
         }
         if ($networks === []) {
+            if ($secret !== null) {
+                throw new \InvalidArgumentException(self::SECRET_ENV . ' is set, and ' . self::ENV . ' pins no proxy to send it.');
+            }
+
             return new self([]);
         }
 
@@ -95,7 +128,7 @@ final readonly class TrustedProxies
             }
         }
 
-        return new self($networks, array_values(array_unique($packed)));
+        return new self($networks, array_values(array_unique($packed)), $secret === null ? null : hash('sha256', $secret, true));
     }
 
     /**
@@ -169,7 +202,7 @@ final readonly class TrustedProxies
         if ($packed === null) {
             return '';
         }
-        if (!$this->trustsPeer($packed)) {
+        if (!$this->trustsPeer($packed, $request)) {
             return $peer;
         }
 
@@ -213,7 +246,7 @@ final readonly class TrustedProxies
         }
 
         $packed = self::packed($request->remoteAddress ?? '');
-        if ($packed === null || !$this->trustsPeer($packed)) {
+        if ($packed === null || !$this->trustsPeer($packed, $request)) {
             return $host;
         }
 
@@ -226,10 +259,23 @@ final readonly class TrustedProxies
         return trim($hops[\count($hops) - 1], " \t");
     }
 
-    /** Whether a peer is a pinned proxy: in a pinned network, and not this machine itself. */
-    private function trustsPeer(string $packed): bool
+    /**
+     * Whether a peer is a pinned proxy: in a pinned network, not this machine
+     * itself, and -- given a secret -- sending it.
+     */
+    private function trustsPeer(string $packed, Request $request): bool
     {
-        return !\in_array($packed, $this->own, true) && $this->trustsPacked($packed);
+        if (\in_array($packed, $this->own, true) || !$this->trustsPacked($packed)) {
+            return false;
+        }
+        if ($this->secretHash === null) {
+            return true;
+        }
+        $proof = $request->header(self::SECRET_HEADER);
+
+        // Compared as hashes, in constant time: the length of what was sent
+        // says nothing of the secret's.
+        return $proof !== null && $proof !== '' && hash_equals($this->secretHash, hash('sha256', $proof, true));
     }
 
     /** Whether a packed address is loopback: 127.0.0.0/8 or ::1. */

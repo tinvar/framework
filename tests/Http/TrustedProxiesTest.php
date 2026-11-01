@@ -184,3 +184,58 @@ describe("a peer at the server's own address", function () {
             ->and(array_values(array_filter($own, static fn (string $a): bool => str_starts_with($a, '127.') || $a === '::1')))->toBe([]);
     });
 });
+
+/**
+ * A range is not proof. The shipped ranges hold more than the ingress: the
+ * node's own address, which the kubelet's probes and every hostNetwork pod
+ * connect from and most network plugins let through any NetworkPolicy; the
+ * bridge or node address a pod's connection to its own Service is
+ * masqueraded to on the way back in (hairpin), which the renderers sharing
+ * the pod can reach; compose's gateway, which a published port's userland
+ * proxy connects from. Any of them, in the range, named any client it
+ * liked. Given a secret, a peer is a proxy only when it also sends it, in
+ * X-Tinvar-Proxy, as the deployment's own proxy is set to; the renderers
+ * hold no secret, and nothing else on the node knows it.
+ */
+describe('a proxy secret', function () {
+    $secret = str_repeat('s3cr3t-', 6);
+    $proxies = TrustedProxies::of(['10.0.0.0/8'], own: [], secret: $secret);
+    $from = static fn (string $peer, ?string $proof, string $forwarded = '198.51.100.1'): Request => new Request(
+        'GET',
+        '/',
+        ['x-forwarded-for' => $forwarded, 'x-forwarded-host' => 'admin.shop.test', 'host' => 'shop.test', ...($proof === null ? [] : [TrustedProxies::SECRET_HEADER => $proof])],
+        remoteAddress: $peer,
+    );
+
+    it('makes a peer in the range a proxy only when it sends it', function () use ($proxies, $from, $secret) {
+        expect($proxies->clientAddress($from('10.244.0.7', $secret)))->toBe('198.51.100.1')
+            ->and($proxies->host($from('10.244.0.7', $secret)))->toBe('admin.shop.test');
+    });
+
+    it('leaves a peer in the range that sends none, or another, the client itself', function (?string $proof) use ($proxies, $from) {
+        // The node, a hairpinned Service connection, the bridge gateway: in
+        // the range, and no proxy of the deployment's.
+        expect($proxies->clientAddress($from('10.244.0.1', $proof)))->toBe('10.244.0.1')
+            ->and($proxies->host($from('10.244.0.1', $proof)))->toBe('shop.test');
+    })->with([
+        'none' => [null],
+        'empty' => [''],
+        'another' => [str_repeat('x', 42)],
+        'a prefix of it' => [str_repeat('s3cr3t-', 5)],
+    ]);
+
+    it('cannot spread guesses over buckets without it', function () use ($proxies, $from) {
+        $throttle = new Throttle(new ArrayThrottleStore(), new AuthContext(), $proxies->clientAddress(...));
+
+        foreach (range(1, 3) as $i) {
+            $throttle->hitAddress('sign-in', $from('10.244.0.1', null, "198.51.100.{$i}"), 3, 60);
+        }
+
+        expect($throttle->hitAddress('sign-in', $from('10.244.0.1', null, '198.51.100.9'), 3, 60)->allowed)->toBeFalse();
+    });
+
+    it('is refused when it is short enough to guess, or given with no proxy to prove', function () {
+        expect(fn () => TrustedProxies::of(['10.0.0.0/8'], own: [], secret: 'short'))->toThrow(\InvalidArgumentException::class)
+            ->and(fn () => TrustedProxies::of([], own: [], secret: str_repeat('s', 32)))->toThrow(\InvalidArgumentException::class);
+    });
+});
