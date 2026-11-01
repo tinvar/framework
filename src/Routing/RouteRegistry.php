@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Routing;
 
+use Tinvar\Attributes\AdminResource;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Domain;
 use Tinvar\Attributes\EncryptHistory;
@@ -85,6 +86,18 @@ final class RouteRegistry
         $pageAttribute = $reflection->getAttributes(Page::class)[0] ?? null;
         $layoutAttribute = $reflection->getAttributes(Layout::class)[0] ?? null;
         $errorAttribute = $reflection->getAttributes(ErrorPage::class)[0] ?? null;
+        $resourceAttribute = $reflection->getAttributes(AdminResource::class)[0] ?? null;
+
+        if ($resourceAttribute !== null) {
+            if ($pageAttribute !== null || $layoutAttribute !== null || $errorAttribute !== null) {
+                throw new RoutingException(
+                    "{$class} is an #[AdminResource] and declares a route of its own too. A resource's pages are its four screens; "
+                    . 'put another page in a class of its own.',
+                );
+            }
+
+            return $this->registerResource($class, $resourceAttribute->newInstance())[0];
+        }
 
         if ($errorAttribute !== null) {
             if ($pageAttribute !== null || $layoutAttribute !== null) {
@@ -225,7 +238,122 @@ final class RouteRegistry
      */
     public function registerAll(array $classes): array
     {
-        return array_map($this->register(...), $classes);
+        $routes = [];
+        foreach ($classes as $class) {
+            $resource = AdminResource::of($class);
+            $routes = $resource === null || self::declaresRoute($class)
+                ? [...$routes, $this->register($class)]
+                : [...$routes, ...$this->registerResource($class, $resource)];
+        }
+
+        return $routes;
+    }
+
+    /** @param class-string $class */
+    private static function declaresRoute(string $class): bool
+    {
+        $reflection = new \ReflectionClass($class);
+
+        return $reflection->getAttributes(Page::class) !== [] || $reflection->getAttributes(Layout::class) !== []
+            || $reflection->getAttributes(ErrorPage::class) !== [];
+    }
+
+    /**
+     * An #[AdminResource]'s four pages (ADR 0150), each registered as a
+     * page declared by #[Page] is -- held to the same rules, checked by
+     * the same binder and build rules -- with the loader it runs on the
+     * class, and the check the attribute names for it.
+     *
+     * Every declaration a page reads off its class is read off this one:
+     * #[Domain], #[TenantFrom], #[Middleware], class-level #[Authorize] and
+     * #[Panel], to which the attribute's panel is added, so the panel's
+     * guard and membership check run first on every screen. The check for
+     * each screen comes from the attribute, never from the class's methods:
+     * a loader overridden without its #[Authorize] cannot lose it, and the
+     * loaders on Resource are final besides.
+     *
+     * @param class-string $class
+     * @return non-empty-list<CompiledRoute> the list first
+     */
+    private function registerResource(string $class, AdminResource $resource): array
+    {
+        $model = $resource->model;
+        if (!class_exists($model) || !is_subclass_of($model, \Tinvar\Orm\Model::class)) {
+            throw new RoutingException("{$class} is an #[AdminResource] of {$model}, which is not a model. Name a subclass of Tinvar\\Orm\\Model.");
+        }
+        $reflection = new \ReflectionClass($class);
+        if (!$reflection->isInstantiable()) {
+            throw new RoutingException("{$class} is an #[AdminResource] and cannot be built. Make it a concrete class.");
+        }
+        foreach (AdminResource::screens() as $screen) {
+            if (!$reflection->hasMethod($screen['loader'])) {
+                throw new RoutingException(
+                    "{$class} is an #[AdminResource] with no {$screen['loader']}() loader. Extend Resource, the resources module's base class, which has them.",
+                );
+            }
+        }
+
+        $host = self::hostOf($class);
+        $panels = [...self::panelsOf($class), $resource->panelDeclaration()];
+        try {
+            PanelBinding::of($panels);
+        } catch (\LogicException $e) {
+            throw new RoutingException("{$class}: {$e->getMessage()}", 0, $e);
+        }
+        $tenantFrom = self::tenantFromOf($class);
+        $classChecks = Authorize::declaredOn($class);
+        $base = $resource->basePath();
+        $slug = $resource->slug();
+
+        $routes = [];
+        foreach (AdminResource::screens() as $screen) {
+            $path = ($base . $screen['path']) === '' ? '/' : $base . $screen['path'];
+            $view = "{$resource->viewDirectory()}/{$screen['view']}";
+            $name = "{$resource->panel}.{$slug}.{$screen['name']}";
+            if (!Str::isViewPath($view)) {
+                throw RoutingException::badView($class, $view);
+            }
+            if (!Str::isDottedIdentifier($name)) {
+                throw RoutingException::badName($class, $name);
+            }
+
+            $segments = self::compile($path);
+            if (self::isFrameworkPath($segments)) {
+                throw RoutingException::frameworkPath($class, $path);
+            }
+            $pathParameters = self::parametersOf($path, $segments);
+            foreach ($host->parameters ?? [] as $parameter) {
+                if (\in_array($parameter, $pathParameters, true)) {
+                    throw new RoutingException("{$class} takes '{$parameter}' from both its host ({$host?->pattern}) and its path ({$path}). A parameter comes from one place.");
+                }
+            }
+
+            $route = new CompiledRoute(
+                kind: RouteKind::Page,
+                class: $class,
+                template: self::normalizeTemplate($path),
+                view: $view,
+                name: $name,
+                segments: $segments,
+                parameters: [...($host->parameters ?? []), ...$pathParameters],
+                middleware: Middleware::declaredOn($class, $screen['loader']),
+                // The class's own checks first, as for any page, then the
+                // screen's: the record by name, or the model's class.
+                checks: [...$classChecks, new Authorize($screen['ability'], $screen['record'] ? AdminResource::RECORD : $model)],
+                tenantFrom: $tenantFrom,
+                panels: $panels,
+                host: $host,
+                loader: $screen['loader'],
+                bindings: $screen['record'] ? [AdminResource::RECORD => $model] : [],
+            );
+
+            Binder::assertBindable($route);
+            $this->add($route);
+            $routes[] = $route;
+        }
+        \assert($routes !== []);
+
+        return $routes;
     }
 
     private function add(CompiledRoute $route): void

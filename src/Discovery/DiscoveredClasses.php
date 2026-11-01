@@ -26,7 +26,7 @@ final readonly class DiscoveredClasses
      * class decided about to its policy, every other kind a list.
      */
     public const array KINDS = [
-        'routes' => 'pages, layouts and error pages: #[Page], #[Layout], #[ErrorPage]',
+        'routes' => 'pages, layouts, error pages and admin resources: #[Page], #[Layout], #[ErrorPage], #[AdminResource]',
         'queries' => '#[Query]',
         'actions' => 'a public #[Action] method',
         'endpoints' => 'a public #[Get], #[Post] or #[Endpoint] method',

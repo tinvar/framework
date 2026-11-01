@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Discovery;
 
 use Tinvar\Attributes\Action;
+use Tinvar\Attributes\AdminResource;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Channel;
 use Tinvar\Attributes\Command;
@@ -99,7 +100,8 @@ final class Classifier
 
         $name = $class->getName();
         $kinds = [];
-        if (self::has($class, Page::class) || self::has($class, Layout::class) || self::has($class, ErrorPage::class)) {
+        if (self::has($class, Page::class) || self::has($class, Layout::class) || self::has($class, ErrorPage::class)
+            || self::has($class, AdminResource::class)) {
             $kinds[] = 'routes';
         }
         $query = self::has($class, Query::class);

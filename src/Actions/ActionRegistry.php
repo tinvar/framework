@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Actions;
 
 use Tinvar\Attributes\Action;
+use Tinvar\Attributes\AdminResource;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\ClassAttributes;
 use Tinvar\Attributes\Cors;
@@ -56,6 +57,18 @@ final class ActionRegistry
         // A Tinvar attribute naming no class would be matched by nothing, and
         // what it declares would not hold (KnownAttributes).
         KnownAttributes::check($reflection);
+
+        // An admin resource's declarations are held to its model here, where
+        // its actions register: a column naming no property, a bulk action
+        // naming no method, is a refusal at boot, not a 500 on its list
+        // (ADR 0150).
+        if (is_subclass_of($class, \Tinvar\Resources\Resource::class) || AdminResource::of($class) !== null) {
+            try {
+                \Tinvar\Resources\ResourceDefinition::of($class);
+            } catch (\LogicException $e) {
+                throw new ActionException($e->getMessage(), 0, $e);
+            }
+        }
 
         // A bare id naming a tenant's model, in an action's parameters or the
         // form request it takes, reaches the body unscoped (ADR 0105).
@@ -153,7 +166,16 @@ final class ActionRegistry
 
         // The class's checks first, then the method's, and the action must
         // pass every one. Only the method's own count as covering an input.
-        $checks = Authorize::declaredOn($class, $method->getName());
+        // An #[AdminResource]'s actions (ADR 0150) are Resource's, written
+        // once for every model: a check naming the ORM's base Model names the
+        // resource's model, and a parameter typed as it is bound as one.
+        $resource = AdminResource::of($class);
+        $checks = array_map(
+            static fn (Authorize $check): Authorize => $resource !== null && $check->argument === Model::class
+                ? new Authorize($check->ability, $resource->model)
+                : $check,
+            Authorize::declaredOn($class, $method->getName()),
+        );
         $inherited = Authorize::classLevelCount($class);
         $exempt = $method->getAttributes(NoAuthorization::class) !== [];
 
@@ -215,6 +237,13 @@ final class ActionRegistry
             }
 
             $typeName = $type->getName();
+            if ($typeName === Model::class) {
+                $typeName = $resource !== null ? $resource->model : throw ActionException::unbindable(
+                    $where,
+                    $name,
+                    Model::class . ', which names no model: type it as one, or -- on a Tinvar\\Resources\\Resource -- declare the class an #[AdminResource]',
+                );
+            }
 
             if (is_subclass_of($typeName, Model::class)) {
                 // Checked at compile time, not trusted to a build step that
@@ -340,7 +369,7 @@ final class ActionRegistry
             optionalModels: $optional,
             classLevelChecks: $inherited,
             tenantFrom: self::tenantFromOf($where, $class, $method->getName()),
-            panels: self::panelsOf($where, $class, $method->getName()),
+            panels: self::panelsOf($where, $class, $method->getName(), $resource),
             uploads: $uploads,
             optionalUploads: $optionalUploads,
             transaction: $declaration->transaction,
@@ -412,9 +441,10 @@ final class ActionRegistry
      * @param class-string $class
      * @return list<Panel>
      */
-    private static function panelsOf(string $where, string $class, string $method): array
+    private static function panelsOf(string $where, string $class, string $method, ?AdminResource $resource = null): array
     {
-        $panels = Panel::declaredOn($class, $method);
+        // An #[AdminResource]'s actions are in its panel, as its pages are.
+        $panels = [...Panel::declaredOn($class, $method), ...($resource === null ? [] : [$resource->panelDeclaration()])];
 
         try {
             PanelBinding::of($panels);

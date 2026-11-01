@@ -86,6 +86,9 @@ $core = [
     'entry' => [
         'Tinvar\\Live\\', 'Tinvar\\Channels\\', 'Tinvar\\Actions\\', 'Tinvar\\Endpoints\\', 'Tinvar\\Uploads\\',
         'Tinvar\\Http\\EntryContext', 'Tinvar\\Http\\BuildRegistry', 'Tinvar\\Http\\Middleware\\CheckVersion', 'Tinvar\\Routing\\Router',
+        // An admin resource's screens and actions (ADR 0150): a page's
+        // loaders and an action's bodies, over the action runner's result.
+        'Tinvar\\Resources\\',
     ],
     // The framework's own endpoints under /_ and what a request's scope and
     // failure are made of, which the kernel mounts.

@@ -825,6 +825,9 @@ final class Kernel
         $cache ??= new QueryCache(new \Tinvar\Cache\ArrayStore(), $this->auth, $panels, build: $this->builds->current ?? '');
         $this->gate = $gate;
         $this->cache = $cache;
+        // The gate every check is asked through, for a class that asks it
+        // what to draw: an admin resource's links (ADR 0150).
+        $container?->instance(Gate::class, $gate);
         // A caching failure answers the call uncached, and is logged where a
         // failed request is -- never kept for the worker's life.
         $cache->reportTo($this->report(...));
