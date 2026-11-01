@@ -12,6 +12,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Jobs\DatabaseQueue;
 
+use Tinvar\Jobs\PruneQueue;
+use Tinvar\Jobs\Rate;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Queue\DatabaseQueue;
 use Tinvar\Queue\PendingJob;
@@ -134,6 +136,35 @@ it('keeps locks, windows and batches on SQLite', function () {
             }
         }
     }
+});
+
+it('prunes the rate windows and sliding starts that are past any window a rate can have', function () {
+    $connection = PdoConnection::sqlite(':memory:', 'rates');
+    [$queue] = pair($connection, static fn (): PdoConnection => $connection);
+    $then = 1_000_000;
+    $now = $then + Rate::MAX_PER;
+
+    expect($queue->slot('stale-fixed', 5, 60, $then))->toBe(0)
+        ->and($queue->slot('stale-sliding', 5, 60, $then, sliding: true))->toBe(0)
+        ->and($queue->slot('fresh-fixed', 5, 60, $now - 30))->toBe(0)
+        ->and($queue->slot('fresh-sliding', 5, 60, $now - 30, sliding: true))->toBe(0);
+
+    // The two stale windows, the stale sliding start; the fresh ones stay.
+    expect($queue->prune($now, $now - PruneQueue::KEEP))->toBe(3)
+        ->and(array_column($connection->select('SELECT queue FROM job_rates ORDER BY queue'), 'queue'))->toBe(['fresh-fixed', 'fresh-sliding'])
+        ->and(array_column($connection->select('SELECT rate_key FROM job_rate_starts'), 'rate_key'))->toBe(['fresh-sliding'])
+        // A rate pruned starts again as a new one would.
+        ->and($queue->slot('stale-fixed', 1, 60, $now))->toBe(0)
+        ->and($queue->slot('stale-fixed', 1, 60, $now))->toBeGreaterThan(0);
+});
+
+it('prunes rate windows on a queue with no sliding starts table', function () {
+    $connection = PdoConnection::sqlite(':memory:', 'rates');
+    $queue = databaseQueue($connection);
+    DatabaseQueue::defineCoordination(schemaOf($connection));
+    $queue->slot('stale', 5, 60, 1_000_000);
+
+    expect($queue->prune(1_000_000 + Rate::MAX_PER, 0))->toBe(1);
 });
 
 it('keeps locks, windows and batches on Postgres', function () {

@@ -12,6 +12,7 @@ namespace Tinvar\Tests\Jobs\PruneQueue;
 
 use Tinvar\Attributes\Schedule;
 use Tinvar\Jobs\PruneQueue;
+use Tinvar\Jobs\Rate;
 use Tinvar\Queue\ArrayQueue;
 use Tinvar\Queue\BatchRecord;
 use Tinvar\Queue\PendingJob;
@@ -33,6 +34,29 @@ it('forgets batches finished a week ago and lapsed locks, keeping the rest', fun
         ->and($queue->batch('running'))->not->toBeNull()
         ->and($queue->locked('lapsed'))->toBeNull()
         ->and($queue->locked('held'))->not->toBeNull();
+});
+
+it('forgets, on the array queue, the ends counted for a pruned batch and the rate windows long past', function () {
+    $queue = new ArrayQueue();
+    $now = 2_000_000_000;
+    $then = $now - Rate::MAX_PER;
+    $queue->addBatch(new BatchRecord('old', '', '', '', 2, 2, 0, false, 1));
+    $queue->batchJobDone('old', 'j-1', $now - PruneQueue::KEEP - 1);
+    $queue->batchJobDone('old', 'j-2', $now - PruneQueue::KEEP - 1);
+    $queue->addBatch(new BatchRecord('running', '', '', '', 2, 2, 0, false, 1));
+    $queue->batchJobDone('running', 'j-3', $now - 10);
+    $queue->slot('stale-fixed', 5, 60, $then);
+    $queue->slot('stale-sliding', 5, 60, $then, sliding: true);
+    $queue->slot('fresh-fixed', 5, 60, $now - 30);
+    $queue->slot('fresh-sliding', 5, 60, $now - 30, sliding: true);
+
+    $held = static fn (string $name): array => array_keys((array) new \ReflectionProperty(ArrayQueue::class, $name)->getValue($queue));
+
+    // The batch, its window and its sliding start; the ends go with the batch.
+    expect(PruneQueue::prune($queue, $now))->toBe(3)
+        ->and($held('ended'))->toBe(["running\0j-3"])
+        ->and($held('rates'))->toBe(['fresh-fixed'])
+        ->and($held('starts'))->toBe(['fresh-sliding']);
 });
 
 it('runs nightly, and does nothing on a queue that keeps no batches or locks', function () {

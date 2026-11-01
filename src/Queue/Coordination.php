@@ -21,6 +21,14 @@ namespace Tinvar\Queue;
 interface Coordination
 {
     /**
+     * The longest window a rate may hold over, in seconds -- a day, the
+     * longest `per` a job's rate takes:
+     * a window or a sliding start begun this long ago has ended, whatever
+     * its rate, and prune() forgets it.
+     */
+    public const int LONGEST_WINDOW = 86_400;
+
+    /**
      * Takes the lock $key for job $job until $until, if no other job holds
      * it unexpired: null when $job holds it now, or the id of the job that
      * does. A lock always lapses at its $until, so a job that never ends --
@@ -77,8 +85,10 @@ interface Coordination
     public function batchJobFailed(string $id, string $job, int $now): ?BatchStep;
 
     /**
-     * Forgets batches finished before $finishedBefore and locks lapsed by
-     * $now: how many rows went.
+     * Forgets batches finished before $finishedBefore -- with the ends
+     * counted for them -- locks lapsed by $now, and rate windows and
+     * sliding starts that began LONGEST_WINDOW or more before $now, which
+     * have ended whatever their rate: how many rows went.
      */
     public function prune(int $now, int $finishedBefore): int;
 

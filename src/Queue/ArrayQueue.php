@@ -368,11 +368,22 @@ final class ArrayQueue implements Queue, Coordination, Wakes
 
     public function prune(int $now, int $finishedBefore): int
     {
-        $before = \count($this->batches) + \count($this->locks);
+        $stale = $now - Coordination::LONGEST_WINDOW;
+        $starts = array_sum(array_map(\count(...), $this->starts));
+        $before = \count($this->batches) + \count($this->locks) + \count($this->rates) + $starts;
         $this->batches = array_filter($this->batches, static fn (BatchRecord $b): bool => $b->finishedAt === null || $b->finishedAt >= $finishedBefore);
         $this->locks = array_filter($this->locks, static fn (array $lock): bool => $lock['until'] > $now);
+        // The ends counted for a batch gone go with it, as the database's do.
+        $this->ended = array_filter($this->ended, fn (bool $_, string $key): bool => isset($this->batches[strstr($key, "\0", true)]), ARRAY_FILTER_USE_BOTH);
+        // A window begun LONGEST_WINDOW ago has ended, whatever its rate's $per.
+        $this->rates = array_filter($this->rates, static fn (array $rate): bool => $rate['window'] > $stale);
+        $this->starts = array_filter(
+            array_map(static fn (array $at): array => array_values(array_filter($at, static fn (int $t): bool => $t > $stale)), $this->starts),
+            static fn (array $at): bool => $at !== [],
+        );
+        $after = \count($this->batches) + \count($this->locks) + \count($this->rates) + array_sum(array_map(\count(...), $this->starts));
 
-        return $before - \count($this->batches) - \count($this->locks);
+        return $before - $after;
     }
 
     public function atomically(\Closure $work): mixed

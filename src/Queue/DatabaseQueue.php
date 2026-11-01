@@ -6,6 +6,7 @@ namespace Tinvar\Queue;
 
 use Tinvar\Orm\Connection;
 use Tinvar\Orm\NamesDriver;
+use Tinvar\Orm\Schema\Dialect;
 use Tinvar\Orm\Schema\Schema;
 use Tinvar\Orm\Schema\Table;
 
@@ -591,9 +592,35 @@ final class DatabaseQueue implements Queue, Coordination, Wakes
                 [$finishedBefore],
             );
 
+            // A window that began a whole LONGEST_WINDOW ago has ended whatever its
+            // rate's $per, so its row says nothing a new one would not. A
+            // sliding rate's row (window_start 0) is only what its starts
+            // are counted under: it goes with its last start, and the next
+            // start writes it again.
+            $stale = $now - Coordination::LONGEST_WINDOW;
+            $starts = 0;
+            if ($this->hasStarts()) {
+                $starts = $this->connection->execute("DELETE FROM {$this->startsTable} WHERE started_at <= ?", [$stale])
+                    + $this->connection->execute(
+                        "DELETE FROM {$this->ratesTable} WHERE window_start = 0 AND queue NOT IN (SELECT rate_key FROM {$this->startsTable})",
+                    );
+            }
+
             return $this->connection->execute("DELETE FROM {$this->batchesTable} WHERE finished_at IS NOT NULL AND finished_at < ?", [$finishedBefore])
-                + $this->connection->execute("DELETE FROM {$this->locksTable} WHERE expires_at <= ?", [$now]);
+                + $this->connection->execute("DELETE FROM {$this->locksTable} WHERE expires_at <= ?", [$now])
+                + $this->connection->execute("DELETE FROM {$this->ratesTable} WHERE window_start > 0 AND window_start <= ?", [$stale])
+                + $starts;
         });
+    }
+
+    /** Whether the sliding starts' table was made: defineSlidingRates() is the application's choice. */
+    private function hasStarts(): bool
+    {
+        try {
+            return Dialect::for($this->connection)->hasTable($this->connection, $this->startsTable);
+        } catch (\InvalidArgumentException) {
+            return false;
+        }
     }
 
     public function atomically(\Closure $work): mixed

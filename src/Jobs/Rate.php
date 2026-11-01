@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Jobs;
 
+use Tinvar\Queue\Coordination;
+
 /**
  * How fast a rate-limited queue's jobs may start: at most `runs` in `per`
  * seconds, counted across every worker on the queue's store (ADR 0100,
@@ -35,8 +37,8 @@ namespace Tinvar\Jobs;
  */
 final readonly class Rate
 {
-    /** A day: past that, a window is not a rate. */
-    public const int MAX_PER = 86_400;
+    /** A day: past that, a window is not a rate -- and what the queue's prune forgets past. */
+    public const int MAX_PER = Coordination::LONGEST_WINDOW;
 
     public function __construct(
         public int $runs,
