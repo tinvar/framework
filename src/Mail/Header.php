@@ -26,11 +26,13 @@ final class Header
      * $value as RFC 2047 encoded words when it is not plain ASCII, folded a
      * word to a line: each of whole characters and at most 75 bytes, so no
      * reader splits a character between two, nor refuses a word too long.
-     * Plain ASCII as it is.
+     * Plain ASCII as it is, unless $words: a display name's quotes, angle
+     * brackets and commas are markup of the address list, so a name that
+     * holds any is written as encoded words whatever its characters.
      */
-    public static function encode(string $value): string
+    public static function encode(string $value, bool $words = false): string
     {
-        if (preg_match('/^[\x20-\x7e]*\z/', $value) === 1) {
+        if (!$words && preg_match('/^[\x20-\x7e]*\z/', $value) === 1) {
             return $value;
         }
 

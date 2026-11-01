@@ -148,6 +148,35 @@ it('encodes a long display name, or a subject of four-byte characters, as words 
     expect(max(array_map('strlen', $words[0])))->toBeLessThanOrEqual(75);
 });
 
+// Audit: a plain-ASCII display name went into the header as it was, so one
+// holding `<`, `,` or a quote rewrote the address list a reader's client
+// parses -- `Ada <attacker@evil.test>, Bob <ada@example.test>` -- a Reply-To
+// that answers the attacker too; and a long one ran a line past 998 bytes.
+it('never writes a display name a header could read as an address, a list or an open quote', function () {
+    foreach (['Ada <attacker@evil.test>, Bob', 'Ada "the" Lovelace', "O'Neil, Ada", 'Ada; Bcc: x@evil.test', 'a\\"b', str_repeat('a', 2000)] as $name) {
+        $header = new Address('ada@example.test', $name)->toHeader();
+        $words = [];
+        preg_match_all('/=\?UTF-8\?B\?([A-Za-z0-9+\/=]+)\?=/', $header, $words);
+        $decoded = implode('', array_map(static fn (string $w): string => (string) base64_decode($w, true), $words[1]));
+
+        expect(substr_count($header, '<'))->toBe(1)
+            ->and(substr_count($header, '"') % 2)->toBe(0)
+            ->and($header)->toEndWith(' <ada@example.test>')
+            ->and($decoded)->toBe($name)
+            ->and(max(array_map('strlen', explode("\r\n", $header))))->toBeLessThanOrEqual(78);
+    }
+
+    $mime = MimeMessage::build(new Message(
+        new Address('orders@shop.test'),
+        [new Address('ada@example.test', 'Ada <attacker@evil.test>, Bob')],
+        'Hi',
+        '<p>x</p>',
+        'x',
+        replyTo: new Address('ada@example.test', 'Ada <attacker@evil.test>, Bob'),
+    ), 'shop.test', 1_800_000_000);
+    expect(explode("\r\n\r\n", $mime, 2)[0])->not->toContain('<attacker@evil.test>');
+});
+
 it('appends messages to a log, one JSON line each, and reads them back', function () {
     $path = sys_get_temp_dir() . '/tinvar-mail-' . bin2hex(random_bytes(4)) . '/mail.log';
     try {

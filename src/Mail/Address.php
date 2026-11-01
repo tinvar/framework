@@ -13,6 +13,9 @@ namespace Tinvar\Mail;
  */
 final readonly class Address
 {
+    /** The longest display name written quoted on the header's line; a longer one is folded as encoded words. */
+    private const int PLAIN_NAME = 64;
+
     public function __construct(public string $email, public string $name = '')
     {
         // Nor quotes, commas or semicolons, which a quoted local part may
@@ -33,10 +36,15 @@ final readonly class Address
             return "<{$this->email}>";
         }
 
-        // Encoded as a subject is: words of at most 75 bytes, folded.
-        $name = preg_match('/^[A-Za-z0-9 .\'_-]*\z/', $this->name) === 1
+        // Quoted when it is a short run of letters, digits and the few
+        // marks no parser reads as anything. Anything else -- a quote, a
+        // `<`, a comma, a `;`, which would end the name early or start an
+        // address of its own in the list a client parses, or a name too long
+        // for one line -- encoded as words of at most 75 bytes, folded,
+        // plain ASCII or not.
+        $name = \strlen($this->name) <= self::PLAIN_NAME && preg_match('/^[A-Za-z0-9 .\'_-]*\z/', $this->name) === 1
             ? '"' . $this->name . '"'
-            : Header::encode($this->name);
+            : Header::encode($this->name, words: true);
 
         return "{$name} <{$this->email}>";
     }
