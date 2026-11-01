@@ -771,13 +771,15 @@ final class AppConsole
      */
     private function fragments(array $arguments): int
     {
-        $build = "{$this->root}/dist";
+        // The build discover writes into: TINVAR_BUILD_DIR's, or dist/.
+        $build = null;
         foreach ($arguments as $argument) {
-            if (!str_starts_with($argument, '--build=')) {
+            if (!str_starts_with($argument, '--build=') || rtrim(substr($argument, 8), '/') === '') {
                 return $this->usage('build:fragments');
             }
             $build = rtrim(substr($argument, 8), '/');
         }
+        $build ??= BuildProfile::buildDirectory($this->root);
 
         $routes = new RouteRegistry();
         $routes->registerAll($this->classes()->routes);

@@ -158,6 +158,28 @@ it('writes the fragment manifest and the discovery manifest into the build it ma
     }
 });
 
+// The build directory discover writes into, by default, is the one
+// build:fragments writes into: TINVAR_BUILD_DIR's where it names one.
+it('writes the fragment manifest into the build TINVAR_BUILD_DIR names, as discover does', function () {
+    $build = sys_get_temp_dir() . '/tinvar-fragments-' . bin2hex(random_bytes(4));
+    mkdir("{$build}/rsc", 0o777, true);
+    copy(\dirname(__DIR__, 4) . '/examples/shop/dist/rsc/deferred.json', "{$build}/rsc/deferred.json");
+    $before = getenv('TINVAR_BUILD_DIR');
+    putenv("TINVAR_BUILD_DIR={$build}");
+    try {
+        $console = console();
+
+        [$status, $out] = ran($console, 'build:fragments');
+        expect($status)->toBe(0)
+            ->and($out)->toContain("wrote {$build}/fragments.json")
+            ->and(is_file("{$build}/fragments.json"))->toBeTrue()
+            ->and(ran($console, 'build:fragments', '--build=')[0])->toBe(64);
+    } finally {
+        putenv($before === false ? 'TINVAR_BUILD_DIR' : "TINVAR_BUILD_DIR={$before}");
+        exec('rm -rf ' . escapeshellarg($build));
+    }
+});
+
 it('stops a command that needs the classes where discovery refuses them, saying why', function () {
     $console = console(['classes' => static fn (): DiscoveredClasses => throw new DiscoveryFailed(['Broken.php does not parse'])]);
 
