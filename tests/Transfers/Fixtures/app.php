@@ -54,6 +54,9 @@ use Tinvar\Queue\ArrayQueue;
 use Tinvar\Routing\LoadedRoute;
 use Tinvar\Routing\RouteRegistry;
 use Tinvar\Storage\MemoryStorage;
+use Tinvar\Storage\Storage;
+use Tinvar\Storage\StorageException;
+use Tinvar\Storage\StorageWriter;
 use Tinvar\Support\Signer;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Transfers\ArrayTransferStore;
@@ -278,6 +281,50 @@ final class SignIn implements Middleware
     }
 }
 
+/**
+ * The test's storage, which refuses to store a file while the test says
+ * so -- a disk full, a bucket gone -- and is the test's MemoryStorage
+ * otherwise.
+ */
+final readonly class RefusingStorage implements Storage
+{
+    /** @param \Closure(): bool $refusing */
+    public function __construct(private MemoryStorage $files, private \Closure $refusing) {}
+
+    public function put(string $key, mixed $stream): void
+    {
+        if (($this->refusing)()) {
+            throw new StorageException('The storage is refusing writes.');
+        }
+        $this->files->put($key, $stream);
+    }
+
+    public function read(string $key): mixed
+    {
+        return $this->files->read($key);
+    }
+
+    public function exists(string $key): bool
+    {
+        return $this->files->exists($key);
+    }
+
+    public function size(string $key): ?int
+    {
+        return $this->files->size($key);
+    }
+
+    public function delete(string $key): void
+    {
+        $this->files->delete($key);
+    }
+
+    public function writer(string $key): StorageWriter
+    {
+        return $this->files->writer($key);
+    }
+}
+
 /** The application, and what a test needs to reach into it. */
 final class App
 {
@@ -285,6 +332,9 @@ final class App
 
     /** Whether queueing a transfer's job throws, as a queue that is down does. */
     public bool $dispatchFails = false;
+
+    /** Whether storing a file throws, as storage that is down does. */
+    public bool $storageRefuses = false;
 
     public readonly Kernel $kernel;
     public readonly Orm $orm;
@@ -350,7 +400,7 @@ final class App
             KEY,
             $transfers,
             $this->records,
-            $this->storage,
+            new RefusingStorage($this->storage, fn (): bool => $this->storageRefuses),
             fn (\Tinvar\Jobs\Job $job): string => $this->dispatchFails ? throw new \RuntimeException('The queue is down.') : $dispatcher->dispatch($job),
             $this->notes,
             $origin === null ? null : static fn (Authenticatable $user, string $tenant): string => $origin,

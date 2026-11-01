@@ -359,6 +359,16 @@ final readonly class TransferRunner
             }
 
             throw $e;
+        } catch (\Throwable $e) {
+            // Anything else -- the rows unreadable, the file or a pause's
+            // unstored, what a pause stored unreadable -- fails the record
+            // before the job does, rather than leaving it `running` until it
+            // reads as failed an hour on; what it had stored goes with it.
+            if (!$done) {
+                $this->fail($record, 'The file could not be written.', $control);
+            }
+
+            throw $e;
         }
     }
 
@@ -400,12 +410,6 @@ final readonly class TransferRunner
                 $this->fail($record, "It has more than {$transfer->maxRows} rows. Narrow it and start it again.", $control);
 
                 return;
-            } catch (WorkerStopping $e) {
-                throw $e;
-            } catch (\Throwable $e) {
-                $this->fail($record, 'The file could not be written.', $control);
-
-                throw $e;
             }
 
             if ($pausedAt !== null) {
@@ -648,6 +652,21 @@ final readonly class TransferRunner
             $this->fail($record, $e->getMessage() . ($record->rows > 0 ? " The first {$record->rows} rows were imported; the rest were not." : ' Nothing was changed.'));
 
             return true;
+        } catch (WorkerStopping $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            // Anything else -- a database error, a form request that threw
+            // -- fails the record before the job does, rather than leaving it
+            // `running`, naming the file the job is about to delete, until it
+            // reads as failed an hour on. One writeRows() failed already is
+            // left as it said.
+            if ($record->status === TransferRecord::RUNNING) {
+                $this->fail($record, $record->rows > 0
+                    ? "The import stopped with an error. The first {$record->rows} rows were imported; the rest were not."
+                    : 'The import stopped with an error, so nothing was changed.');
+            }
+
+            throw $e;
         } finally {
             fclose($stream);
         }
@@ -763,7 +782,7 @@ final readonly class TransferRunner
             } catch (WorkerStopping $e) {
                 throw $e;
             } catch (\Throwable $e) {
-                $this->fail($record, $record->rows > 0
+                $record = $this->fail($record, $record->rows > 0
                     ? "A row could not be applied. The first {$record->rows} rows were imported; it and the rows after it were not."
                     : 'A row could not be applied, so nothing was changed.');
 
@@ -1079,7 +1098,8 @@ final readonly class TransferRunner
         }
     }
 
-    private function fail(TransferRecord $record, string $why, ?JobControl $control = null): void
+    /** @return TransferRecord the record as it was failed */
+    private function fail(TransferRecord $record, string $why, ?JobControl $control = null): TransferRecord
     {
         // What a paused export had written: never a file anyone fetches.
         if ($record->kind === CompiledTransfer::EXPORT) {
@@ -1090,14 +1110,17 @@ final readonly class TransferRunner
             $this->forgetPauses($record, $control);
         }
 
-        $this->finish($record->with(['status' => TransferRecord::FAILED, 'failure' => $why]));
+        return $this->finish($record->with(['status' => TransferRecord::FAILED, 'failure' => $why]));
     }
 
-    private function finish(TransferRecord $record): void
+    /** @return TransferRecord the record as it was finished */
+    private function finish(TransferRecord $record): TransferRecord
     {
         $finished = $record->with(['finishedAt' => $this->transfers->now(), 'key' => $record->kind === CompiledTransfer::IMPORT ? '' : $record->key]);
         $this->transfers->store->update($finished);
         $this->notify($finished);
+
+        return $finished;
     }
 
     /** Tells the application, which a failure in does not undo. */

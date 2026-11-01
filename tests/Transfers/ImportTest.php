@@ -152,6 +152,24 @@ describe('an import that is refused row by row', function () {
     });
 });
 
+// Review: an import whose check or write threw anything but a refusal --
+// its table gone, a database error -- failed its job and lost its file,
+// and left its record `running`, naming that file, until it went stale.
+describe('an import that fails with an error', function () {
+    it('is failed on its record, and keeps no file', function () {
+        $app = new App();
+        expect($app->import("widget,stock\r\n" . W1 . ",10\r\n")->status)->toBe(202);
+        $app->connection->execute('ALTER TABLE widgets RENAME TO gone');
+
+        expect(fn () => $app->work())->toThrow('no such table');
+        $record = $app->record();
+        expect($record->status)->toBe(TransferRecord::FAILED)
+            ->and($record->failure)->toBe('The import stopped with an error, so nothing was changed.')
+            ->and($record->key)->toBe('')
+            ->and($app->storage->keys())->toBe([]);
+    });
+});
+
 describe('/_import', function () {
     it('refuses a user its #[Authorize] denies, and stores nothing', function () {
         $app = new App();

@@ -242,3 +242,18 @@ it('writes every row once when a stop cuts a run off, wherever it lands', functi
     'a first pause cut off, then finished' => [['cut off', 'finish']],
     'a pause cut off twice' => [['cut off', 'cut off', 'pause', 'finish']],
 ]);
+
+// Review: storing the finished file or a pause's could throw -- storage
+// full, or gone -- and leave the record `running` until it went stale.
+it('fails its record when its file cannot be stored, finished or paused', function (bool $pausing) {
+    $app = manyWidgets(TransferRunner::PAGE + 1);
+    $app->export();
+    $app->storageRefuses = true;
+
+    expect(fn () => runOnce($app, static fn (): bool => $pausing))->toThrow(\Tinvar\Storage\StorageException::class);
+    $record = $app->record();
+    expect($record->status)->toBe(TransferRecord::FAILED)
+        ->and($record->failure)->toBe('The file could not be written.')
+        ->and($record->key)->toBe('')
+        ->and($app->storage->keys())->toBe([]);
+})->with(['finished' => [false], 'paused' => [true]]);
