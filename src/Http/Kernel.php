@@ -756,6 +756,9 @@ final class Kernel
         // Over the defaults, not instead of them: tightening one bucket by
         // passing ['actions' => 3] silently turned off every other one. A
         // bucket is off only when it says so, with 0.
+        // Merged after the chunks' budget is read from what the application
+        // named: the defaults always name one.
+        $chunkBudget = $limits['upload-chunks'] ?? (isset($limits['uploads']) ? $limits['uploads'] * 8 : null);
         $limits = [...self::DEFAULT_LIMITS, ...$limits];
 
         // The per-account pass reads who is signed in from the context it
@@ -1161,10 +1164,10 @@ final class Kernel
 
         // A chunk of a resumable upload: the same stack, spending a budget
         // of its own -- `upload-chunks`, or eight times `uploads` where an
-        // application's limits name none. Every chunk is still held to a
-        // session that counts against the cap and the quota, to its size and
-        // to the floor on a chunk's.
-        $chunkLimits = [...$limits, 'upload-chunks' => $limits['upload-chunks'] ?? ($limits['uploads'] ?? 0) * 8];
+        // application's limits name that and not this. Every chunk is still
+        // held to a session that counts against the cap and the quota, to
+        // its size and to the floor on a chunk's.
+        $chunkLimits = [...$limits, 'upload-chunks' => $chunkBudget ?? $limits['upload-chunks']];
         $this->uploadChunkStack = new Pipeline([
             ...$this->floodGuardFor($throttle, 'upload-chunks', $chunkLimits),
             ...$global,

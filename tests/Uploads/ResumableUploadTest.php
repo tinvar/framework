@@ -516,6 +516,21 @@ it('throttles chunks by a budget of their own, not by the uploads one', function
         ->and(offsetOf($app, $session)->status)->toBe(429);
 });
 
+// Review: the limits were merged over the defaults before the chunks' budget
+// was worked out, so `upload-chunks` was always named and an application's
+// own `uploads` never set it -- 240 whatever the uploads budget, where ADR
+// 0143 and the docs give eight times it.
+it('budgets chunks at eight times the uploads an application names, where it names no chunk budget', function () {
+    $app = new App(new MemoryStorage(), throttled: true);
+    $file = largePdf(UploadEndpoint::MIN_CHUNK_BYTES * 2);
+    $session = (string) beginSession($app, strlen($file))['session'];
+
+    $sent = sendChunk($app, $session, 0, substr($file, 0, UploadEndpoint::MIN_CHUNK_BYTES));
+
+    expect($sent->status)->toBe(200)
+        ->and($sent->header('x-ratelimit-limit'))->toBe('16');
+});
+
 // Review: keeping a whole file removed its partial bytes and forgot its
 // record before the keep had an outcome, so a scanner that was down, or a
 // store that failed, lost the upload; and a last chunk sent again while the
