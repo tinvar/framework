@@ -817,6 +817,66 @@ it('lets staff into the admin panel\'s orders, and refuses a customer', function
         ->and(array_unique($result['customerSheets']))->toBe(['index']);
 })->with(SERVERS);
 
+// An export as staff meet it (ADR 0070, 0149): started on the admin host's
+// transfers page, worked by the queue, its link mailed on the admin host --
+// where the download's stack, the panel's, lets it open -- and followed
+// from the message in the same browser. The same link on the shop's own
+// host, where the staff member is signed in too, downloads nothing.
+it('exports the orders from the admin host and downloads them by the emailed link there alone', function (string $server) use ($root) {
+    $directory = sys_get_temp_dir() . '/tinvar-e2e-export-' . bin2hex(random_bytes(4));
+    mkdir($directory, 0o700);
+    $mailLog = "{$directory}/mail.log";
+    $database = Shop::testDatabase();
+    $pdo = new \PDO("sqlite:{$database}");
+    $orders = (int) $pdo->query('SELECT COUNT(*) FROM orders')?->fetchColumn();
+    $numbers = $pdo->query('SELECT number FROM orders ORDER BY placed_at DESC LIMIT 3')?->fetchAll(\PDO::FETCH_COLUMN) ?: [];
+    $pdo = null;
+
+    $output = '';
+    try {
+        served($root, function (string $origin, string $log, Renderer $renderer, string $token, array $env) use ($root, &$output): void {
+            $output = runWithTimeout(
+                ['node', "{$root}/examples/shop/e2e/admin-export.mjs", $origin, StaffAccount::EMAIL, StaffAccount::PASSWORD],
+                $root,
+                120,
+                [...array_filter($env, \is_string(...)), 'TINVAR_E2E_PHP' => PHP_BINARY],
+            );
+        }, ['SHOP_DATABASE' => $database, 'SHOP_MAIL_LOG' => $mailLog, 'SHOP_STORAGE' => "{$directory}/storage"], hosts: true, server: $server);
+    } finally {
+        exec('rm -rf ' . escapeshellarg($directory));
+    }
+
+    $result = json_decode((string) $output, true);
+    expect($result)->toBeArray("the browser script failed:\n{$output}");
+    // Signed in on the shop's host and handed to the admin host's page.
+    expect($result['errors'])->toBe([])
+        ->and($result['redirected']['host'])->toStartWith('localhost:')
+        ->and($result['redirected']['path'])->toBe('/sign-in')
+        ->and($result['landed']['host'])->toStartWith('admin.localhost:')
+        ->and($result['landed']['path'])->toBe('/transfers');
+
+    // The link, mailed on the admin host's origin, never the shop's.
+    expect($result['subject'])->toBe('Your orders export is ready: ' . number_format($orders) . ' rows')
+        ->and($result['linkOrigin'])->toBe($result['adminOrigin'])
+        ->and($result['linkOrigin'])->toStartWith('http://admin.localhost:');
+
+    // Opened there: the CSV, every order a row of it.
+    $csv = (string) $result['file']['csv'];
+    expect($result['onAdmin'])->toBe(['host' => substr($result['adminOrigin'], \strlen('http://')), 'status' => 200, 'type' => 'text/csv; charset=utf-8'])
+        ->and($result['file']['name'])->toEndWith('.csv')
+        ->and($csv)->toStartWith("number,status,placedAt,customerName,customerEmail,subtotalCents,shippingCents,totalCents\r\n")
+        ->and(substr_count($csv, "\r\n"))->toBe($orders + 1)
+        ->and($numbers)->not->toBe([]);
+    foreach ($numbers as $number) {
+        expect($csv)->toContain("\r\n{$number},");
+    }
+
+    // On the shop's own host: refused, and nothing downloaded.
+    expect($result['onShop']['host'])->toStartWith('localhost:')
+        ->and($result['onShop']['status'])->toBeIn([403, 404])
+        ->and($result['onShop']['downloaded'])->toBeFalse();
+})->with(SERVERS);
+
 // "Uploaded files are referenced only by a server-issued upload ticket": the
 // account page's two forms, in Chromium against the served shop. Each file
 // goes to /_upload under the page's ticket and is saved by its action; a
