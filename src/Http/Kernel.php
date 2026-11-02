@@ -465,6 +465,9 @@ final class Kernel
     private readonly Pipeline $endpointStack;
     private readonly Pipeline $sessionlessStack;
 
+    /** Caddy's on-demand TLS `ask`: the one given, or the one the container holds (ADR 0155). */
+    private readonly ?TlsAskEndpoint $tlsAsk;
+
     /** A CORS preflight's: the flood guard alone (ADR 0074). */
     private readonly Pipeline $preflightStack;
 
@@ -603,7 +606,9 @@ final class Kernel
      * @param TlsAskEndpoint|null $tlsAsk Caddy's on-demand TLS `ask` at /_tls/ask, where a
      *        custom domain is checked before a certificate is obtained or renewed for it:
      *        answered beside the probes, ahead of everything else, since Caddy is not a
-     *        visitor either
+     *        visitor either. Unless given, the one the application registered in $container
+     *        -- as tinvar/tenancy's custom domains register theirs (ADR 0155) -- so an
+     *        application that takes custom domains answers Caddy without wiring it twice
      * @param StandIns|null $standIns what answers in place of a query's or an action's
      *        body: a test's fakes (the testing layer's BodyFakes), asked by both
      *        runners once a call has passed every check before its body. Refused
@@ -723,7 +728,7 @@ final class Kernel
         int $maxBodyBytes = Limits::MAX_BODY_BYTES,
         int $maxJsonDepth = Limits::MAX_JSON_DEPTH,
         array $redirectOrigins = [],
-        private readonly ?TlsAskEndpoint $tlsAsk = null,
+        ?TlsAskEndpoint $tlsAsk = null,
         ?StandIns $standIns = null,
         bool $clientTelemetry = false,
         ?string $clientAssets = null,
@@ -743,6 +748,10 @@ final class Kernel
     ) {
         $this->resolver = $resolver;
         $this->shared = $shared;
+        // Registered, not merely buildable: the container could autowire a
+        // TlsAskEndpoint for an application that takes no custom domains.
+        $registered = $container?->registered(TlsAskEndpoint::class) === true ? $container->get(TlsAskEndpoint::class) : null;
+        $this->tlsAsk = $tlsAsk ?? $registered;
         $this->hostsByFiber = new \WeakMap();
         $this->sharedTags = $tagVersions === null ? null : new SharedTags($tagVersions, $orm, $this->report(...));
 
