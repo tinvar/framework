@@ -377,7 +377,7 @@ final readonly class EntryContext
             }
         }
 
-        $refusals = self::tenantHostRefusals($routes, $endpoints, $actions, $queries, $channels);
+        $refusals = self::tenantHostRefusals($routes, $endpoints, $actions, $queries, $channels, $this->panelDomainFor(...));
         if ($refusals !== []) {
             throw new \InvalidArgumentException($refusals[0]);
         }
@@ -432,6 +432,16 @@ final readonly class EntryContext
      * and by `tinvar check`. A page reads its tenant from its own
      * #[TenantFrom] or the nearest layout's above it, as its chain does.
      *
+     * An action, query or channel declaring no #[Domain] of its own is on
+     * its panel's host, when $panelDomain says it has one: a panel living
+     * on `{tenant}.{root}` holds every entry point in it there, and one of
+     * them reading its tenant from the session would be the same leak. (A
+     * page or endpoint in such a panel must declare its panel's #[Domain]
+     * itself, so its own host is read.)
+     *
+     * @param (\Closure(list<\Tinvar\Attributes\Panel>, class-string): ?string)|null $panelDomain
+     *        the host an entry point's panel lives on (panelDomainFor()); none, and only
+     *        each one's own #[Domain] is read
      * @return list<string>
      */
     public static function tenantHostRefusals(
@@ -440,7 +450,9 @@ final readonly class EntryContext
         ?ActionRegistry $actions = null,
         ?QueryRegistry $queries = null,
         ?ChannelRegistry $channels = null,
+        ?\Closure $panelDomain = null,
     ): array {
+        $panelDomain ??= static fn (): ?string => null;
         $held = [];
         $layouts = $routes->layouts();
         foreach ($routes->pages() as $page) {
@@ -456,15 +468,17 @@ final readonly class EntryContext
             $held[] = [$endpoint->where(), $endpoint->host, $endpoint->tenantFrom];
         }
         foreach ($actions?->all() ?? [] as $action) {
-            $held[] = [$action->where(), $action->host, $action->tenantFrom];
+            $held[] = [$action->where(), $action->host ?? $panelDomain($action->panels, $action->class), $action->tenantFrom];
         }
         if ($queries !== null) {
             foreach ($queries->names() as $name) {
-                $held[] = [$queries->classFor($name) ?? $name, $queries->hostFor($name), $queries->tenantSourceFor($name)];
+                $class = $queries->classFor($name);
+                $host = $queries->hostFor($name) ?? ($class === null ? null : $panelDomain($queries->panelsFor($name), $class));
+                $held[] = [$class ?? $name, $host, $queries->tenantSourceFor($name)];
             }
         }
         foreach ($channels?->all() ?? [] as $channel) {
-            $held[] = [$channel->where(), $channel->host, $channel->tenantFrom];
+            $held[] = [$channel->where(), $channel->host ?? $panelDomain($channel->panels, $channel->class), $channel->tenantFrom];
         }
 
         $refusals = [];
