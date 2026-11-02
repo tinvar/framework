@@ -43,6 +43,8 @@ final class AuditTable
             $rows->string('job', self::NAME)->nullable();
             $rows->string('job_id', 64)->nullable();
             $rows->string('started_by', self::NAME)->nullable();
+            // The API token a user acted through (ADR 0159), by its id.
+            $rows->string('api_token_id', 64)->nullable();
             $rows->string('action', self::NAME)->nullable();
             $rows->string('panel', 64)->nullable();
             $rows->string('host', 255)->nullable();
@@ -69,6 +71,21 @@ final class AuditTable
             $rows->string('anchor', 64);
             $rows->string('anchor_mac', 64);
         }, $ifNotExists);
+    }
+
+    /**
+     * Brings tables define() made before to the shape it makes now, for an
+     * existing application's migration: the column naming the API token a
+     * user acted through. Nothing for tables that have it already; every
+     * entry written before still verifies, its hash covering no token.
+     */
+    public static function upgrade(Schema $schema): void
+    {
+        if (!$schema->hasColumn(self::ENTRIES, 'api_token_id')) {
+            $schema->table(self::ENTRIES, static function (Table $rows): void {
+                $rows->string('api_token_id', 64)->nullable();
+            });
+        }
     }
 
     public static function drop(Schema $schema): void

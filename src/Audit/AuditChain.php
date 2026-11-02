@@ -72,7 +72,8 @@ final readonly class AuditChain
     /**
      * An entry's fields as its hash covers them, from its row as written
      * or as read back: every column but the two hashes, the moment in one
-     * form whatever form the database keeps it in.
+     * form whatever form the database keeps it in, and the API token after
+     * the rest, named, where the entry has one.
      *
      * @param array<string, mixed> $row
      * @return list<string|int|null>
@@ -81,7 +82,7 @@ final readonly class AuditChain
     {
         $text = static fn (string $column): ?string => isset($row[$column]) ? (string) $row[$column] : null;
 
-        return [
+        $fields = [
             (string) $row['id'],
             (string) $row['tenant'],
             (int) $row['sequence'],
@@ -103,5 +104,14 @@ final readonly class AuditChain
             $text('changes'),
             $text('data'),
         ];
+        // The API token, appended only where an entry names one: an entry
+        // written before the column was, or by no token, hashes as it did.
+        $token = $text('api_token_id');
+        if ($token !== null) {
+            $fields[] = 'api_token';
+            $fields[] = $token;
+        }
+
+        return $fields;
     }
 }

@@ -125,6 +125,7 @@ it('makes every table the shop uses, and leaves nothing the models describe for 
         '2026_11_01_000151_create_notification_inbox_and_preferences',
         '2026_11_01_000156_create_audit_log',
         '2026_11_01_000157_create_api_tokens',
+        '2026_11_02_000158_name_the_api_token_in_audit_entries',
     ])
         ->and(tables($connection))->toBe(TABLES)
         ->and(($generator = new MigrationGenerator($connection, new SqliteDialect()))->generate([Product::class, Customer::class, Order::class, OrderLine::class, Receipt::class], '2026-10-24'))->toBeNull()
@@ -142,9 +143,9 @@ it('rolls all the way back to nothing, and up again', function () {
     $migrator = Migrations::migrator($connection);
     $migrator->migrate();
 
-    expect($migrator->rollback())->toHaveCount(35)
+    expect($migrator->rollback())->toHaveCount(36)
         ->and(tables($connection))->toBe(['tinvar_migrations'])
-        ->and($migrator->migrate())->toHaveCount(35)
+        ->and($migrator->migrate())->toHaveCount(36)
         ->and(tables($connection))->toBe(TABLES);
 });
 
@@ -171,7 +172,7 @@ it('adopts a database built before the shop had migrations, and keeps what is in
 
     $ran = Migrations::migrate($connection);
 
-    expect($ran)->toHaveCount(35)
+    expect($ran)->toHaveCount(36)
         ->and(tables($connection))->toBe(TABLES)
         ->and($connection->select('SELECT name FROM customers'))->toBe([['name' => 'Ada']])
         // The account's time, written to the second as the shop wrote it,
@@ -187,14 +188,14 @@ it('rewrites the times the shop wrote to the second as the ORM writes them, and 
     $connection = PdoConnection::sqlite(database(), create: true);
     $migrator = Migrations::migrator($connection);
     $migrator->migrate();
-    $migrator->rollback(8);
+    $migrator->rollback(9);
     $connection->execute("INSERT INTO customers (id, email, name, password_hash, created_at) VALUES ('c1', 'ada@shop.test', 'Ada', 'x', '2026-01-01T09:30:00Z')");
     $connection->execute("INSERT INTO customers (id, email, name, password_hash, created_at) VALUES ('c2', 'bo@shop.test', 'Bo', 'x', '2026-01-01T09:30:00.250000Z')");
     $connection->execute("INSERT INTO orders (id, number, customer_id, status, placed_at, subtotal_cents, shipping_cents, total_cents) VALUES ('o1', 'PW-1', 'c1', 'placed', '2026-01-02T10:00:00Z', 1, 0, 1)");
 
     $migrator->migrate();
     $up = [$connection->select('SELECT created_at FROM customers ORDER BY created_at'), $connection->select('SELECT placed_at FROM orders')];
-    $migrator->rollback(8);
+    $migrator->rollback(9);
     $down = $connection->select('SELECT created_at FROM customers ORDER BY created_at');
     $migrator->migrate();
 
@@ -214,7 +215,7 @@ it('rewrites the marketing and newsletter times the shop wrote to the second as 
     $connection = PdoConnection::sqlite(database(), create: true);
     $migrator = Migrations::migrator($connection);
     $migrator->migrate();
-    $migrator->rollback(6);
+    $migrator->rollback(7);
     $connection->execute("INSERT INTO customers (id, email, name, password_hash, created_at) VALUES ('c1', 'ada@shop.test', 'Ada', 'x', '2026-01-01T09:30:00.000000Z')");
     $connection->execute("INSERT INTO marketing_preferences (customer_id, list, subscribed, updated_at) VALUES ('c1', 'newsletter', 1, '2026-01-01T09:31:00Z')");
     $connection->execute("INSERT INTO marketing_opt_ins (id, customer_id, list, address, source, requested_at, confirmed_at) VALUES ('o1', 'c1', 'newsletter', 'ada@shop.test', 'seed', '2026-01-01T09:30:00Z', NULL)");
@@ -226,7 +227,7 @@ it('rewrites the marketing and newsletter times the shop wrote to the second as 
         $connection->select('SELECT requested_at, confirmed_at FROM marketing_opt_ins'),
         $connection->select('SELECT queued_at FROM newsletter_issues'),
     ];
-    $migrator->rollback(6);
+    $migrator->rollback(7);
     $down = $connection->select('SELECT updated_at FROM marketing_preferences');
     $migrator->migrate();
 
@@ -246,7 +247,7 @@ it('gives an uploads table made before uploads had an owner one, counting by it'
     $connection = PdoConnection::sqlite(database(), create: true);
     $migrator = Migrations::migrator($connection);
     $migrator->migrate();
-    $migrator->rollback(27);
+    $migrator->rollback(28);
 
     $columns = array_column($connection->select('SELECT name FROM pragma_table_info(?)', ['uploads']), 'name');
     $owner = array_values(array_filter(new SqliteDialect()->indexes($connection, 'uploads'), static fn (array $i): bool => $i['name'] === 'uploads_owner'));
@@ -281,6 +282,7 @@ it('gives an uploads table made before uploads had an owner one, counting by it'
         '2026_11_01_000151_create_notification_inbox_and_preferences',
         '2026_11_01_000156_create_audit_log',
         '2026_11_01_000157_create_api_tokens',
+        '2026_11_02_000158_name_the_api_token_in_audit_entries',
     ]);
 
     $columns = array_column($connection->select('SELECT name FROM pragma_table_info(?)', ['uploads']), 'name');
@@ -340,8 +342,8 @@ describe('from the command line', function () {
 
         expect([$firstStatus, $status])->toBe([0, 0], "{$firstErr}\n{$err}")
             ->and([$firstOut, $out])->toContain("Nothing to migrate.\n")
-            ->and(implode('', [$firstOut, $out]))->toContain('Ran 35 migration(s).')
-            ->and($connection->select('SELECT COUNT(*) AS n, MAX(batch) AS batch FROM ' . Migrator::TABLE))->toBe([['n' => 35, 'batch' => 1]])
+            ->and(implode('', [$firstOut, $out]))->toContain('Ran 36 migration(s).')
+            ->and($connection->select('SELECT COUNT(*) AS n, MAX(batch) AS batch FROM ' . Migrator::TABLE))->toBe([['n' => 36, 'batch' => 1]])
             ->and(file_exists("{$database}-migrate.lock"))->toBeFalse();
     });
 
@@ -366,7 +368,7 @@ describe('from the command line', function () {
         $connection = PdoConnection::sqlite($database);
 
         expect($status)->toBe(0, $err)
-            ->and($out)->toContain('Dropped every table and ran 35 migration(s).')
+            ->and($out)->toContain('Dropped every table and ran 36 migration(s).')
             ->and($out)->toContain('24 products, 3 customers')
             ->and(Migrations::migrator($connection)->pending())->toBe([])
             ->and($connection->select('SELECT COUNT(*) AS n FROM staff'))->toBe([['n' => 1]]);

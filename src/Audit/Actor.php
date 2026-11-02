@@ -7,7 +7,8 @@ namespace Tinvar\Audit;
 /**
  * Who an audit entry says made a change (ADR 0156): the kind of actor, its
  * id, and for a user acting as someone else, the one doing it; for a job,
- * which job it was and who started the work it is part of.
+ * which job it was and who started the work it is part of; for a user
+ * signed in by an API token, which token.
  */
 final readonly class Actor
 {
@@ -17,6 +18,8 @@ final readonly class Actor
      * @param string|null $job the job's class, for a change a job made
      * @param string|null $jobId that job's id on the queue
      * @param string|null $startedBy who started the job's work: the user signed in where it was dispatched
+     * @param string|null $apiToken the id of the API token the user acted through (ADR 0159); null
+     *        for a session's request, or anything else
      */
     public function __construct(
         public ActorKind $kind,
@@ -25,5 +28,6 @@ final readonly class Actor
         public ?string $job = null,
         public ?string $jobId = null,
         public ?string $startedBy = null,
+        public ?string $apiToken = null,
     ) {}
 }

@@ -132,6 +132,7 @@ final readonly class AuditTrail
                 $text('job'),
                 $text('job_id'),
                 $text('started_by'),
+                $text('api_token_id'),
             ),
             action: $text('action'),
             panel: $text('panel'),

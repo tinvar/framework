@@ -280,6 +280,38 @@ it('prunes a whole prefix past the retention and keeps the rest walkable', funct
     expect($audit->verify('acme')->problem)->toBe('Where pruning left the log has been changed.');
 });
 
+it('names the API token a user acted through, inside the chain, and keeps entries from before it verifiable', function () {
+    [$orm, $audit, $auth, $connection] = log();
+    $schema = new Schema($connection, Dialect::for($connection));
+
+    // A log made before entries named a token: its table without the column.
+    $connection->execute('ALTER TABLE audit_entries DROP COLUMN api_token_id');
+    $auth->login(new Person('u-1'));
+    $orm->actAs('acme', fn () => $audit->event('note.read'));
+
+    AuditTable::upgrade($schema);
+    AuditTable::upgrade($schema);
+    expect($schema->hasColumn('audit_entries', 'api_token_id'))->toBeTrue()
+        ->and($audit->verify('acme')->intact)->toBeTrue();
+
+    $auth->login(new Person('u-1'), apiToken: '0192f1c4a5b67e3f8a9b0c1d2e3f4a5b');
+    expect($audit->actor()->apiToken)->toBe('0192f1c4a5b67e3f8a9b0c1d2e3f4a5b');
+    $orm->actAs('acme', fn () => $audit->event('note.exported'));
+    $auth->login(new Person('u-1'));
+    $orm->actAs('acme', fn () => $audit->event('note.read'));
+
+    $entries = $orm->actAs('acme', fn () => $audit->trail()->recent());
+    expect(array_map(static fn ($e): ?string => $e->actor->apiToken, $entries))->toBe([null, '0192f1c4a5b67e3f8a9b0c1d2e3f4a5b', null])
+        ->and($entries[1]->actor->kind)->toBe(ActorKind::User)
+        ->and($audit->verify('acme')->intact)->toBeTrue();
+
+    // The token is in the hash: named otherwise, or taken off, the entry is no longer as written.
+    $connection->execute("UPDATE audit_entries SET api_token_id = 'ffffffffffffffffffffffffffffffff' WHERE sequence = 2");
+    expect($audit->verify('acme')->problem)->toBe('Entry 2 is not as it was written.');
+    $connection->execute('UPDATE audit_entries SET api_token_id = NULL WHERE sequence = 2');
+    expect($audit->verify('acme')->problem)->toBe('Entry 2 is not as it was written.');
+});
+
 it('names the impersonator AuthContext was handed, where the application gives the log no answer of its own', function () {
     [$orm, $audit, $auth] = log();
     $auth->login(new Person('u-1'), impersonator: 'staff-4');
@@ -506,6 +538,6 @@ it('verifies a log another worker writes to, or prunes, while it is walked', fun
     $connection->observeStatements(null);
 
     // An entry no head names is still found.
-    $connection->execute("INSERT INTO audit_entries SELECT id || 'x', tenant, sequence + 10, occurred_at, event, subject_type, subject_id, actor_type, actor_id, impersonator_id, job, job_id, started_by, action, panel, host, request_id, ip, changes, data, previous_hash, hash FROM audit_entries WHERE tenant = 'acme' AND sequence = 4");
+    $connection->execute("INSERT INTO audit_entries SELECT id || 'x', tenant, sequence + 10, occurred_at, event, subject_type, subject_id, actor_type, actor_id, impersonator_id, job, job_id, started_by, api_token_id, action, panel, host, request_id, ip, changes, data, previous_hash, hash FROM audit_entries WHERE tenant = 'acme' AND sequence = 4");
     expect($audit->verify('acme')->problem)->toBe('Entry 5 is past the head.');
 });

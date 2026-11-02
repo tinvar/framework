@@ -47,7 +47,8 @@ use Tinvar\Validation\FormRequest;
  * **Who and where.** Each entry names its actor -- the signed-in user, a
  * service signed in as itself, a job and who started it, a guest, or the
  * system -- and the user signed in as them, where the application says
- * (`impersonator:`). And where it was asked for: the tenant, the panel,
+ * (`impersonator:`, or AuthContext::impersonator()), and the API token a
+ * user acted through, inside the chain. And where it was asked for: the tenant, the panel,
  * the host, the request's id and the client's address, read through the
  * pinned proxies as the throttles read it (ADR 0134). The Kernel tells the
  * log of each request it handles; a change outside any is the system's.
@@ -269,7 +270,7 @@ final class AuditLog implements ModelChanges, ActionObserver
         if ($user !== null) {
             $impersonator = $this->impersonator === null ? $this->auth->impersonator() : ($this->impersonator)();
 
-            return new Actor(ActorKind::User, $user->authIdentifier(), $impersonator === '' ? null : $impersonator);
+            return new Actor(ActorKind::User, $user->authIdentifier(), $impersonator === '' ? null : $impersonator, apiToken: $this->auth->apiToken());
         }
 
         return new Actor($this->requests === [] ? ActorKind::System : ActorKind::Guest);
@@ -530,6 +531,11 @@ final class AuditLog implements ModelChanges, ActionObserver
             'changes' => $changes === null ? null : self::json($changes),
             'data' => $data === null || $data === [] ? null : self::json($data),
         ];
+        // Only where there is one: a log whose table predates the column
+        // takes every entry no token made as before (AuditTable::upgrade()).
+        if ($actor->apiToken !== null) {
+            $row['api_token_id'] = self::cut($actor->apiToken, 64);
+        }
         $hashedAt = TimestampStorage::Iso8601->format($now);
         $connection = $this->orm->statements();
 
