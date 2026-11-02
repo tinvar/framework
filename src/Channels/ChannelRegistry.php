@@ -335,7 +335,10 @@ final class ChannelRegistry
             scalars: $scalars,
             checks: $checks,
             exempt: $exempt,
-            middleware: Middleware::declaredOn($class),
+            // Read where its checks are: the class, then its constructor. A
+            // #[Middleware] -- or a package's #[RequiresPlan] (ADR 0150) --
+            // written on the constructor beside an #[Authorize] was dropped.
+            middleware: Middleware::declaredOn($class, '__construct'),
             tenantFrom: $tenantFrom,
             panels: $panels,
             publicAccess: PublicAccess::declaredOn($class),

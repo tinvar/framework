@@ -17,6 +17,7 @@ use Tinvar\Actions\ActionResult;
 use Tinvar\Attributes\Action;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Channel;
+use Tinvar\Attributes\Middleware as UseMiddleware;
 use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Page;
 use Tinvar\Attributes\Post;
@@ -35,6 +36,7 @@ use Tinvar\Data\Data;
 use Tinvar\Data\DataBoundaryException;
 use Tinvar\Endpoints\EndpointRegistry;
 use Tinvar\Http\BuildRegistry;
+use Tinvar\Http\HttpException;
 use Tinvar\Http\Kernel;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Middleware\VerifyCsrfToken;
@@ -195,6 +197,26 @@ final class Goodbye
     }
 }
 
+/** What a gate that is not met does: refuses every request it stands in front of. */
+final class Refuse implements Middleware
+{
+    public function handle(Request $request, \Closure $next): Response
+    {
+        throw new HttpException(402, 'Refused by the middleware on the constructor.', 'refused');
+    }
+}
+
+/**
+ * Its #[Authorize] would go on its constructor, so its #[Middleware] -- or a
+ * package's #[RequiresPlan] (ADR 0150) -- may be written there too.
+ */
+#[Channel('vaults.{vault}', message: OtherData::class), NoAuthorization(reason: 'a test vault'), TenantFrom(FromHeader::class)]
+final readonly class Vaults
+{
+    #[UseMiddleware(Refuse::class)]
+    public function __construct(public int $vault) {}
+}
+
 // --- refused at registration -------------------------------------------------
 
 #[Channel('scripts.{script}', message: OtherData::class), Authorize('viewAny', Script::class), TenantFrom(FromHeader::class)]
@@ -250,7 +272,7 @@ function kernel(?\Tinvar\Routing\Domains $domains = null): array
     $container = new Container();
 
     $channels = new ChannelRegistry();
-    $channels->registerAll([ScriptRuns::class, Status::class, Rooms::class, ...($domains === null ? [] : [AdminStatus::class])]);
+    $channels->registerAll([ScriptRuns::class, Status::class, Rooms::class, Vaults::class, ...($domains === null ? [] : [AdminStatus::class])]);
     $actions = new ActionRegistry();
     $actions->registerAll([SessionActions::class]);
     $endpoints = new EndpointRegistry();
@@ -522,6 +544,15 @@ it('is told there is nothing to hear when the application has no hub, whatever i
         ->and($response->status)->toBe(204)
         ->and($body)->toBe([])
         ->and($get->status)->toBe(405);
+});
+
+it('runs the middleware written on a channel\'s constructor, where its checks are read from', function () {
+    [$kernel] = kernel();
+
+    [$response, $body] = subscribe($kernel, 'vaults', ['vault' => 7], ALICE);
+
+    expect($response->status)->toBe(402)
+        ->and($body)->not->toHaveKey('token');
 });
 
 describe('a trade', function () {
