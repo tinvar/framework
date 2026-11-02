@@ -465,7 +465,7 @@ final class Kernel
     private readonly Pipeline $endpointStack;
     private readonly Pipeline $sessionlessStack;
 
-    /** Caddy's on-demand TLS `ask`: the one given, or the one the container holds (ADR 0159). */
+    /** Caddy's on-demand TLS `ask`: the one given, or the one the container holds (ADR 0161). */
     private readonly ?TlsAskEndpoint $tlsAsk;
 
     /** A CORS preflight's: the flood guard alone (ADR 0074). */
@@ -607,7 +607,7 @@ final class Kernel
      *        custom domain is checked before a certificate is obtained or renewed for it:
      *        answered beside the probes, ahead of everything else, since Caddy is not a
      *        visitor either. Unless given, the one the application registered in $container
-     *        -- as tinvar/tenancy's custom domains register theirs (ADR 0159) -- so an
+     *        -- as tinvar/tenancy's custom domains register theirs (ADR 0161) -- so an
      *        application that takes custom domains answers Caddy without wiring it twice
      * @param StandIns|null $standIns what answers in place of a query's or an action's
      *        body: a test's fakes (the testing layer's BodyFakes), asked by both
