@@ -485,6 +485,10 @@ it('refuses a resource whose routes another page already answers or is named', f
         ->and(implode("\n", $app->err))->toContain("{$app->namespace}\\Http\\Pages\\Orders already answers /orders/{id}")
         ->and($app->files())->toBe($before);
 
+    expect($app(['Orders/Order', '--fields=title:string', '--path=/_orders']))->toBe(MakeCommand::USAGE)
+        ->and(implode("\n", $app->err))->toContain('is under /_, where every path is the framework\'s')
+        ->and($app->files())->toBe($before);
+
     // Somewhere else, with --path, it is the app's.
     expect($app(['Orders/Order', '--fields=title:string', '--path=/admin/orders']))->toBe(0, implode("\n", $app->err))
         ->and($app->read('app/Http/Pages/Orders/OrderEdit.php'))->toContain("#[Page('/admin/orders/{order}/edit'");

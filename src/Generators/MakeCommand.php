@@ -412,6 +412,11 @@ final class MakeCommand
         if ($basePath === '' || Names::routeParameters($basePath) !== []) {
             throw new \InvalidArgumentException("--path is where the list is, a path with no {parameter}, as in --path=/orders: the rest go under it.");
         }
+        // Everything under /_ is the framework's (ADR 0075): the routes would
+        // be refused when the app boots.
+        if (str_starts_with($basePath, '/_')) {
+            throw new \InvalidArgumentException("--path={$basePath} is under /_, where every path is the framework's. Choose another, as in --path=/orders.");
+        }
         $routePrefix = implode('.', array_map(Names::camel(...), $kebab));
 
         $enums = [];
