@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * The accounts kit's flows (ADR 0150) over an application's own users table
+ * The accounts kit's flows (ADR 0151) over an application's own users table
  * -- `members`, through the AccountUsers contract -- on SQLite and, where
  * one is there, Postgres: sessions with rows and their realms, the second
  * factor, passkeys end to end with a software authenticator, emailed links

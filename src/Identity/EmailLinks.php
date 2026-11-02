@@ -71,14 +71,14 @@ final readonly class EmailLinks
 
     /**
      * Proves the holder reads the address a new account is asked for at,
-     * before any account exists (ADR 0150): about an address, as an invite
+     * before any account exists (ADR 0151): about an address, as an invite
      * is, and the account is made only when it is used.
      */
     public const string SIGN_UP = 'sign-up';
 
     /**
      * Proves the holder reads the new address an account asked to move to
-     * (ADR 0150): about the account and its epoch, with the new address kept
+     * (ADR 0151): about the account and its epoch, with the new address kept
      * in the link's record, never in its token.
      */
     public const string CHANGE_EMAIL = 'change-email';

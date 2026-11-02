@@ -22,7 +22,7 @@ use Tinvar\Orm\Connection;
 use Tinvar\Validation\ValidationException;
 
 /**
- * The accounts kit's flows (ADR 0150): signing up by a link to the address,
+ * The accounts kit's flows (ADR 0151): signing up by a link to the address,
  * signing in and out, resetting and changing a password, changing the
  * address by a link to the new one, passkeys, two-factor codes and "sign
  * out everywhere". An application's actions call these and say what the
