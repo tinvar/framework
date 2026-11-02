@@ -53,12 +53,13 @@ use Tinvar\Validation\ValidationException;
  *   asked and good once (PasskeyChallenges), for this host as the relying
  *   party, checked in full (WebAuthn).
  * - **A session alone changes nothing about how its account signs in.**
- *   Adding a passkey and turning two-factor on need the owner to have
+ *   Adding or removing a passkey and turning two-factor on need the owner to have
  *   proved it is them on this session in the last five minutes -- the
  *   password typed again, one of the account's passkeys or a code from its
  *   authenticator app -- and every other such change asks for the password
  *   itself. So a stolen session cookie cannot add a way back in that
- *   outlives it, and a passkey added is told to the owner by email.
+ *   outlives it, or take away the owner's, and a passkey added or removed
+ *   is told to the owner by email.
  */
 final class Accounts
 {
@@ -677,10 +678,29 @@ final class Accounts
         return $user;
     }
 
-    /** Removes one of the account's passkeys; false when it is not the account's. */
-    public function removePasskey(AccountUser $user, string $id): bool
+    /**
+     * Removes one of the account's passkeys -- while the session's
+     * confirmation still counts, as adding one asks -- and tells the owner
+     * by email; false when it is not the account's. A session alone would
+     * otherwise take away the owner's way back in: a thief with a cookie
+     * removing the passkeys before turning the password over.
+     */
+    public function removePasskey(Request $http, AccountUser $user, string $id): bool
     {
-        return $this->passkeys->remove($user->authIdentifier(), $id);
+        $this->assertRecentlyConfirmed($http);
+        $name = null;
+        foreach ($this->passkeys->of($user->authIdentifier()) as $passkey) {
+            if ($passkey->id === $id) {
+                $name = $passkey->name;
+            }
+        }
+        if ($name === null || !$this->passkeys->remove($user->authIdentifier(), $id)) {
+            return false;
+        }
+
+        $this->jobs->dispatch(new SendAccountMail(AccountMailKind::PasskeyRemoved, name: $name, userId: $user->authIdentifier()));
+
+        return true;
     }
 
     // ------------------------------------------------------------- the worker
@@ -711,6 +731,7 @@ final class Accounts
             AccountMailKind::EmailChanged => $user === null ? null : $this->mails->emailChanged($user, $job->email, $resetPage),
             AccountMailKind::PasswordChanged => $user === null ? null : $this->mails->passwordChanged($user, $resetPage),
             AccountMailKind::PasskeyAdded => $user === null ? null : $this->mails->passkeyAdded($user, $job->name, $this->links->page($this->links->paths->account), $resetPage),
+            AccountMailKind::PasskeyRemoved => $user === null ? null : $this->mails->passkeyRemoved($user, $job->name, $this->links->page($this->links->paths->account), $resetPage),
             AccountMailKind::TwoFactorDisabled => $user === null ? null : $this->mails->twoFactorDisabled($user, $resetPage),
         };
 

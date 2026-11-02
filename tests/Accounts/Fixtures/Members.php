@@ -192,6 +192,11 @@ final readonly class MemberMails implements AccountMails
         return new MemberMail($user->accountEmail(), 'passkey-added', $accountUrl);
     }
 
+    public function passkeyRemoved(AccountUser $user, string $passkeyName, string $accountUrl, string $resetUrl): Mailable
+    {
+        return new MemberMail($user->accountEmail(), 'passkey-removed', $accountUrl);
+    }
+
     public function twoFactorDisabled(AccountUser $user, string $resetUrl): Mailable
     {
         return new MemberMail($user->accountEmail(), 'two-factor-disabled', $resetUrl);

@@ -347,9 +347,33 @@ it('removes a passkey for its own account alone', function () {
         $options = $ada->do(static fn (Accounts $a, Request $r) => $a->passkeyRegistrationOptions($r, $adaUser));
         $passkey = $ada->do(static fn (Accounts $a, Request $r) => $a->registerPasskey($r, $adaUser, credential($authenticator, $authenticator->register((string) Base64Url::decode($options['challenge']))), 'Key'));
 
-        expect($app->kit->accounts->removePasskey($bobUser, $passkey->id))->toBeFalse()
-            ->and($app->kit->accounts->removePasskey($adaUser, $passkey->id))->toBeTrue()
+        $bob->confirm();
+        expect($bob->do(static fn (Accounts $a, Request $r) => $a->removePasskey($r, $bobUser, $passkey->id)))->toBeFalse()
+            ->and($ada->do(static fn (Accounts $a, Request $r) => $a->removePasskey($r, $adaUser, $passkey->id)))->toBeTrue()
             ->and($app->kit->accounts->passkeys($adaUser))->toBe([]);
+    });
+});
+
+it('asks a session to confirm it is its owner before it removes a passkey, and tells the owner', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $key = SoftwareAuthenticator::es256();
+        $owner->confirm();
+        $options = $owner->do(static fn (Accounts $a, Request $r) => $a->passkeyRegistrationOptions($r, $user));
+        $passkey = $owner->do(static fn (Accounts $a, Request $r) => $a->registerPasskey($r, $user, credential($key, $key->register((string) Base64Url::decode($options['challenge']))), 'Laptop'));
+
+        // A stolen session cookie, its owner's confirmation long lapsed: the passkey stays.
+        $app->now += Accounts::CONFIRMATION_LIFETIME;
+        expect(refused(static fn () => $owner->do(static fn (Accounts $a, Request $r) => $a->removePasskey($r, $user, $passkey->id))))->toBe(['confirm' => [Accounts::CONFIRM_FIRST]])
+            ->and($app->kit->accounts->passkeys($user))->toHaveCount(1);
+
+        $owner->confirm();
+        expect($owner->do(static fn (Accounts $a, Request $r) => $a->removePasskey($r, $user, $passkey->id)))->toBeTrue()
+            ->and($app->kit->accounts->passkeys($user))->toBe([]);
+        $app->work();
+        expect($app->links('passkey-removed', 'ada@example.com'))->toBe(['https://app.example/account']);
     });
 });
 
