@@ -10,7 +10,7 @@ use Tinvar\Orm\Model;
 use Tinvar\Orm\ModelMeta;
 
 /**
- * A #[Searchable] model as search reads it (ADR 0153): its table, which
+ * A #[Searchable] model as search reads it (ADR 0154): its table, which
  * names it in every index; its fields, each placed in one of four weight
  * classes, A highest; and its tenant column, if it is #[TenantScoped].
  *

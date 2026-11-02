@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Search;
 
 /**
- * What a backend answers a search with (ADR 0153): the keys matched on one
+ * What a backend answers a search with (ADR 0154): the keys matched on one
  * page, best first, and how many matched in all -- Meilisearch's estimate
  * where it is the backend.
  *

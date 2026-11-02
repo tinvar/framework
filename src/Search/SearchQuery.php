@@ -10,7 +10,7 @@ use Tinvar\Orm\Page;
 use Tinvar\Orm\Query;
 
 /**
- * One search of one model (ADR 0153), built from Search::for():
+ * One search of one model (ADR 0154), built from Search::for():
  *
  *     $page = $search->for(Product::class)
  *         ->query($request->query['q'] ?? '')

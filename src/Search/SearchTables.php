@@ -8,7 +8,7 @@ use Tinvar\Orm\RowLevelSecurity;
 use Tinvar\Orm\Schema\Schema;
 
 /**
- * The tables an in-database index lives in (ADR 0153), made by one line in
+ * The tables an in-database index lives in (ADR 0154), made by one line in
  * a migration of the application's:
  *
  *     public function up(Schema $schema): void

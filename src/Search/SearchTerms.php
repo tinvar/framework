@@ -6,7 +6,7 @@ namespace Tinvar\Search;
 
 /**
  * What someone typed into a search box, as the words search looks for
- * (ADR 0153).
+ * (ADR 0154).
  *
  * The one place user input enters search, and it leaves as words alone:
  * runs of letters and digits in any script, lowercased, at most MAX_TERMS

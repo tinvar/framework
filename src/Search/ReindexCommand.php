@@ -9,7 +9,7 @@ use Tinvar\Console\Prompts\Cancelled;
 
 /**
  * `tinvar search:reindex [--model=Product,...] [--tenant=ID] [--force]`
- * (ADR 0153): builds the index of each #[Searchable] model again from its
+ * (ADR 0154): builds the index of each #[Searchable] model again from its
  * rows, under a progress bar.
  *
  * Which models: those --model names, by class or short name; where a

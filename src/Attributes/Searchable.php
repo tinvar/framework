@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Attributes;
 
 /**
- * A model whose rows full-text search finds (ADR 0153).
+ * A model whose rows full-text search finds (ADR 0154).
  *
  *     #[Table('products'), Searchable(fields: ['name', 'summary', 'description'], weights: ['name' => 3, 'summary' => 2])]
  *     final class Product extends Model { ... }

@@ -11,7 +11,7 @@ use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 
 /**
- * An application's full-text search (ADR 0153): its #[Searchable] models,
+ * An application's full-text search (ADR 0154): its #[Searchable] models,
  * the backend their index is in, and the ORM it follows.
  *
  *     $search = new Search($orm, $backend, $classes->models, $dispatcher, $gate);

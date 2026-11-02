@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * Meilisearch as the index (ADR 0153): reached through the outbound client
+ * Meilisearch as the index (ADR 0154): reached through the outbound client
  * held to its one origin and the application's #[OutboundPolicy]; an index
  * per tenant, chosen from the ORM's scope; written from jobs queued after
  * the commit, in each row's tenant; the key a Secret no error repeats.

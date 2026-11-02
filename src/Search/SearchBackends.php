@@ -12,7 +12,7 @@ use Tinvar\Support\BuildProfile;
 use Tinvar\Support\DevMode;
 
 /**
- * The backend the environment names (ADR 0153): TINVAR_SEARCH_BACKEND
+ * The backend the environment names (ADR 0154): TINVAR_SEARCH_BACKEND
  * (SearchConfig), and Meilisearch's own variables where it names that.
  *
  *     $backend = new SearchBackends($outbound)->backend($connection);

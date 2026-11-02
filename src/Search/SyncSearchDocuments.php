@@ -7,7 +7,7 @@ namespace Tinvar\Search;
 use Tinvar\Jobs\Job;
 
 /**
- * Brings a remote index up to date with rows written (ADR 0153): queued
+ * Brings a remote index up to date with rows written (ADR 0154): queued
  * by Search after the commit that wrote them, in the tenant each row is
  * in, and run there. The rows are read again on the worker, through the
  * ORM, in that tenant: one found is indexed as it is now, one missing is

@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Search;
 
 /**
- * Where an application's search index lives (ADR 0153): its own database
+ * Where an application's search index lives (ADR 0154): its own database
  * -- SQLite's FTS5 (SqliteSearch) or Postgres's tsvector (PostgresSearch),
  * the default -- or Meilisearch over the outbound client
  * (MeilisearchSearch), or a test's SearchFake.

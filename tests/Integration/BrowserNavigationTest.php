@@ -559,7 +559,7 @@ it('shows a product page prefetched before signing in as the customer sees it, o
         ->and($result['visitsAfterSignIn'])->toBe([$result['path']]);
 });
 
-// Catalog search (ADR 0153): the header's box, the results page as a client
+// Catalog search (ADR 0154): the header's box, the results page as a client
 // visit, a result opened, a search that finds nothing, and query syntax in
 // the address bar read as words.
 it('searches the catalog from the header, opens a result, and reads query syntax as words', function () use ($root) {
