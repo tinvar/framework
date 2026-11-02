@@ -28,7 +28,7 @@ final class AuthContext
     private string $epoch = '';
 
     /**
-     * The id of the API token the user was signed in with (ADR 0151); null
+     * The id of the API token the user was signed in with (ADR 0155); null
      * when they were signed in by a session, or nobody is. Read by what
      * must refuse a token's caller -- issuing another token, above all --
      * and kept for the request alone: actingAs() does not change it.
@@ -104,7 +104,7 @@ final class AuthContext
      * @param string $epoch the user's auth epoch, which the application changes on a role
      *        change and on impersonation starting or stopping
      * @param string|null $apiToken the id of the API token that signed them in, for a request
-     *        a token authenticated (ADR 0151); null for a session's
+     *        a token authenticated (ADR 0155); null for a session's
      */
     public function login(?Authenticatable $user, string $epoch = '', ?string $apiToken = null): void
     {
@@ -116,7 +116,7 @@ final class AuthContext
 
     /**
      * The id of the API token this request's user was signed in with; null
-     * for a session's user, or nobody (ADR 0151).
+     * for a session's user, or nobody (ADR 0155).
      */
     public function apiToken(): ?string
     {

@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * What an API token is as text (ADR 0151): `tvr_<id>_<secret>`, a prefix a
+ * What an API token is as text (ADR 0155): `tvr_<id>_<secret>`, a prefix a
  * secret scanner finds, an id that is no secret, and 43 characters of
  * base62 of which only the SHA-256 is kept.
  */

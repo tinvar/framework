@@ -12,7 +12,7 @@ use Tinvar\Http\Response;
 
 /**
  * Signs a request's user in from the API token it presents, and refuses one
- * that presents none, or one that does not hold (ADR 0151).
+ * that presents none, or one that does not hold (ADR 0155).
  *
  * Run where a session's middleware never is: in front of `/_api` and of
  * each endpoint marked #[RequiresScope], whose requests reach it with no

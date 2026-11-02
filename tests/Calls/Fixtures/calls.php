@@ -270,7 +270,7 @@ final class Harness
     }
 
     /**
-     * The API's tokens and calls (ADR 0151), each made when a test first
+     * The API's tokens and calls (ADR 0155), each made when a test first
      * asks for it, as the tools and the service calls are.
      */
     public \Tinvar\Api\ArrayApiTokens $tokenStore {

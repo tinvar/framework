@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * DatabaseApiTokens (ADR 0151): API tokens in a table of the application's
+ * DatabaseApiTokens (ADR 0155): API tokens in a table of the application's
  * database -- the digest of each secret, never the secret; each moment as
  * the ORM stores one; every statement about a user's tokens held to the
  * tenant. On SQLite, and on Postgres and MySQL where they are there.

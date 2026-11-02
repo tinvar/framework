@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * The shop's order API end to end (ADR 0151), as a customer's script calls
+ * The shop's order API end to end (ADR 0155), as a customer's script calls
  * it: the shop served by PHP's server, a customer signing in and making a
  * token on the settings page's action, and then curl -- nothing of the
  * framework's on the calling side -- reading their orders with it, and

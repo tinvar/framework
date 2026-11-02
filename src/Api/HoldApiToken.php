@@ -13,7 +13,7 @@ use Tinvar\Orm\Orm;
 
 /**
  * Holds the token that signed an endpoint's caller in to what the endpoint
- * requires and where it runs (ADR 0151): every scope its #[RequiresScope]
+ * requires and where it runs (ADR 0155): every scope its #[RequiresScope]
  * names, and the tenant and the panel the entry checks put the request in,
  * which must be the token's own.
  *

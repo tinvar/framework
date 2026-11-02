@@ -109,7 +109,7 @@ describe('emitting a response', function () {
 });
 
 // PHP rewrites the status for WWW-Authenticate (to 401) and Location (to
-// 302): set after them, a 403 naming a missing scope stays a 403 (ADR 0151).
+// 302): set after them, a 403 naming a missing scope stays a 403 (ADR 0155).
 it('sets the status after a header PHP would rewrite it for', function () {
     $log = [];
     Sapi::emit(

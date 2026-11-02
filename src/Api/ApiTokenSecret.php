@@ -8,7 +8,7 @@ use Tinvar\Http\Request;
 
 /**
  * What an API token is as text: `tvr_<id>_<secret>`, and how it is read
- * from a request (ADR 0151).
+ * from a request (ADR 0155).
  *
  *   - `tvr_` marks it as Tinvar's, so a secret scanner -- GitHub's, a
  *     pre-commit hook -- can find one pushed by mistake: SCANNER_PATTERN.
