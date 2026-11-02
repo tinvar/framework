@@ -9,7 +9,7 @@ use Tinvar\Config\ConfigException;
 use Tinvar\Config\Configs;
 
 /**
- * How long the audit log keeps its entries (ADR 0151), as
+ * How long the audit log keeps its entries (ADR 0153), as
  * TINVAR_AUDIT_RETENTION_DAYS: whole days, 1 to 36,500, a year when unset.
  * PruneAuditLog takes away what is older each night.
  *

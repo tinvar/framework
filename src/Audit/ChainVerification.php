@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Audit;
 
 /**
- * What AuditLog::verify() found walking a tenant's log (ADR 0151): whether
+ * What AuditLog::verify() found walking a tenant's log (ADR 0153): whether
  * every entry is where the chain says and as it was written, how many it
  * walked, and where the first break is.
  */

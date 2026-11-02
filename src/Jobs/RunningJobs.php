@@ -6,7 +6,7 @@ namespace Tinvar\Jobs;
 
 /**
  * The job running now, if one is: what the audit log reads to say a change
- * was made by a job, and who started it (ADR 0151), and what the dispatcher
+ * was made by a job, and who started it (ADR 0153), and what the dispatcher
  * reads to carry a job's starter on to the jobs it dispatches.
  *
  * Given to the JobRunner, which puts each job's envelope here for as long
