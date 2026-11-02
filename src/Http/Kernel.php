@@ -180,19 +180,19 @@ final class Kernel
     public readonly ?Domains $domains;
 
     /**
-     * The application's API tokens (ADR 0158): issued, listed and revoked
+     * The application's API tokens (ADR 0159): issued, listed and revoked
      * by its users, and in the container for its actions and pages; null
      * when it was given no ApiAccess.
      */
     public readonly ?ApiTokens $apiTokens;
 
-    /** POST /_api/{operation}, mounted only when an application gives ApiAccess (ADR 0158). */
+    /** POST /_api/{operation}, mounted only when an application gives ApiAccess (ADR 0159). */
     private readonly ?ApiEndpoint $api_;
 
     /**
      * What every /_api call runs behind: the flood guard and `throttle:api`
      * by address, and nothing that reads a cookie -- no global stack, so no
-     * session, and so no CSRF token to ask for (ADR 0158).
+     * session, and so no CSRF token to ask for (ADR 0159).
      */
     private readonly Pipeline $apiStack;
 
@@ -336,7 +336,7 @@ final class Kernel
         // them is a page's fetch or a download, and a write among them
         // spends the same bucket as the reads.
         'endpoints' => 120,
-        // POST /_api/{operation}, called with an API token (ADR 0158): an
+        // POST /_api/{operation}, called with an API token (ADR 0159): an
         // endpoint's budget, in a bucket of its own, so a script reading the
         // API spends nothing of the pages' fetches and downloads.
         'api' => 120,
@@ -672,7 +672,7 @@ final class Kernel
      *        in the container for actions and pages to record events with, and forgets what
      *        it holds of a request with the reset contract
      * @param ApiAccess|null $apiAccess where the application's API tokens are kept, and how their
-     *        users are found again (ADR 0158): given, POST /_api/{operation} runs every action and
+     *        users are found again (ADR 0159): given, POST /_api/{operation} runs every action and
      *        query marked #[RequiresScope] for a token holding its scopes, every endpoint marked so
      *        takes a token and no session, and ApiTokens is in the container. Without it, a
      *        #[RequiresScope] anywhere is refused here
@@ -1355,7 +1355,7 @@ final class Kernel
             }
         }
 
-        // The public API (ADR 0158): the actions and queries marked
+        // The public API (ADR 0159): the actions and queries marked
         // #[RequiresScope], at /_api, and the endpoints marked so, each
         // taking an API token and no session. Refused without ApiAccess,
         // rather than an API that answers nobody.
@@ -2161,7 +2161,7 @@ final class Kernel
         if (($this->clientTelemetry_?->matches($request) ?? false) && TelemetryEndpoint::ridesNoSession($request)) {
             return true;
         }
-        // A call to the API: its token is its credential (ADR 0158). And
+        // A call to the API: its token is its credential (ADR 0159). And
         // any request presenting one, which a session's path refuses: a
         // script sent where it should not be is handed no session for it.
         if (($this->api_?->matches($request) ?? false) || ($this->api_ !== null && ApiTokenSecret::presented($request))) {
@@ -2255,7 +2255,7 @@ final class Kernel
             }
 
             // The API, ahead of everything that opens a session: its token
-            // is its caller's credential, never a cookie (ADR 0158).
+            // is its caller's credential, never a cookie (ADR 0159).
             if ($this->api_ !== null && $this->api_->matches($request)) {
                 $this->telemetry?->route(ApiEndpoint::ROUTE);
                 ApiEndpoint::assertMethod($request);
@@ -2267,7 +2267,7 @@ final class Kernel
             // #[RequiresScope], and refused everywhere a session is read:
             // a session's path that let one through would be a second way
             // in that CSRF and the session's own checks were never asked
-            // to guard (ADR 0158). An endpoint is told apart below.
+            // to guard (ADR 0159). An endpoint is told apart below.
             if (ApiTokenSecret::presented($request) && !$this->takesApiTokens($request)) {
                 $this->telemetry?->route('_api_token_refused');
 
@@ -2892,7 +2892,7 @@ final class Kernel
     }
 
     /**
-     * One call to the API (ADR 0158), as a #[WithoutSession] endpoint is
+     * One call to the API (ADR 0159), as a #[WithoutSession] endpoint is
      * run: refused if anyone is signed in before its stack, its request
      * stripped of every cookie and PHP's copies of them, behind the flood
      * guard and `throttle:api` by address. The token signs its user in

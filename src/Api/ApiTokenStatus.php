@@ -21,7 +21,7 @@ enum ApiTokenStatus: string
     /**
      * Its user's auth epoch has moved since it was issued -- a sign-out
      * everywhere, a password changed, a role taken away -- which ends every
-     * token they held, as it ends every session (ADR 0158).
+     * token they held, as it ends every session (ADR 0159).
      */
     case SignedOut = 'signed_out';
 

@@ -231,7 +231,7 @@ describe('the modules', function () {
             ->and($modules->mayUse('tools', 'services'))->toBeFalse()
             ->and($modules->mayUse('services', 'tools'))->toBeFalse()
             ->and($modules->mayUse('gateway', 'jobs'))->toBeFalse()
-            // ADR 0158: the API's tokens and calls on calls, beside the
+            // ADR 0159: the API's tokens and calls on calls, beside the
             // tools and services, and the kernel over them.
             ->and($modules->mayUse('api', 'calls'))->toBeTrue()
             ->and($modules->mayUse('api', 'services'))->toBeFalse()

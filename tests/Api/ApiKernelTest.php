@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * The public API through the Kernel (ADR 0158): `POST /_api/{operation}`
+ * The public API through the Kernel (ADR 0159): `POST /_api/{operation}`
  * and an endpoint marked #[RequiresScope], each taking an API token and no
  * session -- no cookie read, none issued, no CSRF token asked for -- and a
  * token refused on every path a session is read.

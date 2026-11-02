@@ -10,7 +10,7 @@ use Carbon\CarbonImmutable;
  * One API token as it is kept: everything about it but its secret, of which
  * only a digest is stored, and never here (ApiTokenStore).
  *
- * A token is bound where it was issued (ADR 0158): to its user and the auth
+ * A token is bound where it was issued (ADR 0159): to its user and the auth
  * epoch they were on, the tenant and the panel in force, and the host the
  * request was on where the application routes by host (ADR 0149) -- each
  * checked again at every use, so a token is good only for its user, while

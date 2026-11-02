@@ -47,7 +47,7 @@ final readonly class CompiledEndpoint
      * @param Cors|null $cors the other origins that may call it and read its answer (ADR 0074)
      * @param list<string> $revalidates the tags a call on a method that may write
      *        invalidates once its body has returned (ADR 0075)
-     * @param list<string> $scopes what its #[RequiresScope] names (ADR 0158): an API token
+     * @param list<string> $scopes what its #[RequiresScope] names (ADR 0159): an API token
      *        holding all of them signs its caller in, and nothing else does -- it is then
      *        $sessionless too. None for an endpoint a session reaches
      */
@@ -81,7 +81,7 @@ final readonly class CompiledEndpoint
         public array $scopes = [],
     ) {}
 
-    /** Whether an API token is what signs its caller in (ADR 0158). */
+    /** Whether an API token is what signs its caller in (ADR 0159). */
     public function takesApiTokens(): bool
     {
         return $this->scopes !== [];

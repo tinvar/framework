@@ -31,7 +31,7 @@ use Tinvar\Validation\ValidationException;
  *
  * A #[WithoutSession] endpoint's own middleware is what signs its caller
  * in -- or, for one that requires API token scopes, the token's (ADR
- * 0158), ahead of its own middleware -- so it runs first, then the authentication the stack could not ask
+ * 0159), ahead of its own middleware -- so it runs first, then the authentication the stack could not ask
  * before it, then the tenant and the panel -- whose membership check needs
  * to know who the caller is.
  *
@@ -65,7 +65,7 @@ final class EndpointHandler
         // `throttle:endpoints` a minute, for the account pass a sessionless
         // endpoint's stack could not run; 0 for none.
         private readonly int $endpointsLimit = 0,
-        // An endpoint that takes API tokens (#[RequiresScope], ADR 0158):
+        // An endpoint that takes API tokens (#[RequiresScope], ADR 0159):
         // the middleware that signs a token's user in, run where a
         // sessionless endpoint's own middleware would sign its caller in;
         // and, for each such endpoint, the one that holds the token to its

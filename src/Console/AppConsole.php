@@ -143,7 +143,7 @@ final class AppConsole
      *        for `key:generate` and `doctor`; null where the application has no file
      * @param (\Closure(): ?string)|null $probeTokenFile where the probe token is, likewise
      * @param (\Closure(list<string>): int)|null $openapi tinvar/codegen's `openapi`, where it is
-     *        installed (ADR 0158): the public API as an OpenAPI 3.1 document, which `build` also
+     *        installed (ADR 0159): the public API as an OpenAPI 3.1 document, which `build` also
      *        writes into the build as openapi.json when there is one to describe
      */
     public function __construct(
@@ -593,7 +593,7 @@ final class AppConsole
         if ($fragments !== 0) {
             return $fragments;
         }
-        // The public API's description, beside what it describes (ADR 0158):
+        // The public API's description, beside what it describes (ADR 0159):
         // where codegen is installed and something is marked #[RequiresScope].
         if ($this->openapi !== null) {
             $described = ($this->openapi)(['--out=' . substr($build, \strlen('--build=')) . '/openapi.json', '--if-any']);

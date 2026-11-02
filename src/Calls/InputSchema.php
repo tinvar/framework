@@ -23,7 +23,7 @@ use Tinvar\Validation\Rules\Min;
  * values, an #[In] or #[FieldOf] list, #[Min] and #[Max], an #[Email]'s
  * format and a #[Pattern] -- and leaves the rest to the validator's
  * messages, which a refused call carries back. The OpenAPI document (ADR
- * 0158) reads an input's schema from here too.
+ * 0159) reads an input's schema from here too.
  */
 final class InputSchema
 {

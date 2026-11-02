@@ -8,7 +8,7 @@ use Carbon\CarbonImmutable;
 
 /**
  * Where API tokens are kept: each one's record and the SHA-256 of its
- * secret, never the secret (ADR 0158).
+ * secret, never the secret (ADR 0159).
  *
  * Every statement about a user's tokens names the tenant: a token's id from
  * another tenant's form revokes nothing here. find() alone does not, since

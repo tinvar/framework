@@ -18,7 +18,7 @@ use Tinvar\Support\Str;
 
 /**
  * `POST /_api/{operation}`: an action or a query marked #[RequiresScope],
- * called with an API token (ADR 0158).
+ * called with an API token (ADR 0159).
  *
  *     curl -X POST https://shop.example/_api/orders.yours \
  *       -H 'Authorization: Bearer tvr_...' -H 'Content-Type: application/json' \

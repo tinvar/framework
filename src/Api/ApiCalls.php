@@ -22,7 +22,7 @@ use Tinvar\Query\QueryRegistry;
 
 /**
  * The actions and queries marked #[RequiresScope], called with an API token
- * that holds (ADR 0158): what `POST /_api/{operation}` runs.
+ * that holds (ADR 0159): what `POST /_api/{operation}` runs.
  *
  * Through the machinery a tool call and a service call go through (ADR
  * 0098): the operations are read by Operations -- so an action that takes

@@ -6,7 +6,7 @@ namespace Tinvar\Attributes;
 
 /**
  * Exposes an endpoint, an action or a query over HTTP to an API token
- * holding these scopes (Tinvar\ApiTokens, ADR 0158).
+ * holding these scopes (Tinvar\ApiTokens, ADR 0159).
  *
  *     #[Query(name: 'orders.yours'), Authorize('viewAny', Order::class), RequiresScope(ApiScope::OrdersRead)]
  *     final class YourOrders { ... }

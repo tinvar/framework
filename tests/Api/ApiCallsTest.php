@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * The API's calls (ADR 0158): an action or a query marked #[RequiresScope],
+ * The API's calls (ADR 0159): an action or a query marked #[RequiresScope],
  * run for the user an API token signed in -- held to the token's scopes,
  * tenant, panel and host, then run through the action's or query's own
  * resolution, #[Authorize] and validation.

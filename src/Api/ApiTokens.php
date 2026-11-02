@@ -14,7 +14,7 @@ use Tinvar\Orm\Orm;
 use Tinvar\Support\Uuid;
 
 /**
- * Personal access tokens for the application's public HTTP API (ADR 0158):
+ * Personal access tokens for the application's public HTTP API (ADR 0159):
  * issued by a signed-in user, for the scopes the API declares, listed and
  * revoked by them, and checked at every use.
  *
