@@ -117,7 +117,7 @@ it('ships a lock its own check refuses only for leaving @tinvar/* to a registry'
     $violations = array_values(array_diff(new \Tinvar\Packages\SupplyChain(ROOT . '/packages/skeleton', $policy)->check(), ['composer.lock is missing.']));
 
     // Each of the three it takes from inside the app (ADR 0138): the mail kit
-    // its account emails are drawn with (ADR 0152), the client and the renderer.
+    // its account emails are drawn with (ADR 0153), the client and the renderer.
     expect($violations)->toHaveCount(3)
         ->and($violations[0])->toStartWith('package.json depends on @tinvar/mail, which PackagePolicy::$unpublished says no registry serves yet')
         ->and($violations[1])->toStartWith('package.json depends on @tinvar/react, which PackagePolicy::$unpublished says no registry serves yet')

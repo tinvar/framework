@@ -148,7 +148,7 @@ return [
     // queue; events, mail, webhooks, transfers, workflows and push each on jobs
     // and none on another; calls (an action or query run outside HTTP) on
     // the core, with tools and services on calls; the gateway's contract on
-    // the core (ADR 0098, 0099); the accounts kit on jobs and mail (ADR 0152);
+    // the core (ADR 0098, 0099); the accounts kit on jobs and mail (ADR 0153);
     // and the kernel -- the HTTP kernel, the console and the
     // server, which a process starts with -- over all of them. An
     // attribute is its module's, though the namespace is shared.
@@ -169,7 +169,7 @@ return [
             'tools' => ['Tinvar\\Tools\\', 'Tinvar\\Attributes\\Tool'],
             'services' => ['Tinvar\\Services\\', 'Tinvar\\Attributes\\ServiceCall'],
             'gateway' => ['Tinvar\\Gateway\\'],
-            // The accounts kit (ADR 0152): sign-up, sign-in, sessions with
+            // The accounts kit (ADR 0153): sign-up, sign-in, sessions with
             // rows, passkeys and two-factor, on the core, jobs and mail.
             'accounts' => ['Tinvar\\Accounts\\'],
             'kernel' => ['Tinvar\\Http\\Kernel', 'Tinvar\\Console\\', 'Tinvar\\Discovery\\', 'Tinvar\\Server\\', 'Tinvar\\Http\\TestableApplication', 'Tinvar\\Http\\BrowserTestable', 'Tinvar\\Attributes\\Command'],

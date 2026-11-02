@@ -214,7 +214,7 @@ describe('the modules', function () {
             ->and($modules->mayUse('webhooks', 'mail'))->toBeFalse()
             ->and($modules->mayUse('webhooks', 'events'))->toBeFalse()
             ->and($modules->mayUse('transfers', 'mail'))->toBeFalse()
-            // ADR 0152: the accounts kit on jobs and mail, and nothing beside them.
+            // ADR 0153: the accounts kit on jobs and mail, and nothing beside them.
             ->and($modules->mayUse('accounts', 'mail'))->toBeTrue()
             ->and($modules->mayUse('accounts', 'jobs'))->toBeTrue()
             ->and($modules->mayUse('accounts', 'webhooks'))->toBeFalse()
