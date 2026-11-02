@@ -47,6 +47,9 @@ use Tinvar\Support\Signer;
 
 const KEY = 'audit-log-test-key-of-at-least-32-bytes';
 
+/** What the pinned proxy sends beside its X-Forwarded-For (ADR 0134). */
+const PROXY_SECRET = 'audit-log-test-proxy-secret-of-at-least-forty-eight-bytes!!';
+
 #[Table('audit_notes'), TenantScoped, Audited]
 final class Note extends Model
 {
@@ -127,7 +130,7 @@ function log(?\Closure $impersonator = null, int $retentionDays = 365): array
         $auth,
         KEY,
         jobs: $jobs,
-        proxies: TrustedProxies::of(['10.0.0.0/8']),
+        proxies: TrustedProxies::of(['10.0.0.0/8'], null, PROXY_SECRET),
         impersonator: $impersonator,
         retentionDays: $retentionDays,
         clock: static fn (): CarbonImmutable => $clock->now,
@@ -285,7 +288,7 @@ it('names who acted: the system, a guest, a user and who is impersonating them, 
 
     expect($audit->actor()->kind)->toBe(ActorKind::System);
 
-    $request = new Request('POST', '/_action/x', ['host' => 'Shop.Test', 'x-forwarded-for' => '198.51.100.7, 10.0.0.2'], remoteAddress: '10.0.0.1');
+    $request = new Request('POST', '/_action/x', ['host' => 'Shop.Test', 'x-forwarded-for' => '198.51.100.7, 10.0.0.2', TrustedProxies::SECRET_HEADER => PROXY_SECRET], remoteAddress: '10.0.0.1');
     $depth = $audit->enterRequest($request, 'req-1');
     expect($audit->actor()->kind)->toBe(ActorKind::Guest);
 
@@ -345,7 +348,7 @@ it('keeps a request\'s host, id and address only in their own forms, and hashes 
 
     // A Host and an id that are no text, an address that is none: dropped,
     // and the change they came with is made and recorded all the same.
-    $request = new Request('POST', '/_action/x', ['host' => "sh\xC3\x28op.test", 'x-forwarded-for' => 'not-an-address'], remoteAddress: '10.0.0.1');
+    $request = new Request('POST', '/_action/x', ['host' => "sh\xC3\x28op.test", 'x-forwarded-for' => 'not-an-address', TrustedProxies::SECRET_HEADER => PROXY_SECRET], remoteAddress: '10.0.0.1');
     $depth = $audit->enterRequest($request, "req-\xFF");
     $auth->login(new Person("u-\xFF"));
     $note = $orm->actAs('acme', fn (): Note => note($orm, "body \xFE"));
