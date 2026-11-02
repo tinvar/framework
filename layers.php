@@ -177,7 +177,7 @@ return [
             // The accounts kit (ADR 0153): sign-up, sign-in, sessions with
             // rows, passkeys and two-factor, on the core, jobs and mail.
             'accounts' => ['Tinvar\\Accounts\\'],
-            // The audit log (ADR 0155): over jobs, to name the job that made
+            // The audit log (ADR 0156): over jobs, to name the job that made
             // a change and its starter, and services, to name a service.
             'audit' => ['Tinvar\\Audit\\', 'Tinvar\\Attributes\\AuditedAction'],
             'kernel' => ['Tinvar\\Http\\Kernel', 'Tinvar\\Console\\', 'Tinvar\\Discovery\\', 'Tinvar\\Server\\', 'Tinvar\\Http\\TestableApplication', 'Tinvar\\Http\\BrowserTestable', 'Tinvar\\Attributes\\Command'],

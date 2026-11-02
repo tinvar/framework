@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Audit;
 
 /**
- * Who an audit entry says made a change (ADR 0155): the kind of actor, its
+ * Who an audit entry says made a change (ADR 0156): the kind of actor, its
  * id, and for a user acting as someone else, the one doing it; for a job,
  * which job it was and who started the work it is part of.
  */

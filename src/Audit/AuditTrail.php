@@ -9,7 +9,7 @@ use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 
 /**
- * The tenant in force's audit log, to read (ADR 0155): newest first, a page
+ * The tenant in force's audit log, to read (ADR 0156): newest first, a page
  * at a time, each page read back from the place the last one ended at.
  *
  *     $entries = $audit->trail()->forSubject($order, limit: 50);

@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * The audit log (ADR 0155) on the servers: its tables made by each
+ * The audit log (ADR 0156) on the servers: its tables made by each
  * dialect, a moment hashed the same as the server stores it, an entry
  * rolled back with its change, and two writers to one tenant's log chained
  * one after the other -- the second waits on the head row's lock while the

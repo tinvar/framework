@@ -7,7 +7,7 @@ namespace Tinvar\Audit;
 use Carbon\CarbonImmutable;
 
 /**
- * One entry of a tenant's audit log, as AuditTrail reads it back (ADR 0155):
+ * One entry of a tenant's audit log, as AuditTrail reads it back (ADR 0156):
  * what happened, to what, by whom, where and when.
  *
  * Not Data: a loader maps what its page shows onto Data of its own, as it
