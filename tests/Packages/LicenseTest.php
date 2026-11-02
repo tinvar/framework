@@ -34,7 +34,7 @@ function manifest(string $path): array
 it('knows every package there is', function () {
     expect(packages())->toEqualCanonicalizing([
         'billing', 'codegen', 'database', 'devtools-extension', 'framework', 'react',
-        'mail', 'renderer', 'skeleton', 'support', 'tenancy', 'testing',
+        'mail', 'renderer', 'skeleton', 'support', 'tenancy', 'testing', 'vscode-extension',
     ]);
 });
 
@@ -55,6 +55,11 @@ it('declares MIT in every manifest a package is published by', function (string 
     // package's: composer.json is what Packagist reads for it.
     if ($package === 'skeleton') {
         $manifests = [ROOT . '/packages/skeleton/composer.json'];
+    }
+    // The VS Code extension's manifest is the extension's own package.json,
+    // in src/ beside the files VS Code loads (ADR 0158).
+    if ($package === 'vscode-extension') {
+        $manifests = [ROOT . '/packages/vscode-extension/src/package.json'];
     }
 
     foreach ($manifests as $path) {
