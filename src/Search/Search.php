@@ -65,10 +65,13 @@ final class Search
         }
     }
 
-    /** Has the ORM tell this search of every row written, from now on. */
+    /**
+     * Has the ORM tell this search of every row written, from now on,
+     * beside whatever else observes it; again, and it is still told once.
+     */
     public function observe(): self
     {
-        $this->orm->observeWrites($this->written(...));
+        $this->orm->observeWrites($this, $this->written(...));
 
         return $this;
     }
