@@ -162,9 +162,15 @@ it('supervises the shop in dev, and draws the toolbar over its pages', function 
     }
 
     // Stopped by its signal, everything with it; codegen ran first, into the
-    // copy's types, and wrote nothing that had not changed.
+    // copy's types, and wrote nothing that had not changed -- but entries.json,
+    // which names each PHP file from where the types are, and the copy's types
+    // are not the shop's.
+    preg_match('/^\[codegen\] (?:types up to date at start|at start: (.*))$/m', $stderr, $codegen);
+    $rewritten = array_filter(explode('; ', $codegen[1] ?? ''), static fn (string $line): bool => $line !== ''
+        && !str_ends_with(explode(' (', $line)[0], '/resources/types/entries.json'));
     expect($code)->toBe(0, $stderr)
-        ->and($stderr)->toContain('[codegen] types up to date at start')
+        ->and($codegen)->not->toBe([], $stderr)
+        ->and($rewritten)->toBe([])
         ->and($types)->not->toBe('');
     clearstatcache();
 
