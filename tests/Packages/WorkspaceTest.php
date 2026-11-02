@@ -113,9 +113,26 @@ it('fails a package named for another directory, and one carrying extra.tinvar',
     });
 
     expect($violations)->toBe([
-        'packages/database/composer.json: carries extra.tinvar, which marks an application\'s package for the allowlist; the framework\'s packages carry none.',
+        'packages/database/composer.json: carries extra.tinvar, which marks an application\'s package for the allowlist; the framework\'s packages carry none but a kit\'s declaration.',
         'packages/support/composer.json: is named "tinvar/helpers"; a package in packages/support is tinvar/support.',
     ]);
+});
+
+it('lets a package declare the kit it is, and nothing beside it (ADR 0157)', function () {
+    $kit = ['name' => 'tenant-pages', 'class' => 'Tinvar\\Tenancy\\SelfService\\TenantPagesKit'];
+    $alone = violations(static function (array $files) use ($kit): array {
+        $files['packages/database/composer.json']['extra'] = ['tinvar' => ['kit' => $kit]];
+
+        return $files;
+    });
+    $beside = violations(static function (array $files) use ($kit): array {
+        $files['packages/database/composer.json']['extra'] = ['tinvar' => ['kit' => $kit, 'codemods' => []]];
+
+        return $files;
+    });
+
+    expect($alone)->toBe([])
+        ->and($beside)->toHaveCount(1);
 });
 
 it('fails a require its layer may not use, and a layer it uses that it does not require', function () {

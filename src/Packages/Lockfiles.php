@@ -270,7 +270,25 @@ final class Lockfiles
         }
 
         // Present but not an object is still a claim to be a Tinvar package.
-        return \is_array($container[self::METADATA]) ? $container[self::METADATA] : [];
+        if (!\is_array($container[self::METADATA])) {
+            return [];
+        }
+
+        // A kit's declaration alone (ADR 0157) enables nothing: it names the
+        // class `kit:install` builds when a person runs it for that package.
+        // Anything beside it is a claim as before.
+        return self::kitOnly($container[self::METADATA]) ? null : $container[self::METADATA];
+    }
+
+    /**
+     * Whether framework metadata says only that its package is a kit
+     * (`{"kit": {...}}`), which marks nothing for the allowlist.
+     *
+     * @param array<mixed> $metadata
+     */
+    public static function kitOnly(array $metadata): bool
+    {
+        return array_keys($metadata) === ['kit'] && \is_array($metadata['kit']);
     }
 
     /** @return array<mixed>|null */

@@ -207,8 +207,11 @@ final readonly class Workspace
             $violations[] = "{$where}: is of type " . json_encode($manifest['type']) . '; a package is a "library", and only an application Workspace names is anything else.';
         }
 
-        if (\is_array($manifest['extra'] ?? null) && \array_key_exists('tinvar', $manifest['extra'])) {
-            $violations[] = "{$where}: carries extra.tinvar, which marks an application's package for the allowlist; the framework's packages carry none.";
+        // A kit's declaration (ADR 0157) is the one thing a framework package
+        // may say there: it marks nothing for the allowlist.
+        if (\is_array($manifest['extra'] ?? null) && \array_key_exists('tinvar', $manifest['extra'])
+            && !(\is_array($manifest['extra']['tinvar']) && Lockfiles::kitOnly($manifest['extra']['tinvar']))) {
+            $violations[] = "{$where}: carries extra.tinvar, which marks an application's package for the allowlist; the framework's packages carry none but a kit's declaration.";
         }
 
         foreach (['require', 'require-dev'] as $section) {
