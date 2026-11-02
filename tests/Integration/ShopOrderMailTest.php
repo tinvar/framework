@@ -21,6 +21,8 @@ use Shop\Jobs\Orders\SendOrderConfirmation;
 use Shop\Database\Models\Orders\Order;
 use Shop\Http\Channels\Orders\OrderChanges;
 use Shop\Console\Tasks\Fulfilment\AdvanceShipments;
+use Tinvar\Audit\AuditLog;
+use Tinvar\Auth\AuthContext;
 use Tinvar\Bench\Renderer;
 use Tinvar\Bench\Shop;
 use Tinvar\Console\Output;
@@ -227,6 +229,9 @@ it('moves orders along the shipping timeline as they age, and tells the pages sh
         $connection = PdoConnection::sqlite("{$directory}/shop.sqlite", 'shop', create: true);
         new \Shop\Database\Seeders\Seeder($connection)->run(customers: 1);
         $orm = new Orm($connection, new IdentityMap('shop'));
+        // Orders are audited (ADR 0150): each move the schedule makes is
+        // recorded, as the shop's Kernel records it.
+        $audit = new AuditLog($orm, new AuthContext(), KEY);
         $hub = new MemoryHub();
         $changes = new OrderChanges(new Invalidator($hub, new Topics(new Signer(KEY, Topics::PURPOSE)), $orm));
         $now = new \DateTimeImmutable('2026-10-24T12:00:00Z');
@@ -250,7 +255,10 @@ it('moves orders along the shipping timeline as they age, and tells the pages sh
         expect($statuses)->toBe(['a' => 'placed', 'b' => 'packed', 'c' => 'shipped', 'd' => 'delivered', 'e' => 'cancelled', 'f' => 'shipped'])
             // Each moved order's page and timeline, its customer's orders,
             // and staff's list of everyone's: one topic each.
-            ->and($hub->published)->toHaveCount(3 + 1 + 1);
+            ->and($hub->published)->toHaveCount(3 + 1 + 1)
+            // Each of the five moves, by the shop itself: no one asked.
+            ->and(array_map(static fn ($e): string => $e->actor->kind->value, $audit->trail()->recent(event: 'updated')))
+            ->toBe(['system', 'system', 'system', 'system', 'system']);
     } finally {
         \Tinvar\Support\PrivateDirectory::remove($directory);
     }

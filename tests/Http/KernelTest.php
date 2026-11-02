@@ -498,6 +498,9 @@ describe('the reset contract', function () {
             // channel before each retry of it (Minter).
             'FragmentMinter::reset',
             'StaticMinter::reset',
+            // A job's own stack, unwound by within() however the job ends;
+            // no request holds it.
+            'RunningJobs::reset',
         ];
 
         $unregistered = array_values(array_diff($resettable, $exempt));
@@ -513,6 +516,8 @@ describe('the reset contract', function () {
             'Orm::reset' => 'orm',
             // Added by the Kernel when it is given Features (ADR 0094).
             'Features::reset' => 'features',
+            // Added by the Kernel when it is given an audit log (ADR 0150).
+            'AuditLog::reset' => 'audit',
         ];
 
         $missing = array_values(array_diff($unregistered, array_keys($covered)));

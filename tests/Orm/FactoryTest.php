@@ -9,6 +9,8 @@ use Shop\Database\Factories\Catalog\ProductFactory;
 use Shop\Database\Models\Account\Customer;
 use Shop\Database\Models\Orders\Order;
 use Shop\Database\Models\Catalog\Product;
+use Tinvar\Audit\AuditLog;
+use Tinvar\Auth\AuthContext;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
@@ -23,9 +25,17 @@ function shopSqlite(): PdoConnection
     return $connection;
 }
 
+/**
+ * An Orm over it, with the audit log the shop registers: an order and an
+ * account are #[Audited], and an Orm with nowhere to record them refuses to
+ * write them (ADR 0150).
+ */
 function shopOrm(PdoConnection $connection): Orm
 {
-    return new Orm($connection, new IdentityMap('shop-test'));
+    $orm = new Orm($connection, new IdentityMap('shop-test'));
+    new AuditLog($orm, new AuthContext(), 'factory-test-key-of-at-least-32-bytes');
+
+    return $orm;
 }
 
 it('builds a model with its typed fields set', function () {
