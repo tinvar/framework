@@ -191,6 +191,11 @@ final readonly class MemberMails implements AccountMails
     {
         return new MemberMail($user->accountEmail(), 'passkey-added', $accountUrl);
     }
+
+    public function twoFactorDisabled(AccountUser $user, string $resetUrl): Mailable
+    {
+        return new MemberMail($user->accountEmail(), 'two-factor-disabled', $resetUrl);
+    }
 }
 
 /** Draws nothing: the text part is the template's name and its props, for a test to read the link from. */

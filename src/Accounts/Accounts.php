@@ -517,11 +517,27 @@ final class Accounts
         return $codes;
     }
 
-    /** Turns two-factor sign-in off, the password asked first. */
+    /**
+     * Turns two-factor sign-in off, the password asked first. Every other
+     * session ends and both epochs move, in one durable transaction with
+     * the secret's removal -- a session or an API token that got in while
+     * the second factor was asked for was let in under a rule that no longer
+     * stands, and one a thief holds must not outlive what guarded it -- and
+     * the owner is told by email. This browser stays signed in, under a new
+     * id.
+     */
     public function disableTwoFactor(Request $http, AccountUser $user, #[\SensitiveParameter] string $password): void
     {
         $this->confirmPassword($http, $user, $password, 'currentPassword');
-        $this->twoFactor->disable($user->authIdentifier());
+        $this->connection->durableTransaction(function () use ($user): void {
+            $this->twoFactor->disable($user->authIdentifier());
+            $this->sessions->endEverywhere($user->authIdentifier());
+            $this->epochs->bump($user->authIdentifier());
+            $this->credentials->bump($user->authIdentifier());
+        });
+
+        $this->sessions->signIn(SessionState::of($http), $user);
+        $this->jobs->dispatch(new SendAccountMail(AccountMailKind::TwoFactorDisabled, userId: $user->authIdentifier()));
     }
 
     /**
@@ -695,6 +711,7 @@ final class Accounts
             AccountMailKind::EmailChanged => $user === null ? null : $this->mails->emailChanged($user, $job->email, $resetPage),
             AccountMailKind::PasswordChanged => $user === null ? null : $this->mails->passwordChanged($user, $resetPage),
             AccountMailKind::PasskeyAdded => $user === null ? null : $this->mails->passkeyAdded($user, $job->name, $this->links->page($this->links->paths->account), $resetPage),
+            AccountMailKind::TwoFactorDisabled => $user === null ? null : $this->mails->twoFactorDisabled($user, $resetPage),
         };
 
         if ($mailable !== null) {

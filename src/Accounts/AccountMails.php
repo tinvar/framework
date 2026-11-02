@@ -50,4 +50,11 @@ interface AccountMails
      * to reset the password from, if it was not them.
      */
     public function passkeyAdded(AccountUser $user, string $passkeyName, string $accountUrl, string $resetUrl): Mailable;
+
+    /**
+     * That two-factor sign-in was turned off, which signed out every other
+     * device: a password alone signs in now, so the owner hears of it, with
+     * where to reset the password from if it was not them.
+     */
+    public function twoFactorDisabled(AccountUser $user, string $resetUrl): Mailable;
 }

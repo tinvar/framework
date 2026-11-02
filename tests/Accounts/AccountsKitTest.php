@@ -566,3 +566,34 @@ it('moves the credential epoch API tokens are held to on sign out everywhere, a 
         expect($credential())->toBe('4');
     });
 })->with('drivers');
+
+it('ends every other session and token when two-factor is turned off, and tells the owner', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $id = $user->authIdentifier();
+        $owner->confirm();
+        $secret = (string) Base32::decode($owner->do(static fn (Accounts $a, Request $r) => $a->beginTwoFactor($r, $user))['secret']);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->confirmTwoFactor($r, $user, Totp::at($secret, $app->now)));
+
+        // A session that got in elsewhere -- the one a thief holds, say.
+        $other = new Visitor($app);
+        $other->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        $app->now += Totp::PERIOD;
+        $other->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, Totp::at($secret, $app->now)));
+        expect($other->who())->toBe('ada@example.com');
+        $epoch = $app->kit->epochs->of($id);
+        $credential = $app->kit->credentials->of($id);
+
+        $owner->do(static fn (Accounts $a, Request $r) => $a->disableTwoFactor($r, $user, PASSWORD));
+        $app->work();
+
+        expect($app->kit->accounts->twoFactorEnabled($user))->toBeFalse()
+            ->and($other->who())->toBeNull()
+            ->and($owner->who())->toBe('ada@example.com')
+            ->and($app->kit->epochs->of($id))->not->toBe($epoch)
+            ->and($app->kit->credentials->of($id))->not->toBe($credential)
+            ->and($app->links('two-factor-disabled', 'ada@example.com'))->toBe(['https://app.example/password/forgot']);
+    });
+})->with('drivers');
