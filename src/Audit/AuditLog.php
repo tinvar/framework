@@ -29,7 +29,7 @@ use Tinvar\Uploads\UploadList;
 use Tinvar\Validation\FormRequest;
 
 /**
- * A per-tenant record of who did what (ADR 0153).
+ * A per-tenant record of who did what (ADR 0155).
  *
  *     $audit = new AuditLog($orm, $auth, $key, panels: $panels, jobs: $running, proxies: $proxies);
  *     new Kernel(..., audit: $audit);

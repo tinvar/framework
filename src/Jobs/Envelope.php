@@ -74,7 +74,7 @@ final readonly class Envelope
      * @param string|null          $startedBy who started the work, whether or not the job runs as
      *                                         them: the user signed in where it was dispatched, or the
      *                                         starter of the job that dispatched it -- what the audit log
-     *                                         says a job was started by (ADR 0153)
+     *                                         says a job was started by (ADR 0155)
      * @param string|null          $startedByImpersonator who was signed in as that user, when the work
      *                                         was started under impersonation: sealed beside it, so a
      *                                         job's entries name both, as the request's would

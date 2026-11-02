@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * The shop's audit log (ADR 0153), through its own Kernel: staff fulfilling
+ * The shop's audit log (ADR 0155), through its own Kernel: staff fulfilling
  * an order is an audited action, and the workflow's moves are the job's,
  * started by them; a customer cancelling is the action and the change it
  * made, through it; sign-ins, failed or not, are in the account's log with

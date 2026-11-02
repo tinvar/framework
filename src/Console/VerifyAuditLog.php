@@ -10,7 +10,7 @@ use Tinvar\Audit\AuditLog;
 /**
  * `tinvar audit:verify [--tenant=ID]`: walks each tenant's audit log -- or
  * the one named -- and says whether every entry is in its place and as it
- * was written (ADR 0153). Exits 1 naming the first break of each log that
+ * was written (ADR 0155). Exits 1 naming the first break of each log that
  * has one, by its place and what was wrong, never by what the entry holds;
  * 0 when every log holds.
  *

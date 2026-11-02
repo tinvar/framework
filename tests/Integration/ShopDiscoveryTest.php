@@ -48,7 +48,7 @@ function build(): string
 it('discovers every class its Kernel listed by hand, and adds the framework\'s own', function () {
     $classes = Kernel::classes();
 
-    expect($classes->routes)->toHaveCount(25)->toContain(\Shop\Http\Resources\Catalog\ProductResource::class, \Shop\Http\Pages\Shell\Layout::class, \Shop\Http\Pages\Admin\Layout::class, \Shop\Http\Pages\Admin\Orders::class, \Shop\Http\Pages\Shell\SystemError::class)
+    expect($classes->routes)->toHaveCount(27)->toContain(\Shop\Http\Resources\Catalog\ProductResource::class, \Shop\Http\Pages\Shell\Layout::class, \Shop\Http\Pages\Admin\Layout::class, \Shop\Http\Pages\Admin\Orders::class, \Shop\Http\Pages\Shell\SystemError::class)
         ->and($classes->queries)->toBe([\Shop\Http\Queries\Catalog\Availability::class, \Shop\Http\Queries\Orders\ShippingUpdates::class])
         ->and($classes->actions)->toHaveCount(8)
         ->and($classes->endpoints)->toBe([\Shop\Http\Endpoints\Admin\MovedToAdminHost::class, \Shop\Http\Endpoints\Catalog\ProductStock::class, \Shop\Http\Endpoints\Orders\OrderReceipt::class, \Shop\Http\Endpoints\Warehouse\WarehouseCalls::class, \Shop\Http\Endpoints\Warehouse\WarehouseStock::class])
@@ -62,9 +62,9 @@ it('discovers every class its Kernel listed by hand, and adds the framework\'s o
             \Shop\Database\Models\Orders\Order::class => \Shop\Policies\Orders\OrderPolicy::class,
         ])
         ->and($classes->models)->toBe([\Shop\Database\Models\Account\Customer::class, \Shop\Database\Models\Account\Receipt::class, \Shop\Database\Models\Catalog\Product::class, \Shop\Database\Models\Orders\Order::class, \Shop\Database\Models\Orders\OrderLine::class])
-        ->and($classes->commands)->toBe([\Shop\Console\Commands\Fulfilment\AdvanceShipmentsNow::class, \Shop\Console\Commands\Marketing\AnnounceProduct::class, \Shop\Console\Commands\Marketing\SendNewsletterIssue::class])
-        ->and($classes->tasks)->toContain(\Shop\Console\Tasks\Fulfilment\AdvanceShipments::class, \Shop\Console\Tasks\Marketing\ScheduleNewsletter::class, \Tinvar\Jobs\PruneQueue::class)
-        ->and($classes->configs)->toContain(\Shop\Config\ShopConfig::class, \Shop\Config\ServerConfig::class, \Tinvar\Config\FrameworkConfig::class, \Tinvar\Mail\DkimConfig::class)
+        ->and($classes->commands)->toBe([\Shop\Console\Commands\Fulfilment\AdvanceShipmentsNow::class, \Shop\Console\Commands\Marketing\AnnounceProduct::class, \Shop\Console\Commands\Marketing\SendNewsletterIssue::class, \Tinvar\Console\VerifyAuditLog::class])
+        ->and($classes->tasks)->toContain(\Shop\Console\Tasks\Fulfilment\AdvanceShipments::class, \Shop\Console\Tasks\Marketing\ScheduleNewsletter::class, \Tinvar\Jobs\PruneQueue::class, \Tinvar\Audit\PruneAuditLog::class)
+        ->and($classes->configs)->toContain(\Shop\Config\ShopConfig::class, \Shop\Config\ServerConfig::class, \Tinvar\Config\FrameworkConfig::class, \Tinvar\Mail\DkimConfig::class, \Tinvar\Audit\AuditConfig::class)
         ->and($classes->scenarios)->toBe([\Shop\Database\Scenarios\DemoCustomer::class, \Shop\Database\Scenarios\LoadCustomers::class, \Shop\Database\Scenarios\NewCustomer::class])
         ->and($classes->fieldEnums)->toBe([\Shop\Http\Data\Catalog\CatalogSort::class])
         ->and($classes->payloads)->toContain(\Shop\Http\Data\Orders\OrderConfirmationData::class, \Shop\Http\Data\Orders\OrderExportRow::class)

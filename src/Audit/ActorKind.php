@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Audit;
 
 /**
- * What kind of thing an audit entry says made a change (ADR 0153). The
+ * What kind of thing an audit entry says made a change (ADR 0155). The
  * value is what the entry's `actor_type` column holds.
  */
 enum ActorKind: string

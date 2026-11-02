@@ -7,7 +7,7 @@ namespace Tinvar\Audit;
 use Tinvar\Support\Signer;
 
 /**
- * The hashes that chain a tenant's audit log together (ADR 0153), so an
+ * The hashes that chain a tenant's audit log together (ADR 0155), so an
  * entry edited, deleted or put in out of order is found by verify().
  *
  * Each entry's hash is a MAC, under a key derived from the application key

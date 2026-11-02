@@ -635,7 +635,7 @@ final class Kernel
      *        path, and every entry point declaring #[Domain] -- or in a panel held to a
      *        host -- runs on that host alone. Without it, an entry point declaring
      *        #[Domain] is refused here
-     * @param AuditLog|null $audit the application's audit log (ADR 0153): given, it hears every
+     * @param AuditLog|null $audit the application's audit log (ADR 0155): given, it hears every
      *        action around its body -- an #[AuditedAction] then runs in a transaction with its
      *        entry -- is told the host, client address and id of each request it handles, is
      *        in the container for actions and pages to record events with, and forgets what
@@ -1851,7 +1851,7 @@ final class Kernel
         $this->handling = $request;
         $host = HostMatch::of($request);
         $hostBefore = $this->enterHost($host ?? false);
-        // Where each audit entry the request makes was asked for (ADR 0153).
+        // Where each audit entry the request makes was asked for (ADR 0155).
         $audit = $this->audit;
         $auditDepth = $audit?->enterRequest($request, $this->telemetry?->requestId()) ?? 0;
         $failure = null;

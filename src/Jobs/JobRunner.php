@@ -63,7 +63,7 @@ final readonly class JobRunner
         private ?Memberships $memberships = null,
         private ?UserLookup $users = null,
         // Told of each job while it runs, for the audit log to read who
-        // made a change (ADR 0153); nothing is told without it.
+        // made a change (ADR 0155); nothing is told without it.
         private ?RunningJobs $running = null,
     ) {}
 

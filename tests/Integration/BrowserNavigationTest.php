@@ -826,7 +826,7 @@ it('lets staff into the admin panel\'s orders, and refuses a customer', function
         ->and($result['scrolled']['partials'][0]['cursor'] ?? '')->not->toBe('')
         ->and($result['scrolled']['bar'])->toBe($result['scrolled']['partials'][0]['cursor']);
 
-    // The audit log's pages (ADR 0153): the staff's sign-in is what the
+    // The audit log's pages (ADR 0155): the staff's sign-in is what the
     // staff did; an order's page shows its lines, or that it has none yet.
     expect($result['staffActivity']['heading'])->toBe('Staff activity')
         ->and(implode('|', array_map('trim', $result['staffActivity']['lines'])))->toContain('Signed in')
