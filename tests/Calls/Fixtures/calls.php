@@ -11,6 +11,7 @@ use Tinvar\Attributes\Action;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\Query;
+use Tinvar\Attributes\RequiresScope;
 use Tinvar\Attributes\ServiceCall;
 use Tinvar\Attributes\Tool;
 use Tinvar\Auth\AuthContext;
@@ -129,7 +130,7 @@ final class RackActions
 {
     public function __construct(private readonly Orm $orm) {}
 
-    #[Action(name: 'racks.rename'), Authorize('update', 'rack'), Tool('Renames a rack.'), ServiceCall('warehouse'), Exposed]
+    #[Action(name: 'racks.rename'), Authorize('update', 'rack'), Tool('Renames a rack.'), ServiceCall('warehouse'), Exposed, RequiresScope('racks:write')]
     public function rename(Rack $rack, RenameRequest $request): ActionResult
     {
         Ran::$bodies[] = 'rename';
@@ -153,7 +154,7 @@ final class RackActions
 #[Panel('admin', permission: 'racks.audit')]
 final class AuditActions
 {
-    #[Action(name: 'racks.audit'), Authorize('view', 'rack'), Tool('Audits a rack.'), ServiceCall('warehouse')]
+    #[Action(name: 'racks.audit'), Authorize('view', 'rack'), Tool('Audits a rack.'), ServiceCall('warehouse'), RequiresScope('racks:audit')]
     public function audit(Rack $rack): ActionResult
     {
         Ran::$bodies[] = 'audit';
@@ -162,7 +163,7 @@ final class AuditActions
     }
 }
 
-#[Query(name: 'racks.show'), Authorize('view', 'rack'), Tool('Shows a rack.', name: 'show_rack'), ServiceCall('warehouse', 'carrier'), Exposed]
+#[Query(name: 'racks.show'), Authorize('view', 'rack'), Tool('Shows a rack.', name: 'show_rack'), ServiceCall('warehouse', 'carrier'), Exposed, RequiresScope('racks:read')]
 final class ShowRack
 {
     public function __invoke(Rack $rack): RackData
@@ -177,7 +178,7 @@ final class ShowRack
 #[\Tinvar\Attributes\Domain('ops.{root}')]
 final class LabelActions
 {
-    #[Action(name: 'racks.label'), Authorize('view', 'rack'), Tool('Labels a rack.'), ServiceCall('warehouse')]
+    #[Action(name: 'racks.label'), Authorize('view', 'rack'), Tool('Labels a rack.'), ServiceCall('warehouse'), RequiresScope('racks:read')]
     public function label(Rack $rack): ActionResult
     {
         Ran::$bodies[] = 'label';
@@ -264,6 +265,40 @@ final class Harness
             $this->users,
             $this->spent,
             fn (): int => $this->now,
+            $this->hosts,
+        );
+    }
+
+    /**
+     * The API's tokens and calls (ADR 0151), each made when a test first
+     * asks for it, as the tools and the service calls are.
+     */
+    public \Tinvar\Api\ArrayApiTokens $tokenStore {
+        get => $this->tokenStore ??= new \Tinvar\Api\ArrayApiTokens();
+    }
+
+    public \Tinvar\Api\ApiTokens $apiTokens {
+        get => $this->apiTokens ??= new \Tinvar\Api\ApiTokens(
+            $this->tokenStore,
+            $this->users,
+            $this->auth,
+            $this->orm,
+            \Tinvar\Api\ApiScopes::of(\Tinvar\Api\ApiCalls::discover($this->actions, $this->queries, $this->entry), []),
+            $this->panels,
+            $this->hosts,
+            fn (): int => $this->now,
+            maxPerUser: 3,
+        );
+    }
+
+    public \Tinvar\Api\ApiCalls $apiCalls {
+        get => $this->apiCalls ??= new \Tinvar\Api\ApiCalls(
+            \Tinvar\Api\ApiCalls::discover($this->actions, $this->queries, $this->entry),
+            $this->runner,
+            $this->auth,
+            $this->orm,
+            $this->panels,
+            $this->staff,
             $this->hosts,
         );
     }
