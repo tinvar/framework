@@ -285,8 +285,8 @@ final class AuditLog implements ModelChanges, ActionObserver
     }
 
     /**
-     * A tenant's head: how many entries its log has had and the last one's
-     * hash. Kept somewhere the database's writers cannot reach, it shows
+     * A tenant's head -- the one in force, or, where none is, the one
+     * named: how many entries its log has had and the last one's hash. Kept somewhere the database's writers cannot reach, it shows
      * the newest entries were not taken away with the head put back.
      *
      * @return array{sequence: int, hash: string}|null null for a tenant with no log
@@ -295,14 +295,15 @@ final class AuditLog implements ModelChanges, ActionObserver
     {
         $rows = $this->orm->statements()->select(
             'SELECT sequence, hash FROM ' . AuditTable::HEADS . ' WHERE tenant = ?',
-            [$tenant ?? $this->orm->tenant()],
+            [$this->tenantNamed($tenant)],
         );
 
         return $rows === [] ? null : ['sequence' => (int) $rows[0]['sequence'], 'hash' => (string) $rows[0]['hash']];
     }
 
     /**
-     * Walks a tenant's log -- the tenant in force's unless named -- from
+     * Walks a tenant's log -- the tenant in force's, and another only where
+     * none is in force and it is named (a command's) -- from
      * where pruning left it to its head, and says whether every entry is
      * in its place and as it was written.
      *
@@ -315,7 +316,7 @@ final class AuditLog implements ModelChanges, ActionObserver
      */
     public function verify(?string $tenant = null): ChainVerification
     {
-        $tenant ??= $this->orm->tenant();
+        $tenant = $this->tenantNamed($tenant);
         for ($attempt = 1; ; $attempt++) {
             [$result, $prunedThrough] = $this->walk($tenant);
             if ($result->intact || $prunedThrough === null || $attempt === 3) {
@@ -326,6 +327,27 @@ final class AuditLog implements ModelChanges, ActionObserver
                 return $result;
             }
         }
+    }
+
+    /**
+     * The tenant whose log head() or verify() reads: the one in force, or
+     * the one named -- which, while a tenant is in force, may be none other,
+     * inside acrossTenants() too, as trail() reads no other. A command, with
+     * no tenant in force, names each in turn.
+     */
+    private function tenantNamed(?string $tenant): string
+    {
+        $inForce = $this->orm->tenant();
+        if ($tenant === null) {
+            return $inForce;
+        }
+        if ($inForce !== '' && $tenant !== $inForce) {
+            throw new \LogicException(
+                "The audit log of another tenant is not read while tenant '{$inForce}' is in force: name none, or run the check where no tenant is (`tinvar audit:verify`).",
+            );
+        }
+
+        return $tenant;
     }
 
     /**

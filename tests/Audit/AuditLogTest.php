@@ -338,6 +338,23 @@ it('reads what staff did while impersonating someone as theirs, by an index of i
     expect($index())->toBe(['tenant', 'impersonator_id', 'sequence']);
 });
 
+it('refuses to verify or show the head of another tenant\'s log while a tenant is in force, and lets a command name each', function () {
+    [$orm, $audit, $auth] = log();
+    $auth->login(new Person('u-1'));
+    $orm->actAs('acme', fn () => $audit->event('note.read'));
+    $orm->actAs('globex', fn () => $audit->event('note.read'));
+
+    expect(fn () => $orm->actAs('globex', fn () => $audit->verify('acme')))->toThrow(\LogicException::class, 'another tenant')
+        ->and(fn () => $orm->actAs('globex', fn () => $audit->head('acme')))->toThrow(\LogicException::class, 'another tenant')
+        ->and(fn () => $orm->actAs('globex', fn () => $orm->acrossTenants(fn () => $audit->verify('acme'))))->toThrow(\LogicException::class, 'another tenant')
+        ->and($orm->actAs('globex', fn () => $audit->verify('globex')->intact))->toBeTrue()
+        ->and($orm->actAs('globex', fn () => $audit->verify()->tenant))->toBe('globex')
+        ->and($orm->actAs('globex', fn () => $audit->head()['sequence'] ?? null))->toBe(1)
+        // No tenant in force -- the console's audit:verify -- names each.
+        ->and($audit->verify('acme')->intact)->toBeTrue()
+        ->and($audit->head('globex')['sequence'] ?? null)->toBe(1);
+});
+
 it('names the impersonator AuthContext was handed, where the application gives the log no answer of its own', function () {
     [$orm, $audit, $auth] = log();
     $auth->login(new Person('u-1'), impersonator: 'staff-4');
