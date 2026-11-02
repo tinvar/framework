@@ -273,10 +273,12 @@ it('serves the shop from source, and shows an edited component without a reload'
             ->and($updated['other']['after']['first'])->toBe($updated['number'])
             ->and($updated['other']['documents'])->toBe(0)
             ->and($updated['admin']['after']['first'])->toBe($updated['number'])
-            ->and($updated['other']['live'])->toBe([
-                ['path' => '/_live/subscribe', 'status' => 200],
-                ['path' => '/.well-known/mercure', 'status' => 200],
-            ]);
+            // The page's token first, then the signed-in customer's bell
+            // (ADR 0155), whose inbox channel may be traded again beside it:
+            // every trade let in, and the stream listening.
+            ->and($updated['other']['live'][0] ?? null)->toBe(['path' => '/_live/subscribe', 'status' => 200])
+            ->and(end($updated['other']['live']))->toBe(['path' => '/.well-known/mercure', 'status' => 200])
+            ->and(array_unique(array_column($updated['other']['live'], 'status')))->toBe([200]);
 
         expect($code)->toBe(0);
 
