@@ -1267,3 +1267,30 @@ it('keeps the catalog on the admin host\'s products screens', function (string $
 
     expect($result['refused']['status'])->toBe(403);
 })->with(SERVERS);
+
+// ADR 0155: a customer makes an API token on the settings page, which shows
+// it once; a script reads their orders with it, with none of the browser's
+// cookies; the page lists it by name, never its text; revoked, it is refused.
+it('makes an API token on the settings page, calls the order API with it, and revokes it', function () use ($root) {
+    $output = '';
+    served($root, function (string $origin) use ($root, &$output): void {
+        $output = runWithTimeout(
+            ['node', "{$root}/examples/shop/e2e/api-tokens.mjs", $origin, DemoAccount::EMAIL, DemoAccount::PASSWORD],
+            $root,
+            90,
+        );
+    });
+
+    $result = json_decode((string) $output, true);
+    expect($result)->toBeArray("the browser script failed:\n{$output}");
+
+    expect($result['errors'])->toBe([])
+        ->and($result['empty'])->toBeTrue()
+        ->and($result['offered'])->toBe(['orders:cancel', 'orders:read'])
+        ->and($result['tokenShape'])->toBeTrue()
+        ->and($result['withToken']['status'])->toBe(200)
+        ->and($result['withToken']['orders'])->toBeGreaterThan(0)
+        ->and($result['listed'])->toBe(1)
+        ->and($result['textAfterReload'])->toBeFalse()
+        ->and($result['afterRevoke'])->toBe(['status' => 401, 'orders' => null]);
+});
