@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Audit;
 
+use Tinvar\Orm\Schema\Dialect;
 use Tinvar\Orm\Schema\Schema;
 use Tinvar\Orm\Schema\Table;
 
@@ -60,6 +61,7 @@ final class AuditTable
             $rows->index(['tenant', 'subject_type', 'subject_id', 'sequence'], 'audit_entries_subject');
             $rows->index(['tenant', 'actor_id', 'sequence'], 'audit_entries_actor');
             $rows->index(['tenant', 'started_by', 'sequence'], 'audit_entries_starter');
+            $rows->index(['tenant', 'impersonator_id', 'sequence'], 'audit_entries_impersonator');
             $rows->index(['tenant', 'occurred_at'], 'audit_entries_age');
         }, $ifNotExists);
 
@@ -76,8 +78,9 @@ final class AuditTable
     /**
      * Brings tables define() made before to the shape it makes now, for an
      * existing application's migration: the column naming the API token a
-     * user acted through. Nothing for tables that have it already; every
-     * entry written before still verifies, its hash covering no token.
+     * user acted through, and the index an impersonator's entries are read
+     * by. Nothing for tables that have them already; every entry written
+     * before still verifies, its hash covering no token.
      */
     public static function upgrade(Schema $schema): void
     {
@@ -86,6 +89,23 @@ final class AuditTable
                 $rows->string('api_token_id', 64)->nullable();
             });
         }
+        self::indexImpersonators($schema);
+    }
+
+    /**
+     * The index AuditTrail::byActors() reads an impersonator's entries by,
+     * for a table define() made before it had one; nothing where it is.
+     */
+    public static function indexImpersonators(Schema $schema): void
+    {
+        $connection = $schema->connection();
+        $have = array_column(Dialect::for($connection)->indexes($connection, self::ENTRIES), 'name');
+        if (\in_array('audit_entries_impersonator', $have, true)) {
+            return;
+        }
+        $schema->table(self::ENTRIES, static function (Table $rows): void {
+            $rows->index(['tenant', 'impersonator_id', 'sequence'], 'audit_entries_impersonator');
+        });
     }
 
     public static function drop(Schema $schema): void

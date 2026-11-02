@@ -312,6 +312,32 @@ it('names the API token a user acted through, inside the chain, and keeps entrie
     expect($audit->verify('acme')->problem)->toBe('Entry 2 is not as it was written.');
 });
 
+it('reads what staff did while impersonating someone as theirs, by an index of its own', function () {
+    [$orm, $audit, $auth, $connection] = log();
+    $schema = new Schema($connection, Dialect::for($connection));
+    $auth->login(new Person('u-1'), impersonator: 'staff-9');
+    $orm->actAs('acme', fn () => $audit->event('note.read'));
+    $auth->login(new Person('staff-9'));
+    $orm->actAs('acme', fn () => $audit->event('note.exported'));
+    $auth->login(new Person('u-2'));
+    $orm->actAs('acme', fn () => $audit->event('note.read'));
+
+    $byStaff = $orm->actAs('acme', fn () => $audit->trail()->byActors(['staff-9']));
+    expect(array_map(static fn ($e): array => [$e->event, $e->actor->id, $e->actor->impersonator], $byStaff))->toBe([
+        ['note.exported', 'staff-9', null],
+        ['note.read', 'u-1', 'staff-9'],
+    ]);
+
+    $index = static fn (): ?array => array_values(array_filter(Dialect::for($connection)->indexes($connection, 'audit_entries'), static fn (array $i): bool => $i['name'] === 'audit_entries_impersonator'))[0]['columns'] ?? null;
+    expect($index())->toBe(['tenant', 'impersonator_id', 'sequence']);
+
+    // A log made before has it added, once.
+    $connection->execute('DROP INDEX audit_entries_impersonator');
+    AuditTable::upgrade($schema);
+    AuditTable::upgrade($schema);
+    expect($index())->toBe(['tenant', 'impersonator_id', 'sequence']);
+});
+
 it('names the impersonator AuthContext was handed, where the application gives the log no answer of its own', function () {
     [$orm, $audit, $auth] = log();
     $auth->login(new Person('u-1'), impersonator: 'staff-4');

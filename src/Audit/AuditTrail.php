@@ -49,8 +49,10 @@ final readonly class AuditTrail
     }
 
     /**
-     * What some people did: each change made by one of them, or by a job
-     * one of them started.
+     * What some people did: each change made by one of them, by one of
+     * them signed in as someone else -- staff impersonating a customer act
+     * as that customer, and what they did is theirs too -- or by a job one
+     * of them started.
      *
      * @param list<string> $actors their ids, as the user signed in names them
      * @return list<AuditEntry>
@@ -63,7 +65,12 @@ final readonly class AuditTrail
         }
         $marks = implode(', ', array_fill(0, \count($actors), '?'));
 
-        return $this->read("(actor_id IN ({$marks}) OR started_by IN ({$marks}))", [...$actors, ...$actors], $limit, $before);
+        return $this->read(
+            "(actor_id IN ({$marks}) OR impersonator_id IN ({$marks}) OR started_by IN ({$marks}))",
+            [...$actors, ...$actors, ...$actors],
+            $limit,
+            $before,
+        );
     }
 
     /** @return list<AuditEntry> */
