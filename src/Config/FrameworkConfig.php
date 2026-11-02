@@ -72,6 +72,8 @@ final readonly class FrameworkConfig
      * @param list<string> $hostAliases hosts, or addresses, answered as the primary host
      * @param Secret|null $trustedProxySecret what a pinned proxy must also send, in X-Tinvar-Proxy,
      *        to be taken for one (TrustedProxies, ADR 0134)
+     * @param string|null $trustedProxyClient `header` where a proxy that proves itself names the
+     *        client in X-Tinvar-Client, read in place of X-Forwarded-For (Cloudflare's `ip.src`)
      */
     public function __construct(
         public ?string $dev = null,
@@ -102,11 +104,16 @@ final readonly class FrameworkConfig
         public array $hostAliases = [],
         #[\SensitiveParameter]
         public ?Secret $trustedProxySecret = null,
+        public ?string $trustedProxyClient = null,
     ) {
         $problems = [];
 
+        if ($trustedProxyClient !== null && $trustedProxyClient !== '' && $trustedProxyClient !== TrustedProxies::CLIENT_FROM_HEADER) {
+            $problems[] = TrustedProxies::CLIENT_ENV . ' is `' . TrustedProxies::CLIENT_FROM_HEADER . '`, where the proxy that proves itself names the client in X-Tinvar-Client, or unset.';
+        }
+
         try {
-            TrustedProxies::of($trustedProxies, [], $trustedProxySecret?->reveal());
+            TrustedProxies::of($trustedProxies, [], $trustedProxySecret?->reveal(), $this->clientFromHeader());
         } catch (\InvalidArgumentException $e) {
             $problems[] = $e->getMessage();
         }
@@ -215,7 +222,13 @@ final readonly class FrameworkConfig
      */
     public function proxies(): TrustedProxies
     {
-        return TrustedProxies::of($this->trustedProxies, secret: $this->trustedProxySecret?->reveal());
+        return TrustedProxies::of($this->trustedProxies, secret: $this->trustedProxySecret?->reveal(), clientHeader: $this->clientFromHeader());
+    }
+
+    /** Whether TINVAR_TRUSTED_PROXY_CLIENT says a proven proxy names the client in X-Tinvar-Client. */
+    private function clientFromHeader(): bool
+    {
+        return $this->trustedProxyClient === TrustedProxies::CLIENT_FROM_HEADER;
     }
 
     /**

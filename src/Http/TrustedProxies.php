@@ -56,6 +56,19 @@ namespace Tinvar\Http;
  * hairpin and SNAT peers a range holds. A list of single addresses -- a
  * terminator on loopback, or at an address nothing else connects from --
  * needs none.
+ *
+ * A proof of the proxy is not a proof of the client, though. Behind
+ * Cloudflare every Cloudflare range is pinned, and the Transform Rule that
+ * sends the secret sends it for a request a Cloudflare Worker -- anyone's
+ * -- sends to the domain too. The Worker writes X-Forwarded-For as it
+ * likes, and read from the right through Cloudflare's own hops it named
+ * any client it chose. So such a proxy can name the client itself, in
+ * `X-Tinvar-Client`: Cloudflare's rule sets it to `ip.src`, its own view
+ * of who connected, overwriting any a client sent. Where the deployment
+ * says so (`TINVAR_TRUSTED_PROXY_CLIENT=header`, which needs the secret),
+ * a proven proxy's client is that header alone, one bare address, and
+ * X-Forwarded-For is never read: a proven request without it, or with
+ * anything else in it, names no client.
  */
 final readonly class TrustedProxies
 {
@@ -75,6 +88,15 @@ final readonly class TrustedProxies
     /** The request header a pinned proxy proves itself with, when a secret is set. */
     public const string SECRET_HEADER = 'x-tinvar-proxy';
 
+    /** The variable that says a proven proxy names the client in CLIENT_HEADER (FrameworkConfig). */
+    public const string CLIENT_ENV = 'TINVAR_TRUSTED_PROXY_CLIENT';
+
+    /** What CLIENT_ENV is set to for it; unset, X-Forwarded-For is read. */
+    public const string CLIENT_FROM_HEADER = 'header';
+
+    /** The request header a proven proxy names the client in, where CLIENT_ENV says so. */
+    public const string CLIENT_HEADER = 'x-tinvar-client';
+
     /** The shortest secret taken: long enough not to be guessed. */
     public const int MIN_SECRET = 32;
 
@@ -82,8 +104,9 @@ final readonly class TrustedProxies
      * @param list<array{string, int}> $networks each network's packed address and its prefix length
      * @param list<string> $own this machine's own addresses, packed, loopback left out: never a proxy
      * @param string|null $secretHash the SHA-256 of the secret a proxy must send, or null for none
+     * @param bool $clientHeader whether a proven proxy names the client in CLIENT_HEADER, never in X-Forwarded-For
      */
-    private function __construct(private array $networks, private array $own = [], private ?string $secretHash = null) {}
+    private function __construct(private array $networks, private array $own = [], private ?string $secretHash = null, private bool $clientHeader = false) {}
 
     /** No proxy: the peer is always the client. */
     public static function none(): self
@@ -97,13 +120,21 @@ final readonly class TrustedProxies
      *        from its interfaces (ownAddresses()) unless given. Loopback among them is left out.
      * @param string|null $secret what a peer in a pinned network must also send in SECRET_HEADER to be
      *        taken for a proxy; null or '' for none, the range alone deciding
+     * @param bool $clientHeader whether a proxy that proves itself with $secret names the client in
+     *        CLIENT_HEADER, which is then read in place of X-Forwarded-For
      * @throws \InvalidArgumentException naming the first malformed entry by its place, or for a
      *         secret too short to hold, or one given with no network for it to prove, or for
-     *         none given with a range wider than one address
+     *         none given with a range wider than one address, or with $clientHeader
      */
-    public static function of(array $entries, ?array $own = null, #[\SensitiveParameter] ?string $secret = null): self
+    public static function of(array $entries, ?array $own = null, #[\SensitiveParameter] ?string $secret = null, bool $clientHeader = false): self
     {
         $secret = $secret === null || $secret === '' ? null : $secret;
+        if ($clientHeader && $secret === null) {
+            throw new \InvalidArgumentException(
+                self::CLIENT_ENV . '=' . self::CLIENT_FROM_HEADER . ' needs ' . self::SECRET_ENV . ': only a proxy that proves itself '
+                . 'with it may name the client, and without it anyone could.',
+            );
+        }
         if ($secret !== null && \strlen($secret) < self::MIN_SECRET) {
             throw new \InvalidArgumentException(self::SECRET_ENV . ' is ' . self::MIN_SECRET . ' characters or more.');
         }
@@ -149,7 +180,7 @@ final readonly class TrustedProxies
             }
         }
 
-        return new self($networks, array_values(array_unique($packed)), $secret === null ? null : hash('sha256', $secret, true));
+        return new self($networks, array_values(array_unique($packed)), $secret === null ? null : hash('sha256', $secret, true), $clientHeader);
     }
 
     /**
@@ -209,8 +240,9 @@ final readonly class TrustedProxies
     /**
      * The address of the client this request came from: the peer, unless
      * the peer is a pinned proxy, and then the right-most X-Forwarded-For
-     * hop that is not one. '' when no address can be resolved, which a
-     * Throttle charges to its shared bucket.
+     * hop that is not one -- or, where a proven proxy names the client,
+     * CLIENT_HEADER. '' when no address can be resolved, which a Throttle
+     * charges to its shared bucket.
      */
     public function clientAddress(Request $request): string
     {
@@ -225,6 +257,14 @@ final readonly class TrustedProxies
         }
         if (!$this->trustsPeer($packed, $request)) {
             return $peer;
+        }
+
+        // The client the proven proxy names, one bare address, or none:
+        // X-Forwarded-For is never read in its place.
+        if ($this->clientHeader) {
+            $client = self::packed(trim($request->header(self::CLIENT_HEADER) ?? '', " \t"));
+
+            return $client === null ? '' : (string) inet_ntop($client);
         }
 
         $forwarded = $request->header('x-forwarded-for');

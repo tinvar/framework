@@ -123,6 +123,38 @@ it('puts Cloudflare in front only where the platform keeps X-Forwarded-For', fun
         ->and(static fn () => new DeployApp('my-app', front: 'fastly'))->toThrow(\InvalidArgumentException::class, '--front is cloudflare');
 });
 
+// Cloudflare's Transform Rule sends the secret for a request a Cloudflare
+// Worker -- anyone's -- sends to the domain too, and the Worker writes
+// X-Forwarded-For as it likes. So the rule names the client itself, from
+// ip.src, and the boot reads that in place of X-Forwarded-For.
+it('has Cloudflare in front name the client from ip.src, which the boot reads in place of X-Forwarded-For', function (DeployTarget $target, string $edge) {
+    $recipe = $target->recipe()->write(new DeployApp('my-app', secrets: SECRETS, appAddresses: ['66.241.124.10'], front: 'cloudflare'));
+    $all = implode("\n", array_map(static fn ($f): string => $f->contents, $recipe->files)) . "\n" . implode("\n", $recipe->steps);
+    preg_match('/TINVAR_TRUSTED_PROXIES[\s=:"\']+(?:value: ")?([0-9][0-9a-f.:\/,]*)/', $all, $pinned);
+
+    expect($all)->toMatch('/TINVAR_TRUSTED_PROXY_CLIENT\W+(value: )?"?header"?/')
+        ->and(implode("\n", $recipe->steps))->toContain('Set dynamic X-Tinvar-Client to ip.src');
+
+    $secret = str_repeat('s', 40);
+    $config = \Tinvar\Config\Configs::load(\Tinvar\Config\FrameworkConfig::class, [
+        'TINVAR_TRUSTED_PROXIES' => $pinned[1] ?? '',
+        'TINVAR_TRUSTED_PROXY_SECRET' => $secret,
+        'TINVAR_TRUSTED_PROXY_CLIENT' => 'header',
+    ]);
+    // A Worker's request through the edge: the X-Forwarded-For it wrote
+    // names someone else, Cloudflare's ip.src the Worker.
+    $worker = new \Tinvar\Http\Request('GET', '/', [
+        'x-forwarded-for' => '198.51.100.66, 104.16.0.9',
+        TrustedProxies::CLIENT_HEADER => '2a06:98c0:3600::103',
+        TrustedProxies::SECRET_HEADER => $secret,
+    ], remoteAddress: $edge);
+
+    expect($config->proxies()->clientAddress($worker))->toBe('2a06:98c0:3600::103');
+})->with([
+    'fly' => [DeployTarget::Fly, '172.16.4.5'],
+    'render' => [DeployTarget::Render, '10.20.30.40'],
+]);
+
 it('refuses a name, an address or a domain a platform would not take', function () {
     expect(static fn () => new DeployApp('My App'))->toThrow(\InvalidArgumentException::class)
         ->and(static fn () => new DeployApp('my-app', domain: 'http://app.example.com'))->toThrow(\InvalidArgumentException::class)

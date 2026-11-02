@@ -187,7 +187,12 @@ final class RecipeParts
     /**
      * What a platform's config says of its proxies. With a front
      * (Cloudflare) that sends the proxy secret, the platform's edge and the
-     * front's ranges are pinned behind it. With none, nothing is pinned:
+     * front's ranges are pinned behind it, and the front names the client
+     * in X-Tinvar-Client (TINVAR_TRUSTED_PROXY_CLIENT=header): its rule
+     * sends the secret for a request a Cloudflare Worker -- anyone's --
+     * sends to the domain too, and the Worker writes X-Forwarded-For as it
+     * likes, so the client is Cloudflare's `ip.src`, which it cannot choose
+     * (ADR 0134). With none, nothing is pinned:
      * a range wider than one address is refused at boot without the secret
      * (ADR 0134), and the platform's edge cannot send one, so every visitor
      * is counted as the edge's one address -- shared throttle budgets, but
@@ -203,8 +208,11 @@ final class RecipeParts
         }
 
         return [
-            'env' => ['TINVAR_TRUSTED_PROXIES' => self::ranges([...$platform, ...self::CLOUDFLARE], $app)],
-            'comment' => "{$name}'s edge and Cloudflare's ranges, each request proven by\nTINVAR_TRUSTED_PROXY_SECRET, which Cloudflare sends in X-Tinvar-Proxy.\n",
+            'env' => [
+                'TINVAR_TRUSTED_PROXIES' => self::ranges([...$platform, ...self::CLOUDFLARE], $app),
+                'TINVAR_TRUSTED_PROXY_CLIENT' => 'header',
+            ],
+            'comment' => "{$name}'s edge and Cloudflare's ranges, each request proven by\nTINVAR_TRUSTED_PROXY_SECRET, which Cloudflare sends in X-Tinvar-Proxy. The client\nis the address Cloudflare names in X-Tinvar-Client, its ip.src: X-Forwarded-For,\nwhich a Cloudflare Worker writes as it likes, is not read.\n",
         ];
     }
 
@@ -223,8 +231,9 @@ final class RecipeParts
         return [
             "# Cloudflare in front: proxy {$host} through it (the orange cloud), and add a Transform Rule",
             '# (Rules, Transform Rules, Modify Request Header) for it: Set static X-Tinvar-Proxy to the value in',
-            '# ' . $app->secretFile($proxy) . ' (pbcopy < ' . escapeshellarg($app->secretFile($proxy)) . '). Cloudflare overwrites any a client sent;',
-            '# a request that reaches the platform any other way does not have it, and names no client.',
+            '# ' . $app->secretFile($proxy) . ' (pbcopy < ' . escapeshellarg($app->secretFile($proxy)) . '), and in the same rule',
+            '# Set dynamic X-Tinvar-Client to ip.src. Cloudflare overwrites any either a client sent; a request',
+            '# that reaches the platform any other way has neither, and names no client.',
         ];
     }
 

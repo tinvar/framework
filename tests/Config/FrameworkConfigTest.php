@@ -253,3 +253,15 @@ it('holds a pinned proxy to the secret it must send, and refuses one too short o
         ->and($short->getMessage())->not->toContain('short')
         ->and($alone->problems[0])->toContain('pins no proxy');
 });
+
+it('reads the client from X-Tinvar-Client where TINVAR_TRUSTED_PROXY_CLIENT says header, and refuses it without the secret', function () {
+    $secret = str_repeat('k', 40);
+    $config = Configs::load(FrameworkConfig::class, ['TINVAR_TRUSTED_PROXIES' => '10.0.0.0/8', 'TINVAR_TRUSTED_PROXY_SECRET' => $secret, 'TINVAR_TRUSTED_PROXY_CLIENT' => 'header']);
+    $request = new Request('GET', '/', ['x-forwarded-for' => '198.51.100.1', 'x-tinvar-client' => '203.0.113.9', 'x-tinvar-proxy' => $secret], remoteAddress: '10.1.2.3');
+    $unproven = refusal(['TINVAR_TRUSTED_PROXIES' => '127.0.0.1', 'TINVAR_TRUSTED_PROXY_CLIENT' => 'header']);
+    $other = refusal(['TINVAR_TRUSTED_PROXY_CLIENT' => 'x-real-ip']);
+
+    expect($config->proxies()->clientAddress($request))->toBe('203.0.113.9')
+        ->and($unproven->problems[0])->toStartWith('TINVAR_TRUSTED_PROXY_CLIENT=header needs TINVAR_TRUSTED_PROXY_SECRET')
+        ->and($other->problems[0])->toStartWith('TINVAR_TRUSTED_PROXY_CLIENT is `header`');
+});

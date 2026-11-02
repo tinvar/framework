@@ -268,3 +268,60 @@ describe('a proxy secret', function () {
             ->and(fn () => TrustedProxies::of([], own: [], secret: str_repeat('s', 32)))->toThrow(\InvalidArgumentException::class);
     });
 });
+
+/*
+ * Behind Cloudflare, every Cloudflare range is pinned and its Transform Rule
+ * sends the secret -- for a request a Cloudflare Worker of anyone's sends to
+ * the domain as well. The Worker writes X-Forwarded-For as it likes, and read
+ * from the right through Cloudflare's own hops it named any client it chose.
+ * So the rule also sets X-Tinvar-Client to `ip.src`, Cloudflare's own view of
+ * who connected, overwriting any a client sent, and where the deployment says
+ * so (TINVAR_TRUSTED_PROXY_CLIENT=header) the client is read from that alone.
+ */
+describe('a client header', function () {
+    $proxies = TrustedProxies::of(['172.16.0.0/12', '104.16.0.0/13'], own: [], secret: PROXY_SECRET, clientHeader: true);
+    $from = static fn (string $peer, ?string $client, string $forwarded = '198.51.100.1, 104.16.0.9', ?string $proof = PROXY_SECRET): Request => new Request(
+        'GET',
+        '/',
+        [
+            'x-forwarded-for' => $forwarded,
+            ...($client === null ? [] : [TrustedProxies::CLIENT_HEADER => $client]),
+            ...($proof === null ? [] : [TrustedProxies::SECRET_HEADER => $proof]),
+        ],
+        remoteAddress: $peer,
+    );
+
+    it('names the client from a proxy that proves itself, whatever X-Forwarded-For says', function () use ($proxies, $from) {
+        // A Worker's request: the X-Forwarded-For it wrote names someone
+        // else; Cloudflare's ip.src names the Worker.
+        expect($proxies->clientAddress($from('172.16.3.4', '2a06:98c0:3600::103')))->toBe('2a06:98c0:3600::103')
+            ->and($proxies->clientAddress($from('172.16.3.4', '203.0.113.9', '198.51.100.77')))->toBe('203.0.113.9')
+            ->and($proxies->clientAddress($from('172.16.3.4', '::ffff:203.0.113.9')))->toBe('203.0.113.9');
+    });
+
+    it('names no client when a proven proxy sends none, or anything but one bare address -- never X-Forwarded-For', function (?string $client) use ($proxies, $from) {
+        expect($proxies->clientAddress($from('172.16.3.4', $client)))->toBe('');
+    })->with([
+        'none' => [null],
+        'empty' => [''],
+        'two' => ['203.0.113.9, 198.51.100.1'],
+        'a port' => ['203.0.113.9:443'],
+        'a name' => ['unknown'],
+    ]);
+
+    it('is believed from a proven proxy alone: a peer without the secret is the client itself', function () use ($proxies, $from) {
+        expect($proxies->clientAddress($from('172.16.3.4', '203.0.113.9', proof: null)))->toBe('172.16.3.4')
+            ->and($proxies->clientAddress($from('198.51.100.20', '203.0.113.9')))->toBe('198.51.100.20');
+    });
+
+    it('is not read where the deployment did not ask for it', function () use ($from) {
+        $forwarded = TrustedProxies::of(['172.16.0.0/12', '104.16.0.0/13'], own: [], secret: PROXY_SECRET);
+
+        expect($forwarded->clientAddress($from('172.16.3.4', '203.0.113.9')))->toBe('198.51.100.1');
+    });
+
+    it('is refused without a secret: only a proxy that proves itself may name the client', function () {
+        expect(fn () => TrustedProxies::of(['192.0.2.7'], own: [], clientHeader: true))
+            ->toThrow(\InvalidArgumentException::class, 'TINVAR_TRUSTED_PROXY_CLIENT');
+    });
+});
