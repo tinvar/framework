@@ -165,7 +165,7 @@ return [
             'transfers' => ['Tinvar\\Transfers\\'],
             'workflows' => ['Tinvar\\Workflows\\'],
             'push' => ['Tinvar\\Push\\'],
-            // Full-text search (ADR 0152): the ORM followed, the outbound
+            // Full-text search (ADR 0153): the ORM followed, the outbound
             // client, and jobs for a remote index.
             'search' => ['Tinvar\\Search\\', 'Tinvar\\Attributes\\Searchable'],
             'calls' => ['Tinvar\\Calls\\'],

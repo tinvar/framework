@@ -34,7 +34,7 @@ const KEY = 'shop-migrations-test-key-32-bytes!!!';
 const TABLES = [
     'auth_epochs', 'customers', 'email_links', 'failed_jobs', 'flashes', 'handoff_nonces', 'job_batch_ends', 'job_batches', 'job_locks', 'job_rates', 'jobs',
     'mail_event_nonces', 'mail_sent', 'mail_suppressions', 'marketing_opt_in_sends', 'marketing_opt_ins', 'marketing_preferences', 'newsletter_issues', 'order_lines', 'order_numbers', 'orders', 'products', 'receipts', 'schedule_runs',
-    // The search index (ADR 0152): its documents, and FTS5's table and its shadows.
+    // The search index (ADR 0153): its documents, and FTS5's table and its shadows.
     'search_documents', 'search_documents_text', 'search_documents_text_config', 'search_documents_text_content', 'search_documents_text_data',
     'search_documents_text_docsize', 'search_documents_text_idx', 'sessions', 'spent_tokens', 'staff',
     'tinvar_build_history', 'tinvar_migrations', 'transfers', 'uploads', 'webhook_deliveries', 'webhook_events',

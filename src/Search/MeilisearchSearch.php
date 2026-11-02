@@ -13,7 +13,7 @@ use Tinvar\Outbound\OutboundRequest;
 use Tinvar\Outbound\OutboundResponse;
 
 /**
- * The index in Meilisearch (ADR 0152), reached through the application's
+ * The index in Meilisearch (ADR 0153), reached through the application's
  * one OutboundHttp: held to the origin TINVAR_MEILISEARCH_URL names, at
  * every hop, by Destinations, and to the application's #[OutboundPolicy]
  * like any request -- a Meilisearch on a private network is one address

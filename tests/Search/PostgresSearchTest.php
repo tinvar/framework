@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * Full-text search in Postgres (ADR 0152): a tsvector behind a GIN index,
+ * Full-text search in Postgres (ADR 0153): a tsvector behind a GIN index,
  * and the index table held by row-level security as a #[TenantScoped]
  * table is, so even a raw read of it that forgot the predicate sees one
  * tenant's documents. Run as a role that is not a superuser, which every

@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Search;
 
 /**
- * The index in Postgres (ADR 0152): one row per document in
+ * The index in Postgres (ADR 0153): one row per document in
  * `search_documents`, its text a tsvector -- each weight class under its
  * label, A to D, stemmed by the `english` configuration -- behind a GIN
  * index, and ranked by ts_rank with the model's own weights.

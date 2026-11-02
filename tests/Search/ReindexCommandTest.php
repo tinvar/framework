@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * `tinvar search:reindex` (ADR 0152): the models a person chooses, or
+ * `tinvar search:reindex` (ADR 0153): the models a person chooses, or
  * every one with nobody there, rebuilt under a progress bar.
  */
 

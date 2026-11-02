@@ -8,7 +8,7 @@ use Tinvar\Orm\Connection;
 use Tinvar\Orm\NamesDriver;
 
 /**
- * The index kept in the application's own database (ADR 0152): the
+ * The index kept in the application's own database (ADR 0153): the
  * default, needing no service and no key. SqliteSearch or PostgresSearch,
  * as the connection's driver says, over the tables SearchTables makes.
  *
