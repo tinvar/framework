@@ -197,7 +197,7 @@ describe('the modules', function () {
     it('lets a module use the core and jobs, never one beside it, and only the kernel use them all', function () {
         $modules = Layers::modules();
 
-        expect($modules->names())->toBe(['support', 'database', 'queue', ...CORE, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'calls', 'tools', 'services', 'gateway', 'accounts', 'kernel', 'tenancy', 'billing', 'testing', 'codegen'])
+        expect($modules->names())->toBe(['support', 'database', 'queue', ...CORE, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'kernel', 'tenancy', 'billing', 'testing', 'codegen'])
             ->and($modules->mayUse('queue', 'database'))->toBeTrue()
             ->and($modules->mayUse('queue', 'http'))->toBeFalse()
             ->and($modules->mayUse('queue', 'jobs'))->toBeFalse()
@@ -235,6 +235,9 @@ describe('the modules', function () {
             ->and($modules->mayUse('kernel', 'webhooks'))->toBeTrue()
             ->and($modules->mayUse('push', 'jobs'))->toBeTrue()
             ->and($modules->mayUse('push', 'webhooks'))->toBeFalse()
+            ->and($modules->mayUse('notifications', 'mail'))->toBeTrue()
+            ->and($modules->mayUse('notifications', 'push'))->toBeTrue()
+            ->and($modules->mayUse('mail', 'notifications'))->toBeFalse()
             ->and($modules->mayUse('kernel', 'push'))->toBeTrue()
             ->and($modules->mayUse('kernel', 'tenancy'))->toBeFalse();
     });
@@ -302,7 +305,7 @@ describe('the core', function () {
             foreach (['support', 'database', 'queue'] as $below) {
                 expect($modules->mayUse($layer, $below))->toBeTrue();
             }
-            foreach (['jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'calls', 'tools', 'services', 'gateway', 'kernel'] as $module) {
+            foreach (['jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'kernel'] as $module) {
                 expect($modules->mayUse($module, $layer))->toBeTrue("{$module} using {$layer}")
                     ->and($modules->mayUse($layer, $module))->toBeFalse("{$layer} using {$module}");
             }

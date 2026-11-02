@@ -52,7 +52,7 @@ final readonly class InboxEndpoint
     public const int MAX_CHOICES = 60;
 
     /**
-     * @param \Closure(class-string): Middleware $middlewareResolver builds an inbox's own middleware
+     * @param \Closure(string): Middleware $middlewareResolver builds an inbox's own middleware
      * @param list<class-string> $globalMiddleware already run around this endpoint
      */
     public function __construct(

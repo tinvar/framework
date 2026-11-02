@@ -14,7 +14,7 @@ final readonly class CompiledInbox
      * @param class-string $class
      * @param class-string|null $tenantFrom what its #[TenantFrom] names
      * @param list<\Tinvar\Attributes\Panel> $panels
-     * @param list<class-string> $middleware
+     * @param list<string> $middleware each a middleware's class, or a reference to a middleware attribute
      */
     public function __construct(
         public string $name,
