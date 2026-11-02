@@ -265,7 +265,7 @@ final class AuditLog implements ModelChanges, ActionObserver
 
         $job = $this->jobs?->current();
         if ($job !== null) {
-            return new Actor(ActorKind::Job, $user?->authIdentifier(), $job->startedByImpersonator, $job->class, $job->id, $job->startedBy);
+            return new Actor(ActorKind::Job, $user?->authIdentifier(), $job->startedByImpersonator, $job->class, $job->id, $job->startedBy, $job->startedByApiToken);
         }
         if ($user !== null) {
             $impersonator = $this->impersonator === null ? $this->auth->impersonator() : ($this->impersonator)();

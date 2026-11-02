@@ -38,6 +38,11 @@ use Tinvar\Support\Signer;
  * Likewise its chain's catch (ADR 0118), sealed by the worker from this
  * envelope when a job of the chain fails for good; and, for a chain inside
  * a batch, the id the batch counts the whole chain by, its first job's.
+ *
+ * And who started the work, for the audit log (ADR 0156): the user, who
+ * was impersonating them, and the API token they acted through, each
+ * sealed only where there is one, so a payload sealed before it reads --
+ * and verifies -- as it did.
  */
 final readonly class Envelope
 {
@@ -78,6 +83,10 @@ final readonly class Envelope
      * @param string|null          $startedByImpersonator who was signed in as that user, when the work
      *                                         was started under impersonation: sealed beside it, so a
      *                                         job's entries name both, as the request's would
+     * @param string|null          $startedByApiToken the id of the API token that user acted through, when
+     *                                         the work was started by a request a token signed (ADR 0159):
+     *                                         sealed beside it, so a job's entries name the token, as the
+     *                                         request's do
      */
     public function __construct(
         public string $id,
@@ -98,6 +107,7 @@ final readonly class Envelope
         public ?string $member = null,
         public ?string $startedBy = null,
         public ?string $startedByImpersonator = null,
+        public ?string $startedByApiToken = null,
     ) {}
 
     /** What its batch counts it as: the chain it is part of, by the chain's first job, or itself. */
@@ -136,6 +146,7 @@ final readonly class Envelope
             member: $this->member,
             startedBy: $this->startedBy,
             startedByImpersonator: $this->startedByImpersonator,
+            startedByApiToken: $this->startedByApiToken,
         );
     }
 
@@ -167,6 +178,7 @@ final readonly class Envelope
             member: $this->batch === null ? null : $this->batchMember(),
             startedBy: $this->startedBy,
             startedByImpersonator: $this->startedByImpersonator,
+            startedByApiToken: $this->startedByApiToken,
         );
     }
 
@@ -194,6 +206,7 @@ final readonly class Envelope
             declaredBy: $this->catch['by'],
             startedBy: $this->startedBy,
             startedByImpersonator: $this->startedByImpersonator,
+            startedByApiToken: $this->startedByApiToken,
         );
     }
 
@@ -252,6 +265,9 @@ final readonly class Envelope
         if ($this->startedByImpersonator !== null) {
             $fields['si'] = $this->startedByImpersonator;
         }
+        if ($this->startedByApiToken !== null) {
+            $fields['st'] = $this->startedByApiToken;
+        }
         $json = json_encode($fields, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION);
 
         return Signer::encode($signer->sign($json)) . '.' . $json;
@@ -293,6 +309,7 @@ final readonly class Envelope
             || !(!\array_key_exists('bm', $data) || \is_string($data['bm']))
             || !(!\array_key_exists('sb', $data) || \is_string($data['sb']))
             || !(!\array_key_exists('si', $data) || \is_string($data['si']))
+            || !(!\array_key_exists('st', $data) || \is_string($data['st']))
             || !(!\array_key_exists('catch', $data) || \is_array($data['catch']))
             || !(!\array_key_exists('chain', $data) || \is_array($data['chain']))) {
             throw new JobRefused('payload_unsigned', 'The job\'s payload is not an envelope this version wrote.');
@@ -319,6 +336,7 @@ final readonly class Envelope
         $member = $data['bm'] ?? null;
         $startedBy = $data['sb'] ?? null;
         $startedByImpersonator = $data['si'] ?? null;
+        $startedByApiToken = $data['st'] ?? null;
 
         return new self(
             id: $data['id'],
@@ -339,6 +357,7 @@ final readonly class Envelope
             member: $member,
             startedBy: $startedBy,
             startedByImpersonator: $startedByImpersonator,
+            startedByApiToken: $startedByApiToken,
         );
     }
 

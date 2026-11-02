@@ -439,7 +439,23 @@ final readonly class Dispatcher
             // dispatching this one, or else whoever is signed in.
             startedBy: $this->running?->current()->startedBy ?? $this->auth->id(),
             startedByImpersonator: $this->impersonatorNow(),
+            startedByApiToken: $this->apiTokenNow(),
         );
+    }
+
+    /**
+     * The API token the user dispatching acted through, if a token signed
+     * the request (ADR 0159): inside a job, the token that job was started
+     * through, and otherwise the request's.
+     */
+    private function apiTokenNow(): ?string
+    {
+        $running = $this->running?->current();
+        if ($running !== null) {
+            return $running->startedByApiToken;
+        }
+
+        return $this->auth->id() === null ? null : $this->auth->apiToken();
     }
 
     /**

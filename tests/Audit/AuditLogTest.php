@@ -489,6 +489,48 @@ it('carries who was impersonating a job\'s starter into its entries, sealed, and
         ->and(Envelope::open($old->seal($signer), $signer)->startedByImpersonator)->toBeNull();
 });
 
+it('carries the API token a job\'s starter acted through into its entries, sealed, and opens a payload sealed without one', function () {
+    [$orm, $audit, $auth, , , $jobs] = log();
+    $signer = new Signer(KEY, Envelope::PURPOSE);
+    $queue = new ArrayQueue();
+    $dispatcher = new Dispatcher($queue, $orm, $signer, $auth, running: $jobs, impersonator: static fn (): ?string => null);
+    $token = '0192f1c4a5b67e3f8a9b0c1d2e3f4a5b';
+
+    $auth->login(new Person('u-1'), apiToken: $token);
+    $id = $orm->actAs('acme', fn (): string => $dispatcher->dispatch(new Nightly()));
+    $auth->login(null);
+    $envelope = Envelope::open((string) $queue->payload($id), $signer);
+    expect($envelope->startedBy)->toBe('u-1')
+        ->and($envelope->startedByApiToken)->toBe($token);
+
+    $actor = $jobs->within($envelope, fn () => $audit->actor());
+    expect($actor->kind)->toBe(ActorKind::Job)
+        ->and($actor->apiToken)->toBe($token);
+
+    // Written with the entry, as a request's is.
+    $jobs->within($envelope, fn () => $orm->actAs('acme', fn () => note($orm, 'by the job')));
+    $entries = $orm->actAs('acme', fn (): array => $audit->trail()->recent());
+    expect($entries[0]->actor->apiToken)->toBe($token)
+        ->and($entries[0]->actor->kind)->toBe(ActorKind::Job);
+
+    // A job the job dispatches carries it on.
+    $next = $jobs->within($envelope, fn (): string => $orm->actAs('acme', fn (): string => $dispatcher->dispatch(new Nightly())));
+    expect(Envelope::open((string) $queue->payload($next), $signer)->startedByApiToken)->toBe($token);
+
+    // Inside the MAC: changed, the payload is refused.
+    $sealed = $envelope->seal($signer);
+    expect(fn () => Envelope::open(str_replace("\"st\":\"{$token}\"", '"st":"ffffffffffffffffffffffffffffffff"', $sealed), $signer))->toThrow(JobRefused::class);
+
+    // A session's dispatch carries none, and one sealed before tokens were reads as it did.
+    $auth->login(new Person('u-1'));
+    $session = $orm->actAs('acme', fn (): string => $dispatcher->dispatch(new Nightly()));
+    $auth->login(null);
+    $old = new Envelope('job-0', Nightly::class, [], 'acme', startedBy: 'u-1');
+    expect((string) $queue->payload($session))->not->toContain('"st"')
+        ->and(Envelope::open((string) $queue->payload($session), $signer)->startedByApiToken)->toBeNull()
+        ->and(Envelope::open($old->seal($signer), $signer)->startedByApiToken)->toBeNull();
+});
+
 it('carries a job\'s starter and impersonator on to what it dispatches while running as its user, who has no session to ask', function () {
     [$orm, , $auth, , , $jobs] = log();
     $signer = new Signer(KEY, Envelope::PURPOSE);

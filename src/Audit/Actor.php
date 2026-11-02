@@ -18,8 +18,9 @@ final readonly class Actor
      * @param string|null $job the job's class, for a change a job made
      * @param string|null $jobId that job's id on the queue
      * @param string|null $startedBy who started the job's work: the user signed in where it was dispatched
-     * @param string|null $apiToken the id of the API token the user acted through (ADR 0159); null
-     *        for a session's request, or anything else
+     * @param string|null $apiToken the id of the API token the user acted through (ADR 0159) -- for a
+     *        job, the one the user who started its work acted through; null for a session's
+     *        request, or anything else
      */
     public function __construct(
         public ActorKind $kind,
