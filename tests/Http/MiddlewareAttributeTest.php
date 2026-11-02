@@ -19,7 +19,11 @@ use Tinvar\Attributes\Layout;
 use Tinvar\Attributes\Middleware as UseMiddleware;
 use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Page;
+use Tinvar\Attributes\Post;
 use Tinvar\Attributes\PublicAccess;
+use Tinvar\Attributes\WithoutSession;
+use Tinvar\Auth\Authenticatable;
+use Tinvar\Endpoints\EndpointRegistry;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Data\Data;
@@ -174,6 +178,42 @@ final class BadgeActions
     }
 }
 
+final readonly class Caller implements Authenticatable
+{
+    public function __construct(private string $id) {}
+
+    public function authIdentifier(): string
+    {
+        return $this->id;
+    }
+}
+
+/** A sessionless endpoint's own sign-in: whoever `x-caller` names. */
+final class HeaderSignIn implements Middleware
+{
+    public static ?AuthContext $auth = null;
+
+    public function handle(Request $request, \Closure $next): Response
+    {
+        $caller = $request->header('x-caller');
+        if ($caller !== null) {
+            self::$auth?->login(new Caller($caller));
+        }
+
+        return $next($request);
+    }
+}
+
+#[WithoutSession(reason: 'a fixture API whose caller signs in with a header')]
+final class BadgeApi
+{
+    #[Post('/api/badges', name: 'api.badges'), UseMiddleware(HeaderSignIn::class), NoAuthorization(reason: 'a fixture with no model input'), RequiresBadge('api')]
+    public function export(): TitleData
+    {
+        return new TitleData('API');
+    }
+}
+
 /** @param list<\Throwable> $reported */
 function kernel(array &$reported = []): Kernel
 {
@@ -181,13 +221,17 @@ function kernel(array &$reported = []): Kernel
     $routes->registerAll([GoldPage::class, OrderedPage::class, MembersLayout::class, LoungePage::class, StaffRoom::class, UnguardedPage::class]);
     $actions = new ActionRegistry();
     $actions->register(BadgeActions::class);
+    $endpoints = new EndpointRegistry();
+    $endpoints->register(BadgeApi::class);
+    $auth = new AuthContext();
+    HeaderSignIn::$auth = $auth;
 
     return new Kernel(
         orm: new Orm(PdoConnection::sqlite(':memory:', 'test'), new IdentityMap('test')),
         routes: $routes,
         queries: new QueryRegistry(),
         actions: $actions,
-        auth: new AuthContext(),
+        auth: $auth,
         policies: new PolicyRegistry(),
         resolver: static fn (string $class): object => $class === Unregistered::class
             ? throw new \LogicException('Nothing is registered for ' . Unregistered::class . '.')
@@ -196,6 +240,7 @@ function kernel(array &$reported = []): Kernel
         log: static function (\Throwable $e) use (&$reported): void {
             $reported[] = $e;
         },
+        endpoints: $endpoints,
     );
 }
 
@@ -237,6 +282,23 @@ it('guards an action as it guards a page', function () {
 
     expect($kernel->handle(action('badges.export'), page(), '{}')->status)->toBe(402)
         ->and($kernel->handle(action('badges.export', 'exporter'), page(), '{}')->status)->toBe(200);
+});
+
+// A sessionless endpoint's own #[Middleware] signs its caller in, so it
+// runs first; a gate is not that, and runs where it runs everywhere else:
+// once the caller is known and the tenant and panel are entered.
+it('runs on a sessionless endpoint after its caller is signed in, never ahead of authentication', function () {
+    $kernel = kernel();
+    $call = static fn (array $headers): Response => $kernel->handle(
+        new Request('POST', '/api/badges', ['content-type' => 'application/json', 'accept' => 'application/json', ...$headers]),
+        page(),
+        '{}',
+    );
+
+    expect($call([])->status)->toBe(401)
+        ->and(CheckBadge::$ran)->toBe([])
+        ->and($call(['x-caller' => 'ann'])->status)->toBe(402)
+        ->and($call(['x-caller' => 'ann', 'x-badge' => 'api'])->status)->toBe(200);
 });
 
 it('runs after the class\'s #[Middleware] when it is written on the method', function () {

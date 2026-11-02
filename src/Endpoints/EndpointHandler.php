@@ -6,6 +6,7 @@ namespace Tinvar\Endpoints;
 
 use Tinvar\Attributes\Endpoint;
 use Tinvar\Auth\AuthContext;
+use Tinvar\Http\DeclaredMiddleware;
 use Tinvar\Http\EntryContext;
 use Tinvar\Http\Endpoints\Limits;
 use Tinvar\Http\HttpException;
@@ -94,10 +95,17 @@ final class EndpointHandler
         $entry = $this->entry === null
             ? []
             : $this->entry->stackFor($endpoint->tenantFrom, $this->entry->panelFor($endpoint->panels, $endpoint->class));
-        $own = array_map(
-            $this->middlewareResolver,
-            $endpoint->sessionless ? $endpoint->middleware : array_values(array_diff($endpoint->middleware, $this->globalMiddleware)),
-        );
+        // A sessionless endpoint's own #[Middleware] signs its caller in, so
+        // it runs ahead of authentication. A middleware attribute's -- a
+        // gate, such as #[RequiresPlan] (ADR 0150) -- signs nobody in: it
+        // runs where it runs on every other entry point, once the caller is
+        // known and the tenant and panel are entered. Run ahead of them, it
+        // told an anonymous caller whether the gate let them in, and found
+        // no tenant to bill.
+        $declared = $endpoint->sessionless ? $endpoint->middleware : array_values(array_diff($endpoint->middleware, $this->globalMiddleware));
+        $gates = $endpoint->sessionless ? array_values(array_filter($declared, DeclaredMiddleware::isReference(...))) : [];
+        $own = array_map($this->middlewareResolver, array_values(array_diff($declared, $gates)));
+        $gates = array_map($this->middlewareResolver, $gates);
 
         $tokens = [[], []];
         if ($endpoint->takesApiTokens()) {
@@ -119,6 +127,7 @@ final class EndpointHandler
                 ...$this->bucket($endpoint, byAddress: false),
                 ...$entry,
                 ...$tokens[1],
+                ...$gates,
             ]
             : [
                 ...$this->bucket($endpoint, byAddress: true),
