@@ -29,6 +29,8 @@ final readonly class AccountPaths
         public string $signedOut = '/',
         // The account page, where its passkeys are: what a security email points to.
         public string $account = '/account',
+        // The account's API tokens page: what the email about a new token points to.
+        public string $apiTokens = '/account/api-tokens',
     ) {
         foreach (get_object_vars($this) as $name => $path) {
             if (!\is_string($path) || preg_match('#^/(?!/)[A-Za-z0-9/_.-]*\z#', $path) !== 1) {

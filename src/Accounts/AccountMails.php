@@ -64,4 +64,13 @@ interface AccountMails
      * where to reset the password from if it was not them.
      */
     public function twoFactorDisabled(AccountUser $user, string $resetUrl): Mailable;
+
+    /**
+     * That an API token called $tokenName was made for the account (ADR
+     * 0159): a token outlives every session and every sign-in, so the owner
+     * hears of each one -- with the page to revoke it from, and where to
+     * reset the password from (which ends every token), if it was not them.
+     * Never the token's text: only its name.
+     */
+    public function apiTokenCreated(AccountUser $user, string $tokenName, string $tokensUrl, string $resetUrl): Mailable;
 }

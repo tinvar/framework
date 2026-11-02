@@ -149,8 +149,9 @@ return [
     // and none on another; notifications on jobs, mail and push, whose
     // channels they are (ADR 0155); calls (an action or query run outside HTTP) on
     // the core, with tools and services on calls; the gateway's contract on
-    // the core (ADR 0098, 0099); the accounts kit on jobs and mail (ADR 0153);
-    // the public API's tokens and calls on calls (ADR 0159);
+    // the core (ADR 0098, 0099); the public API's tokens and calls on calls
+    // (ADR 0159); the accounts kit on jobs and mail, and on the API, whose
+    // tokens it issues only to a confirmed session (ADR 0153);
     // and the kernel -- the HTTP kernel, the console and the
     // server, which a process starts with -- over all of them. An
     // attribute is its module's, though the namespace is shared.
@@ -175,14 +176,15 @@ return [
             'tools' => ['Tinvar\\Tools\\', 'Tinvar\\Attributes\\Tool'],
             'services' => ['Tinvar\\Services\\', 'Tinvar\\Attributes\\ServiceCall'],
             'gateway' => ['Tinvar\\Gateway\\'],
+            // The public API (ADR 0159): API tokens and /_api, on calls.
+            'api' => ['Tinvar\\Api\\'],
             // The accounts kit (ADR 0153): sign-up, sign-in, sessions with
-            // rows, passkeys and two-factor, on the core, jobs and mail.
+            // rows, passkeys and two-factor, on the core, jobs and mail; and
+            // the API's tokens, which it issues to a confirmed session.
             'accounts' => ['Tinvar\\Accounts\\'],
             // The audit log (ADR 0156): over jobs, to name the job that made
             // a change and its starter, and services, to name a service.
             'audit' => ['Tinvar\\Audit\\', 'Tinvar\\Attributes\\AuditedAction'],
-            // The public API (ADR 0159): API tokens and /_api, on calls.
-            'api' => ['Tinvar\\Api\\'],
             'kernel' => ['Tinvar\\Http\\Kernel', 'Tinvar\\Console\\', 'Tinvar\\Discovery\\', 'Tinvar\\Server\\', 'Tinvar\\Http\\TestableApplication', 'Tinvar\\Http\\BrowserTestable', 'Tinvar\\Attributes\\Command'],
             ...$above,
         ],
@@ -203,9 +205,9 @@ return [
             'tools' => ['support', 'database', 'queue', ...$coreNames, 'calls'],
             'services' => ['support', 'database', 'queue', ...$coreNames, 'calls'],
             'gateway' => ['support', 'database', 'queue', ...$coreNames],
-            'accounts' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'mail'],
-            'audit' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'calls', 'services'],
             'api' => ['support', 'database', 'queue', ...$coreNames, 'calls'],
+            'accounts' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'mail', 'calls', 'api'],
+            'audit' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'calls', 'services'],
             'kernel' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit', 'api'],
             'tenancy' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit', 'api', 'kernel'],
             'billing' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit', 'api', 'kernel'],

@@ -213,7 +213,7 @@ final class World
     {
         $this->users->epochs[$user] ??= 'e1';
         $tokens = $this->kernel->apiTokens ?? throw new \LogicException('No API tokens.');
-        $issue = fn (): string => $this->auth->actingAs(new User($user), static fn (): string => $tokens->issue('Test', $scopes)->plaintext, 'e1');
+        $issue = fn (): string => $this->auth->actingAs(new User($user), static fn (): string => $tokens->issue('Test', $scopes, \Carbon\CarbonImmutable::now('UTC')->addDays(30))->plaintext, 'e1');
 
         return $panel === null ? $issue() : $this->panels->within($panel, $issue);
     }

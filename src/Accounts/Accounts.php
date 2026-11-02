@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Accounts;
 
+use Carbon\CarbonImmutable;
 use Tinvar\Accounts\Passkeys\Base64Url;
 use Tinvar\Accounts\Passkeys\Passkey;
 use Tinvar\Accounts\Passkeys\PasskeyChallenges;
@@ -14,6 +15,9 @@ use Tinvar\Accounts\Passkeys\WebAuthn;
 use Tinvar\Accounts\TwoFactor\Base32;
 use Tinvar\Accounts\TwoFactor\Totp;
 use Tinvar\Accounts\TwoFactor\TwoFactorStore;
+use Tinvar\Api\ApiTokenRefused;
+use Tinvar\Api\ApiTokens;
+use Tinvar\Api\IssuedApiToken;
 use Tinvar\Http\Request;
 use Tinvar\Identity\EmailLinks;
 use Tinvar\Jobs\Dispatcher;
@@ -53,13 +57,14 @@ use Tinvar\Validation\ValidationException;
  *   asked and good once (PasskeyChallenges), for this host as the relying
  *   party, checked in full (WebAuthn).
  * - **A session alone changes nothing about how its account signs in.**
- *   Adding or removing a passkey and turning two-factor on need the owner to have
+ *   Adding or removing a passkey, turning two-factor on and issuing an API
+ *   token need the owner to have
  *   proved it is them on this session in the last five minutes -- the
  *   password typed again, one of the account's passkeys or a code from its
  *   authenticator app -- and every other such change asks for the password
  *   itself. So a stolen session cookie cannot add a way back in that
- *   outlives it, or take away the owner's, and a passkey added or removed
- *   is told to the owner by email.
+ *   outlives it, or take away the owner's, and a passkey added or removed,
+ *   or an API token made, is told to the owner by email.
  */
 final class Accounts
 {
@@ -703,6 +708,33 @@ final class Accounts
         return true;
     }
 
+    // ------------------------------------------------------------ API tokens
+
+    /**
+     * Issues an API token for the account (ADR 0159) -- while the session's
+     * confirmation still counts, as adding a passkey asks -- and tells the
+     * owner by email, naming it. A token outlives the session that made it
+     * and every sign-in, so a session alone would otherwise mint a lasting
+     * way in: a thief with a cookie leaving with a credential that "sign out
+     * everywhere" is the only thing to end.
+     *
+     * $tokens is the application's ApiTokens (the Kernel's, from its
+     * ApiAccess), which holds the token to its user, epoch, tenant, panel and
+     * host, and to the lifetime the application allows.
+     *
+     * @param list<string|\BackedEnum> $scopes
+     * @throws ValidationException on `confirm` (CONFIRM_FIRST) while the session is not confirmed
+     * @throws ApiTokenRefused for a choice that will not do, or a caller who may not have one
+     */
+    public function issueApiToken(Request $http, AccountUser $user, ApiTokens $tokens, string $name, array $scopes, ?CarbonImmutable $expiresAt): IssuedApiToken
+    {
+        $this->assertRecentlyConfirmed($http);
+        $issued = $tokens->issue($name, $scopes, $expiresAt);
+        $this->jobs->dispatch(new SendAccountMail(AccountMailKind::ApiTokenCreated, name: $issued->token->name, userId: $user->authIdentifier()));
+
+        return $issued;
+    }
+
     // ------------------------------------------------------------- the worker
 
     /**
@@ -733,6 +765,7 @@ final class Accounts
             AccountMailKind::PasskeyAdded => $user === null ? null : $this->mails->passkeyAdded($user, $job->name, $this->links->page($this->links->paths->account), $resetPage),
             AccountMailKind::PasskeyRemoved => $user === null ? null : $this->mails->passkeyRemoved($user, $job->name, $this->links->page($this->links->paths->account), $resetPage),
             AccountMailKind::TwoFactorDisabled => $user === null ? null : $this->mails->twoFactorDisabled($user, $resetPage),
+            AccountMailKind::ApiTokenCreated => $user === null ? null : $this->mails->apiTokenCreated($user, $job->name, $this->links->page($this->links->paths->apiTokens), $resetPage),
         };
 
         if ($mailable !== null) {
@@ -803,7 +836,7 @@ final class Accounts
         return $user;
     }
 
-    /** A change to how the account signs in, refused unless the session was confirmed in the last five minutes. */
+    /** A change to how the account signs in -- or a token made for it -- refused unless the session was confirmed in the last five minutes. */
     private function assertRecentlyConfirmed(Request $http): void
     {
         if (!$this->recentlyConfirmed($http)) {

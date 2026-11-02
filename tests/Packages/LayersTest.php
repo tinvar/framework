@@ -197,7 +197,7 @@ describe('the modules', function () {
     it('lets a module use the core and jobs, never one beside it, and only the kernel use them all', function () {
         $modules = Layers::modules();
 
-        expect($modules->names())->toBe(['support', 'database', 'queue', ...CORE, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit', 'api', 'kernel', 'tenancy', 'billing', 'testing', 'codegen'])
+        expect($modules->names())->toBe(['support', 'database', 'queue', ...CORE, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'api', 'accounts', 'audit', 'kernel', 'tenancy', 'billing', 'testing', 'codegen'])
             ->and($modules->mayUse('queue', 'database'))->toBeTrue()
             ->and($modules->mayUse('queue', 'http'))->toBeFalse()
             ->and($modules->mayUse('queue', 'jobs'))->toBeFalse()
@@ -214,9 +214,12 @@ describe('the modules', function () {
             ->and($modules->mayUse('webhooks', 'mail'))->toBeFalse()
             ->and($modules->mayUse('webhooks', 'events'))->toBeFalse()
             ->and($modules->mayUse('transfers', 'mail'))->toBeFalse()
-            // ADR 0153: the accounts kit on jobs and mail, and nothing beside them.
+            // ADR 0153: the accounts kit on jobs and mail, and the API whose
+            // tokens it issues to a confirmed session, and nothing beside them.
             ->and($modules->mayUse('accounts', 'mail'))->toBeTrue()
             ->and($modules->mayUse('accounts', 'jobs'))->toBeTrue()
+            ->and($modules->mayUse('accounts', 'api'))->toBeTrue()
+            ->and($modules->mayUse('api', 'accounts'))->toBeFalse()
             ->and($modules->mayUse('accounts', 'webhooks'))->toBeFalse()
             ->and($modules->mayUse('accounts', 'kernel'))->toBeFalse()
             ->and($modules->mayUse('mail', 'accounts'))->toBeFalse()

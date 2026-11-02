@@ -1398,6 +1398,7 @@ final class Kernel
                 $callHosts,
                 $apiAccess->clock,
                 $apiAccess->maxPerUser,
+                $apiAccess->maxLifetimeDays,
             );
             $tokenSignIn = new SignInWithApiToken($apiTokens, $this->auth);
             $api = new ApiEndpoint(

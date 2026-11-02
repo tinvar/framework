@@ -16,6 +16,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Tests\Accounts\Kit;
 
+use Carbon\CarbonImmutable;
 use Tinvar\Accounts\AccountLinks;
 use Tinvar\Accounts\Accounts;
 use Tinvar\Accounts\AccountsKit;
@@ -24,6 +25,8 @@ use Tinvar\Accounts\SessionState;
 use Tinvar\Accounts\SignInResult;
 use Tinvar\Accounts\TwoFactor\Base32;
 use Tinvar\Accounts\TwoFactor\Totp;
+use Tinvar\Api\ApiTokens;
+use Tinvar\Api\ArrayApiTokens;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Request;
 use Tinvar\Identity\EmailLinks;
@@ -463,6 +466,41 @@ it('confirms a session with one of its account\'s passkeys, or a code from its a
             ->and($app->kit->accounts->recoveryCodesLeft($user))->toBe(10);
         $ada->do(static fn (Accounts $a, Request $r) => $a->confirmWithCode($r, $user, Totp::at($secret, $app->now)));
         expect($ada->do(static fn (Accounts $a, Request $r) => $a->recentlyConfirmed($r)))->toBeTrue();
+    });
+});
+
+// Audit (ADR 0153, 0159): an API token outlives the session that made it
+// and every sign-in, so a stolen session cookie alone minted a lasting
+// credential, and nobody heard of it.
+it('asks a session to confirm it is its owner before it issues an API token, and tells the owner', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $store = new ArrayApiTokens();
+        $tokens = new ApiTokens($store, $app->kit->tokenHolders, $app->auth, $app->orm, ['' => ['notes:read']], clock: fn (): int => $app->now);
+        $issue = static fn () => $owner->do(static fn (Accounts $a, Request $r) => $app->auth->actingAs(
+            $user,
+            static fn () => $a->issueApiToken($r, $user, $tokens, 'Nightly export', ['notes:read'], CarbonImmutable::createFromTimestampUTC($app->now)->addDays(30)),
+        ));
+
+        // A stolen session cookie, its owner's confirmation long lapsed: no token.
+        expect(refused($issue))->toBe(['confirm' => [Accounts::CONFIRM_FIRST]])
+            ->and($store->tokens)->toBe([]);
+        $app->work();
+        expect($app->links('api-token-created', 'ada@example.com'))->toBe([]);
+
+        $owner->confirm();
+        $issued = $issue();
+        expect($issued->token->name)->toBe('Nightly export')
+            ->and($store->tokens)->toHaveCount(1);
+        $app->work();
+        expect($app->links('api-token-created', 'ada@example.com'))->toBe(['https://app.example/account/api-tokens'])
+            ->and($app->mail->sent[array_key_last($app->mail->sent)]->text)->not->toContain($issued->plaintext);
+
+        // Five minutes on, it is asked again.
+        $app->now += Accounts::CONFIRMATION_LIFETIME;
+        expect(refused($issue))->toBe(['confirm' => [Accounts::CONFIRM_FIRST]]);
     });
 });
 

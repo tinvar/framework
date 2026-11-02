@@ -131,6 +131,37 @@ it('issues none while the user is being impersonated, and says who is signed in 
     $h->auth->reset();
 });
 
+// Audit (ADR 0159): a token outlives the session that made it and every
+// sign-in, so one that never expires is a lasting way in for whoever held
+// the session for a moment. An application's ApiAccess caps how long one
+// lasts -- a year unless it says otherwise -- and asks for an expiry.
+it('holds a token to the lifetime the application allows, and asks for an expiry under one', function () {
+    $h = new Harness();
+    $now = CarbonImmutable::createFromTimestampUTC($h->now);
+    $capped = new ApiTokens($h->tokenStore, $h->users, $h->auth, $h->orm, ['' => ['racks:read']], clock: fn (): int => $h->now, maxLifetimeDays: 365);
+    $issue = fn (?CarbonImmutable $expiresAt) => $h->as('ada', fn () => $capped->issue('Nightly export', ['racks:read'], $expiresAt));
+    $refusal = function (?CarbonImmutable $expiresAt) use ($issue): ApiTokenRefused {
+        try {
+            $issue($expiresAt);
+        } catch (ApiTokenRefused $e) {
+            return $e;
+        }
+
+        throw new \LogicException('issued');
+    };
+
+    expect($refusal(null)->choice)->toBe(ApiTokenChoice::Expiry)
+        ->and($refusal(null)->getMessage())->toContain('365 days')
+        ->and($refusal($now->addDays(365)->addSecond())->choice)->toBe(ApiTokenChoice::Expiry)
+        ->and($h->tokenStore->tokens)->toBe([])
+        ->and($issue($now->addDays(365))->token->expiresAt?->getTimestamp())->toBe($now->addDays(365)->getTimestamp())
+        ->and(new \Tinvar\Api\ApiAccess(new \Tinvar\Api\ArrayApiTokens(), $h->users)->maxLifetimeDays)->toBe(ApiTokens::MAX_LIFETIME_DAYS)
+        ->and(ApiTokens::MAX_LIFETIME_DAYS)->toBe(365)
+        // An application that wants tokens that never expire says so.
+        ->and(new \Tinvar\Api\ApiAccess(new \Tinvar\Api\ArrayApiTokens(), $h->users, maxLifetimeDays: null)->maxLifetimeDays)->toBeNull()
+        ->and(fn () => new \Tinvar\Api\ApiAccess(new \Tinvar\Api\ArrayApiTokens(), $h->users, maxLifetimeDays: 0))->toThrow(\InvalidArgumentException::class);
+});
+
 it('holds a user to as many active tokens as the application allows', function () {
     $h = new Harness();
     foreach (range(1, 3) as $_) {

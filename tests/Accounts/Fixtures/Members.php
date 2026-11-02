@@ -201,6 +201,11 @@ final readonly class MemberMails implements AccountMails
     {
         return new MemberMail($user->accountEmail(), 'two-factor-disabled', $resetUrl);
     }
+
+    public function apiTokenCreated(AccountUser $user, string $tokenName, string $tokensUrl, string $resetUrl): Mailable
+    {
+        return new MemberMail($user->accountEmail(), 'api-token-created', $tokensUrl);
+    }
 }
 
 /** Draws nothing: the text part is the template's name and its props, for a test to read the link from. */

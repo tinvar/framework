@@ -30,7 +30,10 @@ use Tinvar\Support\Uuid;
  * where the application routes by host (CallHosts, ADR 0149). Its scopes
  * are some of those the application declares with #[RequiresScope] in that
  * panel, found by discovery; a scope nothing declares is refused, as a
- * typo. Its expiry is optional, and in the future.
+ * typo. Its expiry is in the future, and within the lifetime the
+ * application allows (ApiAccess::$maxLifetimeDays, a year unless it says
+ * otherwise); only an application that allows any lifetime may issue one
+ * that never expires.
  *
  * **Kept** as a record and the SHA-256 of its secret (ApiTokenSecret): the
  * text is in IssuedApiToken alone, for the response to the request that
@@ -53,6 +56,13 @@ final readonly class ApiTokens
     /** The most tokens one user may hold in a tenant and panel, unless the application says otherwise. */
     public const int MAX_PER_USER = 50;
 
+    /**
+     * The longest a token may last, in days, unless the application's
+     * ApiAccess says otherwise: a token outlives every session and sign-in,
+     * so one that never ends is a lasting way in for whoever made it.
+     */
+    public const int MAX_LIFETIME_DAYS = 365;
+
     /** A token's last use is written at most this often, in seconds. */
     public const int USE_RECORDED_EVERY = 60;
 
@@ -65,6 +75,8 @@ final readonly class ApiTokens
      * @param CallHosts|null $hosts the hosts a token is bound to; none, and the application is
      *        taken to route on no host
      * @param (\Closure(): int)|null $clock seconds since the epoch; time() unless given
+     * @param int|null $maxLifetimeDays the longest a token may last, which makes an expiry
+     *        required; null, and a token may never expire (ApiAccess gives MAX_LIFETIME_DAYS)
      */
     public function __construct(
         private ApiTokenStore $store,
@@ -76,6 +88,7 @@ final readonly class ApiTokens
         private ?CallHosts $hosts = null,
         private ?\Closure $clock = null,
         private int $maxPerUser = self::MAX_PER_USER,
+        private ?int $maxLifetimeDays = null,
     ) {}
 
     /**
@@ -133,7 +146,10 @@ final readonly class ApiTokens
         }
         $now = $this->now();
         if ($expiresAt !== null && $expiresAt->lessThanOrEqualTo($now)) {
-            throw new ApiTokenRefused(ApiTokenChoice::Expiry, 'A token\'s expiry is in the future: choose a later date, or none.');
+            throw new ApiTokenRefused(ApiTokenChoice::Expiry, 'A token\'s expiry is in the future: choose a later date' . ($this->maxLifetimeDays === null ? ', or none.' : '.'));
+        }
+        if ($this->maxLifetimeDays !== null && ($expiresAt === null || $expiresAt->greaterThan($now->addDays($this->maxLifetimeDays)))) {
+            throw new ApiTokenRefused(ApiTokenChoice::Expiry, "A token lasts at most {$this->maxLifetimeDays} days here: choose an expiry within that.");
         }
 
         $tenant = $this->orm->tenant();
