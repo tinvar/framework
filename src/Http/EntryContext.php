@@ -136,6 +136,26 @@ final readonly class EntryContext
     }
 
     /**
+     * The panel's guard and its own middleware -- MFA, a network allowlist
+     * -- in the order stackFor() runs them, without the host, tenant,
+     * EnterPanel or membership steps: for a call that holds those itself
+     * and must still pass what the panel puts in front of everything in it
+     * (an API token's call to /_api, ADR 0159).
+     *
+     * @return list<Middleware>
+     */
+    public function panelGuards(PanelBinding $panel): array
+    {
+        $definition = $this->registry?->definition($panel->name) ?? throw self::undefined($panel->name);
+        $stack = $definition->guard === null ? [] : [$this->middleware($definition->guard)];
+        foreach ($definition->middleware as $class) {
+            $stack[] = $this->middleware($class);
+        }
+
+        return $stack;
+    }
+
+    /**
      * The panel an entry point is in -- by its #[Panel], or else by the
      * namespace of its class -- with everything its declarations and the
      * panel's definition require of a membership; null for none.

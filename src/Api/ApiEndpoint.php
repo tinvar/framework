@@ -100,7 +100,7 @@ final readonly class ApiEndpoint
             $presented = SignInWithApiToken::presentedBy($passed) ?? throw new \LogicException('An API call ran with no token signed in.');
             $arguments = Limits::input($passed, $rawBody, $this->maxBodyBytes, $this->maxJsonDepth);
 
-            return $this->respond($this->calls->call($presented, $name, $arguments), $name);
+            return $this->respond($this->calls->call($presented, $name, $arguments, $passed), $name);
         });
     }
 

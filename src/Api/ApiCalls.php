@@ -17,6 +17,9 @@ use Tinvar\Calls\Operations;
 use Tinvar\Http\EntryContext;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware\RequirePanelMembership;
+use Tinvar\Http\Pipeline;
+use Tinvar\Http\Request;
+use Tinvar\Http\Response;
 use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
 
@@ -44,7 +47,10 @@ use Tinvar\Query\QueryRegistry;
  * Then it runs as the token's user on their epoch, in the token's tenant,
  * never across tenants or a subtree; in a panel, only while the user still
  * holds a membership of it meeting everything the operation's binding
- * requires.
+ * requires, and only past the panel's guard and its own middleware -- MFA,
+ * a network allowlist -- run on the call's request, as they run for a page
+ * or an endpoint in the panel. A token outlives the request that issued it,
+ * so what the panel checked then is checked again at every call.
  */
 final readonly class ApiCalls
 {
@@ -64,6 +70,7 @@ final readonly class ApiCalls
         private ?PanelContext $panels = null,
         private ?Memberships $memberships = null,
         private ?CallHosts $hosts = null,
+        private ?EntryContext $entry = null,
     ) {
         $byName = [];
         foreach ($operations as [$operation, $declaration]) {
@@ -120,8 +127,10 @@ final readonly class ApiCalls
      * token allows.
      *
      * @param array<array-key, mixed> $arguments the caller's input, decoded from its JSON
+     * @param Request|null $request the call's request, which a panel's guard and middleware run
+     *        on; without one, an operation in a panel that has either is refused
      */
-    public function call(PresentedApiToken $presented, string $operation, array $arguments): CallResult
+    public function call(PresentedApiToken $presented, string $operation, array $arguments, ?Request $request = null): CallResult
     {
         $entry = $this->operations[$operation] ?? null;
         if ($entry === null) {
@@ -147,14 +156,14 @@ final readonly class ApiCalls
         return $this->auth->actingAs(
             $presented->user,
             fn (): CallResult => $this->orm->actAs($token->tenant, fn (): CallResult => $this->orm->withoutSubtreeGrant(
-                fn (): CallResult => $this->run($declared, $arguments),
+                fn (): CallResult => $this->run($declared, $arguments, $request),
             )),
             $presented->epoch,
         );
     }
 
     /** @param array<array-key, mixed> $arguments */
-    private function run(Operation $operation, array $arguments): CallResult
+    private function run(Operation $operation, array $arguments, ?Request $request): CallResult
     {
         $run = fn (): CallResult => $this->runner->run($operation, $arguments);
         $binding = $operation->panel;
@@ -178,7 +187,41 @@ final readonly class ApiCalls
         }
 
         $panels = $this->panels;
+        $held = static fn (): CallResult => $panels->grantedWithin($binding, $run);
+        $guards = $this->entry?->panelGuards($binding) ?? [];
 
-        return $panels->within($binding->name, static fn (): CallResult => $panels->grantedWithin($binding, $run));
+        return $panels->within($binding->name, static function () use ($guards, $request, $held): CallResult {
+            if ($guards === []) {
+                return $held();
+            }
+            // The panel's guard and middleware ran when the token was issued;
+            // a token is good long after, from anywhere, so they run again on
+            // this call's request: an admin since removed, or a call from off
+            // the allowed network, is refused here as on a page of the panel.
+            if ($request === null) {
+                return CallResult::refused('panel');
+            }
+            $result = null;
+            $reached = false;
+            try {
+                new Pipeline($guards)->run($request, static function () use (&$result, &$reached, $held): Response {
+                    $reached = true;
+                    $result = $held();
+
+                    return Response::make(204);
+                });
+            } catch (HttpException $e) {
+                // The panel's refusal; one from the call itself is its own.
+                if ($reached) {
+                    throw $e;
+                }
+
+                return CallResult::forbidden();
+            }
+
+            // A guard that answered without passing the call on -- a redirect
+            // to sign in -- let nothing run.
+            return $result ?? CallResult::forbidden();
+        });
     }
 }

@@ -38,6 +38,7 @@ use Tinvar\Tests\Calls\Fixtures\AuditActions;
 use Tinvar\Tests\Calls\Fixtures\RackActions;
 use Tinvar\Tests\Calls\Fixtures\RackData;
 use Tinvar\Tests\Calls\Fixtures\RackPolicy;
+use Tinvar\Tests\Calls\Fixtures\Ran;
 use Tinvar\Tests\Calls\Fixtures\ShowRack;
 use Tinvar\Tests\Calls\Fixtures\Staff;
 use Tinvar\Tests\Calls\Fixtures\User;
@@ -60,6 +61,39 @@ final class SessionCookie implements Middleware
         $user = $request->cookie('session');
         if ($user !== null && self::$auth !== null) {
             self::$auth->login(new User($user), 'e1');
+        }
+
+        return $next($request);
+    }
+}
+
+/** A panel's own middleware -- a network allowlist, say -- shut until a test opens it. */
+final class OfficeOnly implements Middleware
+{
+    public static bool $open = false;
+
+    public function handle(Request $request, \Closure $next): Response
+    {
+        if (!self::$open) {
+            throw new \Tinvar\Http\HttpException(403, 'Only from the office network.', 'forbidden');
+        }
+
+        return $next($request);
+    }
+}
+
+/** A panel's guard: lets in only the users a test names, as an admins list does. */
+final class AdminsOnly implements Middleware
+{
+    /** @var list<string> */
+    public static array $admins = [];
+
+    public static ?AuthContext $auth = null;
+
+    public function handle(Request $request, \Closure $next): Response
+    {
+        if (!\in_array(self::$auth?->id(), self::$admins, true)) {
+            throw new \Tinvar\Http\ForbiddenException('Admins only.');
         }
 
         return $next($request);
@@ -92,13 +126,15 @@ final class World
     public Users $users;
     public Staff $staff;
     public ArrayApiTokens $store;
+    public PanelContext $panels;
 
     /** @param array<string, int> $limits */
-    public function __construct(array $limits = [], bool $api = true)
+    public function __construct(array $limits = [], bool $api = true, PanelDefinition $admin = new PanelDefinition('admin'))
     {
         $this->fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
         $orm = new Orm($this->fixture->connection, new IdentityMap('api-kernel'));
-        $this->auth = SessionCookie::$auth = new AuthContext();
+        $this->auth = SessionCookie::$auth = AdminsOnly::$auth = new AuthContext();
+        $this->panels = new PanelContext();
         SessionCookie::$runs = 0;
         $this->users = new Users();
         $this->staff = new Staff();
@@ -124,8 +160,8 @@ final class World
             globalMiddleware: [SessionCookie::class],
             throttle: new Throttle(new ArrayThrottleStore(), $this->auth, static fn (Request $r): string => $r->remoteAddress ?? ''),
             limits: $limits,
-            panels: new PanelContext(),
-            panelRegistry: new PanelRegistry(new PanelDefinition('admin')),
+            panels: $this->panels,
+            panelRegistry: new PanelRegistry($admin),
             memberships: $this->staff,
             endpoints: $endpoints,
             apiAccess: $api ? new ApiAccess($this->store, $this->users) : null,
@@ -138,12 +174,13 @@ final class World
     }
 
     /** @param list<string> $scopes */
-    public function token(array $scopes, string $user = 'ada'): string
+    public function token(array $scopes, string $user = 'ada', ?string $panel = null): string
     {
         $this->users->epochs[$user] ??= 'e1';
         $tokens = $this->kernel->apiTokens ?? throw new \LogicException('No API tokens.');
+        $issue = fn (): string => $this->auth->actingAs(new User($user), static fn (): string => $tokens->issue('Test', $scopes)->plaintext, 'e1');
 
-        return $this->auth->actingAs(new User($user), static fn (): string => $tokens->issue('Test', $scopes)->plaintext, 'e1');
+        return $panel === null ? $issue() : $this->panels->within($panel, $issue);
     }
 
     /**
@@ -250,6 +287,31 @@ describe('/_api', function () {
         expect($statuses)->toBe([200, 200, 429])
             ->and($last->header('retry-after'))->not->toBeNull()
             ->and(json($last)['error']['code'])->toBe('too_many_requests');
+    });
+
+    it('runs an operation in a panel behind the panel\'s guard and its middleware, as a page or an endpoint there is', function () {
+        $w = new World(admin: new PanelDefinition('admin', guard: AdminsOnly::class, middleware: [OfficeOnly::class]));
+        $w->staff->members['ada'] = ['racks.audit'];
+        $token = $w->token(['racks:audit'], panel: 'admin');
+        $call = static fn (): Response => $w->call('POST', '/_api/racks.audit', ['authorization' => "Bearer {$token}"], json_encode(['rack' => $w->rack()], JSON_THROW_ON_ERROR));
+        Ran::$bodies = [];
+
+        // Off the office network, and an admin: the panel's middleware refuses.
+        AdminsOnly::$admins = ['ada'];
+        OfficeOnly::$open = false;
+        $offNetwork = $call();
+        // On it, and no longer an admin: the panel's guard refuses.
+        OfficeOnly::$open = true;
+        AdminsOnly::$admins = [];
+        $demoted = $call();
+        // On it, and an admin: let in.
+        AdminsOnly::$admins = ['ada'];
+        $allowed = $call();
+
+        expect($offNetwork->status)->toBe(403)
+            ->and($demoted->status)->toBe(403)
+            ->and($allowed->status)->toBe(200)
+            ->and(Ran::$bodies)->toBe(['audit']);
     });
 
     it('ends every token when the user\'s epoch moves', function () {

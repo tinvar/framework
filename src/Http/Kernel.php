@@ -1409,6 +1409,7 @@ final class Kernel
                     $panels,
                     $memberships,
                     $callHosts,
+                    $entry,
                 ),
                 $tokenSignIn,
                 $throttle,
