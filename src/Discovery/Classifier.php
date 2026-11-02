@@ -38,6 +38,7 @@ use Tinvar\Attributes\Webhook;
 use Tinvar\Data\Data;
 use Tinvar\Data\SharedData;
 use Tinvar\Endpoints\EndpointRegistry;
+use Tinvar\Http\MiddlewareAttribute;
 use Tinvar\Jobs\Job;
 use Tinvar\Mail\Mailable;
 use Tinvar\Orm\Model;
@@ -241,10 +242,15 @@ final class Classifier
             return null;
         }
 
+        // A gate (ADR 0150) is inherited as #[Middleware] is. Nothing at all
+        // is read off an interface: ClassAttributes walks a class's parents
+        // and traits, never what it implements, so a check, a middleware or
+        // a gate there was dropped from every class implementing it.
         $found = [];
         foreach ($class->getAttributes() as $attribute) {
             $name = $attribute->getName();
-            if (str_starts_with($name, 'Tinvar\\Attributes\\') && !\in_array($name, self::INHERITED, true)) {
+            $inherited = \in_array($name, self::INHERITED, true) || self::gate($name);
+            if ((str_starts_with($name, 'Tinvar\\Attributes\\') || self::gate($name)) && (!$inherited || $class->isInterface())) {
                 $found[] = '#[' . self::short($name) . ']';
             }
         }
@@ -290,9 +296,50 @@ final class Classifier
             . 'could hold (ADR 0149). Take it off.';
     }
 
+    /**
+     * What is wrong with $class carrying a #[Middleware] or a gate (ADR
+     * 0150) -- on itself, an ancestor, a trait or a public method -- when
+     * none of the kinds it is runs an entry point's middleware: a webhook,
+     * a task, a job or a command is reached by no request it could stand
+     * in front of, and the gate would let everyone past without a word.
+     * Null when it is one of them, or declares none.
+     *
+     * @param \ReflectionClass<object> $class
+     * @param list<string> $kinds what classify() found it to be
+     */
+    public static function unguarded(\ReflectionClass $class, array $kinds): ?string
+    {
+        if ($kinds === [] || array_intersect($kinds, self::HOSTED) !== []) {
+            return null;
+        }
+        $found = [];
+        foreach ([...\Tinvar\Attributes\ClassAttributes::of($class, Middleware::class), ...\Tinvar\Attributes\ClassAttributes::of($class, MiddlewareAttribute::class, \ReflectionAttribute::IS_INSTANCEOF)] as $attribute) {
+            $found[] = '#[' . self::short($attribute->getName()) . ']';
+        }
+        foreach ($class->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
+            foreach ([...$method->getAttributes(Middleware::class), ...$method->getAttributes(MiddlewareAttribute::class, \ReflectionAttribute::IS_INSTANCEOF)] as $attribute) {
+                $found[] = '#[' . self::short($attribute->getName()) . "] on {$method->getName()}()";
+            }
+        }
+        if ($found === []) {
+            return null;
+        }
+
+        return "{$class->getName()} carries " . implode(', ', array_values(array_unique($found))) . ', which runs around a request, and is '
+            . implode(', ', $kinds) . ', which runs no middleware: it would never be asked. Only a page, a layout, an endpoint, an action, '
+            . 'a query, a channel, a transfer or an inbox runs one; check what it needs inside it instead.';
+    }
+
     private static function framework(string $attribute): bool
     {
-        return str_starts_with($attribute, 'Tinvar\\Attributes\\') && !\in_array($attribute, self::UNCLAIMED_ALLOWED, true);
+        return (str_starts_with($attribute, 'Tinvar\\Attributes\\') && !\in_array($attribute, self::UNCLAIMED_ALLOWED, true))
+            || self::gate($attribute);
+    }
+
+    /** Whether $attribute is a MiddlewareAttribute (ADR 0150): a package's gate, such as #[RequiresPlan]. */
+    private static function gate(string $attribute): bool
+    {
+        return class_exists($attribute) && is_subclass_of($attribute, MiddlewareAttribute::class);
     }
 
     private static function short(string $class): string

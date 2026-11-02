@@ -351,6 +351,36 @@ it('refuses on an abstract class an attribute that registers only the class it i
         ->not->toContain($app->name('AdminPages'));
 });
 
+// A middleware attribute (ADR 0150) is a gate: one that nothing reads --
+// on an interface, which ClassAttributes never walks, on a class nothing
+// registers, or on a kind that runs no middleware -- would let everyone in.
+it('refuses a middleware attribute where nothing would run it, and keeps one on an abstract base', function () {
+    $app = $this->app;
+    $app->write(
+        'Gates\\RequiresGold',
+        '#[\Attribute(\Attribute::TARGET_CLASS | \Attribute::TARGET_METHOD)] final class RequiresGold implements MiddlewareAttribute { public function middleware(): string { return CheckGold::class; } }',
+        'use Tinvar\\Http\\MiddlewareAttribute;',
+    );
+    $app->write(
+        'Gates\\CheckGold',
+        'final class CheckGold implements AttributeMiddleware { public function handle(MiddlewareAttribute $a, Request $r, \Closure $next): Response { return $next($r); } }',
+        "use Tinvar\\Http\\AttributeMiddleware;\nuse Tinvar\\Http\\MiddlewareAttribute;\nuse Tinvar\\Http\\Request;\nuse Tinvar\\Http\\Response;",
+    );
+    $app->write('GoldOnly', '#[Gates\RequiresGold] interface GoldOnly {}');
+    $app->write('AdminOnly', "#[Authorize('admin'), Middleware('auth')] interface AdminOnly {}", "use Tinvar\\Attributes\\Authorize;\nuse Tinvar\\Attributes\\Middleware;");
+    $app->write('GoldHelper', 'final class GoldHelper { #[Gates\RequiresGold] public function go(): void {} }');
+    $app->write('GoldHook', "#[Webhook('/hooks/gold'), Gates\\RequiresGold] final class GoldHook { public function __invoke(): void {} }", 'use Tinvar\\Attributes\\Webhook;');
+    $app->write('GoldBase', '#[Gates\RequiresGold] abstract class GoldBase {}');
+
+    $said = problems(fn () => $app->discovery()->scan());
+
+    expect($said)->toContain($app->name('GoldOnly') . ' is an interface and carries #[RequiresGold]')
+        ->toContain($app->name('AdminOnly') . ' is an interface and carries #[Authorize], #[Middleware]')
+        ->toContain($app->name('GoldHelper') . ' carries #[RequiresGold] on go(), and nothing registers it')
+        ->toContain($app->name('GoldHook') . ' carries #[RequiresGold], which runs around a request')
+        ->not->toContain($app->name('GoldBase'));
+});
+
 // #[Domain] is read off a base class or trait by the kinds held to a host
 // (ADR 0149), and refused on a kind nothing reads it on: a task has no
 // request, and a host would be dropped without a word.

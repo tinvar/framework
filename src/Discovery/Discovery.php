@@ -605,7 +605,7 @@ final class Discovery
 
             return;
         }
-        $hostless = Classifier::hostless($class, $kinds);
+        $hostless = Classifier::hostless($class, $kinds) ?? Classifier::unguarded($class, $kinds);
         if ($hostless !== null) {
             $problems[] = $hostless;
 
