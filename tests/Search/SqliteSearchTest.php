@@ -25,6 +25,9 @@ use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Tests\Search\Fixtures\BrokenRow;
+use Tinvar\Tests\Search\Fixtures\SecretColumnRow;
+use Tinvar\Tests\Search\Fixtures\SecretNamedRow;
+use Tinvar\Tests\Search\Fixtures\SensitiveRow;
 use Tinvar\Tests\Search\Fixtures\Note;
 use Tinvar\Tests\Search\Fixtures\PlainRow;
 use Tinvar\Tests\Search\Fixtures\Ticket;
@@ -317,6 +320,16 @@ describe('#[Searchable]', function () {
             ->and($note->table)->toBe('notes')
             ->and(SearchableModel::of(Ticket::class)->tenantColumn)->toBe('tenant_id')
             ->and(fn () => SearchableModel::of(BrokenRow::class))->toThrow(\InvalidArgumentException::class, "'missing', which is no #[Column]");
+    });
+
+    it('refuses to index a field marked #[Sensitive], or whose property or column names a secret', function () {
+        $connection = new PdoConnection(new \PDO('sqlite::memory:'));
+
+        expect(fn () => SearchableModel::of(SensitiveRow::class))->toThrow(\InvalidArgumentException::class, "'taxNumber', which is #[Sensitive]")
+            ->and(fn () => SearchableModel::of(SecretNamedRow::class))->toThrow(\InvalidArgumentException::class, "'apiKey', whose name says it is a secret")
+            ->and(fn () => SearchableModel::of(SecretColumnRow::class))->toThrow(\InvalidArgumentException::class, "'code', whose name says it is a secret")
+            ->and(fn () => new Search(new Orm($connection, new IdentityMap('x'), Tenancy::flat()), DatabaseSearch::for($connection), [SensitiveRow::class]))
+            ->toThrow(\InvalidArgumentException::class, '#[Sensitive]');
     });
 
     it('stops a search from being built over a model it cannot read', function () {

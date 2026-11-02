@@ -7,6 +7,7 @@ namespace Tinvar\Tests\Search\Fixtures;
 use Tinvar\Attributes\Searchable;
 use Tinvar\Orm\Attributes\Column;
 use Tinvar\Orm\Attributes\Id;
+use Tinvar\Orm\Attributes\Sensitive;
 use Tinvar\Orm\Attributes\Table;
 use Tinvar\Orm\Attributes\TenantScoped;
 use Tinvar\Orm\Connection;
@@ -55,6 +56,33 @@ final class BrokenRow extends Model
 {
     #[Id] public private(set) string $id;
     #[Column] public string $name;
+}
+
+/** A searchable model naming a field marked #[Sensitive]: the audit log's secret is the index's too. */
+#[Table('patients'), Searchable(fields: ['name', 'taxNumber'])]
+final class SensitiveRow extends Model
+{
+    #[Id] public private(set) string $id;
+    #[Column] public string $name;
+    #[Column, Sensitive] public string $taxNumber;
+}
+
+/** A searchable model naming a field whose name says it is a secret. */
+#[Table('integrations'), Searchable(fields: ['label', 'apiKey'])]
+final class SecretNamedRow extends Model
+{
+    #[Id] public private(set) string $id;
+    #[Column] public string $label;
+    #[Column] public string $apiKey;
+}
+
+/** A searchable model naming a property whose column says it is a secret. */
+#[Table('accounts'), Searchable(fields: ['label', 'code'])]
+final class SecretColumnRow extends Model
+{
+    #[Id] public private(set) string $id;
+    #[Column] public string $label;
+    #[Column('reset_token')] public string $code;
 }
 
 /** The fixture tables, and the index's, on $connection's database. */

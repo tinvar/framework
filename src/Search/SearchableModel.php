@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Tinvar\Search;
 
 use Tinvar\Attributes\Searchable;
+use Tinvar\Orm\Attributes\Audited;
+use Tinvar\Orm\Attributes\Sensitive;
 use Tinvar\Orm\Metadata;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\ModelMeta;
@@ -21,8 +23,8 @@ use Tinvar\Orm\ModelMeta;
  * and a field added or taken out needs a reindex, never a migration.
  *
  * Built once per class and checked whole: a field that is no column of
- * the model, or is one of a type search cannot read as text, is refused,
- * naming it.
+ * the model, is one of a type search cannot read as text, or is a secret
+ * -- #[Sensitive], or named as one -- is refused, naming it.
  */
 final class SearchableModel
 {
@@ -81,7 +83,9 @@ final class SearchableModel
             if ($column === null) {
                 throw new \InvalidArgumentException("{$class} searches '{$field}', which is no #[Column] property of it: name a property the model maps to a column.");
             }
-            self::assertTextual(new \ReflectionProperty($class, $field));
+            $property = new \ReflectionProperty($class, $field);
+            self::assertTextual($property);
+            self::assertNotSecret($property, $column);
             $fields[$field] = $column;
         }
 
@@ -122,6 +126,26 @@ final class SearchableModel
                 continue;
             }
             throw new \InvalidArgumentException("{$class} searches '{$field}', typed {$name}: search reads text, numbers, booleans and backed enums. Search a property of one of those types instead.");
+        }
+    }
+
+    /**
+     * Refuses a field the audit log would redact: one marked #[Sensitive],
+     * or whose property or column name says it is a secret
+     * (Audited::SECRET_NAMES). The index is a copy of the text, kept apart
+     * from the row -- in Meilisearch, off the database altogether -- and a
+     * search hands back which rows a guess matches, so a secret indexed is
+     * a secret anyone who may search can test guesses against.
+     */
+    private static function assertNotSecret(\ReflectionProperty $property, string $column): void
+    {
+        $class = $property->getDeclaringClass()->getName();
+        $field = $property->getName();
+        if ($property->getAttributes(Sensitive::class, \ReflectionAttribute::IS_INSTANCEOF) !== []) {
+            throw new \InvalidArgumentException("{$class} searches '{$field}', which is #[Sensitive]: a secret is never indexed, where anyone who may search could test guesses against it. Take it out of #[Searchable(fields: [...])].");
+        }
+        if (Audited::namesSecret($field) || Audited::namesSecret($column)) {
+            throw new \InvalidArgumentException("{$class} searches '{$field}', whose name says it is a secret: a secret is never indexed, where anyone who may search could test guesses against it. Take it out of #[Searchable(fields: [...])], or rename it if it is not one.");
         }
     }
 
