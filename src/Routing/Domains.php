@@ -360,7 +360,8 @@ final readonly class Domains
      * primary host, or a pattern with no parameters. A host a parameter
      * takes, `{account}.example.com`, or a tenant's custom domain may be
      * anyone's who can sign up, and is a target only when its pattern is
-     * named in $redirectable, and then over https alone. Nothing a browser
+     * named in $redirectable, and then over https alone -- or http on
+     * localhost, in development. Nothing a browser
      * would read another way: no userinfo, no control character, no
      * backslash.
      */
@@ -384,7 +385,11 @@ final readonly class Domains
         $fixed = $match->pattern === null
             || (self::compile($match->pattern, 'A host pattern')->parameters === [] && $match->pattern !== $this->customAs?->pattern);
 
-        return $fixed || (\in_array($match->pattern, $this->redirectable, true) && strtolower($m[1]) === 'https');
+        // https, or http on localhost alone, which never leaves the machine:
+        // a development app serving its tenants on `{tenant}.localhost`.
+        $secure = strtolower($m[1]) === 'https' || $host === 'localhost' || str_ends_with($host, '.localhost');
+
+        return $fixed || (\in_array($match->pattern, $this->redirectable, true) && $secure);
     }
 
     /**

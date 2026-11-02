@@ -241,7 +241,7 @@ it('answers any port only on a machine\'s own hosts, when asked to', function ()
         ->and(new Domains(['root' => 'shop.test'], scheme: 'http')->origin(null))->toBe('http://shop.test');
 });
 
-it('lets an action send a browser to a host a parameter takes, or a custom domain, only when opted in and over https', function () {
+it('lets an action send a browser to a host a parameter takes, or a custom domain, only when opted in and over https, or http on localhost', function () {
     $custom = static fn (string $host): ?array => $host === 'acme-store.com' ? ['tenant' => 'acme'] : null;
     $closed = new Domains(['root' => 'example.com'], patterns: ['admin.{root}', '{account}.{root}'], custom: $custom, customAs: '{tenant}.shops.{root}');
     $opened = new Domains(['root' => 'example.com'], patterns: ['admin.{root}', '{account}.{root}'], custom: $custom, customAs: '{tenant}.shops.{root}', redirectable: ['{account}.{root}', '{tenant}.shops.{root}']);
@@ -254,5 +254,7 @@ it('lets an action send a browser to a host a parameter takes, or a custom domai
         ->and($opened->owns('https://attacker.example.com/'))->toBeTrue()
         ->and($opened->owns('https://acme-store.com/'))->toBeTrue()
         ->and($plain->owns('http://attacker.example.com/'))->toBeFalse()
+        ->and(new Domains(['root' => 'localhost'], scheme: 'http', patterns: ['{account}.{root}'], redirectable: ['{account}.{root}'])->owns('http://acme.localhost/'))->toBeTrue()
+        ->and(new Domains(['root' => 'localhost'], scheme: 'http', patterns: ['{account}.{root}'])->owns('http://acme.localhost/'))->toBeFalse()
         ->and(new \Tinvar\Http\ExternalOrigins()->serving($closed)->allows('https://attacker.example.com/'))->toBeFalse();
 });
