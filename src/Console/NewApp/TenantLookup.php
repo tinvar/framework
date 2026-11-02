@@ -6,7 +6,7 @@ namespace Tinvar\Console\NewApp;
 
 /**
  * Whether a new application is multi-tenant, and how a request's tenant
- * is found (ADR 0056, 0156): `tinvar new --tenancy=off|subdomain|domain`.
+ * is found (ADR 0056, 0157): `tinvar new --tenancy=off|subdomain|domain`.
  */
 enum TenantLookup: string
 {

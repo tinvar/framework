@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * `tinvar new` for real (ADR 0156): run non-interactively from this
+ * `tinvar new` for real (ADR 0157): run non-interactively from this
  * checkout's bin/tinvar in a temporary directory, the app it makes --
  * installed by Composer and npm, migrated and seeded, its key and probe
  * token in a state directory of the run's own -- then built and served by

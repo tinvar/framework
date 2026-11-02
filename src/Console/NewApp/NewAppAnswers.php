@@ -9,7 +9,7 @@ use Tinvar\Mail\MailProvider;
 use Tinvar\Orm\DatabaseDriver;
 
 /**
- * What `tinvar new` was told or asked (ADR 0156): every choice that shapes
+ * What `tinvar new` was told or asked (ADR 0157): every choice that shapes
  * the application it writes, each with the default a person with nothing
  * to say gets -- SQLite, one tenant, mail to a log, no kit, no deployment.
  */

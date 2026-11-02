@@ -7,7 +7,7 @@ namespace Tinvar\Console\Kits;
 /**
  * A kit: a Composer package that adds a whole feature to an application --
  * accounts, say -- by writing the application's own classes, migrations
- * and views once, then leaving them to the application (ADR 0156).
+ * and views once, then leaving them to the application (ADR 0157).
  *
  * A package says it is one in its composer.json, and nowhere else:
  *

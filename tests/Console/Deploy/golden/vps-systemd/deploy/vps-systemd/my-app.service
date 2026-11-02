@@ -1,5 +1,5 @@
 # my-app under systemd, written by `bin/tinvar deploy:init vps-systemd`
-# (ADR 0156 in the framework's repository): the app's image, run as its
+# (ADR 0157 in the framework's repository): the app's image, run as its
 # compose file runs it, behind the host's Caddy. No secret is in this
 # file: they are in /etc/my-app/app.env, root's alone.
 [Unit]

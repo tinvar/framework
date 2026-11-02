@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Console\Doctor;
 
-/** How a doctor's finding stands (ADR 0156). */
+/** How a doctor's finding stands (ADR 0157). */
 enum Severity: string
 {
     /** Checked, and as it should be. */

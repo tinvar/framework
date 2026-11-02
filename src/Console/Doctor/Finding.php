@@ -7,7 +7,7 @@ namespace Tinvar\Console\Doctor;
 /**
  * One thing a doctor check found: what it is, and -- for a warning or a
  * problem -- the exact fix, as a command to run or a variable to set
- * (ADR 0156). Never a secret's value: a finding names variables and files.
+ * (ADR 0157). Never a secret's value: a finding names variables and files.
  */
 final readonly class Finding
 {

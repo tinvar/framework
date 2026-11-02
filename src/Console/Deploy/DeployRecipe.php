@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Console\Deploy;
 
 /**
- * One platform's deployment (ADR 0156): the files that platform reads,
+ * One platform's deployment (ADR 0157): the files that platform reads,
  * with the trusted-proxy ranges its edge connects from -- and a proxy
  * secret where its edge can send one -- the probes, the secrets it needs
  * in its secret store, and the layouts its containers allow.

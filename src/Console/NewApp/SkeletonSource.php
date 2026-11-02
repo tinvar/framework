@@ -8,7 +8,7 @@ use Tinvar\Console\Kits\KitDeclaration;
 
 /**
  * Where `tinvar new` takes the skeleton and the framework's packages from
- * (ADR 0156): this repository's checkout, served by path repositories,
+ * (ADR 0157): this repository's checkout, served by path repositories,
  * until tinvar/skeleton is published; Packagist once it is. detect()
  * chooses, so nothing changes for a person the day it is published.
  */

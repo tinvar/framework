@@ -18,7 +18,7 @@ use Tinvar\Console\Doctor\Checks\RendererCheck;
 use Tinvar\Console\Doctor\Checks\SecretsCheck;
 
 /**
- * `tinvar doctor` (ADR 0156): every check an application needs to boot and
+ * `tinvar doctor` (ADR 0157): every check an application needs to boot and
  * serve safely, run together, and every problem reported at once, each
  * with the exact fix.
  *

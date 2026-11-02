@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Console\Doctor;
 
 /**
- * One of `tinvar doctor`'s checks (ADR 0156): reads the application and
+ * One of `tinvar doctor`'s checks (ADR 0157): reads the application and
  * the environment it is handed in a DoctorContext -- never the process's
  * own, so a test hands it one -- and says everything it finds, never
  * stopping at the first. It runs what the framework runs at boot where

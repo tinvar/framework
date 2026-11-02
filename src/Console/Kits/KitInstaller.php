@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Console\Kits;
 
 /**
- * `tinvar kit:install <package>` (ADR 0156): the kit a package Composer
+ * `tinvar kit:install <package>` (ADR 0157): the kit a package Composer
  * installed declares (KitDeclaration), built from the application's own
  * autoloader and installed into it. A package that declares none, or
  * names a class that is not an AppKit, is refused, saying so.
