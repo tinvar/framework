@@ -93,7 +93,7 @@ it('holds the endpoints among its entry points to the registry\'s check', functi
         ->and(ran($clashes, 'check')[0])->toBe(1);
 });
 
-// `check --json`, for an editor's problems list (ADR 0158): each problem
+// `check --json`, for an editor's problems list (ADR 0159): each problem
 // with the file and line of the class it names, and the same exit status.
 it('prints what the check found as JSON with --json, each problem at the class it names', function () {
     $clashes = console(['classes' => static fn (): DiscoveredClasses => new DiscoveredClasses(routes: \Shop\Kernel::classes()->routes, endpoints: [ClashesWithAPage::class])]);
