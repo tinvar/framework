@@ -31,7 +31,7 @@ final class DevEnvironment
             '# bin/tinvar reads this into its environment before anything reads config,',
             '# here and nowhere else: never where TINVAR_ENV says production or staging,',
             '# never over a variable the environment already sets, and never a secret --',
-            '# a variable ending in _KEY, _SECRET, _PASSWORD or _TOKEN is left out. Put a',
+            '# a variable ending in _KEY, _SECRET, _PASSWORD, _TOKEN or _DSN is left out. Put a',
             '# secret in a file outside the project, readable by you alone, and name the',
             '# file in its _FILE variable. git ignores this file; .env.example lists the',
             '# rest. `bin/tinvar doctor` checks it all.',

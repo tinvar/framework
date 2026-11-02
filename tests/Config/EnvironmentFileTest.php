@@ -74,3 +74,33 @@ it('says what makes an environment a server\'s', function () {
         ->and(EnvironmentFile::refusedHere(['TINVAR_PROFILE' => 'test']))->toBe('TINVAR_PROFILE=test')
         ->and(EnvironmentFile::refusedHere(['TINVAR_ENV' => 'local']))->toBeNull();
 });
+
+it('names as a secret every Secret the framework\'s config reads, so none is read from .env', function () {
+    $classes = [
+        Tinvar\Config\FrameworkConfig::class,
+        Tinvar\Mail\MailConfig::class,
+        Tinvar\Mail\SmtpConfig::class,
+        Tinvar\Mail\DkimConfig::class,
+        Tinvar\Mail\Providers\PostmarkConfig::class,
+        Tinvar\Mail\Providers\MailgunConfig::class,
+        Tinvar\Mail\Providers\SendGridConfig::class,
+        Tinvar\Mail\Providers\SesConfig::class,
+        Tinvar\Mail\Providers\ResendConfig::class,
+        Tinvar\Search\MeilisearchConfig::class,
+        Tinvar\Search\SearchConfig::class,
+        Tinvar\Push\VapidConfig::class,
+        Tinvar\Audit\AuditConfig::class,
+    ];
+    $secrets = [];
+    foreach ($classes as $class) {
+        foreach (Tinvar\Config\Configs::keys($class) as $key) {
+            if ($key->secret()) {
+                $secrets[] = $key->variable;
+            }
+        }
+    }
+
+    expect($secrets)->toContain('TINVAR_DUMP_MYSQL_DSN')
+        ->and(array_values(array_filter($secrets, static fn (string $name): bool => !EnvironmentFile::namesSecret($name))))->toBe([])
+        ->and(EnvironmentFile::parse("TINVAR_DUMP_MYSQL_DSN=mysql:host=db;user=u;password=hunter2\n")['secrets'])->toBe(['TINVAR_DUMP_MYSQL_DSN']);
+});

@@ -25,7 +25,7 @@ use Tinvar\Support\DevMode;
  * - **Never over the environment.** A variable already set, even to the
  *   empty string, is left as it is: what a person exports wins.
  * - **Never a secret.** A variable whose name says it holds one -- ending
- *   in `_KEY`, `_SECRET`, `_PASSWORD` or `_TOKEN` -- is not read from a
+ *   in `_KEY`, `_SECRET`, `_PASSWORD`, `_TOKEN` or `_DSN` -- is not read from a
  *   file inside the project, where a copy, an archive or a commit carries
  *   it away. Its `_FILE` variable, naming a file outside the project, is
  *   read like any other. `tinvar doctor` names each one it finds.
@@ -37,7 +37,7 @@ use Tinvar\Support\DevMode;
 final class EnvironmentFile
 {
     /** The suffixes of a variable this never reads from a file in the project. */
-    public const array SECRET_SUFFIXES = ['_KEY', '_SECRET', '_PASSWORD', '_TOKEN'];
+    public const array SECRET_SUFFIXES = ['_KEY', '_SECRET', '_PASSWORD', '_TOKEN', '_DSN'];
 
     /**
      * Reads $file into the process environment, as the class says; nothing
