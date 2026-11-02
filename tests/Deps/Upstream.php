@@ -211,17 +211,26 @@ function frankenphp(string $version, string $php, string $arch): string
     return "\x7FELF{$arch}" . str_repeat("\0", 300) . "FrankenPHP v{$version} PHP {$php} Caddy v2.10.2\0" . str_repeat("\0", 300);
 }
 
-/** The newest release, with each binary's bytes, attested unless $attested is false. */
-function frankenphpRelease(FakeHttp $http, FakeVerifier $verifier, string $version, string $php, bool $attested = true, bool $digests = true): array
+/**
+ * A superseded release, with each binary's bytes, attested unless $attested
+ * is false; and above it the latest, $latest or the next patch, whose
+ * binaries FrankenPHP rebuilds nightly and deps:check never takes.
+ */
+function frankenphpRelease(FakeHttp $http, FakeVerifier $verifier, string $version, string $php, bool $attested = true, bool $digests = true, ?string $latest = null): array
 {
     $assets = [];
+    $rebuilt = [];
+    [$major, $minor, $patch] = explode('.', $version);
+    $latest ??= "{$major}.{$minor}." . ((int) $patch + 1);
     foreach (FrankenPhpPin::ASSETS as $arch => $asset) {
         $assets[$asset] = frankenphp($version, $php, $arch);
+        $rebuilt[$asset] = frankenphp($latest, $php, $arch);
         if ($attested) {
             $verifier->attested[hash('sha256', $assets[$asset])] = FrankenPhpPin::REPOSITORY . ' ' . FrankenPhpPin::WORKFLOW;
         }
+        $verifier->attested[hash('sha256', $rebuilt[$asset])] = FrankenPhpPin::REPOSITORY . ' ' . FrankenPhpPin::WORKFLOW;
     }
-    releases($http, FrankenPhpPin::REPOSITORY, ["v{$version}" => $assets, 'v1.13.3' => []], [
+    releases($http, FrankenPhpPin::REPOSITORY, ["v{$latest}" => $rebuilt, "v{$version}" => $assets] + ['v1.13.3' => []], [
         'v1.14.0' => 'prerelease',
         'v1.15.0' => 'draft',
         'v1.16.0;curl evil|sh' => 'release',
@@ -266,12 +275,8 @@ function upstreams(): array
     foreach ([['php', '-cli-trixie', '8.5.12-cli-trixie', ['PHP_VERSION' => '8.5.12']], ['debian', 'trixie-slim', 'trixie-slim', null]] as [$name, $filter, $tag, $env]) {
         image($http, $name, $filter, $tag, environment: $env);
     }
-    $assets = [];
-    foreach (FrankenPhpPin::ASSETS as $arch => $asset) {
-        $assets[$asset] = frankenphp('1.13.4', '8.5.12', $arch);
-        $verifier->attested[hash('sha256', $assets[$asset])] = FrankenPhpPin::REPOSITORY . ' ' . FrankenPhpPin::WORKFLOW;
-    }
-    releases($http, FrankenPhpPin::REPOSITORY, ['v1.13.4' => $assets]);
+    // v1.13.4 superseded by v1.13.5, the latest.
+    frankenphpRelease($http, $verifier, '1.13.4', '8.5.12');
     $http->json('https://getcomposer.org/versions', ['stable' => [['version' => '2.10.4', 'min-php' => 70205]]])
         ->on('https://getcomposer.org/download/2.10.4/composer.phar', 'phar')
         ->on('https://getcomposer.org/download/2.10.4/composer.phar.sha256sum', hash('sha256', 'phar') . '  composer.phar')

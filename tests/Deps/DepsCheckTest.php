@@ -207,17 +207,19 @@ describe('an image', function () {
 
 describe('FrankenPHP', function () {
 
-    it('moves to a release whose binaries are attested and carry the image\'s PHP minor', function () {
+    it('moves to a superseded release whose binaries are attested and carry the image\'s PHP minor', function () {
         $http = new FakeHttp();
         $verifier = new FakeVerifier();
-        $assets = frankenphpRelease($http, $verifier, '1.13.4', '8.5.13');
+        $assets = frankenphpRelease($http, $verifier, '1.13.4', '8.5.13', latest: '1.13.5');
         $files = files();
 
         $outcome = new FrankenPhpPin()->check($files, context($http, $verifier));
 
         expect($outcome->status)->toBe('bumped')
             ->and($outcome->from)->toBe('v1.13.3 (PHP 8.5.12)')
-            ->and($outcome->to)->toBe('v1.13.4 (PHP 8.5.13)');
+            ->and($outcome->to)->toBe('v1.13.4 (PHP 8.5.13)')
+            // The latest, v1.13.5, is not even downloaded.
+            ->and(array_filter($http->urls(), static fn (string $url): bool => str_contains($url, 'v1.13.5')))->toBe([]);
         $dockerfile = $files->contents(PinnedFiles::DOCKERFILE);
         expect($dockerfile)->toContain('"https://github.com/php/frankenphp/releases/download/v1.13.4/$frankenphp"')
             ->and($dockerfile)->toContain("FrankenPHP's official static binary, v1.13.4 with PHP 8.5.13,")
@@ -277,7 +279,49 @@ describe('FrankenPHP', function () {
             ->toThrow(DepsException::class, 'says it is FrankenPHP v1.13.2');
     });
 
-    it('is current while the release and its sums are the pinned ones, downloading nothing', function () {
+    it('never proposes the latest release, whose binaries are rebuilt nightly', function () {
+        // 2026-11-01: v1.13.4 was the latest, was pinned, and its sums
+        // moved that night. The pin on v1.13.3, which it superseded, is
+        // current until a newer release supersedes v1.13.4 in turn.
+        $http = new FakeHttp();
+        $verifier = new FakeVerifier();
+        frankenphpRelease($http, $verifier, '1.13.4', '8.5.12', latest: '1.13.5');
+        $http->json('https://api.github.com/repos/php/frankenphp/releases?per_page=50', [
+            ['tag_name' => 'v1.13.4', 'draft' => false, 'prerelease' => false, 'assets' => [
+                ['name' => 'frankenphp-linux-aarch64-gnu', 'digest' => 'sha256:' . str_repeat('4', 64)],
+                ['name' => 'frankenphp-linux-x86_64-gnu', 'digest' => 'sha256:' . str_repeat('5', 64)],
+            ]],
+            ['tag_name' => 'v1.13.3', 'draft' => false, 'prerelease' => false, 'assets' => [
+                ['name' => 'frankenphp-linux-aarch64-gnu', 'digest' => 'sha256:53aca1dfd4496cd1cb1d1954d0e9a5896e60c65dc7a61ebd7a821c69bdcea539'],
+                ['name' => 'frankenphp-linux-x86_64-gnu', 'digest' => 'sha256:d210c06bfcd7ed974c05376fc7fa9c300b1db8cd2a7c793bed5ed8d087b3f0ef'],
+            ]],
+        ]);
+        $files = files();
+
+        $outcome = new FrankenPhpPin()->check($files, context($http, $verifier));
+
+        expect($outcome->status)->toBe('current')
+            ->and($outcome->from)->toBe('v1.13.3 (PHP 8.5.12)')
+            ->and(implode(' ', $outcome->notes))->toContain('v1.13.4 is the latest release')
+            ->and($files->changed())->toBe([])
+            ->and($http->urls())->toBe(['https://api.github.com/repos/php/frankenphp/releases?per_page=50']);
+    });
+
+    it('re-verifies a superseded release rebuilt under new sums', function () {
+        $http = new FakeHttp();
+        $verifier = new FakeVerifier();
+        $assets = frankenphpRelease($http, $verifier, '1.13.3', '8.5.12');
+        $files = files();
+
+        $outcome = new FrankenPhpPin()->check($files, context($http, $verifier));
+
+        expect($outcome->status)->toBe('bumped')
+            ->and($outcome->to)->toBe('v1.13.3 (PHP 8.5.12)')
+            ->and(implode(' ', $outcome->notes))->toContain('rebuilt upstream under new sums')
+            ->and($files->contents(PinnedFiles::DOCKERFILE))->toContain('frankenphp_sha256=' . hash('sha256', $assets['frankenphp-linux-x86_64-gnu']) . ';');
+    });
+
+    it('is current while the pinned release is the latest and its sums hold, downloading nothing', function () {
         $http = new FakeHttp();
         $http->json('https://api.github.com/repos/php/frankenphp/releases?per_page=50', [[
             'tag_name' => 'v1.13.3', 'draft' => false, 'prerelease' => false, 'assets' => [
@@ -289,9 +333,22 @@ describe('FrankenPHP', function () {
         $outcome = new FrankenPhpPin()->check(files(), context($http));
 
         expect($outcome->status)->toBe('current')
+            ->and(implode(' ', $outcome->notes))->toContain('rebuilt nightly')
             ->and($http->urls())->toBe(['https://api.github.com/repos/php/frankenphp/releases?per_page=50'])
             // GitHub's token goes to its API.
             ->and($http->requests[0][1]['Authorization'] ?? null)->toBe('Bearer test-token');
+    });
+
+    it('fails when the pinned release is the latest and its sums moved, and does not chase them', function () {
+        $http = new FakeHttp();
+        $verifier = new FakeVerifier();
+        frankenphpRelease($http, $verifier, '1.13.2', '8.5.12', latest: '1.13.3');
+        $files = files();
+
+        expect(fn () => new FrankenPhpPin()->check($files, context($http, $verifier)))
+            ->toThrow(DepsException::class, 'v1.13.3 is the latest release and its sums moved');
+        expect($files->changed())->toBe([])
+            ->and(array_filter($http->urls(), static fn (string $url): bool => str_contains($url, '/releases/download/')))->toBe([]);
     });
 
     it('reads the banner across a chunk boundary, and refuses two', function () {
