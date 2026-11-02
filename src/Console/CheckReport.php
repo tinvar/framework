@@ -8,7 +8,7 @@ use Tinvar\Auth\Violation;
 
 /**
  * `tinvar check --json`: what the check found, for an editor to put in its
- * problems list (ADR 0156) -- each problem with the file and line of the
+ * problems list (ADR 0158) -- each problem with the file and line of the
  * class, method or property it names, where it names one.
  *
  *     {"format": 1, "passed": false, "sections": [
