@@ -12,6 +12,7 @@ declare(strict_types=1);
 namespace Tinvar\Tests\Console\NewApp;
 
 use Tinvar\Console\Kits\KitDeclaration;
+use Tinvar\Console\NewApp\AppDirectory;
 use Tinvar\Console\NewApp\MonorepoSkeleton;
 use Tinvar\Console\NewApp\NewAppCommand;
 use Tinvar\Console\NewApp\PackagistSkeleton;
@@ -270,21 +271,50 @@ it('finds every line tenancy edits in the skeleton\'s Kernel, once each', functi
     }
 })->skip(workspace() === null, 'the repository\'s checkout');
 
-it('refuses an empty directory every user may write into, where they could swap the code it runs', function () {
+it('refuses an empty directory other users may write into, where they could swap the code it runs', function () {
     $work = scratch();
-    mkdir("{$work}/shared");
-    chmod("{$work}/shared", 0o777);
+    foreach (['shared' => 0o777, 'grouped' => 0o775] as $name => $mode) {
+        mkdir("{$work}/{$name}");
+        chmod("{$work}/{$name}", $mode);
+    }
 
     [$status, , $err] = made(['shared', '--no-install']);
 
     expect($status)->toBe(64)
-        ->and($err)->toContain('every user may write')
-        ->and(scandir("{$work}/shared"))->toBe(['.', '..']);
+        ->and($err)->toContain('writable by other users')
+        ->and(scandir("{$work}/shared"))->toBe(['.', '..'])
+        ->and(made(['grouped', '--no-install'])[0])->toBe(64);
 
-    // A group-writable one of this user's own, as a umask of 002 makes it, is taken.
-    mkdir("{$work}/mine");
-    chmod("{$work}/mine", 0o775);
-    expect(made(['mine', '--no-install'])[0])->toBe(0);
+    // A link, even to a directory of this user's own, is not taken for it.
+    mkdir("{$work}/target", 0o755);
+    symlink("{$work}/target", "{$work}/linked");
+    expect(made(['linked', '--no-install'])[2])->toContain('is a link');
+})->skip(workspace() === null, 'the repository\'s checkout');
+
+it('refuses a directory under one every user may write into and is not sticky, and takes one under /tmp\'s kind', function () {
+    $work = scratch();
+    mkdir("{$work}/open");
+    chmod("{$work}/open", 0o777);
+    mkdir("{$work}/sticky");
+    chmod("{$work}/sticky", 0o1777);
+
+    [$status, , $err] = made(['open/my-app', '--no-install']);
+
+    expect($status)->toBe(64)
+        ->and($err)->toContain('writable by every user, and not sticky')
+        ->and(file_exists("{$work}/open/my-app"))->toBeFalse()
+        ->and(made(['sticky/my-app', '--no-install'])[0])->toBe(0)
+        ->and(fileperms("{$work}/sticky/my-app") & 0o777)->toBe(0o755);
+})->skip(workspace() === null, 'the repository\'s checkout');
+
+it('makes the directory itself, and refuses one that appeared in its place after the answers', function () {
+    $work = scratch();
+    mkdir("{$work}/late", 0o755);
+    file_put_contents("{$work}/late/planted.php", "<?php\n");
+
+    expect(static fn () => AppDirectory::claim("{$work}/late"))->toThrow(\RuntimeException::class, 'is not empty')
+        ->and(AppDirectory::claim("{$work}/fresh/app"))->toBe("{$work}/fresh/app")
+        ->and(fileperms("{$work}/fresh/app") & 0o777)->toBe(0o755);
 })->skip(workspace() === null, 'the repository\'s checkout');
 
 it('hands the new app\'s commands none of what its .env sets, so its own answers reach them', function () {

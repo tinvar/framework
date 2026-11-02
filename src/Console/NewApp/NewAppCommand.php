@@ -85,8 +85,9 @@ final class NewAppCommand
         ($this->out)("Making {$answers->name()} in {$directory}, from {$source->describe()}" . ($source->shipsAccounts() ? ', with the accounts the skeleton ships' : '') . ".\n");
 
         $extra = [...($answers->tenancy !== TenantLookup::Off ? ['tinvar/tenancy'] : []), ...$answers->kits];
+        // Made here, or taken empty: held so nobody else can change it.
+        $directory = AppDirectory::claim($directory);
         $source->fetch($directory, $extra, $processes);
-        $directory = realpath($directory) ?: $directory;
 
         // The database's password, where it is a server's: generated into a
         // file outside the project, named in .env, never written in it.
@@ -147,21 +148,11 @@ final class NewAppCommand
         }
         $cwd = $this->cwd !== '' ? $this->cwd : (string) getcwd();
         $absolute = str_starts_with($directory, '/') ? $directory : "{$cwd}/{$directory}";
-        if (is_dir($absolute) && array_diff(scandir($absolute) ?: [], ['.', '..']) !== []) {
-            throw new \InvalidArgumentException("{$absolute} is not empty: tinvar new makes an app only in a new or empty directory.");
-        }
-        if (file_exists($absolute) && !is_dir($absolute)) {
-            throw new \InvalidArgumentException("{$absolute} is a file.");
-        }
-        // An empty directory someone else may write into -- a shared one,
-        // or another user's -- lets them swap bin/tinvar or vendor/ between
-        // the copy and the commands this runs from it, as this user.
-        if (is_dir($absolute)) {
-            $owner = fileowner($absolute);
-            $mode = fileperms($absolute);
-            if (($mode !== false && ($mode & 0o002) !== 0) || (\function_exists('posix_geteuid') && $owner !== posix_geteuid())) {
-                throw new \InvalidArgumentException("{$absolute} is a directory every user may write into, or not yours: tinvar new makes an app only in one they cannot change under it. Name a new directory, or `chmod go-w` it.");
-            }
+        // Empty, and nobody else able to change it, or anything above it,
+        // between the copy and the commands this runs from it (AppDirectory).
+        $problem = AppDirectory::problem($absolute);
+        if ($problem !== null) {
+            throw new \InvalidArgumentException($problem);
         }
         if (preg_match('/^[a-z][a-z0-9-]*\z/', basename($absolute)) !== 1) {
             throw new \InvalidArgumentException("'" . basename($absolute) . "' is not a name the app can take: lowercase letters, digits and dashes, starting with a letter, as its key file and its platforms name it.");
