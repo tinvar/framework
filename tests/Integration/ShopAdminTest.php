@@ -246,7 +246,7 @@ it('sends the panel\'s old addresses on the shop\'s host to the admin host', fun
 });
 
 it('serves the storefront\'s pages on the shop\'s host alone, and no host it does not list', function () {
-    expect(get(ADMIN_ORIGIN . '/products')->response->status)->toBe(404)
+    expect(get(ADMIN_ORIGIN . '/account')->response->status)->toBe(404)
         ->and(get('http://evil.test/')->response->status)->toBe(421)
         ->and(get('http://localhost:8080/')->response->status)->toBe(200);
 });

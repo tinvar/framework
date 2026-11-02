@@ -48,9 +48,9 @@ function build(): string
 it('discovers every class its Kernel listed by hand, and adds the framework\'s own', function () {
     $classes = Kernel::classes();
 
-    expect($classes->routes)->toHaveCount(23)->toContain(\Shop\Http\Pages\Shell\Layout::class, \Shop\Http\Pages\Admin\Layout::class, \Shop\Http\Pages\Admin\Orders::class, \Shop\Http\Pages\Shell\SystemError::class)
+    expect($classes->routes)->toHaveCount(24)->toContain(\Shop\Http\Resources\Catalog\ProductResource::class, \Shop\Http\Pages\Shell\Layout::class, \Shop\Http\Pages\Admin\Layout::class, \Shop\Http\Pages\Admin\Orders::class, \Shop\Http\Pages\Shell\SystemError::class)
         ->and($classes->queries)->toBe([\Shop\Http\Queries\Catalog\Availability::class, \Shop\Http\Queries\Orders\ShippingUpdates::class])
-        ->and($classes->actions)->toHaveCount(7)
+        ->and($classes->actions)->toHaveCount(8)
         ->and($classes->endpoints)->toBe([\Shop\Http\Endpoints\Admin\MovedToAdminHost::class, \Shop\Http\Endpoints\Catalog\ProductStock::class, \Shop\Http\Endpoints\Orders\OrderReceipt::class, \Shop\Http\Endpoints\Warehouse\WarehouseCalls::class, \Shop\Http\Endpoints\Warehouse\WarehouseStock::class])
         ->and($classes->channels)->toBe([\Shop\Http\Channels\Orders\OrderUpdates::class])
         ->and($classes->transfers)->toBe([\Shop\Http\Transfers\Catalog\StockImport::class, \Shop\Http\Transfers\Orders\OrdersExport::class])
