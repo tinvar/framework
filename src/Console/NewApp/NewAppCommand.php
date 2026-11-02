@@ -81,7 +81,7 @@ final class NewAppCommand
     public function make(NewAppAnswers $answers, SkeletonSource $source, Processes $processes): int
     {
         $directory = $answers->directory;
-        ($this->out)("Making {$answers->name()} in {$directory}, from {$source->describe()}.\n");
+        ($this->out)("Making {$answers->name()} in {$directory}, from {$source->describe()}" . ($source->shipsAccounts() ? ', with the accounts the skeleton ships' : '') . ".\n");
 
         $extra = [...($answers->tenancy !== TenantLookup::Off ? ['tinvar/tenancy'] : []), ...$answers->kits];
         $source->fetch($directory, $extra, $processes);
@@ -223,15 +223,24 @@ final class NewAppCommand
     {
         $wantsAccounts = $flags->has('accounts') ? true : ($flags->has('no-accounts') ? false : null);
         $named = $flags->kits;
-        $available = ($wantsAccounts === true || $named !== [] || ($ask && $wantsAccounts === null)) ? $source->kits($processes) : [];
+        $available = ($named !== [] || (!$source->shipsAccounts() && ($wantsAccounts === true || ($ask && $wantsAccounts === null)))) ? $source->kits($processes) : [];
         $byPackage = [];
         foreach ($available as $declaration) {
             $byPackage[$declaration->package] = $declaration;
         }
 
         $kits = [];
-        $accounts = $available['accounts'] ?? null;
-        if ($wantsAccounts === true && !$accounts instanceof KitDeclaration) {
+        // The skeleton ships accounts wired (ADR 0153): there is nothing to
+        // add, and nothing tinvar new takes out of its Kernel.
+        if ($source->shipsAccounts()) {
+            if ($wantsAccounts === false) {
+                throw new \InvalidArgumentException("--no-accounts, and {$source->describe()}'s skeleton ships accounts wired into its Kernel, which tinvar new does not take apart (ADR 0153). Make the app with them, and take out what you do not want by hand.");
+            }
+            $accounts = null;
+        } else {
+            $accounts = $available['accounts'] ?? null;
+        }
+        if ($wantsAccounts === true && !$source->shipsAccounts() && !$accounts instanceof KitDeclaration) {
             throw new \InvalidArgumentException("--accounts, and {$source->describe()} has no accounts kit yet: make the app without it, and add it later with `composer require tinvar/accounts` and `bin/tinvar kit:install tinvar/accounts`.");
         }
         if ($accounts instanceof KitDeclaration && ($wantsAccounts ?? ($ask && Prompts::confirm("Include accounts? ({$accounts->title})", default: false)))) {

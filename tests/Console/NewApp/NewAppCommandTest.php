@@ -50,16 +50,16 @@ final class Scratch
  *
  * @param array<string, KitDeclaration> $kits
  */
-function source(array $kits = []): SkeletonSource
+function source(array $kits = [], bool $accounts = false): SkeletonSource
 {
     $workspace = workspace();
     \assert($workspace !== null);
 
-    return new class ($workspace, $kits) implements SkeletonSource {
+    return new class ($workspace, $kits, $accounts) implements SkeletonSource {
         private MonorepoSkeleton $inner;
 
         /** @param array<string, KitDeclaration> $kits */
-        public function __construct(string $workspace, private array $kits)
+        public function __construct(string $workspace, private array $kits, private bool $accounts)
         {
             $this->inner = new MonorepoSkeleton($workspace);
         }
@@ -75,6 +75,11 @@ function source(array $kits = []): SkeletonSource
         }
 
         public function prepareNpm(string $directory, Processes $processes): void {}
+
+        public function shipsAccounts(): bool
+        {
+            return $this->accounts;
+        }
 
         public function kits(Processes $processes): array
         {
@@ -208,6 +213,11 @@ it('includes the accounts kit where the source has one, and refuses --accounts w
 
         public function prepareNpm(string $directory, Processes $processes): void {}
 
+        public function shipsAccounts(): bool
+        {
+            return false;
+        }
+
         public function kits(Processes $processes): array
         {
             return ['accounts' => $this->kit];
@@ -215,6 +225,17 @@ it('includes the accounts kit where the source has one, and refuses --accounts w
     };
     expect(made(['two-app', '--no-install', '--accounts'], $source)[0])->toBe(0)
         ->and(json_decode((string) file_get_contents("{$work}/two-app/composer.json"), true)['require'])->toHaveKey('tinvar/accounts');
+})->skip(workspace() === null, 'the repository\'s checkout');
+
+it('takes the accounts a skeleton ships as they are, and will not take them out', function () {
+    $work = scratch();
+
+    [$refused, , $err] = made(['one-app', '--no-install', '--no-accounts'], source(accounts: true));
+    expect($refused)->toBe(64)
+        ->and($err)->toContain('ships accounts wired')
+        ->and(made(['two-app', '--no-install', '--accounts'], source(accounts: true))[0])->toBe(0)
+        ->and(is_dir("{$work}/two-app/app/Auth/Account"))->toBeTrue()
+        ->and((new MonorepoSkeleton((string) workspace()))->shipsAccounts())->toBeTrue();
 })->skip(workspace() === null, 'the repository\'s checkout');
 
 it('refuses a directory that is not empty, and leaves it as it was', function () {

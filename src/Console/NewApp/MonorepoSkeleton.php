@@ -19,7 +19,7 @@ use Tinvar\Console\Kits\KitDeclaration;
  * - every third-party package held to the version the workspace's
  *   composer.lock pins, so the application runs on what this checkout was
  *   tested with;
- * - @tinvar/renderer and @tinvar/react packed by npm into `.packages/` and
+ * - every @tinvar npm package it depends on packed by npm into `.packages/` and
  *   depended on as `file:` tarballs, and the shipped package-lock.json
  *   completed with them, nothing installed and no script run: what the
  *   supply-chain check allows for a package no registry serves yet
@@ -29,9 +29,6 @@ final readonly class MonorepoSkeleton implements SkeletonSource
 {
     /** What a copy of the skeleton or a package leaves out, at any depth. */
     public const array LEFT_OUT = ['vendor', 'node_modules', 'dist', 'dist-test', '.phpunit.cache', 'tools'];
-
-    /** The npm packages served from the checkout as tarballs, by directory. */
-    public const array NPM_PACKAGES = ['renderer', 'react'];
 
     public function __construct(private string $workspace) {}
 
@@ -104,13 +101,12 @@ final readonly class MonorepoSkeleton implements SkeletonSource
     public function prepareNpm(string $directory, Processes $processes): void
     {
         $package = AppFiles::readJson("{$directory}/package.json");
-        foreach (self::NPM_PACKAGES as $name) {
+        foreach ($this->npmPackages($package) as $published => $source) {
             $before = glob("{$directory}/.packages/*.tgz") ?: [];
-            if ($processes->run(['npm', 'pack', '--silent', '--pack-destination', "{$directory}/.packages"], "{$this->workspace}/packages/{$name}") !== 0) {
-                throw new \RuntimeException("npm pack failed in packages/{$name}: run `npm ci` in the repository first.");
+            if ($processes->run(['npm', 'pack', '--silent', '--pack-destination', "{$directory}/.packages"], $source) !== 0) {
+                throw new \RuntimeException("npm pack failed in {$source}: run `npm ci` in the repository first.");
             }
-            $tarball = array_values(array_diff(glob("{$directory}/.packages/*.tgz") ?: [], $before))[0] ?? throw new \RuntimeException("npm pack wrote no tarball for packages/{$name}.");
-            $published = AppFiles::readJson("{$this->workspace}/packages/{$name}/package.json")['name'] ?? '';
+            $tarball = array_values(array_diff(glob("{$directory}/.packages/*.tgz") ?: [], $before))[0] ?? throw new \RuntimeException("npm pack wrote no tarball for {$published}.");
             foreach (['dependencies', 'devDependencies'] as $section) {
                 if (isset($package[$section][$published])) {
                     $package[$section][$published] = 'file:.packages/' . basename($tarball);
@@ -127,6 +123,13 @@ final readonly class MonorepoSkeleton implements SkeletonSource
         }
     }
 
+    public function shipsAccounts(): bool
+    {
+        $kernel = "{$this->workspace}/packages/skeleton/app/Kernel.php";
+
+        return is_file($kernel) && str_contains((string) file_get_contents($kernel), 'AccountsKit');
+    }
+
     public function kits(Processes $processes): array
     {
         $kits = [];
@@ -139,6 +142,39 @@ final readonly class MonorepoSkeleton implements SkeletonSource
         ksort($kits);
 
         return $kits;
+    }
+
+    /**
+     * Every @tinvar npm package the application's package.json depends on,
+     * by name, and the checkout's directory it is packed from: none is
+     * on npm yet (ADR 0138).
+     *
+     * @param array<string, mixed> $package
+     * @return array<string, string>
+     */
+    private function npmPackages(array $package): array
+    {
+        $wanted = [];
+        foreach (['dependencies', 'devDependencies'] as $section) {
+            foreach (array_keys(\is_array($package[$section] ?? null) ? $package[$section] : []) as $name) {
+                if (\is_string($name) && str_starts_with($name, '@tinvar/')) {
+                    $wanted[$name] = true;
+                }
+            }
+        }
+        $found = [];
+        foreach (glob("{$this->workspace}/packages/*/package.json") ?: [] as $file) {
+            $name = AppFiles::readJson($file)['name'] ?? null;
+            if (\is_string($name) && isset($wanted[$name])) {
+                $found[$name] = \dirname($file);
+            }
+        }
+        foreach (array_keys($wanted) as $name) {
+            $found[$name] ?? throw new \RuntimeException("The skeleton depends on {$name}, which is no package in {$this->workspace}/packages.");
+        }
+        ksort($found);
+
+        return $found;
     }
 
     /** The checkout's directory of a framework package, by its name. */

@@ -40,6 +40,12 @@ final readonly class PackagistSkeleton implements SkeletonSource
         // how to install them from their tarballs (ADR 0138).
     }
 
+    /** The published skeleton is this repository's, which ships accounts wired (ADR 0153). */
+    public function shipsAccounts(): bool
+    {
+        return true;
+    }
+
     public function kits(Processes $processes): array
     {
         $kits = [];

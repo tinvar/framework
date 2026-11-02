@@ -24,11 +24,11 @@ final class TenancySetup
         'orm' => "        \$this->orm = new Orm(\$connection, new IdentityMap(\$connection->name()));\n",
         'container' => "        \$container = (new Container())\n            ->instance(Orm::class, \$this->orm)\n",
         'kernel' => "            standIns: \$standIns,\n        );\n",
-        'imports' => "use App\\Http\\Pages\\Layout;\n",
+        'imports' => "use App\\Config\\AppConfig;\n",
     ];
 
     /** The migration's name, after the skeleton's own. */
-    public const string MIGRATION = '2026_11_01_000001_create_tenants.php';
+    public const string MIGRATION = '2026_11_02_000001_create_tenants.php';
 
     /** @throws \RuntimeException where the skeleton no longer has a line the setup edits */
     public static function apply(string $directory, TenantLookup $lookup): void
