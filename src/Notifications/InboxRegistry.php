@@ -15,7 +15,7 @@ use Tinvar\Auth\PanelBinding;
 use Tinvar\Auth\Violation;
 
 /**
- * The #[Inbox] classes an application declares, by name (ADR 0150): each
+ * The #[Inbox] classes an application declares, by name (ADR 0152): each
  * the entry point a signed-in user reads their notifications through.
  *
  * Refused here, when the application starts: an inbox anyone may open

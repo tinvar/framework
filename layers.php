@@ -147,7 +147,7 @@ return [
     // the database alone; the core, which names no module; jobs on the
     // queue; events, mail, webhooks, transfers, workflows and push each on jobs
     // and none on another; notifications on jobs, mail and push, whose
-    // channels they are (ADR 0150); calls (an action or query run outside HTTP) on
+    // channels they are (ADR 0152); calls (an action or query run outside HTTP) on
     // the core, with tools and services on calls; the gateway's contract on
     // the core (ADR 0098, 0099); the accounts kit on jobs and mail (ADR 0153);
     // and the kernel -- the HTTP kernel, the console and the

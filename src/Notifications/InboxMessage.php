@@ -6,7 +6,7 @@ namespace Tinvar\Notifications;
 
 /**
  * What an inbox entry says: a title, a line or two of body, and where it
- * leads (ADR 0150).
+ * leads (ADR 0152).
  *
  * Text, never markup: the client draws it as text, so nothing an order's
  * name or a customer's note holds can become a tag. And a link only to a

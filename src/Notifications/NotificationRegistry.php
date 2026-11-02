@@ -9,7 +9,7 @@ use Tinvar\Auth\Violation;
 use Tinvar\Jobs\Queueable;
 
 /**
- * The #[Notification] classes an application has, by type (ADR 0150).
+ * The #[Notification] classes an application has, by type (ADR 0152).
  *
  * Held to what a notification must be when the application starts, rather
  * than at its first send: a class that declares #[Notification] and sends

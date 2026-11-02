@@ -9,7 +9,7 @@ use Tinvar\Jobs\Queueable;
 use Tinvar\Orm\Orm;
 
 /**
- * Sends notifications (ADR 0150): one call, every channel the user gets.
+ * Sends notifications (ADR 0152): one call, every channel the user gets.
  *
  *     $notifier->send($customer, new OrderShipped($order));
  *

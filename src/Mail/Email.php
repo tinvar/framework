@@ -118,7 +118,7 @@ final readonly class Email
     /**
      * This email with $unsubscribe as its List-Unsubscribe headers, and its
      * category as it was: a notification's email is still transactional
-     * once its reader can turn that kind off with one click (ADR 0150).
+     * once its reader can turn that kind off with one click (ADR 0152).
      */
     public function withUnsubscribe(Unsubscribe $unsubscribe): self
     {

@@ -11,7 +11,7 @@ use Tinvar\Render\TenantClaim;
 use Tinvar\Support\Uuid;
 
 /**
- * A user's inbox in the tenant in force (ADR 0150): its entries, read and
+ * A user's inbox in the tenant in force (ADR 0152): its entries, read and
  * written through the store, and every change announced on each inbox's
  * personal channel, so every page the user has open hears it.
  *

@@ -10,7 +10,7 @@ use Tinvar\Render\TenantClaim;
 
 /**
  * The one-click unsubscribe of a notification's email, through the mail
- * module's own link and endpoint (ADR 0048, 0150): a list named
+ * module's own link and endpoint (ADR 0048, 0152): a list named
  * `notify.{type}` turns that kind's mail off in the reader's preferences,
  * as unticking it in the inbox's preferences would. Every other list is
  * the application's, and handed to its own Unsubscriber.

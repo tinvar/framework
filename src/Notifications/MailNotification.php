@@ -9,7 +9,7 @@ use Tinvar\Jobs\Queueable;
 use Tinvar\Mail\Email;
 
 /**
- * A notification that sends an email (ADR 0150).
+ * A notification that sends an email (ADR 0152).
  *
  * mail() is asked on the mail queue's worker, when the email is sent --
  * after the user's preference for this kind was read again there -- with

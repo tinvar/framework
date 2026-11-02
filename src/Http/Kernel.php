@@ -182,7 +182,7 @@ final class Kernel
     public readonly ?TransferStatus $transferStatus;
 
     /**
-     * /_inbox (ADR 0150), and what sends notifications and reads a user's
+     * /_inbox (ADR 0152), and what sends notifications and reads a user's
      * inbox: mounted only when an application supplies Notifications.
      */
     public readonly ?InboxEndpoint $inbox_;
@@ -295,7 +295,7 @@ final class Kernel
         // Starting an export or an import: each a job, and an import a file
         // written to disk -- fewer than uploads.
         'transfers' => 10,
-        // An inbox's calls (ADR 0150): its feed on every page a signed-in
+        // An inbox's calls (ADR 0152): its feed on every page a signed-in
         // user opens, and a mark read or a preference now and then.
         'inbox' => 120,
         // /_vitals and /_errors: a vitals report when a page is left, and
@@ -608,7 +608,7 @@ final class Kernel
      *        and the `transfers` throttle, GET /_download/{token} behind the global stack and
      *        the `files` throttle, and Transfers, TransferRunner -- which the jobs run with --
      *        and TransferStatus are in the container
-     * @param Notifications|null $notifications the application's notifications (ADR 0150): given,
+     * @param Notifications|null $notifications the application's notifications (ADR 0152): given,
      *        POST /_inbox/{name} is mounted for each #[Inbox] behind CSRF, the `inbox` throttle
      *        and authentication, each inbox's personal channel `inbox.{name}` is registered
      *        with the channels, and the Notifier, the InboxFeed and NotificationDelivery --

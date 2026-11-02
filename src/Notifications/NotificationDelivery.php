@@ -13,7 +13,7 @@ use Tinvar\Render\TenantClaim;
 
 /**
  * Sends one notification to one user, on the channels they get for it
- * (ADR 0150): what SendNotification runs on the worker, in the tenant the
+ * (ADR 0152): what SendNotification runs on the worker, in the tenant the
  * notification was sent in.
  *
  * The user is found again by id, and a user gone since sends nothing. Their

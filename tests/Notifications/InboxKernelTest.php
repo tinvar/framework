@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * The inbox through the real HTTP Kernel (ADR 0150): POST /_inbox/{name}
+ * The inbox through the real HTTP Kernel (ADR 0152): POST /_inbox/{name}
  * let in behind CSRF and authentication, then the inbox's own tenant;
  * every read and write the signed-in user's own in that tenant; and its
  * personal channel, a topic per user, bound to the session, the user and

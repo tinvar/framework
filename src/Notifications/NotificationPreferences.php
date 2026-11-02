@@ -6,7 +6,7 @@ namespace Tinvar\Notifications;
 
 /**
  * Which channels each user wants for each kind of notification, per
- * tenant (ADR 0150): only what they chose -- a kind or a channel they
+ * tenant (ADR 0152): only what they chose -- a kind or a channel they
  * never touched is absent, and gets its notification's defaults
  * (CompiledNotification::channelsFor()), so a default changed later
  * reaches everyone who left it alone.

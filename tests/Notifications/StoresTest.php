@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * The inbox and preference tables (ADR 0150), on SQLite and on Postgres:
+ * The inbox and preference tables (ADR 0152), on SQLite and on Postgres:
  * every read and write held to the tenant and the user, the feed newest
  * first with its cursor, moments that read back as the instants written,
  * and a choice replaced rather than added to.

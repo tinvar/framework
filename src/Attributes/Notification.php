@@ -8,7 +8,7 @@ use Tinvar\Notifications\NotificationChannel;
 
 /**
  * A kind of notification: something the application tells a user, on the
- * channels its class sends on (ADR 0150).
+ * channels its class sends on (ADR 0152).
  *
  *     #[Notification('orders.shipped', label: 'Order shipped', defaults: [NotificationChannel::Mail, NotificationChannel::Inbox])]
  *     final readonly class OrderShipped implements MailNotification, PushNotification, InboxNotification

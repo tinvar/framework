@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Attributes;
 
 /**
- * Where a signed-in user reads their notifications (ADR 0150): the entry
+ * Where a signed-in user reads their notifications (ADR 0152): the entry
  * point of their in-app inbox, by name.
  *
  *     #[Inbox('customer'), Middleware(RequireCustomer::class)]
