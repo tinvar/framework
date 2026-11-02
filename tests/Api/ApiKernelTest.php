@@ -100,6 +100,41 @@ final class AdminsOnly implements Middleware
     }
 }
 
+/** A package's gate, as #[RequiresPlan] is: its middleware says what it found in force. */
+#[\Attribute(\Attribute::TARGET_CLASS | \Attribute::TARGET_METHOD)]
+final readonly class SeesWhereItRuns implements \Tinvar\Http\MiddlewareAttribute
+{
+    public function middleware(): string
+    {
+        return RecordWhereItRuns::class;
+    }
+}
+
+final class RecordWhereItRuns implements \Tinvar\Http\AttributeMiddleware
+{
+    public static ?PanelContext $panels = null;
+
+    /** @var list<?string> the panel in force at each run */
+    public static array $saw = [];
+
+    public function handle(\Tinvar\Http\MiddlewareAttribute $attribute, Request $request, \Closure $next): Response
+    {
+        self::$saw[] = self::$panels?->currentOrNull();
+
+        return $next($request);
+    }
+}
+
+#[\Tinvar\Attributes\Panel('admin', permission: 'racks.audit')]
+final class AdminRackApi
+{
+    #[Get('/admin/api/racks/{rack}', name: 'admin.api.racks.show'), Authorize('view', 'rack'), RequiresScope('racks:audit'), SeesWhereItRuns]
+    public function show(Rack $rack): RackData
+    {
+        return new RackData($rack->id, $rack->name);
+    }
+}
+
 final class RackApi
 {
     #[Get('/api/racks/{rack}', name: 'api.racks.show'), Authorize('view', 'rack'), RequiresScope('racks:read')]
@@ -134,7 +169,7 @@ final class World
         $this->fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
         $orm = new Orm($this->fixture->connection, new IdentityMap('api-kernel'));
         $this->auth = SessionCookie::$auth = AdminsOnly::$auth = new AuthContext();
-        $this->panels = new PanelContext();
+        $this->panels = RecordWhereItRuns::$panels = new PanelContext();
         SessionCookie::$runs = 0;
         $this->users = new Users();
         $this->staff = new Staff();
@@ -146,7 +181,7 @@ final class World
         $queries = new QueryRegistry($resolver);
         $queries->registerAll([ShowRack::class]);
         $endpoints = new EndpointRegistry();
-        $endpoints->registerAll([RackApi::class, RackPage::class]);
+        $endpoints->registerAll([RackApi::class, RackPage::class, AdminRackApi::class]);
 
         $this->kernel = new Kernel(
             orm: $orm,
@@ -335,6 +370,18 @@ describe('an endpoint marked #[RequiresScope]', function () {
             ->and($response->cookies())->toBe([])
             ->and(SessionCookie::$runs)->toBe(0)
             ->and($w->kernel->opensNoSession(new Request('GET', "/api/racks/{$w->rack()}")))->toBeTrue();
+    });
+
+    it('runs a middleware attribute -- a package\'s #[RequiresPlan] -- after the panel and tenant are placed, as on a session\'s endpoint', function () {
+        $w = new World();
+        $w->staff->members['ada'] = ['racks.audit'];
+        $token = $w->token(['racks:audit'], panel: 'admin');
+        RecordWhereItRuns::$saw = [];
+
+        $response = $w->call('GET', "/admin/api/racks/{$w->rack()}", ['authorization' => "Bearer {$token}"]);
+
+        expect($response->status)->toBe(200)
+            ->and(RecordWhereItRuns::$saw)->toBe(['admin']);
     });
 
     it('refuses a token without its scope, no token, and a session cookie', function () {
