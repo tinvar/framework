@@ -140,6 +140,13 @@ final readonly class CannotTravel implements InboxNotification
 final readonly class OpenInbox {}
 
 /** Draws the props as the renderer would: the unsubscribe URL in both parts. */
+/** An application's lists, as an enum names them. */
+enum ListName: string
+{
+    case Fine = 'announcements';
+    case Reserved = 'notify.weekly';
+}
+
 final class Draws implements MailRenderer
 {
     public function render(string $template, array $props, ?LinkPolicy $links = null): RenderedMail
@@ -340,13 +347,34 @@ describe('a send', function () {
         };
         $preferences = new ArrayNotificationPreferences();
         $h = new Harness();
-        $unsubscriber = new NotificationUnsubscriber(NotificationRegistry::of([ScriptRan::class]), $preferences, $h->orm, $application);
+        $unsubscriber = new NotificationUnsubscriber(NotificationRegistry::of([ScriptRan::class]), $preferences, $h->orm, $application, ['newsletter']);
         $h->orm->actAs('acme', function () use ($unsubscriber): void {
             $unsubscriber->unsubscribe('newsletter', 'ada');
             $unsubscriber->unsubscribe('notify.gone.type', 'ada');
         });
 
         expect($heard)->toBe([['newsletter', 'ada']])->and($preferences->chosen)->toBe([]);
+    });
+
+    // A `notify.` list is the notifications' own: an application list by
+    // such a name would never reach the application, and its readers could
+    // not stop it with one click.
+    it('refuses, at boot, an application list named in the notifications\' prefix, or an application with lists it does not name', function () {
+        $application = new class implements \Tinvar\Mail\Unsubscriber {
+            public function unsubscribe(string $list, string $recipient): void {}
+        };
+        $build = static fn (array $lists): NotificationUnsubscriber => new NotificationUnsubscriber(
+            NotificationRegistry::of([ScriptRan::class]),
+            new ArrayNotificationPreferences(),
+            new Harness()->orm,
+            $application,
+            $lists,
+        );
+
+        expect(fn () => $build(['newsletter', 'notify.digest']))->toThrow(\InvalidArgumentException::class, "'notify.digest'")
+            ->and(fn () => $build([ListName::Reserved]))->toThrow(\InvalidArgumentException::class, "'notify.weekly'")
+            ->and(fn () => $build([]))->toThrow(\InvalidArgumentException::class, 'name the lists')
+            ->and($build(['newsletter', ListName::Fine]))->toBeInstanceOf(NotificationUnsubscriber::class);
     });
 
     it('honours an unsubscribe that lands between the fan-out and the mail\'s own try', function () {
