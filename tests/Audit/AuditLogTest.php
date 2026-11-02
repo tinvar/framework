@@ -280,6 +280,14 @@ it('prunes a whole prefix past the retention and keeps the rest walkable', funct
     expect($audit->verify('acme')->problem)->toBe('Where pruning left the log has been changed.');
 });
 
+it('names the impersonator AuthContext was handed, where the application gives the log no answer of its own', function () {
+    [$orm, $audit, $auth] = log();
+    $auth->login(new Person('u-1'), impersonator: 'staff-4');
+    expect($audit->actor()->impersonator)->toBe('staff-4');
+    $auth->login(new Person('u-1'));
+    expect($audit->actor()->impersonator)->toBeNull();
+});
+
 it('names who acted: the system, a guest, a user and who is impersonating them, a job and its starter, a service', function () {
     $impersonating = null;
     [$orm, $audit, $auth, , , $jobs] = log(impersonator: function () use (&$impersonating): ?string {

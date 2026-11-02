@@ -457,7 +457,7 @@ final readonly class Dispatcher
         if ($this->auth->id() === null) {
             return null;
         }
-        $impersonator = $this->impersonator === null ? null : ($this->impersonator)();
+        $impersonator = $this->impersonator === null ? $this->auth->impersonator() : ($this->impersonator)();
 
         return \is_string($impersonator) && $impersonator !== '' ? $impersonator : null;
     }

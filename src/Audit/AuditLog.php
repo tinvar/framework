@@ -104,7 +104,8 @@ final class AuditLog implements ModelChanges, ActionObserver
      * @param TrustedProxies|null $proxies the proxies in front, through which the client's address
      *        and host are read; none, and the peer is the client
      * @param (\Closure(): ?string)|null $impersonator who is signed in as the user, where the
-     *        application lets staff act as someone else: their id, or null
+     *        application lets staff act as someone else: their id, or null; none, and
+     *        AuthContext::impersonator() says
      * @param int $retentionDays how long prune() keeps an entry, in days
      * @param (\Closure(): CarbonImmutable)|null $clock when an entry is made; now, unless given
      */
@@ -266,7 +267,7 @@ final class AuditLog implements ModelChanges, ActionObserver
             return new Actor(ActorKind::Job, $user?->authIdentifier(), $job->startedByImpersonator, $job->class, $job->id, $job->startedBy);
         }
         if ($user !== null) {
-            $impersonator = $this->impersonator === null ? null : ($this->impersonator)();
+            $impersonator = $this->impersonator === null ? $this->auth->impersonator() : ($this->impersonator)();
 
             return new Actor(ActorKind::User, $user->authIdentifier(), $impersonator === '' ? null : $impersonator);
         }

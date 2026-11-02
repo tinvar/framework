@@ -36,6 +36,18 @@ final class AuthContext
     private ?string $apiToken = null;
 
     /**
+     * Who is signed in as the user, while staff impersonate them: the
+     * impersonator's id; null when nobody is. Handed in by the middleware
+     * that signs the user in, as the epoch is, and read by what must refuse
+     * or record an impersonated request -- issuing an API token, which would
+     * outlive the impersonation as the user's own credential (ADR 0159), and
+     * the audit log and the job dispatcher where the application gives them
+     * no answer of their own. Kept for the request alone: actingAs() does
+     * not change it.
+     */
+    private ?string $impersonator = null;
+
+    /**
      * Whom the first login() of the request signed in, with their epoch:
      * the session's user, as the stack found them. Null before any.
      *
@@ -105,12 +117,15 @@ final class AuthContext
      *        change and on impersonation starting or stopping
      * @param string|null $apiToken the id of the API token that signed them in, for a request
      *        a token authenticated (ADR 0159); null for a session's
+     * @param string|null $impersonator who is signed in as them, while staff impersonate the
+     *        user; null when nobody is
      */
-    public function login(?Authenticatable $user, string $epoch = '', ?string $apiToken = null): void
+    public function login(?Authenticatable $user, string $epoch = '', ?string $apiToken = null, ?string $impersonator = null): void
     {
         $this->user = $user;
         $this->epoch = $user === null ? '' : $epoch;
         $this->apiToken = $user === null ? null : $apiToken;
+        $this->impersonator = $user === null || $impersonator === '' ? null : $impersonator;
         $this->first ??= [$this->user?->authIdentifier(), $this->epoch];
     }
 
@@ -121,6 +136,15 @@ final class AuthContext
     public function apiToken(): ?string
     {
         return $this->apiToken;
+    }
+
+    /**
+     * Who is signed in as this request's user, while staff impersonate
+     * them; null when nobody is.
+     */
+    public function impersonator(): ?string
+    {
+        return $this->impersonator;
     }
 
     /**
@@ -176,6 +200,7 @@ final class AuthContext
         $this->user = null;
         $this->epoch = '';
         $this->apiToken = null;
+        $this->impersonator = null;
         $this->first = null;
         $this->byFiber = new \WeakMap();
     }

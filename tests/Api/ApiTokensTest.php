@@ -85,6 +85,25 @@ it('issues none with nobody signed in, across tenants, or for a caller a token s
         })->toThrow(\LogicException::class, 'cannot issue another');
 });
 
+it('issues none while the user is being impersonated, and says who is signed in as whom', function () {
+    $h = new Harness();
+    $h->users->epochs['ada'] = 'e1';
+    $h->auth->login(new User('ada'), 'e1', impersonator: 'staff-7');
+    try {
+        expect($h->auth->impersonator())->toBe('staff-7')
+            ->and(fn () => $h->apiTokens->issue('Nightly export', ['racks:read']))->toThrow(\LogicException::class, 'impersonat')
+            ->and($h->tokenStore->tokens)->toBe([]);
+    } finally {
+        $h->auth->reset();
+    }
+
+    // Reset with the request: the next one is nobody's impersonation.
+    expect($h->auth->impersonator())->toBeNull();
+    $h->auth->login(new User('ada'), 'e1');
+    expect($h->auth->impersonator())->toBeNull();
+    $h->auth->reset();
+});
+
 it('holds a user to as many active tokens as the application allows', function () {
     $h = new Harness();
     foreach (range(1, 3) as $_) {

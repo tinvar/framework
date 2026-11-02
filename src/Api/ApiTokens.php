@@ -22,8 +22,9 @@ use Tinvar\Support\Uuid;
  *     // Show $issued->plaintext once; it is never shown again.
  *
  * **Issued** in a request a session signed its user in to -- never one a
- * token did, so a token cannot make another -- with someone signed in and
- * outside acrossTenants(). A token is bound to its user and the epoch the
+ * token did, so a token cannot make another, nor one where staff are
+ * impersonating the user (AuthContext::impersonator()) -- with someone
+ * signed in and outside acrossTenants(). A token is bound to its user and the epoch the
  * application's UserLookup says they are on -- the auth epoch, unless the
  * application hands ApiAccess a lookup whose epoch moves on fewer things -- the tenant and the panel in force, and the request's host
  * where the application routes by host (CallHosts, ADR 0149). Its scopes
@@ -97,6 +98,12 @@ final readonly class ApiTokens
         }
         if ($this->auth->apiToken() !== null) {
             throw new \LogicException('An API token cannot issue another: a token is issued in a request its user\'s session signed them in to.');
+        }
+        // A token outlives the impersonation it was made in, as the user's
+        // own credential: staff signed in as someone would leave behind a
+        // way in as them that no one sees ending.
+        if ($this->auth->impersonator() !== null) {
+            throw new \LogicException('An API token cannot be issued while the user is being impersonated: it would outlive the impersonation as their own credential. Stop impersonating, and let the user make it.');
         }
         if ($this->orm->isUnscoped()) {
             throw new \LogicException('An API token cannot be issued inside acrossTenants(): it is held to one tenant.');
