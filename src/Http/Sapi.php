@@ -357,7 +357,7 @@ final class Sapi
         }
         // After the headers: PHP rewrites the status for some of them -- a
         // 401 for WWW-Authenticate, a 302 for Location -- so a 403 naming
-        // the scope a token lacks (ADR 0155) left as a 401. Set last, it is
+        // the scope a token lacks (ADR 0158) left as a 401. Set last, it is
         // the response's own.
         $status($response->status);
         $response->sendBody($write);

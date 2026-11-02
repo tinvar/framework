@@ -314,7 +314,7 @@ final class EndpointRegistry
             throw new EndpointException("{$where}: {$e->getMessage()}", 0, $e);
         }
         // An API token is its caller's credential, never a cookie (ADR
-        // 0155): the endpoint runs with no session, as #[WithoutSession]
+        // 0158): the endpoint runs with no session, as #[WithoutSession]
         // does, so no cookie signs anyone in and no CSRF token is asked for.
         $sessionless = $scopes !== [] || WithoutSession::declaredOn($class, $method->getName());
         if ($scopes !== [] && $public) {

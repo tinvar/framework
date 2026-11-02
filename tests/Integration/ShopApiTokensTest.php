@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * The shop's order API (ADR 0155) through its whole request path: a
+ * The shop's order API (ADR 0158) through its whole request path: a
  * customer issues an API token from their settings, and a script of theirs
  * reads their own orders with it -- over /_api and the receipt endpoint --
  * with no session, holding the token to its scopes, their own orders and

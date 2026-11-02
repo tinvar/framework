@@ -150,7 +150,7 @@ return [
     // channels they are (ADR 0155); calls (an action or query run outside HTTP) on
     // the core, with tools and services on calls; the gateway's contract on
     // the core (ADR 0098, 0099); the accounts kit on jobs and mail (ADR 0153);
-    // the public API's tokens and calls on calls (ADR 0151);
+    // the public API's tokens and calls on calls (ADR 0158);
     // and the kernel -- the HTTP kernel, the console and the
     // server, which a process starts with -- over all of them. An
     // attribute is its module's, though the namespace is shared.
@@ -181,7 +181,7 @@ return [
             // The audit log (ADR 0156): over jobs, to name the job that made
             // a change and its starter, and services, to name a service.
             'audit' => ['Tinvar\\Audit\\', 'Tinvar\\Attributes\\AuditedAction'],
-            // The public API (ADR 0151): API tokens and /_api, on calls.
+            // The public API (ADR 0158): API tokens and /_api, on calls.
             'api' => ['Tinvar\\Api\\'],
             'kernel' => ['Tinvar\\Http\\Kernel', 'Tinvar\\Console\\', 'Tinvar\\Discovery\\', 'Tinvar\\Server\\', 'Tinvar\\Http\\TestableApplication', 'Tinvar\\Http\\BrowserTestable', 'Tinvar\\Attributes\\Command'],
             ...$above,

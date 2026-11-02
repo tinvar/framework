@@ -1268,7 +1268,7 @@ it('keeps the catalog on the admin host\'s products screens', function (string $
     expect($result['refused']['status'])->toBe(403);
 })->with(SERVERS);
 
-// ADR 0155: a customer makes an API token on the settings page, which shows
+// ADR 0158: a customer makes an API token on the settings page, which shows
 // it once; a script reads their orders with it, with none of the browser's
 // cookies; the page lists it by name, never its text; revoked, it is refused.
 it('makes an API token on the settings page, calls the order API with it, and revokes it', function () use ($root) {

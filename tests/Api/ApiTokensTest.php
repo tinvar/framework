@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * Personal access tokens (ADR 0155): issued by a signed-in user for the
+ * Personal access tokens (ADR 0158): issued by a signed-in user for the
  * scopes the application declares, bound to their user and epoch, tenant,
  * panel and host, listed and revoked by them, and checked at every use.
  */

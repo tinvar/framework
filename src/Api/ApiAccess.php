@@ -7,7 +7,7 @@ namespace Tinvar\Api;
 use Tinvar\Auth\UserLookup;
 
 /**
- * What an application gives its Kernel to take API tokens (ADR 0155):
+ * What an application gives its Kernel to take API tokens (ADR 0158):
  * where tokens are kept, and how a token's user is found again with the
  * auth epoch they are on now.
  *

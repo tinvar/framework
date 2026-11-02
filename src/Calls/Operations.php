@@ -49,7 +49,7 @@ final class Operations
     /**
      * The same, read from the application's declarations alone -- no
      * database, no request -- for what describes them rather than runs
-     * them: the OpenAPI document (ADR 0155). Panels are read as the entry
+     * them: the OpenAPI document (ADR 0158). Panels are read as the entry
      * checks read them, from $panels; a #[Panel] naming one it does not
      * define is refused.
      *
