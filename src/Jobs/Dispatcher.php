@@ -435,22 +435,27 @@ final readonly class Dispatcher
             unique: $unique,
             catch: $catch,
             // Who started the work, sealed whether or not the job runs as
-            // them, for the audit log to name: whoever is signed in, or the
-            // starter of the job dispatching this one.
-            startedBy: $this->auth->id() ?? $this->running?->current()?->startedBy,
+            // them, for the audit log to name: the starter of the job
+            // dispatching this one, or else whoever is signed in.
+            startedBy: $this->running?->current()?->startedBy ?? $this->auth->id(),
             startedByImpersonator: $this->impersonatorNow(),
         );
     }
 
     /**
-     * Who is signed in as the user dispatching, if anyone is: the
-     * application's answer while someone is signed in, else the impersonator
-     * the job dispatching this one was started under.
+     * Who is signed in as the user dispatching, if anyone is: inside a job,
+     * the impersonator that job was started under -- a job running as its
+     * user has no session for the application's answer to read -- and
+     * otherwise the application's answer while someone is signed in.
      */
     private function impersonatorNow(): ?string
     {
+        $running = $this->running?->current();
+        if ($running !== null) {
+            return $running->startedByImpersonator;
+        }
         if ($this->auth->id() === null) {
-            return $this->running?->current()?->startedByImpersonator;
+            return null;
         }
         $impersonator = $this->impersonator === null ? null : ($this->impersonator)();
 

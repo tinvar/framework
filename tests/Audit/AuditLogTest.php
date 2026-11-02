@@ -405,3 +405,19 @@ it('carries who was impersonating a job\'s starter into its entries, sealed, and
     expect($old->seal($signer))->not->toContain('"si"')
         ->and(Envelope::open($old->seal($signer), $signer)->startedByImpersonator)->toBeNull();
 });
+
+it('carries a job\'s starter and impersonator on to what it dispatches while running as its user, who has no session to ask', function () {
+    [$orm, , $auth, , , $jobs] = log();
+    $signer = new Signer(KEY, Envelope::PURPOSE);
+    $queue = new ArrayQueue();
+    // The application's answer reads the session, which a worker has none of.
+    $dispatcher = new Dispatcher($queue, $orm, $signer, $auth, running: $jobs, impersonator: static fn (): ?string => null);
+    $envelope = new Envelope('job-1', Nightly::class, [], 'acme', user: 'u-1', startedBy: 'u-1', startedByImpersonator: 'staff-9');
+
+    $next = $auth->actingAs(new Person('u-1'), fn (): string => $jobs->within(
+        $envelope,
+        fn (): string => $orm->actAs('acme', fn (): string => $dispatcher->dispatch(new Nightly())),
+    ));
+    $opened = Envelope::open((string) $queue->payload($next), $signer);
+    expect([$opened->startedBy, $opened->startedByImpersonator])->toBe(['u-1', 'staff-9']);
+});
