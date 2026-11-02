@@ -94,6 +94,9 @@ final class Redactor
         '/\beyJ[A-Za-z0-9_\-]*\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*/' => '[jwt]',
         // The framework's signed tokens (SignedToken): route, fragment, live.
         '/\bv1\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}/' => '[token]',
+        // An API token (ADR 0158), wherever it is quoted -- a body, a URL a
+        // script put it in by mistake -- not only after "Bearer".
+        '/\btvr_[0-9a-f]{32}_[0-9A-Za-z]{43}/' => '[api-token]',
     ];
 
     private readonly string $keys;

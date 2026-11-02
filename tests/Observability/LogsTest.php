@@ -78,6 +78,7 @@ describe('the redactor', function () {
         'the word basic, capitalised' => ['Basic Understanding is required', 'Basic Understanding is required'],
         'a JWT' => ['cookie eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl rejected', 'cookie [jwt] rejected'],
         'a signed token' => ['refused v1.eyJjIjoiQXVkaXRMb2cifQ.Y2Rmb2dzaWduYXR1cmU as expired', 'refused [token] as expired'],
+        'an API token' => ['a script pasted tvr_0192f1c4a5b67e3f8a9b0c1d2e3f4a5b_' . str_repeat('aB3', 14) . 'x in a note', 'a script pasted [api-token] in a note'],
         'a secret query parameter' => ['GET /reset?token=abc123&page=2', 'GET /reset?token=[redacted]&page=2'],
         'a session cookie\'s MAC' => [
             '__Host-shop_session=0123456789abcdef0123456789abcdef.1792000000.1792043200.aB3dEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCd',
