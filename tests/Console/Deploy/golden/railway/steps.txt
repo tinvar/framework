@@ -2,11 +2,11 @@
 railway init --name my-app
 # The SQLite database, and the files kept beside it, on a volume.
 railway volume add --mount-path /var/lib/app/data
-# The variables in the open: Railway's edge, inside 100.64.0.0/10, as the proxy (it sends no header of ours, so no TINVAR_TRUSTED_PROXY_SECRET).
-railway variables --set 'TINVAR_TRUSTED_PROXIES=100.64.0.0/10'
+# The variables in the open. No TINVAR_TRUSTED_PROXIES: Railway's edge cannot send TINVAR_TRUSTED_PROXY_SECRET, and a range is refused without it (ADR 0134), so every visitor is counted as the edge's one address.
+railway variables
 # The rest: paste each into the service's Variables -- a secret from its file, which never reaches a command line:
 #   TINVAR_APP_KEY: pbcopy < '/home/you/.local/state/tinvar/my-app-2cab79174cf3.railway.key'   (xclip -selection clipboard on Linux)
 #   TINVAR_PROBE_TOKEN: pbcopy < '/home/you/.local/state/tinvar/my-app-2cab79174cf3.railway.probe-token'   (xclip -selection clipboard on Linux)
-# Mail: no provider that sends is named. Once the app sends mail, set TINVAR_MAIL_PROVIDER (smtp, ses, postmark, mailgun, resend or sendgrid) and its variables: production refuses log and array.
+# Mail: no provider that sends is named, and the app sends mail -- its accounts' links. Set TINVAR_MAIL_PROVIDER (smtp, ses, postmark, mailgun, resend or sendgrid) and its variables: production refuses to boot with none, log or array.
 railway up
 # Then `railway domain`, and set TINVAR_APP_DOMAIN to the https address it gives.

@@ -15,9 +15,10 @@ use Tinvar\Console\Deploy\RecipeParts;
  * Railway: railway.json builds the app's image from its Dockerfile and runs
  * one replica; the variables are set with `railway variables` -- the ones
  * in the open from the command line, the secrets pasted into the service's
- * variables from their files, never onto a command line -- its SQLite
- * database on a volume, and Railway's edge pinned as the proxy
- * (RecipeParts::RAILWAY).
+ * variables from their files, never onto a command line -- and its SQLite
+ * database on a volume. Railway's edge cannot send the proxy secret and
+ * replaces X-Forwarded-For with the address that reached it, so no proxy
+ * is pinned and no front helps: every visitor is the edge's one address.
  *
  * Railway's healthcheck sends no header of ours, so none is set, and the
  * probes stay behind the probe token.
@@ -32,6 +33,9 @@ final readonly class RailwayRecipe implements DeployRecipe
     public function write(DeployApp $app): Recipe
     {
         RecipeParts::oneContainerOnly($app, 'Railway');
+        if ($app->front !== null) {
+            throw new \InvalidArgumentException("Railway's edge replaces X-Forwarded-For with the address that reached it, so behind Cloudflare every visitor would be read as Cloudflare's: --front is for Fly.io and Render. Railway runs with no proxy pinned.");
+        }
         $secrets = RecipeParts::appSecrets($this->target());
 
         $config = json_encode([
@@ -48,7 +52,6 @@ final readonly class RailwayRecipe implements DeployRecipe
         ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
 
         $open = [
-            'TINVAR_TRUSTED_PROXIES' => RecipeParts::ranges(RecipeParts::RAILWAY, $app),
             ...($app->domain !== null ? ['TINVAR_APP_DOMAIN' => $app->domain] : []),
         ];
         if ($app->database->isServer()) {
@@ -77,7 +80,7 @@ final readonly class RailwayRecipe implements DeployRecipe
             ...(RecipeParts::sqlite($app)
                 ? ['# The SQLite database, and the files kept beside it, on a volume.', 'railway volume add --mount-path /var/lib/app/data']
                 : ['# The database, in the same project: its variables are referenced below.', 'railway add --database ' . ($app->database->value === 'postgres' ? 'postgres' : 'mysql')]),
-            '# The variables in the open: Railway\'s edge, inside 100.64.0.0/10, as the proxy (it sends no header of ours, so no TINVAR_TRUSTED_PROXY_SECRET).',
+            '# The variables in the open. No TINVAR_TRUSTED_PROXIES: Railway\'s edge cannot send TINVAR_TRUSTED_PROXY_SECRET, and a range is refused without it (ADR 0134), so every visitor is counted as the edge\'s one address.',
             $set,
             '# The rest: paste each into the service\'s Variables -- a secret from its file, which never reaches a command line:',
             ...array_map(static fn ($secret): string => "#   {$secret->variable}: pbcopy < " . escapeshellarg($app->secretFile($secret)) . '   (xclip -selection clipboard on Linux)', $secrets),

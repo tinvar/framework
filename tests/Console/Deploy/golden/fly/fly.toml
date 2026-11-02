@@ -12,10 +12,10 @@ kill_timeout = 120
   dockerfile = "Dockerfile"
 
 [env]
-  # Fly.io names the app's own public address last in X-Forwarded-For: add
-  # each of `fly ips list`'s, as /32 or /128, or run deploy:init again with
-  # --app-ips=ADDRESS,...; until then every visitor is one throttle caller.
-  TINVAR_TRUSTED_PROXIES = "172.16.0.0/12"
+  # No TINVAR_TRUSTED_PROXIES: Fly.io's edge cannot send TINVAR_TRUSTED_PROXY_SECRET,
+  # and a range is refused without it (ADR 0134), so every visitor is counted as the
+  # edge's one address. Put Cloudflare in front (deploy:init --front=cloudflare) to
+  # count each visitor apart.
   TINVAR_APP_DOMAIN = "https://my-app.fly.dev"
 
 [http_service]

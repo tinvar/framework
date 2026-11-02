@@ -19,6 +19,7 @@ use Tinvar\Console\Deploy\DeployApp;
 use Tinvar\Console\Deploy\DeployInitCommand;
 use Tinvar\Console\Deploy\DeployTarget;
 use Tinvar\Console\Deploy\Recipe;
+use Tinvar\Http\TrustedProxies;
 use Tinvar\Mail\MailProvider;
 use Tinvar\Orm\DatabaseDriver;
 
@@ -29,9 +30,9 @@ function cases(): array
 {
     return [
         'fly' => [DeployTarget::Fly, new DeployApp('my-app', secrets: SECRETS)],
-        'fly-postgres' => [DeployTarget::Fly, new DeployApp('my-app', database: DatabaseDriver::Postgres, domain: 'https://app.example.com', mail: [MailProvider::Resend], secrets: SECRETS, appAddresses: ['66.241.124.10', '2a09:8280:1::4c:1'])],
+        'fly-postgres' => [DeployTarget::Fly, new DeployApp('my-app', database: DatabaseDriver::Postgres, domain: 'https://app.example.com', mail: [MailProvider::Resend], secrets: SECRETS, appAddresses: ['66.241.124.10', '2a09:8280:1::4c:1'], front: 'cloudflare')],
         'render' => [DeployTarget::Render, new DeployApp('my-app', secrets: SECRETS)],
-        'render-postgres' => [DeployTarget::Render, new DeployApp('my-app', database: DatabaseDriver::Postgres, mail: [MailProvider::Postmark], secrets: SECRETS)],
+        'render-postgres' => [DeployTarget::Render, new DeployApp('my-app', database: DatabaseDriver::Postgres, mail: [MailProvider::Postmark], secrets: SECRETS, front: 'cloudflare')],
         'railway' => [DeployTarget::Railway, new DeployApp('my-app', secrets: SECRETS)],
         'railway-mysql' => [DeployTarget::Railway, new DeployApp('my-app', database: DatabaseDriver::Mysql, domain: 'https://app.example.com', mail: [MailProvider::Ses], secrets: SECRETS)],
         'vps-systemd' => [DeployTarget::VpsSystemd, new DeployApp('my-app', domain: 'https://app.example.com', secrets: SECRETS)],
@@ -90,7 +91,7 @@ it('writes each platform\'s recipe as its golden files say', function (DeployTar
     return $with;
 });
 
-it('puts no secret in a file it writes, and pins every platform\'s proxies', function () {
+it('puts no secret in a file it writes, and pins proxies only where one proves itself with the secret', function () {
     foreach (cases() as $case => [$target, $app]) {
         $recipe = $target->recipe()->write($app);
         foreach ($recipe->files as $file) {
@@ -98,6 +99,14 @@ it('puts no secret in a file it writes, and pins every platform\'s proxies', fun
         }
         $all = implode("\n", array_map(static fn ($f): string => $f->contents, $recipe->files)) . implode("\n", $recipe->steps);
         expect($all)->toContain('TINVAR_TRUSTED_PROXIES');
+        // A range is refused at boot without the secret (ADR 0134): where
+        // one is pinned, the deployment generates the secret.
+        $variables = array_map(static fn ($s): string => $s->variable, $recipe->secrets);
+        if (preg_match('/TINVAR_TRUSTED_PROXIES[ =:"\']+([0-9][0-9a-f.:\/,]*)/', $all, $pinned) === 1) {
+            expect($variables)->toContain('TINVAR_TRUSTED_PROXY_SECRET');
+            // And the list is one the boot takes, with a secret.
+            expect(TrustedProxies::of(explode(',', $pinned[1]), [], str_repeat('s', 40))->isEmpty())->toBeFalse();
+        }
     }
 });
 
@@ -106,6 +115,12 @@ it('runs two containers only where the platform and the image can', function () 
         ->toThrow(\InvalidArgumentException::class, 'Fly.io runs the one-container layout')
         ->and(static fn () => DeployTarget::VpsCompose->recipe()->write(new DeployApp('my-app', layout: ContainerLayout::Two, secrets: SECRETS)))
         ->toThrow(\InvalidArgumentException::class, "pod-php and pod-renderer targets");
+});
+
+it('puts Cloudflare in front only where the platform keeps X-Forwarded-For', function () {
+    expect(static fn () => DeployTarget::Railway->recipe()->write(new DeployApp('my-app', secrets: SECRETS, front: 'cloudflare')))
+        ->toThrow(\InvalidArgumentException::class, 'replaces X-Forwarded-For')
+        ->and(static fn () => new DeployApp('my-app', front: 'fastly'))->toThrow(\InvalidArgumentException::class, '--front is cloudflare');
 });
 
 it('refuses a name, an address or a domain a platform would not take', function () {

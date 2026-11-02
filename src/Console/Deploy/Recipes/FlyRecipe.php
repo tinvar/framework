@@ -13,8 +13,10 @@ use Tinvar\Console\Deploy\RecipeParts;
 
 /**
  * Fly.io: the app's image on a Firecracker machine, its SQLite database on
- * a volume, the secrets in `fly secrets`, fly-proxy and the app's own
- * addresses pinned as the proxies (RecipeParts::FLY).
+ * a volume, the secrets in `fly secrets`. Fly's edge cannot send the proxy
+ * secret, so nothing is pinned unless Cloudflare stands in front and sends
+ * it; then fly-proxy's range, the app's own addresses and Cloudflare's
+ * are (RecipeParts::proxies()).
  *
  * One container: a machine runs the image's entrypoint, which starts PHP
  * and the renderers as two users. Fly's health checks send no header of
@@ -31,11 +33,13 @@ final readonly class FlyRecipe implements DeployRecipe
     public function write(DeployApp $app): Recipe
     {
         RecipeParts::oneContainerOnly($app, 'Fly.io');
-        $secrets = RecipeParts::appSecrets($this->target());
+        $proxy = RecipeParts::proxySecret($this->target());
+        $secrets = [...RecipeParts::appSecrets($this->target()), ...($app->front !== null ? [$proxy] : [])];
         $domain = $app->domain ?? "https://{$app->name}.fly.dev";
+        $proxies = RecipeParts::proxies(RecipeParts::FLY, $app, 'Fly.io');
 
         $env = [
-            'TINVAR_TRUSTED_PROXIES' => RecipeParts::ranges(RecipeParts::FLY, $app),
+            ...$proxies['env'],
             'TINVAR_APP_DOMAIN' => $domain,
             ...RecipeParts::databaseEnvironment($app, 'CHANGE-ME.flycast'),
         ];
@@ -59,9 +63,10 @@ final readonly class FlyRecipe implements DeployRecipe
               destination = "/var/lib/app/data"
 
             TOML : '';
-        $addresses = $app->appAddresses === []
-            ? "# Fly.io names the app's own public address last in X-Forwarded-For: add\n# each of `fly ips list`'s, as /32 or /128, or run deploy:init again with\n# --app-ips=ADDRESS,...; until then every visitor is one throttle caller.\n"
-            : "# fly-proxy's network, and the app's own addresses, which Fly.io names last\n# in X-Forwarded-For.\n";
+        $addresses = preg_replace('/^/m', '# ', rtrim($proxies['comment'])) . "\n";
+        if ($app->front !== null && $app->appAddresses === []) {
+            $addresses .= "# Fly.io names the app's own public address last in X-Forwarded-For: add each\n# of `fly ips list`'s, or run deploy:init again with --app-ips=ADDRESS,...\n";
+        }
 
         $toml = <<<TOML
             # Fly.io, written by `bin/tinvar deploy:init fly` (ADR 0150 in the
@@ -108,11 +113,12 @@ final readonly class FlyRecipe implements DeployRecipe
             ...(RecipeParts::sqlite($app) ? ['# The SQLite database\'s volume, in the region fly.toml names.', 'fly volumes create app_data --size 1 --region iad'] : [
                 "# The database: create it (fly postgres create, or your provider's), put its host in APP_DATABASE_HOST in fly.toml, and its password in the secrets below.",
             ]),
-            '# The app key and the probe token, read from their files outside the project, into fly secrets.',
+            '# The secrets, read from their files outside the project, into fly secrets.',
             RecipeParts::lines($app, $secrets) . ' | fly secrets import',
             ...array_map(static fn (string $variable): string => "printf '{$variable}=%s\\n' \"\$(cat /path/to/{$variable})\" | fly secrets import", RecipeParts::broughtSecrets($app)),
             ...RecipeParts::mailSteps($app),
-            ...($app->appAddresses === [] ? ["# Pin the app's own addresses: `fly ips list`, then add each to TINVAR_TRUSTED_PROXIES in fly.toml."] : []),
+            ...RecipeParts::frontSteps($app, $proxy, $app->host("{$app->name}.fly.dev")),
+            ...($app->front !== null && $app->appAddresses === [] ? ["# Pin the app's own addresses: `fly ips list`, then add each to TINVAR_TRUSTED_PROXIES in fly.toml."] : []),
             'fly deploy',
             '# Check it, through /_health with the probe token:',
             RecipeParts::probeStep($app, $secrets[1], $domain),

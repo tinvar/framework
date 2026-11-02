@@ -16,8 +16,9 @@ use Tinvar\Console\Deploy\RecipeParts;
  * service, its SQLite database on a persistent disk -- or a Render
  * Postgres database whose host, user and password Render hands the service
  * itself -- the secrets as variables Render asks for when the Blueprint is
- * applied (`sync: false`), never written here, and Render's load balancer
- * and Cloudflare in front pinned as the proxies (RecipeParts::RENDER).
+ * applied (`sync: false`), never written here. Render's edge cannot send
+ * the proxy secret, so nothing is pinned unless Cloudflare of your own
+ * stands in front and sends it (RecipeParts::proxies()).
  *
  * Render's health check sends no header of ours, so none is set: Render
  * then waits for the port, and the probes stay behind the probe token.
@@ -32,13 +33,16 @@ final readonly class RenderRecipe implements DeployRecipe
     public function write(DeployApp $app): Recipe
     {
         RecipeParts::oneContainerOnly($app, 'Render');
-        $secrets = RecipeParts::appSecrets($this->target());
+        $proxy = RecipeParts::proxySecret($this->target());
+        $secrets = [...RecipeParts::appSecrets($this->target()), ...($app->front !== null ? [$proxy] : [])];
         $domain = $app->domain ?? "https://{$app->name}.onrender.com";
+        $proxies = RecipeParts::proxies(RecipeParts::RENDER, $app, 'Render');
 
-        $vars = [
-            ['TINVAR_TRUSTED_PROXIES', 'value', RecipeParts::ranges(RecipeParts::RENDER, $app)],
-            ['TINVAR_APP_DOMAIN', 'value', $domain],
-        ];
+        $vars = [];
+        foreach ($proxies['env'] as $variable => $value) {
+            $vars[] = [$variable, 'value', $value];
+        }
+        $vars[] = ['TINVAR_APP_DOMAIN', 'value', $domain];
         foreach ($secrets as $secret) {
             $vars[] = [$secret->variable, 'sync', null];
         }
@@ -85,6 +89,11 @@ final readonly class RenderRecipe implements DeployRecipe
 
             YAML : '';
 
+        // Behind Render's load balancer (inside 10.0.0.0/8) and the Cloudflare
+        // Render puts in front of it, a front of your own's ranges are
+        // Cloudflare's too.
+        $comment = preg_replace('/^/m', '    # ', rtrim($proxies['comment'])) . "\n";
+
         $blueprint = <<<YAML
             # Render, written by `bin/tinvar deploy:init render` (ADR 0150 in the
             # framework's repository). No secret is in this file: Render asks for
@@ -102,11 +111,7 @@ final readonly class RenderRecipe implements DeployRecipe
                 # No healthCheckPath: Render's checks send no Authorization header,
                 # and /_health answers only the probe token. Render waits for the
                 # port instead; point a monitor of your own at the probes.
-            {$disk}
-                # Render's load balancer, inside 10.0.0.0/8, and Cloudflare in front of
-                # it (cloudflare.com/ips): neither sends a header of ours, so no
-                # TINVAR_TRUSTED_PROXY_SECRET.
-            {$yaml}{$databases}
+            {$disk}{$comment}{$yaml}{$databases}
             YAML;
 
         $steps = [
@@ -116,6 +121,7 @@ final readonly class RenderRecipe implements DeployRecipe
             ...array_map(static fn (string $variable): string => "#   {$variable}: your provider's value", array_values(array_diff(RecipeParts::broughtSecrets($app), ['APP_DATABASE_PASSWORD']))),
             ...($app->database->isServer() && $app->database->value !== 'postgres' ? ["# The {$app->database->title()} database: Render runs none; set APP_DATABASE_HOST, NAME, USER and PASSWORD to your provider's in place of the fromDatabase entries."] : []),
             ...RecipeParts::mailSteps($app),
+            ...RecipeParts::frontSteps($app, $proxy, $app->host("{$app->name}.onrender.com")),
             '# Check it, through /_health with the probe token:',
             RecipeParts::probeStep($app, $secrets[1], $domain),
         ];

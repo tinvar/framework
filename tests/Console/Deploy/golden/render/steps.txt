@@ -2,6 +2,6 @@
 # Render asks for each sync: false variable. Paste each from its file, which never leaves this machine otherwise:
 #   TINVAR_APP_KEY: pbcopy < '/home/you/.local/state/tinvar/my-app-2cab79174cf3.render.key'   (xclip -selection clipboard on Linux)
 #   TINVAR_PROBE_TOKEN: pbcopy < '/home/you/.local/state/tinvar/my-app-2cab79174cf3.render.probe-token'   (xclip -selection clipboard on Linux)
-# Mail: no provider that sends is named. Once the app sends mail, set TINVAR_MAIL_PROVIDER (smtp, ses, postmark, mailgun, resend or sendgrid) and its variables: production refuses log and array.
+# Mail: no provider that sends is named, and the app sends mail -- its accounts' links. Set TINVAR_MAIL_PROVIDER (smtp, ses, postmark, mailgun, resend or sendgrid) and its variables: production refuses to boot with none, log or array.
 # Check it, through /_health with the probe token:
 printf 'Authorization: Bearer %s\n' "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.render.probe-token')" | curl --fail --header @- https://my-app.onrender.com/_health

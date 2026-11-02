@@ -1,10 +1,14 @@
 # Create the app from fly.toml, without deploying it yet.
 fly launch --no-deploy --copy-config --name my-app
 # The database: create it (fly postgres create, or your provider's), put its host in APP_DATABASE_HOST in fly.toml, and its password in the secrets below.
-# The app key and the probe token, read from their files outside the project, into fly secrets.
-printf 'TINVAR_APP_KEY=%s\nTINVAR_PROBE_TOKEN=%s\n' "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.fly.key')" "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.fly.probe-token')" | fly secrets import
+# The secrets, read from their files outside the project, into fly secrets.
+printf 'TINVAR_APP_KEY=%s\nTINVAR_PROBE_TOKEN=%s\nTINVAR_TRUSTED_PROXY_SECRET=%s\n' "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.fly.key')" "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.fly.probe-token')" "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.fly.proxy-secret')" | fly secrets import
 printf 'APP_DATABASE_PASSWORD=%s\n' "$(cat /path/to/APP_DATABASE_PASSWORD)" | fly secrets import
 printf 'TINVAR_RESEND_KEY=%s\n' "$(cat /path/to/TINVAR_RESEND_KEY)" | fly secrets import
+# Cloudflare in front: proxy app.example.com through it (the orange cloud), and add a Transform Rule
+# (Rules, Transform Rules, Modify Request Header) for it: Set static X-Tinvar-Proxy to the value in
+# /home/you/.local/state/tinvar/my-app-2cab79174cf3.fly.proxy-secret (pbcopy < '/home/you/.local/state/tinvar/my-app-2cab79174cf3.fly.proxy-secret'). Cloudflare overwrites any a client sent;
+# a request that reaches the platform any other way does not have it, and names no client.
 fly deploy
 # Check it, through /_health with the probe token:
 printf 'Authorization: Bearer %s\n' "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.fly.probe-token')" | curl --fail --header @- https://app.example.com/_health
