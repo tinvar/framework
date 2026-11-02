@@ -142,6 +142,9 @@ final class AppConsole
      * @param (\Closure(): ?string)|null $keyFile where the app key is generated when TINVAR_APP_KEY gives none,
      *        for `key:generate` and `doctor`; null where the application has no file
      * @param (\Closure(): ?string)|null $probeTokenFile where the probe token is, likewise
+     * @param (\Closure(list<string>): int)|null $openapi tinvar/codegen's `openapi`, where it is
+     *        installed (ADR 0155): the public API as an OpenAPI 3.1 document, which `build` also
+     *        writes into the build as openapi.json when there is one to describe
      */
     public function __construct(
         string $root,
@@ -166,6 +169,7 @@ final class AppConsole
         private readonly ?\Closure $connect = null,
         private readonly ?\Closure $keyFile = null,
         private readonly ?\Closure $probeTokenFile = null,
+        private readonly ?\Closure $openapi = null,
     ) {
         $this->root = realpath($root) ?: $root;
         $this->projectRoot = $projectRoot === null ? $this->root : (realpath($projectRoot) ?: $projectRoot);
@@ -589,6 +593,14 @@ final class AppConsole
         if ($fragments !== 0) {
             return $fragments;
         }
+        // The public API's description, beside what it describes (ADR 0155):
+        // where codegen is installed and something is marked #[RequiresScope].
+        if ($this->openapi !== null) {
+            $described = ($this->openapi)(['--out=' . substr($build, \strlen('--build=')) . '/openapi.json', '--if-any']);
+            if ($described !== 0) {
+                return $described;
+            }
+        }
 
         return $this->discover([$build]);
     }
@@ -731,6 +743,11 @@ final class AppConsole
         $this->command('check', 'check', "Run the security model's build rules over the app, hold its lockfiles to its PackagePolicy (no network), and its Caddyfile to holding each response whole and bounding a stalled write", fn (array $a): int => $a === [] ? $this->check() : $this->usage('check'))
             ->command('config', 'config', "Every key the app's #[Config] classes read, where each value comes from, and no secret's; exits 1, naming each key, where the server would refuse to boot", fn (array $a): int => new ConfigCommand($this->classes()->configs)->run($a))
             ->command('codegen', 'codegen [--out=DIR] [--check]', 'Write the TypeScript the views use from the PHP; with --check, write nothing and fail if what is there differs', $this->codegen ?? static function (): int {
+                fwrite(STDERR, "tinvar/codegen is not installed: it is a dev dependency, which this install left out.\n");
+
+                return 1;
+            })
+            ->command('openapi', 'openapi [--out=FILE] [--check] [--if-any]', "The public API -- every action, query and endpoint marked #[RequiresScope] -- as an OpenAPI 3.1 document; printed unless --out names a file, and with --check, compared with it", $this->openapi ?? static function (): int {
                 fwrite(STDERR, "tinvar/codegen is not installed: it is a dev dependency, which this install left out.\n");
 
                 return 1;
