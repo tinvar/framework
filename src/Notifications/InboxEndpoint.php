@@ -12,6 +12,7 @@ use Tinvar\Http\Endpoints\Limits;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\NotFoundException;
+use Tinvar\Http\EntryGates;
 use Tinvar\Http\Pipeline;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
@@ -99,6 +100,9 @@ final readonly class InboxEndpoint
 
         return new Pipeline($stack)->run($request, function (Request $inner) use ($what, $rawBody): Response {
             $user = $this->auth->id() ?? throw new HttpException(401, 'Sign in to read your notifications.', 'unauthenticated');
+            // Its gates (#[RequiresPlan]) once a user is known: an inbox is
+            // its own user's, and that is its only check (ADR 0150).
+            EntryGates::enforce($inner);
             $body = Limits::input($inner, $rawBody, self::MAX_BODY_BYTES, 4);
 
             return match ($what) {

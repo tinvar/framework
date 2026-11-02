@@ -11,6 +11,7 @@ use Tinvar\Data\Encoder;
 use Tinvar\Data\SharedTags;
 use Tinvar\Endpoints\UnknownField;
 use Tinvar\Http\NotFoundException;
+use Tinvar\Http\EntryGates;
 use Tinvar\Http\Request;
 use Tinvar\Live\Invalidator;
 use Tinvar\Orm\Model;
@@ -169,6 +170,10 @@ final class ActionRunner
             throw new ValidationException($this->requiredOnly($action, $input, $setAside, $subject, $models));
         }
 
+        // Every check passed: then its gates (#[RequiresPlan]), which a
+        // caller the checks refuse never reaches (ADR 0150).
+        EntryGates::enforce($request);
+
         // 4. Validate, every form request, scalar parameter and upload
         //    before anything is reported. A Precognition call stops here.
         [$requests, $scalars, $uploads] = $this->validateInputs($action, $input, $subject, $models, $request);
@@ -257,6 +262,9 @@ final class ActionRunner
         $action = $this->registry->get($name);
         [$models, $unsent] = $this->resolveModels($action, $input);
         $setAside = $this->authorize($action, $models, $unsent);
+        // Its gates once the checks it can decide have passed: an answer to
+        // "would this do?" is behind them, as the call is (ADR 0150).
+        EntryGates::enforce($request);
 
         $subject = $this->subjectOf($action, $models);
 

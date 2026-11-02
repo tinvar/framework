@@ -15,6 +15,9 @@ namespace Tinvar\Tests\Http\MiddlewareAttributes;
 use Tinvar\Actions\ActionRegistry;
 use Tinvar\Actions\ActionResult;
 use Tinvar\Attributes\Action;
+use Tinvar\Attributes\Authorize;
+use Tinvar\Attributes\Get;
+use Tinvar\Attributes\Query;
 use Tinvar\Attributes\Layout;
 use Tinvar\Attributes\Middleware as UseMiddleware;
 use Tinvar\Attributes\NoAuthorization;
@@ -29,11 +32,13 @@ use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Data\Data;
 use Tinvar\Http\AttributeMiddleware;
 use Tinvar\Http\DeclaredMiddleware;
+use Tinvar\Http\EntryGates;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Kernel;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\MiddlewareAttribute;
 use Tinvar\Http\Middleware\VerifyCsrfToken;
+use Tinvar\Http\Pipeline;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Orm\IdentityMap;
@@ -214,29 +219,144 @@ final class BadgeApi
     }
 }
 
+/** Answers itself: anyone without an invite is sent to ask for one. */
+#[\Attribute(\Attribute::TARGET_CLASS | \Attribute::TARGET_METHOD)]
+final readonly class RequiresInvite implements MiddlewareAttribute
+{
+    public function middleware(): string
+    {
+        return CheckInvite::class;
+    }
+}
+
+final class CheckInvite implements AttributeMiddleware
+{
+    public function handle(MiddlewareAttribute $attribute, Request $request, \Closure $next): Response
+    {
+        return $request->header('x-invite') === null
+            ? Response::make(303, '', ['location' => '/ask-for-an-invite'])
+            : $next($request);
+    }
+}
+
+#[Page('/party', view: 'party'), PublicAccess, RequiresInvite]
+final class PartyPage
+{
+    public function __invoke(): TitleData
+    {
+        return new TitleData('Party');
+    }
+}
+
+/** What #[Authorize] decides about in the fixtures below: a vault some callers may enter. */
+final class Vault {}
+
+final class VaultPolicy
+{
+    public static bool $allow = false;
+
+    public function enter(?object $user, string $subject): bool
+    {
+        return self::$allow;
+    }
+}
+
+// Each entry point both checks who may reach it and gates it, as a page
+// with #[Authorize] and #[RequiresPlan] does. A caller the check refuses
+// learns nothing of the gate: it never runs for them (ADR 0150).
+
+#[Page('/vault', view: 'vault'), PublicAccess, Authorize('enter', Vault::class), RequiresBadge('vault')]
+final class VaultPage
+{
+    public function __invoke(): TitleData
+    {
+        return new TitleData('Vault');
+    }
+}
+
+#[Layout('/strongroom', view: 'strongroom/layout'), Authorize('enter', Vault::class), RequiresBadge('vault')]
+final class StrongroomLayout
+{
+    public function __invoke(): ?TitleData
+    {
+        return null;
+    }
+}
+
+#[Page('/strongroom/inside', view: 'strongroom/inside'), PublicAccess]
+final class StrongroomPage
+{
+    public function __invoke(): TitleData
+    {
+        return new TitleData('Inside');
+    }
+}
+
+final class VaultActions
+{
+    #[Action(name: 'vault.open'), PublicAccess, Authorize('enter', Vault::class), RequiresBadge('vault')]
+    public function open(): ActionResult
+    {
+        return ActionResult::ok(['opened' => true]);
+    }
+}
+
+#[Query(name: 'vault.peek'), PublicAccess, Authorize('enter', Vault::class), RequiresBadge('vault')]
+final class PeekVault
+{
+    public function __invoke(): TitleData
+    {
+        return new TitleData('Peek');
+    }
+}
+
+final class VaultApi
+{
+    #[Get('/api/vault', name: 'api.vault'), PublicAccess, Authorize('enter', Vault::class), RequiresBadge('vault')]
+    public function show(): TitleData
+    {
+        return new TitleData('Vault API');
+    }
+}
+
+#[WithoutSession(reason: 'a fixture API whose caller signs in with a header')]
+final class SessionlessVaultApi
+{
+    #[Post('/api/sessionless-vault', name: 'api.sessionlessVault'), UseMiddleware(HeaderSignIn::class), Authorize('enter', Vault::class), RequiresBadge('vault')]
+    public function show(): TitleData
+    {
+        return new TitleData('Vault API');
+    }
+}
+
 /** @param list<\Throwable> $reported */
 function kernel(array &$reported = []): Kernel
 {
     $routes = new RouteRegistry();
-    $routes->registerAll([GoldPage::class, OrderedPage::class, MembersLayout::class, LoungePage::class, StaffRoom::class, UnguardedPage::class]);
+    $routes->registerAll([GoldPage::class, OrderedPage::class, MembersLayout::class, LoungePage::class, StaffRoom::class, UnguardedPage::class, VaultPage::class, StrongroomLayout::class, StrongroomPage::class, PartyPage::class]);
     $actions = new ActionRegistry();
     $actions->register(BadgeActions::class);
+    $actions->register(VaultActions::class);
+    $queries = new QueryRegistry();
+    $queries->register(PeekVault::class);
     $endpoints = new EndpointRegistry();
     $endpoints->register(BadgeApi::class);
+    $endpoints->register(VaultApi::class);
+    $endpoints->register(SessionlessVaultApi::class);
     $auth = new AuthContext();
     HeaderSignIn::$auth = $auth;
 
     return new Kernel(
         orm: new Orm(PdoConnection::sqlite(':memory:', 'test'), new IdentityMap('test')),
         routes: $routes,
-        queries: new QueryRegistry(),
+        queries: $queries,
         actions: $actions,
         auth: $auth,
-        policies: new PolicyRegistry(),
+        policies: (new PolicyRegistry())->register(Vault::class, VaultPolicy::class),
         resolver: static fn (string $class): object => $class === Unregistered::class
             ? throw new \LogicException('Nothing is registered for ' . Unregistered::class . '.')
             : new $class(),
-        allowedQueries: static fn (Request $r): array => [],
+        allowedQueries: static fn (Request $r): array => ['vault.peek'],
         log: static function (\Throwable $e) use (&$reported): void {
             $reported[] = $e;
         },
@@ -266,6 +386,7 @@ function action(string $name, ?string $badge = null): Request
 
 beforeEach(function () {
     CheckBadge::$ran = [];
+    VaultPolicy::$allow = false;
 });
 
 it('hands the middleware the attribute, so it reads its arguments', function () {
@@ -334,4 +455,68 @@ it('refuses a reference that no longer points at the attribute it names', functi
     expect(DeclaredMiddleware::on(GoldPage::class))->toBe([RequiresBadge::class . '@' . GoldPage::class . '#0'])
         ->and(fn () => DeclaredMiddleware::attribute(RequiresUnregistered::class . '@' . GoldPage::class . '#0'))->toThrow(\LogicException::class, 'points at no')
         ->and(fn () => DeclaredMiddleware::attribute(RequiresBadge::class . '@' . GoldPage::class . '#3'))->toThrow(\LogicException::class, 'points at no');
+});
+
+// The gate runs after the entry point's #[Authorize]: run ahead of it, a
+// 402 told a caller the check refuses -- a visitor, a user of another
+// tenant -- whether the tenant has the plan (ADR 0150).
+it('runs after the entry point\'s #[Authorize], so a caller the check refuses learns nothing of the gate', function (\Closure $call) {
+    $kernel = kernel();
+
+    expect($call($kernel, null)->status)->toBe(403)
+        ->and($call($kernel, 'vault')->status)->toBe(403)
+        ->and(CheckBadge::$ran)->toBe([]);
+
+    VaultPolicy::$allow = true;
+
+    expect($call($kernel, null)->status)->toBe(402)
+        ->and($call($kernel, 'vault')->status)->toBe(200)
+        ->and(CheckBadge::$ran)->toBe(['vault', 'vault']);
+})->with([
+    'a page' => [static fn (Kernel $k, ?string $badge): Response => $k->handle(visit('/vault', $badge), page())],
+    'a layout' => [static fn (Kernel $k, ?string $badge): Response => $k->handle(visit('/strongroom/inside', $badge), page())],
+    'an action' => [static fn (Kernel $k, ?string $badge): Response => $k->handle(action('vault.open', $badge), page(), '{}')],
+    'a query over /_query' => [static fn (Kernel $k, ?string $badge): Response => $k->handle(new Request('POST', '/_query/vault.peek', [
+        'content-type' => 'application/json',
+        VerifyCsrfToken::HEADER => 't',
+        ...($badge === null ? [] : ['x-badge' => $badge]),
+    ], cookies: [VerifyCsrfToken::COOKIE => 't']), page(), '{"args":{}}')],
+    'an endpoint' => [static fn (Kernel $k, ?string $badge): Response => $k->handle(new Request('GET', '/api/vault', [
+        'accept' => 'application/json',
+        ...($badge === null ? [] : ['x-badge' => $badge]),
+    ]), page())],
+    'a sessionless endpoint' => [static fn (Kernel $k, ?string $badge): Response => $k->handle(new Request('POST', '/api/sessionless-vault', [
+        'content-type' => 'application/json',
+        'accept' => 'application/json',
+        'x-caller' => 'ann',
+        ...($badge === null ? [] : ['x-badge' => $badge]),
+    ]), page(), '{}')],
+]);
+
+it('answers with a gate\'s own answer when it answers without calling $next, the page never loaded', function () {
+    $kernel = kernel();
+    $refused = $kernel->handle(visit('/party'), page());
+
+    expect($refused->status)->toBe(303)
+        ->and($refused->header('location'))->toBe('/ask-for-an-invite')
+        ->and($kernel->handle(new Request('GET', '/party', ['x-invite' => 'yes']), page())->status)->toBe(200);
+});
+
+// A gate is only recorded where it stands in the stack, and run by the
+// runner once the checks have passed. A runner that never ran it must not
+// answer as if it had passed.
+it('fails closed when nothing runs a deferred gate: a request answered without it is refused', function () {
+    $gate = EntryGates::defer(new Order());
+    $answer = static fn (int $status): \Closure => static fn (Request $r): Response => Response::make($status);
+
+    expect(fn () => new Pipeline([$gate])->run(visit('/'), $answer(200)))->toThrow(\LogicException::class, 'nothing ran it')
+        ->and(CheckBadge::$ran)->toBe([])
+        // A refusal is answered as it was: the gate had nothing to add.
+        ->and(new Pipeline([$gate])->run(visit('/'), $answer(403))->status)->toBe(403)
+        ->and(new Pipeline([$gate])->run(visit('/'), static function (Request $r): Response {
+            EntryGates::enforce($r);
+
+            return Response::make(200);
+        })->status)->toBe(200)
+        ->and(CheckBadge::$ran)->toBe(['order']);
 });

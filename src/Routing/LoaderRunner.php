@@ -11,6 +11,7 @@ use Tinvar\Auth\Gate;
 use Tinvar\Data\Data;
 use Tinvar\Data\DataShape;
 use Tinvar\Data\PayloadContext;
+use Tinvar\Http\EntryGates;
 use Tinvar\Http\ForbiddenException;
 use Tinvar\Http\Request;
 use Tinvar\Live\TagsRead;
@@ -70,6 +71,9 @@ final class LoaderRunner
         // the route chain" -- a refresh of one segment is still a refresh of
         // a page the session must be allowed to see.
         $this->authorize($chain, $models);
+        // Then its gates (#[RequiresPlan]), which a caller the checks refuse
+        // never reaches (ADR 0150).
+        EntryGates::enforce($request);
 
         // The chain's loaders share one read-only transaction rather than
         // opening one each; each is still a read-only scope in invoke().
@@ -211,6 +215,7 @@ final class LoaderRunner
         $models = $binder->resolveChain($chain, $chain->parameters);
 
         $this->authorize($chain, $models);
+        EntryGates::enforce($request);
 
         return $models;
     }

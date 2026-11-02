@@ -218,7 +218,7 @@ final class EndpointHandler
         }
 
         try {
-            $errors = $this->runner->precognition($endpoint, $parameters, $input, $only);
+            $errors = $this->runner->precognition($endpoint, $parameters, $input, $only, $request);
         } catch (UnknownField) {
             // A name the client chose, not an author's typo: bad input, and
             // not quoted back.

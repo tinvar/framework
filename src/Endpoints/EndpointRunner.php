@@ -13,6 +13,7 @@ use Tinvar\Data\Data;
 use Tinvar\Data\Encoder;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\NotFoundException;
+use Tinvar\Http\EntryGates;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Orm\Model;
@@ -76,6 +77,10 @@ final class EndpointRunner
         if ($setAside !== []) {
             throw new ValidationException($this->requiredOnly($endpoint, $input, $setAside, $models, $subject));
         }
+
+        // Every check passed: then its gates (#[RequiresPlan]), which a
+        // caller the checks refuse never reaches (ADR 0150).
+        EntryGates::enforce($request);
 
         // 3. Validate, every form request before anything is reported.
         $requests = $this->validate($endpoint, $input, $models, $subject);
@@ -157,13 +162,17 @@ final class EndpointRunner
      * @param array<string, string> $path
      * @param array<string, mixed>  $input
      * @param list<string>|null     $only the fields to judge; null for every form request whole
+     * @param Request|null          $request the call, whose gates run once the checks have passed
      * @return array<string, list<string>> each field's errors; none when the input would do
      * @throws UnknownField when $only names a field no form request declares
      */
-    public function precognition(CompiledEndpoint $endpoint, array $path, array $input, ?array $only): array
+    public function precognition(CompiledEndpoint $endpoint, array $path, array $input, ?array $only, ?Request $request = null): array
     {
-        return $this->orm->readOnly(function () use ($endpoint, $path, $input, $only): array {
+        return $this->orm->readOnly(function () use ($endpoint, $path, $input, $only, $request): array {
             [$models, $subject, $setAside] = $this->resolveAndAuthorize($endpoint, $path, $input);
+            // Its gates once the checks it can decide have passed: an answer
+            // to "would this do?" is behind them, as the call is (ADR 0150).
+            EntryGates::enforce($request);
 
             // As run() answers: the field left out is required, and every
             // other field waits for it, since none has been cleared to be

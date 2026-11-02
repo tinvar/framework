@@ -11,6 +11,7 @@ use Tinvar\Http\Endpoints\Limits;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\NotFoundException;
+use Tinvar\Http\EntryGates;
 use Tinvar\Http\Pipeline;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
@@ -129,6 +130,9 @@ final readonly class TransferEndpoint
 
         $arguments = $this->runner->arguments($transfer, self::argumentsOf($body));
         $this->runner->authorize($transfer, $arguments);
+        // Then its gates (#[RequiresPlan]), which a caller the checks refuse
+        // never reaches (ADR 0150).
+        EntryGates::enforce($request);
 
         $record = $this->record($request, $transfer, $format);
         $this->transfers->store->add($record);
@@ -154,6 +158,7 @@ final readonly class TransferEndpoint
         $body = Limits::form($request->body, $this->maxBodyBytes, $this->maxJsonDepth);
         $arguments = $this->runner->arguments($transfer, self::argumentsOf($body));
         $this->runner->authorize($transfer, $arguments);
+        EntryGates::enforce($request);
         $record = $this->record($request, $transfer, 'csv');
 
         $file = self::receivedFile($request);

@@ -10,6 +10,7 @@ use Tinvar\Auth\PanelContext;
 use Tinvar\Http\EntryContext;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
+use Tinvar\Http\EntryGates;
 use Tinvar\Http\Pipeline;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
@@ -124,6 +125,9 @@ final readonly class DownloadEndpoint
             || !hash_equals($token->authHash, $this->transfers->authHash($user, $this->auth->epoch()))) {
             throw self::missing();
         }
+        // The export's gates (#[RequiresPlan]), once the token holds: a
+        // caller it does not hold for learns nothing of them (ADR 0150).
+        EntryGates::enforce($request);
 
         $record = $this->transfers->store->find($token->transfer, $token->tenant, $token->panel, $user);
         if ($record === null

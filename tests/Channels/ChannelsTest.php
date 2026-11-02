@@ -217,6 +217,39 @@ final readonly class Vaults
     public function __construct(public int $vault) {}
 }
 
+/** A package's gate, as #[RequiresPlan] is (ADR 0150): a request must carry `x-pass`. */
+#[\Attribute(\Attribute::TARGET_CLASS | \Attribute::TARGET_METHOD)]
+final readonly class RequiresPass implements \Tinvar\Http\MiddlewareAttribute
+{
+    public function middleware(): string
+    {
+        return CheckPass::class;
+    }
+}
+
+final class CheckPass implements \Tinvar\Http\AttributeMiddleware
+{
+    public static int $ran = 0;
+
+    public function handle(\Tinvar\Http\MiddlewareAttribute $attribute, Request $request, \Closure $next): Response
+    {
+        self::$ran++;
+        if ($request->header('x-pass') === null) {
+            throw new HttpException(402, 'This needs a pass.', 'plan_required');
+        }
+
+        return $next($request);
+    }
+}
+
+/** Checked and gated, its gate written on the constructor where its check is read. */
+#[Channel('gated.{script}', message: ScriptRunData::class), Authorize('view', 'script'), TenantFrom(FromHeader::class)]
+final readonly class GatedScripts
+{
+    #[RequiresPass]
+    public function __construct(public Script $script) {}
+}
+
 // --- refused at registration -------------------------------------------------
 
 #[Channel('scripts.{script}', message: OtherData::class), Authorize('viewAny', Script::class), TenantFrom(FromHeader::class)]
@@ -272,7 +305,7 @@ function kernel(?\Tinvar\Routing\Domains $domains = null): array
     $container = new Container();
 
     $channels = new ChannelRegistry();
-    $channels->registerAll([ScriptRuns::class, Status::class, Rooms::class, Vaults::class, ...($domains === null ? [] : [AdminStatus::class])]);
+    $channels->registerAll([ScriptRuns::class, Status::class, Rooms::class, Vaults::class, GatedScripts::class, ...($domains === null ? [] : [AdminStatus::class])]);
     $actions = new ActionRegistry();
     $actions->registerAll([SessionActions::class]);
     $endpoints = new EndpointRegistry();
@@ -553,6 +586,27 @@ it('runs the middleware written on a channel\'s constructor, where its checks ar
 
     expect($response->status)->toBe(402)
         ->and($body)->not->toHaveKey('token');
+});
+
+// A gate runs once the channel's checks have passed: run ahead of them, a
+// 402 told a user the check refuses whether the tenant has the plan.
+it('runs a channel\'s gate after its #[Authorize], so a user the check refuses learns nothing of it', function () {
+    [$kernel, , , $fixture] = kernel();
+    $script = $fixture->scripts['acme'][0];
+    CheckPass::$ran = 0;
+
+    [$refused] = subscribe($kernel, 'gated', ['script' => $script], [...BOB, 'x-pass' => '1']);
+    [$unrefused] = subscribe($kernel, 'gated', ['script' => $script], BOB);
+    expect($refused->status)->toBe(403)
+        ->and($unrefused->status)->toBe(403)
+        ->and(CheckPass::$ran)->toBe(0);
+
+    [$gated] = subscribe($kernel, 'gated', ['script' => $script], ALICE);
+    [$passed, $body] = subscribe($kernel, 'gated', ['script' => $script], [...ALICE, 'x-pass' => '1']);
+    expect($gated->status)->toBe(402)
+        ->and($passed->status)->toBe(200)
+        ->and($body['token'])->toBeString()
+        ->and(CheckPass::$ran)->toBe(2);
 });
 
 describe('a trade', function () {

@@ -120,6 +120,7 @@ final class QueryEndpoint
         $results = $this->runner->run(
             [['id' => 0, 'name' => $name, 'args' => $args]],
             ($this->allowedFor)($request),
+            request: $request,
         );
 
         $result = $results[0];

@@ -90,7 +90,10 @@ final class DeclaredMiddleware
 
     /**
      * The middleware a reference stands for: the attribute's middleware(),
-     * built by $resolver, handed the attribute with each request.
+     * built by $resolver, handed the attribute with each request -- and
+     * deferred: where it stands in the stack it only records itself, and
+     * the entry point's runner runs it once its #[Authorize] checks have
+     * passed (EntryGates).
      *
      * @param \Closure(class-string): object $resolver
      * @throws \LogicException for a reference that points at nothing, or a middleware that cannot be built
@@ -118,14 +121,16 @@ final class DeclaredMiddleware
             throw new \LogicException("{$declared} names {$class} as its middleware, and the resolver built " . get_debug_type($handler) . ', which is no ' . AttributeMiddleware::class . '.');
         }
 
-        return new readonly class ($handler, $attribute) implements Middleware {
+        // Deferred where it stands in the stack, and run by the entry point's
+        // runner once its #[Authorize] checks have passed (EntryGates).
+        return EntryGates::defer(new readonly class ($handler, $attribute) implements Middleware {
             public function __construct(private AttributeMiddleware $handler, private MiddlewareAttribute $attribute) {}
 
             public function handle(Request $request, \Closure $next): Response
             {
                 return $this->handler->handle($this->attribute, $request, $next);
             }
-        };
+        });
     }
 
     /**

@@ -12,6 +12,7 @@ use Tinvar\Http\EntryContext;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Middleware\RequireAuthentication;
+use Tinvar\Http\EntryGates;
 use Tinvar\Http\Pipeline;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
@@ -139,6 +140,9 @@ final class ChannelEndpoint
             if ($channel->personal && $this->auth->id() === null) {
                 throw new HttpException(401, 'A personal channel is heard by the user signed in, and nobody is.', 'unauthenticated');
             }
+            // Its gates (#[RequiresPlan]) once every check has passed: a
+            // caller the checks refuse learns nothing of them (ADR 0150).
+            EntryGates::enforce($inner);
 
             $tenant = TenantClaim::current($this->orm);
             $at = $now ?? time();
@@ -199,6 +203,7 @@ final class ChannelEndpoint
             if ($channel->personal && $this->auth->id() === null) {
                 throw new HttpException(404, 'A personal channel is heard by the user signed in, and nobody is.', 'live_unavailable');
             }
+            EntryGates::enforce($inner);
             // A personal channel's topic is the signed-in user's, worked out
             // again: one minted for anyone else names another topic.
             if (!hash_equals($token->topic, $this->topics->forChannel($tenant, $channel, $resolved, $this->auth->id()))) {

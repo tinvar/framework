@@ -13,6 +13,7 @@ use Tinvar\Auth\PanelContext;
 use Tinvar\Http\EntryContext;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Middleware;
+use Tinvar\Http\EntryGates;
 use Tinvar\Http\Pipeline;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
@@ -286,7 +287,15 @@ final class UploadEndpoint
             ),
         ];
 
-        return new Pipeline($stack)->run($request, $then);
+        // The action's gates (#[RequiresPlan], ADR 0150) are deferred to
+        // after its checks, and an upload runs none of them -- what admits
+        // it is its ticket, bound when the page that holds it was drawn --
+        // so they run once the stack has, ahead of $then.
+        return new Pipeline($stack)->run($request, static function (Request $inner) use ($then): Response {
+            EntryGates::enforce($inner);
+
+            return $then($inner);
+        });
     }
 
     /**

@@ -21,6 +21,8 @@ use Tinvar\Orm\Orm;
 use Tinvar\Protocol\Frame;
 use Tinvar\Protocol\ProtocolException;
 use Tinvar\Support\Uuid;
+use Tinvar\Http\EntryGates;
+use Tinvar\Http\Request;
 
 /**
  * Runs one tick's worth of query calls.
@@ -156,9 +158,12 @@ final class QueryRunner
      * @param SharedReads|null $shared the render's shared data, read by calls named
      *        `$shared.key` beside the queries of the tick; none -- an HTTP call, a
      *        render handed none -- and every such call is refused (ADR 0060)
+     * @param Request|null $request the HTTP call to /_query it answers, whose
+     *        gates (#[RequiresPlan]) run for a call once its checks have
+     *        passed (ADR 0150); null for a render's, which run behind its page's
      * @return list<array{id: int, value?: mixed, error?: array{code: string, digest: string, message?: string}}>
      */
-    public function run(array $calls, array $allowed, ?SharedReads $shared = null): array
+    public function run(array $calls, array $allowed, ?SharedReads $shared = null, ?Request $request = null): array
     {
         /** @var array<int, array{code: string, digest: string, message?: string}> $errors */
         $errors = [];
@@ -232,6 +237,8 @@ final class QueryRunner
                 $errors[$id] = $denial;
                 continue;
             }
+            // Then its gates, which a caller the checks refuse never reaches.
+            EntryGates::enforce($request);
 
             // Dedupe on the validated arguments, before substitution: models
             // are objects and would not key stably. Keyed in admit(), where an
