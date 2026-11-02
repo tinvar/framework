@@ -211,10 +211,11 @@ it('writes a resource that lints, registers, passes the build rules, type-checks
     routeTable($app);
 
     expect($app(['Accounts/Customer', '--fields=name:string,email:string']))->toBe(0, implode("\n", $app->err))
-        ->and($app(['Orders/Order', '--fields=' . ORDER_FIELDS]))->toBe(0, implode("\n", $app->err))
-        // No line of text to name a row by, a relation that may be empty, and
-        // names as long as they may be, which prettier breaks lines for.
-        ->and($app(['Shipping/InternationalConsignment', '--fields=deliveredToTheRecipientAtTheirDoorstepOn:?timestamp,recipient:?belongsTo(Customer),'
+        ->and($app(['Orders/Order', '--fields=' . ORDER_FIELDS, '--panel=admin']))->toBe(0, implode("\n", $app->err));
+    $placed = implode("\n", $app->out);
+    // No line of text to name a row by, a relation that may be empty, and
+    // names as long as they may be, which prettier breaks lines for.
+    expect($app(['Shipping/InternationalConsignment', '--fields=deliveredToTheRecipientAtTheirDoorstepOn:?timestamp,recipient:?belongsTo(Customer),'
             . 'insured:?bool,declaredValueInTheSmallestUnitOfCurrency:float,carrier:enum(PostOffice,Courier),handlingInstructionsForTheCourierTeam:?string']))->toBe(0, implode("\n", $app->err));
 
     $migrations = glob("{$app->root}/database/migrations/*.php") ?: [];
@@ -252,6 +253,7 @@ it('writes a resource that lints, registers, passes the build rules, type-checks
         'app/Http/Queries/Orders/ShowOrder.php',
         'app/Http/Requests/Accounts/SaveCustomerRequest.php',
         'app/Http/Requests/Orders/SaveOrderRequest.php',
+        'app/Http/Resources/Orders/OrderResource.php',
         'app/Policies/Accounts/CustomerPolicy.php',
         'app/Policies/Orders/OrderPolicy.php',
         'composer.json',
@@ -294,6 +296,15 @@ it('writes a resource that lints, registers, passes the build rules, type-checks
         ->and($app->read('app/Http/Actions/Orders/OrderActions.php'))->toContain("#[Action, Authorize('create', Order::class), Authorize('view', 'customer')]")
         ->and($app->read('app/Http/Actions/Orders/OrderActions.php'))->toContain("#[Action, Authorize('delete', 'order')]")
         ->and($app->read('app/Policies/Orders/OrderPolicy.php'))->toContain('#[Policy(Order::class)]')
+        // And in the admin panel, under its name, beside its own pages.
+        ->and($app->read('app/Http/Resources/Orders/OrderResource.php'))->toContain("#[AdminResource(model: Order::class, panel: 'admin', path: '/admin/orders')]")
+        ->and($app->read('app/Http/Resources/Orders/OrderResource.php'))->toContain("Column::make('title')->sortable()->searchable(),")
+        ->and($app->read('app/Http/Resources/Orders/OrderResource.php'))->toContain("Column::make('customer'),")
+        ->and($app->read('app/Http/Resources/Orders/OrderResource.php'))->toContain("Field::make('notes')->textarea(),")
+        ->and($app->read('app/Http/Resources/Orders/OrderResource.php'))->toContain("Filter::make('status'),")
+        ->and($app->read('app/Http/Resources/Orders/OrderResource.php'))->toContain('return [BulkAction::delete()];')
+        ->and($app->read('app/Http/Resources/Orders/OrderResource.php'))->not->toContain("make('id')")
+        ->and($placed)->toContain('admin/resources/index, admin/resources/show and admin/resources/form')
         ->and($app->read('resources/pages/orders/index.tsx'))->toContain("from '@meridian/ui';")
         ->and($app->read('resources/entries/rsc.tsx'))->toContain("  'orders/edit': { Page: OrdersEditPage as Page, layouts: [] },")
         ->and($app->out)->toContain('No test was written: the app has no tests/ directory, or no Kernel::fromEnvironment(database:, telemetry:) and Database\Migrations to build one with, as the skeleton has.');
@@ -322,7 +333,7 @@ it('writes a resource that lints, registers, passes the build rules, type-checks
     $routes->registerAll($classes->routes);
     $actions = new ActionRegistry(models: $classes->models);
     $actions->registerAll($classes->actions);
-    expect(array_map(static fn ($page): string => $page->template, $routes->pages()))->toContain('/orders', '/orders/new', '/orders/{order}', '/orders/{order}/edit')
+    expect(array_map(static fn ($page): string => $page->template, $routes->pages()))->toContain('/orders', '/orders/new', '/orders/{order}', '/orders/{order}/edit', '/admin/orders', '/admin/orders/{record}/edit')
         ->and((new QueryRegistry())->registerAll($classes->queries))->toBe(['accounts.listCustomers', 'accounts.showCustomer', 'orders.listOrders', 'orders.showOrder', 'shipping.listInternationalConsignments', 'shipping.showInternationalConsignment'])
         ->and(array_map(static fn ($action): string => $action->name, $actions->all()))->toContain('OrderActions.create', 'OrderActions.update', 'OrderActions.destroy')
         ->and(array_keys($classes->policies))->toBe([$app->class('Database\Models\Accounts\Customer'), $app->class('Database\Models\Orders\Order'), $app->class('Database\Models\Shipping\InternationalConsignment')])
@@ -513,6 +524,23 @@ it('asks for the name and each field, one at a time, where a person is there', f
         ->assertAsked('Which model does customer belong to?');
     expect($app->read('app/Database/Models/Orders/Order.php'))->toContain("#[BelongsTo(onDelete: 'set null')] public ?Customer \$customer;")
         ->and($app->read('app/Database/Models/Orders/OrderStatus.php'))->toContain("case Published = 'published';");
+});
+
+it('asks whether to place it in a panel, and which', function () {
+    $app = $this->app;
+    $prompts = Prompts::fake(['Racks/Rack', 'label', 'string', false, '', true, 'admin']);
+
+    expect($app([]))->toBe(0, implode("\n", $app->err));
+    $prompts->assertAsked('Place it in a panel?')->assertAsked('Which panel?');
+    expect($app->read('app/Http/Resources/Racks/RackResource.php'))->toContain("panel: 'admin', path: '/admin/racks'");
+});
+
+it('refuses a panel name that is not one, writing nothing', function () {
+    $app = $this->app;
+
+    expect($app(['Orders/Order', '--fields=title:string', '--panel=Admin Panel']))->toBe(MakeCommand::USAGE)
+        ->and(implode("\n", $app->err))->toContain("is not a panel's name")
+        ->and($app->files())->toBe(['composer.json']);
 });
 
 // bin/tinvar hands the generators the shop. Only a refusal is run here: a

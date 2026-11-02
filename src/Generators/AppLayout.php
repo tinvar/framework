@@ -45,7 +45,7 @@ final readonly class AppLayout
     ) {}
 
     /** The kinds a generator writes that are the application's HTTP side. */
-    private const array HTTP = ['Pages', 'Queries', 'Actions', 'Requests', 'Data'];
+    private const array HTTP = ['Pages', 'Queries', 'Actions', 'Requests', 'Data', 'Resources'];
 
     /**
      * The namespace, under the application's, that a kind of class goes in:
@@ -60,7 +60,7 @@ final readonly class AppLayout
      * (it has app/Http/), and the flat one otherwise. app/Database/ alone
      * does not count: an older skeleton maps App\Database\ to database/.
      *
-     * @param string $kind Pages, Queries, Actions, Requests, Data or Models
+     * @param string $kind Pages, Queries, Actions, Requests, Data, Resources or Models
      */
     public function area(string $kind): string
     {

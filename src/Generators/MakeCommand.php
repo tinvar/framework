@@ -68,7 +68,7 @@ final class MakeCommand
         'make:query' => 'tinvar make:query <Name> [--model=Rack]',
         'make:action' => 'tinvar make:action <Class> <method> [--model=Rack] [--request]',
         'make:model' => 'tinvar make:model <Name> [--table=racks] [--columns=name:string,heightU:int,notes:?string] [--factory] [--migration]',
-        'make:resource' => 'tinvar make:resource <Name> --fields="title:string,status:enum(Draft,Published),price:int,customer:belongsTo" [--path=/orders]',
+        'make:resource' => 'tinvar make:resource <Name> --fields="title:string,status:enum(Draft,Published),price:int,customer:belongsTo" [--path=/orders] [--panel=admin]',
     ];
 
     /**
@@ -358,7 +358,7 @@ final class MakeCommand
      */
     private function resource(array $positional, array $options, string $usage): array
     {
-        self::only($options, ['fields', 'path'], $usage);
+        self::only($options, ['fields', 'path', 'panel'], $usage);
         [$name] = self::positional($positional, 1, $usage);
         $segments = Names::classPath($name, 'resource name', 'Orders/Order');
         $short = end($segments);
@@ -418,6 +418,11 @@ final class MakeCommand
             throw new \InvalidArgumentException("--path={$basePath} is under /_, where every path is the framework's. Choose another, as in --path=/orders.");
         }
         $routePrefix = implode('.', array_map(Names::camel(...), $kebab));
+        $panel = match (true) {
+            !isset($options['panel']) => null,
+            $options['panel'] === true => throw new \InvalidArgumentException("--panel takes a panel's name, as in --panel=admin. Usage: {$usage}"),
+            default => self::panelName($options['panel']),
+        };
 
         $enums = [];
         foreach ($fields as $field) {
@@ -490,13 +495,16 @@ final class MakeCommand
             test: $test,
             testPath: $test === null ? null : $this->layout->inProject('tests/' . str_replace('\\', '/', substr($test, \strlen('Tests\\'))) . '.php'),
             appNamespace: $this->layout->namespace,
+            resource: $panel === null ? null : $this->class('Resources', [...$domain, "{$short}Resource"]),
+            panel: $panel,
         );
 
         $screens = ['index' => '', 'show' => "/{{$parameter}}", 'create' => '/new', 'edit' => "/{{$parameter}}/edit"];
-        $collisions = $this->registrations->collisions(
-            array_values(array_map(static fn (string $rest): string => $basePath . $rest, $screens)),
-            array_map($plan->route(...), array_keys($screens)),
-        );
+        $paths = array_values(array_map(static fn (string $rest): string => $basePath . $rest, $screens));
+        if ($panel !== null) {
+            $paths = [...$paths, ...array_map(static fn (string $rest): string => $plan->panelPath() . $rest, ['', '/new', '/{record}', '/{record}/edit'])];
+        }
+        $collisions = $this->registrations->collisions($paths, array_map($plan->route(...), array_keys($screens)));
         if ($collisions !== []) {
             throw new GenerationRefused(implode('; ', $collisions) . '. Nothing was written: give the resource another --path or name.');
         }
@@ -544,6 +552,9 @@ final class MakeCommand
             ->add($this->layout->pathOf($plan->createPage), ResourceSources::page($plan, 'create'))
             ->add($this->layout->pathOf($plan->editPage), ResourceSources::page($plan, 'edit'))
             ->add($this->layout->pathOf($plan->policy), ResourceSources::policy($plan));
+        if ($plan->resource !== null) {
+            $files->add($this->layout->pathOf($plan->resource), ResourceSources::adminResource($plan));
+        }
 
         $views = [];
         foreach (array_keys($screens) as $screen) {
@@ -570,6 +581,11 @@ final class MakeCommand
         $next[] = $migrationPath === null
             ? "Then `tinvar make:migration create_{$table}` for its table, and `tinvar migrate`."
             : 'Then `tinvar migrate` for its table.';
+        if ($panel !== null) {
+            $next[] = "In the {$panel} panel at {$plan->panelPath()}: its three resource views, {$panel}/resources/index, {$panel}/resources/show and {$panel}/resources/form, "
+                . 'must be in the route table, drawn once for every resource in the panel. If the panel is on a host of its own, add the #[Domain] its pages carry to '
+                . Names::short($plan->resource ?? '') . '.';
+        }
         $next[] = Names::short($plan->policy) . " lets anyone signed in do anything with any {$parameter}, and a guest nothing: say there who may before it ships.";
         if ($test === null) {
             $next[] = $this->whyNoTest($relatedFactories);
@@ -583,6 +599,16 @@ final class MakeCommand
         ];
 
         return [$files, $next, $registered];
+    }
+
+    /** A panel's name, as a #[Panel] names one: lower case letters, digits, '-' and '_'. */
+    private static function panelName(string $value): string
+    {
+        if (preg_match('/^[a-z][a-z0-9_-]{0,31}\z/', $value) !== 1) {
+            throw new \InvalidArgumentException("'{$value}' is not a panel's name: lower case letters, digits, '-' and '_', as in --panel=admin.");
+        }
+
+        return $value;
     }
 
     /**
@@ -790,6 +816,9 @@ final class MakeCommand
                 }
                 if (!isset($options['fields']) && \count($positional) === 1) {
                     $options['fields'] = $this->askFields();
+                    if (!isset($options['panel']) && Prompts::confirm('Place it in a panel?', default: false, hint: 'An #[AdminResource]: its list, record and forms in a panel, beside its own pages.', name: 'placed')) {
+                        $options['panel'] = Prompts::text('Which panel?', placeholder: 'admin', required: true, validate: self::verdict(self::panelName(...)), name: 'panel');
+                    }
                 }
                 break;
             case 'make:model':

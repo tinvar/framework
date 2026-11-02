@@ -794,6 +794,59 @@ final class ResourceSources
             . $body;
     }
 
+    /**
+     * The model's screens in a panel (ADR 0151): an #[AdminResource] the
+     * framework registers as four pages and four actions behind the panel's
+     * guard and membership, each asking the same policy. Every field is in
+     * its form; the list shows them but long text, sorts by any but a
+     * relation and searches the lines of text; an enum is a filter.
+     */
+    public static function adminResource(ResourcePlan $p): string
+    {
+        $class = (string) $p->resource;
+        $uses = new Uses($class);
+        $model = $uses->name($p->model);
+        $columnClass = $uses->name(\Tinvar\Resources\Column::class);
+        $fieldClass = $uses->name(\Tinvar\Resources\Field::class);
+        $columns = [];
+        $fields = [];
+        $filters = [];
+        foreach ($p->fields as $field) {
+            if ($field->kind !== 'text') {
+                $columns[] = "            {$columnClass}::make('{$field->name}')"
+                    . ($field->kind === 'belongsTo' ? '' : '->sortable()')
+                    . ($field->kind === 'string' ? '->searchable()' : '') . ',';
+            }
+            $fields[] = "            {$fieldClass}::make('{$field->name}')" . ($field->kind === 'text' ? '->textarea()' : '') . ',';
+            if ($field->kind === 'enum') {
+                $filters[] = '            ' . $uses->name(\Tinvar\Resources\Filter::class) . "::make('{$field->name}'),";
+            }
+        }
+        $list = static fn (array $lines): string => $lines === [] ? '[]' : "[\n" . implode("\n", $lines) . "\n        ]";
+        $method = static fn (string $name, string $returns, string $about): string => "    /** {$about} */\n"
+            . "    public static function {$name}(): array\n"
+            . "    {\n"
+            . "        return {$returns};\n"
+            . "    }\n";
+
+        $body = "/**\n"
+            . Sources::wrap("{$p->plural} in the {$p->panel} panel, written by `tinvar make:resource --panel={$p->panel}`: a list, a record, a create and an edit form, deleting one and deleting several, at {$p->panelPath()}. Each is a page or an action behind the panel's guard and membership, asking " . Names::short($p->policy) . ' as the resource\'s own pages do; the panel draws them with its three resource views.')
+            . " */\n"
+            . '#[' . $uses->name(\Tinvar\Attributes\AdminResource::class) . "(model: {$model}::class, panel: '{$p->panel}', path: '{$p->panelPath()}')]\n"
+            . 'final class ' . Names::short($class) . ' extends ' . $uses->name(\Tinvar\Resources\Resource::class) . "\n"
+            . "{\n"
+            . $method('columns', $list($columns), 'What the list shows, sorts by and searches.') . "\n"
+            . $method('fields', $list($fields), 'What the create and edit forms ask, each read as the model types it.') . "\n"
+            . $method('filters', $list($filters), 'What the list may be narrowed to.') . "\n"
+            . $method('bulkActions', '[' . $uses->name(\Tinvar\Resources\BulkAction::class) . '::delete()]', 'What may be done to several at once: each asks the policy of each row.')
+            . "}\n";
+
+        return self::HEADER
+            . 'namespace ' . Sources::namespaceOf($class) . ";\n\n"
+            . $uses->block()
+            . $body;
+    }
+
     // ------------------------------------------------------------- views
     //
     // Each view is written as prettier leaves it at the workspace's print

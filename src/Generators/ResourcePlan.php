@@ -24,6 +24,8 @@ final readonly class ResourcePlan
      *        property its choices are labelled by
      * @param array<string, string|null> $relatedFactories belongsTo field name => the related
      *        model's factory, where it has one the test can make a row with
+     * @param string|null $resource the #[AdminResource] class placing it in a panel, with --panel
+     * @param string|null $panel the panel it is placed in
      */
     public function __construct(
         public string $short,
@@ -61,7 +63,15 @@ final readonly class ResourcePlan
         public ?string $test,
         public ?string $testPath,
         public string $appNamespace,
+        public ?string $resource = null,
+        public ?string $panel = null,
     ) {}
+
+    /** Where the panel's screens of it are: under the panel's name, so they never share a path with its own pages. */
+    public function panelPath(): string
+    {
+        return "/{$this->panel}{$this->basePath}";
+    }
 
     /** The view of one of its screens: orders/index, orders/show, orders/create, orders/edit. */
     public function view(string $screen): string
