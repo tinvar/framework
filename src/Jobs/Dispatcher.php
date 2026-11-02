@@ -437,7 +437,7 @@ final readonly class Dispatcher
             // Who started the work, sealed whether or not the job runs as
             // them, for the audit log to name: the starter of the job
             // dispatching this one, or else whoever is signed in.
-            startedBy: $this->running?->current()?->startedBy ?? $this->auth->id(),
+            startedBy: $this->running?->current()->startedBy ?? $this->auth->id(),
             startedByImpersonator: $this->impersonatorNow(),
         );
     }
