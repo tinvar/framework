@@ -60,3 +60,17 @@ it('logs a read with no tenant as itself, under its own digest, while answering 
         ->and($error->code)->toBe('no_tenant')
         ->and($error->digest)->toBe(Digest::of($failure));
 });
+
+// Audit: an API token refused for who asked -- a token's caller, staff
+// impersonating the user -- was a LogicException, so a page that did not
+// catch it answered a 500 for a refusal that is the user's to hear of.
+it('answers an API token refused with its own status, not a 500', function () {
+    $handler = new ExceptionHandler();
+    $caller = new \Tinvar\Api\ApiTokenRefused(\Tinvar\Api\ApiTokenChoice::Caller, 'An API token cannot be issued while the user is being impersonated.', 403);
+    $name = new \Tinvar\Api\ApiTokenRefused(\Tinvar\Api\ApiTokenChoice::Name, 'Name the token.');
+
+    expect($handler->handle($caller, new \Tinvar\Http\Request('POST', '/_action', ['accept' => 'application/json']))->status)->toBe(403)
+        ->and($handler->errorFor($caller)->status)->toBe(403)
+        ->and($handler->errorFor($caller)->code)->toBe('api_token_refused')
+        ->and($handler->errorFor($name)->status)->toBe(422);
+});

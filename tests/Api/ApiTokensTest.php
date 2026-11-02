@@ -12,6 +12,8 @@ namespace Tinvar\Tests\Api\ApiTokens;
 
 use Carbon\CarbonImmutable;
 use Tinvar\Api\ApiToken;
+use Tinvar\Api\ApiTokenChoice;
+use Tinvar\Api\ApiTokenRefused;
 use Tinvar\Api\ApiTokenSecret;
 use Tinvar\Api\ApiTokenStatus;
 use Tinvar\Api\ApiTokens;
@@ -82,7 +84,32 @@ it('issues none with nobody signed in, across tenants, or for a caller a token s
             } finally {
                 $h->auth->reset();
             }
-        })->toThrow(\LogicException::class, 'cannot issue another');
+        })->toThrow(ApiTokenRefused::class, 'cannot issue another');
+});
+
+it('refuses a token\'s caller and an impersonation as a 403 a settings page can show, not a 500', function () {
+    $h = new Harness();
+    $h->users->epochs['ada'] = 'e1';
+    $refusal = function (string $how) use ($h): ApiTokenRefused {
+        $h->auth->login(new User('ada'), 'e1', apiToken: $how === 'token' ? 'a-token' : null, impersonator: $how === 'staff' ? 'staff-7' : null);
+        try {
+            $h->apiTokens->issue('Nightly export', ['racks:read']);
+        } catch (ApiTokenRefused $e) {
+            return $e;
+        } finally {
+            $h->auth->reset();
+        }
+
+        throw new \LogicException('issued');
+    };
+
+    foreach (['token', 'staff'] as $how) {
+        $e = $refusal($how);
+        expect($e->choice)->toBe(ApiTokenChoice::Caller)
+            ->and($e->status)->toBe(403);
+    }
+    expect($h->tokenStore->tokens)->toBe([])
+        ->and(new ApiTokenRefused(ApiTokenChoice::Name, 'x')->status)->toBe(422);
 });
 
 it('issues none while the user is being impersonated, and says who is signed in as whom', function () {
@@ -91,7 +118,7 @@ it('issues none while the user is being impersonated, and says who is signed in 
     $h->auth->login(new User('ada'), 'e1', impersonator: 'staff-7');
     try {
         expect($h->auth->impersonator())->toBe('staff-7')
-            ->and(fn () => $h->apiTokens->issue('Nightly export', ['racks:read']))->toThrow(\LogicException::class, 'impersonat')
+            ->and(fn () => $h->apiTokens->issue('Nightly export', ['racks:read']))->toThrow(ApiTokenRefused::class, 'impersonat')
             ->and($h->tokenStore->tokens)->toBe([]);
     } finally {
         $h->auth->reset();

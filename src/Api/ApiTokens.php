@@ -86,9 +86,11 @@ final readonly class ApiTokens
      * @param string|null $host the host it is for, named by code issuing it outside a request
      *        (a console command); in a request, the request's host, and none other
      * @throws ApiTokenRefused for a name, scopes or an expiry the user chose that will not do, or a
-     *         user holding as many tokens as they may, naming which (ApiTokenChoice): say so to them
+     *         user holding as many tokens as they may, naming which (ApiTokenChoice): say so to them;
+     *         and, with a 403 (ApiTokenChoice::Caller), for a request a token signed in or one where
+     *         staff are impersonating the user
      * @throws \LogicException for a call the application should not have made: nobody signed in,
-     *         a token's caller, acrossTenants()
+     *         acrossTenants()
      */
     public function issue(string $name, array $scopes, ?CarbonImmutable $expiresAt = null, ?string $host = null): IssuedApiToken
     {
@@ -97,13 +99,13 @@ final readonly class ApiTokens
             throw new \LogicException('An API token is issued for the user signed in, and nobody is.');
         }
         if ($this->auth->apiToken() !== null) {
-            throw new \LogicException('An API token cannot issue another: a token is issued in a request its user\'s session signed them in to.');
+            throw new ApiTokenRefused(ApiTokenChoice::Caller, 'An API token cannot issue another: sign in to the app itself to make one.', 403);
         }
         // A token outlives the impersonation it was made in, as the user's
         // own credential: staff signed in as someone would leave behind a
         // way in as them that no one sees ending.
         if ($this->auth->impersonator() !== null) {
-            throw new \LogicException('An API token cannot be issued while the user is being impersonated: it would outlive the impersonation as their own credential. Stop impersonating, and let the user make it.');
+            throw new ApiTokenRefused(ApiTokenChoice::Caller, 'An API token cannot be made while you are impersonating this user: it would outlive the impersonation as their own credential. Stop impersonating, and let them make it.', 403);
         }
         if ($this->orm->isUnscoped()) {
             throw new \LogicException('An API token cannot be issued inside acrossTenants(): it is held to one tenant.');

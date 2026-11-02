@@ -13,4 +13,10 @@ enum ApiTokenChoice: string
 
     /** Not one choice: they hold as many tokens as they may. */
     case Count = 'count';
+
+    /**
+     * Not one choice: who is asking may not have one made -- a request a
+     * token signed in, or staff impersonating the user. Refused with a 403.
+     */
+    case Caller = 'caller';
 }

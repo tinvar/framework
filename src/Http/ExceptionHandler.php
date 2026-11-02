@@ -111,7 +111,15 @@ final class ExceptionHandler
      */
     private static function normalize(\Throwable $e): \Throwable
     {
-        return $e instanceof NoTenantContext ? new HttpException(404, $e->getMessage(), 'no_tenant') : $e;
+        return match (true) {
+            $e instanceof NoTenantContext => new HttpException(404, $e->getMessage(), 'no_tenant'),
+            // A refusal from above the core with a status of its own -- an API
+            // token refused (ADR 0159), a 403 for a caller who may not have
+            // one -- is the user's to hear of, not a bug: answered with its
+            // status rather than a 500.
+            $e instanceof HasHttpStatus => new HttpException($e->httpStatus(), $e->getMessage(), $e->httpCode()),
+            default => $e,
+        };
     }
 
     /**
