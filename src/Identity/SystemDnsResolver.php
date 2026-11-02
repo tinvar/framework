@@ -30,7 +30,7 @@ namespace Tinvar\Identity;
  * (NXDOMAIN) and for one with no records of the kind asked (NODATA), with
  * no way to tell the two apart; both are an empty answer here.
  */
-final class SystemDnsResolver implements DnsResolver
+final class SystemDnsResolver implements DnsResolver, DnsTextResolver
 {
     public function alias(string $name, float $timeout): ?string
     {
@@ -65,6 +65,25 @@ final class SystemDnsResolver implements DnsResolver
         }
 
         return array_map('strval', array_keys($addresses));
+    }
+
+    public function texts(string $name, float $timeout): array
+    {
+        $texts = [];
+        foreach ($this->records($name, DNS_TXT, $timeout) as $record) {
+            $owner = \is_string($record['host'] ?? null) ? rtrim(strtolower($record['host']), '.') : '';
+            if (($record['type'] ?? null) !== 'TXT' || $owner !== $name) {
+                continue;
+            }
+            // A record longer than 255 bytes is split into strings: PHP
+            // gives them in `entries`, and `txt` joined.
+            $entries = $record['entries'] ?? null;
+            $texts[] = \is_array($entries)
+                ? implode('', array_filter($entries, \is_string(...)))
+                : (\is_string($record['txt'] ?? null) ? $record['txt'] : '');
+        }
+
+        return $texts;
     }
 
     /** @return list<array<array-key, mixed>> */
