@@ -1,0 +1,39 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Database\Models\Orders;
+
+use Carbon\CarbonImmutable;
+use Tinvar\Orm\Attributes\Column;
+use Tinvar\Orm\Attributes\Id;
+use Tinvar\Orm\Attributes\Table;
+use Tinvar\Orm\Attributes\TenantScoped;
+use Tinvar\Orm\Model;
+
+/**
+ * A row of the orders table, written by `tinvar make:resource`. Its typed
+ * properties are the table -- type, nullability and default from PHP,
+ * #[Column] for what PHP cannot say -- and the migration written beside it
+ * makes it. The id is a UUIDv7 the ORM sets on insert, read-only outside it.
+ *
+ * A tenant's: #[TenantScoped] has the ORM read and write only the rows of
+ * the tenant in force, and stamp that tenant on each it inserts.
+ *
+ * A model never crosses to the renderer: OrderData copies what a page needs
+ * out of one, field by field, and the encoder refuses anything else.
+ */
+#[Table('orders'), TenantScoped]
+final class Order extends Model
+{
+    #[Id] public private(set) string $id;
+    #[Column] public string $title;
+    #[Column] public OrderStatus $status;
+    #[Column] public ?CarbonImmutable $placedAt = null;
+
+    /** When it was made, in UTC: stamped by the ORM on insert (ADR 0145). */
+    #[Column] public CarbonImmutable $createdAt;
+
+    /** When it was last saved, in UTC: stamped by the ORM on every save. */
+    #[Column] public CarbonImmutable $updatedAt;
+}

@@ -12,12 +12,15 @@ use Tinvar\Attributes\Page;
 use Tinvar\Attributes\Policy;
 use Tinvar\Attributes\Query;
 use Tinvar\Auth\Authenticatable;
+use Tinvar\Auth\Memberships;
+use Tinvar\Auth\PanelContext;
 use Tinvar\Data\Data;
 use Tinvar\Http\Request;
 use Tinvar\Orm\Attributes\BelongsTo;
 use Tinvar\Orm\Attributes\Column;
 use Tinvar\Orm\Attributes\Id;
 use Tinvar\Orm\Attributes\Table;
+use Tinvar\Orm\Attributes\TenantScoped;
 use Tinvar\Orm\Direction;
 use Tinvar\Orm\Factory;
 use Tinvar\Orm\Migrations\Migration;
@@ -45,7 +48,10 @@ use Tinvar\Validation\ValidationException;
  * the model or its row in an #[Authorize], so the policy written beside
  * them decides each, and that policy lets in anyone signed in and nobody
  * else. A guest is refused everything; narrowing it to the right people is
- * the one decision left to the developer, and the command says so.
+ * the one decision left to the developer, and the command says so. In an
+ * app that uses tenancy the model is a tenant's (#[TenantScoped]), its
+ * table carries the tenant, and the policy lets in only a member of the
+ * tenant in force -- anyone signed in would be every tenant's users.
  *
  * Each PHP file's body is written before its `use` block: a class is
  * imported as the body names it (Uses), so the block is only whole once
@@ -90,10 +96,11 @@ final class ResourceSources
 
         $body = "/**\n"
             . Sources::wrap("A row of the {$p->table} table, written by `tinvar make:resource`. Its typed properties are the table -- type, nullability and default from PHP, #[Column] for what PHP cannot say -- and the migration written beside it makes it. The id is a UUIDv7 the ORM sets on insert, read-only outside it.")
+            . ($p->tenanted ? " *\n" . Sources::wrap("A tenant's: #[TenantScoped] has the ORM read and write only the rows of the tenant in force, and stamp that tenant on each it inserts.") : '')
             . " *\n"
             . Sources::wrap('A model never crosses to the renderer: ' . Names::short($p->record) . ' copies what a page needs out of one, field by field, and the encoder refuses anything else.')
             . " */\n"
-            . "#[{$uses->name(Table::class)}('{$p->table}')]\n"
+            . "#[{$uses->name(Table::class)}('{$p->table}')" . ($p->tenanted ? ', ' . $uses->name(TenantScoped::class) : '') . "]\n"
             . 'final class ' . Names::short($p->model) . " extends {$uses->name(Model::class)}\n"
             . "{\n"
             . implode("\n", $lines) . "\n\n"
@@ -151,6 +158,10 @@ final class ResourceSources
     {
         $imports = [Migration::class, Schema::class, SchemaTable::class];
         $lines = ["            \$table->uuid('id')->primary();"];
+        if ($p->tenanted) {
+            // Its tenant, indexed, and on Postgres held by row-level security.
+            $lines[] = '            $table->tenant();';
+        }
         $indexes = [];
         foreach ($p->fields as $field) {
             $column = $field->column();
@@ -766,26 +777,53 @@ final class ResourceSources
         $user = $uses->name(Authenticatable::class);
         $param = $p->parameter;
         $one = lcfirst($p->short);
+        $allowed = $p->tenanted ? '$this->member($user)' : '$user !== null';
 
         $ability = static fn (string $name, string $what, bool $row): string => "    /** {$what} */\n"
             . "    public function {$name}(?{$user} \$user" . ($row ? ", {$model} \${$param}" : '') . "): bool\n"
             . "    {\n"
-            . "        return \$user !== null;\n"
+            . "        return {$allowed};\n"
             . "    }\n";
+
+        $constructor = '';
+        $member = '';
+        if ($p->tenanted) {
+            $constructor = "    public function __construct(\n"
+                . "        private readonly {$uses->name(Orm::class)} \$orm,\n"
+                . "        private readonly {$uses->name(PanelContext::class)} \$panels,\n"
+                . "        private readonly ?{$uses->name(Memberships::class)} \$memberships = null,\n"
+                . "    ) {}\n\n";
+            $member = "\n    /**\n"
+                . Sources::wrap("Whether \$user holds a membership of the tenant in force, in the panel the request is in. Each {$one} it is asked of is that tenant's already: the ORM reads no other's.", 70, '     * ')
+                . "     */\n"
+                . "    private function member(?{$user} \$user): bool\n"
+                . "    {\n"
+                . "        \$tenant = \$this->orm->tenant();\n"
+                . "        \$panel = \$this->panels->currentOrNull();\n"
+                . "        if (\$user === null || \$tenant === '' || \$panel === null || \$this->memberships === null) {\n"
+                . "            return false;\n"
+                . "        }\n\n"
+                . "        return \$this->memberships->membership(\$user, \$panel, \$tenant) !== null;\n"
+                . "    }\n";
+        }
 
         $body = "/**\n"
             . Sources::wrap("Who may do what with {$p->table}: #[Policy] is how discovery registers it for {$model}. Every #[Authorize] naming " . Sources::article($p->short) . " {$one} asks here, before any loader, query body or action body runs; an ability with no method here refuses everyone.")
             . " *\n"
-            . Sources::wrap("As `tinvar make:resource` wrote it, anyone signed in may do anything with any {$one}, and a guest nothing. Say here who may -- an owner, a role, a panel's permission -- before it ships.")
+            . ($p->tenanted
+                ? Sources::wrap("{$p->plural} are a tenant's. As `tinvar make:resource` wrote it, a member of the tenant in force -- holding a membership of the panel the request is in, by the app's Memberships -- may do anything with any of its {$p->table}, and nobody else anything: not a guest, another tenant's user, a request in no tenant or in no panel, nor anyone at all while the app gives no Memberships. Say here what each member may -- a role, a permission -- before it ships.")
+                : Sources::wrap("As `tinvar make:resource` wrote it, anyone signed in may do anything with any {$one}, and a guest nothing. Say here who may -- an owner, a role, a panel's permission -- before it ships."))
             . " */\n"
             . "#[{$uses->name(Policy::class)}({$model}::class)]\n"
             . 'final class ' . Names::short($p->policy) . "\n"
             . "{\n"
+            . $constructor
             . $ability('viewAny', "The list of {$p->table}.", false) . "\n"
             . $ability('view', "One {$one}.", true) . "\n"
             . $ability('create', "Making one.", false) . "\n"
             . $ability('update', "Changing one.", true) . "\n"
             . $ability('delete', "Deleting one.", true)
+            . $member
             . "}\n";
 
         return self::HEADER

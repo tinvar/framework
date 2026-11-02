@@ -1073,7 +1073,36 @@ final class AppConsole
             return MakeCommand::FAILED;
         }
 
-        return new MakeCommand($layout, $this->classes()->models, registrations: $this->registrations(), migrate: $this->makeMigration(...), migrations: $this->migrations, resourceTest: $this->resourceTest)->run($command, $arguments);
+        $models = $this->classes()->models;
+
+        return new MakeCommand($layout, $models, registrations: $this->registrations(), migrate: $this->makeMigration(...), migrations: $this->migrations, resourceTest: $this->resourceTest, tenancy: self::usesTenancy($this->kernel, $models))->run($command, $arguments);
+    }
+
+    /**
+     * Whether the application uses tenancy, so make:resource writes a
+     * tenant's resource (ADR 0151): tinvar/tenancy installed, and either its
+     * Kernel registers the Orm's half -- its tenant tree, as `tinvar new
+     * --tenancy` writes it -- or one of its models is #[TenantScoped]
+     * already. Read from the Kernel's source, not by booting it: a generator
+     * opens no database.
+     *
+     * @param class-string|null $kernel
+     * @param list<class-string<\Tinvar\Orm\Model>> $models
+     */
+    public static function usesTenancy(?string $kernel, array $models = []): bool
+    {
+        if (!class_exists(\Composer\InstalledVersions::class) || !\Composer\InstalledVersions::isInstalled('tinvar/tenancy')) {
+            return false;
+        }
+        foreach ($models as $model) {
+            if (\Tinvar\Orm\Attributes\TenantScoped::on($model) !== null) {
+                return true;
+            }
+        }
+        $file = $kernel === null || !class_exists($kernel) ? false : new \ReflectionClass($kernel)->getFileName();
+        $source = $file === false ? '' : (string) file_get_contents($file);
+
+        return preg_match('/\bTenancy::tree\s*\(/', $source) === 1;
     }
 
     /**

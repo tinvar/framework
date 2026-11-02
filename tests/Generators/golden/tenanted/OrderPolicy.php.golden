@@ -1,0 +1,82 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Policies\Orders;
+
+use App\Database\Models\Orders\Order;
+use Tinvar\Attributes\Policy;
+use Tinvar\Auth\Authenticatable;
+use Tinvar\Auth\Memberships;
+use Tinvar\Auth\PanelContext;
+use Tinvar\Orm\Orm;
+
+/**
+ * Who may do what with orders: #[Policy] is how discovery registers it for
+ * Order. Every #[Authorize] naming an order asks here, before any loader,
+ * query body or action body runs; an ability with no method here refuses
+ * everyone.
+ *
+ * Orders are a tenant's. As `tinvar make:resource` wrote it, a member of the
+ * tenant in force -- holding a membership of the panel the request is in, by
+ * the app's Memberships -- may do anything with any of its orders, and
+ * nobody else anything: not a guest, another tenant's user, a request in no
+ * tenant or in no panel, nor anyone at all while the app gives no
+ * Memberships. Say here what each member may -- a role, a permission --
+ * before it ships.
+ */
+#[Policy(Order::class)]
+final class OrderPolicy
+{
+    public function __construct(
+        private readonly Orm $orm,
+        private readonly PanelContext $panels,
+        private readonly ?Memberships $memberships = null,
+    ) {}
+
+    /** The list of orders. */
+    public function viewAny(?Authenticatable $user): bool
+    {
+        return $this->member($user);
+    }
+
+    /** One order. */
+    public function view(?Authenticatable $user, Order $order): bool
+    {
+        return $this->member($user);
+    }
+
+    /** Making one. */
+    public function create(?Authenticatable $user): bool
+    {
+        return $this->member($user);
+    }
+
+    /** Changing one. */
+    public function update(?Authenticatable $user, Order $order): bool
+    {
+        return $this->member($user);
+    }
+
+    /** Deleting one. */
+    public function delete(?Authenticatable $user, Order $order): bool
+    {
+        return $this->member($user);
+    }
+
+    /**
+     * Whether $user holds a membership of the tenant in force, in the panel
+     * the request is in. Each order it is asked of is that tenant's already:
+     * the ORM reads no other's.
+     */
+    private function member(?Authenticatable $user): bool
+    {
+        $tenant = $this->orm->tenant();
+        $panel = $this->panels->currentOrNull();
+        if ($user === null || $tenant === '' || $panel === null || $this->memberships === null) {
+            return false;
+        }
+
+        return $this->memberships->membership($user, $panel, $tenant) !== null;
+    }
+}

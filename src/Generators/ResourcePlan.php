@@ -26,6 +26,8 @@ final readonly class ResourcePlan
      *        model's factory, where it has one the test can make a row with
      * @param string|null $resource the #[AdminResource] class placing it in a panel, with --panel
      * @param string|null $panel the panel it is placed in
+     * @param bool $tenanted whether the app uses tenancy, so the model is a tenant's
+     *        (#[TenantScoped]) and its policy asks for a membership of the tenant
      */
     public function __construct(
         public string $short,
@@ -65,6 +67,7 @@ final readonly class ResourcePlan
         public string $appNamespace,
         public ?string $resource = null,
         public ?string $panel = null,
+        public bool $tenanted = false,
     ) {}
 
     /** Where the panel's screens of it are: under the panel's name, so they never share a path with its own pages. */

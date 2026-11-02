@@ -1,0 +1,32 @@
+<?php
+
+declare(strict_types=1);
+
+use App\Database\Models\Orders\OrderStatus;
+use Tinvar\Orm\Migrations\Migration;
+use Tinvar\Orm\Schema\Schema;
+use Tinvar\Orm\Schema\Table;
+
+/**
+ * The orders table, for Order, written by `tinvar make:resource`: what
+ * `tinvar make:migration` would write from the model, so running that next
+ * finds nothing to add. Times are in UTC.
+ */
+return new class extends Migration {
+    public function up(Schema $schema): void
+    {
+        $schema->create('orders', function (Table $table): void {
+            $table->uuid('id')->primary();
+            $table->tenant();
+            $table->string('title');
+            $table->enum('status', OrderStatus::class);
+            $table->timestamp('placed_at')->nullable();
+            $table->timestamps();
+        });
+    }
+
+    public function down(Schema $schema): void
+    {
+        $schema->drop('orders');
+    }
+};

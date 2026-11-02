@@ -104,6 +104,9 @@ final class MakeCommand
      *        make:resource writes its table's migration into; with none, it says to make one
      * @param (\Closure(ResourcePlan): string)|null $resourceTest the text of a resource's test,
      *        tinvar/testing's, handed in where it is installed; with none, no test is written
+     * @param bool $tenancy whether the app uses tenancy -- tinvar/tenancy installed and its Orm
+     *        half registered in the Kernel (AppConsole) -- so make:resource writes a tenant's
+     *        model and a policy that lets in only a member of the tenant (ADR 0151)
      */
     public function __construct(
         private readonly AppLayout $layout,
@@ -114,6 +117,7 @@ final class MakeCommand
         private readonly ?\Closure $migrate = null,
         private readonly ?string $migrations = null,
         private readonly ?\Closure $resourceTest = null,
+        private readonly bool $tenancy = false,
     ) {
         $this->out = $out ?? static function (string $line): void {
             fwrite(STDOUT, $line . "\n");
@@ -449,6 +453,13 @@ final class MakeCommand
                 continue;
             }
             $related = $field->model ?? throw new \LogicException("{$field->name} is a relation to no model.");
+            // The Data it writes sends the related row's key as {$field}Id, a
+            // bare string, which the build rules refuse for a tenant's model
+            // (tenant-scoped-ids-must-be-typed, ADR 0105): refused here,
+            // before anything is written, rather than by `tinvar check` after.
+            if (\Tinvar\Orm\Attributes\TenantScoped::on($related) !== null) {
+                throw new GenerationRefused("{$field->name} belongs to {$related}, which is #[TenantScoped]: the Data make:resource writes would send its key as a bare {$field->name}Id, which the build rules refuse for a tenant's model. Nothing was written. Leave the relation out and add it by hand, sending the related row as a Data object of its own.");
+            }
             if (\Tinvar\Orm\Metadata::for($related)->idProperty !== 'id') {
                 throw new GenerationRefused("{$related}'s key is not \$id, which the form's choices of it are read by. Nothing was written.");
             }
@@ -456,7 +467,9 @@ final class MakeCommand
             $relatedFactories[$field->name] = $this->factoryOf($related);
         }
 
-        $test = $this->testClass([...$domain, "{$short}ResourceTest"], $relatedFactories);
+        // A tenant's resource is let in only by a membership of the tenant,
+        // which the test's stand-in user, in no tenant, does not hold.
+        $test = $this->tenancy ? null : $this->testClass([...$domain, "{$short}ResourceTest"], $relatedFactories);
         $components = implode('/', $kebab);
 
         $plan = new ResourcePlan(
@@ -497,6 +510,7 @@ final class MakeCommand
             appNamespace: $this->layout->namespace,
             resource: $panel === null ? null : $this->class('Resources', [...$domain, "{$short}Resource"]),
             panel: $panel,
+            tenanted: $this->tenancy,
         );
 
         $screens = ['index' => '', 'show' => "/{{$parameter}}", 'create' => '/new', 'edit' => "/{{$parameter}}/edit"];
@@ -586,8 +600,16 @@ final class MakeCommand
                 . 'must be in the route table, drawn once for every resource in the panel. If the panel is on a host of its own, add the #[Domain] its pages carry to '
                 . Names::short($plan->resource ?? '') . '.';
         }
-        $next[] = Names::short($plan->policy) . " lets anyone signed in do anything with any {$parameter}, and a guest nothing: say there who may before it ships.";
-        if ($test === null) {
+        if ($this->tenancy) {
+            $next[] = Names::short($plan->model) . " is a tenant's (#[TenantScoped]): each tenant reads and changes only its own {$plural}. "
+                . Names::short($plan->policy) . " lets in only a member of the tenant in force, holding a membership of the panel the request is in, by the app's Memberships: "
+                . "put its pages in your tenants' panel with #[Panel], have them read their tenant with #[TenantFrom], and give the Kernel Memberships -- until then it refuses everyone. "
+                . 'Say there what each member may do before it ships.';
+            $next[] = "No test was written: a tenant's resource is let in only by a membership of a tenant, which the test's stand-in user does not hold.";
+        } else {
+            $next[] = Names::short($plan->policy) . " lets anyone signed in do anything with any {$parameter}, and a guest nothing: say there who may before it ships.";
+        }
+        if ($test === null && !$this->tenancy) {
             $next[] = $this->whyNoTest($relatedFactories);
         }
 

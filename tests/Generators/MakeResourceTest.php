@@ -56,6 +56,9 @@ final class App
     /** @var list<string> */
     public array $err = [];
 
+    /** Whether the app uses tenancy, as AppConsole tells make:resource from its Kernel. */
+    public bool $tenancy = false;
+
     private readonly \Closure $autoload;
 
     public function __construct()
@@ -105,6 +108,7 @@ final class App
             null,
             "{$this->root}/database/migrations",
             ResourceTestSource::of(...),
+            tenancy: $this->tenancy,
         )->run($command, $arguments);
     }
 
@@ -541,6 +545,127 @@ it('refuses a panel name that is not one, writing nothing', function () {
     expect($app(['Orders/Order', '--fields=title:string', '--panel=Admin Panel']))->toBe(MakeCommand::USAGE)
         ->and(implode("\n", $app->err))->toContain("is not a panel's name")
         ->and($app->files())->toBe(['composer.json']);
+});
+
+/** $text with the app's own namespace written as the golden files write it. */
+function golden(App $app, string $text): string
+{
+    return str_replace($app->namespace . '\\', 'App\\', $text);
+}
+
+// In an app that uses tenancy, every tenant could read and change every
+// row of a resource that was not a tenant's: the model is #[TenantScoped],
+// its table carries the tenant, and its policy lets in only members of the
+// tenant in force. Held whole to golden files.
+it('writes a tenant\'s resource where the app uses tenancy: scoped, and let in only by a membership of the tenant', function () {
+    $app = $this->app;
+    $app->tenancy = true;
+
+    expect($app(['Orders/Order', '--fields=title:string,status:enum(Draft,Published),placedAt:?timestamp']))->toBe(0, implode("\n", $app->err));
+
+    $migration = (string) file_get_contents((string) (glob("{$app->root}/database/migrations/*_create_orders.php") ?: [''])[0]);
+    $golden = __DIR__ . '/golden/tenanted';
+    expect(golden($app, $app->read('app/Database/Models/Orders/Order.php')))->toBe(file_get_contents("{$golden}/Order.php.golden"))
+        ->and(golden($app, $app->read('app/Policies/Orders/OrderPolicy.php')))->toBe(file_get_contents("{$golden}/OrderPolicy.php.golden"))
+        ->and(golden($app, $migration))->toBe(file_get_contents("{$golden}/create_orders.php.golden"))
+        ->and(implode("\n", $app->out))->toContain('OrderPolicy lets in only a member of the tenant in force')
+        ->and(implode("\n", $app->out))->not->toContain('lets anyone signed in');
+
+    // As the rest of what it writes: pint and phpstan at level 8 pass it,
+    // the build rules take it, and make:migration finds nothing to add.
+    [$status, $output] = tool([ROOT . '/vendor/bin/pint', '--test', '--config', ROOT . '/pint.json', "{$app->root}/app", "{$app->root}/database"]);
+    expect($status)->toBe(0, $output);
+    file_put_contents("{$app->root}/phpstan.neon", "parameters:\n    level: 8\n    paths:\n        - app\n    tmpDir: .phpstan\n");
+    [$status, $output] = tool([
+        ROOT . '/vendor/bin/phpstan', 'analyse', '--no-progress', '--memory-limit=1G',
+        '-c', "{$app->root}/phpstan.neon", '--autoload-file=' . ROOT . '/vendor/autoload.php',
+    ]);
+    expect($status)->toBe(0, $output);
+    $classes = $app->classes();
+    expect((new BuildRules($classes->models))->check([...$classes->routes, ...$classes->queries, ...$classes->actions], $classes->payloads))->toBe([]);
+    $connection = PdoConnection::sqlite("{$app->root}/database.sqlite", create: true);
+    (new Migrator($connection, "{$app->root}/database/migrations"))->migrate();
+    $generator = new MigrationGenerator($connection, Dialect::for($connection));
+    expect($generator->generate($classes->models, '2026-11-02'))->toBeNull(implode("\n", $generator->warnings));
+
+    // The policy, asked: a member of the tenant in force, in the panel the
+    // request is in, and nobody else.
+    require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenancy.php';
+    $orm = new \Tinvar\Orm\Orm($connection, new \Tinvar\Orm\IdentityMap('app'), \Tinvar\Tests\Orm\Fixtures\Tenancy::flat());
+    $panels = new \Tinvar\Auth\PanelContext();
+    $memberships = new class implements \Tinvar\Auth\Memberships {
+        public function membership(\Tinvar\Auth\Authenticatable $user, string $panel, string $tenant): ?\Tinvar\Auth\Membership
+        {
+            return $user->authIdentifier() === 'ann' && $panel === 'customer' && $tenant === 'acme' ? new \Tinvar\Auth\Membership('', []) : null;
+        }
+    };
+    $user = static fn (string $id): \Tinvar\Auth\Authenticatable => new readonly class ($id) implements \Tinvar\Auth\Authenticatable {
+        public function __construct(private string $id) {}
+
+        public function authIdentifier(): string
+        {
+            return $this->id;
+        }
+    };
+    $policyClass = $app->class('Policies\Orders\OrderPolicy');
+    $policy = new $policyClass($orm, $panels, $memberships);
+    $asked = static function (string $tenant, ?string $panel, ?\Tinvar\Auth\Authenticatable $who) use ($orm, $panels, $policy): bool {
+        $orm->switchTenant($tenant);
+        $ask = static fn (): bool => $policy->viewAny($who) && $policy->create($who);
+
+        return $panel === null ? $ask() : $panels->within($panel, $ask);
+    };
+
+    expect($asked('acme', 'customer', $user('ann')))->toBeTrue()
+        // Another tenant's member, another tenant, another panel, no panel, a guest.
+        ->and($asked('acme', 'customer', $user('bob')))->toBeFalse()
+        ->and($asked('globex', 'customer', $user('ann')))->toBeFalse()
+        ->and($asked('acme', 'admin', $user('ann')))->toBeFalse()
+        ->and($asked('acme', null, $user('ann')))->toBeFalse()
+        ->and($asked('acme', 'customer', null))->toBeFalse()
+        // No Memberships in the app: nobody.
+        ->and((new $policyClass($orm, $panels))->viewAny($user('ann')))->toBeFalse();
+});
+
+// bin/tinvar's console tells make:resource whether the app uses tenancy:
+// tinvar/tenancy installed, and the Kernel registering its Orm half or a
+// model already a tenant's.
+it('reads whether the app uses tenancy from its Kernel and its models', function () {
+    $app = $this->app;
+    $namespace = $app->namespace;
+    file_put_contents("{$app->root}/app/Kernel.php", "<?php\n\nnamespace {$namespace};\n\nfinal class Kernel\n{\n    public function orm(): object\n    {\n        return new \\Tinvar\\Orm\\Orm(\$this->connection, new \\Tinvar\\Orm\\IdentityMap('app'), Tenancy::tree());\n    }\n}\n");
+    file_put_contents("{$app->root}/app/Plain.php", "<?php\n\nnamespace {$namespace};\n\nfinal class Plain {}\n");
+    $app->tenancy = false;
+    expect($app(['Orders/Order', '--fields=title:string']))->toBe(0, implode("\n", $app->err));
+    $order = $app->class('Database\Models\Orders\Order');
+    file_put_contents("{$app->root}/app/Scoped.php", "<?php\n\nnamespace {$namespace};\n\n#[\\Tinvar\\Orm\\Attributes\\Table('scoped'), \\Tinvar\\Orm\\Attributes\\TenantScoped]\nfinal class Scoped extends \\Tinvar\\Orm\\Model\n{\n    #[\\Tinvar\\Orm\\Attributes\\Id] public private(set) string \$id;\n}\n");
+
+    $installed = \Composer\InstalledVersions::isInstalled('tinvar/tenancy');
+    expect(\Tinvar\Console\AppConsole::usesTenancy($app->class('Kernel')))->toBe($installed)
+        ->and(\Tinvar\Console\AppConsole::usesTenancy($app->class('Plain'), [$order]))->toBeFalse()
+        ->and(\Tinvar\Console\AppConsole::usesTenancy(null, [$order, $app->class('Scoped')]))->toBe($installed)
+        ->and(\Tinvar\Console\AppConsole::usesTenancy(null))->toBeFalse();
+});
+
+it('refuses a relation to a tenant\'s model, whose key the Data it writes would send bare, writing nothing', function () {
+    $app = $this->app;
+    $app->tenancy = true;
+
+    expect($app(['Accounts/Customer', '--fields=name:string']))->toBe(0, implode("\n", $app->err));
+    $before = $app->files();
+
+    expect($app(['Orders/Order', '--fields=title:string,customer:belongsTo']))->toBe(MakeCommand::FAILED)
+        ->and(implode("\n", $app->err))->toContain('customer belongs to ' . $app->class('Database\Models\Accounts\Customer') . ', which is #[TenantScoped]')
+        ->and($app->files())->toBe($before);
+});
+
+it('writes the resource unscoped, its policy the signed-in, where the app does not use tenancy', function () {
+    $app = $this->app;
+
+    expect($app(['Orders/Order', '--fields=title:string']))->toBe(0, implode("\n", $app->err))
+        ->and($app->read('app/Database/Models/Orders/Order.php'))->not->toContain('TenantScoped')
+        ->and($app->read('app/Policies/Orders/OrderPolicy.php'))->toContain('return $user !== null;')
+        ->and($app->read('app/Policies/Orders/OrderPolicy.php'))->not->toContain('Memberships');
 });
 
 // bin/tinvar hands the generators the shop. Only a refusal is run here: a
