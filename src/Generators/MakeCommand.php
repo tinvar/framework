@@ -102,6 +102,8 @@ final class MakeCommand
      *        make:model --migration says to
      * @param string|null $migrations the application's migrations directory, which
      *        make:resource writes its table's migration into; with none, it says to make one
+     * @param (\Closure(ResourcePlan): string)|null $resourceTest the text of a resource's test,
+     *        tinvar/testing's, handed in where it is installed; with none, no test is written
      */
     public function __construct(
         private readonly AppLayout $layout,
@@ -111,6 +113,7 @@ final class MakeCommand
         private readonly Registrations $registrations = new Registrations(),
         private readonly ?\Closure $migrate = null,
         private readonly ?string $migrations = null,
+        private readonly ?\Closure $resourceTest = null,
     ) {
         $this->out = $out ?? static function (string $line): void {
             fwrite(STDOUT, $line . "\n");
@@ -553,7 +556,7 @@ final class MakeCommand
             ->add($plan->formComponentPath, ResourceSources::formComponent($plan, $plan->typesFromComponents))
             ->add($plan->deleteComponentPath, ResourceSources::deleteComponent($plan));
         if ($plan->testPath !== null) {
-            $files->add($plan->testPath, ResourceSources::test($plan));
+            $files->add($plan->testPath, ($this->resourceTest ?? throw new \LogicException('A test was planned with nothing to write it.'))($plan));
         }
 
         $next = [$this->registrations->none()
@@ -683,8 +686,8 @@ final class MakeCommand
     }
 
     /**
-     * The resource's test class, where the application's tests can run it
-     * as the skeleton's run: a tests/ directory, a Kernel built by
+     * The resource's test class, where tinvar/testing is there to write it
+     * and the application's tests can run it as the skeleton's run: a tests/ directory, a Kernel built by
      * fromEnvironment(database:, telemetry:), a Database\Migrations that
      * migrates, and a factory for each related model. Null otherwise.
      *
@@ -695,7 +698,7 @@ final class MakeCommand
     {
         $kernel = "{$this->layout->namespace}\\Kernel";
         $migrations = "{$this->layout->namespace}\\Database\\Migrations";
-        if (!is_dir("{$this->layout->root}/tests") || \in_array(null, $relatedFactories, true)
+        if ($this->resourceTest === null || !is_dir("{$this->layout->root}/tests") || \in_array(null, $relatedFactories, true)
             || !class_exists($kernel) || !method_exists($kernel, 'fromEnvironment')
             || !class_exists($migrations) || !method_exists($migrations, 'migrate')) {
             return null;
@@ -714,6 +717,10 @@ final class MakeCommand
         $missing = array_keys(array_filter($relatedFactories, static fn (?string $factory): bool => $factory === null));
         if ($missing !== []) {
             return 'No test was written: ' . implode(' and ', $missing) . ' belong' . (\count($missing) === 1 ? 's' : '') . ' to a model with no factory to make a row with (`tinvar make:model --factory`).';
+        }
+
+        if ($this->resourceTest === null) {
+            return 'No test was written: tinvar/testing, which writes it, is not handed to this console (bin/tinvar passes it where it is installed).';
         }
 
         return 'No test was written: the app has no tests/ directory, or no Kernel::fromEnvironment(database:, telemetry:) and Database\\Migrations to build one with, as the skeleton has.';

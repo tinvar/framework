@@ -126,6 +126,8 @@ final class AppConsole
      * @param string $connection the name the migrations' connection is opened under
      * @param (\Closure(): ?\Tinvar\Observability\RendererLines)|null $rendererLog the application's log,
      *        which serve writes its renderers' lines to as well as to standard error (ADR 0128)
+     * @param (\Closure(\Tinvar\Generators\ResourcePlan): string)|null $resourceTest the test
+     *        make:resource writes, tinvar/testing's, where it is installed (ADR 0151)
      */
     public function __construct(
         string $root,
@@ -146,6 +148,7 @@ final class AppConsole
         private readonly string $connection = 'app',
         private readonly string $name = 'bin/tinvar',
         private readonly ?\Closure $rendererLog = null,
+        private readonly ?\Closure $resourceTest = null,
     ) {
         $this->root = realpath($root) ?: $root;
         $this->projectRoot = $projectRoot === null ? $this->root : (realpath($projectRoot) ?: $projectRoot);
@@ -763,7 +766,7 @@ final class AppConsole
             return MakeCommand::FAILED;
         }
 
-        return new MakeCommand($layout, $this->classes()->models, registrations: $this->registrations(), migrate: $this->makeMigration(...), migrations: $this->migrations)->run($command, $arguments);
+        return new MakeCommand($layout, $this->classes()->models, registrations: $this->registrations(), migrate: $this->makeMigration(...), migrations: $this->migrations, resourceTest: $this->resourceTest)->run($command, $arguments);
     }
 
     /**

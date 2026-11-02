@@ -35,6 +35,7 @@ use Tinvar\Orm\PdoConnection;
 use Tinvar\Orm\Schema\Dialect;
 use Tinvar\Query\QueryRegistry;
 use Tinvar\Routing\RouteRegistry;
+use Tinvar\Testing\ResourceTestSource;
 
 const ROOT = __DIR__ . '/../../../..';
 
@@ -103,6 +104,7 @@ final class App
             new Registrations(is_file("{$this->root}/resources/entries/rsc.tsx") ? 'resources/entries/rsc.tsx' : null, $classes->routes),
             null,
             "{$this->root}/database/migrations",
+            ResourceTestSource::of(...),
         )->run($command, $arguments);
     }
 
@@ -400,7 +402,7 @@ it('writes tests that pass through the skeleton\'s own Kernel', function () {
             \$classes = (new Tinvar\\Discovery\\Discovery('App', ['App\\\\' => ['{$work}/app']], '{$work}/dist/discovery.php', '{$work}'))->scan();
             \$layout = Tinvar\\Generators\\AppLayout::fromComposer('{$work}', 'App', '{$work}/resources/pages', '{$work}/resources/types');
             \$registrations = new Tinvar\\Generators\\Registrations('resources/entries/rsc.tsx', \$classes->routes);
-            exit((new Tinvar\\Generators\\MakeCommand(\$layout, \$classes->models, registrations: \$registrations, migrations: '{$work}/database/migrations'))->run('make:resource', [\$name, "--fields={\$fields}"]));
+            exit((new Tinvar\\Generators\\MakeCommand(\$layout, \$classes->models, registrations: \$registrations, migrations: '{$work}/database/migrations', resourceTest: Tinvar\\Testing\\ResourceTestSource::of(...)))->run('make:resource', [\$name, "--fields={\$fields}"]));
 
             PHP);
         file_put_contents("{$work}/phpunit.xml", <<<XML
