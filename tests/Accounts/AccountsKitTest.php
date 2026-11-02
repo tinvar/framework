@@ -314,6 +314,27 @@ it('adds a passkey and signs in with it, for this host and this session alone', 
     });
 })->with('drivers');
 
+it('keeps a session\'s new challenge when an old one of its own for another ceremony has expired', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $authenticator = SoftwareAuthenticator::es256();
+
+        // The "confirm it's you" dialog offered a passkey, and was left open.
+        $owner->do(static fn (Accounts $a, Request $r) => $a->passkeyConfirmationOptions($r, $user));
+        $app->now += 400;
+
+        // The owner types the password instead, then adds a passkey.
+        $owner->confirm();
+        $options = $owner->do(static fn (Accounts $a, Request $r) => $a->passkeyRegistrationOptions($r, $user));
+        $made = $authenticator->register((string) Base64Url::decode($options['challenge']));
+        $owner->do(static fn (Accounts $a, Request $r) => $a->registerPasskey($r, $user, credential($authenticator, $made), 'Laptop'));
+
+        expect($app->kit->accounts->passkeys($user))->toHaveCount(1);
+    });
+})->with('drivers');
+
 it('removes a passkey for its own account alone', function () {
     onDriver('sqlite', function (MemberApp $app): void {
         $ada = member($app, 'ada@example.com');

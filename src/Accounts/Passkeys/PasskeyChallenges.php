@@ -70,9 +70,12 @@ final readonly class PasskeyChallenges
                 'INSERT INTO passkey_challenges (session_hash, purpose, challenge, user_id, expires_at) VALUES (?, ?, ?, ?, ?)',
                 [hash('sha256', $session), $purpose, Base64Url::encode($challenge), $user, $now + self::LIFETIME],
             );
+            // Only the expired rows of those sessions: a session's own live
+            // challenge for another ceremony -- the one just issued among
+            // them -- is not swept with its expired one.
             $connection->execute(
-                'DELETE FROM passkey_challenges WHERE session_hash IN (SELECT session_hash FROM passkey_challenges WHERE expires_at <= ? LIMIT ' . self::SWEEP_BATCH . ')',
-                [$now],
+                'DELETE FROM passkey_challenges WHERE expires_at <= ? AND session_hash IN (SELECT session_hash FROM passkey_challenges WHERE expires_at <= ? LIMIT ' . self::SWEEP_BATCH . ')',
+                [$now, $now],
             );
         });
 
