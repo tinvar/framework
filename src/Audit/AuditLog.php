@@ -303,10 +303,37 @@ final class AuditLog implements ModelChanges, ActionObserver
      * Walks a tenant's log -- the tenant in force's unless named -- from
      * where pruning left it to its head, and says whether every entry is
      * in its place and as it was written.
+     *
+     * A live log is walked as its head stood when the walk began: entries
+     * appended meanwhile are past it, and checked by the next walk -- each
+     * commits with the head that names it, so none is ever past a head
+     * read after it. One past the head as it stands at the end is a break.
+     * A log pruned while it was walked is walked again from where pruning
+     * left it, so neither a writer nor the nightly prune reads as tampering.
      */
     public function verify(?string $tenant = null): ChainVerification
     {
         $tenant ??= $this->orm->tenant();
+        for ($attempt = 1; ; $attempt++) {
+            [$result, $prunedThrough] = $this->walk($tenant);
+            if ($result->intact || $prunedThrough === null || $attempt === 3) {
+                return $result;
+            }
+            $now = $this->orm->statements()->select('SELECT pruned_through FROM ' . AuditTable::HEADS . ' WHERE tenant = ?', [$tenant]);
+            if ($now === [] || (int) $now[0]['pruned_through'] === $prunedThrough) {
+                return $result;
+            }
+        }
+    }
+
+    /**
+     * One walk of $tenant's log, and where pruning had left it when the
+     * walk began; null for a log with no head.
+     *
+     * @return array{ChainVerification, int|null}
+     */
+    private function walk(string $tenant): array
+    {
         $connection = $this->orm->statements();
         $heads = $connection->select(
             'SELECT sequence, hash, pruned_through, anchor, anchor_mac FROM ' . AuditTable::HEADS . ' WHERE tenant = ?',
@@ -315,15 +342,16 @@ final class AuditLog implements ModelChanges, ActionObserver
         if ($heads === []) {
             $any = $connection->select('SELECT COUNT(*) AS n FROM ' . AuditTable::ENTRIES . ' WHERE tenant = ?', [$tenant]);
 
-            return (int) $any[0]['n'] === 0
+            return [(int) $any[0]['n'] === 0
                 ? new ChainVerification($tenant, true, 0)
-                : new ChainVerification($tenant, false, 0, 1, 'The log has entries and no head.');
+                : new ChainVerification($tenant, false, 0, 1, 'The log has entries and no head.'), null];
         }
         $head = $heads[0];
         $prunedThrough = (int) $head['pruned_through'];
+        $last = (int) $head['sequence'];
         $previous = (string) $head['anchor'];
         if (!$this->chain->anchorHolds($tenant, $prunedThrough, $previous, (string) $head['anchor_mac'])) {
-            return new ChainVerification($tenant, false, 0, $prunedThrough + 1, 'Where pruning left the log has been changed.');
+            return [new ChainVerification($tenant, false, 0, $prunedThrough + 1, 'Where pruning left the log has been changed.'), $prunedThrough];
         }
 
         $expected = $prunedThrough + 1;
@@ -331,20 +359,20 @@ final class AuditLog implements ModelChanges, ActionObserver
         $after = $prunedThrough;
         do {
             $rows = $connection->select(
-                'SELECT * FROM ' . AuditTable::ENTRIES . ' WHERE tenant = ? AND sequence > ? ORDER BY sequence LIMIT 500',
-                [$tenant, $after],
+                'SELECT * FROM ' . AuditTable::ENTRIES . ' WHERE tenant = ? AND sequence > ? AND sequence <= ? ORDER BY sequence LIMIT 500',
+                [$tenant, $after, $last],
             );
             foreach ($rows as $row) {
                 $sequence = (int) $row['sequence'];
                 if ($sequence !== $expected) {
-                    return new ChainVerification($tenant, false, $walked, $expected, "Entry {$expected} is missing.");
+                    return [new ChainVerification($tenant, false, $walked, $expected, "Entry {$expected} is missing."), $prunedThrough];
                 }
                 if (!hash_equals($previous, (string) $row['previous_hash'])) {
-                    return new ChainVerification($tenant, false, $walked, $sequence, "Entry {$sequence} is not chained to the one before it.");
+                    return [new ChainVerification($tenant, false, $walked, $sequence, "Entry {$sequence} is not chained to the one before it."), $prunedThrough];
                 }
                 $hash = $this->chain->link($previous, AuditChain::fields($row, self::moment($row['occurred_at'])));
                 if (!hash_equals($hash, (string) $row['hash'])) {
-                    return new ChainVerification($tenant, false, $walked, $sequence, "Entry {$sequence} is not as it was written.");
+                    return [new ChainVerification($tenant, false, $walked, $sequence, "Entry {$sequence} is not as it was written."), $prunedThrough];
                 }
                 $previous = $hash;
                 $after = $sequence;
@@ -353,11 +381,21 @@ final class AuditLog implements ModelChanges, ActionObserver
             }
         } while (\count($rows) === 500);
 
-        if ((int) $head['sequence'] !== $after || !hash_equals($previous, (string) $head['hash'])) {
-            return new ChainVerification($tenant, false, $walked, $after + 1, 'The head names an entry the log does not end with.');
+        if ($last !== $after || !hash_equals($previous, (string) $head['hash'])) {
+            return [new ChainVerification($tenant, false, $walked, $after + 1, 'The head names an entry the log does not end with.'), $prunedThrough];
         }
 
-        return new ChainVerification($tenant, true, $walked);
+        // The newest entry there is, then the head as it stands: read in
+        // that order, a writer committing between them moves the head past
+        // what was read, never behind it.
+        $newest = (int) ($connection->select('SELECT MAX(sequence) AS n FROM ' . AuditTable::ENTRIES . ' WHERE tenant = ?', [$tenant])[0]['n'] ?? 0);
+        $now = $connection->select('SELECT sequence FROM ' . AuditTable::HEADS . ' WHERE tenant = ?', [$tenant]);
+        $headNow = $now === [] ? 0 : (int) $now[0]['sequence'];
+        if ($newest > $headNow) {
+            return [new ChainVerification($tenant, false, $walked, $headNow + 1, 'Entry ' . ($headNow + 1) . ' is past the head.'), $prunedThrough];
+        }
+
+        return [new ChainVerification($tenant, true, $walked), $prunedThrough];
     }
 
     /**

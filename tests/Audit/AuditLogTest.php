@@ -438,3 +438,66 @@ it('never prunes an entry inside the retention, though an older one was made aft
     expect($audit->prune($start->addDays(75)))->toBe(2)
         ->and($audit->verify('acme')->intact)->toBeTrue();
 });
+
+/**
+ * Two logs over one SQLite file, as two workers have: the first's
+ * statements observed, so a test can write through the second mid-walk.
+ *
+ * @return array{Orm, AuditLog, PdoConnection, Orm, AuditLog}
+ */
+function shared(): array
+{
+    $file = tempnam(sys_get_temp_dir(), 'tinvar-audit-');
+    $make = static function () use ($file): array {
+        $connection = new PdoConnection(new \PDO('sqlite:' . $file));
+        $orm = new Orm($connection, new IdentityMap('audit'), new Tenants());
+
+        return [$orm, new AuditLog($orm, new AuthContext(), KEY, retentionDays: 30), $connection];
+    };
+    [$orm, $audit, $connection] = $make();
+    $connection->execute('CREATE TABLE audit_notes (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, body TEXT NOT NULL, api_token TEXT)');
+    AuditTable::define(new Schema($connection, Dialect::for($connection)));
+    [$orm2, $audit2] = $make();
+
+    return [$orm, $audit, $connection, $orm2, $audit2];
+}
+
+it('verifies a log another worker writes to, or prunes, while it is walked', function () {
+    [$orm, $audit, $connection, $orm2, $audit2] = shared();
+    $orm->actAs('acme', fn () => note($orm, 'one'));
+
+    // An entry committed after the head was read is past the walk, not a break.
+    $wrote = false;
+    $connection->observeStatements(function (string $sql) use (&$wrote, $orm2): void {
+        if (!$wrote && str_contains($sql, 'anchor_mac FROM audit_heads')) {
+            $wrote = true;
+            $orm2->actAs('acme', fn () => note($orm2, 'two'));
+        }
+    });
+    $result = $audit->verify('acme');
+    expect($wrote)->toBeTrue()
+        ->and($result->problem)->toBeNull()
+        ->and($result->intact)->toBeTrue();
+    $connection->observeStatements(null);
+
+    // Pruned under the walk: walked again from where pruning left it.
+    foreach (['three', 'four'] as $body) {
+        $orm->actAs('acme', fn () => note($orm, $body));
+    }
+    $pruned = false;
+    $connection->observeStatements(function (string $sql) use (&$pruned, $audit2): void {
+        if (!$pruned && str_contains($sql, 'anchor_mac FROM audit_heads')) {
+            $pruned = true;
+            $audit2->prune(CarbonImmutable::now('UTC')->addYears(1), batch: 2, mostBatches: 1);
+        }
+    });
+    $result = $audit->verify('acme');
+    expect($pruned)->toBeTrue()
+        ->and($result->problem)->toBeNull()
+        ->and($result->entries)->toBe(2);
+    $connection->observeStatements(null);
+
+    // An entry no head names is still found.
+    $connection->execute("INSERT INTO audit_entries SELECT id || 'x', tenant, sequence + 10, occurred_at, event, subject_type, subject_id, actor_type, actor_id, impersonator_id, job, job_id, started_by, action, panel, host, request_id, ip, changes, data, previous_hash, hash FROM audit_entries WHERE tenant = 'acme' AND sequence = 4");
+    expect($audit->verify('acme')->problem)->toBe('Entry 5 is past the head.');
+});
