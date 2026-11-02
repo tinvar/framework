@@ -50,6 +50,13 @@ final readonly class Sessions
     /** How long a password that was right waits for its second factor: ten minutes. */
     public const int SECOND_FACTOR_LIFETIME = 600;
 
+    /**
+     * How long the owner's proof that it is them -- a password typed again,
+     * a passkey or an authenticator code -- lets the session change how the
+     * account signs in: five minutes (Accounts::CONFIRMATION_LIFETIME).
+     */
+    public const int CONFIRMATION_LIFETIME = 300;
+
     public function __construct(
         private Connection $connection,
         private SessionCookie $cookie,
@@ -70,9 +77,26 @@ final readonly class Sessions
             $sessions->bigInteger('created_at');
             $sessions->bigInteger('last_seen_at');
             $sessions->bigInteger('expires_at');
+            // When the owner last proved it was them on this session; null
+            // until they do, and never carried to the next id.
+            $sessions->bigInteger('confirmed_at')->nullable();
             $sessions->index(['user_id'], 'sessions_user');
             $sessions->index(['expires_at'], 'sessions_expiry');
         }, $ifNotExists);
+    }
+
+    /**
+     * Adds `confirmed_at` to a sessions table define() made before it had
+     * one; a table that has it is left as it is.
+     */
+    public static function addConfirmedAt(Schema $schema): void
+    {
+        if ($schema->hasColumn('sessions', 'confirmed_at')) {
+            return;
+        }
+        $schema->table('sessions', static function (Table $sessions): void {
+            $sessions->bigInteger('confirmed_at')->nullable();
+        });
     }
 
     public function cookie(): SessionCookie
@@ -96,7 +120,7 @@ final readonly class Sessions
 
         $now = $this->cookie->now();
         $row = $this->connection->select(
-            'SELECT user_id, realm, stage, last_seen_at, expires_at FROM sessions WHERE id = ?',
+            'SELECT user_id, realm, stage, last_seen_at, expires_at, confirmed_at FROM sessions WHERE id = ?',
             [self::hash($id)],
         )[0] ?? null;
 
@@ -121,7 +145,37 @@ final readonly class Sessions
             $this->connection->execute('UPDATE sessions SET last_seen_at = ? WHERE id = ?', [$now, self::hash($id)]);
         }
 
-        return new SessionState($id, $realm, $user, $this->epochs->of($user->authIdentifier()));
+        $confirmed = \is_numeric($row['confirmed_at'] ?? null) ? (int) $row['confirmed_at'] : null;
+
+        return new SessionState($id, $realm, $user, $this->epochs->of($user->authIdentifier()), confirmedAt: $confirmed);
+    }
+
+    /**
+     * Stamps the session as its owner's, just proved -- by a password typed
+     * again, a passkey or an authenticator code -- so for the next five
+     * minutes it may change how the account signs in. A session signed in
+     * as nobody, or as someone else, is not stamped.
+     */
+    public function confirm(SessionState $state, AccountUser $user): void
+    {
+        if ($state->id === '' || $state->user()?->authIdentifier() !== $user->authIdentifier()) {
+            return;
+        }
+        $now = $this->cookie->now();
+        $this->connection->execute(
+            'UPDATE sessions SET confirmed_at = ? WHERE id = ? AND realm = ? AND user_id = ? AND stage = ?',
+            [$now, self::hash($state->id), $state->realm, $user->authIdentifier(), SessionStage::SignedIn->value],
+        );
+        $state->confirmed($now);
+    }
+
+    /** Until when the session's owner last proved it was them counts, or null if it no longer does. */
+    public function confirmedUntil(SessionState $state): ?int
+    {
+        $at = $state->user() === null ? null : $state->confirmedAt();
+        $until = $at === null ? null : $at + self::CONFIRMATION_LIFETIME;
+
+        return $until !== null && $until > $this->cookie->now() ? $until : null;
     }
 
     /**

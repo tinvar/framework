@@ -28,6 +28,8 @@ final class SessionState
      *        one a session made in this request is good on
      * @param string $epoch the user's auth epoch, '' signed out
      * @param AccountUser|null $pending whose password was right, waiting on a second factor
+     * @param int|null $confirmedAt when the owner last proved it was them on this session --
+     *        a password, a passkey or an authenticator code -- in Unix seconds
      */
     public function __construct(
         #[\SensitiveParameter]
@@ -36,6 +38,7 @@ final class SessionState
         private ?AccountUser $user = null,
         private string $epoch = '',
         private ?AccountUser $pending = null,
+        private ?int $confirmedAt = null,
     ) {}
 
     public static function of(Request $request): self
@@ -64,6 +67,18 @@ final class SessionState
         return $this->pending;
     }
 
+    /** When the owner last proved it was them on this session; null if not since it began. */
+    public function confirmedAt(): ?int
+    {
+        return $this->confirmedAt;
+    }
+
+    /** Called by Sessions when the owner proves it is them. */
+    public function confirmed(int $at): void
+    {
+        $this->confirmedAt = $at;
+    }
+
     /** Called by Sessions when it rotates the id; the middleware sets the cookie. */
     public function replaceWith(#[\SensitiveParameter] string $cookie, ?AccountUser $user, ?AccountUser $pending = null): void
     {
@@ -71,6 +86,7 @@ final class SessionState
         $this->user = $user;
         $this->pending = $pending;
         $this->epoch = '';
+        $this->confirmedAt = null;
     }
 
     /** The cookie the response must set, or null if the session was not rotated. */

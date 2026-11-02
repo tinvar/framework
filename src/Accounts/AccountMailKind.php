@@ -12,4 +12,5 @@ enum AccountMailKind: string
     case EmailChange = 'email-change';
     case EmailChanged = 'email-changed';
     case PasswordChanged = 'password-changed';
+    case PasskeyAdded = 'passkey-added';
 }

@@ -50,6 +50,13 @@ use Tinvar\Validation\ValidationException;
  * - **A passkey ceremony** signs a challenge bound to the session that
  *   asked and good once (PasskeyChallenges), for this host as the relying
  *   party, checked in full (WebAuthn).
+ * - **A session alone changes nothing about how its account signs in.**
+ *   Adding a passkey and turning two-factor on need the owner to have
+ *   proved it is them on this session in the last five minutes -- the
+ *   password typed again, one of the account's passkeys or a code from its
+ *   authenticator app -- and every other such change asks for the password
+ *   itself. So a stolen session cookie cannot add a way back in that
+ *   outlives it, and a passkey added is told to the owner by email.
  */
 final class Accounts
 {
@@ -74,6 +81,12 @@ final class Accounts
     public const string TOO_MANY_PASSKEYS = 'This account keeps ' . PasskeyStore::MAX_PER_ACCOUNT . ' passkeys, the most it can. Remove one you no longer use, then add this one.';
 
     public const string WRONG_HOST = 'Passkeys work on this app\'s own address. Open it there, then try again.';
+
+    /** On the `confirm` field: the session has not proved it is its owner's in the last five minutes. */
+    public const string CONFIRM_FIRST = "Confirm it's you first: type your password, or use a passkey or a code from your authenticator app.";
+
+    /** How long a confirmation lets the session change how the account signs in, in seconds. */
+    public const int CONFIRMATION_LIFETIME = Sessions::CONFIRMATION_LIFETIME;
 
     /** The issuer an authenticator app files the account's codes under. */
     private readonly string $issuer;
@@ -369,6 +382,74 @@ final class Accounts
         return $user;
     }
 
+    // --------------------------------------------------------- confirming
+
+    /** Whether this session's owner proved it is them in the last five minutes. */
+    public function recentlyConfirmed(Request $http): bool
+    {
+        return $this->confirmedUntil($http) !== null;
+    }
+
+    /** Until when this session's last confirmation counts, in Unix seconds; null when it does not. */
+    public function confirmedUntil(Request $http): ?int
+    {
+        return $this->sessions->confirmedUntil(SessionState::of($http));
+    }
+
+    /** Confirms the session with the account's password, counted as a sign-in's guess. */
+    public function confirmWithPassword(Request $http, AccountUser $user, #[\SensitiveParameter] string $password): void
+    {
+        $this->confirmPassword($http, $user, $password, 'currentPassword');
+    }
+
+    /**
+     * Confirms the session with a code from the account's authenticator
+     * app, counted as any second factor is. Not a recovery code: those are
+     * for a sign-in that has lost the app, and spending one here would be
+     * spending it for nothing.
+     */
+    public function confirmWithCode(Request $http, AccountUser $user, #[\SensitiveParameter] string $code): void
+    {
+        $this->secondFactorThrottle->hit($http, $user->authIdentifier());
+        $compact = (string) preg_replace('/\s+/', '', $code);
+        if (preg_match('/^\d{' . Totp::DIGITS . '}\z/', $compact) !== 1 || !$this->twoFactor->verify($user->authIdentifier(), $compact)) {
+            throw new ValidationException(['code' => ["That code didn't work. Type the code your authenticator app shows now."]]);
+        }
+        $this->secondFactorThrottle->succeeded($http, $user->authIdentifier());
+        $this->sessions->confirm(SessionState::of($http), $user);
+    }
+
+    /**
+     * What navigator.credentials.get() is handed to confirm the session
+     * with one of the account's passkeys: a challenge bound to this session
+     * and account, and the account's passkeys as the ones to offer.
+     *
+     * @return array<string, mixed>
+     */
+    public function passkeyConfirmationOptions(Request $http, AccountUser $user): array
+    {
+        $this->assertRelyingPartyHost($http);
+        $challenge = $this->challenges->issue(SessionState::of($http)->id, PasskeyChallenges::CONFIRM, $user->authIdentifier());
+
+        return [
+            'challenge' => Base64Url::encode($challenge),
+            'rpId' => $this->relyingParty->id,
+            'userVerification' => 'required',
+            'timeout' => PasskeyChallenges::LIFETIME * 1000,
+            'allowCredentials' => array_map(
+                static fn (Passkey $passkey): array => ['type' => 'public-key', 'id' => Base64Url::encode($passkey->credentialId), 'transports' => $passkey->transports],
+                $this->passkeys->of($user->authIdentifier()),
+            ),
+        ];
+    }
+
+    /** Confirms the session with one of the account's own passkeys, verified as a sign-in's is. */
+    public function confirmWithPasskey(Request $http, AccountUser $user, string $credential): void
+    {
+        $this->verifyPasskey($http, $credential, PasskeyChallenges::CONFIRM, $user);
+        $this->sessions->confirm(SessionState::of($http), $user);
+    }
+
     // ----------------------------------------------------------- two-factor
 
     public function twoFactorEnabled(AccountUser $user): bool
@@ -384,12 +465,14 @@ final class Accounts
     /**
      * A new secret for the account's authenticator app, unconfirmed until a
      * code from it is typed (confirmTwoFactor()): the base32 a person types,
-     * and the otpauth:// URI a QR code carries.
+     * and the otpauth:// URI a QR code carries. The session must have been
+     * confirmed in the last five minutes.
      *
      * @return array{secret: string, uri: string}
      */
-    public function beginTwoFactor(AccountUser $user): array
+    public function beginTwoFactor(Request $http, AccountUser $user): array
     {
+        $this->assertRecentlyConfirmed($http);
         $secret = $this->twoFactor->begin($user->authIdentifier());
 
         return ['secret' => Base32::encode($secret), 'uri' => Totp::uri($secret, $this->issuer, $user->accountEmail())];
@@ -410,12 +493,14 @@ final class Accounts
 
     /**
      * Turns two-factor sign-in on with a code from the new secret, counted
-     * as any second factor is; the recovery codes, to show once.
+     * as any second factor is; the recovery codes, to show once. The
+     * session must have been confirmed in the last five minutes.
      *
      * @return list<string>
      */
     public function confirmTwoFactor(Request $http, AccountUser $user, #[\SensitiveParameter] string $code): array
     {
+        $this->assertRecentlyConfirmed($http);
         $this->secondFactorThrottle->hit($http, $user->authIdentifier());
         $codes = $this->twoFactor->confirm($user->authIdentifier(), $code);
         if ($codes === null) {
@@ -461,13 +546,15 @@ final class Accounts
      * passkey to a signed-in account: a challenge bound to this session and
      * account, this host as the relying party, a discoverable credential
      * that verifies its user, ES256 or RS256, and the account's passkeys
-     * listed so an authenticator does not make a second for it.
+     * listed so an authenticator does not make a second for it. The session
+     * must have been confirmed in the last five minutes.
      *
      * @return array<string, mixed>
      */
     public function passkeyRegistrationOptions(Request $http, AccountUser $user): array
     {
         $this->assertRelyingPartyHost($http);
+        $this->assertRecentlyConfirmed($http);
         $challenge = $this->challenges->issue(SessionState::of($http)->id, PasskeyChallenges::REGISTER, $user->authIdentifier());
 
         return [
@@ -491,11 +578,14 @@ final class Accounts
 
     /**
      * Adds the passkey the browser made: its challenge used up, its
-     * attestation verified for this host, and kept under $name.
+     * attestation verified for this host, and kept under $name -- while the
+     * session's confirmation still counts. The owner is told by email: a
+     * passkey outlives every session, "sign out everywhere" included.
      */
     public function registerPasskey(Request $http, AccountUser $user, string $credential, string $name): Passkey
     {
         $this->assertRelyingPartyHost($http);
+        $this->assertRecentlyConfirmed($http);
         $challenge = $this->challenges->consume(SessionState::of($http)->id, PasskeyChallenges::REGISTER, $user->authIdentifier());
         if ($challenge === null) {
             throw new ValidationException(['credential' => ['Adding the passkey took too long, or was started in another tab. Try again.']]);
@@ -518,6 +608,8 @@ final class Accounts
         if (!$this->passkeys->add($user->authIdentifier(), $this->userHandle($user), $verified, $label, $parts['transports'])) {
             throw new ValidationException(['credential' => ['That passkey is already on an account. Use it to sign in, or make a new one.']]);
         }
+
+        $this->jobs->dispatch(new SendAccountMail(AccountMailKind::PasskeyAdded, name: $label, userId: $user->authIdentifier()));
 
         foreach ($this->passkeys->of($user->authIdentifier()) as $passkey) {
             if (hash_equals($passkey->credentialId, $verified->credentialId)) {
@@ -557,50 +649,8 @@ final class Accounts
      */
     public function signInWithPasskey(Request $http, string $credential): AccountUser
     {
-        $this->assertRelyingPartyHost($http);
-        $state = SessionState::of($http);
-        $refused = static fn (string $message = PasskeyRefused::TRY_AGAIN): ValidationException => new ValidationException(['credential' => [$message]]);
-
-        try {
-            $parts = self::credential($credential, ['clientDataJSON', 'authenticatorData', 'signature']);
-        } catch (PasskeyRefused $e) {
-            throw $refused($e->getMessage());
-        }
-        // Per address, and per credential: a passkey cannot be guessed, but
-        // verifying costs a signature check, and a flood of them is someone's.
-        $this->signInThrottle->hit($http, 'passkey:' . Base64Url::encode($parts['rawId']));
-
-        $challenge = $this->challenges->consume($state->id, PasskeyChallenges::AUTHENTICATE);
-        if ($challenge === null) {
-            throw $refused('Signing in with the passkey took too long, or was started in another tab. Try again.');
-        }
-        $passkey = $this->passkeys->byCredentialId($parts['rawId']);
-        if ($passkey === null) {
-            throw $refused('That passkey is not on any account here. Sign in with your password, then add it on your account page.');
-        }
-        if ($parts['userHandle'] !== null && !hash_equals($passkey->userHandle, $parts['userHandle'])) {
-            throw $refused();
-        }
-
-        try {
-            $assertion = new WebAuthn($this->relyingParty)->verifyAssertion(
-                $parts['clientDataJSON'],
-                $parts['authenticatorData'],
-                $parts['signature'],
-                $challenge,
-                $passkey->publicKey,
-                $passkey->signCount,
-            );
-        } catch (PasskeyRefused $e) {
-            throw $refused($e->getMessage());
-        }
-        $user = $this->users->find($passkey->userId);
-        if ($user === null || !$this->passkeys->used($passkey, $assertion)) {
-            throw $refused();
-        }
-        $this->signInThrottle->succeeded($http, 'passkey:' . Base64Url::encode($parts['rawId']));
-
-        $this->sessions->signIn($state, $user);
+        $user = $this->verifyPasskey($http, $credential, PasskeyChallenges::AUTHENTICATE);
+        $this->sessions->signIn(SessionState::of($http), $user);
 
         return $user;
     }
@@ -638,6 +688,7 @@ final class Accounts
                 : $this->mails->emailChange($user, $job->email, $this->links->changeEmail($user, $job->email), $minutes(EmailLinks::CHANGE_EMAIL)),
             AccountMailKind::EmailChanged => $user === null ? null : $this->mails->emailChanged($user, $job->email, $resetPage),
             AccountMailKind::PasswordChanged => $user === null ? null : $this->mails->passwordChanged($user, $resetPage),
+            AccountMailKind::PasskeyAdded => $user === null ? null : $this->mails->passkeyAdded($user, $job->name, $this->links->page($this->links->paths->account), $resetPage),
         };
 
         if ($mailable !== null) {
@@ -646,6 +697,75 @@ final class Accounts
     }
 
     // --------------------------------------------------------------- helpers
+
+    /**
+     * A passkey assertion for this session's challenge for $purpose,
+     * verified: the credential found by its id and held to the account
+     * handle it was made with -- and, to confirm a session, to $owner's
+     * account -- the assertion verified for this host with its user
+     * verified, and its sign count moved on. Its account.
+     */
+    private function verifyPasskey(Request $http, string $credential, string $purpose, ?AccountUser $owner = null): AccountUser
+    {
+        $this->assertRelyingPartyHost($http);
+        $state = SessionState::of($http);
+        $refused = static fn (string $message = PasskeyRefused::TRY_AGAIN): ValidationException => new ValidationException(['credential' => [$message]]);
+        $notThisAccount = 'That passkey is not on this account. Use one you added here, or type your password.';
+
+        try {
+            $parts = self::credential($credential, ['clientDataJSON', 'authenticatorData', 'signature']);
+        } catch (PasskeyRefused $e) {
+            throw $refused($e->getMessage());
+        }
+        // Per address, and per credential: a passkey cannot be guessed, but
+        // verifying costs a signature check, and a flood of them is someone's.
+        $this->signInThrottle->hit($http, 'passkey:' . Base64Url::encode($parts['rawId']));
+
+        $challenge = $this->challenges->consume($state->id, $purpose, $owner?->authIdentifier() ?? '');
+        if ($challenge === null) {
+            throw $refused('Using the passkey took too long, or was started in another tab. Try again.');
+        }
+        $passkey = $this->passkeys->byCredentialId($parts['rawId']);
+        if ($passkey === null) {
+            throw $refused($owner === null
+                ? 'That passkey is not on any account here. Sign in with your password, then add it on your account page.'
+                : $notThisAccount);
+        }
+        if ($owner !== null && $passkey->userId !== $owner->authIdentifier()) {
+            throw $refused($notThisAccount);
+        }
+        if ($parts['userHandle'] !== null && !hash_equals($passkey->userHandle, $parts['userHandle'])) {
+            throw $refused();
+        }
+
+        try {
+            $assertion = new WebAuthn($this->relyingParty)->verifyAssertion(
+                $parts['clientDataJSON'],
+                $parts['authenticatorData'],
+                $parts['signature'],
+                $challenge,
+                $passkey->publicKey,
+                $passkey->signCount,
+            );
+        } catch (PasskeyRefused $e) {
+            throw $refused($e->getMessage());
+        }
+        $user = $this->users->find($passkey->userId);
+        if ($user === null || !$this->passkeys->used($passkey, $assertion)) {
+            throw $refused();
+        }
+        $this->signInThrottle->succeeded($http, 'passkey:' . Base64Url::encode($parts['rawId']));
+
+        return $user;
+    }
+
+    /** A change to how the account signs in, refused unless the session was confirmed in the last five minutes. */
+    private function assertRecentlyConfirmed(Request $http): void
+    {
+        if (!$this->recentlyConfirmed($http)) {
+            throw new ValidationException(['confirm' => [self::CONFIRM_FIRST]]);
+        }
+    }
 
     /** Signs in, or moves to the second-factor stage where two-factor is on. */
     private function enter(Request $http, AccountUser $user): SignInResult
@@ -661,7 +781,10 @@ final class Accounts
         return SignInResult::SignedIn;
     }
 
-    /** The account's current password, asked before a change and counted as a sign-in's guess. */
+    /**
+     * The account's current password, asked before a change and counted as
+     * a sign-in's guess; right, it confirms the session too.
+     */
     private function confirmPassword(Request $http, AccountUser $user, #[\SensitiveParameter] string $password, string $field): void
     {
         $this->signInThrottle->hit($http, $user->accountEmail());
@@ -669,6 +792,7 @@ final class Accounts
             throw new ValidationException([$field => [self::WRONG_PASSWORD]]);
         }
         $this->signInThrottle->succeeded($http, $user->accountEmail());
+        $this->sessions->confirm(SessionState::of($http), $user);
     }
 
     /**

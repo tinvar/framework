@@ -10,8 +10,8 @@ use Tinvar\Orm\Schema\Table;
 
 /**
  * The challenge a passkey ceremony signs, bound to the session that asked
- * for it, to what it is for, and -- for adding a passkey -- to the account
- * adding it; good once, for five minutes.
+ * for it, to what it is for, and -- for adding a passkey or confirming a
+ * session -- to the account; good once, for five minutes.
  *
  * One per session and purpose: asking again replaces it, and using it
  * deletes it in the same statement that reads it (DELETE ... RETURNING),
@@ -28,6 +28,8 @@ final readonly class PasskeyChallenges
 
     public const string REGISTER = 'register';
     public const string AUTHENTICATE = 'authenticate';
+    // Confirming a signed-in session is its owner's, with one of the account's passkeys.
+    public const string CONFIRM = 'confirm';
 
     /** Expired rows forgotten per challenge made, at most. */
     public const int SWEEP_BATCH = 100;
@@ -47,7 +49,7 @@ final readonly class PasskeyChallenges
             $challenges->string('session_hash', 64);
             $challenges->string('purpose', 16);
             $challenges->string('challenge', 64);
-            // The account adding a passkey; '' for a sign-in, which names none.
+            // The account adding a passkey or confirming; '' for a sign-in, which names none.
             $challenges->string('user_id', 191);
             $challenges->bigInteger('expires_at');
             $challenges->primary(['session_hash', 'purpose']);
@@ -79,7 +81,7 @@ final readonly class PasskeyChallenges
 
     /**
      * The challenge $session was issued for $purpose -- and, for adding a
-     * passkey, for $user -- used up by this call; null when there is none,
+     * passkey or confirming, for $user -- used up by this call; null when there is none,
      * it has expired, or it was another account's.
      */
     public function consume(#[\SensitiveParameter] string $session, string $purpose, string $user = ''): ?string
@@ -101,8 +103,8 @@ final readonly class PasskeyChallenges
         if ($session === '') {
             throw new \LogicException('A passkey challenge is bound to a session, and this request has none.');
         }
-        if ($purpose !== self::REGISTER && $purpose !== self::AUTHENTICATE) {
-            throw new \InvalidArgumentException("'{$purpose}' is not a passkey ceremony: register or authenticate.");
+        if (!\in_array($purpose, [self::REGISTER, self::AUTHENTICATE, self::CONFIRM], true)) {
+            throw new \InvalidArgumentException("'{$purpose}' is not a passkey ceremony: register, authenticate or confirm.");
         }
     }
 }

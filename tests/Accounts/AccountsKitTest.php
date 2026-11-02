@@ -71,6 +71,15 @@ final class Visitor
         }
     }
 
+    /** Types the password again, as the account page asks before a change to how it signs in. */
+    public function confirm(string $password = PASSWORD): void
+    {
+        $this->do(static function (Accounts $a, Request $r) use ($password): void {
+            $user = SessionState::of($r)->user() ?? throw new \LogicException('Nobody is signed in to confirm.');
+            $a->confirmWithPassword($r, $user, $password);
+        });
+    }
+
     public function state(): SessionState
     {
         return $this->app->kit->sessions->open($this->request());
@@ -203,7 +212,8 @@ it('holds a sign-in at the second factor, and takes each code once', function (s
         $owner = member($app);
         $user = $owner->state()->user();
         \assert($user !== null);
-        $setup = $app->kit->accounts->beginTwoFactor($user);
+        $owner->confirm();
+        $setup = $owner->do(static fn (Accounts $a, Request $r) => $a->beginTwoFactor($r, $user));
         $secret = (string) Base32::decode($setup['secret']);
         expect($setup['uri'])->toStartWith('otpauth://totp/Test%20app:ada%40example.com?secret=');
 
@@ -236,7 +246,8 @@ it('counts second-factor guesses per account, five to a window', function () {
         $owner = member($app);
         $user = $owner->state()->user();
         \assert($user !== null);
-        $secret = (string) Base32::decode($app->kit->accounts->beginTwoFactor($user)['secret']);
+        $owner->confirm();
+        $secret = (string) Base32::decode($owner->do(static fn (Accounts $a, Request $r) => $a->beginTwoFactor($r, $user))['secret']);
         $owner->do(static fn (Accounts $a, Request $r) => $a->confirmTwoFactor($r, $user, Totp::at($secret, $app->now)));
 
         $guesser = new Visitor($app, address: '198.51.100.3');
@@ -255,6 +266,7 @@ it('adds a passkey and signs in with it, for this host and this session alone', 
         \assert($user !== null);
         $authenticator = SoftwareAuthenticator::es256();
 
+        $owner->confirm();
         $options = $owner->do(static fn (Accounts $a, Request $r) => $a->passkeyRegistrationOptions($r, $user));
         expect($options['rp'])->toBe(['id' => 'app.example', 'name' => 'Test app'])
             ->and($options['authenticatorSelection']['userVerification'])->toBe('required');
@@ -310,12 +322,117 @@ it('removes a passkey for its own account alone', function () {
         $bobUser = $bob->state()->user();
         \assert($adaUser !== null && $bobUser !== null);
         $authenticator = SoftwareAuthenticator::rs256();
+        $ada->confirm();
         $options = $ada->do(static fn (Accounts $a, Request $r) => $a->passkeyRegistrationOptions($r, $adaUser));
         $passkey = $ada->do(static fn (Accounts $a, Request $r) => $a->registerPasskey($r, $adaUser, credential($authenticator, $authenticator->register((string) Base64Url::decode($options['challenge']))), 'Key'));
 
         expect($app->kit->accounts->removePasskey($bobUser, $passkey->id))->toBeFalse()
             ->and($app->kit->accounts->removePasskey($adaUser, $passkey->id))->toBeTrue()
             ->and($app->kit->accounts->passkeys($adaUser))->toBe([]);
+    });
+});
+
+it('asks a session to confirm it is its owner before it adds a passkey or turns on two-factor', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        // A stolen session cookie is all the thief has: no password, no passkey.
+        $thief = member($app);
+        $user = $thief->state()->user();
+        \assert($user !== null);
+        $authenticator = SoftwareAuthenticator::es256();
+        $confirmFirst = ['confirm' => [Accounts::CONFIRM_FIRST]];
+
+        expect(refused(static fn () => $thief->do(static fn (Accounts $a, Request $r) => $a->passkeyRegistrationOptions($r, $user))))->toBe($confirmFirst)
+            ->and(refused(static fn () => $thief->do(static fn (Accounts $a, Request $r) => $a->registerPasskey($r, $user, credential($authenticator, $authenticator->register(random_bytes(32))), 'Mine now'))))->toBe($confirmFirst)
+            ->and(refused(static fn () => $thief->do(static fn (Accounts $a, Request $r) => $a->beginTwoFactor($r, $user))))->toBe($confirmFirst)
+            ->and(refused(static fn () => $thief->do(static fn (Accounts $a, Request $r) => $a->confirmTwoFactor($r, $user, '123456'))))->toBe($confirmFirst)
+            ->and($app->kit->accounts->passkeys($user))->toBe([])
+            ->and($thief->do(static fn (Accounts $a, Request $r) => $a->recentlyConfirmed($r)))->toBeFalse();
+
+        // A wrong password is a guess, counted, and confirms nothing.
+        expect(refused(static fn () => $thief->confirm('not the password')))->toBe(['currentPassword' => [Accounts::WRONG_PASSWORD]])
+            ->and($thief->do(static fn (Accounts $a, Request $r) => $a->recentlyConfirmed($r)))->toBeFalse();
+
+        // The owner types it: this session, and no other, may for five minutes.
+        $owner = $thief;
+        $owner->confirm();
+        expect($owner->do(static fn (Accounts $a, Request $r) => $a->recentlyConfirmed($r)))->toBeTrue()
+            ->and($owner->do(static fn (Accounts $a, Request $r) => $a->confirmedUntil($r)))->toBe($app->now + Accounts::CONFIRMATION_LIFETIME);
+        $phone = new Visitor($app);
+        $phone->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        expect(refused(static fn () => $phone->do(static fn (Accounts $a, Request $r) => $a->beginTwoFactor($r, $user))))->toBe($confirmFirst);
+
+        $options = $owner->do(static fn (Accounts $a, Request $r) => $a->passkeyRegistrationOptions($r, $user));
+        $owner->do(static fn (Accounts $a, Request $r) => $a->registerPasskey($r, $user, credential($authenticator, $authenticator->register((string) Base64Url::decode($options['challenge']))), 'Laptop'));
+        expect($app->kit->accounts->passkeys($user))->toHaveCount(1);
+
+        // Five minutes on, it is asked again.
+        $app->now += Accounts::CONFIRMATION_LIFETIME;
+        expect($owner->do(static fn (Accounts $a, Request $r) => $a->recentlyConfirmed($r)))->toBeFalse()
+            ->and(refused(static fn () => $owner->do(static fn (Accounts $a, Request $r) => $a->passkeyRegistrationOptions($r, $user))))->toBe($confirmFirst);
+
+        // A new session -- a sign-in, which rotates the id -- starts unconfirmed.
+        $owner->confirm();
+        $owner->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        expect($owner->do(static fn (Accounts $a, Request $r) => $a->recentlyConfirmed($r)))->toBeFalse();
+    });
+})->with('drivers');
+
+it('confirms a session with one of its account\'s passkeys, or a code from its authenticator app', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $ada = member($app, 'ada@example.com');
+        $bob = member($app, 'bob@example.com');
+        $user = $ada->state()->user();
+        $bobUser = $bob->state()->user();
+        \assert($user !== null && $bobUser !== null);
+        $adaKey = SoftwareAuthenticator::es256();
+        $bobKey = SoftwareAuthenticator::es256();
+        foreach ([[$ada, $user, $adaKey], [$bob, $bobUser, $bobKey]] as [$visitor, $owner, $key]) {
+            $visitor->confirm();
+            $options = $visitor->do(static fn (Accounts $a, Request $r) => $a->passkeyRegistrationOptions($r, $owner));
+            $visitor->do(static fn (Accounts $a, Request $r) => $a->registerPasskey($r, $owner, credential($key, $key->register((string) Base64Url::decode($options['challenge']))), 'Key'));
+        }
+        $app->now += Accounts::CONFIRMATION_LIFETIME;
+
+        $options = $ada->do(static fn (Accounts $a, Request $r) => $a->passkeyConfirmationOptions($r, $user));
+        expect($options['rpId'])->toBe('app.example')
+            ->and($options['userVerification'])->toBe('required')
+            ->and(array_column($options['allowCredentials'], 'id'))->toBe([Base64Url::encode($adaKey->credentialId)]);
+
+        // Another account's passkey confirms nobody here.
+        $bobs = $bobKey->assert((string) Base64Url::decode($options['challenge']));
+        expect(refused(static fn () => $ada->do(static fn (Accounts $a, Request $r) => $a->confirmWithPasskey($r, $user, credential($bobKey, $bobs)))))->toHaveKey('credential')
+            ->and($ada->do(static fn (Accounts $a, Request $r) => $a->recentlyConfirmed($r)))->toBeFalse();
+
+        $options = $ada->do(static fn (Accounts $a, Request $r) => $a->passkeyConfirmationOptions($r, $user));
+        $answer = $adaKey->assert((string) Base64Url::decode($options['challenge']));
+        $ada->do(static fn (Accounts $a, Request $r) => $a->confirmWithPasskey($r, $user, credential($adaKey, $answer)));
+        expect($ada->do(static fn (Accounts $a, Request $r) => $a->recentlyConfirmed($r)))->toBeTrue();
+        // Its challenge was spent with it.
+        expect(refused(static fn () => $ada->do(static fn (Accounts $a, Request $r) => $a->confirmWithPasskey($r, $user, credential($adaKey, $answer)))))->toHaveKey('credential');
+
+        // With two-factor on, a code from the app confirms; a recovery code does not.
+        $secret = (string) Base32::decode($ada->do(static fn (Accounts $a, Request $r) => $a->beginTwoFactor($r, $user))['secret']);
+        $codes = $ada->do(static fn (Accounts $a, Request $r) => $a->confirmTwoFactor($r, $user, Totp::at($secret, $app->now)));
+        $app->now += Accounts::CONFIRMATION_LIFETIME;
+        expect(refused(static fn () => $ada->do(static fn (Accounts $a, Request $r) => $a->confirmWithCode($r, $user, $codes[0]))))->toHaveKey('code')
+            ->and($app->kit->accounts->recoveryCodesLeft($user))->toBe(10);
+        $ada->do(static fn (Accounts $a, Request $r) => $a->confirmWithCode($r, $user, Totp::at($secret, $app->now)));
+        expect($ada->do(static fn (Accounts $a, Request $r) => $a->recentlyConfirmed($r)))->toBeTrue();
+    });
+});
+
+it('tells the owner by email when a passkey is added', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $key = SoftwareAuthenticator::es256();
+        $owner->confirm();
+        $options = $owner->do(static fn (Accounts $a, Request $r) => $a->passkeyRegistrationOptions($r, $user));
+        $owner->do(static fn (Accounts $a, Request $r) => $a->registerPasskey($r, $user, credential($key, $key->register((string) Base64Url::decode($options['challenge']))), 'Laptop'));
+        $app->work();
+
+        expect($app->links('passkey-added', 'ada@example.com'))->toBe(['https://app.example/account']);
     });
 });
 

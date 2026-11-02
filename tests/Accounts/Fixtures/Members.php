@@ -186,6 +186,11 @@ final readonly class MemberMails implements AccountMails
     {
         return new MemberMail($user->accountEmail(), 'password-changed', $resetUrl);
     }
+
+    public function passkeyAdded(AccountUser $user, string $passkeyName, string $accountUrl, string $resetUrl): Mailable
+    {
+        return new MemberMail($user->accountEmail(), 'passkey-added', $accountUrl);
+    }
 }
 
 /** Draws nothing: the text part is the template's name and its props, for a test to read the link from. */

@@ -42,4 +42,12 @@ interface AccountMails
 
     /** That the account's password was changed or reset, and where to reset from if it was not them. */
     public function passwordChanged(AccountUser $user, string $resetUrl): Mailable;
+
+    /**
+     * That a passkey called $passkeyName was added to the account: a passkey
+     * outlives every session, "sign out everywhere" included, so the owner
+     * hears of each one -- with the account page to remove it from, and where
+     * to reset the password from, if it was not them.
+     */
+    public function passkeyAdded(AccountUser $user, string $passkeyName, string $accountUrl, string $resetUrl): Mailable;
 }
