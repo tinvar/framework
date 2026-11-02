@@ -384,5 +384,10 @@ it('refuses a directory above whose group or every user may swap what is in it, 
         ->and(AppDirectory::refusesAbove(0, 0o40775, 501))->toContain('writable by its group, not yours')
         ->and(AppDirectory::refusesAbove(0, 0o40777, 501))->toContain('writable by every user')
         ->and(AppDirectory::refusesAbove(501, 0o40777, 501))->toContain('writable by every user')
-        ->and(AppDirectory::refusesAbove(502, 0o40755, 501))->toContain('another user\'s');
+        ->and(AppDirectory::refusesAbove(502, 0o40755, 501))->toContain('another user\'s')
+        // No user to compare: the modes alone, a group's write refused.
+        ->and(AppDirectory::refusesAbove(502, 0o40755, null))->toBeNull()
+        ->and(AppDirectory::refusesAbove(502, 0o41777, null))->toBeNull()
+        ->and(AppDirectory::refusesAbove(502, 0o40777, null))->toContain('writable by every user')
+        ->and(AppDirectory::refusesAbove(502, 0o40775, null))->toContain('writable by its group');
 });

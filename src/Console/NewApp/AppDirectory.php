@@ -141,18 +141,18 @@ final class AppDirectory
      * Why a directory above the app -- of $owner, with $mode -- lets someone
      * other than $uid swap what is in it, or null: another user's (root
      * aside), or, not sticky, writable by every user or by a group the
-     * directory is not $uid's own to choose.
+     * directory is not $uid's own to choose. With $uid null -- no posix --
+     * the owner is not compared, and a group's write is refused.
      */
     public static function refusesAbove(int $owner, int $mode, ?int $uid): ?string
     {
-        if ($uid === null) {
-            return null;
-        }
-        $mine = $owner === $uid;
+        // With no user to compare, only the modes are held: a group's
+        // write is then refused, as nobody can say the group is the user's.
+        $mine = $uid !== null && $owner === $uid;
         $sticky = ($mode & 0o1000) !== 0;
 
         return match (true) {
-            !$mine && $owner !== 0 => 'another user\'s',
+            $uid !== null && !$mine && $owner !== 0 => 'another user\'s',
             !$sticky && ($mode & 0o002) !== 0 => 'writable by every user, and not sticky',
             !$sticky && !$mine && ($mode & 0o020) !== 0 => 'writable by its group, not yours, and not sticky',
             default => null,
