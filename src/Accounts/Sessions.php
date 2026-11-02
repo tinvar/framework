@@ -62,6 +62,7 @@ final readonly class Sessions
         private SessionCookie $cookie,
         private AccountUsers $users,
         private AuthEpochs $epochs,
+        private CredentialEpochs $credentials,
     ) {}
 
     /** @param class-string<Model> $userModel */
@@ -242,9 +243,10 @@ final readonly class Sessions
 
     /**
      * Ends every session the session's user has, on every device and host,
-     * this one included, and moves their epoch, in one durable transaction:
-     * every other cookie signs nobody in at its next request, and every
-     * token, grant and emailed link minted for them stops counting.
+     * this one included, and moves their epoch -- and their credential
+     * epoch, which their API tokens are held to -- in one durable
+     * transaction: every other cookie signs nobody in at its next request,
+     * and every token, grant and emailed link minted for them stops counting.
      */
     public function signOutEverywhere(SessionState $state): void
     {
@@ -291,7 +293,8 @@ final readonly class Sessions
         // by, and a sign-out a power cut took back would sign in again.
         $connection = $this->connection;
         $epochs = $this->epochs;
-        $connection->durableTransaction(static function () use ($connection, $epochs, $state, $user, $stage, $everywhere, $id, $now, $expires): void {
+        $credentials = $this->credentials;
+        $connection->durableTransaction(static function () use ($connection, $epochs, $credentials, $state, $user, $stage, $everywhere, $id, $now, $expires): void {
             // This host's row alone: an id presented on the wrong host is not
             // that host's to end.
             if ($state->id !== '') {
@@ -302,6 +305,7 @@ final readonly class Sessions
             if ($leaving !== null) {
                 if ($everywhere) {
                     $connection->execute('DELETE FROM sessions WHERE user_id = ?', [$leaving->authIdentifier()]);
+                    $credentials->bump($leaving->authIdentifier());
                 }
                 // Whatever any tab holds for whoever is leaving is dropped on
                 // its next request, not only this tab's.

@@ -48,9 +48,19 @@ final readonly class AccountsKit
     public Sessions $sessions;
     public SessionCookie $cookie;
     public AuthEpochs $epochs;
+
+    /** What API tokens are held to: moved on fewer things than the auth epoch (CredentialEpochs). */
+    public CredentialEpochs $credentials;
     public EmailLinks $links;
     public AccountLinks $accountLinks;
     public UserLookup $lookup;
+
+    /**
+     * The users as an API token's holder is found again, at their credential
+     * epoch: the lookup to hand ApiAccess (ADR 0159), so a token outlives an
+     * ordinary sign-in and ends when every session does.
+     */
+    public UserLookup $tokenHolders;
     public StartSession $startSession;
     public AccountPaths $paths;
 
@@ -88,8 +98,10 @@ final readonly class AccountsKit
         $this->paths = $paths;
         $this->cookie = new SessionCookie($key, $cookieName, $clock);
         $this->epochs = new AuthEpochs($connection);
+        $this->credentials = new CredentialEpochs($connection);
         $this->lookup = new AccountUserLookup($users, $this->epochs);
-        $this->sessions = new Sessions($connection, $this->cookie, $users, $this->epochs);
+        $this->tokenHolders = new AccountTokenHolders($users, $this->credentials);
+        $this->sessions = new Sessions($connection, $this->cookie, $users, $this->epochs, $this->credentials);
         $local = str_starts_with($origin, 'http://');
         $this->links = EmailLinks::fromKey($key, new DatabaseEmailLinkStore($connection), $this->lookup, $clock, localHttp: $local);
         $this->accountLinks = new AccountLinks($this->links, $origin, $paths);
@@ -101,6 +113,7 @@ final readonly class AccountsKit
             passwords: Passwords::for($users),
             sessions: $this->sessions,
             epochs: $this->epochs,
+            credentials: $this->credentials,
             links: $this->accountLinks,
             jobs: $jobs,
             mailer: $mailer,
@@ -138,7 +151,7 @@ final readonly class AccountsKit
 
     /**
      * Every table the kit keeps, for an application's migration: sessions,
-     * auth epochs, emailed links, passkeys and their challenges, two-factor
+     * auth and credential epochs, emailed links, passkeys and their challenges, two-factor
      * secrets and recovery codes -- each user column a foreign key to
      * $userModel's table.
      *
@@ -148,6 +161,7 @@ final readonly class AccountsKit
     {
         Sessions::define($schema, $userModel, $ifNotExists);
         AuthEpochs::define($schema, $userModel, ifNotExists: $ifNotExists);
+        CredentialEpochs::define($schema, $userModel, $ifNotExists);
         DatabaseEmailLinkStore::define($schema, ifNotExists: $ifNotExists);
         PasskeyStore::define($schema, $userModel, $ifNotExists);
         PasskeyChallenges::define($schema, $ifNotExists);
@@ -155,7 +169,7 @@ final readonly class AccountsKit
     }
 
     /** The tables migrate() makes, last first, for a migration's down(). */
-    public const array TABLES = ['recovery_codes', 'two_factor_secrets', 'passkey_challenges', 'passkeys', 'email_links', 'auth_epochs', 'sessions'];
+    public const array TABLES = ['recovery_codes', 'two_factor_secrets', 'passkey_challenges', 'passkeys', 'email_links', 'credential_epochs', 'auth_epochs', 'sessions'];
 
     /** What the application's pages, actions and middleware are built with. */
     public function register(Container $container): Container

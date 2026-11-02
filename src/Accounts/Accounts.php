@@ -46,7 +46,9 @@ use Tinvar\Validation\ValidationException;
  * - **Every change of who a session is rotates its id**, and every change
  *   to how an account is reached -- a password, an address, a reset, a
  *   sign-out everywhere -- moves the account's auth epoch, which ends every
- *   token, grant, queued job and emailed link minted for it before.
+ *   token, grant, queued job and emailed link minted for it before, and its
+ *   credential epoch, which ends its API tokens (CredentialEpochs): the
+ *   one moved at every sign-in too, the other on these alone.
  * - **A passkey ceremony** signs a challenge bound to the session that
  *   asked and good once (PasskeyChallenges), for this host as the relying
  *   party, checked in full (WebAuthn).
@@ -97,6 +99,7 @@ final class Accounts
         private readonly Passwords $passwords,
         private readonly Sessions $sessions,
         private readonly AuthEpochs $epochs,
+        private readonly CredentialEpochs $credentials,
         private readonly AccountLinks $links,
         private readonly Dispatcher $jobs,
         private readonly Mailer $mailer,
@@ -283,6 +286,7 @@ final class Accounts
             $this->users->changePassword($user, $hash);
             $this->sessions->endEverywhere($user->authIdentifier());
             $this->epochs->bump($user->authIdentifier());
+            $this->credentials->bump($user->authIdentifier());
 
             return $user;
         });
@@ -306,6 +310,7 @@ final class Accounts
             $this->users->changePassword($user, $hash);
             $this->sessions->endEverywhere($user->authIdentifier());
             $this->epochs->bump($user->authIdentifier());
+            $this->credentials->bump($user->authIdentifier());
         });
 
         $this->sessions->signIn(SessionState::of($http), $user);
@@ -369,6 +374,7 @@ final class Accounts
                 throw new ValidationException(['token' => [self::ADDRESS_TAKEN]]);
             }
             $this->epochs->bump($user->authIdentifier());
+            $this->credentials->bump($user->authIdentifier());
 
             return [$this->users->find($user->authIdentifier()) ?? $user, $old];
         });

@@ -531,3 +531,38 @@ it('refuses to build links on plain http where the environment says production',
         putenv($previous === false ? 'TINVAR_ENV' : "TINVAR_ENV={$previous}");
     }
 });
+
+it('moves the credential epoch API tokens are held to on sign out everywhere, a password reset or change and an address change, and not at a sign-in', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $id = $user->authIdentifier();
+        $credential = static fn (): string => $app->kit->tokenHolders->epoch($user);
+        expect($app->kit->tokenHolders->find($id)?->authIdentifier())->toBe($id)
+            ->and($credential())->toBe('0');
+
+        // Signing in and out again, on another device and this one, moves the auth epoch alone.
+        $phone = new Visitor($app);
+        $phone->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        $phone->do(static fn (Accounts $a, Request $r) => $a->signOut($r));
+        $owner->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        expect($credential())->toBe('0');
+
+        $owner->do(static fn (Accounts $a, Request $r) => $a->changePassword($r, $user, PASSWORD, 'a second passphrase here'));
+        expect($credential())->toBe('1');
+
+        $owner->do(static fn (Accounts $a, Request $r) => $a->requestEmailChange($r, $user, 'ada@new.example', 'a second passphrase here'));
+        $app->work();
+        $owner->do(static fn (Accounts $a, Request $r) => $a->confirmEmailChange($r, token($app->links('email-change', 'ada@new.example')[0])));
+        expect($credential())->toBe('2');
+
+        $owner->do(static fn (Accounts $a, Request $r) => $a->requestPasswordReset($r, 'ada@new.example'));
+        $app->work();
+        $owner->do(static fn (Accounts $a, Request $r) => $a->resetPassword($r, token($app->links('password-reset', 'ada@new.example')[0]), PASSWORD));
+        expect($credential())->toBe('3');
+
+        $owner->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r));
+        expect($credential())->toBe('4');
+    });
+})->with('drivers');
