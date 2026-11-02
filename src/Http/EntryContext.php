@@ -377,7 +377,7 @@ final readonly class EntryContext
             }
         }
 
-        $refusals = self::tenantHostRefusals($routes, $endpoints, $actions, $queries, $channels, $this->panelDomainFor(...));
+        $refusals = self::tenantHostRefusals($routes, $endpoints, $actions, $queries, $channels, $transfers, $this->panelDomainFor(...));
         if ($refusals !== []) {
             throw new \InvalidArgumentException($refusals[0]);
         }
@@ -439,6 +439,7 @@ final readonly class EntryContext
      * page or endpoint in such a panel must declare its panel's #[Domain]
      * itself, so its own host is read.)
      *
+     * @param list<DeclaredEntryPoint> $transfers the exports and imports, as check() takes them
      * @param (\Closure(list<\Tinvar\Attributes\Panel>, class-string): ?string)|null $panelDomain
      *        the host an entry point's panel lives on (panelDomainFor()); none, and only
      *        each one's own #[Domain] is read
@@ -450,6 +451,7 @@ final readonly class EntryContext
         ?ActionRegistry $actions = null,
         ?QueryRegistry $queries = null,
         ?ChannelRegistry $channels = null,
+        array $transfers = [],
         ?\Closure $panelDomain = null,
     ): array {
         $panelDomain ??= static fn (): ?string => null;
@@ -479,6 +481,9 @@ final readonly class EntryContext
         }
         foreach ($channels?->all() ?? [] as $channel) {
             $held[] = [$channel->where(), $channel->host ?? $panelDomain($channel->panels, $channel->class), $channel->tenantFrom];
+        }
+        foreach ($transfers as $transfer) {
+            $held[] = [$transfer->where(), $transfer->host ?? $panelDomain($transfer->panels, $transfer->class), $transfer->tenantFrom];
         }
 
         $refusals = [];

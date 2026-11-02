@@ -23,6 +23,12 @@ interface DeclaredEntryPoint
     /** The #[TenantFrom] source it reads its tenant from; null for none. */
     public ?string $tenantFrom { get; }
 
+    /** The #[Domain] pattern it is held to (ADR 0149); null for none of its own. */
+    public ?string $host { get; }
+
+    /** @var class-string the class that declares it, whose namespace may name its panel */
+    public string $class { get; }
+
     /** Where it is, for a refusal to name. */
     public function where(): string;
 }
