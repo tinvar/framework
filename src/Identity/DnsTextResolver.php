@@ -6,7 +6,7 @@ namespace Tinvar\Identity;
 
 /**
  * DNS TXT records, as a custom domain's proof of ownership is read
- * (tinvar/tenancy's DomainOwnership, ADR 0155).
+ * (tinvar/tenancy's DomainOwnership, ADR 0159).
  *
  * A separate interface from DnsResolver, which DomainVerifier asks: where a
  * domain points says nothing of who controls it -- a name a tenant gave up
