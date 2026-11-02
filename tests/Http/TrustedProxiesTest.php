@@ -325,3 +325,65 @@ describe('a client header', function () {
             ->toThrow(\InvalidArgumentException::class, 'TINVAR_TRUSTED_PROXY_CLIENT');
     });
 });
+
+/*
+ * The same Worker writes X-Forwarded-Host as it likes too. Where the proven
+ * proxy names the client (TINVAR_TRUSTED_PROXY_CLIENT=header), its rule
+ * also sets X-Tinvar-Host to `http.host`, the host Cloudflare itself was
+ * sent to, and the host is read from that alone: never X-Forwarded-Host,
+ * and never the Host header behind it. Missing, it names no host (a 400);
+ * anything but one host name, the empty host no one serves (a 421).
+ */
+describe('a host header', function () {
+    $proxies = TrustedProxies::of(['172.16.0.0/12'], own: [], secret: PROXY_SECRET, clientHeader: true);
+    $from = static fn (?string $host, ?string $proof = PROXY_SECRET, string $peer = '172.16.3.4'): Request => new Request(
+        'GET',
+        '/',
+        [
+            'host' => 'app.fly.dev',
+            'x-forwarded-host' => 'admin.shop.test',
+            ...($host === null ? [] : [TrustedProxies::HOST_HEADER => $host]),
+            ...($proof === null ? [] : [TrustedProxies::SECRET_HEADER => $proof]),
+        ],
+        remoteAddress: $peer,
+    );
+
+    it('is the host from a proxy that proves itself, whatever X-Forwarded-Host says', function () use ($proxies, $from) {
+        expect($proxies->host($from('shop.test')))->toBe('shop.test')
+            ->and($proxies->host($from(' Shop.Test:443 ')))->toBe('Shop.Test:443');
+    });
+
+    it('names no host when a proven proxy sends none -- never X-Forwarded-Host or Host', function () use ($proxies, $from) {
+        expect($proxies->host($from(null)))->toBeNull();
+    });
+
+    it('names the empty host for anything but one host name', function (string $host) use ($proxies, $from) {
+        expect($proxies->host($from($host)))->toBe('');
+    })->with([
+        'empty' => [''],
+        'two' => ['shop.test, admin.shop.test'],
+        'an address' => ['203.0.113.9'],
+        'a bracketed address' => ['[::1]'],
+        'a path' => ['shop.test/admin'],
+        'a stray character' => ['shop.test@evil.test'],
+    ]);
+
+    it('is not read from a peer that does not prove itself', function () use ($proxies, $from) {
+        expect($proxies->host($from('shop.test', proof: null)))->toBe('app.fly.dev')
+            ->and($proxies->host($from('shop.test', peer: '198.51.100.20')))->toBe('app.fly.dev');
+    });
+
+    it('is not read where the deployment did not ask for it', function () use ($from) {
+        $forwarded = TrustedProxies::of(['172.16.0.0/12'], own: [], secret: PROXY_SECRET);
+
+        expect($forwarded->host($from('shop.test')))->toBe('admin.shop.test');
+    });
+
+    it('refuses a request without it as naming no host, and a bad one as misdirected', function () use ($proxies, $from) {
+        $domains = Tinvar\Routing\Domains::fromUrl('https://shop.test', proxies: $proxies);
+
+        expect($domains->hostOf($from('shop.test')))->toBe('shop.test')
+            ->and($domains->refusal($from(null))->status)->toBe(400)
+            ->and($domains->refusal($from('203.0.113.9'))->status)->toBe(421);
+    });
+});

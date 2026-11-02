@@ -133,7 +133,8 @@ it('has Cloudflare in front name the client from ip.src, which the boot reads in
     preg_match('/TINVAR_TRUSTED_PROXIES[\s=:"\']+(?:value: ")?([0-9][0-9a-f.:\/,]*)/', $all, $pinned);
 
     expect($all)->toMatch('/TINVAR_TRUSTED_PROXY_CLIENT\W+(value: )?"?header"?/')
-        ->and(implode("\n", $recipe->steps))->toContain('Set dynamic X-Tinvar-Client to ip.src');
+        ->and(implode("\n", $recipe->steps))->toContain('Set dynamic X-Tinvar-Client to ip.src')
+        ->and(implode("\n", $recipe->steps))->toContain('Set dynamic X-Tinvar-Host to http.host');
 
     $secret = str_repeat('s', 40);
     $config = \Tinvar\Config\Configs::load(\Tinvar\Config\FrameworkConfig::class, [
@@ -145,11 +146,16 @@ it('has Cloudflare in front name the client from ip.src, which the boot reads in
     // names someone else, Cloudflare's ip.src the Worker.
     $worker = new \Tinvar\Http\Request('GET', '/', [
         'x-forwarded-for' => '198.51.100.66, 104.16.0.9',
+        'x-forwarded-host' => 'admin.example.com',
         TrustedProxies::CLIENT_HEADER => '2a06:98c0:3600::103',
+        TrustedProxies::HOST_HEADER => 'app.example.com',
         TrustedProxies::SECRET_HEADER => $secret,
     ], remoteAddress: $edge);
 
-    expect($config->proxies()->clientAddress($worker))->toBe('2a06:98c0:3600::103');
+    // And the X-Forwarded-Host it wrote names another host; Cloudflare's
+    // http.host the one it was sent to.
+    expect($config->proxies()->clientAddress($worker))->toBe('2a06:98c0:3600::103')
+        ->and($config->proxies()->host($worker))->toBe('app.example.com');
 })->with([
     'fly' => [DeployTarget::Fly, '172.16.4.5'],
     'render' => [DeployTarget::Render, '10.20.30.40'],

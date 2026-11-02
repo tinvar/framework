@@ -76,10 +76,14 @@ final class StaticFiles
      */
     private static function onPrimaryHost(Domains $domains, array $server): bool
     {
-        $headers = array_filter(
-            ['host' => $server['HTTP_HOST'] ?? null, 'x-forwarded-host' => $server['HTTP_X_FORWARDED_HOST'] ?? null],
-            \is_string(...),
-        );
+        // What TrustedProxies::host() reads: the proxy's proof with the host
+        // it names, so a request is read here as the Kernel reads it.
+        $headers = array_filter([
+            'host' => $server['HTTP_HOST'] ?? null,
+            'x-forwarded-host' => $server['HTTP_X_FORWARDED_HOST'] ?? null,
+            TrustedProxies::SECRET_HEADER => $server['HTTP_X_TINVAR_PROXY'] ?? null,
+            TrustedProxies::HOST_HEADER => $server['HTTP_X_TINVAR_HOST'] ?? null,
+        ], \is_string(...));
         $address = $server['REMOTE_ADDR'] ?? null;
         $host = $domains->hostOf(new Request('GET', '/', $headers, remoteAddress: \is_string($address) ? $address : null));
         $match = $host === null ? null : $domains->match($host);

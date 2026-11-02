@@ -68,7 +68,11 @@ namespace Tinvar\Http;
  * says so (`TINVAR_TRUSTED_PROXY_CLIENT=header`, which needs the secret),
  * a proven proxy's client is that header alone, one bare address, and
  * X-Forwarded-For is never read: a proven request without it, or with
- * anything else in it, names no client.
+ * anything else in it, names no client. The Worker writes
+ * X-Forwarded-Host as it likes too, so there the rule names the host as
+ * well, in `X-Tinvar-Host` (`http.host`), and a proven proxy's host is that
+ * header alone: missing, no host; anything but one host name, the empty
+ * host no one serves.
  */
 final readonly class TrustedProxies
 {
@@ -96,6 +100,9 @@ final readonly class TrustedProxies
 
     /** The request header a proven proxy names the client in, where CLIENT_ENV says so. */
     public const string CLIENT_HEADER = 'x-tinvar-client';
+
+    /** The request header a proven proxy names the host in, where CLIENT_ENV says so. */
+    public const string HOST_HEADER = 'x-tinvar-host';
 
     /** The shortest secret taken: long enough not to be guessed. */
     public const int MIN_SECRET = 32;
@@ -298,6 +305,13 @@ final readonly class TrustedProxies
      * `X-Forwarded-Host: shop.test, ` names the empty host, '', which is no
      * host anyone serves -- never the Host header behind it, and never no
      * host at all.
+     *
+     * Where a proven proxy names the client (CLIENT_ENV), it names the host
+     * too, in HOST_HEADER, and that alone is read: a Cloudflare Worker that
+     * borrows the proxy's proof writes X-Forwarded-Host as it likes, but
+     * not Cloudflare's `http.host`. Without it, no host is named -- null,
+     * never the Host header the platform's edge saw; with anything but one
+     * host name in it, the empty host, which no one serves.
      */
     public function host(Request $request): ?string
     {
@@ -309,6 +323,16 @@ final readonly class TrustedProxies
         $packed = self::packed($request->remoteAddress ?? '');
         if ($packed === null || !$this->trustsPeer($packed, $request)) {
             return $host;
+        }
+
+        if ($this->clientHeader) {
+            $named = $request->header(self::HOST_HEADER);
+            if ($named === null) {
+                return null;
+            }
+            $named = trim($named, " \t");
+
+            return HostName::normalize($named) === null ? '' : $named;
         }
 
         $forwarded = $request->header('x-forwarded-host');

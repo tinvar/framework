@@ -81,6 +81,26 @@ it('serves a built page on the primary host alone, where the application routes 
         ->and(StaticFiles::match($root, server('/'), [], COOKIE, $domains))->toBeNull();
 });
 
+// Behind a proxy that proves itself and names the host (ADR 0134), the host
+// is the one it names, as the Kernel reads it: not the Host header the
+// platform's edge saw.
+it('reads the host a proven proxy names, as Domains does', function () {
+    $secret = str_repeat('s', 32);
+    $proxies = \Tinvar\Http\TrustedProxies::of(['172.16.0.0/12'], own: [], secret: $secret, clientHeader: true);
+    $domains = \Tinvar\Routing\Domains::fromUrl('https://shop.test', proxies: $proxies)->serving(['admin.{root}']);
+    $root = built();
+    $proxied = static fn (?string $named): array => server('/', server: [
+        'HTTP_HOST' => 'shop.test',
+        'HTTP_X_TINVAR_PROXY' => $secret,
+        'REMOTE_ADDR' => '172.16.3.4',
+        ...($named === null ? [] : ['HTTP_X_TINVAR_HOST' => $named]),
+    ]);
+
+    expect(StaticFiles::match($root, $proxied('shop.test'), [], COOKIE, $domains))->not->toBeNull()
+        ->and(StaticFiles::match($root, $proxied('admin.shop.test'), [], COOKIE, $domains))->toBeNull()
+        ->and(StaticFiles::match($root, $proxied(null), [], COOKIE, $domains))->toBeNull();
+});
+
 it('leaves another cookie alone, which says nothing about the visitor', function () {
     expect(StaticFiles::match(built(), server('/'), ['theme' => 'dark'], COOKIE))->not->toBeNull();
 });

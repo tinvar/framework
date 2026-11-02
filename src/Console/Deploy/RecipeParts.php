@@ -232,8 +232,9 @@ final class RecipeParts
             "# Cloudflare in front: proxy {$host} through it (the orange cloud), and add a Transform Rule",
             '# (Rules, Transform Rules, Modify Request Header) for it: Set static X-Tinvar-Proxy to the value in',
             '# ' . $app->secretFile($proxy) . ' (pbcopy < ' . escapeshellarg($app->secretFile($proxy)) . '), and in the same rule',
-            '# Set dynamic X-Tinvar-Client to ip.src. Cloudflare overwrites any either a client sent; a request',
-            '# that reaches the platform any other way has neither, and names no client.',
+            '# Set dynamic X-Tinvar-Client to ip.src, and Set dynamic X-Tinvar-Host to http.host. Cloudflare',
+            '# overwrites any of them a client sent; a request that reaches the platform any other way has',
+            '# none, and names no client and no host.',
         ];
     }
 
