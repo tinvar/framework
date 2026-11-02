@@ -381,8 +381,9 @@ final class AuditLog implements ModelChanges, ActionObserver
      * first, a batch at a time and at most $mostBatches of them a run;
      * answers how many. Each batch is one transaction, and moves the
      * tenant's anchor to the last entry it took, so verify() still walks
-     * what is left. A whole prefix of the log by place, never a gap: an
-     * entry made out of time order is kept with the ones after it.
+     * what is left. A whole prefix of the log by place, never a gap, and
+     * never past the first entry still inside the retention: an entry made
+     * out of time order keeps the older ones after it until it is old too.
      */
     public function prune(?CarbonImmutable $now = null, int $batch = 1_000, int $mostBatches = 20): int
     {
@@ -397,7 +398,17 @@ final class AuditLog implements ModelChanges, ActionObserver
                 'SELECT MAX(sequence) AS upto FROM ' . AuditTable::ENTRIES . ' WHERE tenant = ? AND occurred_at < ?',
                 [$tenant, $stored],
             );
+            // Never past an entry still inside the retention: one made out
+            // of time order -- a clock behind another worker's -- keeps the
+            // older ones after it, rather than going with them.
+            $kept = $connection->select(
+                'SELECT MIN(sequence) AS keep FROM ' . AuditTable::ENTRIES . ' WHERE tenant = ? AND occurred_at >= ?',
+                [$tenant, $stored],
+            );
             $upto = (int) ($oldest[0]['upto'] ?? 0);
+            if (($kept[0]['keep'] ?? null) !== null) {
+                $upto = min($upto, (int) $kept[0]['keep'] - 1);
+            }
             while ($upto > 0 && $batches < $mostBatches) {
                 $done = $this->orm->transaction(function () use ($connection, $tenant, $upto, $batch): ?int {
                     $head = $connection->select('SELECT pruned_through FROM ' . AuditTable::HEADS . ' WHERE tenant = ?', [$tenant]);

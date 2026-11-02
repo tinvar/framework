@@ -421,3 +421,20 @@ it('carries a job\'s starter and impersonator on to what it dispatches while run
     $opened = Envelope::open((string) $queue->payload($next), $signer);
     expect([$opened->startedBy, $opened->startedByImpersonator])->toBe(['u-1', 'staff-9']);
 });
+
+it('never prunes an entry inside the retention, though an older one was made after it', function () {
+    [$orm, $audit, , , $clock] = log(retentionDays: 30);
+    $start = $clock->now;
+    // A worker whose clock runs ahead writes first; one on time writes after.
+    $clock->now = $start->addDays(40);
+    $orm->actAs('acme', fn () => note($orm, 'recent'));
+    $clock->now = $start;
+    $orm->actAs('acme', fn () => note($orm, 'old'));
+
+    expect($audit->prune($start->addDays(45)))->toBe(0)
+        ->and($orm->actAs('acme', fn (): int => \count($audit->trail()->recent())))->toBe(2);
+
+    // Once the newer one is past the retention too, both go.
+    expect($audit->prune($start->addDays(75)))->toBe(2)
+        ->and($audit->verify('acme')->intact)->toBeTrue();
+});
