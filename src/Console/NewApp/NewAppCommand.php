@@ -152,6 +152,16 @@ final class NewAppCommand
         if (file_exists($absolute) && !is_dir($absolute)) {
             throw new \InvalidArgumentException("{$absolute} is a file.");
         }
+        // An empty directory someone else may write into -- a shared one,
+        // or another user's -- lets them swap bin/tinvar or vendor/ between
+        // the copy and the commands this runs from it, as this user.
+        if (is_dir($absolute)) {
+            $owner = fileowner($absolute);
+            $mode = fileperms($absolute);
+            if (($mode !== false && ($mode & 0o002) !== 0) || (\function_exists('posix_geteuid') && $owner !== posix_geteuid())) {
+                throw new \InvalidArgumentException("{$absolute} is a directory every user may write into, or not yours: tinvar new makes an app only in one they cannot change under it. Name a new directory, or `chmod go-w` it.");
+            }
+        }
         if (preg_match('/^[a-z][a-z0-9-]*\z/', basename($absolute)) !== 1) {
             throw new \InvalidArgumentException("'" . basename($absolute) . "' is not a name the app can take: lowercase letters, digits and dashes, starting with a letter, as its key file and its platforms name it.");
         }

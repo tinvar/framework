@@ -269,3 +269,20 @@ it('finds every line tenancy edits in the skeleton\'s Kernel, once each', functi
         expect(substr_count($kernel, $anchor))->toBe(1, "the skeleton's Kernel holds the {$name} line tenancy edits once");
     }
 })->skip(workspace() === null, 'the repository\'s checkout');
+
+it('refuses an empty directory every user may write into, where they could swap the code it runs', function () {
+    $work = scratch();
+    mkdir("{$work}/shared");
+    chmod("{$work}/shared", 0o777);
+
+    [$status, , $err] = made(['shared', '--no-install']);
+
+    expect($status)->toBe(64)
+        ->and($err)->toContain('every user may write')
+        ->and(scandir("{$work}/shared"))->toBe(['.', '..']);
+
+    // A group-writable one of this user's own, as a umask of 002 makes it, is taken.
+    mkdir("{$work}/mine");
+    chmod("{$work}/mine", 0o775);
+    expect(made(['mine', '--no-install'])[0])->toBe(0);
+})->skip(workspace() === null, 'the repository\'s checkout');
