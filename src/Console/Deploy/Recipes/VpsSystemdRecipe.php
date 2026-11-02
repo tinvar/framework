@@ -55,7 +55,7 @@ final readonly class VpsSystemdRecipe implements DeployRecipe
 
         $unit = <<<UNIT
             # {$name} under systemd, written by `bin/tinvar deploy:init vps-systemd`
-            # (ADR 0150 in the framework's repository): the app's image, run as its
+            # (ADR 0155 in the framework's repository): the app's image, run as its
             # compose file runs it, behind the host's Caddy. No secret is in this
             # file: they are in /etc/{$name}/app.env, root's alone.
             [Unit]

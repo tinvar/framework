@@ -10,7 +10,7 @@ use Tinvar\Mail\MailProvider;
 use Tinvar\Mail\MailTransports;
 
 /**
- * The `.env` `tinvar new` writes for the developer's machine (ADR 0150):
+ * The `.env` `tinvar new` writes for the developer's machine (ADR 0155):
  * the settings it asked about, read into the environment by the app's
  * bin/tinvar there and nowhere else (Tinvar\Config\EnvironmentFile), git
  * ignoring it. No secret is ever in it: a secret's variable names a file

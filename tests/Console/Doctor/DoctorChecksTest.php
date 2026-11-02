@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * `tinvar doctor`'s checks (ADR 0150), each over an application of the
+ * `tinvar doctor`'s checks (ADR 0155), each over an application of the
  * test's own in a temporary directory and an environment handed in --
  * never the process's -- so each says what it would on that machine.
  */

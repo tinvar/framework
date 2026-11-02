@@ -13,7 +13,7 @@ use Tinvar\Orm\DatabaseDriver;
 use Tinvar\Support\StateFile;
 
 /**
- * `tinvar new <directory>` (ADR 0150): a working application, made from
+ * `tinvar new <directory>` (ADR 0155): a working application, made from
  * the skeleton and shaped by what it asks -- the database, tenancy and how
  * a tenant is found, the mail provider, the kits (accounts), the deploy
  * target -- then installed, migrated and seeded, its secrets generated

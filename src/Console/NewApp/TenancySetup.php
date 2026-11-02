@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Console\NewApp;
 
 /**
- * Tenancy written into a new application (ADR 0056, 0150): tinvar/tenancy
+ * Tenancy written into a new application (ADR 0056, 0155): tinvar/tenancy
  * required, both its halves registered in the Kernel -- the Orm's tree and
  * the entry points' Tenancy -- and the application's own tenants, a model,
  * its migration and the class that finds a host's tenant and lists them

@@ -69,7 +69,7 @@ final readonly class FlyRecipe implements DeployRecipe
         }
 
         $toml = <<<TOML
-            # Fly.io, written by `bin/tinvar deploy:init fly` (ADR 0150 in the
+            # Fly.io, written by `bin/tinvar deploy:init fly` (ADR 0155 in the
             # framework's repository). No secret is in this file: the app key and the
             # probe token are in `fly secrets`, set from files outside the project.
             app = "{$app->name}"

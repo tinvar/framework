@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * The kit seam (ADR 0150): a package declares the kit it is in its
+ * The kit seam (ADR 0155): a package declares the kit it is in its
  * composer.json, and `kit:install` builds it from the application's own
  * autoloader once Composer has installed it.
  */

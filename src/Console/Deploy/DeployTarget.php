@@ -10,7 +10,7 @@ use Tinvar\Console\Deploy\Recipes\RenderRecipe;
 use Tinvar\Console\Deploy\Recipes\VpsComposeRecipe;
 use Tinvar\Console\Deploy\Recipes\VpsSystemdRecipe;
 
-/** Where `tinvar deploy:init` writes an application's deployment for (ADR 0150). */
+/** Where `tinvar deploy:init` writes an application's deployment for (ADR 0155). */
 enum DeployTarget: string
 {
     case Fly = 'fly';
