@@ -630,7 +630,7 @@ final class Accounts
                 : $this->mails->alreadyRegistered($existing, $this->links->page($this->links->paths->signIn), $resetPage),
             AccountMailKind::PasswordReset => ($existing = $this->users->findByEmail($job->email)) === null
                 ? null
-                : $this->mails->passwordReset($existing, $this->links->reset($existing), $minutes(EmailLinks::PASSWORD_RESET)),
+                : $this->mails->passwordReset($existing, $this->links->passwordReset($existing), $minutes(EmailLinks::PASSWORD_RESET)),
             // To an address another account has, nothing: the account asking
             // would learn whose it is from whatever came back.
             AccountMailKind::EmailChange => $user === null || $this->users->findByEmail($job->email) !== null

@@ -86,7 +86,7 @@ final readonly class AccountLinks
         return $this->links->issue(EmailLinks::SIGN_UP, $this->origin, $this->paths->completeSignUp, '', null, ['email' => $email, 'name' => $name])['url'];
     }
 
-    public function reset(AccountUser $user): string
+    public function passwordReset(AccountUser $user): string
     {
         return $this->links->issue(EmailLinks::PASSWORD_RESET, $this->origin, $this->paths->resetPassword, '', $user)['url'];
     }

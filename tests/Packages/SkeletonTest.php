@@ -116,9 +116,12 @@ it('ships a lock its own check refuses only for leaving @tinvar/* to a registry'
     // composer.lock is written by create-project, before setup runs.
     $violations = array_values(array_diff(new \Tinvar\Packages\SupplyChain(ROOT . '/packages/skeleton', $policy)->check(), ['composer.lock is missing.']));
 
-    expect($violations)->toHaveCount(2)
-        ->and($violations[0])->toStartWith('package.json depends on @tinvar/react, which PackagePolicy::$unpublished says no registry serves yet')
-        ->and($violations[1])->toStartWith('package.json depends on @tinvar/renderer, which PackagePolicy::$unpublished says no registry serves yet');
+    // Each of the three it takes from inside the app (ADR 0138): the mail kit
+    // its account emails are drawn with (ADR 0151), the client and the renderer.
+    expect($violations)->toHaveCount(3)
+        ->and($violations[0])->toStartWith('package.json depends on @tinvar/mail, which PackagePolicy::$unpublished says no registry serves yet')
+        ->and($violations[1])->toStartWith('package.json depends on @tinvar/react, which PackagePolicy::$unpublished says no registry serves yet')
+        ->and($violations[2])->toStartWith('package.json depends on @tinvar/renderer, which PackagePolicy::$unpublished says no registry serves yet');
 
     $lock = json_decode(read('packages/skeleton/package-lock.json'), true);
     \assert(\is_array($lock) && \is_array($lock['packages']));
