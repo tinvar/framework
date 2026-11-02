@@ -173,6 +173,20 @@ it('rebuilds each tenant\'s index under the policy, each read and written as its
     });
 });
 
+it('takes out a tenant\'s documents once it has no rows left, under the policy, when it rebuilds every tenant', function () {
+    onPostgres(function (Orm $orm, Search $search, PdoConnection $connection): void {
+        $orm->actAs('acme', fn () => ticket($orm, 'Printer jammed'));
+        $orm->actAs('globex', fn () => ticket($orm, 'Printer on fire'));
+        // Globex's rows deleted behind the ORM's back.
+        $orm->acrossTenants(fn (): int => $connection->execute("DELETE FROM tickets WHERE tenant_id = 'globex'"));
+        $documents = static fn (): array => $orm->acrossTenants(static fn (): array => array_column($connection->select("SELECT tenant_id FROM search_documents WHERE model = 'tickets' ORDER BY tenant_id"), 'tenant_id'));
+        expect($documents())->toBe(['acme', 'globex']);
+
+        expect($search->reindex(Ticket::class))->toBe(1)
+            ->and($documents())->toBe(['acme']);
+    });
+});
+
 it('takes a deleted row out of its tenant\'s index', function () {
     onPostgres(function (Orm $orm, Search $search): void {
         $ticket = $orm->actAs('acme', fn () => ticket($orm, 'Printer jammed'));

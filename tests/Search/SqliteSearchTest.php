@@ -301,6 +301,23 @@ describe('tenancy', function () {
             ->and($search->reindex(Ticket::class, 'acme'))->toBe(1)
             ->and($search->rowCount(Ticket::class))->toBe(2);
     });
+
+    it('takes out the documents of a tenant with no rows left when it rebuilds every tenant', function () {
+        [$orm, $search, $connection] = sqliteSearch();
+        $orm->actAs('acme', fn () => ticket($orm, 'Printer jammed'));
+        $orm->actAs('globex', fn () => ticket($orm, 'Printer missing'));
+        // Globex's rows deleted behind the ORM's back: its documents stay until a reindex.
+        $connection->execute("DELETE FROM tickets WHERE tenant_id = 'globex'");
+        $documents = static fn (): array => array_column($connection->select("SELECT tenant_id FROM search_documents WHERE model = 'tickets' ORDER BY tenant_id"), 'tenant_id');
+        expect($documents())->toBe(['acme', 'globex']);
+
+        // Naming one tenant touches no other.
+        $search->reindex(Ticket::class, 'acme');
+        expect($documents())->toBe(['acme', 'globex']);
+
+        expect($search->reindex(Ticket::class))->toBe(1)
+            ->and($documents())->toBe(['acme']);
+    });
 });
 
 describe('#[Searchable]', function () {

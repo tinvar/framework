@@ -145,8 +145,9 @@ final class Search
 
     /**
      * Builds $class's index again from its rows: in one tenant, or each in
-     * turn where none is named -- every tenant there is, read across
-     * tenants, then each tenant's rows read as that tenant. In the
+     * turn where none is named -- every tenant's documents emptied, so one
+     * with no rows left keeps none, then every tenant with rows, read
+     * across tenants, has its rows read as that tenant. In the
      * application's database, emptied and filled in one transaction, so a
      * search meanwhile reads the old index whole.
      *
@@ -162,12 +163,28 @@ final class Search
             return $this->reindexIn($model, '', $progress);
         }
 
-        $indexed = 0;
-        foreach ($tenant !== null ? [$tenant] : $this->tenantsWithRows($model) as $each) {
-            $indexed += $this->orm->actAs($each, fn (): int => $this->reindexIn($model, $each, $progress));
+        if ($tenant !== null) {
+            return $this->orm->actAs($tenant, fn (): int => $this->reindexIn($model, $tenant, $progress));
         }
 
-        return $indexed;
+        // Every tenant's: the documents of every tenant emptied first, so a
+        // tenant with no rows left -- deleted past the ORM, or while the
+        // index was down -- keeps none. In the application's database in the
+        // one transaction that fills them again, so a search meanwhile reads
+        // the old index whole.
+        $all = function () use ($model, $progress): int {
+            // Across tenants: under Postgres's policy a delete outside any
+            // tenant reaches no row.
+            $this->orm->acrossTenants(fn () => $this->backend->flush($model, null));
+            $indexed = 0;
+            foreach ($this->tenantsWithRows($model) as $each) {
+                $indexed += $this->orm->actAs($each, fn (): int => $this->reindexIn($model, $each, $progress));
+            }
+
+            return $indexed;
+        };
+
+        return $this->backend->remote() ? $all() : $this->orm->transaction($all);
     }
 
     /**
