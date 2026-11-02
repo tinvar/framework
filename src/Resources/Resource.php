@@ -34,7 +34,7 @@ use Tinvar\Support\Str;
 use Tinvar\Validation\ValidationException;
 
 /**
- * A model's admin screens, from what a subclass declares (ADR 0150).
+ * A model's admin screens, from what a subclass declares (ADR 0152).
  *
  *     #[AdminResource(model: Product::class, panel: 'admin'), Domain('admin.{root}')]
  *     final class ProductResource extends Resource

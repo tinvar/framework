@@ -61,7 +61,7 @@ final class ActionRegistry
         // An admin resource's declarations are held to its model here, where
         // its actions register: a column naming no property, a bulk action
         // naming no method, is a refusal at boot, not a 500 on its list
-        // (ADR 0150).
+        // (ADR 0152).
         if (is_subclass_of($class, \Tinvar\Resources\Resource::class) || AdminResource::of($class) !== null) {
             try {
                 \Tinvar\Resources\ResourceDefinition::of($class);
@@ -166,7 +166,7 @@ final class ActionRegistry
 
         // The class's checks first, then the method's, and the action must
         // pass every one. Only the method's own count as covering an input.
-        // An #[AdminResource]'s actions (ADR 0150) are Resource's, written
+        // An #[AdminResource]'s actions (ADR 0152) are Resource's, written
         // once for every model: a check naming the ORM's base Model names the
         // resource's model, and a parameter typed as it is bound as one.
         $resource = AdminResource::of($class);

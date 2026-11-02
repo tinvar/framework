@@ -254,7 +254,7 @@ final class Binder
 
             if (!$type->isBuiltin()) {
                 // The ORM's base Model, bound as the model the route names
-                // for it: an #[AdminResource]'s record (ADR 0150).
+                // for it: an #[AdminResource]'s record (ADR 0152).
                 if ($name === Model::class && isset($route->bindings[$parameter->getName()])) {
                     if (!$type->allowsNull()) {
                         self::assertCarried($route, $parameter, $route->bindings[$parameter->getName()]);

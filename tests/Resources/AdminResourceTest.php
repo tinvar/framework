@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 /**
  * An admin resource's screens and actions, through the real Kernel
- * (ADR 0150): each an ordinary page or action, so each behind the panel's
+ * (ADR 0152): each an ordinary page or action, so each behind the panel's
  * host, guard and membership, the model's policy, CSRF and validation.
  */
 

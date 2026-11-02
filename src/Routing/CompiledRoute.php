@@ -30,7 +30,7 @@ final readonly class CompiledRoute
      * @param HostPattern|null $host the host its #[Domain] holds it to, or null for the
      *                               primary host (ADR 0149); its parameters lead $parameters
      * @param string $loader the method that loads its data: `__invoke`, or for one of an
-     *                       #[AdminResource]'s pages, the resource's loader for it (ADR 0150)
+     *                       #[AdminResource]'s pages, the resource's loader for it (ADR 0152)
      * @param array<string, class-string<\Tinvar\Orm\Model>> $bindings loader parameters typed
      *        as the ORM's base Model, with the model each is bound as: an #[AdminResource]'s
      *        `record`, as its model
@@ -57,7 +57,7 @@ final readonly class CompiledRoute
     /**
      * What tells this route from every other: its class, and the loader
      * where that is not `__invoke` -- the four pages of an #[AdminResource]
-     * are one class (ADR 0150).
+     * are one class (ADR 0152).
      */
     public function identity(): string
     {

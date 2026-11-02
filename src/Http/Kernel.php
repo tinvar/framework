@@ -826,7 +826,7 @@ final class Kernel
         $this->gate = $gate;
         $this->cache = $cache;
         // The gate every check is asked through, for a class that asks it
-        // what to draw: an admin resource's links (ADR 0150).
+        // what to draw: an admin resource's links (ADR 0152).
         $container?->instance(Gate::class, $gate);
         // A caching failure answers the call uncached, and is logged where a
         // failed request is -- never kept for the worker's life.

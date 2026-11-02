@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Attributes;
 
 /**
- * A model's admin screens, declared once (ADR 0150).
+ * A model's admin screens, declared once (ADR 0152).
  *
  *     #[AdminResource(model: Product::class, panel: 'admin'), Domain('admin.{root}')]
  *     final class ProductResource extends Resource

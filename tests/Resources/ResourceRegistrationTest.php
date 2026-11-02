@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 /**
  * What an admin resource declares is held to its model when it registers
- * (ADR 0150): a typo is a refusal at boot naming the class and what is
+ * (ADR 0152): a typo is a refusal at boot naming the class and what is
  * wrong, never a 500 on the first request to its list.
  */
 

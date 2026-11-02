@@ -1194,7 +1194,7 @@ it('asks the inbox when a switch is flipped on, and turns it on from the emailed
         ->and($result['restored'])->toBeFalse();
 });
 
-// The admin panel's products screens (ADR 0150): an admin resource, so the
+// The admin panel's products screens (ADR 0152): an admin resource, so the
 // framework's pages and actions drawn by the panel's resource views, each
 // behind the panel's guard, membership and host, ProductPolicy, CSRF and
 // validation. Staff sort, search, add -- refused once, beside the field --

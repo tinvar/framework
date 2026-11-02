@@ -86,7 +86,7 @@ $core = [
     'entry' => [
         'Tinvar\\Live\\', 'Tinvar\\Channels\\', 'Tinvar\\Actions\\', 'Tinvar\\Endpoints\\', 'Tinvar\\Uploads\\',
         'Tinvar\\Http\\EntryContext', 'Tinvar\\Http\\BuildRegistry', 'Tinvar\\Http\\Middleware\\CheckVersion', 'Tinvar\\Routing\\Router',
-        // An admin resource's screens and actions (ADR 0150): a page's
+        // An admin resource's screens and actions (ADR 0152): a page's
         // loaders and an action's bodies, over the action runner's result.
         'Tinvar\\Resources\\',
     ],

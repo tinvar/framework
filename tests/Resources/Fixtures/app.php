@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * An application with one admin resource, through one Kernel (ADR 0150):
+ * An application with one admin resource, through one Kernel (ADR 0152):
  * tickets, each at a site, in the `staff` panel on the admin host, behind
  * a guard, a membership check and the ticket policy.
  */

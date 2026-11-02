@@ -259,7 +259,7 @@ final class RouteRegistry
     }
 
     /**
-     * An #[AdminResource]'s four pages (ADR 0150), each registered as a
+     * An #[AdminResource]'s four pages (ADR 0152), each registered as a
      * page declared by #[Page] is -- held to the same rules, checked by
      * the same binder and build rules -- with the loader it runs on the
      * class, and the check the attribute names for it.
