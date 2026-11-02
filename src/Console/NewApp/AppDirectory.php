@@ -18,10 +18,13 @@ namespace Tinvar\Console\NewApp;
  *   nor world writable.
  * - **No directory above it can be swapped by someone else.** Each must be
  *   this user's or root's. One that is not sticky, as /tmp is, must not be
- *   writable by every user, nor by a group unless it is this user's own --
- *   a volume's root on macOS, a umask of 002 -- whose group is theirs to
- *   choose. Whoever may rename an entry of a directory above could put a
- *   tree of their own where the app is.
+ *   writable by every user, nor by a group -- unless it is this user's own
+ *   and its group provably theirs alone: a personal group, named as they
+ *   are, that no other user is in by any reckoning the system gives
+ *   (personalGroup()). A shared group -- macOS's staff, which holds every
+ *   local user -- is refused, as is anything that cannot be read. Whoever
+ *   may rename an entry of a directory above could put a tree of their own
+ *   where the app is.
  *
  * Checked when the answers are, to refuse early, and again by claim() as
  * the app is made, where the directory is then made or taken.
@@ -107,9 +110,15 @@ final class AppDirectory
             $at = $next;
         }
         for ($above = $at; ; $above = \dirname($above)) {
-            $problem = self::refusesAbove((int) fileowner($above), (int) fileperms($above), $uid);
+            $owner = (int) fileowner($above);
+            $mode = (int) fileperms($above);
+            // Whether its group is the user's alone is read only where it decides.
+            $personal = $uid !== null && $owner === $uid && ($mode & 0o1022) === 0o020
+                && self::personalGroup((int) filegroup($above), $uid);
+            $problem = self::refusesAbove($owner, $mode, $uid, $personal);
             if ($problem !== null) {
-                throw new \RuntimeException("{$above}, above {$path}, is {$problem}: whoever can rename what is in it could put a tree of their own where the app is. Make the app somewhere only you and root can change.");
+                $fix = $uid !== null && $owner === $uid ? "Run `chmod g-w,o-w {$above}`, or make" : 'Make';
+                throw new \RuntimeException("{$above}, above {$path}, is {$problem}: whoever can rename what is in it could put a tree of their own where the app is. {$fix} the app somewhere only you and root can change.");
             }
             if (\dirname($above) === $above) {
                 break;
@@ -140,23 +149,134 @@ final class AppDirectory
     /**
      * Why a directory above the app -- of $owner, with $mode -- lets someone
      * other than $uid swap what is in it, or null: another user's (root
-     * aside), or, not sticky, writable by every user or by a group the
-     * directory is not $uid's own to choose. With $uid null -- no posix --
-     * the owner is not compared, and a group's write is refused.
+     * aside), or, not sticky, writable by every user or by a group. A
+     * group's write is taken only on a directory of $uid's own whose group
+     * is provably theirs alone ($personal, from personalGroup()); with $uid
+     * null -- no posix -- it is refused.
      */
-    public static function refusesAbove(int $owner, int $mode, ?int $uid): ?string
+    public static function refusesAbove(int $owner, int $mode, ?int $uid, bool $personal = false): ?string
     {
-        // With no user to compare, only the modes are held: a group's
-        // write is then refused, as nobody can say the group is the user's.
         $mine = $uid !== null && $owner === $uid;
         $sticky = ($mode & 0o1000) !== 0;
+        $grouped = !$sticky && ($mode & 0o020) !== 0;
 
         return match (true) {
             $uid !== null && !$mine && $owner !== 0 => 'another user\'s',
             !$sticky && ($mode & 0o002) !== 0 => 'writable by every user, and not sticky',
-            !$sticky && !$mine && ($mode & 0o020) !== 0 => 'writable by its group, not yours, and not sticky',
+            $grouped && !$mine => 'writable by its group, not yours, and not sticky',
+            $grouped && !$personal => 'writable by its group, which is not provably yours alone, and not sticky',
             default => null,
         };
+    }
+
+    /**
+     * Whether group $gid is provably $uid's alone, read from this system.
+     * Only a personal group can be: named as the user is, listing no member
+     * but them (and root), and holding no other user -- as their primary
+     * group in /etc/passwd or, on macOS, by the directory service's own
+     * reckoning (`dsmemberutil checkmembership` for every local user). A
+     * shared group -- staff, users, wheel -- never is, nor one the system
+     * cannot be asked about: anything not read is no. Users only a network
+     * directory knows (LDAP, NIS) are not asked about off macOS, which a
+     * personal group named as its user leaves no room for in practice.
+     */
+    public static function personalGroup(int $gid, int $uid): bool
+    {
+        if (!\function_exists('posix_getgrgid') || !\function_exists('posix_getpwuid')) {
+            return false;
+        }
+        $user = posix_getpwuid($uid);
+        $group = posix_getgrgid($gid);
+        if (!\is_array($user) || !\is_array($group) || !self::personal($group, $user, [])) {
+            return false;
+        }
+
+        return self::personal($group, $user, self::othersIn($group['name'], $gid, $user['name']));
+    }
+
+    /**
+     * Whether $group is $user's personal group: named as they are, listing
+     * no member but them and root, and $others -- the other users the
+     * system finds in it -- none. Anything unknown (false, null) is no.
+     *
+     * @param array{name?: string, members?: list<string>}|false $group as posix_getgrgid() gives it
+     * @param array{name?: string}|false $user as posix_getpwuid() gives it
+     * @param list<string>|null $others
+     */
+    public static function personal(array|false $group, array|false $user, ?array $others): bool
+    {
+        if ($group === false || $user === false || $others === null) {
+            return false;
+        }
+        $name = $user['name'] ?? '';
+        if ($name === '' || ($group['name'] ?? null) !== $name) {
+            return false;
+        }
+
+        return array_diff($group['members'] ?? [], [$name, 'root']) === [] && array_diff($others, [$name, 'root']) === [];
+    }
+
+    /**
+     * The users other than $user the system finds in group $group: on
+     * macOS, every local user `dsmemberutil` does not say is outside it,
+     * however it reckons membership; elsewhere, every user /etc/passwd
+     * gives it as their primary group. Null where that cannot be read.
+     *
+     * @return list<string>|null
+     */
+    private static function othersIn(string $group, int $gid, string $user): ?array
+    {
+        $others = [];
+        if (PHP_OS_FAMILY === 'Darwin') {
+            $listed = self::output(['/usr/bin/dscl', '.', '-list', '/Users']);
+            if ($listed === null) {
+                return null;
+            }
+            foreach (preg_split('/\R/', trim($listed)) ?: [] as $name) {
+                $name = trim($name);
+                if ($name === '' || $name === $user || $name === 'root') {
+                    continue;
+                }
+                $answer = self::output(['/usr/bin/dsmemberutil', 'checkmembership', '-U', $name, '-G', $group]);
+                if ($answer === null || !str_contains($answer, 'is not a member')) {
+                    $others[] = $name;
+                }
+            }
+
+            return $others;
+        }
+        $passwd = @file_get_contents('/etc/passwd');
+        if ($passwd === false) {
+            return null;
+        }
+        foreach (preg_split('/\R/', $passwd) ?: [] as $line) {
+            $fields = explode(':', $line);
+            if (\count($fields) >= 4 && $fields[3] === (string) $gid && !str_starts_with($fields[0], '#') && $fields[0] !== $user) {
+                $others[] = $fields[0];
+            }
+        }
+
+        return $others;
+    }
+
+    /**
+     * What $command prints, or null where it cannot run or fails.
+     *
+     * @param list<string> $command
+     */
+    private static function output(array $command): ?string
+    {
+        if (!is_executable($command[0])) {
+            return null;
+        }
+        $process = @proc_open($command, [1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
+        if (!\is_resource($process)) {
+            return null;
+        }
+        $out = stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+
+        return proc_close($process) === 0 && $out !== false ? $out : null;
     }
 
     /** Makes $target and whatever above it is missing, each closed to others' writes. */

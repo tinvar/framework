@@ -377,10 +377,14 @@ it('resolves the path once, following only a link of this user\'s or root\'s, an
         ->and(file_exists("{$work}/real/other-app"))->toBeFalse();
 })->skip(!\function_exists('posix_geteuid'), 'posix');
 
-it('refuses a directory above whose group or every user may swap what is in it, unless sticky or the group is the user\'s own', function () {
+it('refuses a directory above whose group or every user may swap what is in it, unless sticky or the group is the user\'s alone', function () {
     expect(AppDirectory::refusesAbove(0, 0o40755, 501))->toBeNull()
         ->and(AppDirectory::refusesAbove(0, 0o41777, 501))->toBeNull()
-        ->and(AppDirectory::refusesAbove(501, 0o40775, 501))->toBeNull()
+        // The user's own, and its group provably theirs alone: taken.
+        ->and(AppDirectory::refusesAbove(501, 0o40775, 501, true))->toBeNull()
+        // The user's own, but its group not provably theirs alone -- staff, say: refused.
+        ->and(AppDirectory::refusesAbove(501, 0o40775, 501))->toContain('writable by its group, which is not provably yours alone')
+        ->and(AppDirectory::refusesAbove(501, 0o40775, 501, false))->toContain('not provably yours alone')
         ->and(AppDirectory::refusesAbove(0, 0o40775, 501))->toContain('writable by its group, not yours')
         ->and(AppDirectory::refusesAbove(0, 0o40777, 501))->toContain('writable by every user')
         ->and(AppDirectory::refusesAbove(501, 0o40777, 501))->toContain('writable by every user')
@@ -391,3 +395,37 @@ it('refuses a directory above whose group or every user may swap what is in it, 
         ->and(AppDirectory::refusesAbove(502, 0o40777, null))->toContain('writable by every user')
         ->and(AppDirectory::refusesAbove(502, 0o40775, null))->toContain('writable by its group');
 });
+
+it('takes as the user\'s alone only a personal group: named as they are, with no other member by any reckoning', function () {
+    $carson = ['name' => 'carson', 'uid' => 501, 'gid' => 501];
+    $own = ['name' => 'carson', 'members' => [], 'gid' => 501];
+
+    expect(AppDirectory::personal($own, $carson, []))->toBeTrue()
+        ->and(AppDirectory::personal([...$own, 'members' => ['carson', 'root']], $carson, ['root']))->toBeTrue()
+        // A shared group, whatever it lists: staff holds every local user on macOS.
+        ->and(AppDirectory::personal(['name' => 'staff', 'members' => ['root'], 'gid' => 20], $carson, []))->toBeFalse()
+        ->and(AppDirectory::personal([...$own, 'members' => ['mallory']], $carson, []))->toBeFalse()
+        ->and(AppDirectory::personal($own, $carson, ['alice']))->toBeFalse()
+        // Anything that could not be read is no.
+        ->and(AppDirectory::personal(false, $carson, []))->toBeFalse()
+        ->and(AppDirectory::personal($own, false, []))->toBeFalse()
+        ->and(AppDirectory::personal($own, $carson, null))->toBeFalse();
+});
+
+it('refuses a group-writable directory of the user\'s own whose group is shared, saying to chmod g-w it', function () {
+    $uid = posix_geteuid();
+    $group = posix_getgrgid(posix_getegid());
+    $user = posix_getpwuid($uid);
+    $work = scratch();
+    mkdir("{$work}/grouped", 0o755);
+    chmod("{$work}/grouped", 0o775);
+
+    // The user's primary group is shared wherever it is not named as they are.
+    if (\is_array($group) && \is_array($user) && $group['name'] !== $user['name']) {
+        expect(AppDirectory::personalGroup(posix_getegid(), $uid))->toBeFalse()
+            ->and(AppDirectory::problem("{$work}/grouped/app"))->toContain('not provably yours alone')
+            ->and(AppDirectory::problem("{$work}/grouped/app"))->toContain("chmod g-w,o-w {$work}/grouped");
+    }
+    chmod("{$work}/grouped", 0o755);
+    expect(AppDirectory::problem("{$work}/grouped/app"))->toBeNull();
+})->skip(!\function_exists('posix_geteuid'), 'posix');
