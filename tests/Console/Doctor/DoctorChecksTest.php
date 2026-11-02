@@ -181,20 +181,20 @@ describe('config, proxies and hosts', function () {
             ->and($said)->toContain('TINVAR_STOP_BUDGET must be whole seconds');
     });
 
-    it('warns of a server with no proxy pinned, and of a wide range no secret backs', function () {
+    it('warns of a server with no proxy pinned, and leaves a range with no secret to the boot\'s refusal', function () {
         $root = app();
 
         expect(severities(new ProxiesCheck()->run(context($root))))->toBe(['ok'])
             ->and(new ProxiesCheck()->run(context($root, ['TINVAR_ENV' => 'production']))[0]->fix)->toContain('deploy:init');
 
-        $wide = new ProxiesCheck()->run(context($root, ['TINVAR_TRUSTED_PROXIES' => '10.0.0.0/8']));
-        $backed = new ProxiesCheck()->run(context($root, ['TINVAR_TRUSTED_PROXIES' => '10.0.0.0/8', 'TINVAR_TRUSTED_PROXY_SECRET' => str_repeat('s', 40)]));
-        $narrow = new ProxiesCheck()->run(context($root, ['TINVAR_TRUSTED_PROXIES' => '10.213.91.0/24']));
+        $refused = new ProxiesCheck()->run(context($root, ['TINVAR_TRUSTED_PROXIES' => '10.213.92.0/24']));
+        $backed = new ProxiesCheck()->run(context($root, ['TINVAR_TRUSTED_PROXIES' => '10.213.92.0/24', 'TINVAR_TRUSTED_PROXY_SECRET' => str_repeat('s', 40)]));
+        $single = new ProxiesCheck()->run(context($root, ['TINVAR_TRUSTED_PROXIES' => '203.0.113.7']));
 
-        expect(severities($wide))->toBe(['warning', 'ok'])
-            ->and($wide[0]->fix)->toContain('header_up X-Tinvar-Proxy')
-            ->and(severities($backed))->toBe(['ok'])
-            ->and(severities($narrow))->toBe(['ok']);
+        expect(severities($refused))->toBe(['skipped'])
+            ->and(severities(new ConfigCheck()->run(context($root, ['TINVAR_TRUSTED_PROXIES' => '10.213.92.0/24']))))->toBe(['problem'])
+            ->and($backed[0]->message)->toContain('each proxy proving itself with TINVAR_TRUSTED_PROXY_SECRET')
+            ->and(severities($single))->toBe(['ok']);
     });
 
     it('warns of a server with no primary host', function () {

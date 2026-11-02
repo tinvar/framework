@@ -15,17 +15,12 @@ use Tinvar\Http\TrustedProxies;
 /**
  * The proxies in front (ADR 0134): TINVAR_TRUSTED_PROXIES and
  * TINVAR_TRUSTED_PROXY_SECRET, read by FrameworkConfig as the boot reads
- * them, and what the boot cannot know -- that a server with nothing pinned
- * behind a proxy counts every visitor as one caller, and that a wide range
- * with no secret lets anything else in it name its own client.
+ * them -- a range wider than one address refused without the secret --
+ * and what the boot cannot know: that a server with nothing pinned behind
+ * a proxy counts every visitor as one caller.
  */
 final readonly class ProxiesCheck implements DoctorCheck
 {
-    /** The widest IPv4 prefix, and IPv6, taken without a remark when no secret backs it. */
-    public const int NARROW_V4 = 16;
-
-    public const int NARROW_V6 = 48;
-
     public function title(): string
     {
         return 'Trusted proxies';
@@ -47,33 +42,10 @@ final readonly class ProxiesCheck implements DoctorCheck
                 ? [Finding::passed('None pinned: on this machine the connecting peer is the client.')]
                 : [Finding::warning(
                     "No proxy is pinned, and {$production}. Behind a TLS terminator, a load balancer or a platform's edge, every visitor arrives from it, and every throttle counts them all as one caller.",
-                    'Set ' . TrustedProxies::ENV . " to the proxy's networks, comma-separated; `{$context->console} deploy:init <target>` writes the right ones for Fly.io, Render, Railway and a VPS. Leave it empty only where clients connect to this server directly.",
+                    'Set ' . TrustedProxies::ENV . " to the proxy's addresses, comma-separated -- a range wider than one address with " . TrustedProxies::SECRET_ENV . ', which the proxy sends in X-Tinvar-Proxy -- and `' . $context->console . ' deploy:init <target>` writes what each platform allows. Leave it empty only where clients connect to this server directly, or where no proxy in front can prove itself.',
                 )];
         }
 
-        $findings = [];
-        $wide = array_values(array_filter($proxies, self::wide(...)));
-        if (!$secret && $wide !== []) {
-            $findings[] = Finding::warning(
-                'The pinned range ' . implode(', ', $wide) . ' is wide, and no ' . TrustedProxies::SECRET_ENV . ' backs it: anything else in it -- a node, a bridge, a neighbour -- may name any client it likes, a throttle bucket for every guess.',
-                'Narrow ' . TrustedProxies::ENV . ' to the proxy\'s own addresses, or, where the proxy can add a header, set ' . TrustedProxies::SECRET_ENV . ' (32 characters or more) and have the proxy send it in X-Tinvar-Proxy, overwriting any a client sent (Caddy: `header_up X-Tinvar-Proxy {env.' . TrustedProxies::SECRET_ENV . '}`).',
-            );
-        }
-
-        $findings[] = Finding::passed(\count($proxies) . ' ' . (\count($proxies) === 1 ? 'network' : 'networks') . ' pinned' . ($secret ? ', each proxy proving itself with ' . TrustedProxies::SECRET_ENV : '') . '.');
-
-        return $findings;
-    }
-
-    /** Whether an entry, `10.0.0.0/8`, covers more than NARROW_V4 or NARROW_V6 bits leave. */
-    public static function wide(string $entry): bool
-    {
-        [$address, $prefix] = array_pad(explode('/', trim($entry), 2), 2, null);
-        $v6 = str_contains((string) $address, ':');
-        if ($prefix === null) {
-            return false;
-        }
-
-        return (int) $prefix < ($v6 ? self::NARROW_V6 : self::NARROW_V4);
+        return [Finding::passed(\count($proxies) . ' ' . (\count($proxies) === 1 ? 'network' : 'networks') . ' pinned' . ($secret ? ', each proxy proving itself with ' . TrustedProxies::SECRET_ENV : '') . '.')];
     }
 }
