@@ -197,7 +197,7 @@ describe('the modules', function () {
     it('lets a module use the core and jobs, never one beside it, and only the kernel use them all', function () {
         $modules = Layers::modules();
 
-        expect($modules->names())->toBe(['support', 'database', 'queue', ...CORE, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit', 'kernel', 'tenancy', 'billing', 'testing', 'codegen'])
+        expect($modules->names())->toBe(['support', 'database', 'queue', ...CORE, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit', 'api', 'kernel', 'tenancy', 'billing', 'testing', 'codegen'])
             ->and($modules->mayUse('queue', 'database'))->toBeTrue()
             ->and($modules->mayUse('queue', 'http'))->toBeFalse()
             ->and($modules->mayUse('queue', 'jobs'))->toBeFalse()
@@ -231,6 +231,13 @@ describe('the modules', function () {
             ->and($modules->mayUse('tools', 'services'))->toBeFalse()
             ->and($modules->mayUse('services', 'tools'))->toBeFalse()
             ->and($modules->mayUse('gateway', 'jobs'))->toBeFalse()
+            // ADR 0151: the API's tokens and calls on calls, beside the
+            // tools and services, and the kernel over them.
+            ->and($modules->mayUse('api', 'calls'))->toBeTrue()
+            ->and($modules->mayUse('api', 'services'))->toBeFalse()
+            ->and($modules->mayUse('services', 'api'))->toBeFalse()
+            ->and($modules->mayUse('entry', 'api'))->toBeFalse()
+            ->and($modules->mayUse('kernel', 'api'))->toBeTrue()
             ->and($modules->mayUse('kernel', 'transfers'))->toBeTrue()
             ->and($modules->mayUse('kernel', 'webhooks'))->toBeTrue()
             ->and($modules->mayUse('push', 'jobs'))->toBeTrue()

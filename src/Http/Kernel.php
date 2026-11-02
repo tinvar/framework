@@ -5,6 +5,16 @@ declare(strict_types=1);
 namespace Tinvar\Http;
 
 use Tinvar\Actions\ActionRegistry;
+use Tinvar\Api\ApiAccess;
+use Tinvar\Api\ApiCalls;
+use Tinvar\Api\ApiEndpoint;
+use Tinvar\Api\ApiScopes;
+use Tinvar\Api\ApiTokens;
+use Tinvar\Api\ApiTokenSecret;
+use Tinvar\Api\HoldApiToken;
+use Tinvar\Api\SignInWithApiToken;
+use Tinvar\Calls\CallHosts;
+use Tinvar\Calls\CallRunner;
 use Tinvar\Actions\ActionRunner;
 use Tinvar\Audit\AuditLog;
 use Tinvar\Actions\TagInvalidation;
@@ -169,6 +179,23 @@ final class Kernel
     /** The hosts the application serves (ADR 0149); null where it routes on no host. */
     public readonly ?Domains $domains;
 
+    /**
+     * The application's API tokens (ADR 0151): issued, listed and revoked
+     * by its users, and in the container for its actions and pages; null
+     * when it was given no ApiAccess.
+     */
+    public readonly ?ApiTokens $apiTokens;
+
+    /** POST /_api/{operation}, mounted only when an application gives ApiAccess (ADR 0151). */
+    private readonly ?ApiEndpoint $api_;
+
+    /**
+     * What every /_api call runs behind: the flood guard and `throttle:api`
+     * by address, and nothing that reads a cookie -- no global stack, so no
+     * session, and so no CSRF token to ask for (ADR 0151).
+     */
+    private readonly Pipeline $apiStack;
+
     /** /_upload and /_file, mounted only when an application supplies Uploads. */
     public readonly ?UploadEndpoint $uploads_;
     public readonly ?FileEndpoint $files_;
@@ -309,6 +336,10 @@ final class Kernel
         // them is a page's fetch or a download, and a write among them
         // spends the same bucket as the reads.
         'endpoints' => 120,
+        // POST /_api/{operation}, called with an API token (ADR 0151): an
+        // endpoint's budget, in a bucket of its own, so a script reading the
+        // API spends nothing of the pages' fetches and downloads.
+        'api' => 120,
     ];
 
     private readonly ExceptionHandler $exceptions;
@@ -640,6 +671,11 @@ final class Kernel
      *        entry -- is told the host, client address and id of each request it handles, is
      *        in the container for actions and pages to record events with, and forgets what
      *        it holds of a request with the reset contract
+     * @param ApiAccess|null $apiAccess where the application's API tokens are kept, and how their
+     *        users are found again (ADR 0151): given, POST /_api/{operation} runs every action and
+     *        query marked #[RequiresScope] for a token holding its scopes, every endpoint marked so
+     *        takes a token and no session, and ApiTokens is in the container. Without it, a
+     *        #[RequiresScope] anywhere is refused here
      */
     public function __construct(
         public readonly Orm $orm,
@@ -703,6 +739,7 @@ final class Kernel
         ?Domains $domains = null,
         ?Notifications $notifications = null,
         private readonly ?AuditLog $audit = null,
+        ?ApiAccess $apiAccess = null,
     ) {
         $this->resolver = $resolver;
         $this->shared = $shared;
@@ -1318,6 +1355,68 @@ final class Kernel
             }
         }
 
+        // The public API (ADR 0151): the actions and queries marked
+        // #[RequiresScope], at /_api, and the endpoints marked so, each
+        // taking an API token and no session. Refused without ApiAccess,
+        // rather than an API that answers nobody.
+        $scopedEndpoints = array_values(array_filter($endpoints?->all() ?? [], static fn (CompiledEndpoint $e): bool => $e->takesApiTokens()));
+        $apiOperations = ApiCalls::discover($this->actions, $this->queries, $entry);
+        if ($apiAccess === null && ($scopedEndpoints !== [] || $apiOperations !== [])) {
+            $first = $scopedEndpoints === [] ? $apiOperations[0][0]->class : $scopedEndpoints[0]->where();
+            throw new \InvalidArgumentException(
+                "{$first} requires API token scopes, and the Kernel was given no ApiAccess to keep and check tokens with: "
+                . 'give it one -- new ApiAccess(new DatabaseApiTokens($connection), $users) -- or take the #[RequiresScope] away.',
+            );
+        }
+        $tokenSignIn = null;
+        $apiTokens = null;
+        $api = null;
+        if ($apiAccess !== null) {
+            // Each token bound to the host it was issued on, and an
+            // operation held to its #[Domain] or its panel's, as a tool
+            // grant and a service context token are (ADR 0149).
+            $callHosts = new CallHosts($this->domains, $this->hostInHand(...));
+            $apiTokens = new ApiTokens(
+                $apiAccess->store,
+                $apiAccess->users,
+                $this->auth,
+                $this->orm,
+                ApiScopes::of($apiOperations, array_map(
+                    static fn (CompiledEndpoint $e): array => [$entry->panelFor($e->panels, $e->class)->name ?? '', $e->scopes],
+                    $scopedEndpoints,
+                )),
+                $panels,
+                $callHosts,
+                $apiAccess->clock,
+                $apiAccess->maxPerUser,
+            );
+            $tokenSignIn = new SignInWithApiToken($apiTokens, $this->auth);
+            $api = new ApiEndpoint(
+                new ApiCalls(
+                    $apiOperations,
+                    new CallRunner($this->actionRunner, $queryRunner, $this->report(...)),
+                    $this->auth,
+                    $this->orm,
+                    $panels,
+                    $memberships,
+                    $callHosts,
+                ),
+                $tokenSignIn,
+                $throttle,
+                $limits['api'] ?? 0,
+                $maxBodyBytes,
+                $maxJsonDepth,
+            );
+            $container?->instance(ApiTokens::class, $apiTokens);
+        }
+        $this->apiTokens = $apiTokens;
+        $this->api_ = $api;
+        $this->apiStack = new Pipeline([
+            ...$this->floodGuardFor($throttle, 'api', $limits),
+            ...$this->throttleFor($throttle, 'api', $limits, byAddress: true),
+        ]);
+        $orm = $this->orm;
+
         $this->endpoints_ = $endpoints === null ? null : new EndpointHandler(
             registry: $endpoints,
             runner: new EndpointRunner($resolver, $this->orm, $gate, new Validator($this->orm), $encoder, $invalidation, $this->auth, $panels),
@@ -1329,6 +1428,8 @@ final class Kernel
             maxJsonDepth: $maxJsonDepth,
             throttle: $throttle,
             endpointsLimit: $limits['endpoints'] ?? 0,
+            tokenSignIn: $tokenSignIn,
+            tokenHold: $tokenSignIn === null ? null : static fn (CompiledEndpoint $e): HoldApiToken => new HoldApiToken($e->scopes, $orm, $panels),
         );
 
         // Checked above to have the Telemetry and Metrics it records into.
@@ -2060,6 +2161,10 @@ final class Kernel
         if (($this->clientTelemetry_?->matches($request) ?? false) && TelemetryEndpoint::ridesNoSession($request)) {
             return true;
         }
+        // A call to the API: its token is its credential (ADR 0151).
+        if ($this->api_?->matches($request) ?? false) {
+            return true;
+        }
 
         $registry = $this->endpoints_?->registry;
         if ($registry === null) {
@@ -2145,6 +2250,30 @@ final class Kernel
                 $this->telemetry?->route('_mail_events');
 
                 return $this->mailEvents->handle($request, $rawBody);
+            }
+
+            // The API, ahead of everything that opens a session: its token
+            // is its caller's credential, never a cookie (ADR 0151).
+            if ($this->api_ !== null && $this->api_->matches($request)) {
+                $this->telemetry?->route(ApiEndpoint::ROUTE);
+                ApiEndpoint::assertMethod($request);
+
+                return $this->runApi($this->api_, $request, $rawBody);
+            }
+
+            // An API token is taken by /_api and the endpoints marked
+            // #[RequiresScope], and refused everywhere a session is read:
+            // a session's path that let one through would be a second way
+            // in that CSRF and the session's own checks were never asked
+            // to guard (ADR 0151). An endpoint is told apart below.
+            if (ApiTokenSecret::presented($request) && !$this->takesApiTokens($request)) {
+                $this->telemetry?->route('_api_token_refused');
+
+                throw new HttpException(
+                    401,
+                    'An API token was presented where a session is read. Send it to /_api, or to an endpoint marked #[RequiresScope].',
+                    'api_token_not_accepted',
+                );
             }
 
             if ($this->handoff !== null && $this->handoff->matches($request)) {
@@ -2758,6 +2887,43 @@ final class Kernel
     public function build(): ?string
     {
         return $this->builds?->current;
+    }
+
+    /**
+     * One call to the API (ADR 0151), as a #[WithoutSession] endpoint is
+     * run: refused if anyone is signed in before its stack, its request
+     * stripped of every cookie and PHP's copies of them, behind the flood
+     * guard and `throttle:api` by address. The token signs its user in
+     * inside, where the throttle is spent again by their account.
+     */
+    private function runApi(ApiEndpoint $api, Request $request, string $rawBody): Response
+    {
+        if ($this->auth->check()) {
+            throw new \LogicException(
+                'A call to /_api found someone signed in before its stack ran. Sign in from the session in global middleware only, so no cookie reaches it.',
+            );
+        }
+        $request = $request->withoutCookies();
+
+        return CookielessGlobals::run(fn (): Response => $this->apiStack->run(
+            $request,
+            static fn (Request $passed): Response => $api->handle($passed, $rawBody),
+        ));
+    }
+
+    /**
+     * Whether $request is for something that takes an API token: /_api, or
+     * an endpoint marked #[RequiresScope] -- matched as dispatch matches it.
+     * A preflight asks about the method it names.
+     */
+    private function takesApiTokens(Request $request): bool
+    {
+        if ($this->api_?->matches($request) ?? false) {
+            return true;
+        }
+        $matched = $this->endpoints_?->registry->match($request);
+
+        return isset($matched['endpoint']) && $matched['endpoint']->takesApiTokens();
     }
 
     /**

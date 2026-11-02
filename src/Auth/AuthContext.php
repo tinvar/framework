@@ -28,6 +28,14 @@ final class AuthContext
     private string $epoch = '';
 
     /**
+     * The id of the API token the user was signed in with (ADR 0151); null
+     * when they were signed in by a session, or nobody is. Read by what
+     * must refuse a token's caller -- issuing another token, above all --
+     * and kept for the request alone: actingAs() does not change it.
+     */
+    private ?string $apiToken = null;
+
+    /**
      * Whom the first login() of the request signed in, with their epoch:
      * the session's user, as the stack found them. Null before any.
      *
@@ -95,12 +103,24 @@ final class AuthContext
      *
      * @param string $epoch the user's auth epoch, which the application changes on a role
      *        change and on impersonation starting or stopping
+     * @param string|null $apiToken the id of the API token that signed them in, for a request
+     *        a token authenticated (ADR 0151); null for a session's
      */
-    public function login(?Authenticatable $user, string $epoch = ''): void
+    public function login(?Authenticatable $user, string $epoch = '', ?string $apiToken = null): void
     {
         $this->user = $user;
         $this->epoch = $user === null ? '' : $epoch;
+        $this->apiToken = $user === null ? null : $apiToken;
         $this->first ??= [$this->user?->authIdentifier(), $this->epoch];
+    }
+
+    /**
+     * The id of the API token this request's user was signed in with; null
+     * for a session's user, or nobody (ADR 0151).
+     */
+    public function apiToken(): ?string
+    {
+        return $this->apiToken;
     }
 
     /**
@@ -155,6 +175,7 @@ final class AuthContext
     {
         $this->user = null;
         $this->epoch = '';
+        $this->apiToken = null;
         $this->first = null;
         $this->byFiber = new \WeakMap();
     }

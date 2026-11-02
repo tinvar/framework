@@ -13,6 +13,7 @@ use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\NoAuthorization;
 use Tinvar\Attributes\Panel;
 use Tinvar\Attributes\PublicAccess;
+use Tinvar\Attributes\RequiresScope;
 use Tinvar\Attributes\TenantFrom;
 use Tinvar\Attributes\Throttle;
 use Tinvar\Attributes\WithoutSession;
@@ -306,8 +307,22 @@ final class EndpointRegistry
 
         [$returns, $data] = self::returnOf($where, $method);
 
-        $sessionless = WithoutSession::declaredOn($class, $method->getName());
         $public = PublicAccess::declaredOn($class, $method->getName());
+        try {
+            $scopes = RequiresScope::declaredOn($class, $method->getName());
+        } catch (\InvalidArgumentException $e) {
+            throw new EndpointException("{$where}: {$e->getMessage()}", 0, $e);
+        }
+        // An API token is its caller's credential, never a cookie (ADR
+        // 0151): the endpoint runs with no session, as #[WithoutSession]
+        // does, so no cookie signs anyone in and no CSRF token is asked for.
+        $sessionless = $scopes !== [] || WithoutSession::declaredOn($class, $method->getName());
+        if ($scopes !== [] && $public) {
+            throw new EndpointException(
+                "{$where} requires the scopes " . implode(', ', $scopes) . ' and is #[PublicAccess]. A scope is held by a token, '
+                . 'which signs its caller in: take #[PublicAccess] away, or the #[RequiresScope].',
+            );
+        }
         $safe = array_diff($declaration->methods, ['GET']) === [];
 
         // "No unauthenticated state-changing route without an explicit
@@ -375,6 +390,7 @@ final class EndpointRegistry
             cors: $cors,
             revalidates: $declaration->revalidates,
             host: $host,
+            scopes: $scopes,
         );
     }
 

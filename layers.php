@@ -150,6 +150,7 @@ return [
     // channels they are (ADR 0155); calls (an action or query run outside HTTP) on
     // the core, with tools and services on calls; the gateway's contract on
     // the core (ADR 0098, 0099); the accounts kit on jobs and mail (ADR 0153);
+    // the public API's tokens and calls on calls (ADR 0151);
     // and the kernel -- the HTTP kernel, the console and the
     // server, which a process starts with -- over all of them. An
     // attribute is its module's, though the namespace is shared.
@@ -180,6 +181,8 @@ return [
             // The audit log (ADR 0156): over jobs, to name the job that made
             // a change and its starter, and services, to name a service.
             'audit' => ['Tinvar\\Audit\\', 'Tinvar\\Attributes\\AuditedAction'],
+            // The public API (ADR 0151): API tokens and /_api, on calls.
+            'api' => ['Tinvar\\Api\\'],
             'kernel' => ['Tinvar\\Http\\Kernel', 'Tinvar\\Console\\', 'Tinvar\\Discovery\\', 'Tinvar\\Server\\', 'Tinvar\\Http\\TestableApplication', 'Tinvar\\Http\\BrowserTestable', 'Tinvar\\Attributes\\Command'],
             ...$above,
         ],
@@ -202,11 +205,12 @@ return [
             'gateway' => ['support', 'database', 'queue', ...$coreNames],
             'accounts' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'mail'],
             'audit' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'calls', 'services'],
-            'kernel' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit'],
-            'tenancy' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit', 'kernel'],
-            'billing' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit', 'kernel'],
-            'testing' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit', 'kernel'],
-            'codegen' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit', 'kernel'],
+            'api' => ['support', 'database', 'queue', ...$coreNames, 'calls'],
+            'kernel' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit', 'api'],
+            'tenancy' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit', 'api', 'kernel'],
+            'billing' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit', 'api', 'kernel'],
+            'testing' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit', 'api', 'kernel'],
+            'codegen' => ['support', 'database', 'queue', ...$coreNames, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'accounts', 'audit', 'api', 'kernel'],
         ],
         'sources' => [
             'packages/framework/src' => 'Tinvar\\',

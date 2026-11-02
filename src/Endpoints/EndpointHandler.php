@@ -30,7 +30,8 @@ use Tinvar\Validation\ValidationException;
  * runner.
  *
  * A #[WithoutSession] endpoint's own middleware is what signs its caller
- * in, so it runs first, then the authentication the stack could not ask
+ * in -- or, for one that requires API token scopes, the token's (ADR
+ * 0151), ahead of its own middleware -- so it runs first, then the authentication the stack could not ask
  * before it, then the tenant and the panel -- whose membership check needs
  * to know who the caller is.
  *
@@ -64,6 +65,15 @@ final class EndpointHandler
         // `throttle:endpoints` a minute, for the account pass a sessionless
         // endpoint's stack could not run; 0 for none.
         private readonly int $endpointsLimit = 0,
+        // An endpoint that takes API tokens (#[RequiresScope], ADR 0151):
+        // the middleware that signs a token's user in, run where a
+        // sessionless endpoint's own middleware would sign its caller in;
+        // and, for each such endpoint, the one that holds the token to its
+        // scopes and to the tenant, panel and host the entry checks put it
+        // in, run after them. Both the API tokens' module, handed in by the
+        // Kernel; neither, and such an endpoint is refused when called.
+        private readonly ?Middleware $tokenSignIn = null,
+        private readonly ?\Closure $tokenHold = null,
     ) {
         Limits::assertConfigurable($maxBodyBytes, $maxJsonDepth);
     }
@@ -89,14 +99,26 @@ final class EndpointHandler
             $endpoint->sessionless ? $endpoint->middleware : array_values(array_diff($endpoint->middleware, $this->globalMiddleware)),
         );
 
+        $tokens = [[], []];
+        if ($endpoint->takesApiTokens()) {
+            if ($this->tokenSignIn === null || $this->tokenHold === null) {
+                throw new \LogicException("{$endpoint->where()} requires API token scopes, and the Kernel was given no ApiAccess to read a token with.");
+            }
+            /** @var Middleware $hold */
+            $hold = ($this->tokenHold)($endpoint);
+            $tokens = [[$this->tokenSignIn], [$hold]];
+        }
+
         $stack = $endpoint->sessionless
             ? [
                 ...$this->bucket($endpoint, byAddress: true),
+                ...$tokens[0],
                 ...$own,
                 new RequireAuthentication($this->auth, self::entryPoint(...)),
                 ...$this->accountShareOfEndpoints(),
                 ...$this->bucket($endpoint, byAddress: false),
                 ...$entry,
+                ...$tokens[1],
             ]
             : [
                 ...$this->bucket($endpoint, byAddress: true),
