@@ -96,4 +96,13 @@ describe('a tool call', function () {
         expect(claimsOf($grant)['h'])->toBe(ContextToken::NO_HOST)
             ->and($h->as('ada', fn () => $h->tools->call($grant, 'show_rack', ['rack' => $h->rack()]))->status)->toBe(CallResult::OK);
     });
+
+    it('is refused when built with no hosts to hold a tool held to one to', function () {
+        // Without them every grant was for any host, and a tool held to
+        // ops.{root} ran on whichever host the call came in on.
+        $h = new Harness(hosts: true);
+        $h->hosts = null;
+
+        expect(fn () => $h->tools)->toThrow(\InvalidArgumentException::class, 'the tool calls were given no CallHosts to hold it there');
+    });
 });

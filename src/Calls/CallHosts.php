@@ -40,6 +40,33 @@ final readonly class CallHosts
         private ?\Closure $inHand = null,
     ) {}
 
+    /**
+     * Refuses $hosts that cannot hold an operation held to a host: none
+     * given, or given no Domains. Each of tool calls, service calls and API
+     * calls takes its CallHosts as optional, for an application that routes
+     * on no host; left out where an operation is held to one, every token
+     * would be good on any host and the operation run on whichever host a
+     * call came in on. Refused when it is built, as fail-closed asks.
+     *
+     * @param iterable<Operation> $operations what it will run
+     * @param string $what what is built, as the refusal names it: 'the tool calls'
+     * @throws \InvalidArgumentException for an operation held to a host with nothing to hold it
+     */
+    public static function assertHolds(?self $hosts, iterable $operations, string $what): void
+    {
+        if ($hosts !== null && $hosts->routes()) {
+            return;
+        }
+        foreach ($operations as $operation) {
+            if ($operation->hosts !== []) {
+                throw new \InvalidArgumentException(
+                    "'{$operation->name}' is held to {$operation->hosts[0]}, and {$what} were given no CallHosts to hold it there: "
+                    . 'pass new CallHosts($kernel->domains, $kernel->hostInHand(...)).',
+                );
+            }
+        }
+    }
+
     /** Whether the application routes by host, and so holds calls to one. */
     public function routes(): bool
     {

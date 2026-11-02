@@ -95,4 +95,11 @@ describe('a service call', function () {
 
         expect($h->asWarehouse(fn () => $h->on('shop.test', fn () => $h->services->call($legacy, 'racks.show', ['rack' => $h->rack()])))->reason)->toBe('context');
     });
+
+    it('is refused when built with no hosts to hold an operation held to one to', function () {
+        $h = new Harness(hosts: true);
+        $h->hosts = null;
+
+        expect(fn () => $h->services)->toThrow(\InvalidArgumentException::class, 'the service calls were given no CallHosts to hold it there');
+    });
 });

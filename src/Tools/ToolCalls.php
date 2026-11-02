@@ -138,6 +138,7 @@ final readonly class ToolCalls
             $byName[$name] = [$operation, $tool];
         }
         $this->tools = $byName;
+        CallHosts::assertHolds($hosts, array_map(static fn (array $entry): Operation => $entry[0], $byName), 'the tool calls');
     }
 
     /**

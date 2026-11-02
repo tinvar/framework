@@ -131,6 +131,7 @@ final readonly class ServiceCalls
             $byName[$operation->name] = [$operation, $declaration];
         }
         $this->operations = $byName;
+        CallHosts::assertHolds($hosts, array_map(static fn (array $entry): Operation => $entry[0], $byName), 'the service calls');
     }
 
     /**

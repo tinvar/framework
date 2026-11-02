@@ -80,6 +80,7 @@ final readonly class ApiCalls
             $byName[$operation->name] = [$operation, $declaration->scopes];
         }
         $this->operations = $byName;
+        CallHosts::assertHolds($hosts, array_map(static fn (array $entry): Operation => $entry[0], $byName), 'the API calls');
     }
 
     /**
