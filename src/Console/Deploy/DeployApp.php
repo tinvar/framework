@@ -21,8 +21,6 @@ final readonly class DeployApp
      * @param string $secrets where its deployment's secret files are, a path and the start of each name:
      *        `/home/you/.local/state/tinvar/my-app-2cab79174cf3` (StateFile)
      * @param bool $podTargets whether its Dockerfile has the two-container targets, pod-php and pod-renderer
-     * @param list<string> $appAddresses the platform's public addresses for it, which its edge names
-     *        last in X-Forwarded-For (Fly.io's): pinned beside the edge's range
      * @param string|null $front what stands in front of the platform's edge and sends the proxy secret: `cloudflare`
      */
     public function __construct(
@@ -33,7 +31,6 @@ final readonly class DeployApp
         public array $mail = [],
         public string $secrets = '',
         public bool $podTargets = false,
-        public array $appAddresses = [],
         public ?string $front = null,
     ) {
         if ($front !== null && !\in_array($front, RecipeParts::FRONTS, true)) {
@@ -41,11 +38,6 @@ final readonly class DeployApp
         }
         if (preg_match('/^[a-z][a-z0-9-]{0,38}[a-z0-9]\z/', $name) !== 1) {
             throw new \InvalidArgumentException("'{$name}' is not a name a platform takes: 2 to 40 lowercase letters, digits and dashes, starting with a letter.");
-        }
-        foreach ($appAddresses as $address) {
-            if (filter_var(explode('/', $address, 2)[0], FILTER_VALIDATE_IP) === false) {
-                throw new \InvalidArgumentException("'{$address}' is not an address: --app-ips takes addresses, as `fly ips list` shows them, comma-separated.");
-            }
         }
         if ($domain !== null && preg_match('#^https://[a-z0-9.-]+(:\d+)?\z#', $domain) !== 1) {
             throw new \InvalidArgumentException("'{$domain}' is not a public address: write it https://app.example.com.");

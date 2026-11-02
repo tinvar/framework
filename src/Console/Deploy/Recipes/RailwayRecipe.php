@@ -16,9 +16,14 @@ use Tinvar\Console\Deploy\RecipeParts;
  * one replica; the variables are set with `railway variables` -- the ones
  * in the open from the command line, the secrets pasted into the service's
  * variables from their files, never onto a command line -- and its SQLite
- * database on a volume. Railway's edge cannot send the proxy secret and
- * replaces X-Forwarded-For with the address that reached it, so no proxy
- * is pinned and no front helps: every visitor is the edge's one address.
+ * database on a volume. Railway's edge cannot send the proxy secret, so no
+ * proxy is pinned, and every visitor is the edge's one address. A front
+ * that names the client and the host itself would not need Railway's
+ * X-Forwarded-For, which its edge replaces, but Railway documents no range
+ * its edge connects to the app from: there is nothing to pin but every
+ * address, which would leave the secret alone to tell the proxy from any
+ * other peer -- the node, a hairpin, a neighbour -- and ADR 0134 holds a
+ * range in front of it. So --front is refused here.
  *
  * Railway's healthcheck sends no header of ours, so none is set, and the
  * probes stay behind the probe token.
@@ -34,7 +39,7 @@ final readonly class RailwayRecipe implements DeployRecipe
     {
         RecipeParts::oneContainerOnly($app, 'Railway');
         if ($app->front !== null) {
-            throw new \InvalidArgumentException("Railway's edge replaces X-Forwarded-For with the address that reached it, so behind Cloudflare every visitor would be read as Cloudflare's: --front is for Fly.io and Render. Railway runs with no proxy pinned.");
+            throw new \InvalidArgumentException("Railway documents no address range its edge connects to the app from, so there is no range to pin behind Cloudflare -- only every address, with the secret alone to prove the proxy: --front is for Fly.io and Render. Railway runs with no proxy pinned.");
         }
         $secrets = RecipeParts::appSecrets($this->target());
 

@@ -17,11 +17,8 @@ final class RecipeParts
 {
     /**
      * Fly.io's proxy connects to a machine from its private network,
-     * 172.16.0.0/12 (fly-proxy, then the machine's own eth0 range), and
-     * Fly.io appends the app's own public address last in X-Forwarded-For
-     * ("the rightmost address will be a shared or dedicated IP address
-     * assigned to your app"), so that is pinned too (DeployApp::$appAddresses).
-     * Fly's edge sets no header of ours.
+     * 172.16.0.0/12 (fly-proxy, then the machine's own eth0 range). Fly's
+     * edge sets no header of ours.
      */
     public const array FLY = ['172.16.0.0/12'];
 
@@ -31,14 +28,6 @@ final class RecipeParts
      * service. Neither can be told to send a header.
      */
     public const array RENDER = ['10.0.0.0/8'];
-
-    /** Cloudflare's published ranges (cloudflare.com/ips-v4, ips-v6). */
-    public const array CLOUDFLARE = [
-        '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22', '141.101.64.0/18', '108.162.192.0/18',
-        '190.93.240.0/20', '188.114.96.0/20', '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13',
-        '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22',
-        '2400:cb00::/32', '2606:4700::/32', '2803:f800::/32', '2405:b500::/32', '2405:8100::/32', '2a06:98c0::/29', '2c0f:f248::/32',
-    ];
 
     /** What may stand in front of a platform's edge and send the proxy secret: `--front=cloudflare`. */
     public const array FRONTS = ['cloudflare'];
@@ -173,26 +162,18 @@ final class RecipeParts
     }
 
     /**
-     * The trusted ranges for $platform, with the app's own addresses where its edge names them.
-     *
-     * @param list<string> $platform
-     */
-    public static function ranges(array $platform, DeployApp $app): string
-    {
-        $own = array_map(static fn (string $a): string => str_contains($a, '/') ? $a : $a . (str_contains($a, ':') ? '/128' : '/32'), $app->appAddresses);
-
-        return implode(',', [...$platform, ...$own]);
-    }
-
-    /**
      * What a platform's config says of its proxies. With a front
-     * (Cloudflare) that sends the proxy secret, the platform's edge and the
-     * front's ranges are pinned behind it, and the front names the client
-     * in X-Tinvar-Client (TINVAR_TRUSTED_PROXY_CLIENT=header): its rule
-     * sends the secret for a request a Cloudflare Worker -- anyone's --
-     * sends to the domain too, and the Worker writes X-Forwarded-For as it
-     * likes, so the client is Cloudflare's `ip.src`, which it cannot choose
-     * (ADR 0134). With none, nothing is pinned:
+     * (Cloudflare) that sends the proxy secret, the platform's edge -- the
+     * peer that connects -- is pinned, and the front names the client in
+     * X-Tinvar-Client and the host in X-Tinvar-Host
+     * (TINVAR_TRUSTED_PROXY_CLIENT=header): its rule sends the secret for a
+     * request a Cloudflare Worker -- anyone's -- sends to the domain too,
+     * and the Worker writes X-Forwarded-For and X-Forwarded-Host as it
+     * likes, so the client is Cloudflare's `ip.src` and the host its
+     * `http.host`, which it cannot choose (ADR 0134). X-Forwarded-For is
+     * then never read, so neither Cloudflare's ranges nor the app's own
+     * addresses, which were pinned only to walk it, are. With none,
+     * nothing is pinned:
      * a range wider than one address is refused at boot without the secret
      * (ADR 0134), and the platform's edge cannot send one, so every visitor
      * is counted as the edge's one address -- shared throttle budgets, but
@@ -209,10 +190,10 @@ final class RecipeParts
 
         return [
             'env' => [
-                'TINVAR_TRUSTED_PROXIES' => self::ranges([...$platform, ...self::CLOUDFLARE], $app),
+                'TINVAR_TRUSTED_PROXIES' => implode(',', $platform),
                 'TINVAR_TRUSTED_PROXY_CLIENT' => 'header',
             ],
-            'comment' => "{$name}'s edge and Cloudflare's ranges, each request proven by\nTINVAR_TRUSTED_PROXY_SECRET, which Cloudflare sends in X-Tinvar-Proxy. The client\nis the address Cloudflare names in X-Tinvar-Client, its ip.src: X-Forwarded-For,\nwhich a Cloudflare Worker writes as it likes, is not read.\n",
+            'comment' => "{$name}'s edge, each request proven by TINVAR_TRUSTED_PROXY_SECRET, which\nCloudflare sends in X-Tinvar-Proxy. The client is the address Cloudflare names in\nX-Tinvar-Client, its ip.src, and the host the one it names in X-Tinvar-Host, its\nhttp.host: X-Forwarded-For and X-Forwarded-Host, which a Cloudflare Worker writes\nas it likes, are not read, so no Cloudflare range is pinned.\n",
         ];
     }
 

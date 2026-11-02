@@ -27,7 +27,7 @@ use Tinvar\Support\StateFile;
  */
 final readonly class DeployInitCommand
 {
-    public const string USAGE = 'deploy:init <fly|render|railway|vps-systemd|vps-compose> [--layout=one|two] [--domain=https://HOST] [--name=NAME] [--front=cloudflare] [--app-ips=ADDRESS,...] [--force]';
+    public const string USAGE = 'deploy:init <fly|render|railway|vps-systemd|vps-compose> [--layout=one|two] [--domain=https://HOST] [--name=NAME] [--front=cloudflare] [--force]';
 
     /**
      * @param string $root the application
@@ -46,13 +46,13 @@ final readonly class DeployInitCommand
     /** @param list<string> $arguments */
     public function run(array $arguments): int
     {
-        $options = ['layout' => 'one', 'domain' => null, 'name' => null, 'app-ips' => null, 'front' => null];
+        $options = ['layout' => 'one', 'domain' => null, 'name' => null, 'front' => null];
         $force = false;
         $target = null;
         foreach ($arguments as $argument) {
             if ($argument === '--force') {
                 $force = true;
-            } elseif (preg_match('/^--(layout|domain|name|app-ips|front)=(.*)\z/', $argument, $m) === 1) {
+            } elseif (preg_match('/^--(layout|domain|name|front)=(.*)\z/', $argument, $m) === 1) {
                 $options[$m[1]] = $m[2];
             } elseif (!str_starts_with($argument, '-') && $target === null) {
                 $target = $argument;
@@ -134,7 +134,7 @@ final readonly class DeployInitCommand
      * unless --name says, its database and mail as its environment says,
      * its secrets beside its dev key in this user's state directory.
      *
-     * @param array{layout: string, domain: string|null, name: string|null, app-ips: string|null, front: string|null} $options
+     * @param array{layout: string, domain: string|null, name: string|null, front: string|null} $options
      */
     private function app(array $options, ContainerLayout $layout): DeployApp
     {
@@ -156,7 +156,6 @@ final readonly class DeployInitCommand
             mail: $mail,
             secrets: "{$directory}/" . StateFile::stem($real),
             podTargets: preg_match('/\bAS\s+pod-php\b/i', $dockerfile) === 1 && preg_match('/\bAS\s+pod-renderer\b/i', $dockerfile) === 1,
-            appAddresses: array_values(array_filter(array_map(trim(...), explode(',', (string) $options['app-ips'])))),
             front: $options['front'] === null || $options['front'] === '' ? null : $options['front'],
         );
     }

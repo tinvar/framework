@@ -30,7 +30,7 @@ function cases(): array
 {
     return [
         'fly' => [DeployTarget::Fly, new DeployApp('my-app', secrets: SECRETS)],
-        'fly-postgres' => [DeployTarget::Fly, new DeployApp('my-app', database: DatabaseDriver::Postgres, domain: 'https://app.example.com', mail: [MailProvider::Resend], secrets: SECRETS, appAddresses: ['66.241.124.10', '2a09:8280:1::4c:1'], front: 'cloudflare')],
+        'fly-postgres' => [DeployTarget::Fly, new DeployApp('my-app', database: DatabaseDriver::Postgres, domain: 'https://app.example.com', mail: [MailProvider::Resend], secrets: SECRETS, front: 'cloudflare')],
         'render' => [DeployTarget::Render, new DeployApp('my-app', secrets: SECRETS)],
         'render-postgres' => [DeployTarget::Render, new DeployApp('my-app', database: DatabaseDriver::Postgres, mail: [MailProvider::Postmark], secrets: SECRETS, front: 'cloudflare')],
         'railway' => [DeployTarget::Railway, new DeployApp('my-app', secrets: SECRETS)],
@@ -117,9 +117,9 @@ it('runs two containers only where the platform and the image can', function () 
         ->toThrow(\InvalidArgumentException::class, "pod-php and pod-renderer targets");
 });
 
-it('puts Cloudflare in front only where the platform keeps X-Forwarded-For', function () {
+it('puts Cloudflare in front only where the platform\'s edge has a range to pin', function () {
     expect(static fn () => DeployTarget::Railway->recipe()->write(new DeployApp('my-app', secrets: SECRETS, front: 'cloudflare')))
-        ->toThrow(\InvalidArgumentException::class, 'replaces X-Forwarded-For')
+        ->toThrow(\InvalidArgumentException::class, 'documents no address range its edge connects')
         ->and(static fn () => new DeployApp('my-app', front: 'fastly'))->toThrow(\InvalidArgumentException::class, '--front is cloudflare');
 });
 
@@ -128,7 +128,7 @@ it('puts Cloudflare in front only where the platform keeps X-Forwarded-For', fun
 // X-Forwarded-For as it likes. So the rule names the client itself, from
 // ip.src, and the boot reads that in place of X-Forwarded-For.
 it('has Cloudflare in front name the client from ip.src, which the boot reads in place of X-Forwarded-For', function (DeployTarget $target, string $edge) {
-    $recipe = $target->recipe()->write(new DeployApp('my-app', secrets: SECRETS, appAddresses: ['66.241.124.10'], front: 'cloudflare'));
+    $recipe = $target->recipe()->write(new DeployApp('my-app', secrets: SECRETS, front: 'cloudflare'));
     $all = implode("\n", array_map(static fn ($f): string => $f->contents, $recipe->files)) . "\n" . implode("\n", $recipe->steps);
     preg_match('/TINVAR_TRUSTED_PROXIES[\s=:"\']+(?:value: ")?([0-9][0-9a-f.:\/,]*)/', $all, $pinned);
 
@@ -161,10 +161,63 @@ it('has Cloudflare in front name the client from ip.src, which the boot reads in
     'render' => [DeployTarget::Render, '10.20.30.40'],
 ]);
 
+// The client and the host are read from Cloudflare's own headers alone, and
+// X-Forwarded-For never: Cloudflare's ranges and the app's own addresses,
+// pinned only to walk it, are not pinned. The peer is the platform's edge,
+// and the secret proves it was sent through Cloudflare.
+it('pins only the platform\'s edge behind a front, which the secret alone proves', function (DeployTarget $target, string $range, string $edge) {
+    $recipe = $target->recipe()->write(new DeployApp('my-app', secrets: SECRETS, front: 'cloudflare'));
+    $all = implode("\n", array_map(static fn ($f): string => $f->contents, $recipe->files)) . "\n" . implode("\n", $recipe->steps);
+    preg_match('/TINVAR_TRUSTED_PROXIES[\s=:"\']+(?:value: ")?([0-9][0-9a-f.:\/,]*)/', $all, $pinned);
+
+    expect($pinned[1] ?? null)->toBe($range)
+        ->and($all)->not->toContain('--app-ips')
+        ->and($all)->not->toContain('fly ips list');
+
+    $secret = str_repeat('s', 40);
+    $proxies = \Tinvar\Config\Configs::load(\Tinvar\Config\FrameworkConfig::class, [
+        'TINVAR_TRUSTED_PROXIES' => $pinned[1],
+        'TINVAR_TRUSTED_PROXY_SECRET' => $secret,
+        'TINVAR_TRUSTED_PROXY_CLIENT' => 'header',
+    ])->proxies();
+    $request = static fn (?string $proof): \Tinvar\Http\Request => new \Tinvar\Http\Request('GET', '/', [
+        'host' => 'my-app.example',
+        TrustedProxies::CLIENT_HEADER => '203.0.113.9',
+        TrustedProxies::HOST_HEADER => 'app.example.com',
+        ...($proof === null ? [] : [TrustedProxies::SECRET_HEADER => $proof]),
+    ], remoteAddress: $edge);
+
+    // Through Cloudflare: its client and host. Straight to the platform,
+    // with no secret or a wrong one: the edge itself, and the Host it saw.
+    expect($proxies->clientAddress($request($secret)))->toBe('203.0.113.9')
+        ->and($proxies->host($request($secret)))->toBe('app.example.com')
+        ->and($proxies->clientAddress($request(null)))->toBe($edge)
+        ->and($proxies->host($request(str_repeat('x', 40))))->toBe('my-app.example');
+})->with([
+    'fly' => [DeployTarget::Fly, '172.16.0.0/12', '172.16.4.5'],
+    'render' => [DeployTarget::Render, '10.0.0.0/8', '10.20.30.40'],
+]);
+
+it('takes no --app-ips: nothing reads the addresses it pinned', function () {
+    $work = sys_get_temp_dir() . '/tinvar-deploy-' . bin2hex(random_bytes(4));
+    mkdir("{$work}/my-app", 0o755, true);
+    $err = '';
+    $command = new DeployInitCommand("{$work}/my-app", ['XDG_STATE_HOME' => "{$work}/state"], static function (string $t): void {}, static function (string $t) use (&$err): void {
+        $err .= $t;
+    });
+
+    try {
+        expect($command->run(['fly', '--front=cloudflare', '--app-ips=66.241.124.10']))->toBe(64)
+            ->and($err)->toContain('Usage:')
+            ->and(DeployInitCommand::USAGE)->not->toContain('--app-ips');
+    } finally {
+        exec('rm -rf ' . escapeshellarg($work));
+    }
+});
+
 it('refuses a name, an address or a domain a platform would not take', function () {
     expect(static fn () => new DeployApp('My App'))->toThrow(\InvalidArgumentException::class)
-        ->and(static fn () => new DeployApp('my-app', domain: 'http://app.example.com'))->toThrow(\InvalidArgumentException::class)
-        ->and(static fn () => new DeployApp('my-app', appAddresses: ['fly.dev']))->toThrow(\InvalidArgumentException::class);
+        ->and(static fn () => new DeployApp('my-app', domain: 'http://app.example.com'))->toThrow(\InvalidArgumentException::class);
 });
 
 it('writes the files, generates the secrets outside the project, and leaves a file of yours alone', function () {

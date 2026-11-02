@@ -89,9 +89,8 @@ final readonly class RenderRecipe implements DeployRecipe
 
             YAML : '';
 
-        // Behind Render's load balancer (inside 10.0.0.0/8) and the Cloudflare
-        // Render puts in front of it, a front of your own's ranges are
-        // Cloudflare's too.
+        // Behind Render's load balancer (inside 10.0.0.0/8), which is the
+        // peer: a front of your own names the client and the host itself.
         $comment = preg_replace('/^/m', '    # ', rtrim($proxies['comment'])) . "\n";
 
         $blueprint = <<<YAML
