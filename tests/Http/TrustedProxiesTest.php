@@ -17,13 +17,17 @@ use Tinvar\Http\Request;
 use Tinvar\Http\Throttle;
 use Tinvar\Http\TrustedProxies;
 
+/** What the proxies below send in X-Tinvar-Proxy: a pinned range needs one. */
+const PROXY_SECRET = 'trusted-proxy-secret-of-at-least-32-chars';
+
+/** A request from $peer, carrying the proxies' secret as the deployment's own proxy sends it. */
 function proxied(?string $peer, ?string $forwarded = null): Request
 {
-    return new Request('GET', '/', $forwarded === null ? [] : ['x-forwarded-for' => $forwarded], remoteAddress: $peer);
+    return new Request('GET', '/', [...($forwarded === null ? [] : ['x-forwarded-for' => $forwarded]), TrustedProxies::SECRET_HEADER => PROXY_SECRET], remoteAddress: $peer);
 }
 
 describe('the client address', function () {
-    $proxies = TrustedProxies::of(['10.0.0.0/8', '192.0.2.7', 'fd00::/8']);
+    $proxies = TrustedProxies::of(['10.0.0.0/8', '192.0.2.7', 'fd00::/8'], secret: PROXY_SECRET);
 
     it('is the peer when no proxy is trusted, whatever the header says', function () {
         expect(TrustedProxies::none()->clientAddress(proxied('203.0.113.5', '198.51.100.1')))->toBe('203.0.113.5');
@@ -87,7 +91,7 @@ describe('the client address', function () {
 
 describe('the list of proxies', function () {
     it('takes IPv4 and IPv6 networks and single addresses', function () {
-        $proxies = TrustedProxies::of(['10.0.0.0/8', '172.16.0.0/12', '192.0.2.7', '::1', 'fd00::/8', '2001:db8::/32']);
+        $proxies = TrustedProxies::of(['10.0.0.0/8', '172.16.0.0/12', '192.0.2.7', '::1', 'fd00::/8', '2001:db8::/32'], secret: PROXY_SECRET);
 
         expect($proxies->trusts('172.31.255.255'))->toBeTrue()
             ->and($proxies->trusts('172.32.0.0'))->toBeFalse()
@@ -104,14 +108,14 @@ describe('the list of proxies', function () {
     });
 
     it('is handed to Caddy space-separated, each network written the one way', function () {
-        expect(TrustedProxies::of(['10.0.0.0/8', '192.0.2.7', 'FD00:0::/8'])->caddyRanges())
+        expect(TrustedProxies::of(['10.0.0.0/8', '192.0.2.7', 'FD00:0::/8'], secret: PROXY_SECRET)->caddyRanges())
             ->toBe('10.0.0.0/8 192.0.2.7/32 fd00::/8')
             ->and(TrustedProxies::none()->caddyRanges())->toBe('');
     });
 
     it('is refused malformed, naming the entry by its place and never its text', function (string $entry) {
         try {
-            TrustedProxies::of(['10.0.0.0/8', $entry]);
+            TrustedProxies::of(['10.0.0.0/8', $entry], secret: PROXY_SECRET);
         } catch (\InvalidArgumentException $e) {
             expect($e->getMessage())->toContain('2nd');
             if ($entry !== '') {
@@ -152,19 +156,19 @@ describe('the list of proxies', function () {
  * connects from, stays the list's to say.
  */
 describe("a peer at the server's own address", function () {
-    $proxies = TrustedProxies::of(['10.0.0.0/8', '127.0.0.1', 'fd00::/8'], own: ['10.213.89.2', 'fd00::2', '127.0.0.1', '::1']);
+    $proxies = TrustedProxies::of(['10.0.0.0/8', '127.0.0.1', 'fd00::/8'], own: ['10.213.89.2', 'fd00::2', '127.0.0.1', '::1'], secret: PROXY_SECRET);
 
     it('is never a proxy, whatever range holds it', function () use ($proxies) {
         expect($proxies->clientAddress(proxied('10.213.89.2', '198.51.100.1')))->toBe('10.213.89.2')
             ->and($proxies->clientAddress(proxied('::ffff:10.213.89.2', '198.51.100.1')))->toBe('::ffff:10.213.89.2')
             ->and($proxies->clientAddress(proxied('fd00::2', '198.51.100.1')))->toBe('fd00::2')
-            ->and($proxies->host(new Request('GET', '/', ['host' => 'shop.test', 'x-forwarded-host' => 'admin.shop.test'], remoteAddress: '10.213.89.2')))->toBe('shop.test');
+            ->and($proxies->host(new Request('GET', '/', ['host' => 'shop.test', 'x-forwarded-host' => 'admin.shop.test', TrustedProxies::SECRET_HEADER => PROXY_SECRET], remoteAddress: '10.213.89.2')))->toBe('shop.test');
     });
 
     it("leaves every other peer in the range a proxy, and loopback the list's to say", function () use ($proxies) {
         expect($proxies->clientAddress(proxied('10.213.89.1', '198.51.100.1')))->toBe('198.51.100.1')
             ->and($proxies->clientAddress(proxied('127.0.0.1', '198.51.100.1')))->toBe('198.51.100.1')
-            ->and($proxies->host(new Request('GET', '/', ['host' => 'shop.test', 'x-forwarded-host' => 'admin.shop.test'], remoteAddress: '10.213.89.1')))->toBe('admin.shop.test');
+            ->and($proxies->host(new Request('GET', '/', ['host' => 'shop.test', 'x-forwarded-host' => 'admin.shop.test', TrustedProxies::SECRET_HEADER => PROXY_SECRET], remoteAddress: '10.213.89.1')))->toBe('admin.shop.test');
     });
 
     it('cannot spread its guesses over buckets of its own', function () use ($proxies) {
@@ -232,6 +236,31 @@ describe('a proxy secret', function () {
         }
 
         expect($throttle->hitAddress('sign-in', $from('10.244.0.1', null, '198.51.100.9'), 3, 60)->allowed)->toBeFalse();
+    });
+
+    it('is required wherever a range wider than one address is pinned', function (array $entries) {
+        expect(fn () => TrustedProxies::of($entries, own: []))
+            ->toThrow(\InvalidArgumentException::class, 'TINVAR_TRUSTED_PROXY_SECRET is required')
+            ->and(TrustedProxies::of($entries, own: [], secret: PROXY_SECRET)->isEmpty())->toBeFalse();
+    })->with([
+        'an IPv4 range' => [['10.0.0.0/8']],
+        'a /31' => [['192.0.2.6/31']],
+        'an IPv6 range' => [['fd00::/8']],
+        'a /127' => [['2001:db8::/127']],
+        'a single address beside a range' => [['192.0.2.7', '10.213.89.0/24']],
+    ]);
+
+    it('names the entry that needs it by its place, and says how to fix it', function () {
+        expect(fn () => TrustedProxies::of(['192.0.2.7', '10.213.89.0/24'], own: []))
+            ->toThrow(\InvalidArgumentException::class, "TINVAR_TRUSTED_PROXIES's 2nd entry is a range wider than one address")
+            ->and(fn () => TrustedProxies::of(['10.213.89.0/24'], own: []))
+            ->toThrow(\InvalidArgumentException::class, 'pin the proxy\'s single address (/32 or /128)');
+    });
+
+    it('is not needed for single addresses', function () {
+        $proxies = TrustedProxies::of(['127.0.0.1', '192.0.2.7/32', '::1', '2001:db8::7/128'], own: []);
+
+        expect($proxies->clientAddress(new Request('GET', '/', ['x-forwarded-for' => '198.51.100.1'], remoteAddress: '192.0.2.7')))->toBe('198.51.100.1');
     });
 
     it('is refused when it is short enough to guess, or given with no proxy to prove', function () {

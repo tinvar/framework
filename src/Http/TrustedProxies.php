@@ -49,6 +49,13 @@ namespace Tinvar\Http;
  * deployment's own proxy is set to send and to overwrite whatever a client
  * sent in it. The renderers hold no secret, and nothing else on the node
  * knows it.
+ *
+ * So the secret is required wherever a range is pinned: a list with any
+ * entry wider than one address (/32 for IPv4, /128 for IPv6) and no secret
+ * is refused, and the boot with it, rather than left open to the node,
+ * hairpin and SNAT peers a range holds. A list of single addresses -- a
+ * terminator on loopback, or at an address nothing else connects from --
+ * needs none.
  */
 final readonly class TrustedProxies
 {
@@ -91,7 +98,8 @@ final readonly class TrustedProxies
      * @param string|null $secret what a peer in a pinned network must also send in SECRET_HEADER to be
      *        taken for a proxy; null or '' for none, the range alone deciding
      * @throws \InvalidArgumentException naming the first malformed entry by its place, or for a
-     *         secret too short to hold, or one given with no network for it to prove
+     *         secret too short to hold, or one given with no network for it to prove, or for
+     *         none given with a range wider than one address
      */
     public static function of(array $entries, ?array $own = null, #[\SensitiveParameter] ?string $secret = null): self
     {
@@ -111,6 +119,19 @@ final readonly class TrustedProxies
                 );
             }
             $networks[] = $network;
+        }
+        if ($secret === null) {
+            foreach ($networks as $i => [$packed, $prefix]) {
+                if ($prefix < \strlen($packed) * 8) {
+                    $at = $i + 1;
+
+                    throw new \InvalidArgumentException(
+                        self::SECRET_ENV . ' is required: ' . self::ENV . "'s {$at}" . self::ordinal($at) . ' entry is a range wider than one '
+                        . 'address, which holds more peers than the proxy -- the node\'s own address, a hairpin or NAT gateway. Set the secret '
+                        . '(32 characters or more) and have the proxy send it in X-Tinvar-Proxy, or pin the proxy\'s single address (/32 or /128).',
+                    );
+                }
+            }
         }
         if ($networks === []) {
             if ($secret !== null) {

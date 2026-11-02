@@ -130,7 +130,7 @@ it('refuses a request that names no host with a 400, never reading it as the pri
 });
 
 it('believes X-Forwarded-Host from a pinned proxy only, and the value nearest it', function () {
-    $domains = new Domains(['root' => 'shop.test'], patterns: ['admin.{root}'], proxies: TrustedProxies::of(['10.0.0.0/8']));
+    $domains = new Domains(['root' => 'shop.test'], patterns: ['admin.{root}'], proxies: TrustedProxies::of(['10.1.2.3']));
 
     // From the proxy: the host it wrote, the right-most.
     expect($domains->resolve(host('internal:8080', ['x-forwarded-host' => 'evil.test, admin.shop.test'], '10.1.2.3'))->pattern)->toBe('admin.{root}')
@@ -143,7 +143,7 @@ it('believes X-Forwarded-Host from a pinned proxy only, and the value nearest it
 });
 
 it('refuses an empty or malformed hop a pinned proxy forwarded, never reading it as no host', function (string $forwarded) {
-    $domains = new Domains(['root' => 'shop.test'], patterns: ['admin.{root}'], proxies: TrustedProxies::of(['10.0.0.0/8']));
+    $domains = new Domains(['root' => 'shop.test'], patterns: ['admin.{root}'], proxies: TrustedProxies::of(['10.1.2.3']));
 
     expect(fn () => $domains->resolve(host('admin.shop.test', ['x-forwarded-host' => $forwarded], '10.1.2.3')))
         ->toThrow(HttpException::class);

@@ -214,7 +214,7 @@ it('reads the dumps\' MySQL user as a Secret, refusing any other driver by varia
 // ADR 0134: the proxies in front, pinned by network, through which the
 // throttles read the client's address -- a malformed list stops the boot.
 it('reads the trusted proxies as a list of networks, refusing a malformed one by its place alone', function () {
-    $config = Configs::load(FrameworkConfig::class, ['TINVAR_TRUSTED_PROXIES' => '10.89.0.1, fd00::/8']);
+    $config = Configs::load(FrameworkConfig::class, ['TINVAR_TRUSTED_PROXIES' => '10.89.0.1, fd00::/8', 'TINVAR_TRUSTED_PROXY_SECRET' => str_repeat('k', 40)]);
     $none = Configs::load(FrameworkConfig::class, []);
     $e = refusal(['TINVAR_TRUSTED_PROXIES' => '10.0.0.0/8,proxy.internal']);
     $everyone = refusal(['TINVAR_TRUSTED_PROXIES' => '0.0.0.0/0']);
@@ -227,6 +227,17 @@ it('reads the trusted proxies as a list of networks, refusing a malformed one by
         ->and($e->problems[0])->toStartWith("TINVAR_TRUSTED_PROXIES's 2nd entry is not a network")
         ->and($e->getMessage())->not->toContain('proxy.internal')
         ->and($everyone->problems[0])->toStartWith("TINVAR_TRUSTED_PROXIES's 1st entry is not a network");
+});
+
+// ADR 0134: a range holds more peers than the proxy, so the secret is
+// required wherever one is pinned; a single address needs none.
+it('stops the boot for a range pinned with no secret, and boots a single address without one', function () {
+    $wide = refusal(['TINVAR_TRUSTED_PROXIES' => '192.0.2.7, 10.213.89.0/24']);
+    $single = Configs::load(FrameworkConfig::class, ['TINVAR_TRUSTED_PROXIES' => '127.0.0.1, 2001:db8::7/128']);
+
+    expect($wide->problems)->toHaveCount(1)
+        ->and($wide->problems[0])->toStartWith("TINVAR_TRUSTED_PROXY_SECRET is required: TINVAR_TRUSTED_PROXIES's 2nd entry is a range wider than one address")
+        ->and($single->proxies()->trusts('127.0.0.1'))->toBeTrue();
 });
 
 it('holds a pinned proxy to the secret it must send, and refuses one too short or with no proxy', function () {

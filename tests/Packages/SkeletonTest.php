@@ -65,6 +65,8 @@ it('keeps every refusal of the shop\'s container', function () {
         ->toContain('no-new-privileges:true')
         ->toContain('TINVAR_APP_KEY: ${APP_KEY:?')
         ->toContain('TINVAR_PROBE_TOKEN: ${APP_PROBE_TOKEN:?')
+        // A range pinned is a secret required (ADR 0134).
+        ->toContain('TINVAR_TRUSTED_PROXY_SECRET: ${APP_TRUSTED_PROXY_SECRET:?')
         ->toContain('TINVAR_PROBE_TRUST_LOOPBACK: "0"')
         ->toContain('"127.0.0.1:8080:8080"')
         ->and($dockerfile)->toContain('TINVAR_ENV=production')

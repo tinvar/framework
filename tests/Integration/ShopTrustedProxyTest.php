@@ -128,6 +128,26 @@ it('stops the boot on a list it cannot read', function () {
     expect(static fn () => shop('10.213.89.0/24,proxy.internal'))->toThrow(ConfigException::class);
 });
 
+it('stops the boot on a range pinned with no secret, which holds more peers than the terminator (ADR 0134)', function () {
+    expect(static fn () => shop('10.213.89.0/24'))->toThrow(ConfigException::class, 'TINVAR_TRUSTED_PROXY_SECRET is required');
+});
+
+it('ships every deployment of a range with the secret required and sent', function () {
+    $root = \dirname(__DIR__, 4);
+    foreach (['examples/shop/compose.yaml', 'examples/shop/compose.pod.yaml'] as $file) {
+        expect((string) file_get_contents("{$root}/{$file}"))
+            ->toContain('TINVAR_TRUSTED_PROXY_SECRET: ${SHOP_TRUSTED_PROXY_SECRET:?')
+            ->toContain('header_up X-Tinvar-Proxy {env.SHOP_TRUSTED_PROXY_SECRET}');
+    }
+    $manifest = (string) file_get_contents("{$root}/examples/shop/kubernetes/shop.yaml");
+    $secret = substr($manifest, (int) strpos($manifest, 'name: TINVAR_TRUSTED_PROXY_SECRET'), 220);
+
+    expect($secret)->toContain('key: trusted-proxy-secret')
+        ->not->toContain('optional: true')
+        ->and($manifest)->toContain('proxy-set-headers')
+        ->toContain('--from-literal=X-Tinvar-Proxy=');
+});
+
 /**
  * A request through the terminator, to the host it names in
  * X-Forwarded-Host, with the Host header a proxy that rewrites it sends:
