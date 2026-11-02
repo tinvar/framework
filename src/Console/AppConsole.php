@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Tinvar\Console;
 
+use Tinvar\Actions\ActionRegistry;
 use Tinvar\Auth\ApplicationClasses;
 use Tinvar\Auth\BuildRules;
+use Tinvar\Auth\PanelRegistry;
 use Tinvar\Auth\Violation;
 use Tinvar\Channels\ChannelRegistry;
 use Tinvar\Config\Configs;
@@ -40,6 +42,7 @@ use Tinvar\Packages\Lockfiles;
 use Tinvar\Packages\PackageLock;
 use Tinvar\Packages\PackagePolicy;
 use Tinvar\Packages\SupplyChain;
+use Tinvar\Query\QueryRegistry;
 use Tinvar\Render\FragmentManifestProducer;
 use Tinvar\Routing\Domains;
 use Tinvar\Routing\RouteRegistry;
@@ -349,18 +352,35 @@ final class AppConsole
      * What `tinvar check` reports of hosts: a page, layout or endpoint
      * declaring a #[Domain] the application configures no Domains for, one
      * naming a configured domain that does not exist, two patterns that
-     * match one host, and a page, layout or endpoint on a `{tenant}` host
-     * reading its tenant from anything but that host
-     * (EntryContext::tenantHostRefusals()). A malformed pattern, and two routes of one host and
-     * one path, are refused as each registers, under the build rules.
+     * match one host, and any entry point -- a page, layout, endpoint,
+     * action, query, channel or transfer -- on a `{tenant}` host, its own or
+     * its panel's, reading its tenant from anything but that host
+     * (EntryContext::tenantHostRefusals(), as the Kernel's boot check reads
+     * them). A malformed pattern, and two routes of one host and one path,
+     * are refused as each registers, under the build rules; a class a
+     * registry refuses is reported by its own check.
      *
      * @param list<class-string> $routes
      * @param list<class-string> $endpoints
      * @param list<class-string<\Tinvar\Orm\Model>> $models
+     * @param list<class-string> $actions
+     * @param list<class-string> $queries
+     * @param list<class-string> $channels
+     * @param list<class-string> $transfers
+     * @param PanelRegistry|null $panels the application's panels, whose hosts hold what is in them
      * @return list<Violation>
      */
-    public static function hostViolations(array $routes, array $endpoints, array $models, ?Domains $domains): array
-    {
+    public static function hostViolations(
+        array $routes,
+        array $endpoints,
+        array $models,
+        ?Domains $domains,
+        array $actions = [],
+        array $queries = [],
+        array $channels = [],
+        array $transfers = [],
+        ?PanelRegistry $panels = null,
+    ): array {
         $registry = new RouteRegistry($models);
         RouteRegistry::check($routes, $registry);
         $patterns = array_map(static fn ($p): string => $p->pattern, $registry->hostPatterns());
@@ -381,7 +401,15 @@ final class AppConsole
 
         $tenantHosts = array_map(
             static fn (string $refusal): Violation => new Violation(self::TENANT_HOST_READS_HOST, substr($refusal, 0, (int) strpos($refusal, ' is on ')), substr($refusal, (int) strpos($refusal, ' is on ') + 1)),
-            EntryContext::tenantHostRefusals($registry, $endpointRegistry),
+            EntryContext::tenantHostRefusals(
+                $registry,
+                $endpointRegistry,
+                self::registered(new ActionRegistry(models: $models), $actions),
+                self::registered(new QueryRegistry(models: $models), $queries),
+                self::registered(new ChannelRegistry($models), $channels),
+                self::registered(new TransferRegistry($models), $transfers)->all(),
+                EntryContext::panelDomainIn($panels),
+            ),
         );
         if ($tenantHosts !== []) {
             return $tenantHosts;
@@ -400,6 +428,43 @@ final class AppConsole
         }
 
         return [];
+    }
+
+    /**
+     * $registry with each of $classes registered that it takes; one it
+     * refuses is reported by that kind's own check.
+     *
+     * @template R of ActionRegistry|QueryRegistry|ChannelRegistry|TransferRegistry
+     * @param R $registry
+     * @param list<class-string> $classes
+     * @return R
+     */
+    private static function registered(ActionRegistry|QueryRegistry|ChannelRegistry|TransferRegistry $registry, array $classes): ActionRegistry|QueryRegistry|ChannelRegistry|TransferRegistry
+    {
+        foreach ($classes as $class) {
+            try {
+                $registry->register($class);
+            } catch (\LogicException) {
+                // Reported by its kind's own check.
+            }
+        }
+
+        return $registry;
+    }
+
+    /** The application's panels, where its Kernel says them in a static panels(). */
+    private function panels(): ?PanelRegistry
+    {
+        if ($this->kernel === null || !method_exists($this->kernel, 'panels')) {
+            return null;
+        }
+        $method = new \ReflectionMethod($this->kernel, 'panels');
+        if (!$method->isStatic() || $method->getNumberOfRequiredParameters() > 0) {
+            return null;
+        }
+        $panels = ($this->kernel)::panels();
+
+        return $panels instanceof PanelRegistry ? $panels : null;
     }
 
     /**
@@ -450,7 +515,17 @@ final class AppConsole
                 // Every host an entry point declares, served by the hosts
                 // the application configures, no two of them one host
                 // (ADR 0149).
-                ...self::hostViolations($classes->routes, $classes->endpoints, $classes->models, $this->domains()),
+                ...self::hostViolations(
+                    $classes->routes,
+                    $classes->endpoints,
+                    $classes->models,
+                    $this->domains(),
+                    $classes->actions,
+                    $classes->queries,
+                    $classes->channels,
+                    $classes->transfers,
+                    $this->panels(),
+                ),
                 // Sort and filter field enums held to their Data (ADR 0057);
                 // who may subscribe to a channel (ADR 0069); a transfer's row
                 // and body (ADR 0070).

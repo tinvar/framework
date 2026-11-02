@@ -286,6 +286,24 @@ final readonly class EntryContext
         return $panel === null ? null : $this->registry?->definition($panel->name)?->domain;
     }
 
+    /**
+     * panelDomainFor() over $registry, for what reads the panels without a
+     * Kernel -- `tinvar check` (tenantHostRefusals()): the host an entry
+     * point's panel lives on, by its #[Panel] or its namespace; null for no
+     * panel, or one $registry does not define, which the Kernel refuses.
+     *
+     * @return \Closure(list<Panel>, class-string): ?string
+     */
+    public static function panelDomainIn(?PanelRegistry $registry): \Closure
+    {
+        return static function (array $declared, string $class) use ($registry): ?string {
+            $panels = array_values(array_filter($declared, static fn (mixed $panel): bool => $panel instanceof Panel));
+            $name = PanelBinding::of($panels)->name ?? (class_exists($class) ? $registry?->panelOf($class) : null);
+
+            return $name === null ? null : $registry?->definition($name)?->domain;
+        };
+    }
+
     /** A route chain's panel: its page's and layouts' declarations, or its page's namespace. */
     public function panelForChain(RouteChain $chain): ?PanelBinding
     {
