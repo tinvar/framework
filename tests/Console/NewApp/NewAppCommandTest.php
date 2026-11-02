@@ -363,3 +363,26 @@ it('hands the new app\'s commands none of what its .env sets, so its own answers
         ->and($deploy[0][1])->not->toHaveKey('TINVAR_SOCKET')
         ->and($deploy[0][1])->toHaveKey('PATH');
 })->skip(workspace() === null, 'the repository\'s checkout');
+
+it('resolves the path once, following only a link of this user\'s or root\'s, and writes where it checked', function () {
+    $work = scratch();
+    mkdir("{$work}/real", 0o755);
+    symlink("{$work}/real", "{$work}/via");
+    $uid = (int) posix_geteuid();
+
+    expect(AppDirectory::claim("{$work}/via/my-app", $uid))->toBe("{$work}/real/my-app")
+        ->and(is_dir("{$work}/real/my-app"))->toBeTrue()
+        // The same link, taken as another user's: it decides where the app goes.
+        ->and(AppDirectory::problem("{$work}/via/other-app", $uid + 4242))->toContain('is a link another user made')
+        ->and(file_exists("{$work}/real/other-app"))->toBeFalse();
+})->skip(!\function_exists('posix_geteuid'), 'posix');
+
+it('refuses a directory above whose group or every user may swap what is in it, unless sticky or the group is the user\'s own', function () {
+    expect(AppDirectory::refusesAbove(0, 0o40755, 501))->toBeNull()
+        ->and(AppDirectory::refusesAbove(0, 0o41777, 501))->toBeNull()
+        ->and(AppDirectory::refusesAbove(501, 0o40775, 501))->toBeNull()
+        ->and(AppDirectory::refusesAbove(0, 0o40775, 501))->toContain('writable by its group, not yours')
+        ->and(AppDirectory::refusesAbove(0, 0o40777, 501))->toContain('writable by every user')
+        ->and(AppDirectory::refusesAbove(501, 0o40777, 501))->toContain('writable by every user')
+        ->and(AppDirectory::refusesAbove(502, 0o40755, 501))->toContain('another user\'s');
+});
