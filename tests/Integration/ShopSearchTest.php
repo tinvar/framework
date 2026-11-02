@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * The storefront's catalog search (ADR 0150), through the shop's Kernel:
+ * The storefront's catalog search (ADR 0152), through the shop's Kernel:
  * the search page's loader, the index the seeder built and every product
  * write keeps, and `tinvar search:reindex` on the shop's console.
  */

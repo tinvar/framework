@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Search;
 
-/** The backends TINVAR_SEARCH_BACKEND names (ADR 0150). */
+/** The backends TINVAR_SEARCH_BACKEND names (ADR 0152). */
 enum SearchDriver: string
 {
     /** The application's own database: SQLite's FTS5, or Postgres's tsvector. */

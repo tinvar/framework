@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Search;
 
 /**
- * The index in SQLite's FTS5 (ADR 0150): each document's model, key and
+ * The index in SQLite's FTS5 (ADR 0152): each document's model, key and
  * tenant in `search_documents`, its text in `search_documents_text` under
  * the same rowid, ranked by bm25 with the model's four class weights.
  *

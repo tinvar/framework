@@ -83,7 +83,7 @@ final class Console
      * @param Telemetry|null $telemetry where each command and each job queue:work runs is
      *        a trace of its own (ADR 0112); the scheduler is given its own
      * @param Search|null $search the application's full-text search, which search:reindex
-     *        builds again (ADR 0150)
+     *        builds again (ADR 0152)
      */
     public function __construct(
         array $commands,

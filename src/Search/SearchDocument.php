@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Search;
 
 /**
- * One row as an index holds it (ADR 0150): its key, and the text of each
+ * One row as an index holds it (ADR 0152): its key, and the text of each
  * of its model's four weight classes, A to D (SearchableModel).
  *
  * Nothing else: no tenant -- the backend is told it beside the document,

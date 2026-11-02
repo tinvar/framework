@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * Full-text search in SQLite's FTS5 (ADR 0150): the index follows the
+ * Full-text search in SQLite's FTS5 (ADR 0152): the index follows the
  * ORM's writes once they commit, a search reads its results again through
  * the ORM, and each tenant's documents are its own.
  */

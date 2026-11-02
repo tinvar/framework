@@ -9,7 +9,7 @@ use Tinvar\Attributes\Env;
 use Tinvar\Config\Secret;
 
 /**
- * Meilisearch's settings (ADR 0150): TINVAR_MEILISEARCH_URL, the origin it
+ * Meilisearch's settings (ADR 0152): TINVAR_MEILISEARCH_URL, the origin it
  * answers at; TINVAR_MEILISEARCH_KEY -- or _KEY_FILE -- an API key with the
  * search, documents and indexes actions, never the master key; and
  * TINVAR_MEILISEARCH_PREFIX, put before every index's name, for several
