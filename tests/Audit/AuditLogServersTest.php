@@ -52,6 +52,11 @@ function skipWithout(string $driver): void
 /** @return array{Orm, AuditLog} */
 function logOn(\PDO $pdo, string $driver): array
 {
+    // The ORM quotes its identifiers as the standard does; MySQL reads them
+    // so with ANSI_QUOTES in its SQL mode, as an application's connection has.
+    if ($driver === 'mysql') {
+        $pdo->exec("SET SESSION sql_mode = CONCAT(@@sql_mode, ',ANSI_QUOTES')");
+    }
     $connection = new PdoConnection($pdo, $driver);
     $orm = new Orm($connection, new IdentityMap($driver . bin2hex(random_bytes(3))));
 
