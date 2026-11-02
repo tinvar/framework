@@ -2161,8 +2161,10 @@ final class Kernel
         if (($this->clientTelemetry_?->matches($request) ?? false) && TelemetryEndpoint::ridesNoSession($request)) {
             return true;
         }
-        // A call to the API: its token is its credential (ADR 0151).
-        if ($this->api_?->matches($request) ?? false) {
+        // A call to the API: its token is its credential (ADR 0151). And
+        // any request presenting one, which a session's path refuses: a
+        // script sent where it should not be is handed no session for it.
+        if (($this->api_?->matches($request) ?? false) || ($this->api_ !== null && ApiTokenSecret::presented($request))) {
             return true;
         }
 

@@ -23,8 +23,9 @@ use Tinvar\Support\Uuid;
  *
  * **Issued** in a request a session signed its user in to -- never one a
  * token did, so a token cannot make another -- with someone signed in and
- * outside acrossTenants(). A token is bound to its user and the auth epoch
- * they are on, the tenant and the panel in force, and the request's host
+ * outside acrossTenants(). A token is bound to its user and the epoch the
+ * application's UserLookup says they are on -- the auth epoch, unless the
+ * application hands ApiAccess a lookup whose epoch moves on fewer things -- the tenant and the panel in force, and the request's host
  * where the application routes by host (CallHosts, ADR 0149). Its scopes
  * are some of those the application declares with #[RequiresScope] in that
  * panel, found by discovery; a scope nothing declares is refused, as a
@@ -83,8 +84,8 @@ final readonly class ApiTokens
      * @param CarbonImmutable|null $expiresAt when it stops working; never, unless given
      * @param string|null $host the host it is for, named by code issuing it outside a request
      *        (a console command); in a request, the request's host, and none other
-     * @throws \InvalidArgumentException for a name, scope or expiry the user chose that will not do,
-     *         or a user holding as many tokens as they may: say so to them
+     * @throws ApiTokenRefused for a name, scopes or an expiry the user chose that will not do, or a
+     *         user holding as many tokens as they may, naming which (ApiTokenChoice): say so to them
      * @throws \LogicException for a call the application should not have made: nobody signed in,
      *         a token's caller, acrossTenants()
      */
@@ -103,32 +104,40 @@ final readonly class ApiTokens
 
         $name = trim($name);
         if ($name === '' || mb_strlen($name) > ApiToken::MAX_NAME_LENGTH || preg_match('/[\p{Cc}\p{Cf}]/u', $name) === 1) {
-            throw new \InvalidArgumentException('Name the token in 1 to ' . ApiToken::MAX_NAME_LENGTH . ' characters, saying what it is for.');
+            throw new ApiTokenRefused(ApiTokenChoice::Name, 'Name the token in 1 to ' . ApiToken::MAX_NAME_LENGTH . ' characters, saying what it is for.');
         }
         if ($scopes === []) {
-            throw new \InvalidArgumentException('Choose at least one scope: a token with none could do nothing.');
+            throw new ApiTokenRefused(ApiTokenChoice::Scopes, 'Choose at least one scope: a token with none could do nothing.');
         }
-        $scopes = RequiresScope::normalize($scopes);
+        try {
+            $scopes = RequiresScope::normalize($scopes);
+        } catch (\InvalidArgumentException $e) {
+            throw new ApiTokenRefused(ApiTokenChoice::Scopes, $e->getMessage());
+        }
         $grantable = $this->grantable();
         $unknown = array_values(array_diff($scopes, $grantable));
         if ($unknown !== []) {
-            throw new \InvalidArgumentException(
+            throw new ApiTokenRefused(
+                ApiTokenChoice::Scopes,
                 'No API here requires ' . implode(', ', $unknown) . ($grantable === [] ? '. This panel declares no #[RequiresScope] at all.' : '. Choose from ' . implode(', ', $grantable) . '.'),
             );
         }
         $now = $this->now();
         if ($expiresAt !== null && $expiresAt->lessThanOrEqualTo($now)) {
-            throw new \InvalidArgumentException('A token\'s expiry is in the future: choose a later date, or none.');
+            throw new ApiTokenRefused(ApiTokenChoice::Expiry, 'A token\'s expiry is in the future: choose a later date, or none.');
         }
 
         $tenant = $this->orm->tenant();
         $panel = $this->panels?->currentOrNull() ?? '';
+        // The epoch the lookup says the user is on now: what every use of
+        // the token is checked against (authenticate()).
+        $epoch = $this->users->epoch($user);
         $held = array_filter(
             $this->store->forUser($tenant, $panel, $user->authIdentifier()),
-            fn (ApiToken $t): bool => $t->statusAt($now, $this->auth->epoch()) === ApiTokenStatus::Active,
+            static fn (ApiToken $t): bool => $t->statusAt($now, $epoch) === ApiTokenStatus::Active,
         );
         if (\count($held) >= $this->maxPerUser) {
-            throw new \InvalidArgumentException("You hold {$this->maxPerUser} tokens, the most you may: revoke one you no longer use first.");
+            throw new ApiTokenRefused(ApiTokenChoice::Count, "You hold {$this->maxPerUser} tokens, the most you may: revoke one you no longer use first.");
         }
 
         $id = str_replace('-', '', Uuid::v7());
@@ -137,7 +146,7 @@ final readonly class ApiTokens
             id: $id,
             name: $name,
             user: $user->authIdentifier(),
-            epoch: $this->auth->epoch(),
+            epoch: $epoch,
             tenant: $tenant,
             panel: $panel,
             host: ($this->hosts ?? new CallHosts())->issuing([], $host),
@@ -177,10 +186,31 @@ final readonly class ApiTokens
         return $this->store->forUser($this->orm->tenant(), $this->panels?->currentOrNull() ?? '', $user->authIdentifier());
     }
 
-    /** Where one of the signed-in user's tokens stands now, on the epoch they are on. */
+    /**
+     * Every token the signed-in user holds, as mine() lists them, each with
+     * where it stands now: the user's epoch looked up once for them all.
+     *
+     * @return list<array{ApiToken, ApiTokenStatus}>
+     */
+    public function listed(): array
+    {
+        $user = $this->auth->user();
+        $tokens = $this->mine();
+        if ($user === null || $tokens === []) {
+            return [];
+        }
+        $now = $this->now();
+        $epoch = $this->users->epoch($user);
+
+        return array_map(static fn (ApiToken $t): array => [$t, $t->statusAt($now, $epoch)], $tokens);
+    }
+
+    /** Where one of the signed-in user's tokens stands now, on the epoch the lookup says they are on. */
     public function statusOf(ApiToken $token): ApiTokenStatus
     {
-        return $token->statusAt($this->now(), $this->auth->epoch());
+        $user = $this->auth->user();
+
+        return $token->statusAt($this->now(), $user === null ? '' : $this->users->epoch($user));
     }
 
     /**
