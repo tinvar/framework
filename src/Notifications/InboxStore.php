@@ -7,7 +7,7 @@ namespace Tinvar\Notifications;
 use Carbon\CarbonImmutable;
 
 /**
- * Where users' inbox entries are kept (ADR 0154).
+ * Where users' inbox entries are kept (ADR 0155).
  *
  * Every read and write names the tenant claim and the user, whatever else
  * it names: an entry's id from a request finds nothing of another user's,

@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * The notification bell end to end (ADR 0154): the shop under `tinvar
+ * The notification bell end to end (ADR 0155): the shop under `tinvar
  * serve --worker` -- FrankenPHP, its built-in Mercure hub, the queue
  * worker -- and Chromium. A signed-in customer has their orders open; one
  * of their orders ships; the worker fans the notification out, and the

@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * The shop's notifications (ADR 0154) through its own Kernel, the real
+ * The shop's notifications (ADR 0155) through its own Kernel, the real
  * renderer and the worker: an order shipped by the schedule rings the
  * customer's bell and emails them, with a one-click unsubscribe that turns
  * that kind's email off -- the same preference the account page's switches

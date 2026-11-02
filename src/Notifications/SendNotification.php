@@ -9,7 +9,7 @@ use Tinvar\Jobs\Job;
 use Tinvar\Jobs\Queueable;
 
 /**
- * One notification to one user, fanned out on the worker (ADR 0154): queued
+ * One notification to one user, fanned out on the worker (ADR 0155): queued
  * by Notifier::send(), sealed with the tenant it was sent in, after the
  * commit of the transaction that sent it. The notification travels as its
  * class and constructor's arguments -- its models by id, read again here,

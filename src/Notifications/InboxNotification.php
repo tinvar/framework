@@ -8,7 +8,7 @@ use Tinvar\Auth\Authenticatable;
 use Tinvar\Jobs\Queueable;
 
 /**
- * A notification that puts an entry in the user's in-app inbox (ADR 0154).
+ * A notification that puts an entry in the user's in-app inbox (ADR 0155).
  *
  * inbox() is asked on the worker, with the user it is for, and what it
  * answers is written to their feed in the tenant in force -- the one the

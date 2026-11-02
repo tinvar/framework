@@ -11,7 +11,7 @@ use Tinvar\Mail\UnsubscribeLinks;
 use Tinvar\Push\PushNotifications;
 
 /**
- * What an application supplies for notifications (ADR 0154): its
+ * What an application supplies for notifications (ADR 0155): its
  * #[Notification] and #[Inbox] classes, where inbox entries and
  * preferences are kept, how jobs are queued and users found again, and the
  * channels' own modules -- the Mailer, PushNotifications and the one-click
