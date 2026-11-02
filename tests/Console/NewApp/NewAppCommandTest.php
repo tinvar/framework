@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * `tinvar new` (ADR 0155), without installing anything: the questions'
+ * `tinvar new` (ADR 0156), without installing anything: the questions'
  * flags and defaults, the refusals, and the files it writes from this
  * checkout's skeleton -- the .env, the manifests, tenancy -- with each
  * secret in a file outside the app.

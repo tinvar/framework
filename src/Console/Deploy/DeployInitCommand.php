@@ -11,7 +11,7 @@ use Tinvar\Orm\DatabaseDriver;
 use Tinvar\Support\StateFile;
 
 /**
- * `tinvar deploy:init <target>` (ADR 0155): one platform's deployment,
+ * `tinvar deploy:init <target>` (ADR 0156): one platform's deployment,
  * written into the application -- the platform's config with the proxies
  * its edge connects from, the probes, the database and mail it uses -- and
  * the secrets it needs generated into files outside the project, then the

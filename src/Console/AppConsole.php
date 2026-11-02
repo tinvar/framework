@@ -138,7 +138,7 @@ final class AppConsole
      * @param (\Closure(bool): Connection)|null $connect the application's own database, told whether
      *        to make a SQLite file that is missing: what the migrations and `doctor` open where no
      *        --database=PATH names a SQLite file instead, so a Postgres or MySQL application migrates
-     *        the server it runs on (ADR 0155). None, and $database's SQLite file
+     *        the server it runs on (ADR 0156). None, and $database's SQLite file
      * @param (\Closure(): ?string)|null $keyFile where the app key is generated when TINVAR_APP_KEY gives none,
      *        for `key:generate` and `doctor`; null where the application has no file
      * @param (\Closure(): ?string)|null $probeTokenFile where the probe token is, likewise

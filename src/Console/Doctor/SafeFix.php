@@ -8,7 +8,7 @@ namespace Tinvar\Console\Doctor;
  * What `tinvar doctor --fix` may do about a finding by itself: only what
  * cannot lose anything or open anything -- a dev secret generated where
  * there is none, the pending migrations run on a developer's machine
- * (ADR 0155). Everything else is said as a fix for a person to make.
+ * (ADR 0156). Everything else is said as a fix for a person to make.
  */
 final readonly class SafeFix
 {

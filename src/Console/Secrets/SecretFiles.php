@@ -12,7 +12,7 @@ use Tinvar\Support\AppKey;
  * the project (ADR 0082), as AppKey writes them: 0600 from the first byte,
  * under a lock, renamed into place whole. What `key:generate`, `doctor
  * --fix` and `tinvar new` generate them with, so each writes the file the
- * app itself would have (ADR 0155).
+ * app itself would have (ADR 0156).
  */
 final class SecretFiles
 {

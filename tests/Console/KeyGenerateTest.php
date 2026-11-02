@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * `key:generate` and `doctor` as every bin/tinvar has them (ADR 0155):
+ * `key:generate` and `doctor` as every bin/tinvar has them (ADR 0156):
  * secrets generated into their files outside the project, never printed,
  * and never on a server.
  */

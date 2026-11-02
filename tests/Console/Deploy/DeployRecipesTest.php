@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * Every deploy recipe held to golden files (ADR 0155): what `deploy:init`
+ * Every deploy recipe held to golden files (ADR 0156): what `deploy:init`
  * writes for each platform, and the steps it prints, byte for byte.
  *
  *     TINVAR_UPDATE_GOLDEN=1 vendor/bin/pest packages/framework/tests/Console/Deploy

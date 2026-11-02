@@ -95,7 +95,7 @@ final readonly class RenderRecipe implements DeployRecipe
         $comment = preg_replace('/^/m', '    # ', rtrim($proxies['comment'])) . "\n";
 
         $blueprint = <<<YAML
-            # Render, written by `bin/tinvar deploy:init render` (ADR 0155 in the
+            # Render, written by `bin/tinvar deploy:init render` (ADR 0156 in the
             # framework's repository). No secret is in this file: Render asks for
             # each `sync: false` variable when the Blueprint is applied.
             services:

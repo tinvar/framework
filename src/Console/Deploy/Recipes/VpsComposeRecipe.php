@@ -111,7 +111,7 @@ final readonly class VpsComposeRecipe implements DeployRecipe
 
         $compose = <<<YAML
             # {$name} on a VPS, written by `bin/tinvar deploy:init vps-compose` (ADR
-            # 0155 in the framework's repository). From the project's root, as root,
+            # 0156 in the framework's repository). From the project's root, as root,
             # since the secrets are root's files:
             #
             #   sudo docker compose -f deploy/vps-compose/compose.yaml up -d --build
