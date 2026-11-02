@@ -8,7 +8,7 @@ use Tinvar\Attributes\Schedule;
 
 /**
  * Every night, takes away the audit log's entries older than its retention
- * (ADR 0150): a year unless TINVAR_AUDIT_RETENTION_DAYS says otherwise
+ * (ADR 0151): a year unless TINVAR_AUDIT_RETENTION_DAYS says otherwise
  * (AuditConfig), across every tenant, oldest first, a bounded number of
  * batches a run so a log never pruned is caught up over a few nights
  * rather than by one statement holding the write lock.

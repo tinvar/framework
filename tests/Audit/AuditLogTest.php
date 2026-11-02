@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * The audit log (ADR 0150) over an Orm on SQLite: each tenant's log its
+ * The audit log (ADR 0151) over an Orm on SQLite: each tenant's log its
  * own -- written, chained and read apart from every other's -- every entry
  * committed or rolled back with its change, who and where named, the chain
  * holding until someone edits the table, and pruning keeping it walkable.

@@ -76,7 +76,7 @@ final class ActionRunner
         // value the action changed is believed by no browser, not only the
         // one its response reaches (ADR 0074).
         ?SharedTags $sharedTags = null,
-        // Hears every action around its body -- the audit log (ADR 0150) --
+        // Hears every action around its body -- the audit log (ADR 0151) --
         // and may ask for the action's transaction; none unless given.
         private readonly ?ActionObserver $observer = null,
     ) {
@@ -239,7 +239,7 @@ final class ActionRunner
         // allowed origin was refused after the writes it followed, and they
         // stayed.
         // And where what hears it writes of it, so that commits or rolls
-        // back with what the action wrote (ADR 0150).
+        // back with what the action wrote (ADR 0151).
         return $action->transaction || $this->observer?->transactional($action) === true
             ? $this->orm->transaction($answered)
             : $answered();

@@ -63,11 +63,11 @@ final readonly class Dispatcher
         private ?PanelRegistry $registry = null,
         private ?\Closure $clock = null,
         // The job running now, if this dispatch is made from one: its
-        // starter is the starter of what it dispatches (ADR 0150).
+        // starter is the starter of what it dispatches (ADR 0151).
         private ?RunningJobs $running = null,
         // Who is signed in as the user, where the application lets staff
         // act as someone else: their id, or null. Sealed with the job, so
-        // its audit entries name them as the request's would (ADR 0150).
+        // its audit entries name them as the request's would (ADR 0151).
         private ?\Closure $impersonator = null,
     ) {}
 

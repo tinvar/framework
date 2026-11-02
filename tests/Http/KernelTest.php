@@ -516,7 +516,7 @@ describe('the reset contract', function () {
             'Orm::reset' => 'orm',
             // Added by the Kernel when it is given Features (ADR 0094).
             'Features::reset' => 'features',
-            // Added by the Kernel when it is given an audit log (ADR 0150).
+            // Added by the Kernel when it is given an audit log (ADR 0151).
             'AuditLog::reset' => 'audit',
         ];
 

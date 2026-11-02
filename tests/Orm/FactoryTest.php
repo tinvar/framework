@@ -28,7 +28,7 @@ function shopSqlite(): PdoConnection
 /**
  * An Orm over it, with the audit log the shop registers: an order and an
  * account are #[Audited], and an Orm with nowhere to record them refuses to
- * write them (ADR 0150).
+ * write them (ADR 0151).
  */
 function shopOrm(PdoConnection $connection): Orm
 {

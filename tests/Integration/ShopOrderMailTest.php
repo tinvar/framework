@@ -229,7 +229,7 @@ it('moves orders along the shipping timeline as they age, and tells the pages sh
         $connection = PdoConnection::sqlite("{$directory}/shop.sqlite", 'shop', create: true);
         new \Shop\Database\Seeders\Seeder($connection)->run(customers: 1);
         $orm = new Orm($connection, new IdentityMap('shop'));
-        // Orders are audited (ADR 0150): each move the schedule makes is
+        // Orders are audited (ADR 0151): each move the schedule makes is
         // recorded, as the shop's Kernel records it.
         $audit = new AuditLog($orm, new AuthContext(), KEY);
         $hub = new MemoryHub();

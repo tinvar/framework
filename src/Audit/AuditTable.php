@@ -9,7 +9,7 @@ use Tinvar\Orm\Schema\Table;
 
 /**
  * The audit log's two tables, for the application's migration to make
- * (ADR 0150):
+ * (ADR 0151):
  *
  *   - `audit_entries`, the log itself: append-only, one row an entry, each
  *     carrying its tenant, its place in that tenant's log and the hash

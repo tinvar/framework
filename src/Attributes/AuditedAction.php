@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Attributes;
 
 /**
- * Records each run of an action in the audit log (ADR 0150): who ran it,
+ * Records each run of an action in the audit log (ADR 0151): who ran it,
  * where, the records it was called on, and the parameters `with:` names.
  *
  *     #[Action(name: 'orders.refund'), Authorize('refund', 'order'), AuditedAction(with: ['reason'])]

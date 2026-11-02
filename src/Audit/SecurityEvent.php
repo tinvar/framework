@@ -6,7 +6,7 @@ namespace Tinvar\Audit;
 
 /**
  * The security events an application records with AuditLog::security()
- * (ADR 0150): the value is the event the entry is filed under. An event
+ * (ADR 0151): the value is the event the entry is filed under. An event
  * of the application's own is a string, or a backed enum of its own,
  * handed to AuditLog::event().
  */
