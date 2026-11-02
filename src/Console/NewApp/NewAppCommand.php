@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tinvar\Console\NewApp;
 
+use Tinvar\Config\EnvironmentFile;
 use Tinvar\Console\Deploy\DeployTarget;
 use Tinvar\Console\Kits\KitDeclaration;
 use Tinvar\Console\Prompts;
@@ -35,7 +36,7 @@ final class NewAppCommand
     public const string USAGE = 'new <directory> [--database=sqlite|postgres|mysql] [--database-host=HOST] [--database-port=PORT] [--database-name=NAME] [--database-user=USER] [--tenancy=off|subdomain|domain] [--mail=log|smtp|ses|postmark|mailgun|resend|sendgrid] [--accounts|--no-accounts] [--kit=PACKAGE] [--deploy=fly|render|railway|vps-systemd|vps-compose|none] [--from=monorepo|packagist] [--no-install]';
 
     /** What the new application's commands are never handed from this process's environment: another app's settings. */
-    public const array NOT_INHERITED = ['TINVAR_APP_KEY', 'TINVAR_APP_KEY_FILE', 'TINVAR_PROBE_TOKEN', 'TINVAR_PROBE_TOKEN_FILE', 'TINVAR_PROBE_TRUST_LOOPBACK', 'APP_DATABASE', 'APP_DATABASE_DRIVER', 'APP_DATABASE_HOST', 'APP_DATABASE_PORT', 'APP_DATABASE_NAME', 'APP_DATABASE_USER', 'APP_DATABASE_PASSWORD', 'APP_DATABASE_PASSWORD_FILE', 'TINVAR_ENV', 'TINVAR_PROFILE', 'TINVAR_BUILD_DIR', 'COMPOSER'];
+    public const array NOT_INHERITED = ['TINVAR_APP_KEY', 'TINVAR_APP_KEY_FILE', 'TINVAR_PROBE_TOKEN', 'TINVAR_PROBE_TOKEN_FILE', 'TINVAR_PROBE_TRUST_LOOPBACK', 'APP_DATABASE', 'APP_DATABASE_DRIVER', 'APP_DATABASE_HOST', 'APP_DATABASE_PORT', 'APP_DATABASE_NAME', 'APP_DATABASE_USER', 'APP_DATABASE_PASSWORD', 'APP_DATABASE_PASSWORD_FILE', 'TINVAR_ENV', 'TINVAR_PROFILE', 'TINVAR_BUILD_DIR', 'TINVAR_SOCKET', 'COMPOSER'];
 
     /**
      * @param \Closure(string): void $out
@@ -106,7 +107,7 @@ final class NewAppCommand
             return 0;
         }
 
-        $env = $this->childEnvironment();
+        $env = $this->childEnvironment("{$directory}/.env");
         $php = PHP_BINARY;
         // Resolved first with nothing downloaded or run, then installed.
         $this->must($processes->run(['composer', 'update', '--no-install', '--no-plugins', '--no-scripts', '--no-progress', '--no-audit', '--no-interaction'], $directory, $env), 'composer could not resolve the app\'s packages; see what it said above.');
@@ -284,10 +285,20 @@ final class NewAppCommand
         return $case ?? throw new \InvalidArgumentException("--{$flag} is " . implode(', ', array_keys($options)) . ", not '{$given}'.");
     }
 
-    /** @return array<string, string> this process's environment, without another app's settings */
-    private function childEnvironment(): array
+    /**
+     * This process's environment, without another app's settings: those
+     * NOT_INHERITED names, and every variable the new app's $dotEnv sets --
+     * its bin/tinvar never reads one over the environment, so one this
+     * process holds (the app it was run from loaded its own .env) would
+     * win over what the new app was asked to be.
+     *
+     * @return array<string, string>
+     */
+    private function childEnvironment(string $dotEnv): array
     {
-        return array_diff_key(array_filter(getenv(), \is_string(...)), array_flip(self::NOT_INHERITED)) + ['COMPOSER_NO_INTERACTION' => '1'];
+        $own = is_file($dotEnv) ? array_keys(EnvironmentFile::parse((string) file_get_contents($dotEnv), $dotEnv)['values']) : [];
+
+        return array_diff_key(array_filter(getenv(), \is_string(...)), array_flip([...self::NOT_INHERITED, ...$own])) + ['COMPOSER_NO_INTERACTION' => '1'];
     }
 
     private function must(int $status, string $failure): void

@@ -286,3 +286,50 @@ it('refuses an empty directory every user may write into, where they could swap 
     chmod("{$work}/mine", 0o775);
     expect(made(['mine', '--no-install'])[0])->toBe(0);
 })->skip(workspace() === null, 'the repository\'s checkout');
+
+it('hands the new app\'s commands none of what its .env sets, so its own answers reach them', function () {
+    $work = scratch();
+    $previous = ['TINVAR_MAIL_PROVIDER' => getenv('TINVAR_MAIL_PROVIDER'), 'TINVAR_SOCKET' => getenv('TINVAR_SOCKET')];
+    putenv('TINVAR_MAIL_PROVIDER=ses');
+    putenv('TINVAR_SOCKET=/run/another-app/renderer.sock');
+
+    $processes = new class (static function (string $t): void {}) extends Processes {
+        /** @var list<array{list<string>, array<string, string>|null}> */
+        public array $ran = [];
+
+        public function run(array $command, string $directory, ?array $env = null): int
+        {
+            $this->ran[] = [$command, $env];
+
+            return 0;
+        }
+
+        public function has(string $program): bool
+        {
+            return false;
+        }
+    };
+
+    try {
+        $status = new NewAppCommand(
+            static function (string $t): void {},
+            static function (string $t): void {},
+            $processes,
+            static fn (?string $from): SkeletonSource => source(),
+            $work,
+        )->run(['my-app', '--mail=postmark', '--deploy=fly']);
+    } finally {
+        foreach ($previous as $name => $value) {
+            putenv($value === false ? $name : "{$name}={$value}");
+        }
+    }
+
+    $deploy = array_values(array_filter($processes->ran, static fn (array $run): bool => \in_array('deploy:init', $run[0], true)));
+    expect($status)->toBe(0)
+        ->and($deploy)->toHaveCount(1)
+        ->and($deploy[0][1])->toBeArray()
+        ->and($deploy[0][1])->not->toHaveKey('TINVAR_MAIL_PROVIDER')
+        ->and($deploy[0][1])->not->toHaveKey('TINVAR_ENV')
+        ->and($deploy[0][1])->not->toHaveKey('TINVAR_SOCKET')
+        ->and($deploy[0][1])->toHaveKey('PATH');
+})->skip(workspace() === null, 'the repository\'s checkout');
