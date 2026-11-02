@@ -164,10 +164,12 @@ it('updates another tab and staff\'s list when an order is placed, without a rel
         ->and($other['refetches'])->toHaveCount(1)
         ->and($other['refetches'][0])->toMatchArray(['path' => '/orders', 'only' => 'page', 'once' => null])
         // It traded its token for the hub's access, then listened.
-        ->and($other['live'])->toBe([
-            ['path' => '/_live/subscribe', 'status' => 200],
-            ['path' => '/.well-known/mercure', 'status' => 200],
-        ]);
+        // The page's token first, then the bell's inbox channel (ADR 0152),
+        // whose subscription may land after the first trade and is traded
+        // again beside it: every trade let in, and the stream listening.
+        ->and($other['live'][0] ?? null)->toBe(['path' => '/_live/subscribe', 'status' => 200])
+        ->and(end($other['live']))->toBe(['path' => '/.well-known/mercure', 'status' => 200])
+        ->and(array_unique(array_column($other['live'], 'status')))->toBe([200]);
 
     // Staff's list of everyone's orders, in another browser altogether.
     expect($result['admin']['after']['first'])->toBe($result['number'])
