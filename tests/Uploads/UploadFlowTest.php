@@ -185,6 +185,14 @@ describe('/_upload', function () {
             ->and($app->store instanceof Tinvar\Uploads\ArrayUploadStore ? $app->store->all() : [])->toBe([]);
     });
 
+    it('keeps a tenant\'s upload under its tenant\'s segment of the prefix', function () {
+        $app = new App(new MemoryStorage());
+        $response = $app->upload($app->ticket($app->profile(P1), tenant: 'acme'), png(), headers: ['x-test-tenant' => 'acme']);
+
+        expect($response->status)->toBe(201)
+            ->and($app->store->find((string) json($response)['upload'])?->key)->toMatch('#^avatars/_acme/[a-f0-9]{32}\.png$#');
+    });
+
     it('refuses a ticket for another tenant than the request is in', function () {
         $app = new App(new MemoryStorage());
         $ticket = $app->ticket($app->profile(P1), tenant: 'acme');

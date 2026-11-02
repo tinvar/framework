@@ -166,7 +166,7 @@ final readonly class ResumableUploads
         // asked only to be ignored -- the bytes say what it is, once whole.
         $record = new PendingUpload(
             id: bin2hex(random_bytes(16)),
-            key: StorageKey::generate(UploadEndpoint::PARTIAL_PREFIX, ''),
+            key: StorageKey::generate(UploadEndpoint::PARTIAL_PREFIX, '', $ticket->tenant),
             action: $ticket->action,
             field: $ticket->field,
             targetClass: $ticket->targetClass,

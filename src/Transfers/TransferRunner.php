@@ -430,7 +430,7 @@ final readonly class TransferRunner
 
             $size = ftell($stream);
             rewind($stream);
-            $key = StorageKey::generate(Transfers::EXPORT_PREFIX, $record->format);
+            $key = StorageKey::generate(Transfers::EXPORT_PREFIX, $record->format, $record->tenant);
             $this->transfers->storage->put($key, $stream);
         } finally {
             fclose($stream);
@@ -495,7 +495,9 @@ final readonly class TransferRunner
     {
         $name = substr(hash('sha256', $control->idempotencyKey("export-pause\0{$record->id}\0{$n}")), 0, 32);
 
-        return Transfers::EXPORT_PREFIX . '/' . $name . '.' . $record->format;
+        $segment = StorageKey::tenantSegment($record->tenant);
+
+        return Transfers::EXPORT_PREFIX . '/' . ($segment === null ? '' : $segment . '/') . $name . '.' . $record->format;
     }
 
     /** Deletes every file a pause of this job may have stored, up to the next one it could have reached. */

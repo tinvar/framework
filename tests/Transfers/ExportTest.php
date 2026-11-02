@@ -100,7 +100,8 @@ describe('the file', function () {
 
         expect($record->status)->toBe(TransferRecord::DONE)
             ->and($record->rows)->toBe(3)
-            ->and($record->key)->toMatch('#^exports/[a-f0-9]{32}\.csv$#');
+            // Under the tenant it was written for, apart from every other's.
+            ->and($record->key)->toMatch('#^exports/_acme/[a-f0-9]{32}\.csv$#');
         $csv = (string) $app->storage->contents($record->key);
 
         expect($csv)->toStartWith("sku,name,stock\r\n")

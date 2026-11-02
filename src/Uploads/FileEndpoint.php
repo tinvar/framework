@@ -16,6 +16,7 @@ use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenError;
 use Tinvar\Storage\FileTypes;
 use Tinvar\Storage\LocalStorage;
+use Tinvar\Storage\StorageKey;
 use Tinvar\Storage\ObjectStore;
 use Tinvar\Storage\StorageException;
 
@@ -154,6 +155,10 @@ final readonly class FileEndpoint
         $session = $this->uploads->sessionOf($request);
         if ($session === ''
             || ($this->orm === null ? TenantClaim::NONE : TenantClaim::current($this->orm)) !== $file->tenant
+            // A key written for a tenant is that tenant's alone, whatever
+            // signed it; one written before keys named one is held by the
+            // token above, as it always was.
+            || !StorageKey::belongsTo($file->key, $file->tenant)
             || ($this->panels?->currentOrNull() ?? '') !== $file->panel
             || !hash_equals($file->sessionHash, $this->uploads->sessionHash($session))
             || !hash_equals($file->authHash, $this->uploads->authHash($this->auth->id(), $this->auth->epoch()))) {

@@ -415,7 +415,7 @@ final class UploadEndpoint
 
         $intent = new PendingUpload(
             id: bin2hex(random_bytes(16)),
-            key: StorageKey::generate(self::INCOMING_PREFIX, ''),
+            key: StorageKey::generate(self::INCOMING_PREFIX, '', $ticket->tenant),
             action: $ticket->action,
             field: $ticket->field,
             targetClass: $ticket->targetClass,
@@ -701,7 +701,7 @@ final class UploadEndpoint
             }
         }
 
-        $key = StorageKey::generate($declared->prefix, FileTypes::extension($type));
+        $key = StorageKey::generate($declared->prefix, FileTypes::extension($type), $ticket->tenant);
         try {
             $stream = fopen($kept, 'rb');
             if ($stream === false) {

@@ -182,7 +182,7 @@ final readonly class TransferEndpoint
             }
 
             rewind($stream);
-            $key = StorageKey::generate(Transfers::IMPORT_PREFIX, 'csv');
+            $key = StorageKey::generate(Transfers::IMPORT_PREFIX, 'csv', $record->tenant);
             $this->transfers->storage->put($key, $stream);
         } finally {
             fclose($stream);

@@ -26,8 +26,9 @@ use Tinvar\Storage\FileTypes;
  * the bytes: a few kilobytes can claim a hundred thousand pixels square,
  * which whoever decodes it to make a thumbnail pays for in memory.
  *
- * A stored image's key is the prefix asked for, a random name and the
- * extension of the type it was sniffed as.
+ * A stored image's key is the prefix asked for, the tenant it was stored
+ * for (StorageKey::tenantSegment()), a random name and the extension of the
+ * type it was sniffed as.
  */
 final readonly class RemoteImages
 {
@@ -83,9 +84,11 @@ final readonly class RemoteImages
     /**
      * Fetches the image at $url, reads it, and stores it under $prefix.
      *
+     * @param string $tenant the tenant it is stored for, whose segment its key carries; '' for none
+     *
      * @throws OutboundRefused|OutboundFailed|RemoteContentRefused as fetch() does
      */
-    public function store(string $url, string $prefix, int $maxBytes = self::MAX_BYTES): RemoteImage
+    public function store(string $url, string $prefix, int $maxBytes = self::MAX_BYTES, string $tenant = ''): RemoteImage
     {
         if ($this->storage === null) {
             throw new \LogicException('RemoteImages stores into the Storage it was given, and was given none.');
@@ -95,7 +98,7 @@ final readonly class RemoteImages
         }
 
         $image = $this->fetch($url, $maxBytes);
-        $key = "{$prefix}/" . bin2hex(random_bytes(16)) . '.' . FileTypes::extension($image->type);
+        $key = StorageKey::generate($prefix, FileTypes::extension($image->type), $tenant);
         $stream = fopen('php://memory', 'w+b');
         \assert($stream !== false);
         fwrite($stream, $image->bytes);

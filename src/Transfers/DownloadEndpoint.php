@@ -18,6 +18,7 @@ use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenError;
 use Tinvar\Routing\HostMatch;
 use Tinvar\Storage\LocalStorage;
+use Tinvar\Storage\StorageKey;
 
 /**
  * GET /_download/{token}
@@ -128,6 +129,7 @@ final readonly class DownloadEndpoint
         if ($record === null
             || !$record->isDownloadable($this->transfers->now())
             || !hash_equals($record->key, $token->key)
+            || !StorageKey::belongsTo($record->key, $token->tenant)
             || $record->host !== $token->host
             || $record->name !== $token->name) {
             throw self::missing();

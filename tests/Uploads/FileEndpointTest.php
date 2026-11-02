@@ -202,6 +202,25 @@ describe('the tenant and the panel', function () {
             ->and($app->fetch($app->fileUrl($key, 'image/png'), tenant: 'acme')->status)->toBe(404);
     });
 
+    it('serves a key written for a tenant to that tenant alone, whoever signed its URL', function () {
+        [$app, $storage] = appWithStoredPng();
+        $key = 'avatars/_globex/' . str_repeat('cd', 16) . '.png';
+        $stream = fopen('php://memory', 'w+b');
+        fwrite($stream, png());
+        rewind($stream);
+        $storage->put($key, $stream);
+        $acme = 'avatars/_acme/' . str_repeat('ef', 16) . '.png';
+        rewind($stream);
+        $storage->put($acme, $stream);
+
+        // A URL minted in acme for globex's file -- a record pointing at
+        // the wrong key -- serves nothing; acme's own is served, and a key
+        // from before keys named a tenant is served as it always was.
+        expect($app->fetch($app->fileUrl($key, 'image/png', tenant: 'acme'), tenant: 'acme')->status)->toBe(404)
+            ->and($app->fetch($app->fileUrl($acme, 'image/png', tenant: 'acme'), tenant: 'acme')->status)->toBe(200)
+            ->and($app->fetch($app->fileUrl('avatars/' . str_repeat('ab', 16) . '.png', 'image/png', tenant: 'acme'), tenant: 'acme')->status)->toBe(200);
+    });
+
     it('puts the request in the panel the URL names, and serves it there alone', function () {
         [$app, , $key] = appWithStoredPng();
         $staff = $app->fileUrl($key, 'image/png', panel: 'staff');
