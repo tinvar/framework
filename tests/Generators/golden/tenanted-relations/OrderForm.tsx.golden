@@ -1,0 +1,61 @@
+'use client';
+
+import * as stylex from '@stylexjs/stylex';
+import { Button, Field, Input, Select } from '@meridian/ui';
+import { space } from '@meridian/ui/tokens.stylex';
+import { Form } from '@tinvar/react/form';
+import { create, update } from '@actions/OrderActions';
+import type { OrderFormData } from '../../types/generated';
+
+/**
+ * The order form: a new one posted to OrderActions::create(), or the one it is
+ * handed to update(). A real form: before JavaScript loads it is an ordinary
+ * post, with the session's CSRF token in a hidden field, and a mistake comes
+ * back as the page with the error on its field. Once hydrated it submits in
+ * place, and the action's answer goes to the order's page.
+ */
+export function OrderForm({ data }: { data: OrderFormData }) {
+  const record = data.record;
+
+  return (
+    <Form {...stylex.props(styles.form)} action={record === null ? create : update}>
+      {(form) => (
+        <>
+          {record === null ? null : <input type="hidden" name="order" value={record.id} />}
+          <Field label="Title" error={form.errors.title}>
+            <Input name="title" defaultValue={record?.title ?? ''} maxLength={255} required />
+          </Field>
+          <Field label="Customer" error={form.errors.customer}>
+            <Select name="customer" defaultValue={record?.customer.value ?? ''} required>
+              {data.customerOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Buyer" error={form.errors.buyer} optional>
+            <Select name="buyer" defaultValue={record?.buyer?.value ?? ''}>
+              <option value="">None</option>
+              {data.buyerOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <div {...stylex.props(styles.actions)}>
+            <Button type="submit" variant="primary" disabled={form.processing}>
+              {record === null ? 'Create' : 'Save'} order
+            </Button>
+          </div>
+        </>
+      )}
+    </Form>
+  );
+}
+
+const styles = stylex.create({
+  form: { display: 'flex', flexDirection: 'column', rowGap: space.s4 },
+  actions: { display: 'flex', justifyContent: 'flex-end' },
+});

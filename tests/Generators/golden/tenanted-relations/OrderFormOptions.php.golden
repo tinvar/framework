@@ -1,0 +1,71 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Pages\Orders;
+
+use App\Database\Models\Accounts\Customer;
+use App\Database\Models\Orders\Order;
+use App\Http\Data\Orders\OrderData;
+use App\Http\Data\Orders\OrderFormData;
+use App\Http\Data\Orders\OrderOptionData;
+use Tinvar\Orm\Orm;
+
+/**
+ * What the order form is drawn from: the row it edits, and the choices of
+ * its select fields. Read for the create and edit pages, whose checks have
+ * run by then, each of which names the related models it lists, so their
+ * policies decide who may read these choices.
+ */
+final class OrderFormOptions
+{
+    /** The most rows of a related model a select lists: past this, a search is the better control. */
+    public const int MAX_CHOICES = 200;
+
+    public function __construct(private readonly Orm $orm) {}
+
+    public function for(?Order $order): OrderFormData
+    {
+        return new OrderFormData(
+            record: $order === null ? null : OrderData::of($order),
+            customerOptions: $this->customerOptions($order),
+            buyerOptions: $this->buyerOptions($order),
+        );
+    }
+
+    /**
+     * The customer an order may belong to: the first MAX_CHOICES by their
+     * name, and the one it belongs to now wherever that falls, so saving the
+     * form never moves it unasked.
+     *
+     * @return list<OrderOptionData>
+     */
+    private function customerOptions(?Order $order): array
+    {
+        $rows = Customer::query($this->orm)->orderBy('name')->limit(self::MAX_CHOICES)->fetch();
+        $chosen = $order?->customer;
+        if ($chosen !== null && !\in_array($chosen->id, array_map(static fn (Customer $customer): string => $customer->id, $rows), true)) {
+            $rows[] = $chosen;
+        }
+
+        return array_map(static fn (Customer $customer): OrderOptionData => new OrderOptionData($customer->id, $customer->name), $rows);
+    }
+
+    /**
+     * The buyer an order may belong to: the first MAX_CHOICES by their name,
+     * and the one it belongs to now wherever that falls, so saving the form
+     * never moves it unasked.
+     *
+     * @return list<OrderOptionData>
+     */
+    private function buyerOptions(?Order $order): array
+    {
+        $rows = Customer::query($this->orm)->orderBy('name')->limit(self::MAX_CHOICES)->fetch();
+        $chosen = $order === null || $order->buyerId() === null ? null : $order->buyer;
+        if ($chosen !== null && !\in_array($chosen->id, array_map(static fn (Customer $customer): string => $customer->id, $rows), true)) {
+            $rows[] = $chosen;
+        }
+
+        return array_map(static fn (Customer $customer): OrderOptionData => new OrderOptionData($customer->id, $customer->name), $rows);
+    }
+}

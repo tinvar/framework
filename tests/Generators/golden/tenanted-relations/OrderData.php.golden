@@ -1,0 +1,48 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Data\Orders;
+
+use App\Database\Models\Orders\Order;
+use Carbon\CarbonImmutable;
+use Tinvar\Data\Data;
+
+/**
+ * An Order, as the renderer is sent it
+ *
+ * Each field is a promoted constructor parameter, typed, and `tinvar
+ * codegen` makes the TypeScript the views read from them: an enum crosses as
+ * its value, a moment as ISO 8601 in UTC, a relation to a tenant's model as
+ * the row it names -- its id and what a person reads, in OrderOptionData, as
+ * the form's choices hold it -- since a bare id naming one is refused by the
+ * build rules (tenant-scoped-ids-must-be-typed).
+ */
+final readonly class OrderData extends Data
+{
+    public function __construct(
+        public string $id,
+        public string $title,
+        public OrderOptionData $customer,
+        public ?OrderOptionData $buyer,
+        public CarbonImmutable $createdAt,
+        public CarbonImmutable $updatedAt,
+    ) {}
+
+    /**
+     * Copied out of a row, field by field: its customer and buyer as the
+     * rows they name, which ListOrders loads for a whole page at once; any
+     * other relation by its key.
+     */
+    public static function of(Order $order): self
+    {
+        return new self(
+            id: $order->id,
+            title: $order->title,
+            customer: new OrderOptionData($order->customer->id, $order->customer->name),
+            buyer: $order->buyerId() === null || $order->buyer === null ? null : new OrderOptionData($order->buyer->id, $order->buyer->name),
+            createdAt: $order->createdAt,
+            updatedAt: $order->updatedAt,
+        );
+    }
+}

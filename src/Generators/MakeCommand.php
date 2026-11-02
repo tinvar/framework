@@ -68,7 +68,7 @@ final class MakeCommand
         'make:query' => 'tinvar make:query <Name> [--model=Rack]',
         'make:action' => 'tinvar make:action <Class> <method> [--model=Rack] [--request]',
         'make:model' => 'tinvar make:model <Name> [--table=racks] [--columns=name:string,heightU:int,notes:?string] [--factory] [--migration]',
-        'make:resource' => 'tinvar make:resource <Name> --fields="title:string,status:enum(Draft,Published),price:int,customer:belongsTo" [--path=/orders] [--panel=admin]',
+        'make:resource' => 'tinvar make:resource <Name> --fields="title:string,status:enum(Draft,Published),price:int,customer:belongsTo" [--path=/orders] [--panel=admin] [--no-tenancy]',
     ];
 
     /**
@@ -362,7 +362,14 @@ final class MakeCommand
      */
     private function resource(array $positional, array $options, string $usage): array
     {
-        self::only($options, ['fields', 'path', 'panel'], $usage);
+        self::only($options, ['fields', 'path', 'panel', 'no-tenancy'], $usage);
+        if (isset($options['no-tenancy']) && $options['no-tenancy'] !== true) {
+            throw new \InvalidArgumentException("--no-tenancy takes no value: it writes the resource as an app with no tenancy gets it. Usage: {$usage}");
+        }
+        // A tenant's resource where the app uses tenancy, unless told
+        // otherwise: an app that registers tenancy and runs with no tenant
+        // in force, as the shop does, has --no-tenancy.
+        $tenanted = $this->tenancy && !isset($options['no-tenancy']);
         [$name] = self::positional($positional, 1, $usage);
         $segments = Names::classPath($name, 'resource name', 'Orders/Order');
         $short = end($segments);
@@ -448,17 +455,18 @@ final class MakeCommand
 
         $choiceLabels = [];
         $relatedFactories = [];
+        $rowRelations = [];
         foreach ($fields as $field) {
             if ($field->kind !== 'belongsTo') {
                 continue;
             }
             $related = $field->model ?? throw new \LogicException("{$field->name} is a relation to no model.");
-            // The Data it writes sends the related row's key as {$field}Id, a
-            // bare string, which the build rules refuse for a tenant's model
-            // (tenant-scoped-ids-must-be-typed, ADR 0105): refused here,
-            // before anything is written, rather than by `tinvar check` after.
+            // A bare {$field}Id naming a tenant's model is refused by the
+            // build rules (tenant-scoped-ids-must-be-typed, ADR 0105): the
+            // Data sends the related row instead, typed -- its id and what a
+            // person reads, as the form's choices hold it.
             if (\Tinvar\Orm\Attributes\TenantScoped::on($related) !== null) {
-                throw new GenerationRefused("{$field->name} belongs to {$related}, which is #[TenantScoped]: the Data make:resource writes would send its key as a bare {$field->name}Id, which the build rules refuse for a tenant's model. Nothing was written. Leave the relation out and add it by hand, sending the related row as a Data object of its own.");
+                $rowRelations[] = $field->name;
             }
             if (\Tinvar\Orm\Metadata::for($related)->idProperty !== 'id') {
                 throw new GenerationRefused("{$related}'s key is not \$id, which the form's choices of it are read by. Nothing was written.");
@@ -468,8 +476,9 @@ final class MakeCommand
         }
 
         // A tenant's resource is let in only by a membership of the tenant,
-        // which the test's stand-in user, in no tenant, does not hold.
-        $test = $this->tenancy ? null : $this->testClass([...$domain, "{$short}ResourceTest"], $relatedFactories);
+        // which the test's stand-in user, in no tenant, does not hold; and a
+        // tenant's row is made only in a tenant, which the test is in none of.
+        $test = $tenanted || $rowRelations !== [] ? null : $this->testClass([...$domain, "{$short}ResourceTest"], $relatedFactories);
         $components = implode('/', $kebab);
 
         $plan = new ResourcePlan(
@@ -510,7 +519,8 @@ final class MakeCommand
             appNamespace: $this->layout->namespace,
             resource: $panel === null ? null : $this->class('Resources', [...$domain, "{$short}Resource"]),
             panel: $panel,
-            tenanted: $this->tenancy,
+            tenanted: $tenanted,
+            rowRelations: $rowRelations,
         );
 
         $screens = ['index' => '', 'show' => "/{{$parameter}}", 'create' => '/new', 'edit' => "/{{$parameter}}/edit"];
@@ -600,7 +610,7 @@ final class MakeCommand
                 . 'must be in the route table, drawn once for every resource in the panel. If the panel is on a host of its own, add the #[Domain] its pages carry to '
                 . Names::short($plan->resource ?? '') . '.';
         }
-        if ($this->tenancy) {
+        if ($tenanted) {
             $next[] = Names::short($plan->model) . " is a tenant's (#[TenantScoped]): each tenant reads and changes only its own {$plural}. "
                 . Names::short($plan->policy) . " lets in only a member of the tenant in force, holding a membership of the panel the request is in, by the app's Memberships: "
                 . "put its pages in your tenants' panel with #[Panel], have them read their tenant with #[TenantFrom], and give the Kernel Memberships -- until then it refuses everyone. "
@@ -609,8 +619,10 @@ final class MakeCommand
         } else {
             $next[] = Names::short($plan->policy) . " lets anyone signed in do anything with any {$parameter}, and a guest nothing: say there who may before it ships.";
         }
-        if ($test === null && !$this->tenancy) {
-            $next[] = $this->whyNoTest($relatedFactories);
+        if ($test === null && !$tenanted) {
+            $next[] = $rowRelations !== []
+                ? 'No test was written: ' . implode(' and ', $rowRelations) . ' belong' . (\count($rowRelations) === 1 ? 's' : '') . " to a tenant's model, whose rows are made only in a tenant, which the test's stand-in user is in none of."
+                : $this->whyNoTest($relatedFactories);
         }
 
         $registered = [
@@ -1130,7 +1142,7 @@ final class MakeCommand
                 $positional[] = $argument;
                 continue;
             }
-            if (preg_match('/^--([a-z]+)(?:=(.*))?\z/s', $argument, $m) !== 1 || isset($options[$m[1]])) {
+            if (preg_match('/^--([a-z]+(?:-[a-z]+)*)(?:=(.*))?\z/s', $argument, $m) !== 1 || isset($options[$m[1]])) {
                 throw new \InvalidArgumentException("Unknown or repeated argument '{$argument}'. Usage: {$usage}");
             }
             $options[$m[1]] = $m[2] ?? true;

@@ -288,8 +288,9 @@ final class ResourceSources
         foreach ($p->fields as $field) {
             [$name, $type] = self::dataField($field, $p, $uses);
             $parameters[] = "        public {$type} \${$name},";
-            $copies[] = "            {$name}: \${$p->parameter}->" . ($field->kind === 'belongsTo' ? "{$field->name}Id()" : $field->name) . ',';
+            $copies[] = "            {$name}: " . self::copied($field, $p, $uses) . ',';
         }
+        $rows = $p->relatedRows();
         $parameters[] = "        public {$carbon} \$createdAt,";
         $parameters[] = "        public {$carbon} \$updatedAt,";
         $copies[] = "            createdAt: \${$p->parameter}->createdAt,";
@@ -298,14 +299,20 @@ final class ResourceSources
         $body = "/**\n"
             . Sources::wrap(Sources::article($p->short) === 'an' ? "An {$p->short}, as the renderer is sent it" : "A {$p->short}, as the renderer is sent it")
             . " *\n"
-            . Sources::wrap('Each field is a promoted constructor parameter, typed, and `tinvar codegen` makes the TypeScript the views read from them: an enum crosses as its value, a moment as ISO 8601 in UTC, a relation as its id.')
+            . Sources::wrap('Each field is a promoted constructor parameter, typed, and `tinvar codegen` makes the TypeScript the views read from them: an enum crosses as its value, a moment as ISO 8601 in UTC, '
+                . ($rows === []
+                    ? 'a relation as its id.'
+                    : 'a relation to a tenant\'s model as the row it names -- its id and what a person reads, in ' . Names::short($p->option) . ', as the form\'s choices hold it -- '
+                        . 'since a bare id naming one is refused by the build rules (tenant-scoped-ids-must-be-typed)' . (\count($rows) === \count($p->ofKind('belongsTo')) ? '.' : ', and any other relation as its id.')))
             . " */\n"
             . 'final readonly class ' . Names::short($p->record) . " extends {$base}\n"
             . "{\n"
             . "    public function __construct(\n"
             . implode("\n", $parameters) . "\n"
             . "    ) {}\n\n"
-            . "    /** Copied out of a row, field by field: its relations by their keys, so none is read. */\n"
+            . ($rows === []
+                ? "    /** Copied out of a row, field by field: its relations by their keys, so none is read. */\n"
+                : "    /**\n" . Sources::wrap('Copied out of a row, field by field: its ' . implode(' and ', array_map(static fn (ResourceField $field): string => $field->name, $rows)) . ' as the ' . (\count($rows) === 1 ? 'row it names' : 'rows they name') . ', which ' . Names::short($p->listQuery) . ' loads for a whole page at once; any other relation by its key.', 70, '     * ') . "     */\n")
             . "    public static function of({$modelName} \${$p->parameter}): self\n"
             . "    {\n"
             . "        return new self(\n"
@@ -409,9 +416,9 @@ final class ResourceSources
         $body = "/**\n"
             . Sources::wrap(Names::queryName($p->listQuery) . ": the {$p->table}, newest first, a page at a time. What the index page loads, and what a server component may await through its generated `@queries` function.")
             . " *\n"
-            . Sources::wrap("Its #[Authorize] asks {$model}'s policy, through viewAny(), before this body runs: on a render and over /_query alike. The rows are the tenant's alone where the model is a tenant's, as the ORM bounds every read.")
+            . Sources::wrap("Its #[Authorize] asks {$model}'s policy, through viewAny(), before this body runs: on a render and over /_query alike. The rows are the tenant's alone where the model is a tenant's, as the ORM bounds every read." . self::relatedAbout($p))
             . " */\n"
-            . "#[{$uses->name(Query::class)}, {$uses->name(Authorize::class)}('viewAny', {$model}::class)]\n"
+            . "#[{$uses->name(Query::class)}, " . implode(', ', ["{$uses->name(Authorize::class)}('viewAny', {$model}::class)", ...self::relatedChecks($p, $uses)]) . "]\n"
             . "final class {$short}\n"
             . "{\n"
             . "    /** How many rows one page holds. */\n"
@@ -420,6 +427,7 @@ final class ResourceSources
             . "    public function __invoke(int \$page = 1): {$list}\n"
             . "    {\n"
             . "        \$found = {$model}::query(\$this->orm)\n"
+            . ($p->relatedRows() === [] ? '' : '            ->with(' . implode(', ', array_map(static fn (ResourceField $field): string => "'{$field->name}'", $p->relatedRows())) . ")\n")
             . "            ->orderBy('createdAt', {$direction}::Desc)\n"
             . "            ->orderBy('id', {$direction}::Desc)\n"
             . "            ->paginate(max(1, \$page), self::PER_PAGE);\n\n"
@@ -450,9 +458,9 @@ final class ResourceSources
         $body = "/**\n"
             . Sources::wrap(Names::queryName($p->showQuery) . ': one ' . lcfirst($p->short) . ', by its id. What the show page loads, and what a server component may await through its generated `@queries` function.')
             . " *\n"
-            . Sources::wrap("\${$p->parameter} is resolved and scoped -- a missing or foreign id is a 404 -- and its policy decides through view(), before this body runs.")
+            . Sources::wrap("\${$p->parameter} is resolved and scoped -- a missing or foreign id is a 404 -- and its policy decides through view(), before this body runs." . self::relatedAbout($p))
             . " */\n"
-            . "#[{$uses->name(Query::class)}, {$uses->name(Authorize::class)}('view', '{$p->parameter}')]\n"
+            . "#[{$uses->name(Query::class)}, " . implode(', ', ["{$uses->name(Authorize::class)}('view', '{$p->parameter}')", ...self::relatedChecks($p, $uses)]) . "]\n"
             . "final class {$short}\n"
             . "{\n"
             . "    public function __invoke({$model} \${$p->parameter}): {$record}\n"
@@ -491,7 +499,11 @@ final class ResourceSources
                 $label = $p->choiceLabels[$field->name];
                 $row = lcfirst(Names::short((string) $field->model));
                 $row = \in_array($row, [$p->parameter, 'this', 'case', 'chosen', 'rows'], true) ? 'row' : $row;
-                $current = "        \$chosen = \${$p->parameter}?->{$field->name};\n"
+                // A nullable relation set to none is left unset on the
+                // model, not null: its key says whether there is one.
+                $current = ($field->nullable
+                    ? "        \$chosen = \${$p->parameter} === null || \${$p->parameter}->{$field->name}Id() === null ? null : \${$p->parameter}->{$field->name};\n"
+                    : "        \$chosen = \${$p->parameter}?->{$field->name};\n")
                     . "        if (\$chosen !== null && !\\in_array(\$chosen->id, array_map(static fn ({$related} \${$row}): string => \${$row}->id, \$rows), true)) {\n";
                 $methods .= "\n"
                     . "    /**\n"
@@ -555,13 +567,15 @@ final class ResourceSources
         // The related models a form lists are read with the page, so their
         // policies are asked too: a select of every customer is a list of
         // customers, whoever's form it is in.
+        // And a tenant's row the list and the show page name is read with
+        // them: its policy is asked as well.
         $related = [];
         foreach (\in_array($screen, ['create', 'edit'], true) ? $p->ofKind('belongsTo') : [] as $field) {
             $related[] = \sprintf("%s('viewAny', %s::class)", $authorize, $uses->name((string) $field->model));
         }
         $checks = match ($screen) {
-            'index' => ["{$authorize}('viewAny', {$model}::class)"],
-            'show' => ["{$authorize}('view', '{$param}')"],
+            'index' => ["{$authorize}('viewAny', {$model}::class)", ...self::relatedChecks($p, $uses)],
+            'show' => ["{$authorize}('view', '{$param}')", ...self::relatedChecks($p, $uses)],
             'create' => ["{$authorize}('create', {$model}::class)", ...$related],
             default => ["{$authorize}('update', '{$param}')", ...$related],
         };
@@ -579,13 +593,13 @@ final class ResourceSources
                 "        // ?page=2, or the first page for anything that is not a page number.\n"
                     . "        \$page = filter_var(\$request->query['page'] ?? 1, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);\n\n"
                     . "        return (\$this->list)(\\is_int(\$page) ? \$page : 1);\n",
-                "The {$p->table}, newest first, a page at a time: what " . Names::short($p->listQuery) . ' reads. Its check asks the policy through viewAny().',
+                "The {$p->table}, newest first, a page at a time: what " . Names::short($p->listQuery) . ' reads. Its check asks the policy through viewAny().' . self::relatedAbout($p),
             ],
             'show' => [
                 $uses->name($p->showQuery),
                 "__invoke({$model} \${$param}): {$uses->name($p->record)}",
                 "        return (\$this->show)(\${$param});\n",
-                "One " . lcfirst($p->short) . ": \${$param} is resolved and scoped -- a missing or foreign id is a 404 -- and its policy decides, through view(), before this loader runs.",
+                "One " . lcfirst($p->short) . ": \${$param} is resolved and scoped -- a missing or foreign id is a 404 -- and its policy decides, through view(), before this loader runs." . self::relatedAbout($p),
             ],
             'create' => [
                 $uses->name($p->formOptions),
@@ -906,14 +920,14 @@ final class ResourceSources
         )), 0, 4);
 
         $heads = ['              <Th>' . ($label === null ? 'Id' : $label->label()) . '</Th>'];
-        $link = self::tag(18, 'Link', ["href={`{$p->basePath}/\${{$row}.id}`}"], ($label === null ? "{{$row}.id}" : self::shown($label, $row)));
+        $link = self::tag(18, 'Link', ["href={`{$p->basePath}/\${{$row}.id}`}"], ($label === null ? "{{$row}.id}" : self::shown($p, $label, $row)));
         $cells = ["                <Td>\n{$link}\n                </Td>"];
         $imports = ['EmptyState', 'Heading', 'RelativeTime', 'Table', 'TBody', 'Td', 'Text', 'Th', 'THead', 'Tr'];
         foreach ($columns as $field) {
             $numeric = \in_array($field->kind, ['int', 'float', 'timestamp'], true);
             $heads[] = '              <Th' . ($numeric ? ' numeric' : '') . ">{$field->label()}</Th>";
-            $open = '<Td' . ($numeric ? ' numeric' : '') . ($field->kind === 'belongsTo' ? ' mono' : '') . '>';
-            $cells[] = self::wrapped(16, $open, self::shown($field, $row), '</Td>');
+            $open = '<Td' . ($numeric ? ' numeric' : '') . ($field->kind === 'belongsTo' && !$p->carriesRow($field) ? ' mono' : '') . '>';
+            $cells[] = self::wrapped(16, $open, self::shown($p, $field, $row), '</Td>');
         }
         $heads[] = '              <Th numeric>Made</Th>';
         $cells[] = "                <Td numeric>\n                  <RelativeTime date={{$row}.createdAt} />\n                </Td>";
@@ -988,12 +1002,12 @@ final class ResourceSources
         $row = self::rowVariable($p);
         $items = [];
         foreach ($p->fields as $field) {
-            $items[] = self::item($field->label(), self::shown($field, $row, expression: true));
+            $items[] = self::item($field->label(), self::shown($p, $field, $row, expression: true));
         }
         $items[] = self::item('Made', "<RelativeTime date={{$row}.createdAt} format=\"datetime\" />");
         $items[] = self::item('Changed', "<RelativeTime date={{$row}.updatedAt} format=\"datetime\" />");
         $label = $p->labelField();
-        $heading = $label === null ? self::title($p->short) : self::shown($label, $row);
+        $heading = $label === null ? self::title($p->short) : self::shown($p, $label, $row);
         $one = strtolower(self::title($p->short));
         $delete = Names::short($p->deleteComponent);
 
@@ -1094,7 +1108,11 @@ final class ResourceSources
                 'enum', 'belongsTo' => self::tag(
                     12,
                     'Select',
-                    ["name=\"{$name}\"", "defaultValue={record?.{$name}" . ($field->kind === 'belongsTo' ? 'Id' : '') . " ?? ''}", ...$required],
+                    ["name=\"{$name}\"", "defaultValue={record?.{$name}" . match (true) {
+                        $p->carriesRow($field) => ($field->nullable ? '?' : '') . '.value',
+                        $field->kind === 'belongsTo' => 'Id',
+                        default => '',
+                    } . " ?? ''}", ...$required],
                     ($field->nullable ? "              <option value=\"\">None</option>\n" : '')
                         . "              {data.{$name}Options.map((option) => (\n"
                         . "                <option key={option.value} value={option.value}>\n"
@@ -1236,11 +1254,58 @@ final class ResourceSources
      */
     private static function dataField(ResourceField $field, ResourcePlan $p, Uses $uses): array
     {
+        if ($p->carriesRow($field)) {
+            return [$field->name, ($field->nullable ? '?' : '') . $uses->name($p->option)];
+        }
         if ($field->kind === 'belongsTo') {
             return ["{$field->name}Id", ($field->nullable ? '?' : '') . 'string'];
         }
 
         return [$field->name, self::modelType($field, $p, $uses)];
+    }
+
+    /**
+     * How a field is copied out of the model into its Data: a relation by its
+     * key, so none is read -- or, to a tenant's model, as the row it names.
+     */
+    private static function copied(ResourceField $field, ResourcePlan $p, Uses $uses): string
+    {
+        $value = "\${$p->parameter}->{$field->name}";
+        if ($p->carriesRow($field)) {
+            $label = $p->choiceLabels[$field->name];
+            $row = 'new ' . $uses->name($p->option) . "({$value}->id, {$value}->{$label})";
+
+            // A nullable relation set to none is left unset on the model,
+            // not null: its key says whether there is a row to read, before
+            // the property is.
+            return $field->nullable ? "{$value}Id() === null || {$value} === null ? null : {$row}" : $row;
+        }
+
+        return $field->kind === 'belongsTo' ? "{$value}Id()" : $value;
+    }
+
+    /**
+     * The checks a list or a show page, or its query, asks besides its own:
+     * each tenant's model whose row it names, through viewAny().
+     *
+     * @return list<string>
+     */
+    private static function relatedChecks(ResourcePlan $p, Uses $uses): array
+    {
+        $checks = [];
+        foreach ($p->relatedRows() as $field) {
+            $checks[] = \sprintf("%s('viewAny', %s::class)", $uses->name(Authorize::class), $uses->name((string) $field->model));
+        }
+
+        return array_values(array_unique($checks));
+    }
+
+    /** What relatedChecks() asks, said: '' where it asks nothing. */
+    private static function relatedAbout(ResourcePlan $p): string
+    {
+        $models = array_values(array_unique(array_map(static fn (ResourceField $field): string => Names::short((string) $field->model), $p->relatedRows())));
+
+        return $models === [] ? '' : ' It names the ' . implode(' and ', $models) . ' rows it is read with, so ' . (\count($models) === 1 ? 'that model\'s policy is' : 'their policies are') . ' asked too, through viewAny().';
     }
 
     /** The variable one row is in, in a view: `order`, or `row` where that is a word the view uses. */
@@ -1261,9 +1326,14 @@ final class ResourceSources
      * field once; a number, a yes or no and a moment go through the
      * formatters the view declares (formatters()).
      */
-    private static function shown(ResourceField $field, string $row, bool $expression = false): string
+    private static function shown(ResourcePlan $p, ResourceField $field, string $row, bool $expression = false): string
     {
-        $value = "{$row}.{$field->name}" . ($field->kind === 'belongsTo' ? 'Id' : '');
+        $value = match (true) {
+            // A tenant's row, by what a person reads of it.
+            $p->carriesRow($field) => "{$row}.{$field->name}" . ($field->nullable ? '?' : '') . '.label',
+            $field->kind === 'belongsTo' => "{$row}.{$field->name}Id",
+            default => "{$row}.{$field->name}",
+        };
         if ($field->kind === 'timestamp') {
             return "<Moment date={{$value}} />";
         }

@@ -28,6 +28,9 @@ final readonly class ResourcePlan
      * @param string|null $panel the panel it is placed in
      * @param bool $tenanted whether the app uses tenancy, so the model is a tenant's
      *        (#[TenantScoped]) and its policy asks for a membership of the tenant
+     * @param list<string> $rowRelations the belongsTo fields whose model is a tenant's
+     *        (#[TenantScoped]): sent as the related row, in $option, never as a bare id,
+     *        which tenant-scoped-ids-must-be-typed refuses (ADR 0105, ADR 0151)
      */
     public function __construct(
         public string $short,
@@ -68,7 +71,24 @@ final readonly class ResourcePlan
         public ?string $resource = null,
         public ?string $panel = null,
         public bool $tenanted = false,
+        public array $rowRelations = [],
     ) {}
+
+    /**
+     * Whether a field crosses to the renderer as the related row -- its id
+     * and what a person reads, in $option -- rather than as its id: a
+     * relation to a tenant's model.
+     */
+    public function carriesRow(ResourceField $field): bool
+    {
+        return $field->kind === 'belongsTo' && \in_array($field->name, $this->rowRelations, true);
+    }
+
+    /** @return list<ResourceField> the relations that cross as the related row */
+    public function relatedRows(): array
+    {
+        return array_values(array_filter($this->fields, $this->carriesRow(...)));
+    }
 
     /** Where the panel's screens of it are: under the panel's name, so they never share a path with its own pages. */
     public function panelPath(): string

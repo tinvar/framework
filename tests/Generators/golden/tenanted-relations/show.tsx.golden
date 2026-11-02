@@ -1,0 +1,40 @@
+import * as stylex from '@stylexjs/stylex';
+import { DescriptionList, Heading, RelativeTime } from '@meridian/ui';
+import { space } from '@meridian/ui/tokens.stylex';
+import { Title } from '@tinvar/react/head';
+import { Link } from '@tinvar/react/link';
+import type { PageProps } from '../../types/generated';
+import { OrderDeleteForm } from '../../components/orders/OrderDeleteForm';
+
+/**
+ * One order: what OrderShow returns, with the way to change it and to delete
+ * it. Written by `tinvar make:resource`; draw it as the app should.
+ */
+export default function Page({ data: order }: PageProps<'orders/show'>) {
+  return (
+    <div {...stylex.props(styles.page)}>
+      <Title>{order.title}</Title>
+      <header {...stylex.props(styles.header)}>
+        <Heading level={1} size="title1">
+          {order.title}
+        </Heading>
+        <Link href={`/orders/${order.id}/edit`}>Edit</Link>
+      </header>
+      <DescriptionList
+        items={[
+          { term: 'Title', value: order.title },
+          { term: 'Customer', value: order.customer.label },
+          { term: 'Buyer', value: order.buyer?.label ?? '—' },
+          { term: 'Made', value: <RelativeTime date={order.createdAt} format="datetime" /> },
+          { term: 'Changed', value: <RelativeTime date={order.updatedAt} format="datetime" /> },
+        ]}
+      />
+      <OrderDeleteForm id={order.id} />
+    </div>
+  );
+}
+
+const styles = stylex.create({
+  page: { display: 'flex', flexDirection: 'column', rowGap: space.s6 },
+  header: { alignItems: 'center', display: 'flex', justifyContent: 'space-between' },
+});

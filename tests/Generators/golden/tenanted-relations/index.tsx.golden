@@ -1,0 +1,69 @@
+import * as stylex from '@stylexjs/stylex';
+import { EmptyState, Heading, RelativeTime, Table, TBody, Td, Text, Th, THead, Tr } from '@meridian/ui';
+import { space } from '@meridian/ui/tokens.stylex';
+import { Title } from '@tinvar/react/head';
+import { Link } from '@tinvar/react/link';
+import type { PageProps } from '../../types/generated';
+
+/**
+ * The orders, newest first, a page at a time: what OrderIndex returns. Written
+ * by `tinvar make:resource`; draw it as the app should.
+ */
+export default function Page({ data }: PageProps<'orders/index'>) {
+  return (
+    <div {...stylex.props(styles.page)}>
+      <Title>Orders</Title>
+      <header {...stylex.props(styles.header)}>
+        <Heading level={1} size="title1">
+          Orders
+        </Heading>
+        <Link href="/orders/new">New order</Link>
+      </header>
+      {data.total === 0 ? (
+        <EmptyState title="No orders yet" description="Each one made shows up here, newest first." />
+      ) : (
+        <Table
+          label="Orders"
+          footer={
+            data.lastPage > 1 ? (
+              <nav aria-label="Pages" {...stylex.props(styles.pager)}>
+                {data.page > 1 ? <Link href={`/orders?page=${data.page - 1}`}>Newer</Link> : null}
+                <Text size="sm" tone="secondary">{`Page ${data.page} of ${data.lastPage}`}</Text>
+                {data.page < data.lastPage ? <Link href={`/orders?page=${data.page + 1}`}>Older</Link> : null}
+              </nav>
+            ) : undefined
+          }
+        >
+          <THead>
+            <Tr>
+              <Th>Title</Th>
+              <Th>Customer</Th>
+              <Th>Buyer</Th>
+              <Th numeric>Made</Th>
+            </Tr>
+          </THead>
+          <TBody>
+            {data.items.map((order) => (
+              <Tr key={order.id}>
+                <Td>
+                  <Link href={`/orders/${order.id}`}>{order.title}</Link>
+                </Td>
+                <Td>{order.customer.label}</Td>
+                <Td>{order.buyer?.label ?? '—'}</Td>
+                <Td numeric>
+                  <RelativeTime date={order.createdAt} />
+                </Td>
+              </Tr>
+            ))}
+          </TBody>
+        </Table>
+      )}
+    </div>
+  );
+}
+
+const styles = stylex.create({
+  page: { display: 'flex', flexDirection: 'column', rowGap: space.s6 },
+  header: { alignItems: 'center', display: 'flex', justifyContent: 'space-between' },
+  pager: { alignItems: 'center', columnGap: space.s4, display: 'flex' },
+});

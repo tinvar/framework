@@ -878,7 +878,7 @@ final class AppConsole
         foreach (MakeCommand::COMMANDS as $i => $name) {
             $this->command(
                 $name,
-                $i === 0 ? "make:page <Name> --path=/racks/{rack} [--view=racks/show]\n  make:query <Name> [--model=Rack]\n  make:action <Class> <method> [--model=Rack] [--request]\n  make:model <Name> [--table=racks] [--columns=name:string,heightU:int,notes:?string] [--factory] [--migration]\n  make:resource <Name> --fields=\"title:string,status:enum(Draft,Published),price:int,customer:belongsTo\" [--path=/orders] [--panel=admin]" : '',
+                $i === 0 ? "make:page <Name> --path=/racks/{rack} [--view=racks/show]\n  make:query <Name> [--model=Rack]\n  make:action <Class> <method> [--model=Rack] [--request]\n  make:model <Name> [--table=racks] [--columns=name:string,heightU:int,notes:?string] [--factory] [--migration]\n  make:resource <Name> --fields=\"title:string,status:enum(Draft,Published),price:int,customer:belongsTo\" [--path=/orders] [--panel=admin] [--no-tenancy]" : '',
                 $i === 0 ? "Write a page, query, action or model, and what each needs -- or with make:resource, a model and its migration, queries, actions, pages, views, policy and tests at once -- which discovery registers once it is written, and a page's view in the route table where it reads as one; every check they write fails closed until you decide otherwise. Run bare on a terminal, each asks what it needs" : '',
                 fn (array $a): int => $this->generate($name, $a),
             );

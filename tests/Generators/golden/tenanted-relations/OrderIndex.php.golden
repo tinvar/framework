@@ -1,0 +1,35 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Pages\Orders;
+
+use App\Database\Models\Accounts\Customer;
+use App\Database\Models\Orders\Order;
+use App\Http\Data\Orders\OrderListData;
+use App\Http\Queries\Orders\ListOrders;
+use Tinvar\Attributes\Authorize;
+use Tinvar\Attributes\Page;
+use Tinvar\Http\Request;
+
+/**
+ * The page at /orders, drawn by orders/index.tsx. The orders, newest first,
+ * a page at a time: what ListOrders reads. Its check asks the policy through
+ * viewAny(). It names the Customer rows it is read with, so that model's
+ * policy is asked too, through viewAny().
+ */
+#[Page('/orders', view: 'orders/index', name: 'orders.index'),
+    Authorize('viewAny', Order::class),
+    Authorize('viewAny', Customer::class),]
+final class OrderIndex
+{
+    public function __construct(private readonly ListOrders $list) {}
+
+    public function __invoke(Request $request): OrderListData
+    {
+        // ?page=2, or the first page for anything that is not a page number.
+        $page = filter_var($request->query['page'] ?? 1, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+
+        return ($this->list)(\is_int($page) ? $page : 1);
+    }
+}

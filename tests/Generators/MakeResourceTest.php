@@ -61,10 +61,11 @@ final class App
 
     private readonly \Closure $autoload;
 
-    public function __construct()
+    /** @param string $prefix what its namespace starts with: one sorting where App does, for a golden file's imports */
+    public function __construct(string $prefix = 'Res')
     {
         $this->root = sys_get_temp_dir() . '/tinvar-resource-' . bin2hex(random_bytes(6));
-        $this->namespace = 'Res' . bin2hex(random_bytes(4));
+        $this->namespace = $prefix . bin2hex(random_bytes(4));
         foreach (['app/Http', 'resources/pages', 'resources/types', 'resources/entries', 'database/migrations'] as $directory) {
             mkdir("{$this->root}/{$directory}", 0o755, true);
         }
@@ -344,27 +345,7 @@ it('writes a resource that lints, registers, passes the build rules, type-checks
         ->and((new BuildRules($classes->models))->check([...$classes->routes, ...$classes->queries, ...$classes->actions], $classes->payloads))->toBe([]);
 
     // The views and components type-check against what codegen writes.
-    $types = (new TypeScriptGenerator())->files(
-        dataClasses: array_values(array_filter($classes->payloads, static fn (string $class): bool => is_subclass_of($class, Data::class))),
-        queryClasses: $classes->queries,
-        routes: array_map(RouteTypes::of(...), [...$routes->layouts(), ...$routes->pages()]),
-        actions: $actions->all(),
-    );
-    mkdir("{$app->root}/resources/types/actions");
-    file_put_contents("{$app->root}/resources/types/generated.ts", $types['module']);
-    file_put_contents("{$app->root}/resources/types/modules.d.ts", $types['ambient']);
-    foreach ($types['actions'] as $class => $contents) {
-        file_put_contents("{$app->root}/resources/types/actions/{$class}.ts", $contents);
-    }
-    // The workspace's packages, as the app's own node_modules would hold them.
-    symlink((string) realpath(ROOT . '/node_modules'), "{$app->root}/node_modules");
-    file_put_contents("{$app->root}/tsconfig.json", json_encode([
-        'extends' => (string) realpath(ROOT . '/tsconfig.base.json'),
-        'compilerOptions' => ['noEmit' => true, 'types' => ['react', 'react-dom'], 'paths' => ['@actions/*' => ['./resources/types/actions/*']]],
-        'include' => ['resources/pages/**/*.tsx', 'resources/components/**/*.tsx', 'resources/types/**/*.ts'],
-    ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
-    [$status, $output] = tool([ROOT . '/node_modules/.bin/tsc', '-p', "{$app->root}/tsconfig.json", '--pretty', 'false']);
-    expect($status)->toBe(0, $output);
+    typeChecks($app, $routes, $actions);
 
     // The migrations make the tables, and make:migration finds nothing
     // the models say that they did not make.
@@ -647,16 +628,121 @@ it('reads whether the app uses tenancy from its Kernel and its models', function
         ->and(\Tinvar\Console\AppConsole::usesTenancy(null))->toBeFalse();
 });
 
-it('refuses a relation to a tenant\'s model, whose key the Data it writes would send bare, writing nothing', function () {
+// A relation to a tenant's model crosses as the related row -- its id and
+// what a person reads -- in the resource's own OptionData, never as a bare
+// {relation}Id, which tenant-scoped-ids-must-be-typed refuses (ADR 0105):
+// the table and the show page name it, the form selects it by its value.
+it('writes a relation to a tenant\'s model as the related row, typed, and draws it end to end', function () {
+    // Its imports sorted as an App\ app's are: before Carbon\.
+    $this->app->remove();
+    $app = $this->app = new App('Ap');
+    $app->tenancy = true;
+    routeTable($app);
+
+    expect($app(['Accounts/Customer', '--fields=name:string']))->toBe(0, implode("\n", $app->err))
+        ->and($app(['Orders/Order', '--fields=title:string,customer:belongsTo,buyer:?belongsTo(Customer)']))->toBe(0, implode("\n", $app->err));
+
+    $golden = __DIR__ . '/golden/tenanted-relations';
+    foreach ([
+        'OrderData.php' => 'app/Http/Data/Orders/OrderData.php',
+        'ListOrders.php' => 'app/Http/Queries/Orders/ListOrders.php',
+        'ShowOrder.php' => 'app/Http/Queries/Orders/ShowOrder.php',
+        'OrderIndex.php' => 'app/Http/Pages/Orders/OrderIndex.php',
+        'OrderFormOptions.php' => 'app/Http/Pages/Orders/OrderFormOptions.php',
+        'index.tsx' => 'resources/pages/orders/index.tsx',
+        'show.tsx' => 'resources/pages/orders/show.tsx',
+        'OrderForm.tsx' => 'resources/components/orders/OrderForm.tsx',
+    ] as $file => $written) {
+        expect(golden($app, $app->read($written)))->toBe(file_get_contents("{$golden}/{$file}.golden"), $written);
+    }
+    expect($app->read('app/Http/Data/Orders/OrderData.php'))->not->toContain('customerId')
+        ->and(implode("\n", $app->out))->toContain("No test was written: a tenant's resource");
+
+    // As everything it writes: pint, prettier and phpstan at level 8 pass
+    // it, the build rules take it, and its views type-check.
+    [$status, $output] = tool([ROOT . '/vendor/bin/pint', '--test', '--config', ROOT . '/pint.json', "{$app->root}/app", "{$app->root}/database"]);
+    expect($status)->toBe(0, $output);
+    [$status, $output] = tool([ROOT . '/node_modules/.bin/prettier', '--check', '--config', ROOT . '/.prettierrc.json', "{$app->root}/resources/pages", "{$app->root}/resources/components"]);
+    expect($status)->toBe(0, $output);
+    file_put_contents("{$app->root}/phpstan.neon", "parameters:\n    level: 8\n    paths:\n        - app\n    tmpDir: .phpstan\n");
+    [$status, $output] = tool([
+        ROOT . '/vendor/bin/phpstan', 'analyse', '--no-progress', '--memory-limit=1G',
+        '-c', "{$app->root}/phpstan.neon", '--autoload-file=' . ROOT . '/vendor/autoload.php',
+    ]);
+    expect($status)->toBe(0, $output);
+    $classes = $app->classes();
+    $routes = new RouteRegistry($classes->models);
+    $routes->registerAll($classes->routes);
+    $actions = new ActionRegistry(models: $classes->models);
+    $actions->registerAll($classes->actions);
+    (new QueryRegistry())->registerAll($classes->queries);
+    expect((new BuildRules($classes->models))->check([...$classes->routes, ...$classes->queries, ...$classes->actions], $classes->payloads))->toBe([]);
+    typeChecks($app, $routes, $actions);
+
+    // And read in a tenant: each order with its customer named, and a
+    // buyer it has none of as none.
+    $connection = PdoConnection::sqlite("{$app->root}/database.sqlite", create: true);
+    (new Migrator($connection, "{$app->root}/database/migrations"))->migrate();
+    require_once \Composer\InstalledVersions::getInstallPath('tinvar/database') . '/tests/Orm/Fixtures/tenancy.php';
+    $orm = new \Tinvar\Orm\Orm($connection, new \Tinvar\Orm\IdentityMap('app'), \Tinvar\Tests\Orm\Fixtures\Tenancy::flat());
+    $orm->switchTenant('acme');
+    $customerClass = $app->class('Database\Models\Accounts\Customer');
+    $orderClass = $app->class('Database\Models\Orders\Order');
+    $ann = new $customerClass();
+    $ann->name = 'Ann';
+    $orm->save($ann);
+    $order = new $orderClass();
+    $order->title = 'Tea';
+    $order->customer = $ann;
+    $orm->save($order);
+    // Read again from the table, in the tenant.
+    $orm->flush();
+    $orm->switchTenant('acme');
+
+    $listClass = $app->class('Http\Queries\Orders\ListOrders');
+    $showClass = $app->class('Http\Queries\Orders\ShowOrder');
+    $listed = (new $listClass($orm))(1)->items[0];
+    $shown = (new $showClass())($orm->find($orderClass, $order->id));
+    expect($listed->customer->value)->toBe($ann->id)
+        ->and($listed->customer->label)->toBe('Ann')
+        ->and($listed->buyer)->toBeNull()
+        ->and($shown->customer)->toBeInstanceOf($app->class('Http\Data\Orders\OrderOptionData'))
+        ->and($shown->customer->label)->toBe('Ann');
+
+    // The edit form: the row with its customer, no buyer, and the choices.
+    $formClass = $app->class('Http\Pages\Orders\OrderFormOptions');
+    $form = (new $formClass($orm))->for($orm->find($orderClass, $order->id));
+    expect($form->record->customer->value)->toBe($ann->id)
+        ->and($form->record->buyer)->toBeNull()
+        ->and(array_map(static fn (object $option): string => $option->label, $form->buyerOptions))->toBe(['Ann']);
+});
+
+it('keeps a relation to a model that is no tenant\'s as its id, where the app uses tenancy', function () {
     $app = $this->app;
     $app->tenancy = true;
 
-    expect($app(['Accounts/Customer', '--fields=name:string']))->toBe(0, implode("\n", $app->err));
-    $before = $app->files();
+    expect($app(['Accounts/Customer', '--fields=name:string', '--no-tenancy']))->toBe(0, implode("\n", $app->err))
+        ->and($app(['Orders/Order', '--fields=title:string,customer:belongsTo']))->toBe(0, implode("\n", $app->err))
+        ->and($app->read('app/Http/Data/Orders/OrderData.php'))->toContain('public string $customerId,');
+    $classes = $app->classes();
+    expect((new BuildRules($classes->models))->check([...$classes->routes, ...$classes->queries, ...$classes->actions], $classes->payloads))->toBe([]);
+});
 
-    expect($app(['Orders/Order', '--fields=title:string,customer:belongsTo']))->toBe(MakeCommand::FAILED)
-        ->and(implode("\n", $app->err))->toContain('customer belongs to ' . $app->class('Database\Models\Accounts\Customer') . ', which is #[TenantScoped]')
-        ->and($app->files())->toBe($before);
+// The shop registers tenancy and runs with no tenant in force: --no-tenancy
+// writes there what an app with no tenancy gets.
+it('writes the resource unscoped, with --no-tenancy, in an app that uses tenancy', function () {
+    $app = $this->app;
+    $app->tenancy = true;
+
+    expect($app(['Orders/Order', '--fields=title:string', '--no-tenancy']))->toBe(0, implode("\n", $app->err))
+        ->and($app->read('app/Database/Models/Orders/Order.php'))->not->toContain('TenantScoped')
+        ->and($app->read('database/migrations/' . basename((string) (glob("{$app->root}/database/migrations/*_create_orders.php") ?: [''])[0])))->not->toContain('tenant()')
+        ->and($app->read('app/Policies/Orders/OrderPolicy.php'))->toContain('return $user !== null;')
+        ->and(implode("\n", $app->out))->toContain('lets anyone signed in')
+        ->and(implode("\n", $app->out))->not->toContain("a tenant's");
+
+    expect($app(['Racks/Rack', '--fields=label:string', '--no-tenancy=yes']))->toBe(MakeCommand::USAGE)
+        ->and(implode("\n", $app->err))->toContain('--no-tenancy takes no value');
 });
 
 it('writes the resource unscoped, its policy the signed-in, where the app does not use tenancy', function () {
@@ -678,6 +764,33 @@ it('is wired into bin/tinvar, against the shop, refusing what is there', functio
     [, $output] = tool([PHP_BINARY, ROOT . '/bin/tinvar', 'help']);
     expect($output)->toContain('make:resource <Name> --fields=');
 });
+
+/** The app's views and components, type-checked against what codegen writes for its classes. */
+function typeChecks(App $app, RouteRegistry $routes, ActionRegistry $actions): void
+{
+    $classes = $app->classes();
+    $types = (new TypeScriptGenerator())->files(
+        dataClasses: array_values(array_filter($classes->payloads, static fn (string $class): bool => is_subclass_of($class, Data::class))),
+        queryClasses: $classes->queries,
+        routes: array_map(RouteTypes::of(...), [...$routes->layouts(), ...$routes->pages()]),
+        actions: $actions->all(),
+    );
+    mkdir("{$app->root}/resources/types/actions");
+    file_put_contents("{$app->root}/resources/types/generated.ts", $types['module']);
+    file_put_contents("{$app->root}/resources/types/modules.d.ts", $types['ambient']);
+    foreach ($types['actions'] as $class => $contents) {
+        file_put_contents("{$app->root}/resources/types/actions/{$class}.ts", $contents);
+    }
+    // The workspace's packages, as the app's own node_modules would hold them.
+    symlink((string) realpath(ROOT . '/node_modules'), "{$app->root}/node_modules");
+    file_put_contents("{$app->root}/tsconfig.json", json_encode([
+        'extends' => (string) realpath(ROOT . '/tsconfig.base.json'),
+        'compilerOptions' => ['noEmit' => true, 'types' => ['react', 'react-dom'], 'paths' => ['@actions/*' => ['./resources/types/actions/*']]],
+        'include' => ['resources/pages/**/*.tsx', 'resources/components/**/*.tsx', 'resources/types/**/*.ts'],
+    ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+    [$status, $output] = tool([ROOT . '/node_modules/.bin/tsc', '-p', "{$app->root}/tsconfig.json", '--pretty', 'false']);
+    expect($status)->toBe(0, $output);
+}
 
 /** Copies a directory, its files and those below it. */
 function copyTree(string $from, string $to): void

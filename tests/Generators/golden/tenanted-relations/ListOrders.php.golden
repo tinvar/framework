@@ -1,0 +1,51 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Queries\Orders;
+
+use App\Database\Models\Accounts\Customer;
+use App\Database\Models\Orders\Order;
+use App\Http\Data\Orders\OrderData;
+use App\Http\Data\Orders\OrderListData;
+use Tinvar\Attributes\Authorize;
+use Tinvar\Attributes\Query;
+use Tinvar\Orm\Direction;
+use Tinvar\Orm\Orm;
+
+/**
+ * orders.listOrders: the orders, newest first, a page at a time. What the
+ * index page loads, and what a server component may await through its
+ * generated `@queries` function.
+ *
+ * Its #[Authorize] asks Order's policy, through viewAny(), before this body
+ * runs: on a render and over /_query alike. The rows are the tenant's alone
+ * where the model is a tenant's, as the ORM bounds every read. It names the
+ * Customer rows it is read with, so that model's policy is asked too,
+ * through viewAny().
+ */
+#[Query, Authorize('viewAny', Order::class), Authorize('viewAny', Customer::class)]
+final class ListOrders
+{
+    /** How many rows one page holds. */
+    public const int PER_PAGE = 25;
+
+    public function __construct(private readonly Orm $orm) {}
+
+    public function __invoke(int $page = 1): OrderListData
+    {
+        $found = Order::query($this->orm)
+            ->with('customer', 'buyer')
+            ->orderBy('createdAt', Direction::Desc)
+            ->orderBy('id', Direction::Desc)
+            ->paginate(max(1, $page), self::PER_PAGE);
+
+        return new OrderListData(
+            items: array_map(OrderData::of(...), $found->items),
+            page: $found->page,
+            perPage: $found->perPage,
+            total: $found->total,
+            lastPage: $found->lastPage(),
+        );
+    }
+}
