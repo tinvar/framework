@@ -84,7 +84,7 @@ describe('a request from globals', function () {
 });
 
 describe('emitting a response', function () {
-    it('writes the status, every header, then the body as it streams', function () {
+    it('writes every header, then the status, then the body as it streams', function () {
         $log = [];
         $response = Response::stream(static function (Closure $sink): void {
             $sink('<p>one</p>');
@@ -104,8 +104,26 @@ describe('emitting a response', function () {
             },
         );
 
-        expect($log)->toBe(['status 200', 'content-type: text/html', '<p>one</p>', '<p>two</p>']);
+        expect($log)->toBe(['content-type: text/html', 'status 200', '<p>one</p>', '<p>two</p>']);
     });
+});
+
+// PHP rewrites the status for WWW-Authenticate (to 401) and Location (to
+// 302): set after them, a 403 naming a missing scope stays a 403 (ADR 0151).
+it('sets the status after a header PHP would rewrite it for', function () {
+    $log = [];
+    Sapi::emit(
+        Response::make(403, '', ['www-authenticate' => 'Bearer error="insufficient_scope"']),
+        static function (int $s) use (&$log): void {
+            $log[] = $s;
+        },
+        static function (string $n, string $v) use (&$log): void {
+            $log[] = $n;
+        },
+        static function (string $c): void {},
+    );
+
+    expect($log)->toBe(['www-authenticate', 403]);
 });
 
 describe('files', function () {

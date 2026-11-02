@@ -106,7 +106,7 @@ describe('redirect targets', function () {
 });
 
 describe('emitting a buffered response', function () {
-    it('writes the whole body as one chunk after the status and headers', function () {
+    it('writes the whole body as one chunk after the headers and status', function () {
         $log = [];
 
         Sapi::emit(
@@ -122,7 +122,7 @@ describe('emitting a buffered response', function () {
             },
         );
 
-        expect($log)->toBe(['status 201', 'content-type: application/json', '{"ok":true}']);
+        expect($log)->toBe(['content-type: application/json', 'status 201', '{"ok":true}']);
     });
 
     it('writes no chunk at all for an empty body', function () {

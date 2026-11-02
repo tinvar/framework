@@ -339,9 +339,9 @@ final class Sapi
     }
 
     /**
-     * Writes a Response through the given output functions: a status, each
-     * header, each cookie as a Set-Cookie line of its own, then the body as
-     * it streams.
+     * Writes a Response through the given output functions: each header,
+     * each cookie as a Set-Cookie line of its own, the status, then the body
+     * as it streams.
      *
      * @param \Closure(int): void            $status
      * @param \Closure(string, string): void $header name, value
@@ -349,13 +349,17 @@ final class Sapi
      */
     public static function emit(Response $response, \Closure $status, \Closure $header, \Closure $write): void
     {
-        $status($response->status);
         foreach ($response->headers() as $name => $value) {
             $header($name, $value);
         }
         foreach ($response->cookies() as $line) {
             $header('set-cookie', $line);
         }
+        // After the headers: PHP rewrites the status for some of them -- a
+        // 401 for WWW-Authenticate, a 302 for Location -- so a 403 naming
+        // the scope a token lacks (ADR 0151) left as a 401. Set last, it is
+        // the response's own.
+        $status($response->status);
         $response->sendBody($write);
     }
 
