@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * Notifications (ADR 0152): one call, queued after the commit, fanned out
+ * Notifications (ADR 0154): one call, queued after the commit, fanned out
  * on the worker in the tenant it was sent in to the channels the user
  * gets -- an inbox entry, an email with a one-click unsubscribe that turns
  * that kind off, a push to each subscription on the user's epoch -- and

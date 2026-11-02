@@ -225,7 +225,7 @@ it('updates another tab and staff\'s list through a hub apart from the shop', fu
         ->and($other['sameDocument'])->toBeTrue()
         ->and($other['documents'])->toBe(0)
         ->and($other['refetches'])->toHaveCount(1)
-        // The page's token first, then the bell's inbox channel (ADR 0152),
+        // The page's token first, then the bell's inbox channel (ADR 0154),
         // whose subscription may land after the first trade and is traded
         // again beside it: every trade let in, and the stream listening.
         ->and($other['live'][0] ?? null)->toBe(['path' => '/_live/subscribe', 'status' => 200])

@@ -21,7 +21,7 @@ use Tinvar\Validation\ValidationException;
 
 /**
  * POST /_inbox/{name}, /_inbox/{name}/read and /_inbox/{name}/preferences:
- * a signed-in user's inbox (ADR 0152).
+ * a signed-in user's inbox (ADR 0154).
  *
  *   - `/_inbox/{name}` answers a page of the feed, newest first, and the
  *     unread count: `{before?: id, limit?: n}`.

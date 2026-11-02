@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Notifications;
 
 /**
- * A way a notification reaches its user (ADR 0152):
+ * A way a notification reaches its user (ADR 0154):
  *
  *   - Mail: an email, through the Mailer -- its suppression list, its
  *     providers, and a one-click unsubscribe that turns this kind off.

@@ -9,7 +9,7 @@ use Tinvar\Data\Data;
 use Tinvar\Jobs\Queueable;
 
 /**
- * A notification that sends a web push (ADR 0152).
+ * A notification that sends a web push (ADR 0154).
  *
  * push() is asked on the worker, with the user it is for, and its Data is
  * what the service worker's push event reads: encoded as a render's data
