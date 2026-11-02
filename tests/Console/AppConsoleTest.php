@@ -93,6 +93,30 @@ it('holds the endpoints among its entry points to the registry\'s check', functi
         ->and(ran($clashes, 'check')[0])->toBe(1);
 });
 
+// `check --json`, for an editor's problems list (ADR 0156): each problem
+// with the file and line of the class it names, and the same exit status.
+it('prints what the check found as JSON with --json, each problem at the class it names', function () {
+    $clashes = console(['classes' => static fn (): DiscoveredClasses => new DiscoveredClasses(routes: \Shop\Kernel::classes()->routes, endpoints: [ClashesWithAPage::class])]);
+    [$status, $out] = ran($clashes, 'check', '--json');
+    $report = json_decode($out, true, 16, JSON_THROW_ON_ERROR);
+    $problems = array_merge(...array_column($report['sections'], 'problems'));
+    $clash = array_values(array_filter($problems, static fn (array $problem): bool => str_contains($problem['message'], '/orders/{order}')))[0] ?? null;
+
+    expect($status)->toBe(1)
+        ->and($report['format'])->toBe(1)
+        ->and($report['passed'])->toBeFalse()
+        ->and($clash)->not->toBeNull()
+        ->and(realpath((string) $clash['file']))->toBe(realpath(__FILE__))
+        ->and($clash['line'])->toBe(new \ReflectionClass(ClashesWithAPage::class)->getMethod('show')->getStartLine())
+        ->and(ran($clashes, 'check', '--yaml')[0])->toBe(64);
+
+    $console = console()->withCheck('Mine failed:', static fn (): array => [], 'ok: mine');
+    [$status, $out] = ran($console, 'check', '--json');
+    $mine = array_values(array_filter(json_decode($out, true, 16, JSON_THROW_ON_ERROR)['sections'], static fn (array $section): bool => $section['heading'] === 'Mine failed:'))[0];
+
+    expect($mine)->toBe(['heading' => 'Mine failed:', 'problems' => [], 'passed' => ['ok: mine']]);
+});
+
 it('refuses --worker where the application has no queue to run', function () {
     expect(ran(console(), 'serve', '--worker')[0])->toBe(64);
 });

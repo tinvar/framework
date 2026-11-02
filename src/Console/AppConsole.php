@@ -408,7 +408,7 @@ final class AppConsole
      * and the application's own checks; every failure named, under its
      * heading.
      */
-    public function check(): int
+    public function check(bool $json = false): int
     {
         // First what everything else is read from: the application's
         // classes, which a refused scan leaves nothing to check by -- scanned
@@ -417,6 +417,11 @@ final class AppConsole
             $classes = Discovery::freshly($this->classes(...));
             $stale = $this->staleManifest();
         } catch (DiscoveryFailed $e) {
+            if ($json) {
+                echo CheckReport::json([['Discovery failed (ADR 0146):', $e->problems, []]]);
+
+                return 1;
+            }
             fwrite(STDERR, "Discovery failed (ADR 0146):\n  " . implode("\n  ", $e->problems) . "\n");
 
             return 1;
@@ -472,6 +477,12 @@ final class AppConsole
         ];
         foreach ($this->checks as [$heading, $check, $passed]) {
             $results[] = [$heading, $check(), [$passed]];
+        }
+
+        if ($json) {
+            echo CheckReport::json($results);
+
+            return array_any($results, static fn (array $result): bool => $result[1] !== []) ? 1 : 0;
         }
 
         $failed = false;
@@ -740,7 +751,11 @@ final class AppConsole
 
     private function builtIns(): void
     {
-        $this->command('check', 'check', "Run the security model's build rules over the app, hold its lockfiles to its PackagePolicy (no network), and its Caddyfile to holding each response whole and bounding a stalled write", fn (array $a): int => $a === [] ? $this->check() : $this->usage('check'))
+        $this->command('check', 'check [--json]', "Run the security model's build rules over the app, hold its lockfiles to its PackagePolicy (no network), and its Caddyfile to holding each response whole and bounding a stalled write; with --json, print what it found as JSON, each problem with the file and line it names, for an editor", fn (array $a): int => match ($a) {
+            [] => $this->check(),
+            ['--json'] => $this->check(json: true),
+            default => $this->usage('check'),
+        })
             ->command('config', 'config', "Every key the app's #[Config] classes read, where each value comes from, and no secret's; exits 1, naming each key, where the server would refuse to boot", fn (array $a): int => new ConfigCommand($this->classes()->configs)->run($a))
             ->command('codegen', 'codegen [--out=DIR] [--check]', 'Write the TypeScript the views use from the PHP; with --check, write nothing and fail if what is there differs', $this->codegen ?? static function (): int {
                 fwrite(STDERR, "tinvar/codegen is not installed: it is a dev dependency, which this install left out.\n");
