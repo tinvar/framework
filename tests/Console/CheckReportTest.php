@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * `tinvar check --json` (ADR 0159): each problem located at the class,
+ * `tinvar check --json` (ADR 0160): each problem located at the class,
  * method or property it names, by reflection, and none for a problem that
  * names nothing the autoloader knows.
  */

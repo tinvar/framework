@@ -57,7 +57,7 @@ it('declares MIT in every manifest a package is published by', function (string 
         $manifests = [ROOT . '/packages/skeleton/composer.json'];
     }
     // The VS Code extension's manifest is the extension's own package.json,
-    // in src/ beside the files VS Code loads (ADR 0159).
+    // in src/ beside the files VS Code loads (ADR 0160).
     if ($package === 'vscode-extension') {
         $manifests = [ROOT . '/packages/vscode-extension/src/package.json'];
     }
