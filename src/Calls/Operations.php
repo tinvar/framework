@@ -6,6 +6,8 @@ namespace Tinvar\Calls;
 
 use Tinvar\Actions\ActionRegistry;
 use Tinvar\Actions\CompiledAction;
+use Tinvar\Auth\PanelBinding;
+use Tinvar\Auth\PanelRegistry;
 use Tinvar\Http\EntryContext;
 use Tinvar\Http\Request;
 use Tinvar\Orm\Model;
@@ -41,6 +43,54 @@ final class Operations
      */
     public static function declaring(string $attribute, ActionRegistry $actions, QueryRegistry $queries, EntryContext $entry): array
     {
+        return self::find($attribute, $actions, $queries, $entry->panelFor(...), $entry->panelDomainFor(...));
+    }
+
+    /**
+     * The same, read from the application's declarations alone -- no
+     * database, no request -- for what describes them rather than runs
+     * them: the OpenAPI document (ADR 0155). Panels are read as the entry
+     * checks read them, from $panels; a #[Panel] naming one it does not
+     * define is refused.
+     *
+     * @template A of object
+     * @param class-string<A> $attribute
+     * @return list<array{Operation, A}>
+     */
+    public static function described(string $attribute, ActionRegistry $actions, QueryRegistry $queries, ?PanelRegistry $panels = null): array
+    {
+        $panelFor = static function (array $declared, string $class) use ($panels): ?PanelBinding {
+            $binding = PanelBinding::of(array_values(array_filter($declared, static fn (mixed $p): bool => $p instanceof \Tinvar\Attributes\Panel)));
+            if ($binding === null) {
+                $byNamespace = class_exists($class) ? $panels?->panelOf($class) : null;
+                $binding = $byNamespace === null ? null : new PanelBinding($byNamespace);
+            }
+            if ($binding === null) {
+                return null;
+            }
+            $definition = $panels?->definition($binding->name)
+                ?? throw new \LogicException("{$class} is in the panel '{$binding->name}', which the application defines nowhere.");
+
+            return $binding->within($definition);
+        };
+        $domainFor = static function (array $declared, string $class) use ($panelFor, $panels): ?string {
+            $panel = $panelFor($declared, $class);
+
+            return $panel === null ? null : $panels?->definition($panel->name)?->domain;
+        };
+
+        return self::find($attribute, $actions, $queries, $panelFor, $domainFor);
+    }
+
+    /**
+     * @template A of object
+     * @param class-string<A> $attribute
+     * @param \Closure(list<\Tinvar\Attributes\Panel>, class-string): ?PanelBinding $panelFor
+     * @param \Closure(list<\Tinvar\Attributes\Panel>, class-string): ?string $domainFor
+     * @return list<array{Operation, A}>
+     */
+    private static function find(string $attribute, ActionRegistry $actions, QueryRegistry $queries, \Closure $panelFor, \Closure $domainFor): array
+    {
         $found = [];
 
         foreach ($actions->all() as $action) {
@@ -48,7 +98,7 @@ final class Operations
             if ($declared === []) {
                 continue;
             }
-            $found[] = [self::action($action, $entry, $attribute), $declared[0]->newInstance()];
+            $found[] = [self::action($action, $panelFor, $domainFor, $attribute), $declared[0]->newInstance()];
         }
 
         foreach ($queries->names() as $name) {
@@ -60,13 +110,13 @@ final class Operations
             if ($declared === []) {
                 continue;
             }
-            $found[] = [self::query($name, $class, $queries, $entry, $attribute), $declared[0]->newInstance()];
+            $found[] = [self::query($name, $class, $queries, $panelFor, $domainFor, $attribute), $declared[0]->newInstance()];
         }
 
         return $found;
     }
 
-    private static function action(CompiledAction $action, EntryContext $entry, string $attribute): Operation
+    private static function action(CompiledAction $action, \Closure $panelFor, \Closure $domainFor, string $attribute): Operation
     {
         $where = $action->where();
         // Its own #[Middleware] runs around an HTTP request, which a call
@@ -124,15 +174,15 @@ final class Operations
             name: $action->name,
             kind: Operation::ACTION,
             class: $holder,
-            panel: $entry->panelFor($action->panels, $holder),
+            panel: $panelFor($action->panels, $holder),
             inputs: $inputs,
             optional: $action->optionalModels,
-            hosts: self::hosts($action->host?->pattern, $entry->panelDomainFor($action->panels, $holder)),
+            hosts: self::hosts($action->host?->pattern, $domainFor($action->panels, $holder)),
         );
     }
 
     /** @param class-string $class */
-    private static function query(string $name, string $class, QueryRegistry $queries, EntryContext $entry, string $attribute): Operation
+    private static function query(string $name, string $class, QueryRegistry $queries, \Closure $panelFor, \Closure $domainFor, string $attribute): Operation
     {
         if ($queries->middlewareFor($name) !== []) {
             throw self::refuse($class, $attribute, 'declares #[Middleware], which runs around an HTTP request and a call from outside a browser would skip');
@@ -159,9 +209,9 @@ final class Operations
             name: $name,
             kind: Operation::QUERY,
             class: $class,
-            panel: $entry->panelFor($queries->panelsFor($name), $class),
+            panel: $panelFor($queries->panelsFor($name), $class),
             inputs: $inputs,
-            hosts: self::hosts($queries->hostFor($name), $entry->panelDomainFor($queries->panelsFor($name), $class)),
+            hosts: self::hosts($queries->hostFor($name), $domainFor($queries->panelsFor($name), $class)),
         );
     }
 

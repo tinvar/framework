@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace Tinvar\Calls;
 
 use Tinvar\Validation\FieldPlan;
+use Tinvar\Validation\Rules\Email;
+use Tinvar\Validation\Rules\FieldOf;
 use Tinvar\Validation\Rules\In;
+use Tinvar\Validation\Rules\Pattern;
 use Tinvar\Validation\Rules\Max;
 use Tinvar\Validation\Rules\Min;
 
@@ -17,8 +20,10 @@ use Tinvar\Validation\Rules\Min;
  * arguments a call sends are held to the operation's inputs and then
  * validated as a form post is (CallRunner), whatever the caller made of
  * this. So it says what is cheap to say -- the type, a backed enum's
- * values, an #[In] list, #[Min] and #[Max] -- and leaves the rest to the
- * validator's messages, which a refused call carries back.
+ * values, an #[In] or #[FieldOf] list, #[Min] and #[Max], an #[Email]'s
+ * format and a #[Pattern] -- and leaves the rest to the validator's
+ * messages, which a refused call carries back. The OpenAPI document (ADR
+ * 0155) reads an input's schema from here too.
  */
 final class InputSchema
 {
@@ -43,8 +48,14 @@ final class InputSchema
         ];
     }
 
-    /** @return array<string, mixed> */
-    private static function field(FieldPlan $field): array
+    /**
+     * One input's schema: its type, and what its rules say that a schema
+     * can -- an #[In] or #[FieldOf] list, #[Min] and #[Max], an #[Email]'s
+     * format and a #[Pattern] -- the rest left to the validator.
+     *
+     * @return array<string, mixed>
+     */
+    public static function field(FieldPlan $field): array
     {
         $schema = match ($field->kind) {
             'string' => ['type' => 'string'],
@@ -62,8 +73,14 @@ final class InputSchema
         };
 
         foreach ($field->rules as $rule) {
-            if ($rule instanceof In) {
+            if ($rule instanceof In || $rule instanceof FieldOf) {
                 $schema['enum'] = $rule->allowed;
+            } elseif ($rule instanceof Email) {
+                $schema['format'] = 'email';
+            } elseif ($rule instanceof Pattern) {
+                // The validator anchors it whole; a schema's pattern is a
+                // search, so it is anchored here to say the same.
+                $schema['pattern'] = '^(?:' . $rule->pattern . ')$';
             } elseif ($rule instanceof Min) {
                 $schema[$field->kind === 'string' ? 'minLength' : ($field->kind === 'array' ? 'minItems' : 'minimum')] = $rule->min;
             } elseif ($rule instanceof Max) {
