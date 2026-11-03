@@ -231,6 +231,16 @@ describe('downloads', function () {
             ->and($http->sent[0]->maxResponseBytes)->toBe(RemoteFiles::MAX_BYTES);
     });
 
+    // As every other key the framework writes (StorageKey::generate()), and as
+    // RemoteImages::store() keeps one: each tenant's files apart under the prefix.
+    it('stores a download for a tenant under that tenant\'s segment of the prefix', function () {
+        $iso = random_bytes(1_000);
+        $files = new RemoteFiles(new FakeOutboundHttp(static fn (): OutboundResponse => new OutboundResponse(200, [], $iso)), new MemoryStorage());
+
+        expect($files->download('https://mirror.example/a.iso', hash('sha256', $iso), 'images', 'iso', tenant: 'acme')->key)->toMatch('#^images/_acme/[0-9a-f]{32}\.iso\z#')
+            ->and($files->download('https://mirror.example/a.iso', hash('sha256', $iso), 'images', 'iso')->key)->toMatch('#^images/[0-9a-f]{32}\.iso\z#');
+    });
+
     it('stores nothing when the digest does not match, or the answer is not a 2xx', function () {
         $storage = new Kept();
 

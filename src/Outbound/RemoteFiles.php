@@ -30,8 +30,9 @@ use Tinvar\Storage\StorageKey;
  * URL alone vouches for nothing once a mirror or a name changes hands. A
  * file that fails is never kept: what was written is given up.
  *
- * The key is the prefix asked for, a name drawn at random, and the
- * extension asked for: nothing the URL or the server said reaches it.
+ * The key is the prefix asked for, the tenant it was stored for
+ * (StorageKey::tenantSegment()), a name drawn at random, and the extension
+ * asked for: nothing the URL or the server said reaches it.
  */
 final readonly class RemoteFiles
 {
@@ -49,6 +50,7 @@ final readonly class RemoteFiles
      * @param string $sha256 the file's SHA-256 in hex, as its publisher gives it
      * @param string $prefix a storage prefix (StorageKey::PREFIX)
      * @param string $extension the stored file's extension: lowercase letters and digits
+     * @param string $tenant the tenant it is stored for, whose segment its key carries; '' for none
      * @throws OutboundRefused for a URL or destination that is refused
      * @throws OutboundFailed when the transfer did not complete, or was over the cap
      * @throws RemoteContentRefused for a status other than a 2xx, or a digest that does not match
@@ -60,6 +62,7 @@ final readonly class RemoteFiles
         string $extension,
         int $maxBytes = self::MAX_BYTES,
         float $timeout = self::TIMEOUT,
+        string $tenant = '',
     ): RemoteFile {
         $sha256 = strtolower($sha256);
         if (preg_match('/^[0-9a-f]{64}\z/', $sha256) !== 1) {
@@ -80,7 +83,7 @@ final readonly class RemoteFiles
             throw new OutboundRefused('scheme', "{$target->origin()} is not https; a download is fetched over a connection whose certificate was checked.");
         }
 
-        $key = "{$prefix}/" . bin2hex(random_bytes(16)) . ".{$extension}";
+        $key = StorageKey::generate($prefix, $extension, $tenant);
         $file = $this->storage->writer($key);
 
         try {
