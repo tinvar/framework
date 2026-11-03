@@ -359,10 +359,11 @@ final class Accounts
 
     /**
      * Moves the account to the address its link reached, in one durable
-     * transaction with using the link, and moves its epoch, so every link
-     * and token minted for the old address stops counting. The old address
-     * is told. A browser signed in as the account stays signed in, under a
-     * new id.
+     * transaction with using the link that ends every session and moves its
+     * epochs, so every session, link and token minted for the old address
+     * stops counting, as a change of password does (ADR 0153). The old
+     * address is told. A browser signed in as the account stays signed in,
+     * under a new id.
      */
     public function confirmEmailChange(Request $http, string $token): AccountUser
     {
@@ -379,6 +380,7 @@ final class Accounts
             } catch (EmailTaken) {
                 throw new ValidationException(['token' => [self::ADDRESS_TAKEN]]);
             }
+            $this->sessions->endEverywhere($user->authIdentifier());
             $this->epochs->bump($user->authIdentifier());
             $this->credentials->bump($user->authIdentifier());
 

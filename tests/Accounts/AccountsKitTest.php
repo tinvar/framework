@@ -574,6 +574,25 @@ it('moves an address only by a link to the new one, and keeps one account per ad
     });
 })->with('drivers');
 
+it('ends every other session when the address changes, as a change of password does, and keeps the browser that changed it signed in', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        // A session that got in elsewhere -- the one a thief holds, say.
+        $other = new Visitor($app);
+        $other->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        expect($other->who())->toBe('ada@example.com');
+
+        $owner->do(static fn (Accounts $a, Request $r) => $a->requestEmailChange($r, $user, 'ada@new.example', PASSWORD));
+        $app->work();
+        $owner->do(static fn (Accounts $a, Request $r) => $a->confirmEmailChange($r, token($app->links('email-change', 'ada@new.example')[0])));
+
+        expect($other->who())->toBeNull()
+            ->and($owner->who())->toBe('ada@new.example');
+    });
+})->with('drivers');
+
 it('builds links on the configured https origin, stands in on localhost only outside production, and fails closed in it', function () {
     expect(AccountLinks::origin('https://app.example/', env: []))->toBe('https://app.example')
         ->and(AccountLinks::origin(null, 'http://127.0.0.1:6123', []))->toBe('http://localhost:6123')
