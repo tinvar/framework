@@ -650,15 +650,37 @@ final class Worker
         }
     }
 
-    /** What a failed job is kept with: the error, its class, and where it was thrown. */
+    /**
+     * What a failed job is kept with: the error, its class, and where it was
+     * thrown -- each frame's place and call, and none of its arguments.
+     * getTraceAsString() writes the first bytes of every argument wherever
+     * zend.exception_ignore_args is off, PHP's development default, and a
+     * job's arguments are a card's last digits, a token, an address: kept in
+     * the failed jobs' store and shown by queue:failed, they would outlive
+     * the job by as long as the failure is kept.
+     */
     private static function describe(\Throwable $e): string
     {
-        $text = $e::class . ': ' . $e->getMessage() . "\n" . $e->getTraceAsString();
+        $text = $e::class . ': ' . $e->getMessage() . "\n" . self::trace($e);
         for ($previous = $e->getPrevious(); $previous !== null; $previous = $previous->getPrevious()) {
             $text .= "\nCaused by " . $previous::class . ': ' . $previous->getMessage();
         }
 
         return mb_strcut($text, 0, 16_000);
+    }
+
+    /** The trace as getTraceAsString() writes it, less the arguments: `#0 file(line): Class->method()`. */
+    private static function trace(\Throwable $e): string
+    {
+        $lines = [];
+        foreach ($e->getTrace() as $i => $frame) {
+            $where = isset($frame['file']) ? $frame['file'] . '(' . ($frame['line'] ?? 0) . ')' : '[internal function]';
+            $call = isset($frame['class']) ? $frame['class'] . ($frame['type'] ?? '::') . $frame['function'] : $frame['function'];
+            $lines[] = "#{$i} {$where}: {$call}()";
+        }
+        $lines[] = '#' . \count($lines) . ' {main}';
+
+        return implode("\n", $lines);
     }
 
     private function arm(string $class, int $timeout): void
