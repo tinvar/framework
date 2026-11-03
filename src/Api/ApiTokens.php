@@ -297,7 +297,10 @@ final readonly class ApiTokens
 
         $this->store->touch($token->id, $now, $now->subSeconds(self::USE_RECORDED_EVERY));
 
-        return new PresentedApiToken($token, $user, $epoch);
+        // Held to the lookup's epoch; run on the auth epoch, which whatever
+        // the request binds to the user -- a job, a link, a cached answer --
+        // is checked against (TokenHolderLookup).
+        return new PresentedApiToken($token, $user, $this->users instanceof TokenHolderLookup ? $this->users->authEpoch($user) : $epoch);
     }
 
     private function now(): CarbonImmutable

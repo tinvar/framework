@@ -8,6 +8,7 @@ use Tinvar\Accounts\Passkeys\PasskeyChallenges;
 use Tinvar\Accounts\Passkeys\PasskeyStore;
 use Tinvar\Accounts\Passkeys\RelyingParty;
 use Tinvar\Accounts\TwoFactor\TwoFactorStore;
+use Tinvar\Api\TokenHolderLookup;
 use Tinvar\Auth\Authenticatable;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\UserLookup;
@@ -60,7 +61,7 @@ final readonly class AccountsKit
      * epoch: the lookup to hand ApiAccess (ADR 0159), so a token outlives an
      * ordinary sign-in and ends when every session does.
      */
-    public UserLookup $tokenHolders;
+    public TokenHolderLookup $tokenHolders;
     public StartSession $startSession;
     public AccountPaths $paths;
 
@@ -100,7 +101,7 @@ final readonly class AccountsKit
         $this->epochs = new AuthEpochs($connection);
         $this->credentials = new CredentialEpochs($connection);
         $this->lookup = new AccountUserLookup($users, $this->epochs);
-        $this->tokenHolders = new AccountTokenHolders($users, $this->credentials);
+        $this->tokenHolders = new AccountTokenHolders($users, $this->credentials, $this->epochs);
         $this->sessions = new Sessions($connection, $this->cookie, $users, $this->epochs, $this->credentials);
         $local = str_starts_with($origin, 'http://');
         $this->links = EmailLinks::fromKey($key, new DatabaseEmailLinkStore($connection), $this->lookup, $clock, localHttp: $local);

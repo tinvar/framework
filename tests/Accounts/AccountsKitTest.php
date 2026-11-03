@@ -629,6 +629,43 @@ it('moves the credential epoch API tokens are held to on sign out everywhere, a 
     });
 })->with('drivers');
 
+it('runs a token\'s request on its user\'s auth epoch, as jobs, links and cached answers read it, while the token is held to the credential epoch', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        // Signed in on another device: the auth epoch moves, the credential epoch does not.
+        $phone = new Visitor($app);
+        $phone->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        $auth = $app->kit->lookup->epoch($user);
+        expect($app->kit->tokenHolders->epoch($user))->toBe('0')
+            ->and($auth)->not->toBe('0');
+
+        $tokens = new ApiTokens(new ArrayApiTokens(), $app->kit->tokenHolders, $app->auth, $app->orm, ['' => ['notes:read']], clock: fn (): int => $app->now);
+        $owner->confirm();
+        $issued = $owner->do(static fn (Accounts $a, Request $r) => $app->auth->actingAs(
+            $user,
+            static fn () => $a->issueApiToken($r, $user, $tokens, 'Nightly export', ['notes:read'], CarbonImmutable::createFromTimestampUTC($app->now)->addDays(30)),
+        ));
+
+        // A job it dispatches, a link it mints and a query it caches are
+        // each bound to the epoch it runs on, and checked against the auth
+        // epoch: run on the credential epoch, a job was refused, and an
+        // answer cached under it outlived the role change that moves the
+        // auth epoch alone.
+        $presented = $tokens->authenticate($issued->plaintext);
+        expect($presented?->epoch)->toBe($auth)
+            ->and($issued->token->epoch)->toBe('0');
+
+        // Still held to the credential epoch: a sign-in elsewhere keeps it,
+        // signing out everywhere ends it.
+        $phone->do(static fn (Accounts $a, Request $r) => $a->signOut($r));
+        expect($tokens->authenticate($issued->plaintext)?->epoch)->toBe($app->kit->lookup->epoch($user));
+        $owner->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r));
+        expect($tokens->authenticate($issued->plaintext))->toBeNull();
+    });
+});
+
 it('ends every other session and token when two-factor is turned off, and tells the owner', function (string $driver) {
     onDriver($driver, function (MemberApp $app): void {
         $owner = member($app);
