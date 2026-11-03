@@ -8,7 +8,6 @@ use Carbon\CarbonImmutable;
 use Tinvar\Attributes\RequiresScope;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\PanelContext;
-use Tinvar\Auth\UserLookup;
 use Tinvar\Calls\CallHosts;
 use Tinvar\Orm\Orm;
 use Tinvar\Support\Uuid;
@@ -25,8 +24,9 @@ use Tinvar\Support\Uuid;
  * token did, so a token cannot make another, nor one where staff are
  * impersonating the user (AuthContext::impersonator()) -- with someone
  * signed in and outside acrossTenants(). A token is bound to its user and the epoch the
- * application's UserLookup says they are on -- the auth epoch, unless the
- * application hands ApiAccess a lookup whose epoch moves on fewer things -- the tenant and the panel in force, and the request's host
+ * application's TokenHolderLookup says it is held to -- a credential epoch
+ * that moves on fewer things than the auth epoch, or the auth epoch itself
+ * where the application says so -- the tenant and the panel in force, and the request's host
  * where the application routes by host (CallHosts, ADR 0149). Its scopes
  * are some of those the application declares with #[RequiresScope] in that
  * panel, found by discovery; a scope nothing declares is refused, as a
@@ -80,7 +80,7 @@ final readonly class ApiTokens
      */
     public function __construct(
         private ApiTokenStore $store,
-        private UserLookup $users,
+        private TokenHolderLookup $users,
         private AuthContext $auth,
         private Orm $orm,
         private array $scopes,
@@ -300,7 +300,7 @@ final readonly class ApiTokens
         // Held to the lookup's epoch; run on the auth epoch, which whatever
         // the request binds to the user -- a job, a link, a cached answer --
         // is checked against (TokenHolderLookup).
-        return new PresentedApiToken($token, $user, $this->users instanceof TokenHolderLookup ? $this->users->authEpoch($user) : $epoch);
+        return new PresentedApiToken($token, $user, $this->users->authEpoch($user));
     }
 
     private function now(): CarbonImmutable

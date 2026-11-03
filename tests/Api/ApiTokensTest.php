@@ -162,6 +162,26 @@ it('holds a token to the lifetime the application allows, and asks for an expiry
         ->and(fn () => new \Tinvar\Api\ApiAccess(new \Tinvar\Api\ArrayApiTokens(), $h->users, maxLifetimeDays: 0))->toThrow(\InvalidArgumentException::class);
 });
 
+it('refuses, when the Kernel is built, a lookup that does not say which epoch a token is held to and which its request runs on', function () {
+    $h = new Harness();
+    // A plain UserLookup: nothing says whether its epoch is the auth epoch
+    // or a credential epoch, so tokens are never taken with it.
+    $plain = new class implements \Tinvar\Auth\UserLookup {
+        public function find(string $id): ?\Tinvar\Auth\Authenticatable
+        {
+            return new User($id);
+        }
+
+        public function epoch(\Tinvar\Auth\Authenticatable $user): string
+        {
+            return '1';
+        }
+    };
+
+    expect(fn () => new \Tinvar\Api\ApiAccess(new \Tinvar\Api\ArrayApiTokens(), $plain))->toThrow(\TypeError::class)
+        ->and(fn () => new ApiTokens($h->tokenStore, $plain, $h->auth, $h->orm, ['' => ['racks:read']]))->toThrow(\TypeError::class);
+});
+
 it('holds a user to as many active tokens as the application allows', function () {
     $h = new Harness();
     foreach (range(1, 3) as $_) {

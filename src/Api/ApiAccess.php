@@ -4,12 +4,13 @@ declare(strict_types=1);
 
 namespace Tinvar\Api;
 
-use Tinvar\Auth\UserLookup;
-
 /**
  * What an application gives its Kernel to take API tokens (ADR 0159):
  * where tokens are kept, and how a token's user is found again with the
- * auth epoch they are on now.
+ * epoch a token is held to and the auth epoch its request runs on -- a
+ * TokenHolderLookup, never a plain UserLookup, which says only one epoch
+ * and not which. Handed one, the Kernel is not built: the type is checked
+ * here, so an app cannot take tokens on a lookup that never said.
  *
  *     apiAccess: new ApiAccess(new DatabaseApiTokens($connection), $customers),
  *
@@ -30,7 +31,7 @@ final readonly class ApiAccess
      */
     public function __construct(
         public ApiTokenStore $store,
-        public UserLookup $users,
+        public TokenHolderLookup $users,
         public int $maxPerUser = ApiTokens::MAX_PER_USER,
         public ?\Closure $clock = null,
         public ?int $maxLifetimeDays = ApiTokens::MAX_LIFETIME_DAYS,

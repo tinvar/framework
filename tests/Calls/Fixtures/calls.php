@@ -23,7 +23,7 @@ use Tinvar\Auth\PanelDefinition;
 use Tinvar\Auth\PanelRegistry;
 use Tinvar\Auth\PolicyGate;
 use Tinvar\Auth\PolicyRegistry;
-use Tinvar\Auth\UserLookup;
+use Tinvar\Api\TokenHolderLookup;
 use Tinvar\Calls\CallRunner;
 use Tinvar\Data\Data;
 use Tinvar\Http\BuildRegistry;
@@ -55,8 +55,8 @@ final class User implements Authenticatable
     }
 }
 
-/** Users by id, each on an epoch a test can move. */
-final class Users implements UserLookup
+/** Users by id, each on an epoch a test can move, which their tokens are held to and their requests run on. */
+final class Users implements TokenHolderLookup
 {
     /** @var array<string, string> id => epoch */
     public array $epochs = [];
@@ -69,6 +69,10 @@ final class Users implements UserLookup
     public function epoch(Authenticatable $user): string
     {
         return $this->epochs[$user->authIdentifier()] ?? '';
+    }
+    public function authEpoch(Authenticatable $user): string
+    {
+        return $this->epoch($user);
     }
 }
 

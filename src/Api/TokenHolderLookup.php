@@ -21,8 +21,11 @@ use Tinvar\Auth\UserLookup;
  * auth epoch alone -- or matched a session's entry whose auth epoch
  * happened to be the same number.
  *
- * A lookup that is not one of these is taken to report the auth epoch, and
- * a token's request runs on it.
+ * ApiAccess and ApiTokens take one of these and nothing less: a plain
+ * UserLookup says one epoch and not which, so it is refused when the
+ * Kernel is built, rather than tokens taken on a guess. An application
+ * whose tokens are held to the auth epoch says so, its authEpoch()
+ * returning what epoch() does.
  */
 interface TokenHolderLookup extends UserLookup
 {

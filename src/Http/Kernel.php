@@ -1332,7 +1332,7 @@ final class Kernel
             $first = $scopedEndpoints === [] ? $apiOperations[0][0]->class : $scopedEndpoints[0]->where();
             throw new \InvalidArgumentException(
                 "{$first} requires API token scopes, and the Kernel was given no ApiAccess to keep and check tokens with: "
-                . 'give it one -- new ApiAccess(new DatabaseApiTokens($connection), $users) -- or take the #[RequiresScope] away.',
+                . 'give it one -- new ApiAccess(new DatabaseApiTokens($connection), $tokenHolders), its lookup a TokenHolderLookup -- or take the #[RequiresScope] away.',
             );
         }
         $tokenSignIn = null;
