@@ -224,8 +224,11 @@ it('includes the accounts kit where the source has one, and refuses --accounts w
             return ['accounts' => $this->kit];
         }
     };
-    expect(made(['two-app', '--no-install', '--accounts'], $source)[0])->toBe(0)
-        ->and(json_decode((string) file_get_contents("{$work}/two-app/composer.json"), true)['require'])->toHaveKey('tinvar/accounts');
+    [$status, $out] = made(['two-app', '--no-install', '--accounts'], $source);
+    expect($status)->toBe(0)
+        ->and(json_decode((string) file_get_contents("{$work}/two-app/composer.json"), true)['require'])->toHaveKey('tinvar/accounts')
+        // Nothing installed it, so the next steps say to.
+        ->and($out)->toContain('bin/tinvar kit:install tinvar/accounts');
 })->skip(workspace() === null, 'the repository\'s checkout');
 
 it('takes the accounts a skeleton ships as they are, and will not take them out', function () {

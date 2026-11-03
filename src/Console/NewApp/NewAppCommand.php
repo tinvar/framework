@@ -306,6 +306,9 @@ final class NewAppCommand
         $lines = ['', "{$answers->name()} is made. Next:", '', "  cd {$cd}"];
         if (!$answers->install) {
             $lines[] = '  composer update && composer install    # then bin/tinvar setup';
+            foreach ($answers->kits as $package) {
+                $lines[] = '  bin/tinvar kit:install ' . $package . '    # before setup: then do the steps it says';
+            }
         }
         if ($answers->database->isServer() && !$ready) {
             $database = $answers->databaseName !== '' ? $answers->databaseName : $answers->identifier();
@@ -330,6 +333,10 @@ final class NewAppCommand
             $lines[] = '  Tenancy is registered: mark a model #[TenantScoped] and an entry point';
             $lines[] = '  #[TenantFrom(Host::class)], and add a row to tenants for each tenant'
                 . ($answers->tenancy === TenantLookup::Subdomain ? ' (http://<slug>.localhost:PORT on this machine).' : ' (its host on the row).');
+        }
+        if ($answers->install && $answers->kits !== []) {
+            $lines[] = '';
+            $lines[] = '  ' . implode(' and ', $answers->kits) . ' ' . (\count($answers->kits) === 1 ? 'is' : 'are') . ' installed: do the steps kit:install said above first.';
         }
         if ($answers->deploy !== null) {
             $lines[] = '';
