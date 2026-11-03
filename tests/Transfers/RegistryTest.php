@@ -213,6 +213,12 @@ describe('a CSV cell', function () {
             ->and(Csv::value("'plain"))->toBe("'plain")
             ->and(fn () => Csv::cell(['a']))->toThrow(\InvalidArgumentException::class);
     });
+
+    // Read, a `'` ahead of a formula character is the prefix and is taken
+    // off: text that began that way itself was read back without its `'`.
+    it('reads back as written, text that begins with the prefix among it', function (string $value) {
+        expect(Csv::value(Csv::cell($value)))->toBe($value);
+    })->with(["'=x", "'-5", "''=x", "'", "'plain", '=x', '-5']);
 });
 
 describe('a download token', function () {

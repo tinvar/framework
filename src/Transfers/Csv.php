@@ -19,13 +19,18 @@ namespace Tinvar\Transfers;
  * Read, nothing is evaluated: a cell is the text it holds. The one thing
  * undone is that prefix -- a `'` ahead of one of those characters is
  * dropped -- so a file this application exported reads back as the values
- * it was written from. What a cell holds is still only ever text, which
+ * it was written from: text that itself begins with `'` and one of them is
+ * written with a prefix of its own. What a cell holds is still only ever text, which
  * the row's form request coerces and validates.
  */
 final class Csv
 {
-    /** The characters a spreadsheet may read a cell beginning with as a formula. */
-    private const string FORMULA_START = "=+-@\t\r";
+    /**
+     * Text a spreadsheet may read as a formula -- beginning `=`, `+`, `-`,
+     * `@`, a tab or a carriage return -- or that begins with `'`s ahead of
+     * one of them.
+     */
+    private const string FORMULA = "/^'*[=+\\-@\t\r]/";
 
     /** The byte-order mark a spreadsheet may begin a UTF-8 file with. */
     private const string BOM = "\xEF\xBB\xBF";
@@ -52,10 +57,15 @@ final class Csv
         };
     }
 
-    /** Text, prefixed with `'` where a spreadsheet would read it as a formula. */
+    /**
+     * Text, prefixed with `'` where a spreadsheet would read it as a
+     * formula -- and where it begins with `'`s ahead of a formula
+     * character, so that value() takes off the prefix alone and never one
+     * of the text's own.
+     */
     private static function text(string $value): string
     {
-        return $value !== '' && str_contains(self::FORMULA_START, $value[0]) ? "'" . $value : $value;
+        return preg_match(self::FORMULA, $value) === 1 ? "'" . $value : $value;
     }
 
     /**
@@ -77,7 +87,7 @@ final class Csv
      */
     public static function value(string $cell): string
     {
-        return \strlen($cell) > 1 && $cell[0] === "'" && str_contains(self::FORMULA_START, $cell[1]) ? substr($cell, 1) : $cell;
+        return $cell !== '' && $cell[0] === "'" && preg_match(self::FORMULA, substr($cell, 1)) === 1 ? substr($cell, 1) : $cell;
     }
 
     /**
