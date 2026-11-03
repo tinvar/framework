@@ -86,3 +86,16 @@ it('bounds what it keeps of a stack', function () {
     expect(\strlen((string) $e->stack))->toBe(16384)
         ->and($e->sourceLine)->toBeNull();
 });
+
+// The digest reaches the log, the error page's "Reference" line and every
+// RenderFailed listener, as a report frame's does -- and that one is held to
+// Frame::DIGEST_SHAPE. An error frame's was not: a compromised renderer could
+// choose any string, of any length, as the reference a visitor is shown and
+// an operator searches the log for.
+it('refuses a digest not of the shape this side writes, as it refuses a report frame\'s', function () {
+    expect(RendererException::fromErrorFrame(['code' => 'render_failed', 'digest' => 'abc-123_Z'])->digest)->toBe('abc-123_Z')
+        ->and(RendererException::fromErrorFrame(['code' => 'render_failed', 'digest' => "x\ninjected"])->digest)->toBeNull()
+        ->and(RendererException::fromErrorFrame(['code' => 'render_failed', 'digest' => str_repeat('a', 65)])->digest)->toBeNull()
+        ->and(RendererException::fromErrorFrame(['code' => 'render_failed', 'digest' => ''])->digest)->toBeNull()
+        ->and(RendererException::fromErrorFrame(['code' => 'render_failed', 'digest' => 7])->digest)->toBeNull();
+});

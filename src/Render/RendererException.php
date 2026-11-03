@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Render;
 
+use Tinvar\Protocol\Frame;
+
 final class RendererException extends \RuntimeException
 {
     /**
@@ -135,7 +137,13 @@ final class RendererException extends \RuntimeException
         $code = \is_string($frame['code'] ?? null) && preg_match('/^[a-z_]{1,64}$/D', $frame['code']) === 1
             ? $frame['code']
             : 'render_failed';
-        $digest = \is_string($frame['digest'] ?? null) ? $frame['digest'] : null;
+        // And a digest of the shape this side writes, or none, as a report
+        // frame's is held (Frame::readReport): it is the reference a visitor
+        // is shown and an operator searches the log for, so a renderer is
+        // not to write it freely either.
+        $digest = \is_string($frame['digest'] ?? null) && preg_match(Frame::DIGEST_SHAPE, $frame['digest']) === 1
+            ? $frame['digest']
+            : null;
 
         $message = 'The renderer reported an error.';
         if ($debug && \is_string($frame['message'] ?? null)) {
