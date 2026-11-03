@@ -342,4 +342,14 @@ describe('image sources', function () {
             ->toThrow(fn (RemoteContentRefused $e) => expect($e->status)->toBe(403))
             ->and($http->sent)->toBe([]);
     });
+
+    // An image source is a URL someone gave the application, as a webhook's is
+    // (ADR 0038): the private ranges #[OutboundPolicy] allow opens for the
+    // application's own services are not opened to it.
+    it('refuses an image source on a private range the policy opened for the application\'s own services', function () {
+        $http = new FakeOutboundHttp(static fn (): OutboundResponse => new OutboundResponse(200, [], png()), new OutboundPolicy(allow: ['10.0.0.0/8']), new StaticResolver(['search.internal' => ['10.0.4.7']]));
+
+        expect(fn () => new RemoteImages($http)->fetch('https://search.internal/logo.png'))->toThrow(OutboundRefused::class)
+            ->and($http->sent)->toBe([]);
+    });
 });

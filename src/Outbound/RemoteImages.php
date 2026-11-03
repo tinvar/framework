@@ -15,7 +15,8 @@ use Tinvar\Storage\FileTypes;
  *     $image = $images->store($url, prefix: 'logos');
  *
  * Fetched once, by the server, through OutboundHttp -- resolved, vetted and
- * pinned, up to three redirects each vetted again, https only -- and never
+ * pinned, up to three redirects each vetted again, https only, with
+ * every private address refused whatever #[OutboundPolicy] allows -- and never
  * hot-linked: a page that showed the tenant's URL would hand every viewer's
  * address to whoever runs it, and show whatever it served next.
  *
@@ -73,6 +74,10 @@ final readonly class RemoteImages
             timeout: self::TIMEOUT,
             maxResponseBytes: $maxBytes,
             maxRedirects: self::MAX_REDIRECTS,
+            // Someone else chose the URL: the private addresses the
+            // application opened for its own services are not theirs to
+            // reach (ADR 0038).
+            publicOnly: true,
         ));
         if (!$response->successful()) {
             throw new RemoteContentRefused(RemoteContentRefused::STATUS, "GET {$target->origin()} answered {$response->status}.", $response->status);
