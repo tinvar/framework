@@ -17,7 +17,7 @@ final readonly class NewAppAnswers
 {
     /**
      * @param string $directory where the application is made: absolute, and missing or empty
-     * @param list<string> $kits the kits' packages to install, `tinvar/accounts`
+     * @param list<string> $kits the kits' packages to install, `tinvar/tenancy`
      */
     public function __construct(
         public string $directory,

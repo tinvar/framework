@@ -927,7 +927,7 @@ final class AppConsole
                     fwrite(STDERR, $text);
                 },
             )->run($a))
-            ->command('kit:install', 'kit:install <package>', "Install a kit Composer installed -- a package declaring extra.tinvar.kit, as tinvar/accounts -- into the app: it writes the app's own classes, migrations and views once", $this->kitInstall(...))
+            ->command('kit:install', 'kit:install <package>', "Install a kit Composer installed -- a package declaring extra.tinvar.kit, as tinvar/tenancy -- into the app: it writes the app's own classes, migrations and views once", $this->kitInstall(...))
             ->command('key:generate', 'key:generate [--show]', "Generate the app key and the probe token into their files outside the project where neither the environment nor the file has one, saying where and never what; --show prints a new key for a platform's secret store instead, and writes nothing", $this->keyGenerate(...));
         $this->command('packages:lock', 'packages:lock', "Pin each enabled package's version and files in tinvar.lock", fn (array $a): int => $this->packagesLock())
             ->command('audit', 'audit', 'composer audit and npm audit over the lockfiles, held to the reviewed exceptions in audit-exceptions.json (network)', fn (array $a): int => $this->audit());

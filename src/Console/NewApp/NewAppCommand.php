@@ -243,7 +243,7 @@ final class NewAppCommand
             $accounts = $available['accounts'] ?? null;
         }
         if ($wantsAccounts === true && !$source->shipsAccounts() && !$accounts instanceof KitDeclaration) {
-            throw new \InvalidArgumentException("--accounts, and {$source->describe()} has no accounts kit yet: make the app without it, and add it later with `composer require tinvar/accounts` and `bin/tinvar kit:install tinvar/accounts`.");
+            throw new \InvalidArgumentException("--accounts, and {$source->describe()} has no accounts kit yet: make the app without it, and wire tinvar/framework's Tinvar\\Accounts\\AccountsKit into its Kernel later, as the skeleton's Kernel does (ADR 0153).");
         }
         if ($accounts instanceof KitDeclaration && ($wantsAccounts ?? ($ask && Prompts::confirm("Include accounts? ({$accounts->title})", default: false)))) {
             $kits[] = $accounts->package;

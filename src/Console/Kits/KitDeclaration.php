@@ -11,7 +11,7 @@ namespace Tinvar\Console\Kits;
 final readonly class KitDeclaration
 {
     /**
-     * @param string $package the Composer package, `tinvar/accounts`
+     * @param string $package the Composer package, `tinvar/tenancy`
      * @param string $name what `tinvar new` offers it as, `accounts`
      * @param string $title what a person reads
      * @param class-string<AppKit>|string $class the AppKit to build once it is installed

@@ -193,6 +193,8 @@ it('includes the accounts kit where the source has one, and refuses --accounts w
     [$refused, , $err] = made(['one-app', '--no-install', '--accounts']);
     expect($refused)->toBe(64)
         ->and($err)->toContain('has no accounts kit yet')
+        // No package is named that does not exist: AccountsKit is tinvar/framework's.
+        ->and($err)->not->toContain('composer require tinvar/accounts')
         ->and(file_exists("{$work}/one-app"))->toBeFalse();
 
     // The kit's package is the source's to serve: here, only named.
