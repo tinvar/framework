@@ -57,8 +57,10 @@ use Tinvar\Validation\ValidationException;
  *      claimed yet (429) and under their quota (507), an image drawn again,
  *      and what would be kept scanned for malware where Uploads has a
  *      scanner (422 for a find, 503 for a scanner that could not answer).
- *   6. Stored under `<prefix>/<random>.<extension of the sniffed type>`, and
- *      recorded with the ticket's binding for the action to be held to.
+ *   6. Stored under `<prefix>/_<tenant>/<random>.<extension of the sniffed
+ *      type>` (StorageKey::generate(); no tenant's segment for a ticket
+ *      made in none), and recorded with the ticket's binding for the
+ *      action to be held to.
  */
 final class UploadEndpoint
 {
