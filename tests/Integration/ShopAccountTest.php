@@ -879,6 +879,33 @@ it('places an order at the product\'s price, and refuses one it cannot fill', fu
         ->toHaveKey('quantity');
 });
 
+// Each order is a row, a confirmation email and a webhook to the warehouse,
+// so a customer -- or a script holding their session -- placing orders in a
+// loop is held to a budget of their own, beside the one every action spends.
+it('holds a customer to a budget of orders, and leaves everyone else theirs', function () {
+    [$visitor, $pdo] = shop();
+    $visitor->get('/sign-in');
+    signIn($visitor);
+    $teacup = (string) $pdo->query("SELECT id FROM products WHERE sku = 'PW-1001'")->fetchColumn();
+    $orders = static fn (): int => (int) $pdo->query('SELECT COUNT(*) FROM orders')->fetchColumn();
+
+    for ($i = 0; $i < \Shop\Support\OrderBudget::LIMIT; $i++) {
+        expect($visitor->action('orders.place', ['product' => $teacup, 'quantity' => 1])->status)->toBe(303);
+    }
+    $before = $orders();
+    $refused = $visitor->action('orders.place', ['product' => $teacup, 'quantity' => 1]);
+
+    expect($refused->status)->toBe(429)
+        ->and((int) $refused->header('retry-after'))->toBeGreaterThan(0)
+        ->and($orders())->toBe($before);
+
+    // Another customer, on the same address, still places theirs.
+    $other = new Visitor($visitor->kernel, database: $visitor->database);
+    $other->get('/sign-in');
+    $other->action('account.signIn', ['email' => Seeder::emailFor(1), 'password' => Seeder::passwordFor(1), 'next' => '/orders']);
+    expect($other->action('orders.place', ['product' => $teacup, 'quantity' => 1])->status)->toBe(303);
+});
+
 // "An action's response lists the server-side query tags it invalidated
 // (X-Invalidated-Tags), and the client flushes matching prefetch entries
 // automatically" -- so a list of orders prefetched before the order is not
