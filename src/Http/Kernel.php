@@ -2858,7 +2858,8 @@ final class Kernel
     /**
      * Whether $request is for something that takes an API token: /_api, or
      * an endpoint marked #[RequiresScope] -- matched as dispatch matches it.
-     * A preflight asks about the method it names.
+     * A preflight is matched to no endpoint, so takes none: a browser sends
+     * no token with one.
      */
     private function takesApiTokens(Request $request): bool
     {
