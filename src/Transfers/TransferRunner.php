@@ -12,7 +12,9 @@ use Tinvar\Auth\Checks;
 use Tinvar\Auth\Gate;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Data\Data;
+use Tinvar\Http\DeclaredMiddleware;
 use Tinvar\Http\ForbiddenException;
+use Tinvar\Http\HttpException;
 use Tinvar\Http\NotFoundException;
 use Tinvar\Jobs\JobControl;
 use Tinvar\Jobs\JobRefused;
@@ -154,6 +156,38 @@ final readonly class TransferRunner
                 throw ForbiddenException::check($check->ability, $transfer->where());
             }
         }
+    }
+
+    /**
+     * Asks the gates the transfer's attributes put on it (#[RequiresPlan],
+     * ADR 0150) again, as its job runs: a start let on an hour ago is no
+     * reason to write a file -- or apply one -- for a tenant whose plan has
+     * lapsed since. Run in the job's tenant, as its user, in its panel
+     * (JobRunner), with no request: a gate that reads one finds nothing,
+     * and refuses.
+     *
+     * Null when every gate lets it on; else the end of what the record
+     * says -- the gate's own words after a colon, or a full stop for a gate
+     * that could not be built, which is reported and refuses: it fails
+     * closed.
+     */
+    private function gates(CompiledTransfer $transfer): ?string
+    {
+        try {
+            DeclaredMiddleware::check($transfer->middleware, $this->resolver);
+        } catch (HttpException $e) {
+            $said = trim(preg_replace('/\s+/', ' ', $e->getMessage()) ?? '');
+
+            return $said === '' ? '.' : ": {$said}";
+        } catch (\Throwable $e) {
+            if ($this->report !== null) {
+                ($this->report)($e);
+            }
+
+            return '.';
+        }
+
+        return null;
     }
 
     /**
@@ -342,6 +376,12 @@ final readonly class TransferRunner
             $this->authorize($transfer, $arguments);
         } catch (ForbiddenException) {
             $this->fail($record, 'You may no longer run this export.', $control);
+
+            return;
+        }
+        $refused = $this->gates($transfer);
+        if ($refused !== null) {
+            $this->fail($record, "You may no longer run this export{$refused}", $control);
 
             return;
         }
@@ -627,6 +667,14 @@ final readonly class TransferRunner
             $this->fail($record, $record->rows > 0
                 ? "You may no longer run this import. The first {$record->rows} rows were imported before it stopped; the rest were not."
                 : 'You may no longer run this import.');
+
+            return true;
+        }
+        $refused = $this->gates($transfer);
+        if ($refused !== null) {
+            $this->fail($record, $record->rows > 0
+                ? "You may no longer run this import{$refused} The first {$record->rows} rows were imported before it stopped; the rest were not."
+                : "You may no longer run this import{$refused}");
 
             return true;
         }

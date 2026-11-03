@@ -295,3 +295,22 @@ describe('/_import', function () {
         expect($app->queue->size(Transfers::QUEUE))->toBe(0);
     });
 });
+
+// A gate is asked again when the import's job runs, as an export's is.
+it('applies nothing for a tenant its gate refuses by the time the job runs', function () {
+    Tinvar\Tests\Transfers\Fixtures\Subscribed::$tenants = ['acme' => true];
+    $app = new App();
+    expect($app->import("widget,stock\n" . W1 . ",10\n", name: 'paid.stock')->status)->toBe(202);
+
+    Tinvar\Tests\Transfers\Fixtures\Subscribed::$tenants = [];
+
+    try {
+        expect($app->work())->toBe([])
+            ->and($app->stockOf(W1))->toBe(3)
+            ->and($app->storage->keys())->toBe([])
+            ->and($app->record()->status)->toBe(TransferRecord::FAILED)
+            ->and($app->record()->failure)->toBe('You may no longer run this import: This needs a subscription. Choose a plan to go on.');
+    } finally {
+        Tinvar\Tests\Transfers\Fixtures\Subscribed::$tenants = ['acme' => true];
+    }
+});

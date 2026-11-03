@@ -100,6 +100,65 @@ final class DeclaredMiddleware
      */
     public static function build(string $reference, \Closure $resolver): Middleware
     {
+        [$attribute, $handler] = self::handler($reference, $resolver);
+
+        // Deferred where it stands in the stack, and run by the entry point's
+        // runner once its #[Authorize] checks have passed (EntryGates).
+        return EntryGates::defer(new readonly class ($handler, $attribute) implements Middleware {
+            public function __construct(private AttributeMiddleware $handler, private MiddlewareAttribute $attribute) {}
+
+            public function handle(Request $request, \Closure $next): Response
+            {
+                return $this->handler->handle($this->attribute, $request, $next);
+            }
+        });
+    }
+
+    /**
+     * Runs every gate in $middleware -- the references among it; a class
+     * name is no gate -- as a check, now: where no request runs the entry
+     * point, as a queued export's or import's job, which asks again what
+     * its start asked. A gate lets it on by calling `$next`; one that
+     * throws refuses with what it threw, and one that answers instead is a
+     * refusal too, with nobody to hand its answer to.
+     *
+     * The request is $request, or one that carries nothing -- no header, no
+     * cookie, no session -- so a gate that reads the request finds nothing
+     * there, and refuses: it fails closed.
+     *
+     * @param list<string> $middleware an entry point's compiled middleware
+     * @param \Closure(class-string): object $resolver
+     * @throws HttpException as a gate refuses
+     * @throws \LogicException for a reference that points at nothing, or a middleware that cannot be built
+     */
+    public static function check(array $middleware, \Closure $resolver, ?Request $request = null): void
+    {
+        $request ??= new Request('POST', '/');
+        foreach ($middleware as $name) {
+            if (!self::isReference($name)) {
+                continue;
+            }
+            [$attribute, $handler] = self::handler($name, $resolver);
+            $pass = Response::make(204);
+            $answer = $handler->handle($attribute, $request, static fn (Request $passed): Response => $pass);
+            if ($answer !== $pass) {
+                throw new HttpException(
+                    $answer->status >= 400 ? $answer->status : 403,
+                    'A gate on this entry point answered rather than let it on: ' . $attribute::class . '.',
+                    'gate_refused',
+                );
+            }
+        }
+    }
+
+    /**
+     * The attribute a reference points at, and its middleware, built.
+     *
+     * @param \Closure(class-string): object $resolver
+     * @return array{MiddlewareAttribute, AttributeMiddleware}
+     */
+    private static function handler(string $reference, \Closure $resolver): array
+    {
         $attribute = self::attribute($reference);
         $class = $attribute->middleware();
         $declared = '#[' . $attribute::class . '] on ' . substr($reference, strpos($reference, '@') + 1, strrpos($reference, '#') - strpos($reference, '@') - 1);
@@ -121,16 +180,7 @@ final class DeclaredMiddleware
             throw new \LogicException("{$declared} names {$class} as its middleware, and the resolver built " . get_debug_type($handler) . ', which is no ' . AttributeMiddleware::class . '.');
         }
 
-        // Deferred where it stands in the stack, and run by the entry point's
-        // runner once its #[Authorize] checks have passed (EntryGates).
-        return EntryGates::defer(new readonly class ($handler, $attribute) implements Middleware {
-            public function __construct(private AttributeMiddleware $handler, private MiddlewareAttribute $attribute) {}
-
-            public function handle(Request $request, \Closure $next): Response
-            {
-                return $this->handler->handle($this->attribute, $request, $next);
-            }
-        });
+        return [$attribute, $handler];
     }
 
     /**

@@ -144,6 +144,75 @@ final readonly class WidgetsExport
     }
 }
 
+/**
+ * A package's gate, as #[RequiresPlan] is (ADR 0150): lets on a tenant
+ * Subscribed names, and refuses any other with a 402.
+ */
+#[\Attribute(\Attribute::TARGET_CLASS | \Attribute::TARGET_METHOD)]
+final readonly class RequiresSubscription implements \Tinvar\Http\MiddlewareAttribute
+{
+    public function middleware(): string
+    {
+        return CheckSubscription::class;
+    }
+}
+
+/** Which tenants pay now: the test changes it between the start and the run. */
+final class Subscribed
+{
+    /** @var array<string, true> */
+    public static array $tenants = ['acme' => true];
+
+    /** Whether nothing can build the gate's middleware, as when its package registered nothing. */
+    public static bool $unbuildable = false;
+}
+
+final readonly class CheckSubscription implements \Tinvar\Http\AttributeMiddleware
+{
+    public function __construct(private Orm $orm)
+    {
+        if (Subscribed::$unbuildable) {
+            throw new \LogicException('Nothing is registered for the subscription check.');
+        }
+    }
+
+    public function handle(\Tinvar\Http\MiddlewareAttribute $attribute, Request $request, \Closure $next): Response
+    {
+        $tenant = $this->orm->tenant();
+        if (!isset(Subscribed::$tenants[$tenant])) {
+            throw new \Tinvar\Http\HttpException(402, 'This needs a subscription. Choose a plan to go on.', 'plan_required');
+        }
+
+        return $next($request);
+    }
+}
+
+/** The widgets export, for a tenant that pays alone. */
+#[Export(WidgetRow::class, name: 'paid.widgets', maxRows: 1_000), Panel('staff'), Authorize('export', Widget::class), RequiresSubscription]
+final readonly class PaidWidgetsExport
+{
+    public function __construct(private Orm $orm) {}
+
+    public function __invoke(): Query
+    {
+        return Widget::query($this->orm)->orderBy('sku');
+    }
+}
+
+/** The stock import, for a tenant that pays alone. */
+#[Import(name: 'paid.stock', maxBytes: 4096, maxRows: 5, revalidates: ['widgets']), Panel('staff'),
+    Authorize('restock', Widget::class), Authorize('update', 'widget'), RequiresSubscription]
+final readonly class PaidStockImport
+{
+    public function __construct(private Orm $orm) {}
+
+    public function __invoke(StockRow $row): void
+    {
+        $row->widget->stock = $row->stock;
+        $this->orm->save($row->widget);
+    }
+}
+
 /** The same export, held to the admin host by its own #[Domain] (ADR 0149). */
 #[Export(WidgetRow::class, name: 'hosted.widgets', maxRows: 1_000), Panel('staff'), Authorize('export', Widget::class), \Tinvar\Attributes\Domain('admin.{root}')]
 final readonly class HostedWidgetsExport
@@ -399,7 +468,7 @@ final class App
         $this->runner = new JobRunner($this->orm, $jobSigner, $container->resolver(), $this->auth, $panels, $registry, users: $this->users);
 
         $transfers = new TransferRegistry();
-        $transfers->registerAll([WidgetsExport::class, StockImport::class, RestockImport::class, ...($domains === null ? [] : [HostedWidgetsExport::class, AccountWidgetsExport::class])]);
+        $transfers->registerAll([WidgetsExport::class, StockImport::class, RestockImport::class, PaidWidgetsExport::class, PaidStockImport::class, ...($domains === null ? [] : [HostedWidgetsExport::class, AccountWidgetsExport::class])]);
         $this->store = new ArrayTransferStore();
         if ($databaseStore) {
             DatabaseTransferStore::define(new Schema($this->connection, Dialect::for($this->connection)));

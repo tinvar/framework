@@ -360,3 +360,59 @@ it('fails the record of a transfer whose job could not be queued', function (str
         ->and($app->record()->finishedAt)->toBe($app->now)
         ->and($app->storage->keys())->toBe([]);
 })->with(['export', 'import']);
+
+// A gate (#[RequiresPlan]) is asked when the export starts, and again when
+// its job runs: a tenant that stopped paying in between is not written the
+// file it no longer pays for (ADR 0150).
+describe('a gated export', function () {
+    beforeEach(function () {
+        Tinvar\Tests\Transfers\Fixtures\Subscribed::$tenants = ['acme' => true];
+        Tinvar\Tests\Transfers\Fixtures\Subscribed::$unbuildable = false;
+    });
+
+    afterEach(function () {
+        Tinvar\Tests\Transfers\Fixtures\Subscribed::$tenants = ['acme' => true];
+        Tinvar\Tests\Transfers\Fixtures\Subscribed::$unbuildable = false;
+    });
+
+    it('is refused at the start to a tenant the gate refuses, and nothing is queued', function () {
+        $app = new App();
+        Tinvar\Tests\Transfers\Fixtures\Subscribed::$tenants = [];
+
+        expect($app->export(name: 'paid.widgets')->status)->toBe(402)
+            ->and($app->store->all())->toBe([])
+            ->and($app->queue->size(Transfers::QUEUE))->toBe(0);
+    });
+
+    it('asks the gate again when its job runs, and writes nothing for a tenant it refuses now', function () {
+        $app = new App();
+        expect($app->export(name: 'paid.widgets')->status)->toBe(202);
+
+        Tinvar\Tests\Transfers\Fixtures\Subscribed::$tenants = [];
+
+        expect($app->work())->toBe([])
+            ->and($app->storage->keys())->toBe([])
+            ->and($app->record()->status)->toBe(TransferRecord::FAILED)
+            ->and($app->record()->failure)->toBe('You may no longer run this export: This needs a subscription. Choose a plan to go on.');
+    });
+
+    it('writes the file for a tenant the gate still lets on', function () {
+        $app = new App();
+        expect($app->export(name: 'paid.widgets')->status)->toBe(202)
+            ->and($app->work())->toBe([])
+            ->and($app->record()->status)->toBe(TransferRecord::DONE)
+            ->and($app->record()->rows)->toBe(3);
+    });
+
+    it('fails closed on the worker when nothing can build the gate', function () {
+        $app = new App();
+        expect($app->export(name: 'paid.widgets')->status)->toBe(202);
+
+        Tinvar\Tests\Transfers\Fixtures\Subscribed::$unbuildable = true;
+
+        expect($app->work())->toBe([])
+            ->and($app->storage->keys())->toBe([])
+            ->and($app->record()->status)->toBe(TransferRecord::FAILED)
+            ->and($app->record()->failure)->toBe('You may no longer run this export.');
+    });
+});
