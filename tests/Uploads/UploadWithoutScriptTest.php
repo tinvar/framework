@@ -25,6 +25,7 @@ use function Tinvar\Tests\Uploads\Fixtures\png;
 use const Tinvar\Tests\Uploads\Fixtures\CSRF;
 use const Tinvar\Tests\Uploads\Fixtures\P1;
 use const Tinvar\Tests\Uploads\Fixtures\P2;
+use const Tinvar\Tests\Uploads\Fixtures\P3;
 use const Tinvar\Tests\Uploads\Fixtures\SESSION_COOKIE;
 
 require_once __DIR__ . '/Fixtures/app.php';
@@ -219,3 +220,16 @@ it('keeps no file beside one it refuses', function () {
         ->and($app->storage instanceof MemoryStorage ? $app->storage->keys() : null)->toBe([])
         ->and($app->store->all())->toBe([]);
 });
+
+// The post's checks and gates run after its files are taken: a post they
+// refuse leaves none of them kept, waiting against the quota and the cap.
+it('keeps no file of a post its gate or its checks refuse', function (Closure $post, int $status) {
+    $app = new App(new MemoryStorage());
+
+    expect($post($app)->status)->toBe($status)
+        ->and($app->storage instanceof MemoryStorage ? $app->storage->keys() : null)->toBe([])
+        ->and($app->store->all())->toBe([]);
+})->with([
+    'the gate refuses' => [fn (App $app) => postWithoutScript($app, 'profiles.gatedAvatar', ['profile' => P1, '_upload_tickets' => ['avatar' => $app->ticket($app->profile(P1), action: 'profiles.gatedAvatar')]], ['avatar' => png()]), 402],
+    'its check refuses' => [fn (App $app) => postWithoutScript($app, 'profiles.avatar', ['profile' => P3, '_upload_tickets' => ['avatar' => $app->ticket($app->profile(P3))]], ['avatar' => png()]), 403],
+]);

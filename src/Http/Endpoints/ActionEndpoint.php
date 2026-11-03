@@ -300,6 +300,17 @@ final class ActionEndpoint
             // "With JavaScript, a failed action returns errors with the
             // payload (no redirect)."
             return self::json(422, ['errors' => $e->errors]);
+        } catch (\Throwable $e) {
+            // Refused -- by its #[Authorize], its gate (#[RequiresPlan],
+            // ADR 0150), or the action itself -- after its files were
+            // taken: none is kept waiting against the quota and the cap for
+            // a post that will never claim it. One the action claimed
+            // before it failed is the action's, and left.
+            if ($discardInline !== null) {
+                $discardInline();
+            }
+
+            throw $e;
         }
 
         if ($result->isRedirect()) {
