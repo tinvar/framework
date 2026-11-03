@@ -19,9 +19,10 @@ use Tinvar\Queue\ArrayQueue;
 use Tinvar\Queue\PendingJob;
 
 /** @param list<\Tinvar\Observability\MetricsStore> $readAlso */
-function metrics(?\Tinvar\Observability\MetricsStore $store = null, float $flushEvery = 0.0, array $readAlso = []): Metrics
+/** @param (\Closure(): float)|null $clock */
+function metrics(?\Tinvar\Observability\MetricsStore $store = null, float $flushEvery = 0.0, array $readAlso = [], ?\Closure $clock = null): Metrics
 {
-    return new Metrics($store ?? new ArrayMetricsStore(), $flushEvery, $readAlso)
+    return new Metrics($store ?? new ArrayMetricsStore(), $flushEvery, $readAlso, $clock)
         ->counter('shop_orders_total', 'Orders placed.', ['channel'])
         ->histogram('shop_checkout_seconds', 'Seconds a checkout took.', ['channel'], [0.1, 0.5, 1.0]);
 }
@@ -357,7 +358,12 @@ it('tries a store that fails at most once every flushEvery, not after every requ
         }
     };
     $reported = 0;
-    $metrics = metrics($failing, flushEvery: 0.05);
+    // The test's clock, so a worker paused under load between two flushes
+    // is not taken for the interval passing.
+    $now = 1_800_000_000.0;
+    $metrics = metrics($failing, flushEvery: 0.05, clock: static function () use (&$now): float {
+        return $now;
+    });
     $metrics->reportTo(static function () use (&$reported): void {
         $reported++;
     });
@@ -370,7 +376,7 @@ it('tries a store that fails at most once every flushEvery, not after every requ
     $triedWithinTheInterval = [$failing->attempts, $reported];
 
     // Once the interval has passed, the next request tries it again.
-    usleep(60_000);
+    $now += 0.06;
     $metrics->increment('shop_orders_total', ['channel' => 'web']);
     $metrics->flush();
 

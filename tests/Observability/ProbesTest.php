@@ -358,7 +358,9 @@ describe('the checks', function () {
         }
         try {
             $started = microtime(true);
-            $text = new Metrics()->collect(new RendererCheck($directory, new RendererHealth(timeoutSeconds: 0.4), within: 0.6))->exposition();
+            // Uncapped, four stuck renderers at a second each take four:
+            // the bound below leaves a loaded machine room, and still fails that.
+            $text = new Metrics()->collect(new RendererCheck($directory, new RendererHealth(timeoutSeconds: 1.0), within: 0.6))->exposition();
             $took = microtime(true) - $started;
         } finally {
             foreach ($servers as $server) {
@@ -367,7 +369,7 @@ describe('the checks', function () {
             stop([], $directory);
         }
 
-        expect($took)->toBeLessThan(1.2)
+        expect($took)->toBeLessThan(2.5)
             ->and($text)->toContain("tinvar_renderers 4\n")
             ->and($text)->toContain("tinvar_renderers_answering 0\n")
             ->and($text)->toContain('tinvar_renderer_up{slot="3"} 0');

@@ -70,11 +70,13 @@ final class Metrics
      *        every request, which suits APCu, and a second suits a file
      * @param list<MetricsStore> $readAlso stores other processes count into,
      *        added to this one's at every scrape and never written to here
+     * @param (\Closure(): float)|null $clock seconds since the epoch, as microtime(true); microtime(true) unless given
      */
     public function __construct(
         private readonly MetricsStore $store = new ArrayMetricsStore(),
         private readonly float $flushEvery = 0.0,
         private readonly array $readAlso = [],
+        private readonly ?\Closure $clock = null,
     ) {}
 
     /** @param list<string> $labels */
@@ -166,7 +168,7 @@ final class Metrics
             return;
         }
 
-        if (!$force && $this->flushEvery > 0 && microtime(true) - $this->flushedAt < $this->flushEvery) {
+        if (!$force && $this->flushEvery > 0 && $this->now() - $this->flushedAt < $this->flushEvery) {
             // Whatever is still held when the process ends -- a recycled
             // worker, the end of a php -S request -- goes then.
             if (!$this->flushesAtShutdown) {
@@ -183,7 +185,7 @@ final class Metrics
         // the counts: a store that fails -- SQLite busy for its whole
         // timeout, APCu full -- is tried, and reported, at most once every
         // `flushEvery`, never after every request.
-        $this->flushedAt = microtime(true);
+        $this->flushedAt = $this->now();
 
         try {
             $this->store->add($this->pending);
@@ -462,5 +464,10 @@ final class Metrics
         }
 
         return rtrim(rtrim(\sprintf('%.9F', $value), '0'), '.');
+    }
+
+    private function now(): float
+    {
+        return $this->clock === null ? microtime(true) : ($this->clock)();
     }
 }
