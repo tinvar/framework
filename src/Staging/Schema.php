@@ -31,6 +31,38 @@ final class Schema
         $this->driver = $driver;
     }
 
+    /**
+     * What tells this database from every other one the same driver
+     * reaches, as the server itself says it: for the import to refuse
+     * production's own database handed to it as staging's over a second
+     * connection, which the connection objects cannot tell apart.
+     *
+     * SQLite: the file's real path, or null in memory (two in-memory
+     * databases are two). Postgres: the database, the schema, the server's
+     * address and port, and when the postmaster started -- the one thing
+     * two servers at one address never share. MySQL: the database and the
+     * server's own uuid. Every part is what any role may read.
+     */
+    public function identity(): ?string
+    {
+        if ($this->driver === 'sqlite') {
+            $file = $this->file();
+
+            return $file === null ? null : "sqlite\0{$file}";
+        }
+
+        $row = $this->pdo->query(match ($this->driver) {
+            'pgsql' => 'SELECT current_database() AS a, current_schema() AS b, host(inet_server_addr()) AS c, inet_server_port() AS d, pg_postmaster_start_time() AS e',
+            default => 'SELECT DATABASE() AS a, @@server_uuid AS b, @@port AS c, NULL AS d, NULL AS e',
+        });
+        $parts = $row === false ? false : $row->fetch(\PDO::FETCH_ASSOC);
+        if (!\is_array($parts)) {
+            throw new ImportRefused('The database would not say which one it is, so the import cannot tell staging\'s from production\'s.');
+        }
+
+        return $this->driver . "\0" . implode("\0", array_map(static fn (mixed $part): string => \is_scalar($part) ? (string) $part : '', $parts));
+    }
+
     /** The SQLite file this is, or null for one in memory or a server's database. */
     public function file(): ?string
     {

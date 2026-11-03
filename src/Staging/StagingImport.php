@@ -62,7 +62,12 @@ final readonly class StagingImport
         $staging->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
         $from = new Schema($production);
         $to = new Schema($staging);
-        if ($production === $staging || ($from->file() !== null && $from->file() === $to->file())) {
+        // The same object, the same SQLite file, or the same server's same
+        // database and schema over a second connection -- production's
+        // DSN pasted as --to -- each refused by what the server says it is,
+        // before a row is read, whatever marker the database carries.
+        $identity = $from->identity();
+        if ($production === $staging || ($identity !== null && $identity === $to->identity())) {
             throw new ImportRefused('Production and staging are one database here; the import writes only into staging\'s.');
         }
 
