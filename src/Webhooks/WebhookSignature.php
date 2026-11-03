@@ -24,7 +24,7 @@ final class WebhookSignature
     public const string NONCE_SHAPE = '/^[A-Za-z0-9_-]{16,128}\z/';
 
     /** The header value for a delivery, as a sender computes it. */
-    public static function header(string $secret, int $timestamp, string $nonce, string $method, string $target, string $body): string
+    public static function header(#[\SensitiveParameter] string $secret, int $timestamp, string $nonce, string $method, string $target, string $body): string
     {
         return "t={$timestamp},n={$nonce},v1=" . self::mac($secret, $timestamp, $nonce, $method, $target, $body);
     }
@@ -43,7 +43,7 @@ final class WebhookSignature
         return [(int) $m[1], $m[2], $m[3]];
     }
 
-    public static function mac(string $secret, int $timestamp, string $nonce, string $method, string $target, string $body): string
+    public static function mac(#[\SensitiveParameter] string $secret, int $timestamp, string $nonce, string $method, string $target, string $body): string
     {
         return hash_hmac('sha256', "{$timestamp}.{$nonce}." . strtoupper($method) . " {$target}\n{$body}", $secret);
     }
