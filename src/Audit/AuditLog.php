@@ -576,7 +576,7 @@ final class AuditLog implements ModelChanges, ActionObserver
         $hashedAt = TimestampStorage::Iso8601->format($now);
         $connection = $this->orm->statements();
 
-        $this->orm->transaction(function () use ($connection, $tenant, $row, $hashedAt): void {
+        $write = fn () => $this->orm->transaction(function () use ($connection, $tenant, $row, $hashedAt): void {
             [$sequence, $previous] = $this->advance($connection, $tenant);
             $row['sequence'] = $sequence;
             $row['previous_hash'] = $previous;
@@ -590,6 +590,15 @@ final class AuditLog implements ModelChanges, ActionObserver
             );
             $connection->execute('UPDATE ' . AuditTable::HEADS . ' SET hash = ? WHERE tenant = ?', [$row['hash'], $tenant]);
         });
+
+        // Inside acrossTenants() the ORM refuses raw SQL that writes, which
+        // could name no tenant (ADR 0122): an audited save there failed the
+        // action. The entry names its tenant, so it is written as that one.
+        if ($tenant !== '' && $this->orm->isUnscoped()) {
+            $this->orm->actAs($tenant, $write);
+        } else {
+            $write();
+        }
     }
 
     /**
