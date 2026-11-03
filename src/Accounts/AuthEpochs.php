@@ -27,21 +27,9 @@ use Tinvar\Orm\Schema\Table;
  */
 final readonly class AuthEpochs
 {
-    /**
-     * @param string $table where the epochs are kept
-     * @param string $column the user's id in it
-     */
-    public function __construct(
-        private Connection $connection,
-        private string $table = 'auth_epochs',
-        private string $column = 'user_id',
-    ) {
-        foreach ([$table, $column] as $name) {
-            if (preg_match('/^[a-z_][a-z0-9_]{0,62}\z/', $name) !== 1) {
-                throw new \InvalidArgumentException("'{$name}' is not a table or column name the auth epochs can be kept under: lowercase letters, digits and underscores.");
-            }
-        }
-    }
+    public const string TABLE = 'auth_epochs';
+
+    public function __construct(private Connection $connection) {}
 
     /**
      * The table, its user column a foreign key to $userModel, so a user who
@@ -49,9 +37,9 @@ final readonly class AuthEpochs
      *
      * @param class-string<Model> $userModel
      */
-    public static function define(Schema $schema, string $userModel, string $table = 'auth_epochs', bool $ifNotExists = false): void
+    public static function define(Schema $schema, string $userModel, bool $ifNotExists = false): void
     {
-        $schema->create($table, static function (Table $epochs) use ($userModel): void {
+        $schema->create(self::TABLE, static function (Table $epochs) use ($userModel): void {
             $epochs->foreign($userModel, 'user_id')->primary()->cascadeOnDelete();
             $epochs->integer('epoch');
         }, $ifNotExists);
@@ -61,7 +49,7 @@ final readonly class AuthEpochs
     public function of(string $user): string
     {
         $epoch = $this->connection->select(
-            "SELECT epoch FROM {$this->table} WHERE {$this->column} = ?",
+            'SELECT epoch FROM ' . self::TABLE . ' WHERE user_id = ?',
             [$user],
         )[0]['epoch'] ?? 0;
 
@@ -75,8 +63,8 @@ final readonly class AuthEpochs
      */
     public function bump(string $user): void
     {
-        $sql = "INSERT INTO {$this->table} ({$this->column}, epoch) VALUES (?, 1) "
-            . "ON CONFLICT ({$this->column}) DO UPDATE SET epoch = {$this->table}.epoch + 1";
+        $sql = 'INSERT INTO ' . self::TABLE . ' (user_id, epoch) VALUES (?, 1) '
+            . 'ON CONFLICT (user_id) DO UPDATE SET epoch = ' . self::TABLE . '.epoch + 1';
         $connection = $this->connection;
         if ($connection->inTransaction()) {
             $connection->execute($sql, [$user]);
