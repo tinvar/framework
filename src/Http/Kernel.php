@@ -1166,9 +1166,25 @@ final class Kernel
         $global = $container === null ? $buildGlobal() : $container->longLived('the Kernel\'s endpoint stacks', $buildGlobal);
         $this->globalStack = new Pipeline($global);
 
-        // The address pass is outermost -- ahead of the application's own
-        // global middleware, so a refused request does not pay for session
-        // start or tenant resolution. The account pass runs AFTER that
+        // Every entry a session reaches -- an action, a query, an upload, a
+        // channel, an endpoint -- is let in through one stack, in one order,
+        // built here and nowhere else, so no entry can drift from the rest:
+        // the bucket's flood guard, the global stack, CSRF unless the entry
+        // is a GET with no body, the bucket's budget by address and then by
+        // account, and authentication where the entry asks for it. The
+        // budget is `$limits`, unless the entry spends one worked out apart.
+        $entryStack = fn (string $bucket, bool $verifyCsrf = true, ?Middleware $authentication = null, ?array $budgets = null): Pipeline => new Pipeline([
+            ...$this->floodGuardFor($throttle, $bucket, $budgets ?? $limits),
+            ...$global,
+            ...($verifyCsrf ? [new VerifyCsrfToken(tokens: $csrf)] : []),
+            ...$this->throttleFor($throttle, $bucket, $budgets ?? $limits, byAddress: true),
+            ...$this->throttleFor($throttle, $bucket, $budgets ?? $limits, byAddress: false),
+            ...($authentication === null ? [] : [$authentication]),
+        ]);
+
+        // Why that order. The address pass is outermost -- ahead of the
+        // application's own global middleware, so a refused request does not
+        // pay for session start or tenant resolution. The account pass runs AFTER that
         // stack, because the auth context is populated by middleware and a
         // throttle in front of it always sees an anonymous caller: putting
         // both outermost looked right and silently disabled the per-user
@@ -1182,23 +1198,9 @@ final class Kernel
         // still refused before session start: no address limit can tell a
         // visitor's requests from a hostile page in the same browser, but
         // the one their real requests spend can no longer be spent for them.
-        $this->actionStack = new Pipeline([
-            ...$this->floodGuardFor($throttle, 'actions', $limits),
-            ...$global,
-            new VerifyCsrfToken(tokens: $csrf),
-            ...$this->throttleFor($throttle, 'actions', $limits, byAddress: true),
-            ...$this->throttleFor($throttle, 'actions', $limits, byAddress: false),
-            new RequireAuthentication($this->auth, $this->entryPointFor(...)),
-        ]);
+        $this->actionStack = $entryStack('actions', authentication: new RequireAuthentication($this->auth, $this->entryPointFor(...)));
 
-        $this->queryStack = new Pipeline([
-            ...$this->floodGuardFor($throttle, 'queries', $limits),
-            ...$global,
-            new VerifyCsrfToken(tokens: $csrf),
-            ...$this->throttleFor($throttle, 'queries', $limits, byAddress: true),
-            ...$this->throttleFor($throttle, 'queries', $limits, byAddress: false),
-            new RequireAuthentication($this->auth, $this->entryPointFor(...)),
-        ]);
+        $this->queryStack = $entryStack('queries', authentication: new RequireAuthentication($this->auth, $this->entryPointFor(...)));
 
         // Bootstrap gets the throttle and CSRF an action gets, and NOT the
         // authentication check. It exists to hand a visitor the tokens for a
@@ -1207,25 +1209,13 @@ final class Kernel
         // traffic it was built for. The carve-out is deliberate and narrow:
         // minting is not authorization, and every token it hands back still
         // has to survive the originating route's #[Authorize] chain on use.
-        $this->bootstrapStack = new Pipeline([
-            ...$this->floodGuardFor($throttle, 'bootstrap', $limits),
-            ...$global,
-            new VerifyCsrfToken(tokens: $csrf),
-            ...$this->throttleFor($throttle, 'bootstrap', $limits, byAddress: true),
-            ...$this->throttleFor($throttle, 'bootstrap', $limits, byAddress: false),
-        ]);
+        $this->bootstrapStack = $entryStack('bootstrap');
 
         // The live trade gets what bootstrap gets, and for the same reason no
         // authentication: a page a visitor with no account may see reads
         // tags too. It sets a cookie, so CSRF; and whose session it is, it
         // checks itself.
-        $this->liveStack = new Pipeline([
-            ...$this->floodGuardFor($throttle, 'live', $limits),
-            ...$global,
-            new VerifyCsrfToken(tokens: $csrf),
-            ...$this->throttleFor($throttle, 'live', $limits, byAddress: true),
-            ...$this->throttleFor($throttle, 'live', $limits, byAddress: false),
-        ]);
+        $this->liveStack = $entryStack('live');
 
         // A handoff's three steps are GETs a person follows from host to
         // host: the global stack for the session and its user, the handoff
@@ -1234,27 +1224,14 @@ final class Kernel
         // screen's answer; the GETs pass it untouched -- the step among them
         // that changes something is held to the session that began it by
         // PKCE, which is what a CSRF token would have said.
-        $this->handoffStack = new Pipeline([
-            ...$this->floodGuardFor($throttle, 'handoff', $limits),
-            ...$global,
-            new VerifyCsrfToken(tokens: $csrf),
-            ...$this->throttleFor($throttle, 'handoff', $limits, byAddress: true),
-            ...$this->throttleFor($throttle, 'handoff', $limits, byAddress: false),
-        ]);
+        $this->handoffStack = $entryStack('handoff');
 
         // An upload gets an action's stack: it writes, so CSRF and its own
         // throttle; and authentication, with no opt-out -- a ticket is
         // issued to a signed-in user and bound to them, so nobody else has
         // one to use. The action's tenant and panel stack run inside, once
         // the ticket says which action it is for.
-        $this->uploadStack = new Pipeline([
-            ...$this->floodGuardFor($throttle, 'uploads', $limits),
-            ...$global,
-            new VerifyCsrfToken(tokens: $csrf),
-            ...$this->throttleFor($throttle, 'uploads', $limits, byAddress: true),
-            ...$this->throttleFor($throttle, 'uploads', $limits, byAddress: false),
-            new RequireAuthentication($this->auth),
-        ]);
+        $this->uploadStack = $entryStack('uploads', authentication: new RequireAuthentication($this->auth));
 
         // A chunk of a resumable upload: the same stack, spending a budget
         // of its own -- `upload-chunks`, or eight times `uploads` where an
@@ -1262,36 +1239,18 @@ final class Kernel
         // held to a session that counts against the cap and the quota, to
         // its size and to the floor on a chunk's.
         $chunkLimits = [...$limits, 'upload-chunks' => $chunkBudget ?? $limits['upload-chunks']];
-        $this->uploadChunkStack = new Pipeline([
-            ...$this->floodGuardFor($throttle, 'upload-chunks', $chunkLimits),
-            ...$global,
-            new VerifyCsrfToken(tokens: $csrf),
-            ...$this->throttleFor($throttle, 'upload-chunks', $chunkLimits, byAddress: true),
-            ...$this->throttleFor($throttle, 'upload-chunks', $chunkLimits, byAddress: false),
-            new RequireAuthentication($this->auth),
-        ]);
+        $this->uploadChunkStack = $entryStack('upload-chunks', authentication: new RequireAuthentication($this->auth), budgets: $chunkLimits);
 
         // A file is a GET with no body, so no CSRF; the session, for the
         // token's binding, and its throttle. Its token says who may use it.
-        $this->fileStack = new Pipeline([
-            ...$this->floodGuardFor($throttle, 'files', $limits),
-            ...$global,
-            ...$this->throttleFor($throttle, 'files', $limits, byAddress: true),
-            ...$this->throttleFor($throttle, 'files', $limits, byAddress: false),
-        ]);
+        $this->fileStack = $entryStack('files', verifyCsrf: false);
 
         // "`throttle:telemetry`, CSRF": a report is a POST from a page, so it
         // meets the check every POST does, and its own budget after it. No
         // authentication -- a visitor with no account has a page to report
         // on too -- and nothing the endpoint does needs one: it names a
         // route the registry has, and writes a metric and a log line.
-        $this->telemetryStack = new Pipeline([
-            ...$this->floodGuardFor($throttle, 'telemetry', $limits),
-            ...$global,
-            new VerifyCsrfToken(tokens: $csrf),
-            ...$this->throttleFor($throttle, 'telemetry', $limits, byAddress: true),
-            ...$this->throttleFor($throttle, 'telemetry', $limits, byAddress: false),
-        ]);
+        $this->telemetryStack = $entryStack('telemetry');
 
         // A page's report that rides no session -- no cookie, no token, as
         // a static page's visitor sends one (ADR 0129): no global stack, so
@@ -1321,14 +1280,7 @@ final class Kernel
         // through and holds every other method to the session's token, so a
         // #[Post] is protected as an action is -- and authentication reads
         // #[PublicAccess] off the endpoint the request was matched to.
-        $this->endpointStack = new Pipeline([
-            ...$this->floodGuardFor($throttle, 'endpoints', $limits),
-            ...$global,
-            new VerifyCsrfToken(tokens: $csrf),
-            ...$this->throttleFor($throttle, 'endpoints', $limits, byAddress: true),
-            ...$this->throttleFor($throttle, 'endpoints', $limits, byAddress: false),
-            new RequireAuthentication($this->auth, EndpointHandler::entryPoint(...)),
-        ]);
+        $this->endpointStack = $entryStack('endpoints', authentication: new RequireAuthentication($this->auth, EndpointHandler::entryPoint(...)));
 
         // A #[WithoutSession] endpoint gets the budget and nothing that reads
         // a cookie: no global stack, so no session and no one signed in by
@@ -1474,25 +1426,11 @@ final class Kernel
         // so CSRF and its own budget; and authentication, with no opt-out --
         // it runs as a user, and its link is bound to them. Its own tenant
         // and panel stack run inside, once the path says which it is.
-        $this->transferStack = new Pipeline([
-            ...$this->floodGuardFor($throttle, 'transfers', $limits),
-            ...$global,
-            new VerifyCsrfToken(tokens: $csrf),
-            ...$this->throttleFor($throttle, 'transfers', $limits, byAddress: true),
-            ...$this->throttleFor($throttle, 'transfers', $limits, byAddress: false),
-            new RequireAuthentication($this->auth),
-        ]);
+        $this->transferStack = $entryStack('transfers', authentication: new RequireAuthentication($this->auth));
         // An inbox's calls read and write a user's own rows: CSRF on each,
         // its own budget, and authentication with no opt-out. Its tenant
         // and panel stack run inside, once the path says which inbox.
-        $this->inboxStack = new Pipeline([
-            ...$this->floodGuardFor($throttle, 'inbox', $limits),
-            ...$global,
-            new VerifyCsrfToken(tokens: $csrf),
-            ...$this->throttleFor($throttle, 'inbox', $limits, byAddress: true),
-            ...$this->throttleFor($throttle, 'inbox', $limits, byAddress: false),
-            new RequireAuthentication($this->auth),
-        ]);
+        $this->inboxStack = $entryStack('inbox', authentication: new RequireAuthentication($this->auth));
         if ($notifications === null) {
             $this->inbox_ = null;
             $this->notifier = null;
@@ -1704,14 +1642,7 @@ final class Kernel
         // one step of the same thing -- and an action's authentication, read
         // off the channel the path names: someone signed in, unless the
         // channel is #[PublicAccess].
-        $this->channelStack = new Pipeline([
-            ...$this->floodGuardFor($throttle, 'live', $limits),
-            ...$global,
-            new VerifyCsrfToken(tokens: $csrf),
-            ...$this->throttleFor($throttle, 'live', $limits, byAddress: true),
-            ...$this->throttleFor($throttle, 'live', $limits, byAddress: false),
-            new RequireAuthentication($this->auth, $this->channels_ === null ? null : $this->channels_->entryPoint(...)),
-        ]);
+        $this->channelStack = $entryStack('live', authentication: new RequireAuthentication($this->auth, $this->channels_ === null ? null : $this->channels_->entryPoint(...)));
 
         // Every trade runs the route each token names through its tenant,
         // panel stack, middleware and #[Authorize] chain, as /_fragment does:
