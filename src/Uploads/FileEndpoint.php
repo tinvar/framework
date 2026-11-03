@@ -15,10 +15,9 @@ use Tinvar\Orm\Orm;
 use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenError;
 use Tinvar\Storage\FileTypes;
-use Tinvar\Storage\LocalStorage;
 use Tinvar\Storage\StorageKey;
 use Tinvar\Storage\ObjectStore;
-use Tinvar\Storage\StorageException;
+use Tinvar\Storage\StoredFileResponse;
 
 /**
  * GET /_file/{token}
@@ -51,9 +50,6 @@ use Tinvar\Storage\StorageException;
  */
 final readonly class FileEndpoint
 {
-    /** How much of a file is read at a time while it is sent. */
-    private const int CHUNK = 65_536;
-
     /** A token is a path-sized string. */
     private const int MAX_TOKEN_BYTES = 4096;
 
@@ -214,53 +210,7 @@ final readonly class FileEndpoint
             return Response::make(200, '', $headers);
         }
 
-        // From an object store, each chunk handed on as it arrives: nothing
-        // gathered in memory or in the temporary directory first.
-        if ($storage instanceof ObjectStore) {
-            $key = $file->key;
-
-            return Response::stream(static function (\Closure $sink) use ($storage, $key): void {
-                if (!$storage->readTo($key, $sink)) {
-                    // Gone since its size was read: the headers promised its
-                    // length, so the stream fails rather than ending empty.
-                    throw new StorageException('A stored file was gone by the time it was sent.');
-                }
-            }, 200, $headers);
-        }
-
-        // A file on this machine's disk is one the server can send itself,
-        // with no worker writing it to a client that may stop reading
-        // (Sapi::forServer()); the stream below is what goes otherwise, and
-        // the file is opened only then -- never for a response the server
-        // sends from the path.
-        $path = $storage instanceof LocalStorage ? $storage->path($file->key) : null;
-        $stream = null;
-        if ($path === null) {
-            $stream = $storage->read($file->key);
-            if ($stream === null) {
-                throw self::missing();
-            }
-        }
-        $key = $file->key;
-
-        $response = Response::stream(static function (\Closure $sink) use ($stream, $storage, $key): void {
-            $stream ??= $storage->read($key) ?? throw new StorageException('A stored file was gone by the time it was sent.');
-            try {
-                while (!feof($stream)) {
-                    $chunk = fread($stream, self::CHUNK);
-                    if ($chunk === false) {
-                        break;
-                    }
-                    if ($chunk !== '') {
-                        $sink($chunk);
-                    }
-                }
-            } finally {
-                fclose($stream);
-            }
-        }, 200, $headers);
-
-        return $path === null ? $response : $response->withFile($path);
+        return StoredFileResponse::of($storage, $file->key, $headers) ?? throw self::missing();
     }
 
     /**

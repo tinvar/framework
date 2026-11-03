@@ -288,8 +288,11 @@ final class SignIn implements Middleware
  */
 final readonly class RefusingStorage implements Storage
 {
-    /** @param \Closure(): bool $refusing */
-    public function __construct(private MemoryStorage $files, private \Closure $refusing) {}
+    /**
+     * @param \Closure(): bool $refusing
+     * @param (\Closure(): void)|null $reading told of each read
+     */
+    public function __construct(private MemoryStorage $files, private \Closure $refusing, private ?\Closure $reading = null) {}
 
     public function put(string $key, mixed $stream): void
     {
@@ -301,6 +304,10 @@ final readonly class RefusingStorage implements Storage
 
     public function read(string $key): mixed
     {
+        if ($this->reading !== null) {
+            ($this->reading)();
+        }
+
         return $this->files->read($key);
     }
 
@@ -335,6 +342,9 @@ final class App
 
     /** Whether storing a file throws, as storage that is down does. */
     public bool $storageRefuses = false;
+
+    /** How many times a stored file has been read. */
+    public int $reads = 0;
 
     public readonly Kernel $kernel;
     public readonly Orm $orm;
@@ -400,7 +410,9 @@ final class App
             KEY,
             $transfers,
             $this->records,
-            new RefusingStorage($this->storage, fn (): bool => $this->storageRefuses),
+            new RefusingStorage($this->storage, fn (): bool => $this->storageRefuses, function (): void {
+                $this->reads++;
+            }),
             fn (\Tinvar\Jobs\Job $job): string => $this->dispatchFails ? throw new \RuntimeException('The queue is down.') : $dispatcher->dispatch($job),
             $this->notes,
             $origin === null ? null : static fn (Authenticatable $user, string $tenant): string => $origin,
@@ -490,10 +502,10 @@ final class App
 
     /** GETs a /_download path, as the browser following the link does. */
     /** @param array<string, string> $headers */
-    public function download(string $path, string $user = 'staff-1', string $epoch = 'e1', string $tenant = 'acme', array $headers = []): Response
+    public function download(string $path, string $user = 'staff-1', string $epoch = 'e1', string $tenant = 'acme', array $headers = [], string $method = 'GET'): Response
     {
         return $this->kernel->handle(
-            new Request('GET', $path, ['x-test-user' => $user, 'x-test-epoch' => $epoch, 'x-test-tenant' => $tenant, ...$headers], cookies: [SESSION_COOKIE => 'session-b']),
+            new Request($method, $path, ['x-test-user' => $user, 'x-test-epoch' => $epoch, 'x-test-tenant' => $tenant, ...$headers], cookies: [SESSION_COOKIE => 'session-b']),
             self::noPage(...),
         );
     }

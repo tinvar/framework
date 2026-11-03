@@ -18,8 +18,8 @@ use Tinvar\Orm\Orm;
 use Tinvar\Render\TenantClaim;
 use Tinvar\Render\TokenError;
 use Tinvar\Routing\HostMatch;
-use Tinvar\Storage\LocalStorage;
 use Tinvar\Storage\StorageKey;
+use Tinvar\Storage\StoredFileResponse;
 
 /**
  * GET /_download/{token}
@@ -48,9 +48,6 @@ use Tinvar\Storage\StorageKey;
 final readonly class DownloadEndpoint
 {
     public const string PREFIX = '/_download/';
-
-    /** How much of a file is read at a time while it is sent. */
-    private const int CHUNK = 65_536;
 
     /** A token is a path-sized string. */
     private const int MAX_TOKEN_BYTES = 4096;
@@ -140,8 +137,7 @@ final readonly class DownloadEndpoint
         }
 
         $size = $this->transfers->storage->size($record->key);
-        $stream = $size === null ? null : $this->transfers->storage->read($record->key);
-        if ($size === null || $stream === null) {
+        if ($size === null) {
             throw self::missing();
         }
 
@@ -157,35 +153,13 @@ final readonly class DownloadEndpoint
             'vary' => 'Cookie',
         ];
 
+        // A HEAD reads nothing of the file, and a GET sends it as it is
+        // read: never gathered whole from an object store first.
         if ($request->method === 'HEAD') {
-            fclose($stream);
-
             return Response::make(200, '', $headers);
         }
 
-        $response = Response::stream(static function (\Closure $sink) use ($stream): void {
-            try {
-                while (!feof($stream)) {
-                    $chunk = fread($stream, self::CHUNK);
-                    if ($chunk === false) {
-                        break;
-                    }
-                    if ($chunk !== '') {
-                        $sink($chunk);
-                    }
-                }
-            } finally {
-                fclose($stream);
-            }
-        }, 200, $headers);
-
-        // A file on this machine's disk is one the server can send itself,
-        // with no worker writing it to a client that may stop reading
-        // (Sapi::forServer()). The stream above is what goes otherwise.
-        $storage = $this->transfers->storage;
-        $path = $storage instanceof LocalStorage ? $storage->path($record->key) : null;
-
-        return $path === null ? $response : $response->withFile($path);
+        return StoredFileResponse::of($this->transfers->storage, $record->key, $headers) ?? throw self::missing();
     }
 
     /** Always an attachment, under a name made only of what no header can be ended by. */

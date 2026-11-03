@@ -245,6 +245,19 @@ describe('/_download', function () {
             ->and($response->body())->toBe($app->storage->contents($record->key));
     });
 
+    // As /_file does: a HEAD answers the headers and reads nothing of the
+    // file -- on an object store, read() fetches the whole object first.
+    it('answers a HEAD with the file\'s headers, and reads nothing of it', function () {
+        $app = new App();
+        $record = exported($app);
+        $response = $app->download($app->linkFor($record), method: 'HEAD');
+
+        expect($response->status)->toBe(200)
+            ->and($response->header('content-length'))->toBe((string) \strlen((string) $app->storage->contents($record->key)))
+            ->and($response->body())->toBe('')
+            ->and($app->reads)->toBe(0);
+    });
+
     it('is a 404 for another user, whatever their rights', function () {
         $app = new App();
         $link = $app->linkFor(exported($app));
