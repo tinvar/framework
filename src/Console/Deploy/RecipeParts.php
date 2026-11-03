@@ -99,8 +99,8 @@ final class RecipeParts
     }
 
     /**
-     * Each mail provider's variables: what it reads in the open, and the
-     * secrets the store holds.
+     * Each mail provider's variables, from MailProvider::variables(): what
+     * it reads in the open, and the secrets the store holds.
      *
      * @return array{env: list<string>, secrets: list<string>}
      */
@@ -109,17 +109,13 @@ final class RecipeParts
         $env = [];
         $secrets = [];
         foreach ($app->mail as $provider) {
-            [$open, $secret] = match ($provider) {
-                MailProvider::Smtp => [['TINVAR_SMTP_HOST', 'TINVAR_SMTP_PORT', 'TINVAR_SMTP_USERNAME'], ['TINVAR_SMTP_PASSWORD']],
-                MailProvider::Ses => [['TINVAR_SES_REGION', 'TINVAR_SES_KEY'], ['TINVAR_SES_SECRET']],
-                MailProvider::Postmark => [[], ['TINVAR_POSTMARK_TOKEN']],
-                MailProvider::Mailgun => [['TINVAR_MAILGUN_DOMAIN', 'TINVAR_MAILGUN_REGION'], ['TINVAR_MAILGUN_KEY']],
-                MailProvider::Resend => [[], ['TINVAR_RESEND_KEY']],
-                MailProvider::SendGrid => [[], ['TINVAR_SENDGRID_KEY']],
-                MailProvider::Log, MailProvider::Array => [[], []],
-            };
-            array_push($env, ...$open);
-            array_push($secrets, ...$secret);
+            foreach ($provider->variables() as $variable => $secret) {
+                if ($secret) {
+                    $secrets[] = $variable;
+                } else {
+                    $env[] = $variable;
+                }
+            }
         }
 
         return ['env' => $env, 'secrets' => $secrets];

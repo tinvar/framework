@@ -98,7 +98,7 @@ final class DevEnvironment
             }
         }
         $lines = [];
-        foreach (array_keys(self::mailVariables($provider)) as $variable) {
+        foreach (array_keys($provider->variables()) as $variable) {
             $lines[] = match (true) {
                 isset($files[$variable]) => "# {$variable}_FILE=",
                 EnvironmentFile::namesSecret($variable) => "# {$variable}: export it in your shell; this file never sets a variable named like a secret",
@@ -107,23 +107,5 @@ final class DevEnvironment
         }
 
         return $lines;
-    }
-
-    /**
-     * A provider's variables, each marked whether it is a secret.
-     *
-     * @return array<string, bool>
-     */
-    public static function mailVariables(MailProvider $provider): array
-    {
-        return match ($provider) {
-            MailProvider::Smtp => ['TINVAR_SMTP_HOST' => false, 'TINVAR_SMTP_PORT' => false, 'TINVAR_SMTP_USERNAME' => false, 'TINVAR_SMTP_PASSWORD' => true],
-            MailProvider::Ses => ['TINVAR_SES_REGION' => false, 'TINVAR_SES_KEY' => true, 'TINVAR_SES_SECRET' => true],
-            MailProvider::Postmark => ['TINVAR_POSTMARK_TOKEN' => true],
-            MailProvider::Mailgun => ['TINVAR_MAILGUN_DOMAIN' => false, 'TINVAR_MAILGUN_REGION' => false, 'TINVAR_MAILGUN_KEY' => true],
-            MailProvider::Resend => ['TINVAR_RESEND_KEY' => true],
-            MailProvider::SendGrid => ['TINVAR_SENDGRID_KEY' => true],
-            MailProvider::Log, MailProvider::Array => [],
-        };
     }
 }
