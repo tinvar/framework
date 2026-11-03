@@ -14,6 +14,7 @@ namespace Tinvar\Tests\Resources\KeyName;
 use Tinvar\Attributes\AdminResource;
 use Tinvar\Auth\AllowAllGate;
 use Tinvar\Http\Request;
+use Tinvar\Orm\Attributes\BelongsTo;
 use Tinvar\Orm\Attributes\Column;
 use Tinvar\Orm\Attributes\Id;
 use Tinvar\Orm\Attributes\Table;
@@ -22,6 +23,7 @@ use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Resources\Column as ListColumn;
+use Tinvar\Resources\Field;
 use Tinvar\Resources\Resource;
 
 #[Table('labels')]
@@ -40,10 +42,33 @@ final class LabelResource extends Resource
     }
 }
 
+#[Table('jars')]
+final class Jar extends Model
+{
+    #[Id] public private(set) string $id;
+    #[Column] public string $name;
+    #[BelongsTo] public Label $label;
+}
+
+#[AdminResource(model: Jar::class, panel: 'staff')]
+final class JarResource extends Resource
+{
+    public static function columns(): array
+    {
+        return [ListColumn::make('name')];
+    }
+
+    public static function fields(): array
+    {
+        return [Field::make('name'), Field::make('label')];
+    }
+}
+
 function labels(): Orm
 {
     $pdo = new \PDO('sqlite::memory:');
     $pdo->exec('CREATE TABLE labels (code TEXT PRIMARY KEY, name TEXT NOT NULL)');
+    $pdo->exec('CREATE TABLE jars (id TEXT PRIMARY KEY, name TEXT NOT NULL, label_id TEXT NOT NULL)');
     $orm = new Orm(new PdoConnection($pdo, 'test'), new IdentityMap('test'));
     foreach (['Blue', 'Amber', 'Amber'] as $name) {
         $label = new Label();
@@ -69,4 +94,11 @@ it('breaks a tie under another order by the key, whatever it is named', function
     $list = new LabelResource(labels(), new AllowAllGate())->index(new Request('GET', '/labels', [], ['sort' => 'name']));
 
     expect(array_map(static fn ($row): ?string => $row->cells['name'], $list->rows))->toBe(['Amber', 'Amber', 'Blue']);
+});
+
+it('offers the records a field may name, ordered by their key whatever it is named', function () {
+    $form = new JarResource(labels(), new AllowAllGate())->create();
+    $field = $form->fields[1];
+
+    expect(array_map(static fn ($option): string => $option->label, $field->options))->toBe(['Amber', 'Amber', 'Blue']);
 });

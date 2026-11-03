@@ -14,6 +14,7 @@ use Tinvar\Auth\Gate;
 use Tinvar\Http\ForbiddenException;
 use Tinvar\Http\Request;
 use Tinvar\Orm\Direction;
+use Tinvar\Orm\Metadata;
 use Tinvar\Orm\Model;
 use Tinvar\Orm\Orm;
 use Tinvar\Orm\Query;
@@ -529,7 +530,8 @@ abstract class Resource
         $related = $property->class;
         $label = $field->labelledBy ?? 'name';
         $choices = [];
-        foreach ($this->orm->query($related)->orderBy($label)->orderBy('id')->limit(self::MAX_CHOICES)->fetch() as $row) {
+        $key = Metadata::for($related)->idProperty;
+        foreach ($this->orm->query($related)->orderBy($label)->orderBy($key)->limit(self::MAX_CHOICES)->fetch() as $row) {
             $choices[$row->primaryKey()] = (string) $row->{$label};
         }
 
