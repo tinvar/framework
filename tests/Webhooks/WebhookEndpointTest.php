@@ -137,3 +137,36 @@ it('runs one as the tenant the registered tenancy reads, and refuses a delivery 
         ->and($h->journal()->entries)->toBe([['call' => 'acme', 'orm' => 'acme']])
         ->and(fn () => $endpoint->handle(delivery('/hooks/placed', '', $body), $body))->toThrow(HttpException::class, 'no tenant');
 });
+
+/** A gate, as a package declares one (ADR 0150): a middleware attribute. */
+#[\Attribute(\Attribute::TARGET_CLASS | \Attribute::TARGET_METHOD)]
+final class Gated implements \Tinvar\Http\MiddlewareAttribute
+{
+    public function middleware(): string
+    {
+        return \Tinvar\Http\AttributeMiddleware::class;
+    }
+}
+
+#[Webhook('/hooks/gated'), Gated]
+final class GatedHook extends Records {}
+
+#[Webhook('/hooks/wrapped'), \Tinvar\Attributes\Middleware(\stdClass::class)]
+final class WrappedHook extends Records {}
+
+#[Webhook('/hooks/gated-invoke')]
+final class GatedInvokeHook
+{
+    #[Gated]
+    public function __invoke(WebhookCall $call): void {}
+}
+
+it('refuses, when it is built, a webhook carrying a gate or middleware it would never run', function () {
+    // A webhook runs no middleware: its signature is its one check. A gate
+    // on one -- #[RequiresPlan], a #[Middleware] -- would let every
+    // delivery past without a word, so it is refused, as discovery refuses
+    // it, for a webhook handed to the endpoint by hand too.
+    expect(fn () => endpoint(new Harness(), [GatedHook::class]))->toThrow(\InvalidArgumentException::class, 'runs no middleware')
+        ->and(fn () => endpoint(new Harness(), [WrappedHook::class]))->toThrow(\InvalidArgumentException::class, 'runs no middleware')
+        ->and(fn () => endpoint(new Harness(), [GatedInvokeHook::class]))->toThrow(\InvalidArgumentException::class, 'runs no middleware');
+});

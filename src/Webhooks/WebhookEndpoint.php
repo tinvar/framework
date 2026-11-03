@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Tinvar\Webhooks;
 
+use Tinvar\Attributes\ClassAttributes;
+use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\TenantFrom;
 use Tinvar\Attributes\Webhook;
 use Tinvar\Auth\PanelContext;
 use Tinvar\Auth\PanelRegistry;
 use Tinvar\Http\HttpException;
+use Tinvar\Http\MiddlewareAttribute;
 use Tinvar\Http\NonceStore;
 use Tinvar\Http\Middleware\EnterTenant;
 use Tinvar\Http\Request;
@@ -97,6 +100,7 @@ final class WebhookEndpoint
             if ($attribute === null || !method_exists($class, '__invoke')) {
                 throw new \InvalidArgumentException("{$class} is registered as a webhook, and is not a #[Webhook] class with an __invoke().");
             }
+            self::assertUngated($reflection);
             $declared = $attribute->newInstance();
             $path = $declared->path;
             if ($declared->verifier !== null) {
@@ -304,6 +308,33 @@ final class WebhookEndpoint
         $query = $request->rawQuery ?? http_build_query($request->query, '', '&', PHP_QUERY_RFC3986);
 
         return $query === '' ? $request->path : "{$request->path}?{$query}";
+    }
+
+    /**
+     * Refuses a webhook carrying a #[Middleware] or a gate (#[RequiresPlan],
+     * ADR 0150) -- on itself, an ancestor, a trait or a public method. A
+     * webhook runs no middleware: its signature is its one check, so a gate
+     * on it would let every delivery past without a word. Discovery refuses
+     * such a class; this holds a webhook handed to the endpoint by hand to
+     * the same rule.
+     *
+     * @param \ReflectionClass<object> $class
+     */
+    private static function assertUngated(\ReflectionClass $class): void
+    {
+        $found = [
+            ...ClassAttributes::of($class, Middleware::class),
+            ...ClassAttributes::of($class, MiddlewareAttribute::class, \ReflectionAttribute::IS_INSTANCEOF),
+        ];
+        foreach ($class->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
+            $found = [...$found, ...$method->getAttributes(Middleware::class), ...$method->getAttributes(MiddlewareAttribute::class, \ReflectionAttribute::IS_INSTANCEOF)];
+        }
+        if ($found !== []) {
+            throw new \InvalidArgumentException(
+                "{$class->getName()} carries #[" . $found[0]->getName() . '], which runs around a request, and is a webhook, which runs no middleware: '
+                . 'it would never be asked. Check what it needs inside the handler instead.',
+            );
+        }
     }
 
     private static function unsigned(string $why): HttpException
