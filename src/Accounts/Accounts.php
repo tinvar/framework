@@ -49,7 +49,7 @@ use Tinvar\Validation\ValidationException;
  *   (EmailLinks, ADR 0076). The page it lands on only looks; a POST uses it.
  * - **Every change of who a session is rotates its id**, and every change
  *   to how an account is reached -- a password, an address, a reset, a
- *   sign-out everywhere -- moves the account's auth epoch, which ends every
+ *   passkey removed, a sign-out everywhere -- moves the account's auth epoch, which ends every
  *   token, grant, queued job and emailed link minted for it before, and its
  *   credential epoch, which ends its API tokens (CredentialEpochs): the
  *   one moved at every sign-in too, the other on these alone.
@@ -691,6 +691,12 @@ final class Accounts
      * by email; false when it is not the account's. A session alone would
      * otherwise take away the owner's way back in: a thief with a cookie
      * removing the passkeys before turning the password over.
+     *
+     * A passkey is removed because it is lost or no longer trusted, so what
+     * it let in goes with it, as a change of password ends what the old one
+     * did: every other session ends and both epochs move, ending the API
+     * tokens held to the credential epoch, in one durable transaction with
+     * the removal. This browser stays signed in, under a new id.
      */
     public function removePasskey(Request $http, AccountUser $user, string $id): bool
     {
@@ -701,10 +707,24 @@ final class Accounts
                 $name = $passkey->name;
             }
         }
-        if ($name === null || !$this->passkeys->remove($user->authIdentifier(), $id)) {
+        if ($name === null) {
+            return false;
+        }
+        $removed = $this->connection->durableTransaction(function () use ($user, $id): bool {
+            if (!$this->passkeys->remove($user->authIdentifier(), $id)) {
+                return false;
+            }
+            $this->sessions->endEverywhere($user->authIdentifier());
+            $this->epochs->bump($user->authIdentifier());
+            $this->credentials->bump($user->authIdentifier());
+
+            return true;
+        });
+        if (!$removed) {
             return false;
         }
 
+        $this->sessions->signIn(SessionState::of($http), $user);
         $this->jobs->dispatch(new SendAccountMail(AccountMailKind::PasskeyRemoved, name: $name, userId: $user->authIdentifier()));
 
         return true;

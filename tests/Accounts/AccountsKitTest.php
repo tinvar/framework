@@ -380,6 +380,34 @@ it('asks a session to confirm it is its owner before it removes a passkey, and t
     });
 });
 
+it('ends every other session and token when a passkey is removed, as a change of password does', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $id = $user->authIdentifier();
+        $key = SoftwareAuthenticator::es256();
+        $owner->confirm();
+        $options = $owner->do(static fn (Accounts $a, Request $r) => $a->passkeyRegistrationOptions($r, $user));
+        $passkey = $owner->do(static fn (Accounts $a, Request $r) => $a->registerPasskey($r, $user, credential($key, $key->register((string) Base64Url::decode($options['challenge']))), 'Laptop'));
+
+        // A session signed in with the passkey -- the one a thief who took the key holds, say.
+        $other = new Visitor($app);
+        $options = $other->do(static fn (Accounts $a, Request $r) => $a->passkeySignInOptions($r));
+        $other->do(static fn (Accounts $a, Request $r) => $a->signInWithPasskey($r, credential($key, $key->assert((string) Base64Url::decode($options['challenge'])), $passkey->userHandle)));
+        expect($other->who())->toBe('ada@example.com');
+        $epoch = $app->kit->epochs->of($id);
+        $credential = $app->kit->credentials->of($id);
+
+        expect($owner->do(static fn (Accounts $a, Request $r) => $a->removePasskey($r, $user, $passkey->id)))->toBeTrue();
+
+        expect($other->who())->toBeNull()
+            ->and($owner->who())->toBe('ada@example.com')
+            ->and($app->kit->epochs->of($id))->not->toBe($epoch)
+            ->and($app->kit->credentials->of($id))->not->toBe($credential);
+    });
+})->with('drivers');
+
 it('asks a session to confirm it is its owner before it adds a passkey or turns on two-factor', function (string $driver) {
     onDriver($driver, function (MemberApp $app): void {
         // A stolen session cookie is all the thief has: no password, no passkey.

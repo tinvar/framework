@@ -13,7 +13,8 @@ use Tinvar\Orm\Schema\Table;
  * Each user's credential epoch, in a table of its own: a counter that moves
  * when everything that speaks for the user must stop, and on nothing else
  * -- they sign out everywhere, their password is reset or changed, their
- * address changes, or they turn two-factor sign-in off. Their API tokens
+ * address changes, they turn two-factor sign-in off, or they remove a
+ * passkey. Their API tokens
  * are bound to it (ADR 0159), through AccountsKit::$tokenHolders.
  *
  * Not the auth epoch (AuthEpochs), which the kit moves at every sign-in and
