@@ -150,15 +150,20 @@ final class RecipeParts
     }
 
     /**
-     * A step saying mail has no provider, where it has none that sends.
+     * The mail steps: one saying mail has no provider, where it has none
+     * that sends, and one naming APP_MAIL_FROM and APP_ADMINS, which only
+     * the person deploying can say.
      *
      * @return list<string>
      */
     public static function mailSteps(DeployApp $app): array
     {
-        return $app->sendingMail() === ''
-            ? ['# Mail: no provider that sends is named, and the app sends mail -- its accounts\' links. Set TINVAR_MAIL_PROVIDER (smtp, ses, postmark, mailgun, resend or sendgrid) and its variables: production refuses to boot with none, log or array.']
-            : [];
+        return [
+            ...($app->sendingMail() === ''
+                ? ['# Mail: no provider that sends is named, and the app sends mail -- its accounts\' links. Set TINVAR_MAIL_PROVIDER (smtp, ses, postmark, mailgun, resend or sendgrid) and its variables: production refuses to boot with none, log or array.']
+                : []),
+            '# Set APP_MAIL_FROM to the address the app\'s email comes from, which production refuses to boot without, and APP_ADMINS to the accounts that may open /admin, comma-separated.',
+        ];
     }
 
     /**

@@ -43,6 +43,7 @@ final readonly class RenderRecipe implements DeployRecipe
             $vars[] = [$variable, 'value', $value];
         }
         $vars[] = ['TINVAR_APP_DOMAIN', 'value', $domain];
+        $vars[] = ['APP_URL', 'value', $domain];
         foreach ($secrets as $secret) {
             $vars[] = [$secret->variable, 'sync', null];
         }

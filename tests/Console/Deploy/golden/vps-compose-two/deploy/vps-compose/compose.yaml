@@ -57,6 +57,7 @@ services:
     environment:
       TINVAR_TRUSTED_PROXIES: "10.213.92.0/24"
       TINVAR_APP_DOMAIN: "https://app.example.com"
+      APP_URL: "https://app.example.com"
       TINVAR_PROBE_TRUST_LOOPBACK: "0"
       APP_DATABASE_DRIVER: "postgres"
       APP_DATABASE_HOST: "db.internal"

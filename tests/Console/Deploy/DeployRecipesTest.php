@@ -110,6 +110,18 @@ it('puts no secret in a file it writes, and pins proxies only where one proves i
     }
 });
 
+// The skeleton refuses to boot in production without APP_URL, which its
+// account links and passkeys are built on, and APP_MAIL_FROM.
+it('sets the origin the app builds its links on, and says what else production refuses to boot without', function () {
+    foreach (cases() as $case => [$target, $app]) {
+        $recipe = $target->recipe()->write($app);
+        $all = implode("\n", array_map(static fn ($f): string => $f->contents, $recipe->files)) . "\n" . implode("\n", $recipe->steps);
+
+        expect(str_contains($all, 'APP_URL'))->toBeTrue("{$case} sets no APP_URL")
+            ->and(str_contains(implode("\n", $recipe->steps), 'APP_MAIL_FROM'))->toBeTrue("{$case} says nothing of APP_MAIL_FROM");
+    }
+});
+
 it('runs two containers only where the platform and the image can', function () {
     expect(static fn () => DeployTarget::Fly->recipe()->write(new DeployApp('my-app', layout: ContainerLayout::Two, secrets: SECRETS, podTargets: true)))
         ->toThrow(\InvalidArgumentException::class, 'Fly.io runs the one-container layout')

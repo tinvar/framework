@@ -20,6 +20,7 @@ kill_timeout = 120
   TINVAR_TRUSTED_PROXIES = "172.16.0.0/12"
   TINVAR_TRUSTED_PROXY_CLIENT = "header"
   TINVAR_APP_DOMAIN = "https://app.example.com"
+  APP_URL = "https://app.example.com"
   APP_DATABASE_DRIVER = "postgres"
   APP_DATABASE_HOST = "CHANGE-ME.flycast"
   APP_DATABASE_PORT = "5432"

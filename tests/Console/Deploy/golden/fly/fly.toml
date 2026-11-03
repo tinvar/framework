@@ -17,6 +17,7 @@ kill_timeout = 120
   # edge's one address. Put Cloudflare in front (deploy:init --front=cloudflare) to
   # count each visitor apart.
   TINVAR_APP_DOMAIN = "https://my-app.fly.dev"
+  APP_URL = "https://my-app.fly.dev"
 
 [http_service]
   internal_port = 8080

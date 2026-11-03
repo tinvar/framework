@@ -40,6 +40,7 @@ final readonly class FlyRecipe implements DeployRecipe
         $env = [
             ...$proxies['env'],
             'TINVAR_APP_DOMAIN' => $domain,
+            'APP_URL' => $domain,
             ...RecipeParts::databaseEnvironment($app, 'CHANGE-ME.flycast'),
         ];
         if ($app->sendingMail() !== '') {

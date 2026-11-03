@@ -26,6 +26,8 @@ services:
         value: "header"
       - key: TINVAR_APP_DOMAIN
         value: "https://my-app.onrender.com"
+      - key: APP_URL
+        value: "https://my-app.onrender.com"
       - key: TINVAR_APP_KEY
         sync: false
       - key: TINVAR_PROBE_TOKEN

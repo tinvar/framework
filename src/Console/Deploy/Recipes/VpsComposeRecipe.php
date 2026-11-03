@@ -47,6 +47,7 @@ final readonly class VpsComposeRecipe implements DeployRecipe
         foreach ([
             'TINVAR_TRUSTED_PROXIES' => $subnet,
             'TINVAR_APP_DOMAIN' => "https://{$host}",
+            'APP_URL' => "https://{$host}",
             'TINVAR_PROBE_TRUST_LOOPBACK' => '0',
             ...RecipeParts::databaseEnvironment($app, 'db.internal'),
             ...($app->sendingMail() !== '' ? ['TINVAR_MAIL_PROVIDER' => $app->sendingMail()] : []),

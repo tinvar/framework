@@ -5,6 +5,7 @@ fly volumes create app_data --size 1 --region iad
 # The secrets, read from their files outside the project, into fly secrets.
 printf 'TINVAR_APP_KEY=%s\nTINVAR_PROBE_TOKEN=%s\n' "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.fly.key')" "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.fly.probe-token')" | fly secrets import
 # Mail: no provider that sends is named, and the app sends mail -- its accounts' links. Set TINVAR_MAIL_PROVIDER (smtp, ses, postmark, mailgun, resend or sendgrid) and its variables: production refuses to boot with none, log or array.
+# Set APP_MAIL_FROM to the address the app's email comes from, which production refuses to boot without, and APP_ADMINS to the accounts that may open /admin, comma-separated.
 fly deploy
 # Check it, through /_health with the probe token:
 printf 'Authorization: Bearer %s\n' "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.fly.probe-token')" | curl --fail --header @- https://my-app.fly.dev/_health

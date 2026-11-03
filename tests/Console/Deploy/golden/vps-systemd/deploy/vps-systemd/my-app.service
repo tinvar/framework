@@ -17,6 +17,7 @@ ExecStart=/usr/bin/docker run --rm --name my-app --network my-app \
   --env-file /etc/my-app/app.env \
   --env TINVAR_TRUSTED_PROXIES=10.213.92.0/24 \
   --env TINVAR_APP_DOMAIN=https://app.example.com \
+  --env APP_URL=https://app.example.com \
   --env TINVAR_PROBE_TRUST_LOOPBACK=0 \
   --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \

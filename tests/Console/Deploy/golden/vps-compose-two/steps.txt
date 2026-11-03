@@ -7,6 +7,7 @@ printf 'TINVAR_TRUSTED_PROXY_SECRET=%s\n' "$(cat '/home/you/.local/state/tinvar/
 # Add TINVAR_SMTP_USERNAME=... (your provider's) to /etc/my-app/app.env on the server.
 # Add APP_DATABASE_PASSWORD=... (your provider's) to /etc/my-app/app.env on the server.
 # Add TINVAR_SMTP_PASSWORD=... (your provider's) to /etc/my-app/app.env on the server.
+# Set APP_MAIL_FROM to the address the app's email comes from, which production refuses to boot without, and APP_ADMINS to the accounts that may open /admin, comma-separated.
 ssh SERVER 'cd /srv/my-app && sudo docker compose -f deploy/vps-compose/compose.yaml up -d --build'
 # Check it, through /_health with the probe token:
 printf 'Authorization: Bearer %s\n' "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.vps-compose.probe-token')" | curl --fail --header @- https://app.example.com/_health

@@ -3,13 +3,14 @@ railway init --name my-app
 # The database, in the same project: its variables are referenced below.
 railway add --database mysql
 # The variables in the open. No TINVAR_TRUSTED_PROXIES: Railway's edge cannot send TINVAR_TRUSTED_PROXY_SECRET, and a range is refused without it (ADR 0134), so every visitor is counted as the edge's one address.
-railway variables --set 'TINVAR_APP_DOMAIN=https://app.example.com' --set 'APP_DATABASE_DRIVER=mysql' --set 'APP_DATABASE_HOST=${{MySQL.MYSQLHOST}}' --set 'APP_DATABASE_PORT=${{MySQL.MYSQLPORT}}' --set 'APP_DATABASE_NAME=${{MySQL.MYSQLDATABASE}}' --set 'APP_DATABASE_USER=${{MySQL.MYSQLUSER}}' --set 'APP_DATABASE_PASSWORD=${{MySQL.MYSQLPASSWORD}}' --set 'TINVAR_MAIL_PROVIDER=ses'
+railway variables --set 'TINVAR_APP_DOMAIN=https://app.example.com' --set 'APP_URL=https://app.example.com' --set 'APP_DATABASE_DRIVER=mysql' --set 'APP_DATABASE_HOST=${{MySQL.MYSQLHOST}}' --set 'APP_DATABASE_PORT=${{MySQL.MYSQLPORT}}' --set 'APP_DATABASE_NAME=${{MySQL.MYSQLDATABASE}}' --set 'APP_DATABASE_USER=${{MySQL.MYSQLUSER}}' --set 'APP_DATABASE_PASSWORD=${{MySQL.MYSQLPASSWORD}}' --set 'TINVAR_MAIL_PROVIDER=ses'
 # The rest: paste each into the service's Variables -- a secret from its file, which never reaches a command line:
 #   TINVAR_APP_KEY: pbcopy < '/home/you/.local/state/tinvar/my-app-2cab79174cf3.railway.key'   (xclip -selection clipboard on Linux)
 #   TINVAR_PROBE_TOKEN: pbcopy < '/home/you/.local/state/tinvar/my-app-2cab79174cf3.railway.probe-token'   (xclip -selection clipboard on Linux)
 #   TINVAR_SES_REGION: your provider's value
 #   TINVAR_SES_KEY: your provider's value
 #   TINVAR_SES_SECRET: your provider's value
+# Set APP_MAIL_FROM to the address the app's email comes from, which production refuses to boot without, and APP_ADMINS to the accounts that may open /admin, comma-separated.
 railway up
 # Check it, through /_health with the probe token:
 printf 'Authorization: Bearer %s\n' "$(cat '/home/you/.local/state/tinvar/my-app-2cab79174cf3.railway.probe-token')" | curl --fail --header @- https://app.example.com/_health

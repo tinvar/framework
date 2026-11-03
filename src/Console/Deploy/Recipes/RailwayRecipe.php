@@ -57,7 +57,7 @@ final readonly class RailwayRecipe implements DeployRecipe
         ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
 
         $open = [
-            ...($app->domain !== null ? ['TINVAR_APP_DOMAIN' => $app->domain] : []),
+            ...($app->domain !== null ? ['TINVAR_APP_DOMAIN' => $app->domain, 'APP_URL' => $app->domain] : []),
         ];
         if ($app->database->isServer()) {
             $service = $app->database->value === 'postgres' ? 'Postgres' : 'MySQL';
@@ -93,7 +93,7 @@ final readonly class RailwayRecipe implements DeployRecipe
             ...RecipeParts::mailSteps($app),
             'railway up',
             ...($app->domain === null
-                ? ['# Then `railway domain`, and set TINVAR_APP_DOMAIN to the https address it gives.']
+                ? ['# Then `railway domain`, and set TINVAR_APP_DOMAIN and APP_URL to the https address it gives: production refuses to boot without APP_URL.']
                 : ['# Check it, through /_health with the probe token:', RecipeParts::probeStep($app, $secrets[1], $app->domain)]),
         ];
 
