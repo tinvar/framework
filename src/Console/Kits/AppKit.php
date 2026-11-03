@@ -10,12 +10,12 @@ namespace Tinvar\Console\Kits;
  * migrations and views once, then leaving them to the application (ADR 0157).
  *
  * A package says it is one in its composer.json, and nowhere else, as
- * tinvar/tenancy does:
+ * tinvar/tenancy says its `tenant-pages` kit:
  *
  *     "extra": {"tinvar": {"kit": {
  *         "name": "tenant-pages",
  *         "title": "Tenant pages: an organization switcher, custom domains, and settings with members and invites",
- *         "class": "Tinvar\\Tenancy\\SelfService\\TenantPagesKit"
+ *         "class": "<the package's class implementing AppKit>"
  *     }}}
  *
  * `tinvar new` offers every kit its source has by that name -- `--accounts`
