@@ -19,6 +19,7 @@ use Tinvar\Mail\ArrayTransport;
 use Tinvar\Mail\DatabaseSuppressions;
 use Tinvar\Mail\Email;
 use Tinvar\Mail\LinkPolicy;
+use Tinvar\Mail\LogTransport;
 use Tinvar\Mail\Mailable;
 use Tinvar\Mail\MailCategory;
 use Tinvar\Mail\Mailer;
@@ -113,6 +114,17 @@ it('carries a transport\'s message id back through the mailer, and sends through
     $quiet = new Quiet();
     $through = mailer($quiet)->deliver(new Note([new Address('ada@example.test')]));
     expect($quiet->sent)->toBe(1)->and($through->messageId)->toBeNull()->and($through->transport)->toBe('quiet');
+});
+
+// The name its exceptions give it, and SentMessage's docblock: `smtp`, `log`,
+// never `smtptransport`.
+it('names a transport that says nothing back as its class, less the word Transport', function () {
+    $path = tempnam(sys_get_temp_dir(), 'tinvar-log-transport-');
+    try {
+        expect(SentMessage::through(new LogTransport((string) $path), mailer(new Quiet())->send(new Note([new Address('ada@example.test')])))->transport)->toBe('log');
+    } finally {
+        @unlink((string) $path);
+    }
 });
 
 it('says mail with an unsubscribe is marketing and the rest transactional, unless it says otherwise', function () {

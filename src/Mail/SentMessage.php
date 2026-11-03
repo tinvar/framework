@@ -35,7 +35,8 @@ final readonly class SentMessage
     /**
      * Sends $message through $transport: what a Delivers transport reports,
      * or -- for one that says nothing back -- the message, with no id, under
-     * the transport's class name.
+     * the transport's class name, lowercased and less the word Transport:
+     * `smtp`, `log`, as their exceptions name them.
      */
     public static function through(Transport $transport, Message $message): self
     {
@@ -44,9 +45,10 @@ final readonly class SentMessage
         }
 
         $transport->send($message);
-        $name = $transport::class;
+        $name = substr($transport::class, (int) strrpos($transport::class, '\\') + 1);
+        $name = str_ends_with($name, 'Transport') && $name !== 'Transport' ? substr($name, 0, -\strlen('Transport')) : $name;
 
-        return new self($message, null, strtolower(substr($name, (int) strrpos($name, '\\') + 1)));
+        return new self($message, null, strtolower($name));
     }
 
     /**
