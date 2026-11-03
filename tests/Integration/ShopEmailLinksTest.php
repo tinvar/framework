@@ -187,6 +187,19 @@ function errors(Response $response): array
     return \is_array($body['errors'] ?? null) ? $body['errors'] : [];
 }
 
+/**
+ * The security events in $customer's audit log, newest first (ADR 0156).
+ *
+ * @return list<string>
+ */
+function securityEventsOf(Kernel $kernel, Customer $customer): array
+{
+    return array_values(array_filter(
+        array_map(static fn (\Tinvar\Audit\AuditEntry $e): string => $e->event, $kernel->audit->trail()->forSubject($customer)),
+        static fn (string $event): bool => str_starts_with($event, 'auth.'),
+    ));
+}
+
 function signedInAs(Kernel $kernel, Browser $browser): ?string
 {
     $id = $browser->sessionId();
@@ -266,6 +279,43 @@ describe('a sign-in link', function () {
         expect($reused->status)->toBe(422)
             ->and(errors($reused))->toBe(['token' => [EmailLinkActions::LINK_REFUSED]])
             ->and(signedInAs($this->kernel, $again))->toBeNull();
+    });
+
+    // A sign-in by link is a sign-in (ADR 0156): in the account's log as
+    // one from a password is, with where it came from, as the actor it
+    // signed in -- or a stolen link would sign in with no trace.
+    it('is recorded in the account\'s log as a sign-in', function () {
+        $browser = new Browser($this->kernel, '198.51.100.9');
+        $browser->action('account.requestSignInLink', ['email' => DemoAccount::EMAIL]);
+        work($this->kernel);
+        $demo = customer($this->kernel, DemoAccount::EMAIL);
+        $before = \count(securityEventsOf($this->kernel, $demo));
+
+        $browser->action('account.useSignInLink', ['token' => tokenOf(linkIn($this->mail, 'sign-in-link', DemoAccount::EMAIL))]);
+
+        $entries = $this->kernel->audit->trail()->forSubject($demo);
+        expect(securityEventsOf($this->kernel, $demo))->toHaveCount($before + 1)
+            ->and($entries[0]->event)->toBe('auth.signed_in')
+            ->and($entries[0]->actor->id)->toBe($demo->id)
+            ->and($entries[0]->request?->ip)->toBe('198.51.100.9');
+    });
+});
+
+describe('a password reset', function () {
+    it('is recorded in the account\'s log: asked for, done, and the sign-in after it', function () {
+        $demo = customer($this->kernel, DemoAccount::EMAIL);
+        $browser = new Browser($this->kernel, '198.51.100.42');
+        $browser->action('account.requestPasswordReset', ['email' => DemoAccount::EMAIL]);
+        work($this->kernel);
+        $url = linkIn($this->mail, 'password-reset', DemoAccount::EMAIL);
+        expect(securityEventsOf($this->kernel, $demo)[0])->toBe('auth.password_reset_requested');
+
+        $browser->action('account.resetPassword', ['token' => tokenOf($url), 'password' => 'a brand new password']);
+
+        $entries = $this->kernel->audit->trail()->forSubject($demo);
+        expect(\array_slice(securityEventsOf($this->kernel, $demo), 0, 3))->toBe(['auth.signed_in', 'auth.password_changed', 'auth.password_reset_requested'])
+            ->and($entries[0]->actor->id)->toBe($demo->id)
+            ->and($entries[1]->request?->ip)->toBe('198.51.100.42');
     });
 
     it('is refused once expired', function () {
@@ -531,6 +581,30 @@ describe('a staff invite', function () {
             ->and($members->membership(customer($this->kernel, 'customer1@shop.test'), StaffMemberships::PANEL, ''))->not->toBeNull()
             ->and($members->membership(customer($this->kernel, DemoAccount::EMAIL), StaffMemberships::PANEL, ''))->toBeNull()
             ->and(signedInAs($this->kernel, $demo))->toBe(customer($this->kernel, DemoAccount::EMAIL)->id);
+    });
+
+    // Joining the staff is a role change (ADR 0156): in the account's log,
+    // with the role and who invited them, whether the account was made by
+    // the invite or had been there -- and a new account's sign-in with it.
+    it('records the role granted in the account\'s log, and a new account\'s sign-in', function () {
+        $this->staff->action('staff.invite', ['email' => 'customer2@shop.test', 'role' => 'orders'], ['host' => ADMIN_HOST]);
+        $this->staff->action('staff.invite', ['email' => 'another.hire@example.com', 'role' => 'stock'], ['host' => ADMIN_HOST]);
+        work($this->kernel);
+        $inviter = customer($this->kernel, StaffAccount::EMAIL);
+
+        new Browser($this->kernel, '198.51.100.90')->action('staff.acceptInvite', ['token' => tokenOf(linkIn($this->mail, 'staff-invitation', 'customer2@shop.test'))]);
+        $existing = customer($this->kernel, 'customer2@shop.test');
+        $entries = $this->kernel->audit->trail()->forSubject($existing);
+        expect($entries[0]->event)->toBe('auth.role_changed')
+            ->and($entries[0]->data)->toBe(['panel' => StaffMemberships::PANEL, 'role' => 'orders', 'inviter' => $inviter->id])
+            ->and($entries[0]->request?->ip)->toBe('198.51.100.90');
+
+        new Browser($this->kernel, '198.51.100.91')->action('staff.acceptInvite', ['token' => tokenOf(linkIn($this->mail, 'staff-invitation', 'another.hire@example.com')), 'name' => 'Another Hire', 'password' => 'a long enough password']);
+        $hire = customer($this->kernel, 'another.hire@example.com');
+        $entries = $this->kernel->audit->trail()->forSubject($hire);
+        expect(array_map(static fn ($e): string => $e->event, $entries))->toBe(['auth.signed_in', 'auth.role_changed', 'created'])
+            ->and($entries[0]->actor->id)->toBe($hire->id)
+            ->and($entries[1]->data['role'])->toBe('stock');
     });
 });
 
