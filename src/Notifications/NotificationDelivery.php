@@ -75,12 +75,11 @@ final readonly class NotificationDelivery
             return true;
         }
         if ($channel === NotificationChannel::Push && $notification instanceof PushNotification && $this->notifications->push !== null) {
+            // Sent on only where a browser of theirs, subscribed at their
+            // epoch, was queued a push: a user with none got nothing.
             $payload = $notification->push($user);
-            if ($payload !== null) {
-                $this->notifications->push->send($user, $payload);
-            }
 
-            return $payload !== null;
+            return $payload !== null && $this->notifications->push->send($user, $payload) > 0;
         }
 
         return false;

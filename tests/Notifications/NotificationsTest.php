@@ -404,6 +404,17 @@ describe('a send', function () {
             ->and($subscriptions->find('acme', $stale->id))->toBeNull();
     });
 
+    it('names push among the channels it was sent on only when a browser of the user\'s was pushed to', function () {
+        [$h, $notifier, , $preferences, , $subscriptions] = notifications();
+        $subscriptions->subscribe('acme', 'ada', 'e0', 'https://fcm.googleapis.com/fcm/send/before', ...browser());
+        $preferences->choose('acme', 'ada', 'scripts.ran', NotificationChannel::Push, true);
+
+        $channels = $h->orm->actAs('acme', fn (): array => $notifier->sendNow(new \Tinvar\Tests\Jobs\Fixtures\User('ada'), new ScriptRan(script($h))));
+
+        expect($channels)->toBe([NotificationChannel::Mail, NotificationChannel::Inbox])
+            ->and(queuedOn($h, SendPush::QUEUE))->toBe(0);
+    });
+
     it('writes the entry in the tenant it was sent in, and reads the model again there', function () {
         [$h, $notifier, $store] = notifications();
         $h->orm->actAs('globex', fn (): string => $notifier->send(new \Tinvar\Tests\Jobs\Fixtures\User('ada'), new ScriptRan(script($h, 'globex'))));
