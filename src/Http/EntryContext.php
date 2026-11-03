@@ -137,17 +137,25 @@ final readonly class EntryContext
 
     /**
      * The panel's guard and its own middleware -- MFA, a network allowlist
-     * -- in the order stackFor() runs them, without the host, tenant,
-     * EnterPanel or membership steps: for a call that holds those itself
-     * and must still pass what the panel puts in front of everything in it
-     * (an API token's call to /_api, ADR 0159).
+     * -- in the order stackFor() runs them, without the tenant, EnterPanel
+     * or membership steps: for a call that holds those itself and must
+     * still pass what the panel puts in front of everything in it (an API
+     * token's call to /_api, ADR 0159). With them, ahead of the guard, the
+     * host for a panel only the platform's hosts may carry
+     * (RequirePlatformHost): the call's token is held to its own host, but
+     * where the application routes on no host that host is any it serves,
+     * and an admin operation answered on a reseller's domain is what the
+     * rule exists to prevent, whoever asks.
      *
      * @return list<Middleware>
      */
     public function panelGuards(PanelBinding $panel): array
     {
         $definition = $this->registry?->definition($panel->name) ?? throw self::undefined($panel->name);
-        $stack = $definition->guard === null ? [] : [$this->middleware($definition->guard)];
+        $stack = $this->realms?->isPlatformPanel($panel->name) === true ? [new RequirePlatformHost($this->realms, $panel->name)] : [];
+        if ($definition->guard !== null) {
+            $stack[] = $this->middleware($definition->guard);
+        }
         foreach ($definition->middleware as $class) {
             $stack[] = $this->middleware($class);
         }

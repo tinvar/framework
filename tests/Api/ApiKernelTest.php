@@ -30,6 +30,7 @@ use Tinvar\Http\Middleware;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Http\Throttle;
+use Tinvar\Identity\Realms;
 use Tinvar\Orm\IdentityMap;
 use Tinvar\Orm\Orm;
 use Tinvar\Query\QueryRegistry;
@@ -164,7 +165,7 @@ final class World
     public PanelContext $panels;
 
     /** @param array<string, int> $limits */
-    public function __construct(array $limits = [], bool $api = true, PanelDefinition $admin = new PanelDefinition('admin'))
+    public function __construct(array $limits = [], bool $api = true, PanelDefinition $admin = new PanelDefinition('admin'), ?Realms $realms = null)
     {
         $this->fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
         $orm = new Orm($this->fixture->connection, new IdentityMap('api-kernel'));
@@ -200,6 +201,7 @@ final class World
             memberships: $this->staff,
             endpoints: $endpoints,
             apiAccess: $api ? new ApiAccess($this->store, $this->users) : null,
+            realms: $realms,
         );
     }
 
@@ -346,6 +348,33 @@ describe('/_api', function () {
         expect($offNetwork->status)->toBe(403)
             ->and($demoted->status)->toBe(403)
             ->and($allowed->status)->toBe(200)
+            ->and(Ran::$bodies)->toBe(['audit']);
+    });
+
+    it('answers an operation of a platform-only panel on a tenant\'s custom domain as not there, as a page of the panel is', function () {
+        // The admin panel is mapped only to the platform's own hosts (ADR
+        // 0039): RequirePlatformHost keeps its pages and endpoints off a
+        // reseller's domain, and /_api runs the panel's stack too.
+        $realms = new Realms(
+            \Tinvar\Identity\Realm::platform('https://app.example', panel: 'admin'),
+            lookup: static fn (string $host): ?\Tinvar\Identity\Realm => $host === 'reseller.example' ? \Tinvar\Identity\Realm::domain('https://reseller.example', 'acme', 'shop') : null,
+            platformPanels: ['admin'],
+        );
+        $w = new World(admin: new PanelDefinition('admin', guard: AdminsOnly::class), realms: $realms);
+        $w->staff->members['ada'] = ['racks.audit'];
+        AdminsOnly::$admins = ['ada'];
+        $token = $w->token(['racks:audit'], panel: 'admin');
+        $body = json_encode(['rack' => $w->rack()], JSON_THROW_ON_ERROR);
+        Ran::$bodies = [];
+
+        $onPlatform = $w->call('POST', '/_api/racks.audit', ['host' => 'app.example', 'authorization' => "Bearer {$token}"], $body);
+        $onDomain = $w->call('POST', '/_api/racks.audit', ['host' => 'reseller.example', 'authorization' => "Bearer {$token}"], $body);
+        $onUnknown = $w->call('POST', '/_api/racks.audit', ['host' => 'nobody.example', 'authorization' => "Bearer {$token}"], $body);
+
+        expect($onPlatform->status)->toBe(200)
+            ->and($onDomain->status)->toBe(404)
+            ->and(json($onDomain)['error']['code'] ?? null)->toBe('not_found')
+            ->and($onUnknown->status)->toBe(404)
             ->and(Ran::$bodies)->toBe(['audit']);
     });
 

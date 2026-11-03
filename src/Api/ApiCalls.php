@@ -198,7 +198,9 @@ final readonly class ApiCalls
             // The panel's guard and middleware ran when the token was issued;
             // a token is good long after, from anywhere, so they run again on
             // this call's request: an admin since removed, or a call from off
-            // the allowed network, is refused here as on a page of the panel.
+            // the allowed network, is refused here as on a page of the panel
+            // -- and a platform-only panel's operation asked for on a
+            // tenant's custom domain is not there, as its pages are not.
             if ($request === null) {
                 return CallResult::refused('panel');
             }
@@ -217,7 +219,9 @@ final readonly class ApiCalls
                     throw $e;
                 }
 
-                return CallResult::forbidden();
+                // A platform-only panel asked for on another host: not there,
+                // as a page of the panel is not (RequirePlatformHost).
+                return $e->status === 404 ? CallResult::refused('host') : CallResult::forbidden();
             }
 
             // A guard that answered without passing the call on -- a redirect
