@@ -63,7 +63,9 @@ use Tinvar\Validation\ValidationException;
  * a record's pages take it by the route's `{record}`, which the binder
  * resolves in that scope -- an id of another tenant's is a 404. What a
  * form posts is read field by field as the model's property is typed, and
- * only the fields declared are ever written.
+ * only the fields declared are ever written. A field naming a record it
+ * belongs to offers and accepts only records in the tenant's scope that
+ * their own policy's `view` lets the reader see.
  *
  * Every screen hands the view Data, never a model; what crosses for a value
  * is text (Data\ResourceRowData), with a kind that says how to draw it.
@@ -520,7 +522,9 @@ abstract class Resource
 
     /**
      * The records a field may name, value => label, in the label's order:
-     * read in the tenant's scope, so another tenant's are never offered.
+     * read in the tenant's scope, so another tenant's are never offered,
+     * and each kept only where its policy lets the reader view it -- of the
+     * first MAX_CHOICES read, so a reader refused many is offered fewer.
      *
      * @return array<string, string>
      */
@@ -532,10 +536,23 @@ abstract class Resource
         $choices = [];
         $key = Metadata::for($related)->idProperty;
         foreach ($this->orm->query($related)->orderBy($label)->orderBy($key)->limit(self::MAX_CHOICES)->fetch() as $row) {
-            $choices[$row->primaryKey()] = (string) $row->{$label};
+            if ($this->mayName($row)) {
+                $choices[$row->primaryKey()] = (string) $row->{$label};
+            }
         }
 
         return $choices;
+    }
+
+    /**
+     * Whether a field may name $related: its own policy's `view` lets the
+     * reader see it. A related model with no policy, or one without `view`,
+     * is the server error any missing policy is -- never a record offered
+     * or accepted unasked.
+     */
+    private function mayName(Model $related): bool
+    {
+        return $this->gate->allows(new Authorize('view', AdminResource::RECORD), [AdminResource::RECORD => $related]);
     }
 
     /**
@@ -629,9 +646,12 @@ abstract class Resource
             case 'relation':
                 /** @var class-string<Model> $related */
                 $related = (string) $property->class;
+                // Read in the tenant's scope and held to its policy's view:
+                // an id of another tenant's, or of a record the reader may
+                // not see, is answered as one there is none of.
                 $found = $this->orm->find($related, $raw);
 
-                return $found === null ? [null, "{$label} does not match a record."] : [$found, null];
+                return $found === null || !$this->mayName($found) ? [null, "{$label} does not match a record."] : [$found, null];
         }
 
         return [null, "{$label} cannot be written by a form."];

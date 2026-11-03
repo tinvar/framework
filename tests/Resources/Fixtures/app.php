@@ -176,6 +176,19 @@ final class TicketPolicy
     }
 }
 
+/** Who may see a site: a ticket's form offers and accepts only those. */
+#[Policy(Site::class)]
+final class SitePolicy
+{
+    /** @var list<string> the ids of the sites no one may see, for a test to set */
+    public static array $hidden = [];
+
+    public function view(?Authenticatable $user, Site $site): bool
+    {
+        return $user instanceof Staff && !\in_array($site->id, self::$hidden, true);
+    }
+}
+
 #[AdminResource(model: Ticket::class, panel: 'staff', permission: 'tickets.read', perPage: 2), Domain('admin.{root}')]
 final class TicketResource extends Resource
 {
@@ -265,6 +278,7 @@ final class App
         self::$failures = [];
         SignedIn::$user = null;
         TicketPolicy::$refuse = [];
+        SitePolicy::$hidden = [];
         TicketResource::$written = [];
 
         $pdo = new \PDO('sqlite::memory:');
@@ -298,7 +312,7 @@ final class App
             queries: new QueryRegistry($container->resolver()),
             actions: $this->actions,
             auth: $this->auth,
-            policies: new PolicyRegistry()->registerAll([Ticket::class => TicketPolicy::class]),
+            policies: new PolicyRegistry()->registerAll([Ticket::class => TicketPolicy::class, Site::class => SitePolicy::class]),
             resolver: $container->resolver(),
             allowedQueries: static fn (Request $r): array => [],
             log: static function (\Throwable $e): void {

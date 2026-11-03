@@ -12,6 +12,7 @@ namespace Tinvar\Tests\Resources;
 
 use Tinvar\Http\Response;
 use Tinvar\Tests\Resources\Fixtures\App;
+use Tinvar\Tests\Resources\Fixtures\SitePolicy;
 use Tinvar\Tests\Resources\Fixtures\Staff;
 use Tinvar\Tests\Resources\Fixtures\Ticket;
 use Tinvar\Tests\Resources\Fixtures\TicketPolicy;
@@ -246,6 +247,18 @@ describe('the actions', function () {
             'values.dueAt' => ['Due is a date and time, as 2026-11-01T09:30.'],
             'values.site' => ['Site does not match a record.'],
         ])->and($app->orm->query(Ticket::class)->count())->toBe(3);
+    });
+
+    it('offers and accepts only the records a field may name that their policy lets the reader view', function () {
+        $app = new App()->signIn(editor());
+        SitePolicy::$hidden = [$app->ids['site-b']];
+        $edit = screen($app->get("/tickets/{$app->ids['alpha']}/edit"))['data'];
+
+        // An id the select never offered, posted anyway, reads as no record: the same answer as one there is none of.
+        expect($edit['fields'][6]['options'])->toBe([['value' => $app->ids['site-a'], 'label' => 'Ashford']])
+            ->and(errors($app->call('TicketResource.update', ['record' => $app->ids['alpha'], 'values' => ['title' => 'Alpha', 'status' => 'open', 'points' => '3', 'site' => $app->ids['site-b']]])))
+            ->toBe(['values.site' => ['Site does not match a record.']])
+            ->and($app->orm->find(Ticket::class, $app->ids['alpha'])?->site->id)->toBe($app->ids['site-a']);
     });
 
     it('saves a record its policy lets the reader change', function () {
