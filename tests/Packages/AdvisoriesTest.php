@@ -144,3 +144,19 @@ it('holds the workspace\'s and the skeleton\'s exceptions to the rules', functio
     'workspace' => \dirname(__DIR__, 4),
     'skeleton' => \dirname(__DIR__, 3) . '/skeleton',
 ]);
+
+it('shows a control character in what a database reported, never sends it to the terminal', function () {
+    // An advisory's title and package name come from the network: an escape
+    // sequence in one would retitle the window or clear the lines above.
+    $composer = json_encode(['advisories' => ['acme/lib' => [[
+        'advisoryId' => 'PKSA-1', 'packageName' => "acme/lib\e[2J", 'severity' => 'high',
+        'title' => "Hostile\e]0;pwned\x07 title\xc2\x9b2J",
+    ]]], 'abandoned' => []], JSON_THROW_ON_ERROR);
+
+    $failures = new Advisories($this->root, $this->today)->judge([$composer, 1], null)['failures'];
+
+    expect($failures)->toHaveCount(1)
+        ->and($failures[0])->not->toMatch('/[\x00-\x1f\x7f]|\xc2[\x80-\x9f]/')
+        ->and($failures[0])->toContain('PKSA-1')
+        ->and($failures[0])->toContain("Hostile\u{241B}]0;pwned\u{2407} title\u{FFFD}2J");
+});

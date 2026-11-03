@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tinvar\Packages;
 
+use Tinvar\Console\Prompts\Width;
+
 /**
  * What `tinvar audit` makes of the advisory databases' answers: `composer
  * audit --format=json` and `npm audit --json`, held to the project's
@@ -83,7 +85,7 @@ final readonly class Advisories
                     break;
                 }
             }
-            $name = "{$advisory['ecosystem']} {$advisory['package']} " . implode(' / ', $advisory['ids']) . " ({$advisory['severity']}): {$advisory['title']}";
+            $name = self::printable("{$advisory['ecosystem']} {$advisory['package']} " . implode(' / ', $advisory['ids']) . " ({$advisory['severity']}): {$advisory['title']}");
             if ($by !== null) {
                 $used[$by] = true;
                 $excused[] = "{$name} -- excused until {$exceptions[$by]['expires']}: {$exceptions[$by]['reason']}";
@@ -164,6 +166,18 @@ final readonly class Advisories
     }
 
     /**
+     * $text with its control characters shown, never sent: an advisory's
+     * title, package and ids come from the network, and are printed to the
+     * terminal of whoever runs `tinvar audit` and into CI's log, where an
+     * escape sequence would retitle the window, clear the lines above or
+     * hide the failure it is in.
+     */
+    private static function printable(string $text): string
+    {
+        return Width::clean($text);
+    }
+
+    /**
      * @return array{list<array{ecosystem: string, package: string, ids: list<string>, severity: string, title: string, fails: bool}>, list<string>}
      */
     private static function composer(string $json, int $status): array
@@ -204,7 +218,7 @@ final readonly class Advisories
         $problems = [];
         $abandoned = \is_array($decoded['abandoned'] ?? null) ? array_keys($decoded['abandoned']) : [];
         if (($status & self::COMPOSER_ABANDONED) !== 0 && $abandoned !== []) {
-            $problems[] = 'composer audit found abandoned packages: ' . implode(', ', $abandoned) . '.';
+            $problems[] = self::printable('composer audit found abandoned packages: ' . implode(', ', $abandoned) . '.');
         }
 
         return [$advisories, $problems];
@@ -217,7 +231,7 @@ final readonly class Advisories
     {
         $decoded = json_decode($json, true);
         if (!\is_array($decoded) || !\is_array($decoded['vulnerabilities'] ?? null)) {
-            $error = \is_array($decoded) && \is_array($decoded['error'] ?? null) && \is_string($decoded['error']['summary'] ?? null) ? ": {$decoded['error']['summary']}" : '';
+            $error = \is_array($decoded) && \is_array($decoded['error'] ?? null) && \is_string($decoded['error']['summary'] ?? null) ? ': ' . self::printable($decoded['error']['summary']) : '';
 
             return [[], ["npm audit gave no report{$error}: it needs the network."]];
         }
