@@ -7,6 +7,7 @@ namespace Tinvar\Query;
 use Tinvar\Attributes\Authorize;
 use Tinvar\Attributes\Middleware;
 use Tinvar\Attributes\Panel;
+use Tinvar\Http\DeclaredMiddleware;
 use Tinvar\Attributes\Query;
 use Tinvar\Attributes\Domain;
 use Tinvar\Attributes\TenantFrom;
@@ -175,6 +176,22 @@ final class QueryRegistry
         $this->checks[$name] = Authorize::declaredOn($class, Query::entryMethodOf($class));
         $this->classLevelChecks[$name] = Authorize::classLevelCount($class);
         $this->middleware[$name] = Middleware::declaredOn($class, Query::entryMethodOf($class));
+        // A gate -- an attribute that carries its own middleware, as
+        // #[RequiresPlan] -- guarded /_query alone: a query a page reads runs
+        // in the page's render, behind the page's middleware and never its
+        // own, so any page reading it handed its rows to whoever the gate
+        // would refuse. Refused where it is written (ADR 0150).
+        foreach ($this->middleware[$name] as $middleware) {
+            if (DeclaredMiddleware::isReference($middleware)) {
+                $gate = substr($middleware, 0, (int) strpos($middleware, '@'));
+
+                throw new \InvalidArgumentException(
+                    "{$class} carries #[{$gate}], a gate, and a query runs no gate of its own: a page that reads it runs it in its render, "
+                    . 'behind the page\'s middleware, so the gate would guard /_query alone and every page reading the query would hand its rows past it. '
+                    . 'Take it off the query, and put it on the page or layout that reads the query -- or on the action, if an action needs it.',
+                );
+            }
+        }
         $this->tenantFrom[$name] = TenantFrom::declaredOn($class, Query::entryMethodOf($class));
         $host = Domain::declaredOn($class, Query::entryMethodOf($class));
         if ($host !== null) {

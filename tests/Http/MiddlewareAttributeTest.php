@@ -301,12 +301,23 @@ final class VaultActions
     }
 }
 
+/** A gate on a query: refused when it registers (peekRefused()). */
 #[Query(name: 'vault.peek'), PublicAccess, Authorize('enter', Vault::class), RequiresBadge('vault')]
 final class PeekVault
 {
     public function __invoke(): TitleData
     {
         return new TitleData('Peek');
+    }
+}
+
+#[Query(name: 'vault.glance'), PublicAccess, Authorize('enter', Vault::class)]
+final class GlanceVault
+{
+    #[RequiresBadge('vault')]
+    public function __invoke(): TitleData
+    {
+        return new TitleData('Glance');
     }
 }
 
@@ -338,7 +349,6 @@ function kernel(array &$reported = []): Kernel
     $actions->register(BadgeActions::class);
     $actions->register(VaultActions::class);
     $queries = new QueryRegistry();
-    $queries->register(PeekVault::class);
     $endpoints = new EndpointRegistry();
     $endpoints->register(BadgeApi::class);
     $endpoints->register(VaultApi::class);
@@ -476,11 +486,6 @@ it('runs after the entry point\'s #[Authorize], so a caller the check refuses le
     'a page' => [static fn (Kernel $k, ?string $badge): Response => $k->handle(visit('/vault', $badge), page())],
     'a layout' => [static fn (Kernel $k, ?string $badge): Response => $k->handle(visit('/strongroom/inside', $badge), page())],
     'an action' => [static fn (Kernel $k, ?string $badge): Response => $k->handle(action('vault.open', $badge), page(), '{}')],
-    'a query over /_query' => [static fn (Kernel $k, ?string $badge): Response => $k->handle(new Request('POST', '/_query/vault.peek', [
-        'content-type' => 'application/json',
-        VerifyCsrfToken::HEADER => 't',
-        ...($badge === null ? [] : ['x-badge' => $badge]),
-    ], cookies: [VerifyCsrfToken::COOKIE => 't']), page(), '{"args":{}}')],
     'an endpoint' => [static fn (Kernel $k, ?string $badge): Response => $k->handle(new Request('GET', '/api/vault', [
         'accept' => 'application/json',
         ...($badge === null ? [] : ['x-badge' => $badge]),
@@ -520,3 +525,14 @@ it('fails closed when nothing runs a deferred gate: a request answered without i
         })->status)->toBe(200)
         ->and(CheckBadge::$ran)->toBe(['order']);
 });
+
+// A query a page reads runs in the page's render, behind the page's
+// middleware and never its own: a gate on it guarded /_query alone, and
+// any page reading the query handed its rows to a payer the gate would
+// refuse. So it is refused where it is written, at boot.
+it('refuses a gate on a query when the query registers, saying where to put it', function (string $class) {
+    expect(fn () => new QueryRegistry()->register($class))
+        ->toThrow(\InvalidArgumentException::class, '#[' . RequiresBadge::class . ']')
+        ->and(fn () => new QueryRegistry()->register($class))
+        ->toThrow(\InvalidArgumentException::class, 'put it on the page or layout that reads the query');
+})->with([PeekVault::class, GlanceVault::class]);
