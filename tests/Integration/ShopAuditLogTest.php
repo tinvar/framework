@@ -26,9 +26,13 @@ use Shop\Http\Pages\Admin\OrderActivity;
 use Shop\Http\Pages\Admin\StaffActivity;
 use Shop\Kernel;
 use Shop\Support\DemoAccount;
+use Shop\Support\ActivityFeed;
 use Shop\Support\StaffAccount;
+use Carbon\CarbonImmutable;
+use Tinvar\Audit\Actor;
 use Tinvar\Audit\ActorKind;
 use Tinvar\Audit\AuditEntry;
+use Tinvar\Audit\SecurityEvent;
 use Tinvar\Bench\Shop;
 use Tinvar\Console\Output;
 use Tinvar\Http\CsrfTokens;
@@ -232,4 +236,28 @@ it('leaves no entry for an order change that rolls back', function () {
 
     expect(activityOf($this->kernel, $order))->toBe([])
         ->and($this->kernel->audit->verify()->intact)->toBeTrue();
+});
+
+// Every security event is a sentence on the activity pages, never its key:
+// a role granted by an invite read `auth.role_changed`.
+it('says in words every security event it lists', function () {
+    $entries = array_map(static fn (SecurityEvent $event): AuditEntry => new AuditEntry(
+        id: $event->value,
+        tenant: '',
+        sequence: 1,
+        occurredAt: CarbonImmutable::parse('2026-06-15 12:00:00', 'UTC'),
+        event: $event->value,
+        subjectType: null,
+        subjectId: null,
+        actor: new Actor(ActorKind::System),
+        action: null,
+        panel: null,
+        request: null,
+        changes: [],
+        data: [],
+    ), SecurityEvent::cases());
+
+    $summaries = array_map(static fn ($line): string => $line->summary, new ActivityFeed($this->kernel->orm)->lines($entries));
+
+    expect(array_values(array_intersect($summaries, array_map(static fn (SecurityEvent $event): string => $event->value, SecurityEvent::cases()))))->toBe([]);
 });
