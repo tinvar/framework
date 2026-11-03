@@ -336,7 +336,7 @@ final readonly class Dispatcher
     {
         return [
             'job' => $job::class,
-            'args' => Payload::encodeArguments($job),
+            'args' => $this->arguments($job),
             'by' => $job instanceof DeclaredBy ? $job->declaredBy() : null,
             'panel' => $this->panelOf($job),
         ];
@@ -423,7 +423,7 @@ final readonly class Dispatcher
         return new Envelope(
             id: Uuid::v7(),
             class: $job::class,
-            arguments: Payload::encodeArguments($job),
+            arguments: $this->arguments($job),
             tenant: $this->orm->tenant(),
             panel: $this->panelOf($job),
             user: $user,
@@ -550,6 +550,17 @@ final readonly class Dispatcher
     private static function declarations(Job $job): string
     {
         return $job instanceof DeclaredBy ? $job->declaredBy() : $job::class;
+    }
+
+    /**
+     * A job's arguments, encoded, each model in them held to being a row of
+     * the tenant dispatching it.
+     *
+     * @return array<string, mixed>
+     */
+    private function arguments(Job $job): array
+    {
+        return Payload::encodeArguments($job, $this->orm->isOwnRow(...));
     }
 
     private function now(): int

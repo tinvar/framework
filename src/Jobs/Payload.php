@@ -26,7 +26,8 @@ use Tinvar\Orm\Orm;
  *
  * A model is read again when the job runs, inside the job's tenant, so it
  * is the row as it is then, scoped as the dispatcher's read was; one that
- * has gone refuses the job.
+ * has gone refuses the job. One that is not a row of the tenant dispatching
+ * -- read in another tenant, or across them -- is refused at dispatch.
  */
 final class Payload
 {
@@ -36,11 +37,13 @@ final class Payload
     /**
      * A Queueable's constructor arguments, encoded, by parameter name.
      *
+     * @param (\Closure(Model): bool)|null $ownRow whether a model is a row of the tenant
+     *        dispatching: one that is not is refused, not sent (Orm::isOwnRow())
      * @return array<string, mixed>
      */
-    public static function encodeArguments(Queueable $object): array
+    public static function encodeArguments(Queueable $object, ?\Closure $ownRow = null): array
     {
-        return self::arguments($object, 0);
+        return self::arguments($object, 0, $ownRow);
     }
 
     /**
@@ -54,7 +57,7 @@ final class Payload
     }
 
     /** @return array<string, mixed> */
-    private static function arguments(Queueable $object, int $depth): array
+    private static function arguments(Queueable $object, int $depth, ?\Closure $ownRow): array
     {
         $reflection = new \ReflectionClass($object);
         $encoded = [];
@@ -72,13 +75,13 @@ final class Payload
                 throw self::refuse($object::class, $name, 'has no value on the object to send');
             }
 
-            $encoded[$name] = self::encode($property->getValue($object), $object::class . "::\${$name}", $depth + 1);
+            $encoded[$name] = self::encode($property->getValue($object), $object::class . "::\${$name}", $depth + 1, $ownRow);
         }
 
         return $encoded;
     }
 
-    private static function encode(mixed $value, string $where, int $depth): mixed
+    private static function encode(mixed $value, string $where, int $depth, ?\Closure $ownRow): mixed
     {
         if ($depth > self::MAX_DEPTH) {
             throw new \InvalidArgumentException("{$where} nests deeper than a job's payload may.");
@@ -90,13 +93,13 @@ final class Payload
                 ? $value
                 : throw new \InvalidArgumentException("{$where} is not a finite number, which JSON cannot carry."),
             \is_array($value) => ['a' => array_map(
-                static fn (int|string $key): array => [$key, self::encode($value[$key], "{$where}[{$key}]", $depth + 1)],
+                static fn (int|string $key): array => [$key, self::encode($value[$key], "{$where}[{$key}]", $depth + 1, $ownRow)],
                 array_keys($value),
             )],
             $value instanceof \BackedEnum => ['e' => [$value::class, $value->value]],
             $value instanceof \DateTimeImmutable => ['d' => $value->format('Y-m-d\TH:i:s.uP')],
-            $value instanceof Model => ['m' => [$value::class, self::keyOf($value, $where)]],
-            $value instanceof Queueable => ['o' => [$value::class, self::arguments($value, $depth)]],
+            $value instanceof Model => ['m' => [$value::class, self::keyOf($value, $where, $ownRow)]],
+            $value instanceof Queueable => ['o' => [$value::class, self::arguments($value, $depth, $ownRow)]],
             default => throw new \InvalidArgumentException(
                 "{$where} is " . get_debug_type($value) . ', which cannot travel in a job: send scalars, arrays, '
                 . 'backed enums, DateTimeImmutable, models or Queueable objects.',
@@ -104,13 +107,23 @@ final class Payload
         };
     }
 
-    private static function keyOf(Model $model, string $where): string
+    private static function keyOf(Model $model, string $where, ?\Closure $ownRow): string
     {
         // A model with no row has nothing to be read back by, and one only
         // in memory would arrive as whatever its id named by then -- or as
         // nothing.
         if (!Orm::holdsRow($model)) {
             throw new \InvalidArgumentException("{$where} is a " . $model::class . ' that has not been saved; save it before dispatching.');
+        }
+        // The job runs as the tenant dispatching it, and reads its models
+        // again there: another tenant's row would fail it on the worker,
+        // long after this request answered success -- or, read some other
+        // way, be acted on as this tenant's.
+        if ($ownRow !== null && !$ownRow($model)) {
+            throw new \InvalidArgumentException(
+                "{$where} is a " . $model::class . ' that is not a row of the tenant dispatching it: a job runs as its '
+                . 'dispatching tenant. Dispatch it inside actAs() for the tenant the row is in.',
+            );
         }
 
         return $model->primaryKey();

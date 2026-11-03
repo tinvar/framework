@@ -40,6 +40,14 @@ use Tinvar\Tests\Orm\Fixtures\Script;
 
 require_once __DIR__ . '/Fixtures/jobs.php';
 
+final readonly class CarriesScripts implements \Tinvar\Jobs\Job
+{
+    /** @param array<array-key, mixed> $scripts */
+    public function __construct(public array $scripts) {}
+
+    public function handle(): void {}
+}
+
 function queueOf(Harness $h): ArrayQueue
 {
     \assert($h->queue instanceof ArrayQueue);
@@ -425,6 +433,30 @@ it('refuses at dispatch what cannot travel: a closure, an unsaved model', functi
         ->toThrow(\InvalidArgumentException::class, 'Closure, which cannot travel')
         ->and(fn () => $h->dispatcher->dispatch(new RecordContext(new Script())))
         ->toThrow(\InvalidArgumentException::class, 'has not been saved');
+});
+
+// Audit: a job runs as the tenant that dispatched it and reads its models
+// again there, so another tenant's model failed only on the worker, long
+// after the request that dispatched it answered success -- and a job that
+// read its model some other way would have acted on another tenant's row.
+it('refuses at dispatch a model of another tenant than the one dispatching', function () {
+    $h = new Harness();
+    $globex = $h->orm->actAs('globex', fn () => $h->orm->find(Script::class, $h->fixture->scripts['globex'][0]));
+    $across = $h->orm->acrossTenants(fn () => $h->orm->find(Script::class, $h->fixture->scripts['globex'][0]));
+    $own = $h->orm->actAs('acme', fn () => $h->orm->find(Script::class, $h->fixture->scripts['acme'][0]));
+
+    expect(fn () => $h->orm->actAs('acme', fn () => $h->dispatcher->dispatch(new RecordContext($globex))))
+        ->toThrow(\InvalidArgumentException::class, 'is not a row of the tenant dispatching it')
+        ->and(fn () => $h->orm->actAs('acme', fn () => $h->dispatcher->dispatch(new RecordContext($across))))
+        ->toThrow(\InvalidArgumentException::class, 'is not a row of the tenant dispatching it')
+        ->and(fn () => $h->orm->actAs('acme', fn () => $h->dispatcher->dispatch(new CarriesScripts(['nested' => [$globex]]))))
+        ->toThrow(\InvalidArgumentException::class, 'is not a row of the tenant dispatching it')
+        ->and(fn () => $h->dispatcher->dispatch(new RecordContext($globex)))
+        ->toThrow(\InvalidArgumentException::class, 'is not a row of the tenant dispatching it')
+        ->and($h->queue->size('default'))->toBe(0);
+
+    $h->orm->actAs('acme', fn () => $h->dispatcher->dispatch(new RecordContext($own)));
+    expect($h->queue->size('default'))->toBe(1);
 });
 
 it('refuses a job whose model is gone by the time it runs', function () {
