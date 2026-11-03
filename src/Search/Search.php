@@ -42,6 +42,14 @@ final class Search
     private array $models = [];
 
     /**
+     * The keys written and not yet indexed, batched by model, scope and
+     * fiber (written()), each batch with the scope to read its rows in.
+     *
+     * @var array<string, array{class: class-string, run: \Closure(\Closure): mixed, ids: array<string, true>}>
+     */
+    private array $pending = [];
+
+    /**
      * @param list<class-string> $models the application's models: the #[Searchable] ones are registered, the rest ignored
      * @param Dispatcher|null $dispatcher what queues a remote backend's writes; required with one
      * @param Gate|null $gate what SearchQuery::authorize() asks
@@ -232,6 +240,15 @@ final class Search
      * Told by the ORM of a row written: once its transaction commits, the
      * row is indexed again, in the scope the write was made in.
      *
+     * The rows a transaction writes are indexed together: each write adds
+     * its key to the batch of its model, its scope and its fiber, and the
+     * first of the batch's callbacks to run once the commit is in takes the
+     * whole batch -- one read and one index write, or one job, for a
+     * thousand rows saved or updated, not one apiece. A batch is its
+     * fiber's, since a fiber's transaction may be its own and commit apart.
+     * A key whose write was rolled back stays in its batch for the next
+     * commit in that scope to sync: read again, it is indexed as it is.
+     *
      * @param class-string $class
      */
     private function written(string $class, string $id, bool $deleted): void
@@ -241,24 +258,39 @@ final class Search
             return;
         }
 
-        // The scope to read the row again in, taken now: the commit may come
-        // after the code that set it up has returned.
-        $run = match (true) {
-            !$model->tenantScoped() => static fn (\Closure $work): mixed => $work(),
-            $this->orm->isUnscoped() => $this->acrossTenants(...),
-            default => $this->orm->captureScope(),
+        // The scope to read the rows again in, taken now: the commit may
+        // come after the code that set it up has returned.
+        [$scope, $run] = match (true) {
+            !$model->tenantScoped() => ['', static fn (\Closure $work): mixed => $work()],
+            $this->orm->isUnscoped() => ["\0across", $this->acrossTenants(...)],
+            default => [
+                implode("\0", [$this->orm->tenant(), $this->orm->isReadOnly() ? 'r' : 'w', ...($this->orm->subtreeInForce() ?? [])]),
+                $this->orm->captureScope(),
+            ],
         };
+        $fiber = \Fiber::getCurrent();
+        $key = implode("\n", [$class, $fiber === null ? '' : (string) spl_object_id($fiber), $scope]);
 
-        $this->orm->afterCommit(function () use ($run, $class, $id): void {
+        $this->pending[$key] ??= ['class' => $class, 'run' => $run, 'ids' => []];
+        $this->pending[$key]['ids'][$id] = true;
+
+        $this->orm->afterCommit(function () use ($key): void {
+            $batch = $this->pending[$key] ?? null;
+            if ($batch === null) {
+                return;
+            }
+            unset($this->pending[$key]);
+            $class = $batch['class'];
+            $ids = array_map(strval(...), array_keys($batch['ids']));
             try {
-                $run(fn () => $this->backend->remote() ? $this->queue($class, [$id]) : $this->sync($class, [$id]));
+                ($batch['run'])(fn () => $this->backend->remote() ? $this->queue($class, $ids) : $this->sync($class, $ids));
             } catch (\Throwable $e) {
                 // Never thrown on: the write it follows is committed, and a
                 // caller that retried on the throw would write it twice.
                 if ($this->report !== null) {
                     ($this->report)($e);
                 } else {
-                    error_log("Search could not index {$class} {$id}: " . $e::class . ': ' . $e->getMessage() . ' Run `tinvar search:reindex` once the cause is fixed.');
+                    error_log("Search could not index {$class} " . implode(', ', $ids) . ': ' . $e::class . ': ' . $e->getMessage() . ' Run `tinvar search:reindex` once the cause is fixed.');
                 }
             }
         });

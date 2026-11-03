@@ -25,6 +25,7 @@ use Tinvar\Orm\Orm;
 use Tinvar\Orm\PdoConnection;
 use Tinvar\Tests\Orm\Fixtures\Tenancy;
 use Tinvar\Tests\Search\Fixtures\BrokenRow;
+use Tinvar\Tests\Search\Fixtures\CountingBackend;
 use Tinvar\Tests\Search\Fixtures\SecretColumnRow;
 use Tinvar\Tests\Search\Fixtures\SecretNamedRow;
 use Tinvar\Tests\Search\Fixtures\SensitiveRow;
@@ -32,6 +33,7 @@ use Tinvar\Tests\Search\Fixtures\Note;
 use Tinvar\Tests\Search\Fixtures\PlainRow;
 use Tinvar\Tests\Search\Fixtures\Ticket;
 
+use function Tinvar\Tests\Search\Fixtures\createTables;
 use function Tinvar\Tests\Search\Fixtures\names;
 use function Tinvar\Tests\Search\Fixtures\note;
 use function Tinvar\Tests\Search\Fixtures\sqliteSearch;
@@ -97,6 +99,26 @@ describe('the index', function () {
         });
 
         expect(names($search->for(Note::class)->query('lamp')->get()))->toBe(['Kept lamp']);
+    });
+
+    it('indexes the rows a transaction wrote once it commits, together, not one write at a time', function () {
+        $connection = new PdoConnection(new \PDO('sqlite::memory:'));
+        createTables($connection, 'sqlite');
+        $orm = new Orm($connection, new IdentityMap('search'), Tenancy::flat());
+        $backend = new CountingBackend(DatabaseSearch::for($connection));
+        $search = new Search($orm, $backend, [Note::class, Ticket::class])->observe();
+
+        $orm->transaction(function () use ($orm): void {
+            foreach (range(1, 5) as $n) {
+                note($orm, "Lamp {$n}");
+            }
+            $orm->query(Note::class)->update(['body' => 'brass']);
+            $orm->actAs('acme', fn () => [ticket($orm, 'Lamp broken'), ticket($orm, 'Lamp flickers')]);
+        });
+
+        expect($backend->upserts)->toBe(2)
+            ->and(names($search->for(Note::class)->query('brass')->get()))->toHaveCount(5)
+            ->and($orm->actAs('acme', fn (): array => names($search->for(Ticket::class)->query('lamp')->get())))->toHaveCount(2);
     });
 
     it('pages results, with the index\'s count', function () {

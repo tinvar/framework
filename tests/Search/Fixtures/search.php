@@ -85,6 +85,40 @@ final class SecretColumnRow extends Model
     #[Column('reset_token')] public string $code;
 }
 
+/** A backend that counts the upserts it is handed, and hands them on. */
+final class CountingBackend implements SearchBackend
+{
+    public int $upserts = 0;
+
+    public function __construct(private readonly SearchBackend $inner) {}
+
+    public function remote(): bool
+    {
+        return $this->inner->remote();
+    }
+
+    public function upsert(\Tinvar\Search\SearchableModel $model, string $tenant, array $documents): void
+    {
+        $this->upserts++;
+        $this->inner->upsert($model, $tenant, $documents);
+    }
+
+    public function remove(\Tinvar\Search\SearchableModel $model, ?array $tenants, array $ids): void
+    {
+        $this->inner->remove($model, $tenants, $ids);
+    }
+
+    public function search(\Tinvar\Search\SearchableModel $model, \Tinvar\Search\SearchTerms $terms, ?array $tenants, int $limit, int $offset): \Tinvar\Search\SearchHits
+    {
+        return $this->inner->search($model, $terms, $tenants, $limit, $offset);
+    }
+
+    public function flush(\Tinvar\Search\SearchableModel $model, ?string $tenant): void
+    {
+        $this->inner->flush($model, $tenant);
+    }
+}
+
 /** The fixture tables, and the index's, on $connection's database. */
 function createTables(Connection $connection, string $driver): void
 {
