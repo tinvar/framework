@@ -270,6 +270,17 @@ it('reports in tinvar check a host nobody serves, and two spellings of one host'
         ->and($fine)->toBe([]);
 });
 
+it('reports in tinvar check a panel\'s host nobody serves, as the Kernel refuses it', function () {
+    $panels = new \Tinvar\Auth\PanelRegistry(new \Tinvar\Auth\PanelDefinition('admin', domain: 'admin.{root}'));
+    $none = \Tinvar\Console\AppConsole::hostViolations([], [], [], null, panels: $panels);
+    $unconfigured = \Tinvar\Console\AppConsole::hostViolations([], [], [], new Domains(['admin' => 'admin.test'], primary: '{admin}'), panels: $panels);
+
+    expect($none)->toHaveCount(1)
+        ->and($none[0]->rule)->toBe(\Tinvar\Console\AppConsole::HOSTS_MUST_BE_SERVED)
+        ->and((string) $unconfigured[0])->toContain("no domain called 'root'")
+        ->and(\Tinvar\Console\AppConsole::hostViolations([], [], [], new Domains(['root' => 'shop.test']), panels: $panels))->toBe([]);
+});
+
 #[ErrorPage([404, 503], view: 'errors/app'), NoAuthorization(reason: 'an error page')]
 final class AppErrors {}
 

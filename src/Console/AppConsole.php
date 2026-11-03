@@ -349,8 +349,9 @@ final class AppConsole
     }
 
     /**
-     * What `tinvar check` reports of hosts: a page, layout or endpoint
-     * declaring a #[Domain] the application configures no Domains for, one
+     * What `tinvar check` reports of hosts: a page, layout, endpoint,
+     * action, query, channel, transfer or panel declaring a #[Domain] the
+     * application configures no Domains for, as the Kernel refuses it, one
      * naming a configured domain that does not exist, two patterns that
      * match one host, and any entry point -- a page, layout, endpoint,
      * action, query, channel or transfer -- on a `{tenant}` host, its own or
@@ -397,6 +398,29 @@ final class AppConsole
             }
             $patterns = [...$patterns, ...array_map(static fn ($p): string => $p->pattern, $endpointRegistry->hostPatterns())];
         }
+        $actionRegistry = self::registered(new ActionRegistry(models: $models), $actions);
+        $queryRegistry = self::registered(new QueryRegistry(models: $models), $queries);
+        $channelRegistry = self::registered(new ChannelRegistry($models), $channels);
+        $transferList = self::registered(new TransferRegistry($models), $transfers)->all();
+        // Every host the Kernel's Domains must serve, as it gathers them:
+        // the actions', the queries', the channels', the transfers' and the
+        // panels' beside the pages' and the endpoints'.
+        $patterns = [...$patterns, ...$queryRegistry->hostPatterns()];
+        foreach ($actionRegistry->all() as $action) {
+            if ($action->host !== null) {
+                $patterns[] = $action->host->pattern;
+            }
+        }
+        foreach ([...$channelRegistry->all(), ...$transferList] as $held) {
+            if ($held->host !== null) {
+                $patterns[] = $held->host;
+            }
+        }
+        foreach ($panels?->all() ?? [] as $definition) {
+            if ($definition->domain !== null) {
+                $patterns[] = $definition->domain;
+            }
+        }
         $patterns = array_values(array_unique($patterns));
 
         $tenantHosts = array_map(
@@ -404,10 +428,10 @@ final class AppConsole
             EntryContext::tenantHostRefusals(
                 $registry,
                 $endpointRegistry,
-                self::registered(new ActionRegistry(models: $models), $actions),
-                self::registered(new QueryRegistry(models: $models), $queries),
-                self::registered(new ChannelRegistry($models), $channels),
-                self::registered(new TransferRegistry($models), $transfers)->all(),
+                $actionRegistry,
+                $queryRegistry,
+                $channelRegistry,
+                $transferList,
                 EntryContext::panelDomainIn($panels),
             ),
         );
