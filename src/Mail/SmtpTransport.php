@@ -174,13 +174,29 @@ final readonly class SmtpTransport implements Bounded
         return $this->expect($socket, $accepted, $secret ? '(credentials)' : $line);
     }
 
-    /** @param resource $socket */
+    /**
+     * Writes $bytes within the timeout as a whole, as expect() reads: each
+     * write waits up to the timeout for the server to take some, so a
+     * server -- or the path before STARTTLS -- reading the message a little
+     * at a time, just inside it, held the send, and a failover's deadline,
+     * for as long as it went on reading. Each write is given what is left.
+     *
+     * @param resource $socket
+     */
     private function write($socket, #[\SensitiveParameter] string $bytes): void
     {
+        $deadline = microtime(true) + $this->budget();
         for ($written = 0; $written < \strlen($bytes);) {
-            $n = @fwrite($socket, substr($bytes, $written));
+            $left = $deadline - microtime(true);
+            if ($left <= 0) {
+                throw $this->untaken();
+            }
+            stream_set_timeout($socket, (int) $left, (int) (($left - floor($left)) * 1_000_000));
+            $n = @fwrite($socket, substr($bytes, $written, 65_536));
             if ($n === false || $n === 0) {
-                throw new MailTransportException('The SMTP connection closed while writing.', transport: 'smtp');
+                throw stream_get_meta_data($socket)['timed_out']
+                    ? $this->untaken()
+                    : new MailTransportException('The SMTP connection closed while writing.', transport: 'smtp');
             }
             $written += $n;
         }
@@ -243,6 +259,11 @@ final readonly class SmtpTransport implements Bounded
     private function budget(): float
     {
         return $this->until === null ? $this->timeout : min($this->timeout, $this->until - microtime(true));
+    }
+
+    private function untaken(): MailTransportException
+    {
+        return new MailTransportException("The SMTP server did not take what was sent within {$this->timeout}s.", transport: 'smtp');
     }
 
     private function unanswered(string $after): MailTransportException

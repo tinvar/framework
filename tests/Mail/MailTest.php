@@ -14,6 +14,7 @@ use Tinvar\Codec\MessagePackCodec;
 use Tinvar\Data\Data;
 use Tinvar\Mail\Address;
 use Tinvar\Mail\ArrayTransport;
+use Tinvar\Mail\Attachment;
 use Tinvar\Mail\DkimKey;
 use Tinvar\Mail\DkimSigner;
 use Tinvar\Mail\Email;
@@ -688,6 +689,64 @@ it('gives a reply its timeout as a whole, however it trickles in', function () {
 
     expect($thrown)->toContain('did not answer within 1s')
         ->and(microtime(true) - $started)->toBeLessThan(2.5);
+});
+
+// And the message's bytes the same: a server -- or the path before STARTTLS
+// -- that takes the DATA a little at a time, just inside the timeout each
+// write is given, held the send, and a failover's deadline, for as long as
+// it kept reading.
+it('gives writing the message its timeout as a whole, however slowly it is read', function () {
+    if (!\function_exists('pcntl_fork')) {
+        test()->markTestSkipped('pcntl is not available.');
+    }
+
+    $server = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
+    \assert($server !== false);
+    $port = (int) substr((string) strrchr((string) stream_socket_get_name($server, false), ':'), 1);
+    $pid = pcntl_fork();
+    if ($pid === 0) {
+        $client = stream_socket_accept($server, 5);
+        if ($client !== false) {
+            fwrite($client, "220 smtp.test ESMTP\r\n");
+            while (($line = fgets($client)) !== false) {
+                $verb = strtoupper(strtok(trim($line), ' :') ?: '');
+                fwrite($client, match ($verb) {
+                    'EHLO' => "250 smtp.test\r\n",
+                    'DATA' => "354 go ahead\r\n",
+                    default => "250 ok\r\n",
+                });
+                if ($verb === 'DATA') {
+                    break;
+                }
+            }
+            // Read the message, slowly, for six seconds.
+            $until = microtime(true) + 6;
+            while (microtime(true) < $until && fread($client, 8192) !== false) {
+                usleep(50_000);
+            }
+        }
+        leave();
+    }
+    fclose($server);
+
+    $base = message();
+    $big = new Message($base->from, $base->to, $base->subject, $base->html, $base->text, attachments: [
+        new Attachment('big.bin', 'application/octet-stream', random_bytes(8_000_000)),
+    ]);
+    $transport = new SmtpTransport('127.0.0.1', $port, encryption: SmtpTransport::NONE, timeout: 1);
+    $started = microtime(true);
+    try {
+        $transport->send($big);
+        $thrown = null;
+    } catch (MailTransportException $e) {
+        $thrown = $e->getMessage();
+    } finally {
+        posix_kill($pid, SIGKILL);
+        pcntl_waitpid($pid, $status);
+    }
+
+    expect($thrown)->toContain('did not take what was sent within 1s')
+        ->and(microtime(true) - $started)->toBeLessThan(5.0);
 });
 
 it('names itself smtp on every refusal, a server it cannot reach as much as one that answers no', function () {
