@@ -131,6 +131,10 @@ final readonly class VpsComposeRecipe implements DeployRecipe
             services:
               # TLS for {$host}, and the proof the app takes it for its proxy by.
               caddy:
+                # Caddy 2 by its tag, not a digest: it faces the internet, so
+                # `docker compose pull` should take each security release as
+                # Caddy publishes it. `tinvar deps:check` does not move it --
+                # it holds the framework's own pins -- so pull it on a schedule.
                 image: caddy:2
                 env_file: /etc/{$name}/proxy.env
                 ports:
