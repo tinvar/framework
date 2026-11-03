@@ -6,15 +6,16 @@ namespace Tinvar\Console\Kits;
 
 /**
  * A kit: a Composer package that adds a whole feature to an application --
- * accounts, say -- by writing the application's own classes, migrations
- * and views once, then leaving them to the application (ADR 0157).
+ * a tenant's own pages, say -- by writing the application's own classes,
+ * migrations and views once, then leaving them to the application (ADR 0157).
  *
- * A package says it is one in its composer.json, and nowhere else:
+ * A package says it is one in its composer.json, and nowhere else, as
+ * tinvar/tenancy does:
  *
  *     "extra": {"tinvar": {"kit": {
- *         "name": "accounts",
- *         "title": "Accounts: sign-up, sign-in, password reset and email links",
- *         "class": "Tinvar\\Accounts\\AccountsKit"
+ *         "name": "tenant-pages",
+ *         "title": "Tenant pages: an organization switcher, custom domains, and settings with members and invites",
+ *         "class": "Tinvar\\Tenancy\\SelfService\\TenantPagesKit"
  *     }}}
  *
  * `tinvar new` offers every kit its source has by that name -- `--accounts`

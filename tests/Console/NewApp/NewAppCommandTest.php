@@ -462,3 +462,22 @@ it('runs Composer for the published skeleton from an empty directory of its own,
             ->and(file_exists($directory))->toBeFalse();
     }
 });
+
+it('asks Packagist for each kit a package of the framework declares, by the name it declares', function () {
+    $processes = new class (static function (string $t): void {}) extends Processes {
+        public function run(array $command, string $directory, ?array $env = null): int
+        {
+            return 0;
+        }
+    };
+    $declared = [];
+    foreach (glob(\dirname(__DIR__, 4) . '/*/composer.json') ?: [] as $file) {
+        $kit = KitDeclaration::of(json_decode((string) file_get_contents($file), true));
+        if ($kit !== null) {
+            $declared[$kit->name] = $kit->package;
+        }
+    }
+
+    expect($declared)->not->toBe([])
+        ->and(array_map(static fn (KitDeclaration $kit): string => $kit->package, new PackagistSkeleton()->kits($processes)))->toBe($declared);
+});

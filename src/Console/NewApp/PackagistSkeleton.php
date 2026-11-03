@@ -22,8 +22,12 @@ use Tinvar\Support\PrivateDirectory;
  */
 final readonly class PackagistSkeleton implements SkeletonSource
 {
-    /** The packages a kit may be published as, asked of Packagist by name. */
-    public const array KNOWN_KITS = ['tinvar/accounts'];
+    /**
+     * The framework's packages that declare a kit, each by the name its
+     * extra.tinvar.kit gives it, asked of Packagist by package. Accounts are
+     * none of them: the skeleton ships them wired (ADR 0153).
+     */
+    public const array KNOWN_KITS = ['tinvar/tenancy' => 'tenant-pages'];
 
     public function describe(): string
     {
@@ -56,12 +60,11 @@ final readonly class PackagistSkeleton implements SkeletonSource
     public function kits(Processes $processes): array
     {
         $kits = [];
-        foreach (self::KNOWN_KITS as $package) {
+        foreach (self::KNOWN_KITS as $package => $name) {
             if (self::composer(['show', '--all', '--format=json', '--no-interaction', $package], $processes->quietly()) !== 0) {
                 continue;
             }
-            $name = substr($package, (int) strrpos($package, '/') + 1);
-            $kits[$name] = new KitDeclaration($package, $name, ucfirst($name), '');
+            $kits[$name] = new KitDeclaration($package, $name, ucfirst(str_replace('-', ' ', $name)), '');
         }
 
         return $kits;
