@@ -59,9 +59,7 @@ final readonly class Queue
         if ($unique < 0 || $unique > self::MAX_UNIQUE) {
             throw new \InvalidArgumentException('unique is how many seconds a job\'s lock lasts at most: 0 for none, up to a week, so a lock never outlives what it is for.');
         }
-        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z/', $name) !== 1) {
-            throw new \InvalidArgumentException("'{$name}' is not a queue name: letters, digits, '.', '_' and '-', up to 64.");
-        }
+        self::assertName($name);
         if ($tries < 1) {
             throw new \InvalidArgumentException('A job is tried at least once; tries must be 1 or more.');
         }
@@ -82,6 +80,24 @@ final readonly class Queue
         }
 
         $this->backoff = $seconds;
+    }
+
+    /**
+     * Refuses what is not a queue's name: letters, digits, '.', '_' and '-',
+     * up to 64, and never in `t:`, the namespace a rate per tenant counts
+     * under (Jobs\Rate::key()) in the store a rate per queue counts under
+     * its queue's name -- so no queue counts where a tenant's starts are.
+     *
+     * @throws \InvalidArgumentException
+     */
+    public static function assertName(string $name): void
+    {
+        if (str_starts_with($name, 't:')) {
+            throw new \InvalidArgumentException("'{$name}' is not a queue an application may name: 't:' is the tenants' rate namespace.");
+        }
+        if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z/', $name) !== 1) {
+            throw new \InvalidArgumentException("'{$name}' is not a queue name: letters, digits, '.', '_' and '-', up to 64.");
+        }
     }
 
     /** The options a class declares, or the defaults when it declares none. */

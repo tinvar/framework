@@ -50,6 +50,10 @@ final readonly class WorkerOptions
             throw new \InvalidArgumentException('A worker needs a queue to work.');
         }
         StopBudget::check($stopBudget);
+        // A rate counts under its queue's name, beside every tenant's rate.
+        foreach (array_keys($rates) as $queue) {
+            QueueOptions::assertName((string) $queue);
+        }
     }
 
     /**

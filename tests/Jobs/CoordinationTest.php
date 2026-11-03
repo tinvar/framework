@@ -517,6 +517,17 @@ describe('a rate-limited queue', function () {
             ->and($writes)->toBe([]);
     });
 
+    // Review: a rate per tenant counts under `t:` and a digest, in the same
+    // store a rate per queue counts under the queue's name. A queue named
+    // into that namespace would count where some tenant's starts are counted.
+    it('is refused on a queue named in the tenants\' namespace, `t:`, as such a queue is', function () {
+        expect(fn () => new Queue('t:abc'))->toThrow(\InvalidArgumentException::class, "'t:' is the tenants' rate namespace")
+            ->and(fn () => new WorkerOptions(rates: ['t:abc' => new Rate(1, 60)]))
+            ->toThrow(\InvalidArgumentException::class, "'t:' is the tenants' rate namespace")
+            ->and(fn () => new WorkerOptions(rates: ['no spaces' => new Rate(1, 60)]))
+            ->toThrow(\InvalidArgumentException::class, 'is not a queue name');
+    });
+
     it('is at least one start in a window of a second to a day', function () {
         expect(fn () => new Rate(0))->toThrow(\InvalidArgumentException::class)
             ->and(fn () => new Rate(1, Rate::MAX_PER + 1))->toThrow(\InvalidArgumentException::class);
