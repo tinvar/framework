@@ -83,6 +83,17 @@ final class Realms
         return array_map('strval', array_keys($this->platformPanels));
     }
 
+    /**
+     * The platform's own hosts: the authority's and every one listed --
+     * what no tenant's slug may name.
+     *
+     * @return list<string>
+     */
+    public function platformHosts(): array
+    {
+        return array_map('strval', array_keys($this->platform));
+    }
+
     public function isAuthority(Realm $realm): bool
     {
         return $realm->host === $this->authority->host;
