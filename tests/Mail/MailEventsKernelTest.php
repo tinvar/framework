@@ -55,14 +55,13 @@ function kernel(): array
     ), $suppressions];
 }
 
-function delivery(string $body, string $signature): Request
+/** A delivery signed at $timestamp: the same second its signature was made for, never the clock read again. */
+function delivery(string $body, string $signature, int $timestamp): Request
 {
-    $now = time();
-
     return new Request('POST', '/_mail/events/resend', [
         'content-type' => 'application/json',
         'svix-id' => 'msg_kernel_1',
-        'svix-timestamp' => (string) $now,
+        'svix-timestamp' => (string) $timestamp,
         'svix-signature' => 'v1,' . $signature,
     ]);
 }
@@ -73,7 +72,8 @@ describe('the endpoint, mounted', function () {
     it('takes a signed delivery with no session or CSRF token, and opens no session for it', function () {
         [$kernel, $suppressions] = kernel();
         $body = json_encode(['type' => 'email.complained', 'created_at' => gmdate('c'), 'data' => ['email_id' => 'e-1', 'to' => ['ada@example.test']]], JSON_THROW_ON_ERROR);
-        $request = delivery($body, SvixSignature::sign(WEBHOOK_KEY, 'msg_kernel_1', time(), $body));
+        $now = time();
+        $request = delivery($body, SvixSignature::sign(WEBHOOK_KEY, 'msg_kernel_1', $now, $body), $now);
 
         $response = $kernel->handle($request, static fn (): Response => Response::make(500), $body);
 
@@ -88,7 +88,7 @@ describe('the endpoint, mounted', function () {
         $body = json_encode(['type' => 'email.complained', 'data' => ['email_id' => 'e-1', 'to' => ['ada@example.test']]], JSON_THROW_ON_ERROR);
         $respond = static fn (): Response => Response::make(500);
 
-        expect($kernel->handle(delivery($body, base64_encode(str_repeat('x', 32))), $respond, $body)->status)->toBe(401)
+        expect($kernel->handle(delivery($body, base64_encode(str_repeat('x', 32)), time()), $respond, $body)->status)->toBe(401)
             ->and($kernel->handle(new Request('GET', '/_mail/events/resend'), $respond)->status)->toBe(405)
             ->and($kernel->handle(new Request('POST', '/_mail/events/brevo'), $respond, '{}')->status)->toBe(404)
             ->and($suppressions->held)->toBe([]);
