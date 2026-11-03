@@ -72,7 +72,8 @@ final class ResourceDefinition
         foreach (self::listOf($class::columns(), Column::class, "{$short}::columns()") as $column) {
             $where = "{$short}'s column '{$column->key}'";
             $property = ModelProperty::of($model, $column->key, $where);
-            if ($column->searchable && !\in_array($property->type, ['string', 'id'], true)) {
+            // Not the id: a key is a UUID, which the ORM compares by no LIKE on any database.
+            if ($column->searchable && $property->type !== 'string') {
                 throw new \LogicException("{$where} is searchable and holds a {$property->type}: the search looks in text. Take searchable() off it.");
             }
             if ($column->sortable && $property->type === 'relation') {
