@@ -45,6 +45,18 @@ final readonly class TenantlessExport
     }
 }
 
+/** An export on the admin host. */
+#[\Tinvar\Attributes\Export(\Tinvar\Tests\Transfers\Fixtures\WidgetRow::class, name: 'doctor.admin.widgets', maxRows: 1_000), \Tinvar\Attributes\Authorize('export', \Tinvar\Tests\Transfers\Fixtures\Widget::class), \Tinvar\Attributes\Domain('admin.{root}')]
+final readonly class AdminExport
+{
+    public function __construct(private \Tinvar\Orm\Orm $orm) {}
+
+    public function __invoke(): \Tinvar\Orm\Query
+    {
+        return \Tinvar\Tests\Transfers\Fixtures\Widget::query($this->orm)->orderBy('sku');
+    }
+}
+
 /** A fresh application directory, removed after the test. */
 function app(): string
 {
@@ -255,6 +267,16 @@ describe('config, proxies and hosts', function () {
 
         expect(severities($leaky))->toBe(['problem'])
             ->and($leaky[0]->message)->toContain('reads its tenant from nowhere');
+    });
+    it('holds the hosts to the Domains the app\'s Kernel configures, as check and the boot do, not to TINVAR_APP_DOMAIN beside it', function () {
+        $root = app();
+        $classes = static fn (): \Tinvar\Discovery\DiscoveredClasses => new \Tinvar\Discovery\DiscoveredClasses(transfers: [AdminExport::class]);
+        $none = new HostsCheck()->run(context($root, ['TINVAR_APP_DOMAIN' => 'https://shop.test'], ['classes' => $classes, 'domains' => static fn (): ?\Tinvar\Routing\Domains => null]));
+        $served = new HostsCheck()->run(context($root, [], ['classes' => $classes, 'domains' => static fn (): \Tinvar\Routing\Domains => new \Tinvar\Routing\Domains(['root' => 'shop.test'])]));
+
+        expect(severities($none))->toBe(['problem'])
+            ->and($none[0]->message)->toContain('admin.{root}')
+            ->and(severities($served))->toBe(['ok']);
     });
 });
 

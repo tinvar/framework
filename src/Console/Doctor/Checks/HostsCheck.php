@@ -33,14 +33,14 @@ final readonly class HostsCheck implements DoctorCheck
     public function run(DoctorContext $context): array
     {
         try {
-            $config = Configs::load(FrameworkConfig::class, $context->env);
-            $domains = $config->domains();
+            $configured = Configs::load(FrameworkConfig::class, $context->env)->domains();
         } catch (ConfigException|\InvalidArgumentException) {
             return [Finding::skipped('The framework\'s config is refused; see Config above.')];
         }
-        if ($context->domains !== null) {
-            $domains = ($context->domains)() ?? $domains;
-        }
+        // The Domains the application's Kernel configures, where its console
+        // says -- what check holds the hosts to, and what the boot routes by,
+        // whatever TINVAR_APP_DOMAIN says beside it -- else the framework's.
+        $domains = $context->domains !== null ? ($context->domains)() : $configured;
 
         $findings = [];
         try {
@@ -67,7 +67,7 @@ final readonly class HostsCheck implements DoctorCheck
         }
 
         $production = $context->production();
-        if ($domains === null && $production !== null) {
+        if ($domains === null && $configured === null && $production !== null) {
             $findings[] = Finding::warning(
                 "TINVAR_APP_DOMAIN is not set, and {$production}: the app answers on any host it is sent, and builds its links from it.",
                 'Set TINVAR_APP_DOMAIN to the public address, `https://app.example.com`; and TINVAR_HOST_ALIASES to any other name it answers to.',
