@@ -55,3 +55,25 @@ it('counts no comma or bracket inside a string against the budget', function () 
 
     expect($codec->decodeFrame($buffer, $offset)['mail']['text'] ?? null)->toBe(json_decode('"' . $text . '"'));
 });
+
+// A map key is user data: a prop or an action's argument shaped
+// {"$b64": "..."} was read back as bytes, and a string where a map was.
+// Such keys travel escaped, one more `$` in front, and come back as sent.
+it('keeps user data shaped like the binary marker as the map it is', function () {
+    $codec = new JsonLinesCodec();
+    $frame = [
+        't' => 'meta',
+        'props' => ['$b64' => 'AQID'],
+        'deeper' => ['$$b64' => 'x', '$$$b64' => ['$b64' => 'AQID'], '$other' => 1],
+        'bytes' => new \Tinvar\Codec\Bin("\x01\x02"),
+    ];
+    $buffer = $codec->encodeFrame($frame);
+    $offset = 0;
+
+    expect($codec->decodeFrame($buffer, $offset))->toBe([
+        't' => 'meta',
+        'props' => ['$b64' => 'AQID'],
+        'deeper' => ['$$b64' => 'x', '$$$b64' => ['$b64' => 'AQID'], '$other' => 1],
+        'bytes' => "\x01\x02",
+    ])->and(substr($buffer, 4))->toContain('"props":{"$$b64":"AQID"}');
+});
