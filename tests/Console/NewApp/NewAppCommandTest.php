@@ -429,3 +429,36 @@ it('refuses a group-writable directory of the user\'s own whose group is shared,
     chmod("{$work}/grouped", 0o755);
     expect(AppDirectory::problem("{$work}/grouped/app"))->toBeNull();
 })->skip(!\function_exists('posix_geteuid'), 'posix');
+
+it('runs Composer for the published skeleton from an empty directory of its own, never one another user could plant a composer.json in', function () {
+    // Composer reads the composer.json of the directory it runs in, and
+    // loads the plugins that project's vendor/ holds and allows: one planted
+    // in /tmp, or in the sticky directory an app is made under, would run
+    // as the developer.
+    $processes = new class (static function (string $t): void {}) extends Processes {
+        /** @var list<array{list<string>, string, int, list<string>}> each run, of this and of each quiet copy of it */
+        public static array $ran = [];
+
+        public function run(array $command, string $directory, ?array $env = null): int
+        {
+            clearstatcache();
+            self::$ran[] = [$command, $directory, fileperms($directory) & 0o777, array_values(array_diff(scandir($directory) ?: [], ['.', '..']))];
+
+            return 0;
+        }
+    };
+    $source = new PackagistSkeleton();
+
+    $source->fetch(sys_get_temp_dir() . '/tinvar-new-' . bin2hex(random_bytes(4)) . '/my-app', [], $processes);
+    $source->kits($processes);
+
+    expect($processes::$ran)->toHaveCount(1 + \count(PackagistSkeleton::KNOWN_KITS));
+    foreach ($processes::$ran as [$command, $directory, $mode, $contents]) {
+        expect($command[0])->toBe('composer')
+            ->and(rtrim($directory, '/'))->not->toBe(rtrim(sys_get_temp_dir(), '/'))
+            ->and($mode)->toBe(0o700)
+            ->and($contents)->toBe([])
+            // Removed once Composer is done with it.
+            ->and(file_exists($directory))->toBeFalse();
+    }
+});

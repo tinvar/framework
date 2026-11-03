@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Console\NewApp;
 
 use Tinvar\Console\Kits\KitDeclaration;
+use Tinvar\Support\PrivateDirectory;
 
 /**
  * The skeleton as published: `composer create-project tinvar/skeleton`,
@@ -12,6 +13,12 @@ use Tinvar\Console\Kits\KitDeclaration;
  * @tinvar/react and @tinvar/renderer from npm. Until they are published,
  * Composer says it cannot find tinvar/skeleton, and `tinvar new` says to
  * run it from the repository's checkout instead.
+ *
+ * Composer runs from an empty directory of its own, made for the run: it
+ * reads the composer.json of the directory it runs in, and loads the
+ * plugins that project's vendor/ holds and allows, so run from /tmp -- or
+ * from the sticky directory an app may be made under -- it would run
+ * whatever another user planted there, as the developer.
  */
 final readonly class PackagistSkeleton implements SkeletonSource
 {
@@ -25,7 +32,7 @@ final readonly class PackagistSkeleton implements SkeletonSource
 
     public function fetch(string $directory, array $extra, Processes $processes): void
     {
-        $status = $processes->run(['composer', 'create-project', 'tinvar/skeleton', $directory, '--no-install', '--no-scripts', '--no-progress', '--no-interaction'], \dirname($directory));
+        $status = self::composer(['create-project', 'tinvar/skeleton', $directory, '--no-install', '--no-scripts', '--no-progress', '--no-interaction'], $processes);
         if ($status !== 0) {
             throw new \RuntimeException('composer create-project tinvar/skeleton failed. Until tinvar/skeleton is on Packagist, run `bin/tinvar new` from the framework\'s repository, which makes the app from its checkout (--from=monorepo).');
         }
@@ -50,11 +57,7 @@ final readonly class PackagistSkeleton implements SkeletonSource
     {
         $kits = [];
         foreach (self::KNOWN_KITS as $package) {
-            $output = '';
-            $probe = new Processes(static function (string $text) use (&$output): void {
-                $output .= $text;
-            });
-            if ($probe->run(['composer', 'show', '--all', '--format=json', '--no-interaction', $package], sys_get_temp_dir()) !== 0) {
+            if (self::composer(['show', '--all', '--format=json', '--no-interaction', $package], $processes->quietly()) !== 0) {
                 continue;
             }
             $name = substr($package, (int) strrpos($package, '/') + 1);
@@ -62,5 +65,21 @@ final readonly class PackagistSkeleton implements SkeletonSource
         }
 
         return $kits;
+    }
+
+    /**
+     * Composer with $arguments, run from a new empty directory only this
+     * user can enter, removed after.
+     *
+     * @param list<string> $arguments
+     */
+    private static function composer(array $arguments, Processes $processes): int
+    {
+        $empty = PrivateDirectory::create('tinvar-composer');
+        try {
+            return $processes->run(['composer', ...$arguments], $empty);
+        } finally {
+            PrivateDirectory::remove($empty);
+        }
     }
 }

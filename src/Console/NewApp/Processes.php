@@ -53,6 +53,12 @@ class Processes
         return proc_close($process);
     }
 
+    /** These processes, with what each command prints dropped rather than passed on. */
+    public function quietly(): static
+    {
+        return clone($this, ['out' => static function (string $text): void {}]);
+    }
+
     /** Whether $program is on the PATH. */
     public function has(string $program): bool
     {
