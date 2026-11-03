@@ -34,6 +34,11 @@ namespace Tinvar\Outbound;
  *
  * `destinations` holds the request to the hosts and ports one kind of
  * request goes to (Destinations), at every hop.
+ *
+ * `publicOnly` is for a URL someone other than the application chose -- a
+ * tenant's webhook endpoint: the private addresses #[OutboundPolicy]
+ * `allow` opens are the application's own services (a search engine, an
+ * object store), and are not opened to it (OutboundPolicy::publicOnly()).
  */
 final readonly class OutboundRequest implements \JsonSerializable
 {
@@ -60,6 +65,7 @@ final readonly class OutboundRequest implements \JsonSerializable
      * @param int|null $maxResponseBytes the largest body read; the client's default when null
      * @param (\Closure(string): void)|null $sink takes a 2xx response's body as it arrives, in place of the response
      * @param Destinations|null $destinations where this request may go, at every hop; anywhere the policy allows when null
+     * @param bool $publicOnly refuses every private address, whatever the policy allows: for a URL the application did not choose
      */
     public function __construct(
         public string $method,
@@ -74,6 +80,7 @@ final readonly class OutboundRequest implements \JsonSerializable
         public int $maxRedirects = 0,
         public ?\Closure $sink = null,
         public ?Destinations $destinations = null,
+        public bool $publicOnly = false,
     ) {
         if (!\in_array($method, self::METHODS, true)) {
             throw new \InvalidArgumentException("'{$method}' is not a method outbound requests use: " . implode(', ', self::METHODS) . '.');

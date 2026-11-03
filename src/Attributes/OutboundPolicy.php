@@ -162,6 +162,17 @@ final readonly class OutboundPolicy
     }
 
     /**
+     * This policy with `allow` closed: for a URL the application did not
+     * choose -- a tenant's webhook endpoint -- which must not reach the
+     * services the application opened private addresses for. `deny` and
+     * the ports hold as they are.
+     */
+    public function publicOnly(): self
+    {
+        return clone($this, ['allow' => []]);
+    }
+
+    /**
      * @param array<array-key, mixed> $ports
      * @return list<array{int, int}>
      */

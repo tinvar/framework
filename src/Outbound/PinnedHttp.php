@@ -143,7 +143,8 @@ final readonly class PinnedHttp implements OutboundHttp
 
         // Where this kind of request may go, before its name is looked up.
         $request->destinations?->assertAllows($target);
-        $address = $this->policy->vet($target, $this->resolver, $remaining / 1e9);
+        $policy = $request->publicOnly ? $this->policy->publicOnly() : $this->policy;
+        $address = $policy->vet($target, $this->resolver, $remaining / 1e9);
         if (self::clock() >= $deadline) {
             throw new OutboundFailed(OutboundFailed::TIMEOUT, "{$origin} ran out of time looking up its name.", null, self::since($started));
         }

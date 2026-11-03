@@ -97,6 +97,10 @@ final readonly class DeliverWebhook implements Job
                 $this->body,
                 timeout: self::TIMEOUT,
                 readBody: false,
+                // The tenant chose the URL: the private addresses the
+                // application opened for its own services are not its to
+                // reach (ADR 0038).
+                publicOnly: true,
             ));
         } catch (OutboundRefused $e) {
             // Refused, and not why: that a name the tenant chose resolves to

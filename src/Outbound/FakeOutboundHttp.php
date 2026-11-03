@@ -41,7 +41,7 @@ final class FakeOutboundHttp implements OutboundHttp
         $request->destinations?->assertAllows($target);
         $this->policy->assertPort($target);
         if ($target->literal !== null || $this->resolver !== null) {
-            $this->policy->vet($target, $this->resolver ?? new StaticResolver([]), $request->timeout ?? PinnedHttp::DEFAULT_TIMEOUT);
+            ($request->publicOnly ? $this->policy->publicOnly() : $this->policy)->vet($target, $this->resolver ?? new StaticResolver([]), $request->timeout ?? PinnedHttp::DEFAULT_TIMEOUT);
         }
 
         $this->sent[] = $request;

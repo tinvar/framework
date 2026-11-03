@@ -26,6 +26,7 @@ use Tinvar\Outbound\OutboundHttp;
 use Tinvar\Outbound\OutboundRequest;
 use Tinvar\Outbound\OutboundResponse;
 use Tinvar\Outbound\PinnedHttp;
+use Tinvar\Outbound\StaticResolver;
 use Tinvar\Queue\ArrayQueue;
 use Tinvar\Jobs\WorkerOptions;
 use Tinvar\Tests\Jobs\Fixtures\Harness;
@@ -118,7 +119,7 @@ final class Sender
      * @param (\Closure(OutboundRequest): OutboundResponse)|null $respond
      * @param array<string, WebhookSubscription>|null $subscriptions 'scripts' at acme's signed receiver URL unless given
      */
-    public function __construct(?\Closure $respond = null, ?array $subscriptions = null, ?PinnedHttp $http = null)
+    public function __construct(?\Closure $respond = null, ?array $subscriptions = null, FakeOutboundHttp|PinnedHttp|null $http = null)
     {
         $this->h = new Harness();
         $this->http = $http ?? new FakeOutboundHttp($respond);
@@ -375,21 +376,19 @@ it('keeps tries in the database, one delivery\'s in order and a tenant\'s own ne
         ->and(fn () => new DatabaseDeliveryLog($connection, 'deliveries; DROP TABLE x'))->toThrow(\InvalidArgumentException::class);
 });
 
-it('delivers over the network to a receiver on this machine, which verifies the signature', function () {
+it('never sends a tenant\'s delivery to a private address the application allows for its own services', function () {
     if (!\function_exists('pcntl_fork') || !\function_exists('curl_init')) {
         test()->markTestSkipped('pcntl or curl is not available.');
     }
 
-    $server = Server::start([static function (array $r): string {
-        $parsed = WebhookSignature::parse($r['headers'][WebhookSignature::HEADER] ?? null);
-        $valid = $parsed !== null && hash_equals(WebhookSignature::mac(SECRET, $parsed[0], $parsed[1], $r['method'], $r['target'], $r['body']), $parsed[2]);
-
-        return Server::reply($valid ? 202 : 401, 'ignored by the sender');
-    }]);
+    // The operator opened loopback for a service of the application's own
+    // (a search engine, an object store): the tenant's URL naming it is
+    // still refused, and nothing reaches the service.
+    $server = Server::start([static fn (array $r): string => Server::reply(200, 'an internal service')]);
 
     try {
         $s = new Sender(
-            subscriptions: ['scripts' => new WebhookSubscription("http://127.0.0.1:{$server->port}/hooks/in?account=7", SECRET)],
+            subscriptions: ['scripts' => new WebhookSubscription("http://127.0.0.1:{$server->port}/indexes/acme/documents", SECRET)],
             http: new PinnedHttp(new OutboundPolicy(allow: ['127.0.0.1'])),
         );
         $id = $s->sendAsAcme();
@@ -398,9 +397,19 @@ it('delivers over the network to a receiver on this machine, which verifies the 
         $requests = $server->stop();
     }
 
-    expect($requests)->toHaveCount(1)
-        ->and($requests[0]['target'])->toBe('/hooks/in?account=7')
-        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->status], $s->log->attempts($id)))->toBe([[DeliveryAttempt::DELIVERED, 202]]);
+    expect($requests)->toBe([])
+        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->status], $s->log->attempts($id)))->toBe([[DeliveryAttempt::REFUSED, null]])
+        ->and($s->queue()->failed()[0]->error)->toContain('(loopback)');
+});
+
+it('refuses a tenant\'s delivery to a name resolving inside an allowed private range, through any client', function () {
+    $http = new FakeOutboundHttp(policy: new OutboundPolicy(allow: ['10.0.0.0/8']), resolver: new StaticResolver(['search.internal' => ['10.0.4.7']]));
+    $s = new Sender(subscriptions: ['scripts' => new WebhookSubscription('https://search.internal:7700/indexes', SECRET)], http: $http);
+    $id = $s->sendAsAcme();
+    $s->work();
+
+    expect($http->sent)->toBe([])
+        ->and($s->log->attempts($id)[0]->outcome)->toBe(DeliveryAttempt::REFUSED);
 });
 
 /**
