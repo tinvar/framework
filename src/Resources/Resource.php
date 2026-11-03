@@ -116,7 +116,7 @@ abstract class Resource
         return [];
     }
 
-    /** The list's order until a heading is clicked; newest first by default, as ids are made. */
+    /** The list's order until a heading is clicked; newest first by default, by the key, as keys are made. */
     public static function sort(): ?Sort
     {
         return null;
@@ -244,9 +244,9 @@ abstract class Resource
         $direction = $sort === null ? $definition->sort->direction : ($askedDirection ?? Direction::Asc);
         $by = $sort ?? $definition->sort->key;
         $query = $query->orderBy($by, $direction);
-        if ($by !== 'id') {
+        if ($by !== $definition->key) {
             // Rows that tie keep one order from page to page.
-            $query = $query->orderBy('id', $direction);
+            $query = $query->orderBy($definition->key, $direction);
         }
 
         $perPage = $definition->attribute->perPage;

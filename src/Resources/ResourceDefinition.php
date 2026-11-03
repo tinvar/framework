@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tinvar\Resources;
 
 use Tinvar\Attributes\AdminResource;
+use Tinvar\Orm\Metadata;
 use Tinvar\Orm\Model;
 use Tinvar\Support\Str;
 
@@ -33,6 +34,8 @@ final class ResourceDefinition
      * @param list<array{Field, ModelProperty}> $fields
      * @param list<array{Filter, ModelProperty}> $filters
      * @param array<string, BulkAction> $bulkActions by key
+     * @param string $key the model's #[Id] property, whatever it is named: the list's order
+     *        until one is asked for, and its tie-break under any other
      */
     private function __construct(
         public readonly string $class,
@@ -43,6 +46,7 @@ final class ResourceDefinition
         public readonly array $filters,
         public readonly array $bulkActions,
         public readonly Sort $sort,
+        public readonly string $key,
     ) {}
 
     /**
@@ -142,12 +146,13 @@ final class ResourceDefinition
             $bulkActions[$bulk->key] = $bulk;
         }
 
-        $sort = $class::sort() ?? Sort::desc('id');
-        if ($sort->key !== 'id') {
+        $key = Metadata::for($model)->idProperty;
+        $sort = $class::sort() ?? Sort::desc($key);
+        if ($sort->key !== $key) {
             ModelProperty::of($model, $sort->key, "{$short}::sort()");
         }
 
-        return self::$definitions[$class] = new self($class, $attribute, $model, $columns, $fields, $filters, $bulkActions, $sort);
+        return self::$definitions[$class] = new self($class, $attribute, $model, $columns, $fields, $filters, $bulkActions, $sort, $key);
     }
 
     /** The column named $key that may be sorted by, or null. */
