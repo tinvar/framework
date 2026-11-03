@@ -104,7 +104,7 @@ final readonly class ResumableUploads
         [$action, $declared] = $this->endpoint->declarationFor($binding);
 
         return $this->endpoint->within($action, $request, function (Request $inner) use ($session, $binding, $declared, $rawBody): Response {
-            $this->endpoint->assertBinding($inner, $binding);
+            $this->endpoint->admit($inner, $binding);
 
             return match ($inner->path) {
                 UploadEndpoint::SESSION_OFFSET_PATH => $this->offset($session),
@@ -132,7 +132,7 @@ final readonly class ResumableUploads
         [$action, $declared] = $this->endpoint->declarationFor($ticket);
 
         return $this->endpoint->within($action, $request, function (Request $inner) use ($ticket, $declared, $body): Response {
-            $this->endpoint->assertBinding($inner, $ticket);
+            $this->endpoint->admit($inner, $ticket);
 
             return $this->open($ticket, $declared, $body);
         });

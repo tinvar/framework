@@ -26,9 +26,12 @@ use Tinvar\Auth\PanelDefinition;
 use Tinvar\Auth\PanelRegistry;
 use Tinvar\Auth\PolicyRegistry;
 use Tinvar\Container\Container;
+use Tinvar\Http\AttributeMiddleware;
+use Tinvar\Http\HttpException;
 use Tinvar\Http\Kernel;
 use Tinvar\Http\Middleware;
 use Tinvar\Http\Middleware\VerifyCsrfToken;
+use Tinvar\Http\MiddlewareAttribute;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Http\UploadedFile;
@@ -138,6 +141,36 @@ final readonly class ProfilePhoto extends \Tinvar\Validation\FormRequest
 }
 
 /** An upload action held to the admin host by its own #[Domain] (ADR 0149). */
+/**
+ * A gate as a package's #[RequiresPlan] is one (ADR 0150): a middleware
+ * attribute run once the entry point's own checks have passed -- for an
+ * upload, once its ticket has been held to the request.
+ */
+#[\Attribute(\Attribute::TARGET_CLASS | \Attribute::TARGET_METHOD)]
+final readonly class RequiresBadge implements MiddlewareAttribute
+{
+    public function middleware(): string
+    {
+        return CheckBadge::class;
+    }
+}
+
+final class CheckBadge implements AttributeMiddleware
+{
+    /** How many requests the gate was asked about. */
+    public static int $asked = 0;
+
+    public function handle(MiddlewareAttribute $attribute, Request $request, \Closure $next): Response
+    {
+        self::$asked++;
+        if ($request->header('x-badge') !== 'gold') {
+            throw new HttpException(402, 'This needs the gold badge.', 'badge_required');
+        }
+
+        return $next($request);
+    }
+}
+
 final class HostedProfileActions
 {
     public function __construct(private readonly Orm $orm) {}
@@ -192,6 +225,18 @@ final class ProfileActions
 
             throw new \RuntimeException('The body failed after its write.');
         }
+
+        return ActionResult::ok(['key' => $avatar->key]);
+    }
+
+    #[Action(name: 'profiles.gatedAvatar'), Authorize('update', 'profile'), RequiresBadge]
+    public function gatedAvatar(
+        Profile $profile,
+        #[Uploaded(to: 'profile', prefix: 'avatars', types: ['image/png', 'image/jpeg'], maxBytes: 4096)]
+        Upload $avatar,
+    ): ActionResult {
+        $profile->avatarKey = $avatar->key;
+        $this->orm->save($profile);
 
         return ActionResult::ok(['key' => $avatar->key]);
     }
@@ -310,6 +355,7 @@ final class App
         ProfileActions::$received = null;
         ProfileActions::$fail = false;
         ProfileActions::$failAfterSave = false;
+        CheckBadge::$asked = 0;
 
         $this->container = new Container();
         $this->container->instance(Orm::class, $this->orm);

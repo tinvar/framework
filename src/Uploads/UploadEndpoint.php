@@ -290,12 +290,25 @@ final class UploadEndpoint
         // The action's gates (#[RequiresPlan], ADR 0150) are deferred to
         // after its checks, and an upload runs none of them -- what admits
         // it is its ticket, bound when the page that holds it was drawn --
-        // so they run once the stack has, ahead of $then.
-        return new Pipeline($stack)->run($request, static function (Request $inner) use ($then): Response {
-            EntryGates::enforce($inner);
+        // so $then holds the ticket to the request first, and runs them
+        // then (admit()). Fails closed: a $then that answered without
+        // either is refused by the gate's own place in the stack.
+        return new Pipeline($stack)->run($request, $then);
+    }
 
-            return $then($inner);
-        });
+    /**
+     * The ticket held to the request (assertBinding()), and then the
+     * action's gates (#[RequiresPlan], ADR 0150): a request the ticket
+     * refuses is answered the ticket's 403, and never learns what a gate
+     * would have said of it -- as a caller an action's checks refuse never
+     * reaches its gates.
+     *
+     * @internal for ResumableUploads
+     */
+    public function admit(Request $request, UploadTicket $ticket): void
+    {
+        $this->assertBinding($request, $ticket);
+        EntryGates::enforce($request);
     }
 
     /**
@@ -335,7 +348,7 @@ final class UploadEndpoint
         $model = $declared->to === null ? null : $action->models[$declared->to];
 
         return $this->within($action, $request, function (Request $inner) use ($ticket, $now, $model): Response {
-            $this->assertBinding($inner, $ticket);
+            $this->admit($inner, $ticket);
             if ($model !== null && $this->orm->find($model, $ticket->targetId) === null) {
                 throw self::refused('names a record that is not there');
             }
@@ -393,7 +406,7 @@ final class UploadEndpoint
         [$action, $declared] = $this->declarationFor($ticket);
 
         return $this->within($action, $request, function (Request $inner) use ($storage, $body, $ticket, $declared): Response {
-            $this->assertBinding($inner, $ticket);
+            $this->admit($inner, $ticket);
 
             return $inner->path === self::DIRECT_PATH
                 ? $this->begin($storage, $body, $ticket)
@@ -593,7 +606,7 @@ final class UploadEndpoint
 
     private function store(Request $request, UploadTicket $ticket, Uploaded $declared): Response
     {
-        $this->assertBinding($request, $ticket);
+        $this->admit($request, $ticket);
         $file = $this->receivedFile($request);
 
         return $this->keep($ticket, $declared, $file->path, $file->clientName);
@@ -830,6 +843,8 @@ final class UploadEndpoint
                     throw self::refused('was issued for another action or parameter');
                 }
                 [, $declared] = $this->declarationFor($ticket);
+                // The binding alone: the action's own gates are the runner's
+                // to enforce once its checks have passed, not before them.
                 $this->assertBinding($request, $ticket);
 
                 $received = $this->receivedFile($request, $field);
