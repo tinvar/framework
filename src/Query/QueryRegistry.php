@@ -15,6 +15,7 @@ use Tinvar\Auth\PanelBinding;
 use Tinvar\Orm\Model;
 use Tinvar\Support\Str;
 use Tinvar\Support\KnownAttributes;
+use Tinvar\Validation\FieldPlan;
 
 /**
  * Wire name to #[Query] class, with the declarations each one carries.
@@ -41,6 +42,9 @@ final class QueryRegistry
 
     /** @var array<string, class-string|null> */
     private array $tenantFrom = [];
+
+    /** @var array<string, array<string, FieldPlan>> query name => a batch's scalar and enum arguments, as plans */
+    private array $batchScalars = [];
 
     /** @var array<string, string> query name => the #[Domain] pattern it is held to */
     private array $hosts = [];
@@ -186,6 +190,7 @@ final class QueryRegistry
         $this->nullWhenAbsent[$name] = self::nullWhenAbsentOf($reflection);
         $this->modelArguments[$name] = self::modelArgumentsOf($reflection, $declaration);
         $this->scalars[$name] = self::scalarParametersOf($reflection);
+        $this->batchScalars[$name] = self::batchScalarsOf($reflection, $declaration);
 
         return $name;
     }
@@ -454,6 +459,19 @@ final class QueryRegistry
     }
 
     /**
+     * A batch query's scalar and enum arguments, as the plans a call's value
+     * is coerced by: #[Query(args: ['term' => 'string'])] types each as a
+     * plain query's parameter does, and a value its type has no place for
+     * is bad arguments there too, not data loadMany() is left to judge.
+     *
+     * @return array<string, FieldPlan>
+     */
+    public function scalarPlansFor(string $name): array
+    {
+        return $this->batchScalars[$name] ?? [];
+    }
+
+    /**
      * @param \ReflectionClass<object> $reflection
      * @return array<string, \ReflectionParameter>
      */
@@ -464,19 +482,76 @@ final class QueryRegistry
             return [];
         }
 
+        // A parameter the runner coerces nothing to -- mixed, untyped, a
+        // union, an object -- would take what the caller sent as it came,
+        // or fail with a TypeError over it: refused here, as an action's is.
         $scalars = [];
         foreach ($reflection->getMethod('__invoke')->getParameters() as $parameter) {
             $type = $parameter->getType();
+            $where = "{$reflection->getName()}::__invoke(\${$parameter->getName()})";
+            if ($parameter->isVariadic()) {
+                throw new \InvalidArgumentException("{$where} is variadic; a query's argument is one named value.");
+            }
             if (!$type instanceof \ReflectionNamedType) {
-                continue;
+                throw new \InvalidArgumentException(
+                    "{$where} is " . ($type === null ? 'untyped' : "typed {$type}") . ', which the runner cannot coerce a call\'s value to. '
+                    . 'A query takes a string, int, float, bool or array, a backed enum, or a model resolved by id.',
+                );
             }
             $named = $type->getName();
-            if ($type->isBuiltin() ? \in_array($named, ['int', 'float', 'bool', 'string', 'array'], true) : is_subclass_of($named, \BackedEnum::class)) {
+            if ($type->isBuiltin()) {
+                if (!\in_array($named, self::SCALARS, true)) {
+                    throw new \InvalidArgumentException("{$where} is {$named}, which a call cannot send. " . self::TYPES);
+                }
                 $scalars[$parameter->getName()] = $parameter;
+            } elseif (is_subclass_of($named, \BackedEnum::class)) {
+                $scalars[$parameter->getName()] = $parameter;
+            } elseif (!is_subclass_of($named, Model::class)) {
+                throw new \InvalidArgumentException("{$where} is {$named}, which the runner cannot build from a call. " . self::TYPES);
             }
         }
 
         return $scalars;
+    }
+
+    /** The scalar types a query's argument may be declared as. */
+    private const array SCALARS = ['string', 'int', 'float', 'bool', 'array'];
+
+    private const string TYPES = 'A query takes a string, int, float, bool or array, a backed enum, or a model resolved by id.';
+
+    /**
+     * A batch's scalar and enum arguments, each #[Query(args:)] type read
+     * into the plan a call's value is coerced by -- and a type that is none
+     * of those, nor a model, refused: it would type nothing, and the value
+     * would reach loadMany() as sent.
+     *
+     * @param \ReflectionClass<object> $reflection
+     * @return array<string, FieldPlan>
+     */
+    private static function batchScalarsOf(\ReflectionClass $reflection, Query $declaration): array
+    {
+        if (!is_subclass_of($reflection->getName(), BatchQuery::class)) {
+            return [];
+        }
+
+        $plans = [];
+        foreach ($declaration->args as $argument => $type) {
+            $argument = (string) $argument;
+            if (is_subclass_of($type, Model::class)) {
+                continue;
+            }
+            if (\in_array($type, self::SCALARS, true)) {
+                $plans[$argument] = new FieldPlan($argument, $type, nullable: false, hasDefault: false, default: null, rules: []);
+            } elseif (is_subclass_of($type, \BackedEnum::class)) {
+                $plans[$argument] = new FieldPlan($argument, 'enum', nullable: false, hasDefault: false, default: null, rules: [], enumClass: $type);
+            } else {
+                throw new \InvalidArgumentException(
+                    "{$reflection->getName()} declares #[Query(args:)] '{$argument}' as '{$type}', which types nothing. " . self::TYPES,
+                );
+            }
+        }
+
+        return $plans;
     }
 
     public function isBatch(string $name): bool

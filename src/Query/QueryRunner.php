@@ -579,6 +579,19 @@ final class QueryRunner
                     . implode(' ', $e->errors[$argument] ?? []);
             }
         }
+        // A batch's, typed by #[Query(args:)] rather than a signature, held
+        // to their types the same way rather than handed to loadMany() as sent.
+        foreach ($this->registry->scalarPlansFor($name) as $argument => $plan) {
+            if (!\array_key_exists($argument, $args)) {
+                continue;
+            }
+            try {
+                $args[$argument] = $this->validator->coerceField($plan, $args[$argument]);
+            } catch (ValidationException $e) {
+                return "'{$name}' was called with an '{$argument}' its type has no place for: "
+                    . implode(' ', $e->errors[$argument] ?? []);
+            }
+        }
 
         // Optional because it accepts null, not because it has a default:
         // PHP has no value of its own to bind, so the absent argument is

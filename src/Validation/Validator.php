@@ -370,6 +370,22 @@ final class Validator
         }
     }
 
+    /**
+     * A value coerced by a plan made without a parameter -- a batch query's
+     * #[Query(args:)] type -- as coerceParameter() coerces one by its
+     * parameter.
+     *
+     * @throws ValidationException for a value the plan has no place for
+     */
+    public function coerceField(FieldPlan $plan, mixed $raw): mixed
+    {
+        try {
+            return $this->coerce($raw, $plan);
+        } catch (CoercionFailed $failure) {
+            throw new ValidationException([$plan->name => [$failure->getMessage()]]);
+        }
+    }
+
     private function coerce(mixed $raw, FieldPlan $field): mixed
     {
         // A model-typed field is resolved, not validated: "Resolve model
