@@ -16,6 +16,7 @@ use Tinvar\Console\Doctor\Checks\ProductionCheck;
 use Tinvar\Console\Doctor\Checks\ProxiesCheck;
 use Tinvar\Console\Doctor\Checks\RendererCheck;
 use Tinvar\Console\Doctor\Checks\SecretsCheck;
+use Tinvar\Console\Prompts\Width;
 
 /**
  * `tinvar doctor` (ADR 0157): every check an application needs to boot and
@@ -119,9 +120,9 @@ final class Doctor
             }
             foreach ($fixes as $safe) {
                 try {
-                    $out('fixed: ' . ($safe->apply)() . "\n");
+                    $out('fixed: ' . Width::clean(($safe->apply)()) . "\n");
                 } catch (\Throwable $e) {
-                    $out("could not {$safe->describe}: {$e->getMessage()}\n");
+                    $out("could not {$safe->describe}: " . Width::clean($e->getMessage()) . "\n");
                 }
             }
             if ($fixes !== []) {
@@ -182,8 +183,14 @@ final class Doctor
         return $count;
     }
 
+    /**
+     * $text with each line after the first indented $by, its control
+     * characters shown rather than sent: a finding carries what a database
+     * server or an exception said, which an escape sequence in would
+     * retitle the window or clear the lines above.
+     */
     private static function indent(string $text, int $by): string
     {
-        return str_replace("\n", "\n" . str_repeat(' ', $by), $text);
+        return str_replace("\n", "\n" . str_repeat(' ', $by), Width::clean($text, "\n"));
     }
 }

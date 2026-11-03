@@ -437,4 +437,16 @@ describe('the doctor', function () {
             ->and($out)->toContain('No problems.')
             ->and(Severity::from('problem'))->toBe(Severity::Problem);
     });
+
+    it('shows a control character in what a finding says, never sends it to the terminal', function () {
+        // A finding carries what a database server or an exception said:
+        // the escape sequence in one would retitle the window or clear the lines above.
+        $report = Doctor::report([['Database', [
+            Finding::problem("The database cannot be reached: FATAL \e]0;pwned\x07\e[2J done\xc2\x9b", "Check \e[31mthe host\nthen the port."),
+        ]]]);
+
+        expect($report)->not->toMatch('/[\x00-\x09\x0b-\x1f\x7f]|\xc2[\x80-\x9f]/')
+            ->and($report)->toContain("FATAL \u{241B}]0;pwned\u{2407}\u{241B}[2J done")
+            ->and($report)->toContain("Check \u{241B}[31mthe host\n                then the port.");
+    });
 });
