@@ -34,6 +34,7 @@ final readonly class DoctorContext
      * @param (\Closure(): int)|null $migrate runs the pending migrations as `migrate` does, for --fix
      * @param string $buildDirectory the application's build
      * @param string|null $projectRoot where composer.json and the lockfiles are, when not the application's root
+     * @param (\Closure(): string)|null $database the SQLite file the application opens: its console's
      * @param (\Closure(): ?PanelRegistry)|null $panels the panels the application's Kernel configures, whose hosts hold what is in them
      */
     public function __construct(
@@ -51,6 +52,7 @@ final readonly class DoctorContext
         public string $buildDirectory = '',
         public ?string $projectRoot = null,
         public ?\Closure $panels = null,
+        public ?\Closure $database = null,
     ) {}
 
     /**

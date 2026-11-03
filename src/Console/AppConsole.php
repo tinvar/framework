@@ -939,6 +939,7 @@ final class AppConsole
             buildDirectory: BuildProfile::buildDirectory($this->root),
             projectRoot: $this->projectRoot,
             panels: $this->panels(...),
+            database: $database,
         );
     }
 

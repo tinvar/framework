@@ -390,6 +390,17 @@ describe('the build, the renderers and production', function () {
         expect(fileperms("{$root}/database/app.sqlite") & 0o777)->toBe(0o600)
             ->and(severities(new PermissionsCheck()->run(context($root, ['TINVAR_ENV' => 'production'], ['keyFile' => "{$root}/state/app.key"]))))->toBe(['problem', 'problem']);
     });
+    it('finds the database where the app keeps it, not only where the skeleton does', function () {
+        $root = app();
+        mkdir("{$root}/database");
+        touch("{$root}/database/shop.sqlite");
+        chmod("{$root}/database/shop.sqlite", 0o644);
+
+        $findings = new PermissionsCheck()->run(context($root, [], ['database' => static fn (): string => "{$root}/database/shop.sqlite"]));
+
+        expect(severities($findings))->toBe(['warning'])
+            ->and($findings[0]->fix)->toContain("chmod 600 {$root}/database/shop.sqlite");
+    });
 });
 
 describe('the doctor', function () {

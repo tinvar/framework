@@ -37,9 +37,9 @@ final readonly class PermissionsCheck implements DoctorCheck
             $findings = [...$findings, ...self::private(\dirname($file), $owner, 'it holds the app\'s secrets')];
         }
 
-        $database = $context->variable('APP_DATABASE') ?? "{$context->root}/database/app.sqlite";
+        $database = self::database($context);
         $driver = strtolower($context->variable('APP_DATABASE_DRIVER') ?? 'sqlite');
-        if ($driver === 'sqlite' && $database !== ':memory:') {
+        if ($driver === 'sqlite' && $database !== null && $database !== ':memory:') {
             if (is_file($database)) {
                 $findings = [...$findings, ...self::unreadableByOthers($database, $context->production())];
                 if (!is_writable($database)) {
@@ -58,6 +58,23 @@ final readonly class PermissionsCheck implements DoctorCheck
         }
 
         return $findings === [] ? [Finding::passed('The secrets\' files and the database are this user\'s alone.')] : $findings;
+    }
+
+    /**
+     * The SQLite file the application opens, as its console names it; the
+     * skeleton's APP_DATABASE, or its default, where the context names none.
+     * Null where naming it is refused -- a config the Config check reports.
+     */
+    private static function database(DoctorContext $context): ?string
+    {
+        if ($context->database === null) {
+            return $context->variable('APP_DATABASE') ?? "{$context->root}/database/app.sqlite";
+        }
+        try {
+            return ($context->database)();
+        } catch (\RuntimeException) {
+            return null;
+        }
     }
 
     /** @return list<Finding> */
