@@ -55,6 +55,21 @@ it('builds from the bases, FrankenPHP and tini the shop\'s image pins', function
         ->and(array_diff($ours, $pins('examples/shop/Dockerfile')))->toBe([]);
 });
 
+it('compiles the PDO drivers of a server database into both PHPs of the image', function () {
+    // `tinvar new --database=postgres|mysql` deploys this image: FrankenPHP's
+    // static binary has every driver, and the image's own CLI -- migrate,
+    // queue:work under serve -- must have them too (the audit of 2026-11-03).
+    foreach (['packages/skeleton/docker/setup', 'packages/skeleton/Dockerfile'] as $file) {
+        $contents = read($file);
+        expect($contents)->toMatch('/docker-php-ext-install [^\n]*\bpdo_pgsql\b/', $file)
+            ->toMatch('/docker-php-ext-install [^\n]*\bpdo_mysql\b/', $file)
+            ->toMatch('/for extension in [^\n]*\bpdo_pgsql\b/', $file)
+            ->toMatch('/for extension in [^\n]*\bpdo_mysql\b/', $file);
+    }
+    // libpq, which pdo_pgsql links, stays in the runtime once the headers go.
+    expect(read('packages/skeleton/Dockerfile'))->toContain('apt-mark manual libpq5');
+});
+
 it('keeps every refusal of the shop\'s container', function () {
     $compose = read('packages/skeleton/compose.yaml');
     $dockerfile = read('packages/skeleton/Dockerfile');
