@@ -135,7 +135,13 @@ final class Search
         $byTenant = [];
         $tenantOf = $this->tenantsOf($model, $tenants, array_map(static fn (Model $m): string => $meta->keyOf($m), $found));
         foreach ($found as $row) {
-            $byTenant[$tenantOf[$meta->keyOf($row)]][] = $model->document($row);
+            // A row gone between the two reads names no tenant: it is
+            // taken out by the sync its delete queued, never indexed under
+            // none.
+            $owner = $tenantOf[$meta->keyOf($row)] ?? null;
+            if ($owner !== null) {
+                $byTenant[$owner][] = $model->document($row);
+            }
         }
         foreach ($byTenant as $tenant => $documents) {
             $this->orm->actAs((string) $tenant, fn () => $this->backend->upsert($model, (string) $tenant, $documents));
@@ -362,11 +368,14 @@ final class Search
         }
         $meta = $model->meta();
         \assert($model->tenantColumn !== null);
-        $query = $this->orm->query($model->class)->whereIn($meta->idProperty, $ids)->orderBy($meta->idProperty);
-        $keys = array_map(strval(...), $query->pluck($meta->idProperty));
-        $owners = array_map(strval(...), $query->pluck($model->tenantColumn));
+        $owners = [];
+        $rows = $this->orm->query($model->class)->whereIn($meta->idProperty, $ids)
+            ->report(SearchRowTenant::class, ['id' => $meta->idProperty, 'tenant' => $model->tenantColumn]);
+        foreach ($rows as $row) {
+            $owners[$row->id] = $row->tenant;
+        }
 
-        return \count($keys) === \count($owners) ? array_combine($keys, $owners) : [];
+        return $owners;
     }
 
     /**
