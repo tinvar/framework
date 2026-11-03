@@ -73,11 +73,24 @@ final readonly class DatabaseInboxStore implements InboxStore
     public function page(string $tenant, string $user, int $limit, ?string $before = null): array
     {
         $limit = max(1, min(100, $limit));
-        $rows = $before === null
-            ? $this->connection->select("SELECT * FROM {$this->table} WHERE tenant = ? AND user_id = ? ORDER BY id DESC LIMIT {$limit}", [$tenant, $user])
-            : $this->connection->select("SELECT * FROM {$this->table} WHERE tenant = ? AND user_id = ? AND id < ? ORDER BY id DESC LIMIT {$limit}", [$tenant, $user, $before]);
+        $entries = [];
+        // A row no message could be is passed over, and the page filled
+        // from the rows after it: one page short, the feed read as ending
+        // there, and nothing after it could be paged to.
+        do {
+            $rows = $before === null
+                ? $this->connection->select("SELECT * FROM {$this->table} WHERE tenant = ? AND user_id = ? ORDER BY id DESC LIMIT {$limit}", [$tenant, $user])
+                : $this->connection->select("SELECT * FROM {$this->table} WHERE tenant = ? AND user_id = ? AND id < ? ORDER BY id DESC LIMIT {$limit}", [$tenant, $user, $before]);
+            foreach ($rows as $row) {
+                $before = \is_scalar($row['id'] ?? null) ? (string) $row['id'] : $before;
+                $entry = self::entry($row);
+                if ($entry !== null && \count($entries) < $limit) {
+                    $entries[] = $entry;
+                }
+            }
+        } while (\count($rows) === $limit && \count($entries) < $limit);
 
-        return array_values(array_filter(array_map(self::entry(...), $rows)));
+        return $entries;
     }
 
     public function unread(string $tenant, string $user): int

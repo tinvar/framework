@@ -80,6 +80,25 @@ it('keeps a feed per tenant and user, newest first, and marks only what it names
     });
 })->with(['sqlite', 'pgsql']);
 
+it('fills a page past a row no message could be, so the feed goes on after it', function (string $driver) {
+    onDriver($driver, function (PdoConnection $connection): void {
+        DatabaseInboxStore::define(new Schema($connection, Dialect::for($connection)));
+        $store = new DatabaseInboxStore($connection);
+        $at = CarbonImmutable::parse('2026-11-01T12:00:00Z');
+        $first = entry('acme', 'ada', 'First', $at);
+        $second = entry('acme', 'ada', 'Second', $at->addSecond());
+        $third = entry('acme', 'ada', 'Third', $at->addSeconds(2));
+        foreach ([$first, $second, $third] as $e) {
+            $store->add($e);
+        }
+        // Written by hand, or under a rule a later release tightened.
+        $connection->execute('UPDATE ' . DatabaseInboxStore::TABLE . ' SET url = ? WHERE id = ?', ['https://elsewhere.example', $second->id]);
+
+        expect(array_map(static fn (InboxEntry $e): string => $e->message->title, $store->page('acme', 'ada', 2)))->toBe(['Third', 'First'])
+            ->and($store->page('acme', 'ada', 2, $first->id))->toBe([]);
+    });
+})->with(['sqlite', 'pgsql']);
+
 it('keeps each user\'s choices per tenant, a later one replacing the last', function (string $driver) {
     onDriver($driver, function (PdoConnection $connection): void {
         DatabaseNotificationPreferences::define(new Schema($connection, Dialect::for($connection)));
