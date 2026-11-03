@@ -501,6 +501,11 @@ it('sends a customer on only to a path on this site', function (string $next, st
     'a backslash' => ['/\\evil.example', NextPath::DEFAULT],
     'the sign-in page' => ['/sign-in?next=/orders', NextPath::DEFAULT],
     'an endpoint' => ['/_action/account.signOut', NextPath::DEFAULT],
+    // A handoff's authorize step carries the whole address it returns to,
+    // past 512 characters for a long one: the form refused it, and the
+    // sign-in failed with nothing on the page to say why.
+    'a long handoff' => [$handoff = '/_handoff/authorize?origin=https%3A%2F%2Fshop.example&state=s&return=' . str_repeat('a', 1200), $handoff],
+    'longer than any link we made' => ['/orders?' . str_repeat('a', 2100), NextPath::DEFAULT],
 ]);
 
 // A visitor already signed in has nothing to do on the sign-in page.
