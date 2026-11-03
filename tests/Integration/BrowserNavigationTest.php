@@ -1228,6 +1228,7 @@ it('asks the inbox when a switch is flipped on, and turns it on from the emailed
 // behind the panel's guard, membership and host, ProductPolicy, CSRF and
 // validation. Staff sort, search, add -- refused once, beside the field --
 // edit, restock in bulk and delete a product; a customer is refused the list.
+// The search goes through the catalog's full-text index (ADR 0154).
 it('keeps the catalog on the admin host\'s products screens', function (string $server) use ($root) {
     $database = Shop::testDatabase();
 

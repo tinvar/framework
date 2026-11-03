@@ -911,6 +911,12 @@ final class Kernel
         // The gate every check is asked through, for a class that asks it
         // what to draw: an admin resource's links (ADR 0152).
         $container?->instance(Gate::class, $gate);
+        // The index an admin resource's search box asks for a #[Searchable]
+        // model: the application's Search, wherever it registers one, read
+        // as each resource is built (ADR 0152, ADR 0154). Its own, if bound.
+        if ($container !== null && !$container->registered(\Tinvar\Resources\ResourceSearch::class)) {
+            \Tinvar\Search\ResourceSearchIndex::bind($container);
+        }
         // A caching failure answers the call uncached, and is logged where a
         // failed request is -- never kept for the worker's life.
         $cache->reportTo($this->report(...));

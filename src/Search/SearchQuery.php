@@ -158,6 +158,40 @@ final readonly class SearchQuery
     }
 
     /**
+     * The keys of the best $limit matches, best first, from the index alone,
+     * in the tenants the ORM's scope holds a read of the model to: for a
+     * caller that reads the rows again through the ORM itself, as an admin
+     * resource's list does, with its own filters, order and page. A key
+     * the index still holds for a row since deleted names nothing that
+     * read finds. The constraint and the ability are not applied here.
+     *
+     * @return list<string>
+     * @throws SearchFailed
+     */
+    public function keys(int $limit = self::MAX_SCANNED): array
+    {
+        if ($limit < 1 || $limit > self::MAX_SCANNED) {
+            throw new \InvalidArgumentException('A search reads between 1 and ' . self::MAX_SCANNED . ' keys.');
+        }
+        if ($this->terms->isEmpty()) {
+            return [];
+        }
+        // Throws NoTenantContext where a read of the model would.
+        $tenants = $this->model->tenantScoped() ? $this->orm->tenantsInScope($this->model->meta()) : [''];
+
+        $keys = [];
+        while (\count($keys) < $limit) {
+            $hits = $this->search->backend()->search($this->model, $this->terms, $tenants, min(self::SCAN_BATCH, $limit - \count($keys)), \count($keys));
+            array_push($keys, ...$hits->ids);
+            if ($hits->ids === [] || \count($keys) >= $hits->total) {
+                break;
+            }
+        }
+
+        return $keys;
+    }
+
+    /**
      * The models for $ids, read through the ORM under the scope in force,
      * in the index's order, with the constraint and the policy applied.
      *

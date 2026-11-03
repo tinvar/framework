@@ -78,9 +78,18 @@ abstract class Resource
     /** The most records a select of the records a field may belong to offers. */
     public const int MAX_CHOICES = 500;
 
+    /** The most matches the index is asked for: the list then shows, filters and pages among them. */
+    public const int MAX_INDEXED = 1000;
+
+    /**
+     * @param ResourceSearch|null $index the full-text index the search box asks for a
+     *        #[Searchable] model: the search module's, which the Kernel hands every resource
+     *        once the application registers its Search
+     */
     public function __construct(
         protected readonly Orm $orm,
         protected readonly Gate $gate,
+        private readonly ?ResourceSearch $index = null,
     ) {}
 
     /** @return list<Column> the list's columns, and the record page's lines */
@@ -141,18 +150,27 @@ abstract class Resource
     }
 
     /**
-     * The list's search: where the term appears in a searchable() column,
-     * by LIKE, so `%` and `_` in it match any text as they do in SQL, and
-     * matched as the database compares text -- SQLite and MySQL ignoring
-     * case, Postgres not. A resource searched another way -- an index of
-     * its own, the search module -- overrides this, and the list shows its
-     * box even with no searchable column.
+     * The list's search. A #[Searchable] model, where the application has
+     * a search (ADR 0154), is searched through its index: the best
+     * MAX_INDEXED matches of the words, in the tenant's scope, which the
+     * list then reads through the ORM with its filters, order and page --
+     * its order, not the index's. Any other is searched where the term
+     * appears in a searchable() column, by LIKE, so `%` and `_` in it match
+     * any text as they do in SQL, and matched as the database compares text
+     * -- SQLite and MySQL ignoring case, Postgres not. A resource searched
+     * another way overrides this, and the list shows its box even with no
+     * searchable column.
      *
      * @param Query<Model> $query
      * @return Query<Model>
      */
     protected function search(Query $query, string $term): Query
     {
+        $definition = $this->definition();
+        if ($this->index !== null && $this->index->searches($definition->model)) {
+            return $query->whereIn($definition->key, $this->index->keys($definition->model, $term, self::MAX_INDEXED));
+        }
+
         $columns = [];
         foreach ($this->definition()->columns as [$column]) {
             if ($column->searchable) {
@@ -235,7 +253,8 @@ abstract class Resource
             $filters[] = new ResourceFilterData($filter->key, $filter->label ?? $property->label(), self::options($options), $value);
         }
 
-        $searchable = $definition->hasSearchableColumns() || new \ReflectionMethod($this, 'search')->getDeclaringClass()->getName() !== self::class;
+        $searchable = $definition->hasSearchableColumns() || ($this->index?->searches($definition->model) ?? false)
+            || new \ReflectionMethod($this, 'search')->getDeclaringClass()->getName() !== self::class;
         $search = \is_string($request->query['search'] ?? null) ? mb_substr(trim($request->query['search']), 0, self::MAX_SEARCH) : '';
         if ($searchable && $search !== '') {
             $query = $this->search($query, $search);
