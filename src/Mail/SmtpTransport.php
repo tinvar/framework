@@ -81,6 +81,13 @@ final readonly class SmtpTransport implements Bounded
 
             if ($this->encryption === self::STARTTLS) {
                 $this->command($socket, 'STARTTLS', [220]);
+                // Anything already read past the 220 came in plain text,
+                // and the stream would hand it back once TLS is up as if
+                // the server had said it there: whoever sits on the path
+                // answering the EHLO, the AUTH and the message for it.
+                if (stream_get_meta_data($socket)['unread_bytes'] > 0) {
+                    throw new MailTransportException('The SMTP server sent more than its answer to STARTTLS before TLS began: refused, since none of it can be the server\'s.', transport: 'smtp');
+                }
                 if (stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT | STREAM_CRYPTO_METHOD_TLSv1_3_CLIENT) !== true) {
                     throw new MailTransportException('The SMTP server\'s TLS handshake failed.', transport: 'smtp');
                 }

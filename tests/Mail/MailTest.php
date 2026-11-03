@@ -749,6 +749,35 @@ it('gives writing the message its timeout as a whole, however slowly it is read'
         ->and(microtime(true) - $started)->toBeLessThan(5.0);
 });
 
+// Whatever came in plain text after the server's 220 to STARTTLS was read
+// into the stream's buffer, and handed back, once TLS was up, as if the
+// server had said it over TLS: whoever sits on the path before STARTTLS
+// answered the EHLO, the AUTH and the message for the server (the STARTTLS
+// command injection of CVE-2011-0411, the other way round).
+it('refuses a STARTTLS answered with more than its 220, before any of it is read as the server\'s over TLS', function () {
+    if (!\function_exists('pcntl_fork')) {
+        test()->markTestSkipped('pcntl is not available.');
+    }
+
+    [$port, $pid, $log] = smtpServer([
+        'EHLO' => "250-smtp.test\r\n250 STARTTLS",
+        'STARTTLS' => "220 go ahead\r\n250-smtp.test\r\n250 AUTH PLAIN",
+    ]);
+    $transport = new SmtpTransport('127.0.0.1', $port, encryption: SmtpTransport::STARTTLS, timeout: 2);
+    try {
+        $transport->send(message());
+        $thrown = null;
+    } catch (MailTransportException $e) {
+        $thrown = $e->getMessage();
+    } finally {
+        posix_kill($pid, SIGKILL);
+        pcntl_waitpid($pid, $status);
+        @unlink($log);
+    }
+
+    expect($thrown)->toContain('more than its answer to STARTTLS');
+});
+
 it('names itself smtp on every refusal, a server it cannot reach as much as one that answers no', function () {
     $server = stream_socket_server('tcp://127.0.0.1:0');
     $port = (int) substr((string) stream_socket_get_name($server, false), strrpos((string) stream_socket_get_name($server, false), ':') + 1);
