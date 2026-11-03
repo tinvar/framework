@@ -2068,9 +2068,11 @@ final class Kernel
     /**
      * Whether $request opens no session here: a probe (answersProbe()), a
      * browser's problem report (ADR 0093), a page's report that rides no
-     * session (ADR 0129), or a call to a #[WithoutSession]
-     * endpoint -- for an application to issue no session cookie, write no
-     * session row and set nothing per visitor on its answer (ADR 0075).
+     * session (ADR 0129), a webhook's delivery, a one-click unsubscribe
+     * (ADR 0048), a mail provider's events (ADR 0147), a call to the API
+     * (ADR 0159) or to a #[WithoutSession] endpoint -- for an application to
+     * issue no session cookie, write no session row and set nothing per
+     * visitor on its answer (ADR 0075).
      *
      * The Kernel already runs such an endpoint with no global middleware and
      * every cookie taken off its request, so no session reaches it. What it
@@ -2094,10 +2096,14 @@ final class Kernel
         if ($this->answersProbe($request) || ($this->problemReports_?->matches($request) ?? false)) {
             return true;
         }
-        // A mail provider's server, POSTing what became of a message: its
-        // signature is all it carries, and a cookie would be a session it
-        // never uses (ADR 0147).
-        if ($this->mailEvents?->matches($request) ?? false) {
+        // A sender's server -- a webhook's delivery, a mail provider's
+        // one-click unsubscribe or its word of what became of a message --
+        // answered ahead of the global stack, as dispatch() answers it: its
+        // signature or its link is all it carries, and a cookie would be a
+        // session it never uses (ADR 0048, 0147).
+        if (($this->webhooks?->matches($request) ?? false)
+            || ($this->unsubscribe?->matches($request) ?? false)
+            || ($this->mailEvents?->matches($request) ?? false)) {
             return true;
         }
         if (($this->clientTelemetry_?->matches($request) ?? false) && TelemetryEndpoint::ridesNoSession($request)) {

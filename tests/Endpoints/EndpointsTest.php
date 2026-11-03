@@ -565,6 +565,21 @@ describe('registration holds an endpoint to the build rules', function () {
         expect(fn () => kernel([AtTheWebhook::class], $orm, webhooks: $webhooks))->toThrow(\InvalidArgumentException::class, "which is a webhook's");
     });
 
+    it('says a webhook\'s delivery opens no session, so an application issues its sender no cookie', function () {
+        $orm = new Orm(new Fixture(racks: 1, unitsPerRack: 1)->connection, new IdentityMap('test'));
+        $webhooks = new WebhookEndpoint(
+            [CarrierHook::class],
+            $orm,
+            static fn (string $class): object => new $class(),
+            new DerivedSecrets(new Signer('webhook-key-of-32-bytes-at-least!', 'webhook')),
+            new ArrayNonceStore(),
+        );
+        $kernel = kernel([], $orm, webhooks: $webhooks);
+
+        expect($kernel->opensNoSession(new Request('POST', '/hooks/carrier')))->toBeTrue()
+            ->and($kernel->opensNoSession(new Request('GET', '/racks/r-1')))->toBeFalse();
+    });
+
     it('refuses an endpoint whose path a page also matches, in the Kernel and in `tinvar check`', function () {
         expect(fn () => kernel([ShadowsAPage::class]))->toThrow(EndpointException::class, 'some path matches both');
 

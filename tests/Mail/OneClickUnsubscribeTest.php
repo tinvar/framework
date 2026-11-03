@@ -137,6 +137,14 @@ function oneClick(string $path, string $body = 'List-Unsubscribe=One-Click', str
 // Through the Kernel, which mounts the endpoint: a test of modules wired
 // together, run in the whole suite only (bin/module-alone, ADR 0114).
 describe('the endpoint', function () {
+    it('opens no session, so an application issues a provider\'s server no cookie', function () {
+        [$kernel] = kernel();
+        $path = UnsubscribeLinks::PATH . '/' . tokenOf(links(time())->url('digest', 'c-42'));
+
+        expect($kernel->opensNoSession(oneClick($path)))->toBeTrue()
+            ->and($kernel->opensNoSession(new Request('GET', '/account')))->toBeFalse();
+    });
+
     it('unsubscribes the reader a link names, in its tenant, from a POST with no session or CSRF token', function () {
         [$kernel, $recorder] = kernel();
         $path = UnsubscribeLinks::PATH . '/' . tokenOf(links(time())->url('digest', 'c-42', 'tenant-7'));
