@@ -378,6 +378,21 @@ final class AuditLog implements ModelChanges, ActionObserver
             return [new ChainVerification($tenant, false, 0, $prunedThrough + 1, 'Where pruning left the log has been changed.'), $prunedThrough];
         }
 
+        // Nothing lives at or below where the walk starts: a place of 0 or
+        // less was never given out, and the places pruning passed were
+        // emptied in the transaction that moved pruned_through. An entry
+        // there was put in by hand -- and trail() reads it as any other, so
+        // a walk that passed over it would vouch for a forged entry.
+        $below = $connection->select(
+            'SELECT MIN(sequence) AS n FROM ' . AuditTable::ENTRIES . ' WHERE tenant = ? AND sequence <= ?',
+            [$tenant, $prunedThrough],
+        );
+        if (($below[0]['n'] ?? null) !== null) {
+            $at = (int) $below[0]['n'];
+
+            return [new ChainVerification($tenant, false, 0, $at, "Entry {$at} is below where the log starts."), $prunedThrough];
+        }
+
         $expected = $prunedThrough + 1;
         $walked = 0;
         $after = $prunedThrough;
