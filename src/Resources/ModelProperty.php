@@ -8,6 +8,7 @@ use Carbon\CarbonImmutable;
 use Tinvar\Orm\Attributes\BelongsTo;
 use Tinvar\Orm\Attributes\Column as ColumnAttribute;
 use Tinvar\Orm\Attributes\Id;
+use Tinvar\Orm\Attributes\Sensitive;
 use Tinvar\Orm\Model;
 
 /**
@@ -15,7 +16,8 @@ use Tinvar\Orm\Model;
  * names it: what it holds, read from its PHP type and the ORM's attribute
  * on it. Only a property the ORM keeps -- the #[Id], a #[Column] or a
  * #[BelongsTo] -- is one a resource may name: anything else is not in the
- * table, and is refused, saying which it may be.
+ * table, and is refused, saying which it may be; and one marked
+ * #[Sensitive], a secret the audit log never records, is refused too.
  */
 final readonly class ModelProperty
 {
@@ -51,6 +53,12 @@ final readonly class ModelProperty
             || $property->getAttributes(BelongsTo::class) !== [];
         if (!$kept || !$property->isPublic() || $property->isStatic()) {
             throw new \LogicException("{$where} names {$model}::\${$name}, which is not one of its columns. Name a public #[Column], #[BelongsTo] or #[Id] property.");
+        }
+        if ($property->getAttributes(Sensitive::class, \ReflectionAttribute::IS_INSTANCEOF) !== []) {
+            throw new \LogicException(
+                "{$where} names {$model}::\${$name}, which is #[Sensitive]: a secret the audit log never records is never drawn in a list, "
+                . 'filled into a form, offered as a filter or sorted by either. Take it out of the resource, and set it, if anything must, in saving().',
+            );
         }
 
         $type = $property->getType();
