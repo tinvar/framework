@@ -171,7 +171,33 @@ describe('the app key and the probe token', function () {
     });
 });
 
+/** A config class of the test's own: a store's DSN, a secret whose variable's name does not say so. */
+#[\Tinvar\Attributes\Config('DOCTORTEST_')]
+final readonly class StoreConfig
+{
+    public function __construct(
+        #[\SensitiveParameter]
+        public ?\Tinvar\Config\Secret $cacheStore = null,
+        public string $cacheTtl = '60',
+    ) {}
+}
+
 describe('config, proxies and hosts', function () {
+    it('warns of a secret a config class reads whose variable .env sets, since its name does not say it is one', function () {
+        $root = app();
+        file_put_contents("{$root}/.env", "DOCTORTEST_CACHE_STORE=redis://:hunter2@cache.internal/1\nDOCTORTEST_CACHE_TTL=30\n");
+        $classes = \Tinvar\Discovery\DiscoveredClasses::fromArray(['configs' => [StoreConfig::class]]);
+
+        $findings = new ConfigCheck()->run(context($root, ['DOCTORTEST_CACHE_STORE' => 'redis://:hunter2@cache.internal/1', 'DOCTORTEST_CACHE_TTL' => '30'], ['classes' => static fn () => $classes]));
+        $said = implode("\n", array_map(static fn (Finding $f): string => $f->message . $f->fix, $findings));
+
+        expect(severities($findings))->toBe(['ok', 'warning'])
+            ->and($said)->toContain('DOCTORTEST_CACHE_STORE is a secret')
+            ->and($said)->toContain('DOCTORTEST_CACHE_STORE_FILE')
+            ->and($said)->not->toContain('DOCTORTEST_CACHE_TTL')
+            ->and($said)->not->toContain('hunter2');
+    });
+
     it('says every refused key of the framework\'s config, by its variable', function () {
         $findings = new ConfigCheck()->run(context(app(), ['TINVAR_TRUSTED_PROXIES' => '0.0.0.0/0', 'TINVAR_STOP_BUDGET' => 'soon']));
         $said = implode("\n", array_map(static fn (Finding $f): string => $f->message, $findings));
