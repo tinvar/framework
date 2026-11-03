@@ -31,6 +31,20 @@ use Tinvar\Orm\Connection;
 use Tinvar\Orm\Migrations\MigrationRefused;
 use Tinvar\Orm\PdoConnection;
 
+require_once __DIR__ . '/../../Transfers/Fixtures/app.php';
+
+/** An export on a `{tenant}` host that reads its tenant from nowhere. */
+#[\Tinvar\Attributes\Export(\Tinvar\Tests\Transfers\Fixtures\WidgetRow::class, name: 'doctor.tenant.widgets', maxRows: 1_000), \Tinvar\Attributes\Authorize('export', \Tinvar\Tests\Transfers\Fixtures\Widget::class), \Tinvar\Attributes\Domain('{tenant}.{root}')]
+final readonly class TenantlessExport
+{
+    public function __construct(private \Tinvar\Orm\Orm $orm) {}
+
+    public function __invoke(): \Tinvar\Orm\Query
+    {
+        return \Tinvar\Tests\Transfers\Fixtures\Widget::query($this->orm)->orderBy('sku');
+    }
+}
+
 /** A fresh application directory, removed after the test. */
 function app(): string
 {
@@ -231,6 +245,16 @@ describe('config, proxies and hosts', function () {
         $missing = new HostsCheck()->run(context($root, ['TINVAR_ENV' => 'production']));
         expect(severities($missing))->toBe(['warning'])
             ->and($missing[0]->fix)->toContain('TINVAR_APP_DOMAIN');
+    });
+    it('holds every entry point on a {tenant} host to reading its tenant from it, as check and the boot do', function () {
+        $root = app();
+        $leaky = new HostsCheck()->run(context($root, [], [
+            'classes' => static fn (): \Tinvar\Discovery\DiscoveredClasses => new \Tinvar\Discovery\DiscoveredClasses(transfers: [TenantlessExport::class]),
+            'domains' => static fn (): \Tinvar\Routing\Domains => new \Tinvar\Routing\Domains(['root' => 'shop.test']),
+        ]));
+
+        expect(severities($leaky))->toBe(['problem'])
+            ->and($leaky[0]->message)->toContain('reads its tenant from nowhere');
     });
 });
 

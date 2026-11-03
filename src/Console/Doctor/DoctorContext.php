@@ -8,6 +8,7 @@ use Tinvar\Discovery\DiscoveredClasses;
 use Tinvar\Discovery\Discovery;
 use Tinvar\Discovery\DiscoveryFailed;
 use Tinvar\Orm\Connection;
+use Tinvar\Auth\PanelRegistry;
 use Tinvar\Routing\Domains;
 use Tinvar\Support\BuildProfile;
 use Tinvar\Support\DevMode;
@@ -33,6 +34,7 @@ final readonly class DoctorContext
      * @param (\Closure(): int)|null $migrate runs the pending migrations as `migrate` does, for --fix
      * @param string $buildDirectory the application's build
      * @param string|null $projectRoot where composer.json and the lockfiles are, when not the application's root
+     * @param (\Closure(): ?PanelRegistry)|null $panels the panels the application's Kernel configures, whose hosts hold what is in them
      */
     public function __construct(
         public string $root,
@@ -48,6 +50,7 @@ final readonly class DoctorContext
         public ?\Closure $migrate = null,
         public string $buildDirectory = '',
         public ?string $projectRoot = null,
+        public ?\Closure $panels = null,
     ) {}
 
     /**

@@ -938,6 +938,7 @@ final class AppConsole
             migrate: fn (): int => $this->migrate('migrate', []),
             buildDirectory: BuildProfile::buildDirectory($this->root),
             projectRoot: $this->projectRoot,
+            panels: $this->panels(...),
         );
     }
 

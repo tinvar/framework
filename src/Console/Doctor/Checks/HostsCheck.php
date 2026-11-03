@@ -15,8 +15,10 @@ use Tinvar\Discovery\DiscoveryFailed;
 
 /**
  * Domains and hosts (ADR 0149): every #[Domain] a route or endpoint
- * declares served by the hosts the application configures, as `tinvar
- * check` holds it (AppConsole::hostViolations()), and -- what check cannot
+ * declares served by the hosts the application configures, and every
+ * entry point on a `{tenant}` host -- its own or its panel's -- reading
+ * its tenant from that host, as `tinvar check` holds them
+ * (AppConsole::hostViolations()); and -- what check cannot
  * see, since it reads no environment -- a server with no
  * TINVAR_APP_DOMAIN, which then builds every link and origin from
  * whatever Host a request names.
@@ -48,7 +50,18 @@ final readonly class HostsCheck implements DoctorCheck
             $findings[] = Finding::skipped('Discovery refused the app\'s classes; see Config above.');
         }
         if ($classes !== null) {
-            foreach (AppConsole::hostViolations($classes->routes, $classes->endpoints, $classes->models, $domains) as $violation) {
+            $violations = AppConsole::hostViolations(
+                $classes->routes,
+                $classes->endpoints,
+                $classes->models,
+                $domains,
+                $classes->actions,
+                $classes->queries,
+                $classes->channels,
+                $classes->transfers,
+                $context->panels === null ? null : ($context->panels)(),
+            );
+            foreach ($violations as $violation) {
                 $findings[] = Finding::problem((string) $violation, 'Set TINVAR_APP_DOMAIN (and TINVAR_DOMAINS for a further domain) to serve the host it names, or take the #[Domain] off.');
             }
         }
