@@ -14,6 +14,7 @@ namespace Tinvar\Tests\Webhooks\WebhookVerifier;
 
 use Tinvar\Attributes\Webhook;
 use Tinvar\Http\ArrayNonceStore;
+use Tinvar\Http\DatabaseNonceStore;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
@@ -146,5 +147,17 @@ it('refuses a verified delivery with no usable nonce or a signer that is not a d
 })->with([
     'a short nonce' => ['abc', VerifiedDelivery::signerOf('s')],
     'a nonce with a space' => ['evt 00001', VerifiedDelivery::signerOf('s')],
+    // Longer than a nonce store holds: verified, it was then refused by the
+    // store as a replay, and the sender's delivery lost with a 409.
+    'a nonce longer than a nonce store keeps' => ['evt_' . str_repeat('a', DatabaseNonceStore::MAX_NONCE_BYTES - 3), VerifiedDelivery::signerOf('s')],
     'the secret itself as the signer' => ['evt_00001', 'the-secret'],
 ]);
+
+it('takes a nonce as long as a nonce store keeps, and the store claims it', function () {
+    $nonce = 'evt_' . str_repeat('a', DatabaseNonceStore::MAX_NONCE_BYTES - 4);
+    $connection = \Tinvar\Orm\PdoConnection::sqlite(':memory:', 'nonce-length');
+    DatabaseNonceStore::define(new \Tinvar\Orm\Schema\Schema($connection, \Tinvar\Orm\Schema\Dialect::for($connection)));
+
+    expect(new VerifiedDelivery(NOW, $nonce, NOW + 300, VerifiedDelivery::signerOf('s'))->nonce)->toBe($nonce)
+        ->and(new DatabaseNonceStore($connection)->claim('webhook', $nonce, NOW + 300, NOW))->toBeTrue();
+});

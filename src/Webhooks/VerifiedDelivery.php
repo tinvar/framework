@@ -12,8 +12,8 @@ namespace Tinvar\Webhooks;
  */
 final readonly class VerifiedDelivery
 {
-    /** A nonce: printable ASCII, no space, within the length a nonce store keeps. */
-    public const string NONCE_SHAPE = '/^[\x21-\x7e]{8,200}\z/';
+    /** A nonce: printable ASCII, no space, within the 128 bytes a nonce store keeps (DatabaseNonceStore::MAX_NONCE_BYTES). */
+    public const string NONCE_SHAPE = '/^[\x21-\x7e]{8,128}\z/';
 
     /**
      * @param int $timestamp when the sender signed it, seconds since the epoch
@@ -28,7 +28,7 @@ final readonly class VerifiedDelivery
         public string $signer,
     ) {
         if (preg_match(self::NONCE_SHAPE, $nonce) !== 1) {
-            throw new \InvalidArgumentException('A verified delivery\'s nonce is 8 to 200 printable characters, with no space.');
+            throw new \InvalidArgumentException('A verified delivery\'s nonce is 8 to 128 printable characters, with no space.');
         }
         if ($expiresAt < $timestamp) {
             throw new \InvalidArgumentException('A verified delivery\'s nonce is kept until after it was signed, not before.');
