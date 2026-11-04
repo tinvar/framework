@@ -138,7 +138,7 @@ it('issues none while the user is being impersonated, and says who is signed in 
 it('holds a token to the lifetime the application allows, and asks for an expiry under one', function () {
     $h = new Harness();
     $now = CarbonImmutable::createFromTimestampUTC($h->now);
-    $capped = new ApiTokens($h->tokenStore, $h->users, $h->auth, $h->orm, ['' => ['racks:read']], clock: fn (): int => $h->now, maxLifetimeDays: 365);
+    $capped = new ApiTokens($h->tokenStore, $h->tokenHolders, $h->auth, $h->orm, ['' => ['racks:read']], clock: fn (): int => $h->now, maxLifetimeDays: 365);
     $issue = fn (?CarbonImmutable $expiresAt) => $h->as('ada', fn () => $capped->issue('Nightly export', ['racks:read'], $expiresAt));
     $refusal = function (?CarbonImmutable $expiresAt) use ($issue): ApiTokenRefused {
         try {
@@ -155,11 +155,11 @@ it('holds a token to the lifetime the application allows, and asks for an expiry
         ->and($refusal($now->addDays(365)->addSecond())->choice)->toBe(ApiTokenChoice::Expiry)
         ->and($h->tokenStore->tokens)->toBe([])
         ->and($issue($now->addDays(365))->token->expiresAt?->getTimestamp())->toBe($now->addDays(365)->getTimestamp())
-        ->and(new \Tinvar\Api\ApiAccess(new \Tinvar\Api\ArrayApiTokens(), $h->users)->maxLifetimeDays)->toBe(ApiTokens::MAX_LIFETIME_DAYS)
+        ->and(new \Tinvar\Api\ApiAccess(new \Tinvar\Api\ArrayApiTokens(), $h->tokenHolders)->maxLifetimeDays)->toBe(ApiTokens::MAX_LIFETIME_DAYS)
         ->and(ApiTokens::MAX_LIFETIME_DAYS)->toBe(365)
         // An application that wants tokens that never expire says so.
-        ->and(new \Tinvar\Api\ApiAccess(new \Tinvar\Api\ArrayApiTokens(), $h->users, maxLifetimeDays: null)->maxLifetimeDays)->toBeNull()
-        ->and(fn () => new \Tinvar\Api\ApiAccess(new \Tinvar\Api\ArrayApiTokens(), $h->users, maxLifetimeDays: 0))->toThrow(\InvalidArgumentException::class);
+        ->and(new \Tinvar\Api\ApiAccess(new \Tinvar\Api\ArrayApiTokens(), $h->tokenHolders, maxLifetimeDays: null)->maxLifetimeDays)->toBeNull()
+        ->and(fn () => new \Tinvar\Api\ApiAccess(new \Tinvar\Api\ArrayApiTokens(), $h->tokenHolders, maxLifetimeDays: 0))->toThrow(\InvalidArgumentException::class);
 });
 
 it('refuses, when the Kernel is built, a lookup that does not say which epoch a token is held to and which its request runs on', function () {

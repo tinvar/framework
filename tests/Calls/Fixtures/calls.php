@@ -23,7 +23,7 @@ use Tinvar\Auth\PanelDefinition;
 use Tinvar\Auth\PanelRegistry;
 use Tinvar\Auth\PolicyGate;
 use Tinvar\Auth\PolicyRegistry;
-use Tinvar\Api\TokenHolderLookup;
+use Tinvar\Auth\UserLookup;
 use Tinvar\Calls\CallRunner;
 use Tinvar\Data\Data;
 use Tinvar\Http\BuildRegistry;
@@ -55,8 +55,8 @@ final class User implements Authenticatable
     }
 }
 
-/** Users by id, each on an epoch a test can move, which their tokens are held to and their requests run on. */
-final class Users implements TokenHolderLookup
+/** Users by id, each on an epoch a test can move. */
+final class Users implements UserLookup
 {
     /** @var array<string, string> id => epoch */
     public array $epochs = [];
@@ -69,10 +69,6 @@ final class Users implements TokenHolderLookup
     public function epoch(Authenticatable $user): string
     {
         return $this->epochs[$user->authIdentifier()] ?? '';
-    }
-    public function authEpoch(Authenticatable $user): string
-    {
-        return $this->epoch($user);
     }
 }
 
@@ -281,10 +277,36 @@ final class Harness
         get => $this->tokenStore ??= new \Tinvar\Api\ArrayApiTokens();
     }
 
+    /**
+     * The users as API tokens find their holders: held to the epoch a test
+     * moves, and run on it. Made only where a test takes tokens, so a
+     * module's suite that never does loads nothing of the api layer.
+     */
+    public \Tinvar\Api\TokenHolderLookup $tokenHolders {
+        get => $this->tokenHolders ??= new class ($this->users) implements \Tinvar\Api\TokenHolderLookup {
+            public function __construct(private readonly Users $users) {}
+
+            public function find(string $id): ?Authenticatable
+            {
+                return $this->users->find($id);
+            }
+
+            public function epoch(Authenticatable $user): string
+            {
+                return $this->users->epoch($user);
+            }
+
+            public function authEpoch(Authenticatable $user): string
+            {
+                return $this->users->epoch($user);
+            }
+        };
+    }
+
     public \Tinvar\Api\ApiTokens $apiTokens {
         get => $this->apiTokens ??= new \Tinvar\Api\ApiTokens(
             $this->tokenStore,
-            $this->users,
+            $this->tokenHolders,
             $this->auth,
             $this->orm,
             \Tinvar\Api\ApiScopes::of(\Tinvar\Api\ApiCalls::discover($this->actions, $this->queries, $this->entry), []),

@@ -200,7 +200,24 @@ final class World
             panelRegistry: new PanelRegistry($admin),
             memberships: $this->staff,
             endpoints: $endpoints,
-            apiAccess: $api ? new ApiAccess($this->store, $this->users) : null,
+            apiAccess: $api ? new ApiAccess($this->store, new class ($this->users) implements \Tinvar\Api\TokenHolderLookup {
+                public function __construct(private readonly Users $users) {}
+
+                public function find(string $id): ?\Tinvar\Auth\Authenticatable
+                {
+                    return $this->users->find($id);
+                }
+
+                public function epoch(\Tinvar\Auth\Authenticatable $user): string
+                {
+                    return $this->users->epoch($user);
+                }
+
+                public function authEpoch(\Tinvar\Auth\Authenticatable $user): string
+                {
+                    return $this->users->epoch($user);
+                }
+            }) : null,
             realms: $realms,
         );
     }
