@@ -691,6 +691,47 @@ it('gives a reply its timeout as a whole, however it trickles in', function () {
         ->and(microtime(true) - $started)->toBeLessThan(2.5);
 });
 
+// A reply's lines were kept until one said it was the last: a server -- or
+// the path before STARTTLS -- sending `250-` lines as fast as it could held
+// every one of them in memory until the timeout.
+it('refuses a reply of more lines than any server sends, rather than keeping them all', function () {
+    if (!\function_exists('pcntl_fork')) {
+        test()->markTestSkipped('pcntl is not available.');
+    }
+
+    $server = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
+    \assert($server !== false);
+    $port = (int) substr((string) strrchr((string) stream_socket_get_name($server, false), ':'), 1);
+    $pid = pcntl_fork();
+    if ($pid === 0) {
+        $client = stream_socket_accept($server, 5);
+        if ($client !== false) {
+            for ($i = 0; $i < 100_000; $i++) {
+                if (@fwrite($client, "220-smtp.test and on\r\n") === false) {
+                    break;
+                }
+            }
+        }
+        leave();
+    }
+    fclose($server);
+
+    $transport = new SmtpTransport('127.0.0.1', $port, encryption: SmtpTransport::NONE, timeout: 10);
+    $started = microtime(true);
+    try {
+        $transport->send(message());
+        $thrown = null;
+    } catch (MailTransportException $e) {
+        $thrown = $e->getMessage();
+    } finally {
+        posix_kill($pid, SIGKILL);
+        pcntl_waitpid($pid, $status);
+    }
+
+    expect($thrown)->toContain('more than ' . SmtpTransport::MAX_REPLY_LINES . ' lines')
+        ->and(microtime(true) - $started)->toBeLessThan(5);
+});
+
 // And the message's bytes the same: a server -- or the path before STARTTLS
 // -- that takes the DATA a little at a time, just inside the timeout each
 // write is given, held the send, and a failover's deadline, for as long as

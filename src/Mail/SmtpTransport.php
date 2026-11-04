@@ -30,6 +30,15 @@ final readonly class SmtpTransport implements Bounded
     private const int LONGEST_LINE = 4096;
 
     /**
+     * The most lines one reply is read to. An EHLO lists a server's
+     * extensions a line each -- a dozen or two -- and no reply needs more;
+     * one that goes on is refused rather than kept line by line until the
+     * timeout, as a hostile server, or the path before STARTTLS, could make
+     * it.
+     */
+    public const int MAX_REPLY_LINES = 100;
+
+    /**
      * @param float|null $until when the whole send ends, on microtime()'s clock; null when
      *        nothing holds it. A failover sets it through within()
      */
@@ -248,6 +257,9 @@ final readonly class SmtpTransport implements Bounded
             }
             $line = rtrim($line, "\r\n");
             $lines[] = $line;
+            if (\count($lines) > self::MAX_REPLY_LINES) {
+                throw new MailTransportException("The SMTP server answered {$after} with more than " . self::MAX_REPLY_LINES . ' lines, which no reply needs.', transport: 'smtp');
+            }
         } while (\strlen($line) >= 4 && $line[3] === '-');
 
         $code = (int) substr($lines[0], 0, 3);
