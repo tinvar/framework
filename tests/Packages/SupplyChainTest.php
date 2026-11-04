@@ -985,7 +985,10 @@ describe('workflows', function () {
 
         expect($matrix)->toBe($packages)
             ->and($packages)->toContain('tenancy')
-            ->and(array_column($workflow['jobs']['skeleton']['steps'], 'run'))->toContain('php bin/skeleton-proof');
+            ->and(array_column($workflow['jobs']['skeleton']['steps'], 'run'))->toContain('php bin/skeleton-proof --context="$RUNNER_TEMP/skeleton-app.tar"')
+            // And the skeleton's image, built from the app the proof passed.
+            ->and($workflow['jobs']['skeleton-image']['needs'] ?? null)->toBe(['changes', 'skeleton'])
+            ->and(array_column($workflow['jobs']['skeleton-image']['steps'], 'run'))->toContain('.github/ci/verify-skeleton-image "$RUNNER_TEMP/skeleton-app.tar"');
     });
 
     // The split holds the mirrors' deploy keys, so it runs for what has
