@@ -308,6 +308,22 @@ describe('downloads', function () {
             ->toThrow(OutboundRefused::class)
             ->and($http->sent)->toBe([]);
     });
+
+    // A download's URL is often someone else's choosing -- a release feed,
+    // a user's form -- and the policy's allow opens a private range to the
+    // application's own services. A download goes to the public network
+    // alone unless the call says the private one is meant.
+    it('goes to the public network alone, even where the policy opens a private range, unless the call opts in', function () {
+        $iso = 'an installer image';
+        $http = new FakeOutboundHttp(static fn (): OutboundResponse => new OutboundResponse(200, [], $iso), new OutboundPolicy(allow: ['10.0.0.0/8']), new StaticResolver(['mirror.internal' => ['10.0.4.7']]));
+        $files = new RemoteFiles($http, new MemoryStorage());
+
+        expect(fn () => $files->download('https://mirror.internal/a.iso', hash('sha256', $iso), 'images', 'iso'))
+            ->toThrow(OutboundRefused::class)
+            ->and($http->sent)->toBe([])
+            ->and($files->download('https://mirror.internal/a.iso', hash('sha256', $iso), 'images', 'iso', privateNetworks: true)->bytes)->toBe(\strlen($iso))
+            ->and($http->sent[0]->publicOnly)->toBeFalse();
+    });
 });
 
 describe('image sources', function () {

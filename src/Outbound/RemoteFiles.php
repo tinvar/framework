@@ -17,7 +17,12 @@ use Tinvar\Storage\StorageKey;
  * Through OutboundHttp, so the destination is resolved once, vetted against
  * the policy and pinned, and each redirect -- a mirror network sends a few
  * -- vetted again. https only: a download is fetched over a connection
- * whose certificate was checked, as well as against its digest.
+ * whose certificate was checked, as well as against its digest. And to the
+ * public network alone (OutboundRequest's publicOnly), whatever private
+ * range the policy's `allow` opens to the application's own services: a
+ * download's URL is often someone else's choosing -- a release feed, a
+ * form -- and the private network is reached only where the call says so
+ * (`privateNetworks: true`).
  *
  * The body is never held in memory, nor gathered in the temporary
  * directory first. It is written to the store as it arrives -- through a
@@ -51,6 +56,8 @@ final readonly class RemoteFiles
      * @param string $prefix a storage prefix (StorageKey::PREFIX)
      * @param string $extension the stored file's extension: lowercase letters and digits
      * @param string $tenant the tenant it is stored for, whose segment its key carries; '' for none
+     * @param bool $privateNetworks let it reach an address on the private network the policy's `allow`
+     *        opens: only for a URL the application chose itself, never one a user or a feed handed it
      * @throws OutboundRefused for a URL or destination that is refused
      * @throws OutboundFailed when the transfer did not complete, or was over the cap
      * @throws RemoteContentRefused for a status other than a 2xx, or a digest that does not match
@@ -63,6 +70,7 @@ final readonly class RemoteFiles
         int $maxBytes = self::MAX_BYTES,
         float $timeout = self::TIMEOUT,
         string $tenant = '',
+        bool $privateNetworks = false,
     ): RemoteFile {
         $sha256 = strtolower($sha256);
         if (preg_match('/^[0-9a-f]{64}\z/', $sha256) !== 1) {
@@ -96,6 +104,7 @@ final readonly class RemoteFiles
                 timeout: $timeout,
                 maxResponseBytes: $maxBytes,
                 maxRedirects: OutboundRequest::MAX_REDIRECTS,
+                publicOnly: !$privateNetworks,
                 sink: static function (string $chunk) use ($file, $hash, &$bytes): void {
                     $file->write($chunk);
                     hash_update($hash, $chunk);
