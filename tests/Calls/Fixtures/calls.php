@@ -207,6 +207,24 @@ final class RecentPassword implements \Tinvar\Http\Middleware
 }
 
 /** Declares its own middleware, which a tool call could not run. */
+/** Marks what a test of an action's refusals calls. */
+#[\Attribute(\Attribute::TARGET_METHOD)]
+final class Refuses {}
+
+/** An action that answers with the HttpException a test sets, as a gate or a body does. */
+final class HoldActions
+{
+    public static int $status = 402;
+
+    public static string $code = 'plan_required';
+
+    #[Action(name: 'racks.hold'), Authorize('update', 'rack'), Refuses, RequiresScope('racks:write')]
+    public function hold(Rack $rack): ActionResult
+    {
+        throw new \Tinvar\Http\HttpException(self::$status, 'This needs the Pro plan. Choose a plan to go on.', self::$code);
+    }
+}
+
 final class GuardedActions
 {
     #[Action(name: 'racks.guarded'), Authorize('update', 'rack'), \Tinvar\Attributes\Middleware(RecentPassword::class), Tool('Guarded.')]

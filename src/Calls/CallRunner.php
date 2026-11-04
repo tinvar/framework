@@ -79,7 +79,12 @@ final readonly class CallRunner
             return match ($e->status) {
                 401, 403 => CallResult::forbidden(),
                 404 => CallResult::notFound(),
-                default => CallResult::failed($this->report($e)),
+                // A refusal the caller can act on -- a plan, a state, a limit --
+                // by its status and code; never its message. A 5xx is the
+                // application's own trouble, and a failure with a digest.
+                default => $e->status >= 400 && $e->status < 500
+                    ? CallResult::rejected($e->status, $e->code_)
+                    : CallResult::failed($this->report($e)),
             };
         } catch (\Throwable $e) {
             return CallResult::failed($this->report($e));

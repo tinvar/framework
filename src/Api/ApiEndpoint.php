@@ -111,6 +111,9 @@ final readonly class ApiEndpoint
             CallResult::INVALID => self::json(422, ['errors' => $result->errors]),
             CallResult::FORBIDDEN => throw new HttpException(403, "An #[Authorize] check or a panel's membership refused the API call to {$name}.", 'forbidden'),
             CallResult::NOT_FOUND => throw new HttpException(404, "The API call to {$name} named a record that is not there.", 'not_found'),
+            // The application's own 4xx -- a plan, a state, a limit -- with its
+            // status and code, for the client to act on.
+            CallResult::REJECTED => throw new HttpException($result->httpStatus ?? 400, "The application refused the API call to {$name}.", $result->reason ?? 'rejected'),
             CallResult::REFUSED => throw match ($result->reason) {
                 'unknown_operation' => new HttpException(404, 'No API operation has this name.', 'unknown_operation'),
                 // Not on this host: as RequireHost answers an entry point

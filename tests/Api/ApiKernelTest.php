@@ -165,7 +165,7 @@ final class World
     public PanelContext $panels;
 
     /** @param array<string, int> $limits */
-    public function __construct(array $limits = [], bool $api = true, PanelDefinition $admin = new PanelDefinition('admin'), ?Realms $realms = null)
+    public function __construct(array $limits = [], bool $api = true, PanelDefinition $admin = new PanelDefinition('admin'), ?Realms $realms = null, bool $hold = false)
     {
         $this->fixture = new Fixture(racks: 1, unitsPerRack: 1, sites: 1);
         $orm = new Orm($this->fixture->connection, new IdentityMap('api-kernel'));
@@ -178,7 +178,7 @@ final class World
         $resolver = static fn (string $class): object => $class === RackActions::class ? new RackActions($orm) : new $class();
 
         $actions = new ActionRegistry($resolver);
-        $actions->registerAll([RackActions::class, AuditActions::class]);
+        $actions->registerAll([RackActions::class, AuditActions::class, ...($hold ? [\Tinvar\Tests\Calls\Fixtures\HoldActions::class] : [])]);
         $queries = new QueryRegistry($resolver);
         $queries->registerAll([ShowRack::class]);
         $endpoints = new EndpointRegistry();
@@ -327,6 +327,25 @@ describe('/_api', function () {
             ->and($w->call('POST', '/_api/racks.show', $bearer, json_encode(['rack' => 'no-such-rack'], JSON_THROW_ON_ERROR))->status)->toBe(404)
             ->and($w->call('GET', '/_api/racks.show', $bearer)->status)->toBe(405);
     });
+
+    // The action's own 4xx is the API client's to act on -- choose a plan,
+    // wait, change what it asked -- and was a 500 with a digest.
+    it('answers an action\'s own 4xx with its status and code, and a 5xx as a 500', function (int $status, string $code, int $answered, string $answeredCode) {
+        $w = new World(hold: true);
+        \Tinvar\Tests\Calls\Fixtures\HoldActions::$status = $status;
+        \Tinvar\Tests\Calls\Fixtures\HoldActions::$code = $code;
+        $token = $w->token(['racks:write']);
+
+        $response = $w->call('POST', '/_api/racks.hold', ['authorization' => "Bearer {$token}"], json_encode(['rack' => $w->rack()], JSON_THROW_ON_ERROR));
+
+        expect($response->status)->toBe($answered)
+            ->and(json($response)['error']['code'])->toBe($answeredCode)
+            ->and($response->body())->not->toContain('Pro plan');
+    })->with([
+        'a plan' => [402, 'plan_required', 402, 'plan_required'],
+        'a state' => [409, 'already_subscribed', 409, 'already_subscribed'],
+        'the application\'s trouble' => [500, 'boom', 500, 'internal_error'],
+    ]);
 
     it('spends the api throttle by address, and by the token\'s user, and answers 429 with Retry-After', function () {
         $w = new World(['api' => 2]);

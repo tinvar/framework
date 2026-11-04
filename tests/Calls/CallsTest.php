@@ -78,3 +78,35 @@ it('refuses arguments that are not an object of the operation\'s own inputs, bef
     'a field it does not take' => [['rack' => 'r', 'name' => 'n', 'admin' => true]],
     'too deep' => [['rack' => 'r', 'name' => [[[[[[[[['deep']]]]]]]]]]],
 ]);
+
+// A 402 for a plan, a 409 for a state, a 429 for a limit: each says what
+// the caller can do about it, and was collapsed into a failure with a
+// digest, as if the application had broken. A 5xx is the application's
+// own trouble, and stays a failure. Never the exception's message.
+it('passes a 4xx and its code through to the caller, and keeps a 5xx a failure', function (int $status, string $code, string $outcome, ?string $reason) {
+    $h = new Harness();
+    $h->actions->register(\Tinvar\Tests\Calls\Fixtures\HoldActions::class);
+    \Tinvar\Tests\Calls\Fixtures\HoldActions::$status = $status;
+    \Tinvar\Tests\Calls\Fixtures\HoldActions::$code = $code;
+    $hold = Operations::declaring(\Tinvar\Tests\Calls\Fixtures\Refuses::class, $h->actions, $h->queries, $h->entry)[0][0];
+
+    $result = $h->as('ada', fn () => $h->runner->run($hold, ['rack' => $h->rack()]));
+
+    expect($result->status)->toBe($outcome)
+        ->and($result->reason)->toBe($reason)
+        ->and($result->httpStatus)->toBe($outcome === CallResult::REJECTED ? $status : null)
+        ->and(json_encode($result->toArray()))->not->toContain('Pro plan');
+    if ($outcome === CallResult::REJECTED) {
+        expect($result->toArray())->toBe(['status' => 'rejected', 'value' => null, 'reason' => $reason, 'http_status' => $status]);
+    } else {
+        expect($result->digest)->not->toBeNull();
+    }
+})->with([
+    'a plan' => [402, 'plan_required', CallResult::REJECTED, 'plan_required'],
+    'a state' => [409, 'already_subscribed', CallResult::REJECTED, 'already_subscribed'],
+    'a limit' => [429, 'too_many_requests', CallResult::REJECTED, 'too_many_requests'],
+    'a code that is not one' => [409, 'Not <a> code', CallResult::REJECTED, 'rejected'],
+    'no code' => [410, '', CallResult::REJECTED, 'rejected'],
+    'the application\'s trouble' => [500, 'boom', CallResult::FAILED, null],
+    'an upstream\'s' => [503, 'unavailable', CallResult::FAILED, null],
+]);

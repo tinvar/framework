@@ -35,6 +35,13 @@ final readonly class CallResult
      */
     public const string REFUSED = 'refused';
 
+    /**
+     * The application refused it with a 4xx of its own -- a plan it needs
+     * (402), a state it is not in (409), a limit (429): `http_status` says
+     * which, and `reason` its code. Never its message.
+     */
+    public const string REJECTED = 'rejected';
+
     /** It threw; `digest` names it in the log. */
     public const string FAILED = 'failed';
 
@@ -49,6 +56,8 @@ final readonly class CallResult
         public ?string $reason = null,
         public ?string $digest = null,
         public array $flash = [],
+        /** For REJECTED: the 4xx the application answered. */
+        public ?int $httpStatus = null,
     ) {}
 
     /**
@@ -82,6 +91,19 @@ final readonly class CallResult
         return new self(self::REFUSED, reason: $reason);
     }
 
+    /**
+     * @param int $httpStatus a 4xx
+     * @param string $code its code: lowercase letters, digits and `_ . -`; anything else is `rejected`
+     */
+    public static function rejected(int $httpStatus, string $code): self
+    {
+        if ($httpStatus < 400 || $httpStatus > 499) {
+            throw new \InvalidArgumentException('A rejected call carries a 4xx; a 5xx is a failure.');
+        }
+
+        return new self(self::REJECTED, reason: preg_match('/^[a-z0-9][a-z0-9_.-]{0,63}\z/', $code) === 1 ? $code : 'rejected', httpStatus: $httpStatus);
+    }
+
     public static function failed(string $digest): self
     {
         return new self(self::FAILED, digest: $digest);
@@ -106,6 +128,7 @@ final readonly class CallResult
             'errors' => $this->errors === [] ? null : $this->errors,
             'reason' => $this->reason,
             'digest' => $this->digest,
+            'http_status' => $this->httpStatus,
         ], static fn (mixed $value, string $key): bool => $key === 'status' || $key === 'value' || $value !== null, ARRAY_FILTER_USE_BOTH);
     }
 }
