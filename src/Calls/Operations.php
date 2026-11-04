@@ -8,6 +8,7 @@ use Tinvar\Actions\ActionRegistry;
 use Tinvar\Actions\CompiledAction;
 use Tinvar\Auth\PanelBinding;
 use Tinvar\Auth\PanelRegistry;
+use Tinvar\Http\DeclaredMiddleware;
 use Tinvar\Http\EntryContext;
 use Tinvar\Http\Request;
 use Tinvar\Orm\Model;
@@ -124,7 +125,7 @@ final class Operations
         // author put there -- a recent password, a second factor -- would
         // be skipped.
         if ($action->middleware !== []) {
-            throw self::refuse($where, $attribute, 'declares #[Middleware], which runs around an HTTP request and a call from outside a browser would skip');
+            throw self::skipped($where, $attribute, $action->middleware);
         }
         $inputs = [];
         $add = static function (FieldPlan $field) use (&$inputs, $where, $attribute): void {
@@ -185,7 +186,7 @@ final class Operations
     private static function query(string $name, string $class, QueryRegistry $queries, \Closure $panelFor, \Closure $domainFor, string $attribute): Operation
     {
         if ($queries->middlewareFor($name) !== []) {
-            throw self::refuse($class, $attribute, 'declares #[Middleware], which runs around an HTTP request and a call from outside a browser would skip');
+            throw self::skipped($class, $attribute, $queries->middlewareFor($name));
         }
         $inputs = [];
         if ($queries->isBatch($name)) {
@@ -224,6 +225,33 @@ final class Operations
     private static function hosts(?string $own, ?string $panel): array
     {
         return array_values(array_unique(array_filter([$own, $panel], static fn (?string $p): bool => $p !== null)));
+    }
+
+    /**
+     * The refusal of an operation that runs middleware a call from outside
+     * a browser would skip: each one named as it is written --
+     * `#[Middleware(Class)]`, or a gate's own attribute, `#[RequiresPlan]`
+     * -- and the two ways on.
+     *
+     * @param list<string> $middleware as compiled: classes, and references to gates (DeclaredMiddleware)
+     */
+    private static function skipped(string $where, string $attribute, array $middleware): \LogicException
+    {
+        $named = array_values(array_unique(array_map(
+            static fn (string $m): string => DeclaredMiddleware::isReference($m)
+                ? '#[' . substr($m, 0, (int) strpos($m, '@')) . ']'
+                : "#[Middleware({$m})]",
+            $middleware,
+        )));
+        $short = substr($attribute, (int) strrpos($attribute, '\\') + 1);
+
+        return self::refuse(
+            $where,
+            $attribute,
+            'declares #[Middleware] a call from outside a browser would skip -- ' . implode(', ', $named) . ' -- which runs around an HTTP request, '
+            . 'and such a call has none. Check what it checks inside the body, where every caller meets it, '
+            . "and take it off; or take #[{$short}] off it, to keep it a browser's alone",
+        );
     }
 
     private static function refuse(string $where, string $attribute, string $why): \LogicException

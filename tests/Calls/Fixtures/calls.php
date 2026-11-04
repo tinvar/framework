@@ -206,7 +206,6 @@ final class RecentPassword implements \Tinvar\Http\Middleware
     }
 }
 
-/** Declares its own middleware, which a tool call could not run. */
 /** Marks what a test of an action's refusals calls. */
 #[\Attribute(\Attribute::TARGET_METHOD)]
 final class Refuses {}
@@ -225,10 +224,39 @@ final class HoldActions
     }
 }
 
+/** Declares its own middleware, which a tool call could not run. */
 final class GuardedActions
 {
     #[Action(name: 'racks.guarded'), Authorize('update', 'rack'), \Tinvar\Attributes\Middleware(RecentPassword::class), Tool('Guarded.')]
     public function guarded(Rack $rack): ActionResult
+    {
+        return ActionResult::ok();
+    }
+}
+
+/** A package's gate, as #[RequiresPlan] is. */
+#[\Attribute(\Attribute::TARGET_CLASS | \Attribute::TARGET_METHOD)]
+final readonly class RequiresTier implements \Tinvar\Http\MiddlewareAttribute
+{
+    public function middleware(): string
+    {
+        return CheckTier::class;
+    }
+}
+
+final readonly class CheckTier implements \Tinvar\Http\AttributeMiddleware
+{
+    public function handle(\Tinvar\Http\MiddlewareAttribute $attribute, \Tinvar\Http\Request $request, \Closure $next): \Tinvar\Http\Response
+    {
+        return $next($request);
+    }
+}
+
+/** Gated by a package's attribute, which a tool call could not run either. */
+final class GatedActions
+{
+    #[Action(name: 'racks.gated'), Authorize('update', 'rack'), RequiresTier, Tool('Gated.')]
+    public function gated(Rack $rack): ActionResult
     {
         return ActionResult::ok();
     }

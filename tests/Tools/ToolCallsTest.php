@@ -195,6 +195,21 @@ it('refuses to make a tool of an action whose own #[Middleware] a tool call woul
         ->toThrow(\LogicException::class, 'declares #[Middleware]');
 });
 
+// The refusal said "#[Middleware]" whatever was there -- a package's gate
+// too -- and named neither the class nor what to do. It names both now.
+it('says which middleware or gate a tool call would skip, and how to make the action callable', function (string $class, string $names) {
+    $h = new Harness();
+    $h->actions->register($class);
+
+    expect(fn () => ToolCalls::discover($h->actions, $h->queries, $h->entry))
+        ->toThrow(\LogicException::class, $names)
+        ->and(fn () => ToolCalls::discover($h->actions, $h->queries, $h->entry))
+        ->toThrow(\LogicException::class, 'take #[Tool] off it');
+})->with([
+    'a middleware' => [\Tinvar\Tests\Calls\Fixtures\GuardedActions::class, '#[Middleware(' . \Tinvar\Tests\Calls\Fixtures\RecentPassword::class . ')]'],
+    'a gate' => [\Tinvar\Tests\Calls\Fixtures\GatedActions::class, '#[' . \Tinvar\Tests\Calls\Fixtures\RequiresTier::class . ']'],
+]);
+
 it('refuses to make a tool of an action that takes the Request', function () {
     $h = new Harness();
     $h->actions->register(NeedsRequest::class);
