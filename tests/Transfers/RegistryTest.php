@@ -201,7 +201,7 @@ describe('a CSV cell', function () {
     it('is prefixed when a spreadsheet would read it as a formula', function (string $value) {
         expect(Csv::cell($value))->toBe("'" . $value)
             ->and(Csv::value(Csv::cell($value)))->toBe($value);
-    })->with(['=1+1', '+1', '-1', '@SUM(A1)', "\t=1", "\r=1", '=HYPERLINK("http://x","y")']);
+    })->with(['=1+1', '+1', '-1', '@SUM(A1)', "\t=1", "\r=1", '=HYPERLINK("http://x","y")', '＝1+1', '＋1', '－1', '＠SUM(A1)', "'＝1"]);
 
     it('is written as it is otherwise, numbers among them', function () {
         expect(Csv::cell('plain'))->toBe('plain')
@@ -218,7 +218,7 @@ describe('a CSV cell', function () {
     // off: text that began that way itself was read back without its `'`.
     it('reads back as written, text that begins with the prefix among it', function (string $value) {
         expect(Csv::value(Csv::cell($value)))->toBe($value);
-    })->with(["'=x", "'-5", "''=x", "'", "'plain", '=x', '-5']);
+    })->with(["'=x", "'-5", "''=x", "'", "'plain", '=x', '-5', '＝x', "'＠x"]);
 });
 
 describe('a download token', function () {

@@ -9,8 +9,8 @@ namespace Tinvar\Transfers;
  * `"`-quoted with no backslash escape, and CRLF between records.
  *
  * Written, a cell is held against CSV injection: a spreadsheet reads a cell
- * beginning `=`, `+`, `-` or `@` -- or a tab or carriage return ahead of one
- * -- as a formula, and a formula can fetch URLs and run commands on the
+ * beginning `=`, `+`, `-` or `@` -- or their full-width forms, or a tab or
+ * carriage return ahead of one -- as a formula, and a formula can fetch URLs and run commands on the
  * machine that opens the file. Every such text cell is written with a
  * leading `'`, which the spreadsheet shows as text, as OWASP recommends. A
  * number is written as PHP formats it and is never prefixed: `-5` from an
@@ -27,10 +27,12 @@ final class Csv
 {
     /**
      * Text a spreadsheet may read as a formula -- beginning `=`, `+`, `-`,
-     * `@`, a tab or a carriage return -- or that begins with `'`s ahead of
-     * one of them.
+     * `@`, a tab or a carriage return, or the full-width `＝`, `＋`, `－` or
+     * `＠` a spreadsheet in a CJK locale reads as them -- or that begins with
+     * `'`s ahead of one of them. Matched on the bytes, not as UTF-8, so text
+     * that is not valid UTF-8 is held to it too.
      */
-    private const string FORMULA = "/^'*[=+\\-@\t\r]/";
+    private const string FORMULA = "/^'*(?:[=+\\-@\t\r]|\xEF\xBC[\x9D\x8B\x8D\xA0])/";
 
     /** The byte-order mark a spreadsheet may begin a UTF-8 file with. */
     private const string BOM = "\xEF\xBB\xBF";
