@@ -107,11 +107,50 @@ final class ReceiverSecret implements WebhookSecrets
     }
 }
 
+/**
+ * The real client, over the network, to a receiver on this machine alone:
+ * a delivery is publicOnly, and a loopback receiver is refused it, so each
+ * request is noted as it was built and sent on with only that lifted,
+ * through a PinnedHttp that lets in 127.0.0.1 and nothing else. Every
+ * other byte -- method, URL, headers, body, limits -- is the delivery's.
+ */
+final class ThisMachine implements OutboundHttp
+{
+    /** @var list<bool> each request's publicOnly, as the delivery built it */
+    public array $publicOnly = [];
+
+    private PinnedHttp $http;
+
+    public function __construct()
+    {
+        $this->http = new PinnedHttp(new OutboundPolicy(allow: ['127.0.0.1']));
+    }
+
+    public function send(OutboundRequest $request): OutboundResponse
+    {
+        $this->publicOnly[] = $request->publicOnly;
+
+        return $this->http->send(new OutboundRequest(
+            $request->method,
+            $request->url,
+            $request->headers,
+            $request->body,
+            $request->timeout,
+            $request->maxResponseBytes,
+            $request->readBody,
+            $request->maxRedirects,
+            $request->sink,
+            $request->destinations,
+            publicOnly: false,
+        ));
+    }
+}
+
 /** A sending application over the jobs harness: its client a fake unless given, its log in memory. */
 final class Sender
 {
     public Harness $h;
-    public FakeOutboundHttp|PinnedHttp $http;
+    public OutboundHttp $http;
     public ArrayDeliveryLog $log;
     public OutboundWebhooks $webhooks;
 
@@ -119,7 +158,7 @@ final class Sender
      * @param (\Closure(OutboundRequest): OutboundResponse)|null $respond
      * @param array<string, WebhookSubscription>|null $subscriptions 'scripts' at acme's signed receiver URL unless given
      */
-    public function __construct(?\Closure $respond = null, ?array $subscriptions = null, FakeOutboundHttp|PinnedHttp|null $http = null)
+    public function __construct(?\Closure $respond = null, ?array $subscriptions = null, ?OutboundHttp $http = null)
     {
         $this->h = new Harness();
         $this->http = $http ?? new FakeOutboundHttp($respond);
@@ -400,6 +439,39 @@ it('never sends a tenant\'s delivery to a private address the application allows
     expect($requests)->toBe([])
         ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->status], $s->log->attempts($id)))->toBe([[DeliveryAttempt::REFUSED, null]])
         ->and($s->queue()->failed()[0]->error)->toContain('(loopback)');
+});
+
+// The fakes see the request as built; this sees it as a receiver does, over
+// a real socket: the signature a receiver checks covers the method, the
+// target and the body as they arrive, after curl has written them.
+it('delivers over the network to a receiver on this machine, which verifies the signature', function () {
+    if (!\function_exists('pcntl_fork') || !\function_exists('curl_init')) {
+        test()->markTestSkipped('pcntl or curl is not available.');
+    }
+
+    $server = Server::start([static function (array $r): string {
+        $parsed = WebhookSignature::parse($r['headers'][WebhookSignature::HEADER] ?? null);
+        $valid = $parsed !== null && hash_equals(WebhookSignature::mac(SECRET, $parsed[0], $parsed[1], $r['method'], $r['target'], $r['body']), $parsed[2]);
+
+        return Server::reply($valid ? 202 : 401, 'ignored by the sender');
+    }]);
+
+    $http = new ThisMachine();
+    try {
+        $s = new Sender(
+            subscriptions: ['scripts' => new WebhookSubscription("http://127.0.0.1:{$server->port}/hooks/in?account=7", SECRET)],
+            http: $http,
+        );
+        $id = $s->sendAsAcme();
+        $s->work();
+    } finally {
+        $requests = $server->stop();
+    }
+
+    expect($requests)->toHaveCount(1)
+        ->and($requests[0]['target'])->toBe('/hooks/in?account=7')
+        ->and($http->publicOnly)->toBe([true])
+        ->and(array_map(static fn (DeliveryAttempt $a): array => [$a->outcome, $a->status], $s->log->attempts($id)))->toBe([[DeliveryAttempt::DELIVERED, 202]]);
 });
 
 it('refuses a tenant\'s delivery to a name resolving inside an allowed private range, through any client', function () {
