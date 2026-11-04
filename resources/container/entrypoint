@@ -96,8 +96,11 @@ fi
 # root where root owns it and otherwise as its owner in PHP's group, which
 # alone may pass the image's /run/secrets (root's, 0710) -- CAP_SETUID
 # allows that, where no CAP_DAC_OVERRIDE is held -- and never as the
-# renderers' user, who is refused a file it could reach itself. Elsewhere a
-# _FILE variable is the app's to read, as a mounted Kubernetes secret is.
+# renderers' user, who is refused a file it could reach itself. Only a
+# TINVAR_*_FILE variable, or APP_DATABASE_PASSWORD_FILE, may name one, and
+# only one name directly in /run/secrets (secret-file holds both, and every
+# other refused aloud). Elsewhere a _FILE variable is the app's to read, as
+# a mounted Kubernetes secret is.
 app_gid=$(id -g "$app_user")
 read_secret_file() {
     local file=$1 owner
@@ -109,12 +112,14 @@ read_secret_file() {
     fi
 }
 while IFS='=' read -r variable _; do
-    [[ $variable =~ ^[A-Z][A-Z0-9_]*_FILE$ ]] || continue
+    [[ $variable =~ ^[A-Za-z_][A-Za-z0-9_]*_FILE$ ]] || continue
     file=${!variable}
-    [[ $file == /run/secrets/* ]] || continue
-    name=${variable%_FILE}
+    [[ $file == /run/secrets* ]] || continue
+    # The name (TINVAR_*, or APP_DATABASE_PASSWORD) and the path (one name
+    # directly in /run/secrets, no symlink on the way): secret-file's
+    # refusal, said as the container's, or the variable it sets.
+    name=$(/usr/local/lib/tinvar/secret-file /run/secrets "$variable" "$file" 2>&1) || refuse "$name"
     [ -z "${!name:-}" ] || refuse "$name and $variable are both set: give one."
-    [ -f "$file" ] && [ ! -L "$file" ] || refuse "$variable names $file, which is not a file: is the secret listed under the service's secrets:?"
     if "${as_renderer[@]}" test -r "$file"; then
         refuse "$renderer_user can read $file ($variable), which is PHP's alone: make it yours on the host, mode 0600."
     fi

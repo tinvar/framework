@@ -40,7 +40,10 @@ port=${TINVAR_CONTAINER_PORT:-8080}
 # the image's /run/secrets.
 probe_token=${TINVAR_PROBE_TOKEN:-}
 token_file=${TINVAR_PROBE_TOKEN_FILE:-}
-if [ -z "$probe_token" ] && [ -n "$token_file" ] && [ "${token_file#/run/secrets/}" != "$token_file" ] && [ -f "$token_file" ]; then
+# Held to what the entrypoint holds it to (secret-file): one name directly
+# in /run/secrets, no symlink on the way; anything else is not read.
+if [ -z "$probe_token" ] && [ -n "$token_file" ] && [ "${token_file#/run/secrets/}" != "$token_file" ] \
+    && /usr/local/lib/tinvar/secret-file /run/secrets TINVAR_PROBE_TOKEN_FILE "$token_file" >/dev/null; then
     owner=$(stat -c %u "$token_file")
     if [ "$owner" = 0 ] || [ "$(id -u)" = "$owner" ]; then
         probe_token=$(cat -- "$token_file")
