@@ -6,6 +6,7 @@ namespace Tinvar\Mail\Providers;
 
 use Tinvar\Mail\Address;
 use Tinvar\Mail\Attachment;
+use Tinvar\Mail\Header;
 use Tinvar\Mail\Message;
 
 /**
@@ -17,14 +18,22 @@ use Tinvar\Mail\Message;
 final class Fields
 {
     /**
-     * `"Name" <email>`, or the address alone: as JSON carries it, UTF-8 and
-     * all, with the name quoted. An Address holds no line break, and a quote
-     * or a backslash in a name is escaped.
+     * `"Name" <email>`, or the address alone, as the API writes it into the
+     * message's header. A name of plain ASCII is quoted, a quote or a
+     * backslash in it escaped. Any other is RFC 2047 encoded words
+     * (Header::encode()): the API puts the string in the header as it is,
+     * and raw UTF-8 there is what RFC 5322 does not allow and a reader may
+     * show garbled. The words are joined by a space, not folded: a JSON
+     * field holds one line, and a reader joins adjacent words as one name.
+     * An Address holds no line break.
      */
     public static function address(Address $address): string
     {
         if ($address->name === '') {
             return $address->email;
+        }
+        if (preg_match('/^[\x20-\x7e]*\z/', $address->name) !== 1) {
+            return str_replace("\r\n ", ' ', Header::encode($address->name, words: true)) . " <{$address->email}>";
         }
 
         return '"' . addcslashes($address->name, '"\\') . "\" <{$address->email}>";

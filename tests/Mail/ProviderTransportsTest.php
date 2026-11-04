@@ -102,6 +102,27 @@ function transports(): array
     ];
 }
 
+// A JSON API puts the address it is handed in the message's header as it
+// is: a name that is not plain ASCII is raw UTF-8 there, which RFC 5322
+// does not allow and a reader may show garbled or refuse. Encoded words
+// are what a header carries, on one line: JSON holds no folded header.
+it('writes a display name that is not plain ASCII as RFC 2047 encoded words, on one line', function (string $transport, array $field) {
+    $http = fake(static fn (): OutboundResponse => new OutboundResponse(200, [], '{"id":"x-1","MessageID":"x-1"}'));
+    $long = str_repeat('Zoë Café ', 8);
+    $message = new Message(new Address('orders@pellwick.example', 'Zoë Café'), [new Address('ada@example.test', trim($long)), new Address('grace@example.test', 'Grace Hopper')], 'S', '<p>x</p>', 'x');
+    transports()[$transport][0]($http)->deliver($message);
+    $body = body($http->sent[0]);
+    $to = \is_array($body[$field[1]]) ? $body[$field[1]] : explode(', ', $body[$field[1]]);
+
+    expect($body[$field[0]])->toBe('=?UTF-8?B?' . base64_encode('Zoë Café') . '?= <orders@pellwick.example>')
+        ->and($to[0])->toMatch('/^(=\?UTF-8\?B\?[A-Za-z0-9+\/=]+\?=)( =\?UTF-8\?B\?[A-Za-z0-9+\/=]+\?=)* <ada@example\.test>\z/')
+        ->and(iconv_mime_decode('Subject: ' . substr($to[0], 0, (int) strrpos($to[0], ' <')), 0, 'UTF-8'))->toBe('Subject: ' . trim($long))
+        ->and($to[1])->toBe('"Grace Hopper" <grace@example.test>');
+})->with([
+    'Resend' => ['resend', ['from', 'to']],
+    'Postmark' => ['postmark', ['From', 'To']],
+]);
+
 describe('Resend', function () {
     it('posts every field of the message to its API with the key as a bearer token, and hands back its id', function () {
         $http = fake(static fn (): OutboundResponse => new OutboundResponse(200, [], '{"id":"49a3999c-0ce1-4ea6-ab68-afcd6dc2e794"}'));
