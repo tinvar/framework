@@ -5,13 +5,13 @@ declare(strict_types=1);
 namespace Tinvar\Mail\Providers;
 
 use Tinvar\Mail\MailTransportException;
-use Tinvar\Observability\Redactor;
 use Tinvar\Outbound\Destinations;
 use Tinvar\Outbound\OutboundFailed;
 use Tinvar\Outbound\OutboundHttp;
 use Tinvar\Outbound\OutboundRefused;
 use Tinvar\Outbound\OutboundRequest;
 use Tinvar\Outbound\OutboundResponse;
+use Tinvar\Observability\SafeReason;
 
 /**
  * How a mail provider's API is called: through the application's one
@@ -47,8 +47,6 @@ final readonly class ProviderHttp
     /** The most of a provider's reason quoted in an exception. */
     private const int MAX_REASON = 300;
 
-    private Redactor $redactor;
-
     private Destinations $destinations;
 
     /**
@@ -67,7 +65,6 @@ final readonly class ProviderHttp
         private ?\Closure $scrub = null,
     ) {
         $this->destinations = Destinations::hosts($hosts);
-        $this->redactor = new Redactor(traces: false);
     }
 
     /**
@@ -185,19 +182,6 @@ final readonly class ProviderHttp
      */
     private function clean(string $text, #[\SensitiveParameter] array $secrets): string
     {
-        foreach ($secrets as $secret) {
-            if ($secret !== '') {
-                $text = str_replace($secret, Redactor::REDACTED, $text);
-            }
-        }
-        if ($this->scrub !== null) {
-            $text = ($this->scrub)($text);
-        }
-        $text = trim((string) preg_replace('/[\x00-\x1f\x7f]+/', ' ', $text));
-        if (\strlen($text) > self::MAX_REASON) {
-            $text = mb_strcut($text, 0, self::MAX_REASON, 'UTF-8') . '...';
-        }
-
-        return $this->redactor->text($text);
+        return SafeReason::of($text, $secrets, $this->scrub, self::MAX_REASON);
     }
 }
