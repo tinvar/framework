@@ -125,6 +125,77 @@ it('opens nothing until it counts', function () {
     }
 });
 
+// The counts are what stands between a password and forty guesses at it:
+// a file another user could write, or a link planted at its name, would
+// let them reset a budget -- or have the store write where the link points.
+describe('its file', function () {
+    it('is made its owner\'s alone, and so is every file SQLite keeps beside it', function () {
+        $path = scratchFile();
+        $previous = umask(0o022);
+
+        try {
+            new SqliteThrottleStore($path)->increment('k', 60);
+            clearstatcache();
+
+            foreach (glob("{$path}*") ?: [] as $file) {
+                expect(fileperms($file) & 0o777)->toBe(0o600, $file);
+            }
+        } finally {
+            umask($previous);
+            removeScratch($path);
+        }
+    });
+
+    it('is closed up when an older version left it readable by others', function () {
+        $path = scratchFile();
+
+        try {
+            touch($path);
+            chmod($path, 0o644);
+            new SqliteThrottleStore($path)->increment('k', 60);
+            clearstatcache();
+
+            expect(fileperms($path) & 0o777)->toBe(0o600);
+        } finally {
+            removeScratch($path);
+        }
+    });
+
+    it('is refused when its name, or a file SQLite keeps beside it, is a link', function (string $suffix, bool $hard) {
+        $path = scratchFile();
+        $target = \dirname($path) . '/elsewhere';
+
+        try {
+            touch($target);
+            chmod($target, 0o600);
+            $hard ? link($target, $path . $suffix) : symlink($target, $path . $suffix);
+
+            expect(fn () => new SqliteThrottleStore($path)->increment('k', 60))->toThrow(\RuntimeException::class, 'throttle file')
+                ->and(file_get_contents($target))->toBe('');
+        } finally {
+            removeScratch($path);
+        }
+    })->with([
+        'a symbolic link at its name' => ['', false],
+        'a symbolic link at its journal' => ['-journal', false],
+        'a hard link at its name' => ['', true],
+    ]);
+
+    it('is refused in a directory anyone may write that is not sticky', function () {
+        $path = scratchFile();
+
+        try {
+            chmod(\dirname($path), 0o777);
+
+            expect(fn () => new SqliteThrottleStore($path)->increment('k', 60))->toThrow(\RuntimeException::class, 'writable by anyone')
+                ->and(file_exists($path))->toBeFalse();
+        } finally {
+            chmod(\dirname($path), 0o700);
+            removeScratch($path);
+        }
+    });
+});
+
 it('refuses an empty path', function () {
     expect(fn () => new SqliteThrottleStore(''))->toThrow(\InvalidArgumentException::class);
 });
