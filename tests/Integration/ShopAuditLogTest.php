@@ -135,7 +135,10 @@ it('records a customer cancelling an order as the action and the change it made 
         ->and($action->actor->id)->toBe($owner->id)
         ->and($change->event)->toBe('updated')
         ->and($change->action)->toBe('orders.cancel')
-        ->and($change->changes)->toBe(['status' => ['placed', 'cancelled']])
+        ->and($change->changes['status'])->toBe(['placed', 'cancelled'])
+        // And when, as the shipping timeline shows it.
+        ->and(array_keys($change->changes))->toBe(['status', 'cancelledAt'])
+        ->and($change->changes['cancelledAt'][0])->toBeNull()
         ->and($this->kernel->audit->verify()->intact)->toBeTrue();
 
     // A cancel refused by the policy runs no body, and leaves nothing.
