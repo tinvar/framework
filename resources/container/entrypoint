@@ -89,6 +89,41 @@ if [ "$app_uid" = 0 ] || [ "$renderer_uid" = 0 ] || [ "$app_uid" = "$renderer_ui
     refuse "PHP ($app_user, $app_uid) and the renderers ($renderer_user, $renderer_uid) must be two users, neither root."
 fi
 
+# Secrets given as files under /run/secrets -- compose's secrets, mounted
+# from the host as they are there -- each read here, before anything starts,
+# and handed to PHP in its environment, the _FILE variable taken away. A
+# mounted file keeps its owner on the host and its mode, so it is read as
+# root where root owns it and otherwise as its owner in PHP's group, which
+# alone may pass the image's /run/secrets (root's, 0710) -- CAP_SETUID
+# allows that, where no CAP_DAC_OVERRIDE is held -- and never as the
+# renderers' user, who is refused a file it could reach itself. Elsewhere a
+# _FILE variable is the app's to read, as a mounted Kubernetes secret is.
+app_gid=$(id -g "$app_user")
+read_secret_file() {
+    local file=$1 owner
+    owner=$(stat -c %u "$file") || return 1
+    if [ "$owner" = 0 ]; then
+        cat -- "$file"
+    else
+        setpriv --reuid="$owner" --regid="$app_gid" --clear-groups "${drop[@]}" -- cat -- "$file"
+    fi
+}
+while IFS='=' read -r variable _; do
+    [[ $variable =~ ^[A-Z][A-Z0-9_]*_FILE$ ]] || continue
+    file=${!variable}
+    [[ $file == /run/secrets/* ]] || continue
+    name=${variable%_FILE}
+    [ -z "${!name:-}" ] || refuse "$name and $variable are both set: give one."
+    [ -f "$file" ] && [ ! -L "$file" ] || refuse "$variable names $file, which is not a file: is the secret listed under the service's secrets:?"
+    if "${as_renderer[@]}" test -r "$file"; then
+        refuse "$renderer_user can read $file ($variable), which is PHP's alone: make it yours on the host, mode 0600."
+    fi
+    value=$(read_secret_file "$file") || refuse "$file ($variable) cannot be read, as root or as its owner."
+    [ -n "$value" ] || refuse "$file ($variable) is empty."
+    export "$name=$value"
+    unset "$variable" value
+done < <(env)
+
 # One-off commands, as the app's user, under tini: a migration, a seed, a
 # check.
 if [ $# -gt 0 ]; then

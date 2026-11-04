@@ -34,8 +34,23 @@
 
 port=${TINVAR_CONTAINER_PORT:-8080}
 
+# The probe token, or the compose secret it is in (TINVAR_PROBE_TOKEN_FILE
+# under /run/secrets), read as the entrypoint reads it: as root where root
+# owns the file, otherwise as its owner in PHP's group, which alone may pass
+# the image's /run/secrets.
+probe_token=${TINVAR_PROBE_TOKEN:-}
+token_file=${TINVAR_PROBE_TOKEN_FILE:-}
+if [ -z "$probe_token" ] && [ -n "$token_file" ] && [ "${token_file#/run/secrets/}" != "$token_file" ] && [ -f "$token_file" ]; then
+    owner=$(stat -c %u "$token_file")
+    if [ "$owner" = 0 ] || [ "$(id -u)" = "$owner" ]; then
+        probe_token=$(cat -- "$token_file")
+    else
+        probe_token=$(setpriv --reuid="$owner" --regid="$(id -g "${TINVAR_CONTAINER_APP_USER:-tinvar-app}")" --clear-groups --inh-caps=-all --no-new-privs -- cat -- "$token_file")
+    fi
+fi
+
 php_probe() {
-    printf '%s' "${TINVAR_PROBE_TOKEN:-}" | setpriv --reuid=nobody --regid=nogroup --clear-groups --inh-caps=-all --no-new-privs -- \
+    printf '%s' "$probe_token" | setpriv --reuid=nobody --regid=nogroup --clear-groups --inh-caps=-all --no-new-privs -- \
         env -i PATH=/usr/local/bin:/usr/bin:/bin XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
         /usr/local/bin/php -n -r '
             $token = trim((string) stream_get_contents(STDIN));

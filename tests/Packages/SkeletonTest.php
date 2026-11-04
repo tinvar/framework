@@ -78,10 +78,17 @@ it('keeps every refusal of the shop\'s container', function () {
         ->toContain('cap_drop: [ALL]')
         ->toContain('cap_add: [SETUID, SETGID, SETPCAP]')
         ->toContain('no-new-privileges:true')
-        ->toContain('TINVAR_APP_KEY: ${APP_KEY:?')
-        ->toContain('TINVAR_PROBE_TOKEN: ${APP_PROBE_TOKEN:?')
+        // Each secret a compose secret, a file in secrets/ the entrypoint
+        // reads; none from .env, which docker inspect would show.
+        ->toContain('TINVAR_APP_KEY_FILE: /run/secrets/app_key')
+        ->toContain('TINVAR_PROBE_TOKEN_FILE: /run/secrets/probe_token')
         // A range pinned is a secret required (ADR 0134).
-        ->toContain('TINVAR_TRUSTED_PROXY_SECRET: ${APP_TRUSTED_PROXY_SECRET:?')
+        ->toContain('TINVAR_TRUSTED_PROXY_SECRET_FILE: /run/secrets/trusted_proxy_secret')
+        ->toContain('secrets: [app_key, probe_token, trusted_proxy_secret]')
+        ->toContain('file: ./secrets/app_key')
+        ->not->toContain('${APP_KEY')
+        ->not->toContain('${APP_PROBE_TOKEN')
+        ->not->toContain('${APP_TRUSTED_PROXY_SECRET')
         ->toContain('TINVAR_PROBE_TRUST_LOOPBACK: "0"')
         ->toContain('"127.0.0.1:8080:8080"')
         ->and($dockerfile)->toContain('TINVAR_ENV=production')
@@ -89,6 +96,8 @@ it('keeps every refusal of the shop\'s container', function () {
         ->toContain('composer install --no-dev')
         ->toContain('npm ci --ignore-scripts')
         ->toContain('ENTRYPOINT ["/usr/local/lib/tinvar/entrypoint"]')
+        // Where compose mounts the secrets: the renderers' user cannot pass.
+        ->toContain('install -d -o 0 -g tinvar-app -m 0710 /run/secrets')
         ->not->toContain('TINVAR_APP_KEY=');
 });
 
@@ -98,7 +107,7 @@ it('ships no secret, and keeps secrets and state out of git and the image', func
     }
 
     foreach (['.gitignore', '.dockerignore'] as $ignore) {
-        expect(read("packages/skeleton/{$ignore}"))->toContain('.env')->toContain('*.key')->toContain('.sqlite');
+        expect(read("packages/skeleton/{$ignore}"))->toContain('.env')->toContain('*.key')->toContain('.sqlite')->toContain('secrets');
     }
     expect(glob(ROOT . '/packages/skeleton/{,*/,*/*/}*.{key,sqlite,pem}', \GLOB_BRACE) ?: [])->toBe([])
         ->and(file_exists(ROOT . '/packages/skeleton/.env'))->toBeFalse();
