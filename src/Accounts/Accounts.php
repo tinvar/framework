@@ -105,6 +105,13 @@ final class Accounts
 
     public const string WRONG_HOST = 'Passkeys work on this app\'s own address. Open it there, then try again.';
 
+    /**
+     * On the field of a change a signed-in session asked for: a revocation
+     * -- a sign-out everywhere, a reset -- ended the session while the
+     * change was under way, and nothing changed.
+     */
+    public const string SESSION_ENDED = 'You were signed out while this was being saved, so nothing changed. Sign in again, then try once more.';
+
     /** On the `confirm` field: the session has not proved it is its owner's in the last five minutes. */
     public const string CONFIRM_FIRST = "Confirm it's you first: type your password, or use a passkey or a code from your authenticator app.";
 
@@ -433,11 +440,12 @@ final class Accounts
     {
         $this->confirmPassword($http, $user, $current, 'currentPassword');
         $hash = $this->passwords->hash($new);
-        $checked = $this->connection->durableTransaction(function () use ($user, $hash): Credentials {
+        $checked = $this->connection->durableTransaction(function () use ($http, $user, $hash): Credentials {
             $this->users->changePassword($user, $hash);
             $this->sessions->endEverywhere($user->authIdentifier());
             $this->epochs->bump($user->authIdentifier());
             $this->credentials->bump($user->authIdentifier());
+            $this->assertSessionStands($http, $user, 'currentPassword');
             $this->record(SecurityEvent::PasswordChanged, $user);
 
             return $this->sessions->credentials($user, $hash);
@@ -664,11 +672,12 @@ final class Accounts
     public function disableTwoFactor(Request $http, AccountUser $user, #[\SensitiveParameter] string $password): void
     {
         $this->confirmPassword($http, $user, $password, 'currentPassword');
-        $checked = $this->connection->durableTransaction(function () use ($user): Credentials {
+        $checked = $this->connection->durableTransaction(function () use ($http, $user): Credentials {
             $this->twoFactor->disable($user->authIdentifier());
             $this->sessions->endEverywhere($user->authIdentifier());
             $this->epochs->bump($user->authIdentifier());
             $this->credentials->bump($user->authIdentifier());
+            $this->assertSessionStands($http, $user, 'currentPassword');
             $this->record(SecurityEvent::TwoFactorDisabled, $user);
 
             return $this->sessions->credentials($user);
@@ -841,13 +850,14 @@ final class Accounts
         if ($name === null) {
             return false;
         }
-        $checked = $this->connection->durableTransaction(function () use ($user, $id): ?Credentials {
+        $checked = $this->connection->durableTransaction(function () use ($http, $user, $id): ?Credentials {
             if (!$this->passkeys->remove($user->authIdentifier(), $id)) {
                 return null;
             }
             $this->sessions->endEverywhere($user->authIdentifier());
             $this->epochs->bump($user->authIdentifier());
             $this->credentials->bump($user->authIdentifier());
+            $this->assertSessionStands($http, $user, 'confirm');
 
             return $this->sessions->credentials($user);
         });
@@ -1018,6 +1028,27 @@ final class Accounts
         $this->signInThrottle->succeeded($http, 'passkey:' . Base64Url::encode($parts['rawId']));
 
         return [$user, $checked];
+    }
+
+    /**
+     * Inside the transaction of a change this session asked for, once the
+     * change has moved the account's credential epoch: refused -- the whole
+     * change rolled back, SESSION_ENDED on $field -- unless it moved the
+     * epoch on from the one the session was held to when this request opened
+     * it. A revocation committed since, a sign-out everywhere or the owner's
+     * reset, ended the session, and the change it asked for would otherwise
+     * move the epoch past that revocation and sign its browser in again: a
+     * thief's new password undoing the owner's reset (ADR 0165). Read after
+     * the change's own move, which holds the epoch's row until the change
+     * commits, so no revocation lands between the two.
+     */
+    private function assertSessionStands(Request $http, AccountUser $user, string $field): void
+    {
+        $state = SessionState::of($http);
+        $from = $state->user()?->authIdentifier() === $user->authIdentifier() ? $state->credentialEpoch() : null;
+        if ($from === null || $this->credentials->of($user->authIdentifier()) !== (string) ((int) $from + 1)) {
+            throw new ValidationException([$field => [self::SESSION_ENDED]]);
+        }
     }
 
     /** A change to how the account signs in -- or a token made for it -- refused unless the session was confirmed in the last five minutes. */

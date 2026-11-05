@@ -1323,7 +1323,7 @@ it('refuses a handoff whose user signed out everywhere after the endpoint read t
         $code = $step($home, HandoffEndpoint::AUTHORIZE, $step($admin, HandoffEndpoint::START, ['return' => '/orders']));
 
         $lookup->then = static fn () => $home->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r));
-        expect(static fn () => $step($admin, HandoffEndpoint::CALLBACK, $code))->toThrow(HttpException::class, 'refused')
+        expect(static fn () => $step($admin, HandoffEndpoint::CALLBACK, $code))->toThrow(HttpException::class, "its user's auth epoch moved while it was being redeemed")
             ->and($lookup->then)->toBeNull()
             ->and(nextRequest($admin))->toBeNull()
             ->and(nextRequest($home))->toBeNull();
@@ -1350,6 +1350,86 @@ it('ends the sign-in a password reset makes when a sign-out everywhere lands onc
         expect($ran())->toBeTrue()
             ->and(nextRequest($asker))->toBeNull()
             ->and(nextRequest($owner))->toBeNull();
+    });
+})->with('drivers');
+
+// A change a signed-in session makes -- a new password, two-factor off, a
+// passkey removed -- is checked against the session the request opened, and
+// signs that browser in again. A revocation committing once the request has
+// begun ended the session, and the change would otherwise move the epoch on
+// past it: the thief's new password undoing the owner's reset.
+
+it('refuses a change of password that a reset elsewhere overtook once the request began, and keeps the reset', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $thief = member($app);
+        $user = $thief->state()->user();
+        \assert($user !== null);
+        // The owner resets the password at another worker, its own account loaded.
+        $worker = new MemberApp($app->orm->connection());
+        $worker->now = $app->now;
+        $owner = new Visitor($worker);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->requestPasswordReset($r, 'ada@example.com'));
+        $worker->work();
+        $token = token($worker->links('password-reset', 'ada@example.com')[0]);
+
+        $ran = between($app, 'SET confirmed_at', static fn () => $owner->do(static fn (Accounts $a, Request $r) => $a->resetPassword($r, $token, 'the owner chose this one')));
+        expect(refused(static fn () => $thief->do(static fn (Accounts $a, Request $r) => $a->changePassword($r, $user, PASSWORD, 'the thief chose this one'))))->toBe(['currentPassword' => [Accounts::SESSION_ENDED]])
+            ->and($ran())->toBeTrue()
+            ->and(nextRequest($thief))->toBeNull()
+            ->and(nextRequest($owner))->toBe('ada@example.com');
+
+        // The reset stands: the owner's password signs in, and the thief's was never set.
+        $later = new Visitor(new MemberApp($app->orm->connection()));
+        $later->app->now = $app->now;
+        expect(refused(static fn () => $later->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', 'the thief chose this one'))))->toBe(['password' => [Accounts::NO_MATCH]])
+            ->and($later->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', 'the owner chose this one')))->toBe(SignInResult::SignedIn);
+    });
+})->with('drivers');
+
+it('refuses to turn two-factor off for a session a sign-out everywhere ended once the request began', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $owner->confirm();
+        $secret = (string) Base32::decode($owner->do(static fn (Accounts $a, Request $r) => $a->beginTwoFactor($r, $user))['secret']);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->confirmTwoFactor($r, $user, Totp::at($secret, $app->now)));
+
+        // A session that got past the code: the one a thief holds, say.
+        $thief = new Visitor($app);
+        $thief->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        $app->now += Totp::PERIOD;
+        $thief->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, Totp::at($secret, $app->now)));
+
+        $ran = between($app, 'SET confirmed_at', static fn () => $owner->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r)));
+        expect(refused(static fn () => $thief->do(static fn (Accounts $a, Request $r) => $a->disableTwoFactor($r, $user, PASSWORD))))->toBe(['currentPassword' => [Accounts::SESSION_ENDED]])
+            ->and($ran())->toBeTrue()
+            ->and($app->kit->accounts->twoFactorEnabled($user))->toBeTrue()
+            ->and(nextRequest($thief))->toBeNull()
+            ->and(nextRequest($owner))->toBeNull();
+    });
+})->with('drivers');
+
+it('refuses to remove a passkey for a session a sign-out everywhere ended once the request began, and keeps the passkey', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $key = SoftwareAuthenticator::es256();
+        $owner->confirm();
+        $options = $owner->do(static fn (Accounts $a, Request $r) => $a->passkeyRegistrationOptions($r, $user));
+        $passkey = $owner->do(static fn (Accounts $a, Request $r) => $a->registerPasskey($r, $user, credential($key, $key->register((string) Base64Url::decode($options['challenge']))), 'Laptop'));
+
+        // A thief with a session, confirmed with the password it knows.
+        $thief = new Visitor($app);
+        $thief->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        $thief->confirm();
+
+        $ran = between($app, 'FROM passkeys WHERE user_id', static fn () => $owner->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r)));
+        expect(refused(static fn () => $thief->do(static fn (Accounts $a, Request $r) => $a->removePasskey($r, $user, $passkey->id))))->toBe(['confirm' => [Accounts::SESSION_ENDED]])
+            ->and($ran())->toBeTrue()
+            ->and($app->kit->accounts->passkeys($user))->toHaveCount(1)
+            ->and(nextRequest($thief))->toBeNull();
     });
 })->with('drivers');
 

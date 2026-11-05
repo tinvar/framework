@@ -30,6 +30,8 @@ final class SessionState
      * @param AccountUser|null $pending whose password was right, waiting on a second factor
      * @param int|null $confirmedAt when the owner last proved it was them on this session --
      *        a password, a passkey or an authenticator code -- in Unix seconds
+     * @param string|null $credentialEpoch the account's credential epoch the session was held
+     *        to when this request opened it; null signed out
      */
     public function __construct(
         #[\SensitiveParameter]
@@ -39,6 +41,7 @@ final class SessionState
         private string $epoch = '',
         private ?AccountUser $pending = null,
         private ?int $confirmedAt = null,
+        private ?string $credentialEpoch = null,
     ) {}
 
     public static function of(Request $request): self
@@ -73,6 +76,17 @@ final class SessionState
         return $this->confirmedAt;
     }
 
+    /**
+     * The credential epoch the session was held to when this request opened
+     * it: a change the session asks for moves the epoch on from this one, or
+     * a revocation since has ended the session (Accounts, ADR 0165). Null
+     * signed out, and once the session is rotated.
+     */
+    public function credentialEpoch(): ?string
+    {
+        return $this->credentialEpoch;
+    }
+
     /** Called by Sessions when the owner proves it is them. */
     public function confirmed(int $at): void
     {
@@ -87,6 +101,7 @@ final class SessionState
         $this->pending = $pending;
         $this->epoch = '';
         $this->confirmedAt = null;
+        $this->credentialEpoch = null;
     }
 
     /** The cookie the response must set, or null if the session was not rotated. */

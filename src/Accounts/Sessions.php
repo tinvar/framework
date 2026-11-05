@@ -215,7 +215,8 @@ final readonly class Sessions
         // moved the credential epoch, or a new password replaced the hash,
         // and ended it whether or not its row was there to delete.
         $user = \is_scalar($row['user_id']) ? $this->users->find((string) $row['user_id']) : null;
-        if ($user === null || !$this->holds($row['credentials'] ?? null, new Credentials($user->authIdentifier(), self::epoch($row['credential_epoch'] ?? null), $user->accountPasswordHash()))) {
+        $credentialEpoch = self::epoch($row['credential_epoch'] ?? null);
+        if ($user === null || !$this->holds($row['credentials'] ?? null, new Credentials($user->authIdentifier(), $credentialEpoch, $user->accountPasswordHash()))) {
             return $this->ended($cookie, $id, $realm);
         }
 
@@ -231,7 +232,7 @@ final readonly class Sessions
 
         $confirmed = \is_numeric($row['confirmed_at'] ?? null) ? (int) $row['confirmed_at'] : null;
 
-        return new SessionState($id, $realm, $user, $this->epochs->of($user->authIdentifier()), confirmedAt: $confirmed);
+        return new SessionState($id, $realm, $user, $this->epochs->of($user->authIdentifier()), confirmedAt: $confirmed, credentialEpoch: $credentialEpoch);
     }
 
     /**
