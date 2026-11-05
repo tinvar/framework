@@ -1008,7 +1008,7 @@ it('hashes the sign-in decoy as the accounts the policy governs are, leaving out
     $keepingNone = new Passwords(static fn (int $limit): array => [$cheap(), $cheap(), $made]);
 
     expect($cost($mixed->decoy()))->toBe(5)
-        ->and($seededOnly->needsRehash($seededOnly->decoy()))->toBeFalse()
+        ->and($cost($seededOnly->decoy()))->toBe($cost($seededOnly->hash('a password chosen now')))
         ->and($cost($keepingNone->decoy()))->toBe(4);
 });
 
