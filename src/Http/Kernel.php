@@ -1914,7 +1914,7 @@ final class Kernel
             $response = $errorPage ? $this->withErrorPage($request, $response, $respond, $failure) : $response;
             // Whatever answered -- an action, an endpoint, a page, a
             // handoff, an error page -- if it moved who the browser is.
-            $response = $this->revokeLiveIfRebound($request, $response);
+            $response = $this->afterRebound($request, $response);
             // The toolbar draws into the document while the session is still
             // known, before the reset; telemetry ends after it, so what it
             // counts, logs and stamps with X-Request-Id is the response that
@@ -3161,25 +3161,55 @@ final class Kernel
     }
 
     /**
-     * The response, taking away the hub's grant when the request moved who
-     * the browser is, whatever answered it: another user or auth epoch than
-     * the stack first signed in (AuthContext::rebound()), or a session
-     * cookie naming another session. Asked once, around every dispatch,
-     * rather than on each path that runs application code: an endpoint, a
-     * handoff, a test sign-in signs people in and out as well as an action. The hub cannot be told to
-     * forget a grant it gave -- it checks a signature and an expiry -- but
-     * the browser can be told to drop it, so no stream it opens after this
+     * The response, when the request moved who the browser is, whatever
+     * answered it: another user or auth epoch than the stack first signed
+     * in (AuthContext::rebound()), or a session cookie naming another
+     * session. Asked once, around every dispatch, rather than on each path
+     * that runs application code: an endpoint, a handoff, a test sign-in
+     * signs people in and out as well as an action.
+     *
+     * The hub's grant is taken away. The hub cannot be told to forget a
+     * grant it gave -- it checks a signature and an expiry -- but the
+     * browser can be told to drop it, so no stream it opens after this
      * response is let in on the session it no longer has (ADR 0069). The
      * next trade, under the new binding, is the 401 that purges the rest.
+     *
+     * And a redirect that ended the signed-in session the request came with
+     * -- a sign-out, a reset, another account's sign-in link, a role change
+     * -- sends the client router on with a document load, X-Location, not
+     * the client visit X-Redirect asks for: "Client-held data ... is
+     * cleared, with a full page load, on logout, ... role change, ... and
+     * session revocation" (tinvar-spec.md). Followed as a visit, it raced
+     * whatever on the page heard that session end first: the live client's
+     * trade, refused with a 401, interrupted the visit and loaded the page
+     * being left -- a spent link's (ADR 0164). A document load it leaves to
+     * arrive. A sign-in from signed out ended no signed-in session, and
+     * keeps its client visit.
      */
-    private function revokeLiveIfRebound(Request $request, Response $response): Response
+    private function afterRebound(Request $request, Response $response): Response
     {
-        if ($this->live === null) {
+        if (!$this->auth->rebound() && !$this->sessionMoved($request, $response)) {
             return $response;
         }
 
-        if ($this->auth->rebound()) {
-            return $this->live->hub->revoke($response);
+        $redirect = $response->header('x-redirect');
+        if ($response->status === 409 && $redirect !== null && $this->auth->cameSignedIn()) {
+            $response = $response->withoutHeader('x-redirect')->withHeader('x-location', $redirect);
+        }
+
+        return $this->live === null ? $response : $this->live->hub->revoke($response);
+    }
+
+    /**
+     * Whether the cookies the response sets name another session than the
+     * request came with, as the application reads a session -- for its live
+     * updates, or its fragments; false where it gave the Kernel neither.
+     */
+    private function sessionMoved(Request $request, Response $response): bool
+    {
+        $sessionId = $this->live->sessionId ?? $this->support->sessionId ?? null;
+        if ($sessionId === null) {
+            return false;
         }
 
         // The cookies the response sets, over the ones the request came
@@ -3190,19 +3220,17 @@ final class Kernel
             $set[$name] = substr($pair, \strlen($name) + 1);
         }
         if ($set === []) {
-            return $response;
+            return false;
         }
         $after = new Request('GET', '/', cookies: [...$request->cookies, ...$set]);
 
-        return ($this->live->sessionId)($after) === ($this->live->sessionId)($request)
-            ? $response
-            : $this->live->hub->revoke($response);
+        return $sessionId($after) !== $sessionId($request);
     }
 
     /**
      * The response, taking away the hub's grant: for an application that
      * moves a browser to another session outside the pipeline, where
-     * revokeLiveIfRebound() cannot see it -- a session cookie issued in
+     * afterRebound() cannot see it -- a session cookie issued in
      * place of one that no longer verifies, before the request is
      * dispatched with it (ADR 0075). Nothing without a live hub.
      */

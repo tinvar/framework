@@ -159,6 +159,18 @@ final class AuthContext
     }
 
     /**
+     * Whether the first login() of the request signed someone in: the
+     * request came with a signed-in session, whatever it leaves with. A
+     * request that ends it -- a sign-out, a reset, a sign-in as someone
+     * else, a role change -- sends the browser on with a document load
+     * (Kernel, ADR 0164).
+     */
+    public function cameSignedIn(): bool
+    {
+        return $this->first !== null && $this->first[0] !== null;
+    }
+
+    /**
      * @template T
      * @param \Closure(): T $work
      * @return T

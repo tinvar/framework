@@ -1177,6 +1177,15 @@ it('signs in by an emailed link, resets a password by one, signs up and moves to
         ->and($result['reset']['landed'])->toBe('/orders')
         ->and($result['reset']['again'])->toBe("This link won't work")
         ->and($result['reset']['signedInWithIt'])->not->toBe('/sign-in')
+        // Another, used where its customer is signed in, on a page listening
+        // for live updates under the session the reset ends -- FrankenPHP's
+        // hub; php -S has none -- whose trade is refused while the browser is
+        // on its way: sent on to the orders, never back to the spent link's
+        // page (ADR 0164).
+        ->and($result['reset']['signedInListening'])->toBe($server === 'frankenphp' ? 'trading' : 'nothing')
+        ->and($result['reset']['signedInRefused'])->toBe($server === 'frankenphp' ? [419, 401] : [])
+        ->and($result['reset']['signedInLanded'])->toBe('/orders')
+        ->and($result['reset']['signedInHeading'])->toBe('Orders')
         // Made from the sign-up page, then moved to another address (ADR 0162).
         ->and([$result['signUp']['built'], $result['signUp']['addressBuilt']])->toBe(['https://pellwick.test', 'https://pellwick.test'])
         // The name asked with is no heading: a stranger's link would choose it.
