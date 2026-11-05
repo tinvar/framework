@@ -31,12 +31,16 @@ use Tinvar\Accounts\TwoFactor\Base32;
 use Tinvar\Accounts\TwoFactor\Totp;
 use Tinvar\Api\ApiTokens;
 use Tinvar\Api\ArrayApiTokens;
+use Tinvar\Auth\Authenticatable;
 use Tinvar\Auth\AuthContext;
+use Tinvar\Auth\UserLookup;
+use Tinvar\Http\DatabaseNonceStore;
 use Tinvar\Http\HttpException;
 use Tinvar\Http\Request;
 use Tinvar\Http\Response;
 use Tinvar\Identity\Arrival;
 use Tinvar\Identity\EmailLinks;
+use Tinvar\Identity\HandoffCode;
 use Tinvar\Identity\HandoffEndpoint;
 use Tinvar\Identity\Realm;
 use Tinvar\Identity\Realms;
@@ -44,6 +48,7 @@ use Tinvar\Orm\PdoConnection;
 use Tinvar\Orm\Schema\Dialect;
 use Tinvar\Orm\Schema\Schema;
 use Tinvar\Orm\Schema\Table;
+use Tinvar\Support\Signer;
 use Tinvar\Tests\Accounts\Fixtures\MemberApp;
 use Tinvar\Tests\Accounts\Fixtures\Members;
 use Tinvar\Tests\Accounts\Fixtures\SoftwareAuthenticator;
@@ -147,6 +152,76 @@ function onDriver(string $driver, \Closure $test): void
             $pdo->exec('SET SESSION sql_mode = ' . $pdo->quote(\is_string($mode) ? $mode : ''));
         }
     });
+}
+
+/**
+ * Runs $then once, as a request on another worker would, at the first
+ * statement answered outside a transaction from the one naming $after on:
+ * a revocation landing between a sign-in's check and the transaction that
+ * makes its session. The closure returned says whether it ran, so a test
+ * holds the interleaving it meant to make.
+ *
+ * @return \Closure(): bool
+ */
+function between(MemberApp $app, string $after, \Closure $then): \Closure
+{
+    $connection = $app->orm->connection();
+    \assert($connection instanceof PdoConnection);
+    $seen = false;
+    $ran = false;
+    $connection->observeStatements(static function (string $sql) use ($connection, $after, $then, &$seen, &$ran): void {
+        $seen = $seen || str_contains($sql, $after);
+        if (!$seen || $connection->inTransaction()) {
+            return;
+        }
+        $connection->observeStatements(null);
+        $ran = true;
+        $then();
+    });
+
+    return static function () use (&$ran): bool {
+        return $ran;
+    };
+}
+
+/**
+ * Whom $visitor's cookie signs in at its next request, on a worker that
+ * has read nothing yet: a request starts with no account loaded, which the
+ * Visitor's own app, kept from request to request, does not.
+ */
+function nextRequest(Visitor $visitor): ?string
+{
+    $worker = new MemberApp($visitor->app->orm->connection());
+    $worker->now = $visitor->app->now;
+    $fresh = new Visitor($worker, $visitor->host, $visitor->address);
+    $fresh->cookie = $visitor->cookie;
+
+    return $fresh->who();
+}
+
+/** The kit's users as the handoff endpoint reads them, with a moment once it has read an epoch. */
+final class EpochReadFirst implements UserLookup
+{
+    public ?\Closure $then = null;
+
+    public function __construct(private readonly UserLookup $users) {}
+
+    public function find(string $id): ?Authenticatable
+    {
+        return $this->users->find($id);
+    }
+
+    public function epoch(Authenticatable $user): string
+    {
+        $epoch = $this->users->epoch($user);
+        $then = $this->then;
+        $this->then = null;
+        if ($then !== null) {
+            $then();
+        }
+
+        return $epoch;
+    }
 }
 
 /** Signs $email up through the link, and returns the browser, signed in. */
@@ -1114,5 +1189,243 @@ it('records sign-ins, failed and not, sign-outs and each change to how an accoun
             ['auth.email_changed', $id, $id, null],
             ['auth.signed_out_everywhere', $id, $id, null],
         ]);
+    });
+});
+
+// A sign-in checks its credential -- a password, a link, a code, a passkey,
+// a handoff's epoch -- before the transaction that makes its session, and a
+// revocation deletes the rows it sees. One that commits in between used to
+// leave the sign-in a session, for the cookie's twelve hours, that its
+// owner had just ended everywhere. Each revocation lands here as a request
+// on another worker would, between the check and the session.
+
+it('ends a sign-in by password that checked the password a change elsewhere had just replaced', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        // The owner changes the password on another worker, which has its
+        // own account loaded: the thief's worker still holds the old hash.
+        $worker = new MemberApp($app->orm->connection());
+        $worker->now = $app->now;
+        $ownerThere = new Visitor($worker);
+        $ownerThere->cookie = $owner->cookie;
+
+        $thief = new Visitor($app);
+        $ran = between($app, 'FROM "members" WHERE "email"', static function () use ($ownerThere): void {
+            $ownerThere->do(static fn (Accounts $a, Request $r) => $a->changePassword($r, SessionState::of($r)->user() ?? throw new \LogicException('The owner is signed out.'), PASSWORD, 'a new passphrase of the owner'));
+        });
+        $thief->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+
+        expect($ran())->toBeTrue()
+            ->and(nextRequest($thief))->toBeNull()
+            ->and(nextRequest($ownerThere))->toBe('ada@example.com');
+    });
+})->with('drivers');
+
+it('ends a sign-in by an emailed link that a sign-out everywhere overtook once the link was used', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->requestSignInLink($r, 'ada@example.com'));
+        $app->work();
+        $token = token($app->links('sign-in-link', 'ada@example.com')[0]);
+
+        $phone = new Visitor($app);
+        $ran = between($app, 'SET used_at', static fn () => $owner->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r)));
+        $phone->do(static fn (Accounts $a, Request $r) => $a->signInWithLink($r, $token));
+
+        expect($ran())->toBeTrue()
+            ->and(nextRequest($phone))->toBeNull()
+            ->and(nextRequest($owner))->toBeNull();
+    });
+})->with('drivers');
+
+it('refuses a second factor whose sign-in a sign-out everywhere ended once the code was checked', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $owner->confirm();
+        $secret = (string) Base32::decode($owner->do(static fn (Accounts $a, Request $r) => $a->beginTwoFactor($r, $user))['secret']);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->confirmTwoFactor($r, $user, Totp::at($secret, $app->now)));
+
+        $phone = new Visitor($app);
+        $phone->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        $app->now += Totp::PERIOD;
+        $ran = between($app, 'SET last_used_step', static fn () => $owner->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r)));
+
+        expect(refused(static fn () => $phone->do(static fn (Accounts $a, Request $r) => $a->completeSecondFactor($r, Totp::at($secret, $app->now)))))->toBe(['code' => [Accounts::SECOND_FACTOR_EXPIRED]])
+            ->and($ran())->toBeTrue()
+            ->and(nextRequest($phone))->toBeNull();
+    });
+})->with('drivers');
+
+it('ends a sign-in by passkey when that passkey is removed once it was checked', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $key = SoftwareAuthenticator::es256();
+        $owner->confirm();
+        $options = $owner->do(static fn (Accounts $a, Request $r) => $a->passkeyRegistrationOptions($r, $user));
+        $passkey = $owner->do(static fn (Accounts $a, Request $r) => $a->registerPasskey($r, $user, credential($key, $key->register((string) Base64Url::decode($options['challenge']))), 'Laptop'));
+
+        // The thief holds the key; the owner, missing it, removes it.
+        $thief = new Visitor($app);
+        $challenge = (string) Base64Url::decode($thief->do(static fn (Accounts $a, Request $r) => $a->passkeySignInOptions($r))['challenge']);
+        $answer = credential($key, $key->assert($challenge), $passkey->userHandle);
+        $ran = between($app, 'SET sign_count', static fn () => $owner->do(static fn (Accounts $a, Request $r) => $a->removePasskey($r, $user, $passkey->id)));
+        $thief->do(static fn (Accounts $a, Request $r) => $a->signInWithPasskey($r, $answer));
+
+        expect($ran())->toBeTrue()
+            ->and($app->kit->accounts->passkeys($user))->toBe([])
+            ->and(nextRequest($thief))->toBeNull()
+            ->and(nextRequest($owner))->toBe('ada@example.com');
+    });
+})->with('drivers');
+
+it('refuses a handoff whose user signed out everywhere after the endpoint read their epoch, and makes no session for it', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $connection = $app->orm->connection();
+        DatabaseNonceStore::define(new Schema($connection, Dialect::for($connection)), 'handoff_nonces');
+        $kit = $app->kit;
+        $lookup = new EpochReadFirst($kit->lookup);
+        $endpoint = new HandoffEndpoint(
+            realms: new Realms(Realm::platform('https://app.example'), [Realm::platform('https://admin.app.example')]),
+            signer: new Signer(MemberApp::KEY, HandoffCode::PURPOSE),
+            nonces: new DatabaseNonceStore($connection, 'handoff_nonces', durable: true),
+            sessionId: static fn (Request $r): string => $kit->cookie->of($r),
+            auth: $app->auth,
+            orm: $app->orm,
+            users: $lookup,
+            sessions: $kit->arrivals,
+            signIn: static fn (string $next): Response => Response::redirect('/sign-in'),
+            clock: static fn (): int => $app->now,
+        );
+        // One step of the handoff, as the browser $visitor asks it, with
+        // the session opened as the middleware opens it; the query the
+        // step's redirect carries to the next.
+        $step = static function (Visitor $visitor, string $path, array $query) use ($app, $endpoint): array {
+            $request = new Request('GET', $path, ['host' => $visitor->host], query: $query, cookies: [$app->kit->cookie->name => $visitor->cookie], rawQuery: http_build_query($query, '', '&', PHP_QUERY_RFC3986), remoteAddress: $visitor->address);
+            $state = $app->kit->sessions->open($request);
+            $app->auth->login($state->user(), $state->epoch());
+            try {
+                $location = (string) $endpoint->handle($request->withAttribute(SessionState::ATTRIBUTE, $state))->header('location');
+            } finally {
+                $visitor->cookie = $state->replacement() ?? $visitor->cookie;
+                $app->auth->login(null);
+            }
+            parse_str((string) parse_url($location, PHP_URL_QUERY), $next);
+
+            return $next;
+        };
+
+        $home = member($app);
+        $admin = new Visitor($app, 'admin.app.example');
+        $code = $step($home, HandoffEndpoint::AUTHORIZE, $step($admin, HandoffEndpoint::START, ['return' => '/orders']));
+
+        $lookup->then = static fn () => $home->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r));
+        expect(static fn () => $step($admin, HandoffEndpoint::CALLBACK, $code))->toThrow(HttpException::class, 'refused')
+            ->and($lookup->then)->toBeNull()
+            ->and(nextRequest($admin))->toBeNull()
+            ->and(nextRequest($home))->toBeNull();
+    });
+})->with('drivers');
+
+it('ends the sign-in a password reset makes when a sign-out everywhere lands once the reset is made', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        member($app);
+        $asker = new Visitor($app);
+        $asker->do(static fn (Accounts $a, Request $r) => $a->requestPasswordReset($r, 'ada@example.com'));
+        $app->work();
+        $token = token($app->links('password-reset', 'ada@example.com')[0]);
+
+        // The owner, at another browser, signs in with the new password and
+        // ends every session.
+        $owner = new Visitor($app);
+        $ran = between($app, 'SET used_at', static function () use ($owner): void {
+            $owner->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', 'a brand new passphrase'));
+            $owner->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r));
+        });
+        $asker->do(static fn (Accounts $a, Request $r) => $a->resetPassword($r, $token, 'a brand new passphrase'));
+
+        expect($ran())->toBeTrue()
+            ->and(nextRequest($asker))->toBeNull()
+            ->and(nextRequest($owner))->toBeNull();
+    });
+})->with('drivers');
+
+it('holds a session to the credential epoch and password its sign-in was checked against, whoever moved either and when', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $owner = member($app);
+        $user = $owner->state()->user();
+        \assert($user !== null);
+        $sessions = $app->kit->sessions;
+
+        // Checked, then overtaken: a sign-out everywhere commits before the
+        // session is made, and it signs nobody in.
+        $checked = $sessions->credentials($user);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r));
+        $late = new Visitor($app);
+        $late->do(static fn (Accounts $a, Request $r) => $sessions->signIn(SessionState::of($r), $user, $checked));
+        expect(nextRequest($late))->toBeNull();
+
+        // Checked now, it holds -- until the password changes, by the kit or
+        // by the app's own hand.
+        $now = new Visitor($app);
+        $now->do(static fn (Accounts $a, Request $r) => $sessions->signIn(SessionState::of($r), $user, $sessions->credentials($user)));
+        expect(nextRequest($now))->toBe('ada@example.com');
+        $app->orm->connection()->execute('UPDATE members SET password_hash = ?', [password_hash('another passphrase', PASSWORD_BCRYPT, ['cost' => 4])]);
+        expect(nextRequest($now))->toBeNull();
+
+        // Checked against one account, it makes no session for another.
+        $bob = member($app, 'bob@example.com')->state()->user();
+        \assert($bob !== null);
+        expect(static fn () => new Visitor($app)->do(static fn (Accounts $a, Request $r) => $sessions->signIn(SessionState::of($r), $bob, $sessions->credentials($user))))
+            ->toThrow(\LogicException::class);
+    });
+})->with('drivers');
+
+it('keeps every session of an account signed in when its password is rehashed at a sign-in', function (string $driver) {
+    onDriver($driver, function (MemberApp $app): void {
+        $connection = $app->orm->connection();
+        member($app);
+        // Hashed below the policy, as a seeded account or an older policy
+        // left it; signed in where the app keeps such a hash as it is.
+        $connection->execute('UPDATE members SET password_hash = ?', [password_hash(PASSWORD, PASSWORD_BCRYPT, ['cost' => 4])]);
+        $before = $connection->select('SELECT password_hash FROM members')[0]['password_hash'];
+        $seeded = static fn (string $hash): bool => (password_get_info($hash)['options']['cost'] ?? null) === 4;
+        $laptop = new Visitor(new MemberApp($connection, keepHash: $seeded));
+        $laptop->app->now = $app->now;
+        $laptop->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+
+        // Signed in where the policy holds: the hash is replaced, and the
+        // laptop's session, held to the one replaced, goes on.
+        $phone = new Visitor(new MemberApp($connection));
+        $phone->app->now = $app->now;
+        $phone->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+
+        expect($connection->select('SELECT password_hash FROM members')[0]['password_hash'])->not->toBe($before)
+            ->and(nextRequest($laptop))->toBe('ada@example.com')
+            ->and(nextRequest($phone))->toBe('ada@example.com');
+    });
+})->with('drivers');
+
+it('adds the credentials column to a sessions table made before it, and signs nobody in on a row without them', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $connection = $app->orm->connection();
+        $schema = new Schema($connection, Dialect::for($connection));
+        $visitor = member($app);
+        $schema->table('sessions', static function (Table $sessions): void {
+            $sessions->dropColumn('credentials');
+        });
+        expect($schema->hasColumn('sessions', 'credentials'))->toBeFalse();
+
+        Sessions::addCredentials($schema);
+        Sessions::addCredentials($schema);
+        // Made before sessions were held to anything: nobody's, as one a
+        // revocation ended is, and the browser signs in again.
+        expect($schema->hasColumn('sessions', 'credentials'))->toBeTrue()
+            ->and(nextRequest($visitor))->toBeNull();
+        $visitor->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        expect(nextRequest($visitor))->toBe('ada@example.com');
     });
 });

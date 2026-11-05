@@ -130,7 +130,7 @@ final readonly class AccountsKit
         $this->credentials = new CredentialEpochs($connection);
         $this->lookup = new AccountUserLookup($users, $this->epochs);
         $this->tokenHolders = new AccountTokenHolders($users, $this->credentials, $this->epochs);
-        $this->sessions = new Sessions($connection, $this->cookie, $users, $this->epochs, $this->credentials);
+        $this->sessions = new Sessions($connection, $this->cookie, $users, $this->epochs, $this->credentials, $key);
         $this->arrivals = new HandoffArrivals($this->sessions);
         $this->passwords = new Passwords($users->passwordHashes(...), $keepHash);
         $local = $origin !== null && str_starts_with($origin, 'http://');

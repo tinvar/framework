@@ -59,6 +59,11 @@ use Tinvar\Validation\ValidationException;
  *   token, grant, queued job and emailed link minted for it before, and its
  *   credential epoch, which ends its API tokens (CredentialEpochs): the
  *   one moved at every sign-in too, the other on these alone.
+ * - **Every session is held to what its sign-in was checked against** --
+ *   the account's credential epoch, read before the check, and its password
+ *   hash (Credentials, ADR 0165) -- so a revocation that commits while a
+ *   sign-in is under way ends the session the sign-in makes, however late
+ *   its row comes.
  * - **A passkey ceremony** signs a challenge bound to the session that
  *   asked and good once (PasskeyChallenges), for this host as the relying
  *   party, checked in full (WebAuthn).
@@ -188,20 +193,24 @@ final class Accounts
     public function completeSignUp(Request $http, string $token, #[\SensitiveParameter] string $password): AccountUser
     {
         $hash = $this->passwords->hash($password);
-        $user = $this->connection->durableTransaction(function () use ($token, $hash): AccountUser {
+        [$user, $checked] = $this->connection->durableTransaction(function () use ($token, $hash): array {
             $link = $this->links->consume($token, EmailLinks::SIGN_UP);
             $email = $link?->data['email'] ?? '';
             if ($link === null || $email === '') {
                 throw new ValidationException(['token' => [self::LINK_REFUSED]]);
             }
             try {
-                return $this->users->create(Emails::normalize($email), $link->data['name'] ?? '', $hash);
+                $user = $this->users->create(Emails::normalize($email), $link->data['name'] ?? '', $hash);
             } catch (EmailTaken) {
                 throw new ValidationException(['token' => [self::ALREADY_REGISTERED]]);
             }
+
+            // What the session is held to, read where the account was made:
+            // its first epoch, and the password just chosen.
+            return [$user, $this->sessions->credentials($user, $hash)];
         });
 
-        $this->sessions->signIn(SessionState::of($http), $user);
+        $this->sessions->signIn(SessionState::of($http), $user, $checked);
         $this->signedIn($user);
 
         return $user;
@@ -243,6 +252,15 @@ final class Accounts
      */
     public function signInWithLink(Request $http, string $token): SignInResult
     {
+        // What the session will be held to, read before the link is used:
+        // its check of the account's epoch is the last a revocation fails,
+        // so one committed after it ends the session made from it. A link
+        // that would not open is refused here, and stays unused.
+        $offered = $this->signInLinkOffer($token);
+        if ($offered === null) {
+            throw new ValidationException(['token' => [self::LINK_REFUSED]]);
+        }
+        $checked = $this->sessions->credentials($offered);
         $user = $this->connection->durableTransaction(function () use ($token): AccountUser {
             $link = $this->links->consume($token, EmailLinks::SIGN_IN);
             $user = $link === null ? null : $this->users->find($link->user);
@@ -253,7 +271,7 @@ final class Accounts
             return $user;
         });
 
-        return $this->enter($http, $user);
+        return $this->enter($http, $user, $checked);
     }
 
     // ------------------------------------------------- signing in and out
@@ -283,12 +301,25 @@ final class Accounts
         $this->signInThrottle->succeeded($http, $email);
 
         // The one moment the password is known: a hash the policy has moved
-        // on from is replaced while it can be.
-        if ($this->passwords->needsRehash($user->accountPasswordHash())) {
-            $this->users->changePassword($user, $this->passwords->hash($password));
+        // on from is replaced while it can be, and the account's sessions
+        // held to the hash replaced are held to the new one.
+        $hash = $user->accountPasswordHash();
+        if ($this->passwords->needsRehash($hash)) {
+            $rehashed = $this->passwords->hash($password);
+            $this->connection->transaction(function () use ($user, $hash, $rehashed): void {
+                $this->users->changePassword($user, $rehashed);
+                $this->sessions->rehashed($user, $hash, $rehashed);
+            });
+            $hash = $rehashed;
         }
 
-        return $this->enter($http, $user);
+        // Held to the hash the password was checked against, the session
+        // ends at a new password, however the two requests met. The epoch is
+        // read once the password is right -- so a wrong one costs what an
+        // unknown address does -- and a revocation before that read changed
+        // nothing a password signs in with: the same password would sign in
+        // just after it.
+        return $this->enter($http, $user, $this->sessions->credentials($user, $hash));
     }
 
     /**
@@ -310,7 +341,11 @@ final class Accounts
         }
         $this->secondFactorThrottle->succeeded($http, $user->authIdentifier());
 
-        $this->sessions->signIn($state, $user);
+        // Held to what the password, or the link, was checked against: a
+        // sign-out everywhere or a new password since has ended the sign-in.
+        if (!$this->sessions->passSecondFactor($state)) {
+            throw new ValidationException(['code' => [self::SECOND_FACTOR_EXPIRED]]);
+        }
         $this->signedIn($user);
 
         return $user;
@@ -365,7 +400,7 @@ final class Accounts
     public function resetPassword(Request $http, string $token, #[\SensitiveParameter] string $password): SignInResult
     {
         $hash = $this->passwords->hash($password);
-        $user = $this->connection->durableTransaction(function () use ($token, $hash): AccountUser {
+        [$user, $checked] = $this->connection->durableTransaction(function () use ($token, $hash): array {
             $link = $this->links->consume($token, EmailLinks::PASSWORD_RESET);
             $user = $link === null ? null : $this->users->find($link->user);
             if ($user === null) {
@@ -378,12 +413,14 @@ final class Accounts
             // In the transaction that sets it: by the link, so as a visitor.
             $this->record(SecurityEvent::PasswordChanged, $user);
 
-            return $user;
+            // What this browser's session is held to: the account as the
+            // reset leaves it, so a revocation after the reset ends it too.
+            return [$user, $this->sessions->credentials($user, $hash)];
         });
 
         $this->jobs->dispatch(new SendAccountMail(AccountMailKind::PasswordChanged, userId: $user->authIdentifier()));
 
-        return $this->enter($http, $user);
+        return $this->enter($http, $user, $checked);
     }
 
     /**
@@ -396,15 +433,17 @@ final class Accounts
     {
         $this->confirmPassword($http, $user, $current, 'currentPassword');
         $hash = $this->passwords->hash($new);
-        $this->connection->durableTransaction(function () use ($user, $hash): void {
+        $checked = $this->connection->durableTransaction(function () use ($user, $hash): Credentials {
             $this->users->changePassword($user, $hash);
             $this->sessions->endEverywhere($user->authIdentifier());
             $this->epochs->bump($user->authIdentifier());
             $this->credentials->bump($user->authIdentifier());
             $this->record(SecurityEvent::PasswordChanged, $user);
+
+            return $this->sessions->credentials($user, $hash);
         });
 
-        $this->sessions->signIn(SessionState::of($http), $user);
+        $this->sessions->signIn(SessionState::of($http), $user, $checked);
         $this->jobs->dispatch(new SendAccountMail(AccountMailKind::PasswordChanged, userId: $user->authIdentifier()));
     }
 
@@ -452,7 +491,7 @@ final class Accounts
      */
     public function confirmEmailChange(Request $http, string $token): AccountUser
     {
-        [$user, $old] = $this->connection->durableTransaction(function () use ($token): array {
+        [$user, $old, $checked] = $this->connection->durableTransaction(function () use ($token): array {
             $link = $this->links->consume($token, EmailLinks::CHANGE_EMAIL);
             $user = $link === null ? null : $this->users->find($link->user);
             $email = $link?->data['email'] ?? '';
@@ -469,13 +508,14 @@ final class Accounts
             $this->epochs->bump($user->authIdentifier());
             $this->credentials->bump($user->authIdentifier());
             $this->record(SecurityEvent::EmailChanged, $user);
+            $user = $this->users->find($user->authIdentifier()) ?? $user;
 
-            return [$this->users->find($user->authIdentifier()) ?? $user, $old];
+            return [$user, $old, $this->sessions->credentials($user)];
         });
 
         $state = SessionState::of($http);
         if ($state->user()?->authIdentifier() === $user->authIdentifier()) {
-            $this->sessions->signIn($state, $user);
+            $this->sessions->signIn($state, $user, $checked);
         }
         $this->jobs->dispatch(new SendAccountMail(AccountMailKind::EmailChanged, $old, userId: $user->authIdentifier()));
 
@@ -624,15 +664,17 @@ final class Accounts
     public function disableTwoFactor(Request $http, AccountUser $user, #[\SensitiveParameter] string $password): void
     {
         $this->confirmPassword($http, $user, $password, 'currentPassword');
-        $this->connection->durableTransaction(function () use ($user): void {
+        $checked = $this->connection->durableTransaction(function () use ($user): Credentials {
             $this->twoFactor->disable($user->authIdentifier());
             $this->sessions->endEverywhere($user->authIdentifier());
             $this->epochs->bump($user->authIdentifier());
             $this->credentials->bump($user->authIdentifier());
             $this->record(SecurityEvent::TwoFactorDisabled, $user);
+
+            return $this->sessions->credentials($user);
         });
 
-        $this->sessions->signIn(SessionState::of($http), $user);
+        $this->sessions->signIn(SessionState::of($http), $user, $checked);
         $this->jobs->dispatch(new SendAccountMail(AccountMailKind::TwoFactorDisabled, userId: $user->authIdentifier()));
     }
 
@@ -767,8 +809,8 @@ final class Accounts
      */
     public function signInWithPasskey(Request $http, string $credential): AccountUser
     {
-        $user = $this->verifyPasskey($http, $credential, PasskeyChallenges::AUTHENTICATE);
-        $this->sessions->signIn(SessionState::of($http), $user);
+        [$user, $checked] = $this->verifyPasskey($http, $credential, PasskeyChallenges::AUTHENTICATE);
+        $this->sessions->signIn(SessionState::of($http), $user, $checked);
         $this->signedIn($user);
 
         return $user;
@@ -799,21 +841,21 @@ final class Accounts
         if ($name === null) {
             return false;
         }
-        $removed = $this->connection->durableTransaction(function () use ($user, $id): bool {
+        $checked = $this->connection->durableTransaction(function () use ($user, $id): ?Credentials {
             if (!$this->passkeys->remove($user->authIdentifier(), $id)) {
-                return false;
+                return null;
             }
             $this->sessions->endEverywhere($user->authIdentifier());
             $this->epochs->bump($user->authIdentifier());
             $this->credentials->bump($user->authIdentifier());
 
-            return true;
+            return $this->sessions->credentials($user);
         });
-        if (!$removed) {
+        if ($checked === null) {
             return false;
         }
 
-        $this->sessions->signIn(SessionState::of($http), $user);
+        $this->sessions->signIn(SessionState::of($http), $user, $checked);
         $this->jobs->dispatch(new SendAccountMail(AccountMailKind::PasskeyRemoved, name: $name, userId: $user->authIdentifier()));
 
         return true;
@@ -912,9 +954,12 @@ final class Accounts
      * verified: the credential found by its id and held to the account
      * handle it was made with -- and, to confirm a session, to $owner's
      * account -- the assertion verified for this host with its user
-     * verified, and its sign count moved on. Its account.
+     * verified, and its sign count moved on. Its account, and what a
+     * session it signs in is held to.
+     *
+     * @return array{AccountUser, Credentials}
      */
-    private function verifyPasskey(Request $http, string $credential, string $purpose, ?AccountUser $owner = null): AccountUser
+    private function verifyPasskey(Request $http, string $credential, string $purpose, ?AccountUser $owner = null): array
     {
         $party = $this->assertRelyingPartyHost($http);
         $state = SessionState::of($http);
@@ -960,12 +1005,19 @@ final class Accounts
             throw $refused($e->getMessage());
         }
         $user = $this->users->find($passkey->userId);
-        if ($user === null || !$this->passkeys->used($passkey, $assertion)) {
+        if ($user === null) {
+            throw $refused();
+        }
+        // What a session will be held to, read before the passkey is used:
+        // that is the last of its checks, the one a removal fails, so a
+        // removal committed after it ends the session made from it.
+        $checked = $this->sessions->credentials($user);
+        if (!$this->passkeys->used($passkey, $assertion)) {
             throw $refused();
         }
         $this->signInThrottle->succeeded($http, 'passkey:' . Base64Url::encode($parts['rawId']));
 
-        return $user;
+        return [$user, $checked];
     }
 
     /** A change to how the account signs in -- or a token made for it -- refused unless the session was confirmed in the last five minutes. */
@@ -976,16 +1028,19 @@ final class Accounts
         }
     }
 
-    /** Signs in, or moves to the second-factor stage where two-factor is on. */
-    private function enter(Request $http, AccountUser $user): SignInResult
+    /**
+     * Signs in, or moves to the second-factor stage where two-factor is on,
+     * held to what the sign-in was checked against.
+     */
+    private function enter(Request $http, AccountUser $user, Credentials $checked): SignInResult
     {
         $state = SessionState::of($http);
         if ($this->twoFactor->enabled($user->authIdentifier())) {
-            $this->sessions->beginSecondFactor($state, $user);
+            $this->sessions->beginSecondFactor($state, $user, $checked);
 
             return SignInResult::SecondFactor;
         }
-        $this->sessions->signIn($state, $user);
+        $this->sessions->signIn($state, $user, $checked);
         $this->signedIn($user);
 
         return SignInResult::SignedIn;

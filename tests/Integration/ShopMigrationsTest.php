@@ -131,6 +131,7 @@ it('makes every table the shop uses, and leaves nothing the models describe for 
         '2026_11_02_000159_index_audit_entries_by_impersonator',
         '2026_11_03_000160_record_when_each_order_moved',
         '2026_11_05_000162_move_accounts_onto_the_accounts_kit',
+        '2026_11_05_000165_add_credentials_to_sessions',
     ])
         ->and(tables($connection))->toBe(TABLES)
         ->and(($generator = new MigrationGenerator($connection, new SqliteDialect()))->generate([Product::class, Customer::class, Order::class, OrderLine::class, Receipt::class], '2026-10-24'))->toBeNull()
@@ -148,9 +149,9 @@ it('rolls all the way back to nothing, and up again', function () {
     $migrator = Migrations::migrator($connection);
     $migrator->migrate();
 
-    expect($migrator->rollback())->toHaveCount(39)
+    expect($migrator->rollback())->toHaveCount(40)
         ->and(tables($connection))->toBe(['tinvar_migrations'])
-        ->and($migrator->migrate())->toHaveCount(39)
+        ->and($migrator->migrate())->toHaveCount(40)
         ->and(tables($connection))->toBe(TABLES);
 });
 
@@ -177,7 +178,7 @@ it('adopts a database built before the shop had migrations, and keeps what is in
 
     $ran = Migrations::migrate($connection);
 
-    expect($ran)->toHaveCount(39)
+    expect($ran)->toHaveCount(40)
         ->and(tables($connection))->toBe(TABLES)
         ->and($connection->select('SELECT name FROM customers'))->toBe([['name' => 'Ada']])
         // The account's time, written to the second as the shop wrote it,
@@ -193,14 +194,14 @@ it('rewrites the times the shop wrote to the second as the ORM writes them, and 
     $connection = PdoConnection::sqlite(database(), create: true);
     $migrator = Migrations::migrator($connection);
     $migrator->migrate();
-    $migrator->rollback(12);
+    $migrator->rollback(13);
     $connection->execute("INSERT INTO customers (id, email, name, password_hash, created_at) VALUES ('c1', 'ada@shop.test', 'Ada', 'x', '2026-01-01T09:30:00Z')");
     $connection->execute("INSERT INTO customers (id, email, name, password_hash, created_at) VALUES ('c2', 'bo@shop.test', 'Bo', 'x', '2026-01-01T09:30:00.250000Z')");
     $connection->execute("INSERT INTO orders (id, number, customer_id, status, placed_at, subtotal_cents, shipping_cents, total_cents) VALUES ('o1', 'PW-1', 'c1', 'placed', '2026-01-02T10:00:00Z', 1, 0, 1)");
 
     $migrator->migrate();
     $up = [$connection->select('SELECT created_at FROM customers ORDER BY created_at'), $connection->select('SELECT placed_at FROM orders')];
-    $migrator->rollback(12);
+    $migrator->rollback(13);
     $down = $connection->select('SELECT created_at FROM customers ORDER BY created_at');
     $migrator->migrate();
 
@@ -220,7 +221,7 @@ it('rewrites the marketing and newsletter times the shop wrote to the second as 
     $connection = PdoConnection::sqlite(database(), create: true);
     $migrator = Migrations::migrator($connection);
     $migrator->migrate();
-    $migrator->rollback(10);
+    $migrator->rollback(11);
     $connection->execute("INSERT INTO customers (id, email, name, password_hash, created_at) VALUES ('c1', 'ada@shop.test', 'Ada', 'x', '2026-01-01T09:30:00.000000Z')");
     $connection->execute("INSERT INTO marketing_preferences (customer_id, list, subscribed, updated_at) VALUES ('c1', 'newsletter', 1, '2026-01-01T09:31:00Z')");
     $connection->execute("INSERT INTO marketing_opt_ins (id, customer_id, list, address, source, requested_at, confirmed_at) VALUES ('o1', 'c1', 'newsletter', 'ada@shop.test', 'seed', '2026-01-01T09:30:00Z', NULL)");
@@ -232,7 +233,7 @@ it('rewrites the marketing and newsletter times the shop wrote to the second as 
         $connection->select('SELECT requested_at, confirmed_at FROM marketing_opt_ins'),
         $connection->select('SELECT queued_at FROM newsletter_issues'),
     ];
-    $migrator->rollback(10);
+    $migrator->rollback(11);
     $down = $connection->select('SELECT updated_at FROM marketing_preferences');
     $migrator->migrate();
 
@@ -252,7 +253,7 @@ it('gives an uploads table made before uploads had an owner one, counting by it'
     $connection = PdoConnection::sqlite(database(), create: true);
     $migrator = Migrations::migrator($connection);
     $migrator->migrate();
-    $migrator->rollback(31);
+    $migrator->rollback(32);
 
     $columns = array_column($connection->select('SELECT name FROM pragma_table_info(?)', ['uploads']), 'name');
     $owner = array_values(array_filter(new SqliteDialect()->indexes($connection, 'uploads'), static fn (array $i): bool => $i['name'] === 'uploads_owner'));
@@ -291,6 +292,7 @@ it('gives an uploads table made before uploads had an owner one, counting by it'
         '2026_11_02_000159_index_audit_entries_by_impersonator',
         '2026_11_03_000160_record_when_each_order_moved',
         '2026_11_05_000162_move_accounts_onto_the_accounts_kit',
+        '2026_11_05_000165_add_credentials_to_sessions',
     ]);
 
     $columns = array_column($connection->select('SELECT name FROM pragma_table_info(?)', ['uploads']), 'name');
@@ -308,26 +310,42 @@ it('keeps every epoch and ends every session as the accounts move onto the kit, 
     $connection = PdoConnection::sqlite(database(), create: true);
     $migrator = Migrations::migrator($connection);
     $migrator->migrate();
-    $migrator->rollback(1);
+    $migrator->rollback(2);
     $connection->execute("INSERT INTO customers (id, email, name, password_hash, created_at) VALUES ('c1', 'ada@shop.test', 'Ada', 'x', '2026-01-01T09:30:00.000000Z')");
     $connection->execute("INSERT INTO auth_epochs (customer_id, epoch) VALUES ('c1', 7)");
     $connection->execute("INSERT INTO credential_epochs (customer_id, epoch) VALUES ('c1', 3)");
     $connection->execute("INSERT INTO sessions (id, customer_id, realm, created_at, last_seen_at, expires_at, handoff_redemption) VALUES ('h', 'c1', 'localhost', 1, 1, 9999999999, '')");
     $columns = static fn (string $table): array => array_column($connection->select('SELECT name FROM pragma_table_info(?)', [$table]), 'name');
 
-    expect($migrator->migrate())->toBe(['2026_11_05_000162_move_accounts_onto_the_accounts_kit'])
+    expect($migrator->migrate())->toBe(['2026_11_05_000162_move_accounts_onto_the_accounts_kit', '2026_11_05_000165_add_credentials_to_sessions'])
         ->and($connection->select('SELECT user_id, epoch FROM auth_epochs'))->toBe([['user_id' => 'c1', 'epoch' => 7]])
         ->and($connection->select('SELECT user_id, epoch FROM credential_epochs'))->toBe([['user_id' => 'c1', 'epoch' => 3]])
         ->and($connection->select('SELECT COUNT(*) AS n FROM sessions'))->toBe([['n' => 0]])
-        ->and($columns('sessions'))->toBe(['id', 'user_id', 'realm', 'stage', 'created_at', 'last_seen_at', 'expires_at', 'confirmed_at', 'handoff_redemption'])
+        ->and($columns('sessions'))->toBe(['id', 'user_id', 'realm', 'stage', 'created_at', 'last_seen_at', 'expires_at', 'confirmed_at', 'handoff_redemption', 'credentials'])
         ->and(array_intersect(['passkeys', 'passkey_challenges', 'two_factor_secrets', 'recovery_codes'], tables($connection)))->toHaveCount(4);
 
-    $migrator->rollback(1);
+    $migrator->rollback(2);
 
     expect($connection->select('SELECT customer_id, epoch FROM auth_epochs'))->toBe([['customer_id' => 'c1', 'epoch' => 7]])
         ->and($connection->select('SELECT customer_id, epoch FROM credential_epochs'))->toBe([['customer_id' => 'c1', 'epoch' => 3]])
         ->and($columns('sessions'))->toBe(['id', 'customer_id', 'created_at', 'last_seen_at', 'expires_at', 'realm', 'handoff_redemption'])
         ->and(array_intersect(['passkeys', 'passkey_challenges', 'two_factor_secrets', 'recovery_codes'], tables($connection)))->toBe([]);
+});
+
+// A database that moved onto the kit before sessions were held to what
+// their sign-in was checked against (ADR 0165) gains the column, and each
+// session in it -- held to nothing -- signs in once more.
+it('gives a sessions table moved onto the kit before it the credentials column, which its sessions lack', function () {
+    $connection = PdoConnection::sqlite(database(), create: true);
+    $migrator = Migrations::migrator($connection);
+    $migrator->migrate();
+    $migrator->rollback(1);
+    $connection->execute('ALTER TABLE sessions DROP COLUMN credentials');
+    $connection->execute("INSERT INTO customers (id, email, name, password_hash, created_at) VALUES ('c1', 'ada@shop.test', 'Ada', 'x', '2026-01-01T09:30:00.000000Z')");
+    $connection->execute("INSERT INTO sessions (id, user_id, realm, stage, created_at, last_seen_at, expires_at) VALUES ('h', 'c1', 'localhost', 'signed-in', 1, 1, 9999999999)");
+
+    expect($migrator->migrate())->toBe(['2026_11_05_000165_add_credentials_to_sessions'])
+        ->and($connection->select('SELECT id, credentials FROM sessions'))->toBe([['id' => 'h', 'credentials' => null]]);
 });
 
 it('runs on what its migrations make: signing in, the epoch moved, and the admin panel asking staff', function () {
@@ -381,8 +399,8 @@ describe('from the command line', function () {
 
         expect([$firstStatus, $status])->toBe([0, 0], "{$firstErr}\n{$err}")
             ->and([$firstOut, $out])->toContain("Nothing to migrate.\n")
-            ->and(implode('', [$firstOut, $out]))->toContain('Ran 39 migration(s).')
-            ->and($connection->select('SELECT COUNT(*) AS n, MAX(batch) AS batch FROM ' . Migrator::TABLE))->toBe([['n' => 39, 'batch' => 1]])
+            ->and(implode('', [$firstOut, $out]))->toContain('Ran 40 migration(s).')
+            ->and($connection->select('SELECT COUNT(*) AS n, MAX(batch) AS batch FROM ' . Migrator::TABLE))->toBe([['n' => 40, 'batch' => 1]])
             ->and(file_exists("{$database}-migrate.lock"))->toBeFalse();
     });
 
@@ -407,7 +425,7 @@ describe('from the command line', function () {
         $connection = PdoConnection::sqlite($database);
 
         expect($status)->toBe(0, $err)
-            ->and($out)->toContain('Dropped every table and ran 39 migration(s).')
+            ->and($out)->toContain('Dropped every table and ran 40 migration(s).')
             ->and($out)->toContain('24 products, 3 customers')
             ->and(Migrations::migrator($connection)->pending())->toBe([])
             ->and($connection->select('SELECT COUNT(*) AS n FROM staff'))->toBe([['n' => 1]]);

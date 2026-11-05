@@ -36,7 +36,10 @@ it('lists the catalog within its budget', #[QueryBudget(4)] function () {
     get('/')->assertOk();
 });
 
-it('lists a customer\'s orders within theirs', #[QueryBudget(11)] function () {
+// The sign-in actingAs() makes counts too, in the request it measures: four
+// statements, the credential epoch its session is held to among them (ADR
+// 0165).
+it('lists a customer\'s orders within theirs', #[QueryBudget(12)] function () {
     $orm = testing()->app->kernel()->orm;
     $customer = $orm->find(Customer::class, (string) $orm->connection()->select('SELECT id FROM customers WHERE email = ?', [DemoAccount::EMAIL])[0]['id']);
     \assert($customer instanceof Customer);

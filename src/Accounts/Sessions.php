@@ -12,6 +12,7 @@ use Tinvar\Orm\NamesDriver;
 use Tinvar\Orm\Schema\Schema;
 use Tinvar\Orm\Schema\Table;
 use Tinvar\Routing\HostMatch;
+use Tinvar\Support\Signer;
 
 /**
  * Server-side sessions, in the `sessions` table, keyed by the signed cookie.
@@ -34,6 +35,14 @@ use Tinvar\Routing\HostMatch;
  * realm, and signs nobody in on any other (ADR 0039): a handoff brings its
  * user to another of the app's hosts under a session of that host's own
  * (arrive(), HandoffArrivals).
+ *
+ * And every session is held to what its sign-in was checked against
+ * (Credentials): the account's credential epoch, which every revocation
+ * moves -- a sign-out everywhere, a new password or address, two-factor
+ * turned off, a passkey removed -- and its password hash. A revocation
+ * deletes the rows it sees; a sign-in checked before it whose row came
+ * after is one it could not see, and signs nobody in from its next request
+ * on, as if deleted (ADR 0165).
  *
  * Generalized from the example shop's, which signs its customers in
  * through it (ADR 0162).
@@ -60,13 +69,22 @@ final readonly class Sessions
      */
     public const int CONFIRMATION_LIFETIME = 300;
 
+    /** What a row's credentials are sealed under, with the app key. */
+    private const string CREDENTIALS_PURPOSE = 'session-credentials';
+
+    private Signer $seals;
+
     public function __construct(
         private Connection $connection,
         private SessionCookie $cookie,
         private AccountUsers $users,
         private AuthEpochs $epochs,
         private CredentialEpochs $credentials,
-    ) {}
+        #[\SensitiveParameter]
+        string $key,
+    ) {
+        $this->seals = new Signer($key, self::CREDENTIALS_PURPOSE);
+    }
 
     /** @param class-string<Model> $userModel */
     public static function define(Schema $schema, string $userModel, bool $ifNotExists = false): void
@@ -88,6 +106,11 @@ final readonly class Sessions
             // its code's redemption (Arrival::$redemption), so a replay of
             // the code ends it. Null for every session a sign-in made.
             $sessions->string('handoff_redemption', 64)->nullable();
+            // What its sign-in was checked against, sealed under the app key
+            // (seal()): the account's credential epoch and password hash
+            // then. Null on a row made before sessions were held to them,
+            // which signs nobody in.
+            $sessions->string('credentials', 64)->nullable();
             $sessions->index(['user_id'], 'sessions_user');
             $sessions->index(['expires_at'], 'sessions_expiry');
             $sessions->index(['handoff_redemption'], 'sessions_handoff');
@@ -125,9 +148,40 @@ final readonly class Sessions
         });
     }
 
+    /**
+     * Adds `credentials` to a sessions table define() made before it had
+     * one; a table that has it is left as it is. No row there has any, so
+     * each signs nobody in, and its browser signs in once more (ADR 0165):
+     * nothing says what the sign-in that made it was checked against.
+     */
+    public static function addCredentials(Schema $schema): void
+    {
+        if ($schema->hasColumn('sessions', 'credentials')) {
+            return;
+        }
+        $schema->table('sessions', static function (Table $sessions): void {
+            $sessions->string('credentials', 64)->nullable();
+        });
+    }
+
     public function cookie(): SessionCookie
     {
         return $this->cookie;
+    }
+
+    /**
+     * What a sign-in of $user is checked against, read now: the account's
+     * credential epoch, and its password hash -- or $passwordHash, where the
+     * password checked has been stored again since, as by a rehash. Read
+     * before the check and handed to the sign-in after it, so a revocation
+     * committed between the two ends the session the sign-in makes, wherever
+     * its row is.
+     */
+    public function credentials(AccountUser $user, #[\SensitiveParameter] ?string $passwordHash = null): Credentials
+    {
+        $id = $user->authIdentifier();
+
+        return new Credentials($id, $this->credentials->of($id), $passwordHash ?? $user->accountPasswordHash());
     }
 
     /**
@@ -146,7 +200,8 @@ final readonly class Sessions
 
         $now = $this->cookie->now();
         $row = $this->connection->select(
-            'SELECT user_id, realm, stage, last_seen_at, expires_at, confirmed_at FROM sessions WHERE id = ?',
+            'SELECT s.user_id, s.realm, s.stage, s.last_seen_at, s.expires_at, s.confirmed_at, s.credentials, c.epoch AS credential_epoch '
+            . 'FROM sessions s LEFT JOIN ' . CredentialEpochs::TABLE . ' c ON c.user_id = s.user_id WHERE s.id = ?',
             [self::hash($id)],
         )[0] ?? null;
 
@@ -156,8 +211,11 @@ final readonly class Sessions
             return $this->ended($cookie, $id, $realm);
         }
 
+        // Held to what its sign-in was checked against: a revocation since
+        // moved the credential epoch, or a new password replaced the hash,
+        // and ended it whether or not its row was there to delete.
         $user = \is_scalar($row['user_id']) ? $this->users->find((string) $row['user_id']) : null;
-        if ($user === null) {
+        if ($user === null || !$this->holds($row['credentials'] ?? null, new Credentials($user->authIdentifier(), self::epoch($row['credential_epoch'] ?? null), $user->accountPasswordHash()))) {
             return $this->ended($cookie, $id, $realm);
         }
 
@@ -244,20 +302,40 @@ final readonly class Sessions
         return filter_var(trim($address, '[]'), FILTER_VALIDATE_IP) === false ? '' : $address;
     }
 
-    /** Binds the session to $user, under a new id, and moves both users' epochs. */
-    public function signIn(SessionState $state, AccountUser $user): void
+    /**
+     * Binds the session to $user, under a new id, held to what their sign-in
+     * was checked against ($checked, from credentials()), and moves both
+     * users' epochs.
+     */
+    public function signIn(SessionState $state, AccountUser $user, Credentials $checked): void
     {
-        $this->rotate($state, $user, SessionStage::SignedIn);
+        $this->rotate($state, $user, SessionStage::SignedIn, $this->sealFor($user, $checked));
     }
 
     /**
-     * Binds the session to $user at the second-factor stage, under a new id:
-     * signed in as nobody until completeSecondFactor(). $user's epoch stays
-     * where it is -- nothing of theirs has been let in yet.
+     * Binds the session to $user at the second-factor stage, under a new id,
+     * held to what their first factor was checked against: signed in as
+     * nobody until passSecondFactor(). $user's epoch stays where it is --
+     * nothing of theirs has been let in yet.
      */
-    public function beginSecondFactor(SessionState $state, AccountUser $user): void
+    public function beginSecondFactor(SessionState $state, AccountUser $user, Credentials $checked): void
     {
-        $this->rotate($state, $user, SessionStage::SecondFactor);
+        $this->rotate($state, $user, SessionStage::SecondFactor, $this->sealFor($user, $checked));
+    }
+
+    /**
+     * Signs in the user whose sign-in waits on its second factor in this
+     * session, its code just checked, under a new id -- held to what the
+     * first factor was checked against, which the waiting row carries.
+     * False when that sign-in has ended since the request began: a sign-out
+     * everywhere or a new password deleted the row, or its ten minutes are
+     * up.
+     */
+    public function passSecondFactor(SessionState $state): bool
+    {
+        $user = $state->pending();
+
+        return $user !== null && $this->rotate($state, $user, SessionStage::SignedIn, promote: true) !== null;
     }
 
     /** Ends the session, and starts a new signed-out one -- a cookie, no row -- in its place. */
@@ -278,16 +356,28 @@ final readonly class Sessions
      * else, still moves on. The handoff's redemption is kept with the row,
      * so a replay of its code ends the session (revokeArrival()).
      *
+     * Null when $user's auth epoch is no longer $epoch, the one the
+     * handoff's code was checked at: they signed in or out elsewhere, or a
+     * revocation ended what the code was minted under, since the handoff
+     * endpoint checked it. What the session is held to is read before the
+     * epoch is asked again, so a revocation committed after the endpoint's
+     * check has either moved the epoch by then or ends the session.
+     *
      * @param string $realm the host the handoff arrived at (Arrival::$realm): it must be
      *        the one this request came to, the only one the session will be good on
+     * @param string $epoch the auth epoch the handoff endpoint checked the code's against (Arrival::$epoch)
      */
-    public function arrive(SessionState $state, AccountUser $user, string $realm, string $redemption = ''): string
+    public function arrive(SessionState $state, AccountUser $user, string $realm, string $epoch, string $redemption = ''): ?string
     {
         if ($realm !== $state->realm) {
             throw new \LogicException('A handoff arrives into the session of the host it names; this request came to another.');
         }
+        $checked = $this->credentials($user);
+        if ($this->epochs->of($user->authIdentifier()) !== $epoch) {
+            return null;
+        }
 
-        return $this->rotate($state, $user, SessionStage::SignedIn, moveEpoch: false, redemption: $redemption);
+        return $this->rotate($state, $user, SessionStage::SignedIn, $this->sealFor($user, $checked), moveEpoch: false, redemption: $redemption);
     }
 
     /**
@@ -334,24 +424,51 @@ final readonly class Sessions
     }
 
     /**
+     * Holds $user's sessions that are held to the password hash a rehash
+     * replaced -- the same password, hashed as the policy asks now -- to the
+     * new one, inside the transaction that stores it, so a rehash at a
+     * sign-in signs none of their other devices out. Those held to an epoch
+     * moved since were ended, and stay so.
+     */
+    public function rehashed(AccountUser $user, #[\SensitiveParameter] string $from, #[\SensitiveParameter] string $to): void
+    {
+        if (!$this->connection->inTransaction()) {
+            throw new \LogicException('Sessions follow a rehash inside the transaction that stores it.');
+        }
+        $id = $user->authIdentifier();
+        $epoch = $this->credentials->of($id);
+        $this->connection->execute(
+            'UPDATE sessions SET credentials = ? WHERE user_id = ? AND credentials = ?',
+            [$this->seal(new Credentials($id, $epoch, $to)), $id, $this->seal(new Credentials($id, $epoch, $from))],
+        );
+    }
+
+    /**
      * A test's session for $user, with no password asked: the cookie value
      * a browser signed in on $request's host would send.
      */
     public function signedInCookie(AccountUser $user, Request $request): string
     {
         $state = new SessionState('', self::realmOf($request));
-        $this->signIn($state, $user);
+        $this->signIn($state, $user, $this->credentials($user));
 
         return $state->replacement() ?? throw new \LogicException('Signing in made no session.');
     }
 
     /**
+     * @param string|null $seal what the new row is held to (seal()): null for a sign-out, and for a
+     *        second factor passed, which carries over the waiting row's ($promote)
+     * @param bool $promote whether the new row takes the place of $user's second-factor row in this
+     *        session, which must still be there
      * @param bool $moveEpoch whether $user moves to a new epoch; a handoff's arrival does not (arrive())
      * @param string $redemption the handoff code that started the session, hashed (revokeArrival())
-     * @return string the new session id
+     * @return string|null the new session id; null when the second-factor row to promote has gone
      */
-    private function rotate(SessionState $state, ?AccountUser $user, SessionStage $stage, bool $everywhere = false, bool $moveEpoch = true, string $redemption = ''): string
+    private function rotate(SessionState $state, ?AccountUser $user, SessionStage $stage, ?string $seal = null, bool $promote = false, bool $everywhere = false, bool $moveEpoch = true, string $redemption = ''): ?string
     {
+        if ($user !== null && $seal === null && !$promote) {
+            throw new \LogicException('A session is made held to what its sign-in was checked against.');
+        }
         $now = $this->cookie->now();
         // Minted signed in whenever a row stands behind it, so a cookie
         // whose row is later deleted is known for one the server ended.
@@ -366,7 +483,21 @@ final readonly class Sessions
         $connection = $this->connection;
         $epochs = $this->epochs;
         $credentials = $this->credentials;
-        $connection->durableTransaction(static function () use ($connection, $epochs, $credentials, $state, $user, $stage, $everywhere, $moveEpoch, $redemption, $id, $now, $expires): void {
+        $made = $connection->durableTransaction(static function () use ($connection, $epochs, $credentials, $state, $user, $stage, $seal, $promote, $everywhere, $moveEpoch, $redemption, $id, $now, $expires): bool {
+            // A second factor passed carries over what the first was checked
+            // against, from the row that waited for it: gone -- a sign-out
+            // everywhere, a new password, its ten minutes up -- and there is
+            // nobody to sign in.
+            if ($promote) {
+                $seal = $connection->select(
+                    'SELECT credentials FROM sessions WHERE id = ? AND realm = ? AND user_id = ? AND stage = ? AND expires_at > ?',
+                    [self::hash($state->id), $state->realm, $user?->authIdentifier(), SessionStage::SecondFactor->value, $now],
+                )[0]['credentials'] ?? null;
+                if (!\is_string($seal)) {
+                    return false;
+                }
+            }
+
             // This host's row alone: an id presented on the wrong host is not
             // that host's to end.
             if ($state->id !== '') {
@@ -388,7 +519,7 @@ final readonly class Sessions
                 }
             }
             if ($user === null) {
-                return;
+                return true;
             }
             if ($moveEpoch && $stage === SessionStage::SignedIn && !$same) {
                 $epochs->bump($user->authIdentifier());
@@ -398,9 +529,9 @@ final readonly class Sessions
             // with one host signs in on a table made before the column was.
             $connection->execute(
                 $redemption === ''
-                    ? 'INSERT INTO sessions (id, user_id, realm, stage, created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-                    : 'INSERT INTO sessions (id, user_id, realm, stage, created_at, last_seen_at, expires_at, handoff_redemption) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                [self::hash($id), $user->authIdentifier(), $state->realm, $stage->value, $now, $now, $expires, ...($redemption === '' ? [] : [$redemption])],
+                    ? 'INSERT INTO sessions (id, user_id, realm, stage, created_at, last_seen_at, expires_at, credentials) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+                    : 'INSERT INTO sessions (id, user_id, realm, stage, created_at, last_seen_at, expires_at, credentials, handoff_redemption) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [self::hash($id), $user->authIdentifier(), $state->realm, $stage->value, $now, $now, $expires, $seal, ...($redemption === '' ? [] : [$redemption])],
             );
 
             // In the insert's own transaction, so it costs no second turn at
@@ -413,11 +544,48 @@ final readonly class Sessions
                     : 'DELETE FROM sessions WHERE id IN (SELECT id FROM sessions WHERE expires_at <= ? LIMIT ' . self::SWEEP_BATCH . ')',
                 [$now],
             );
+
+            return true;
         });
+        if (!$made) {
+            return null;
+        }
 
         $state->replaceWith($cookie, $stage === SessionStage::SignedIn ? $user : null, $stage === SessionStage::SecondFactor ? $user : null);
 
         return $id;
+    }
+
+    /** $checked, sealed, for a session of $user's: refused when it was read for another account. */
+    private function sealFor(AccountUser $user, Credentials $checked): string
+    {
+        if ($checked->user !== $user->authIdentifier()) {
+            throw new \LogicException('A session is held to what its own account\'s sign-in was checked against, never another account\'s.');
+        }
+
+        return $this->seal($checked);
+    }
+
+    /**
+     * $credentials under the app key: what a row keeps, so a copy of the
+     * table says nothing of an account's password, and nobody without the
+     * key can make a row's credentials match an account's.
+     */
+    private function seal(Credentials $credentials): string
+    {
+        return Signer::encode($this->seals->sign(json_encode([$credentials->user, $credentials->epoch, $credentials->passwordHash], JSON_THROW_ON_ERROR)));
+    }
+
+    /** Whether a row's sealed credentials are $now's: the account's as they stand. */
+    private function holds(mixed $sealed, Credentials $now): bool
+    {
+        return \is_string($sealed) && hash_equals($this->seal($now), $sealed);
+    }
+
+    /** A credential epoch as the database answered it -- an integer, a numeric string, or null for none -- as CredentialEpochs::of() spells it. */
+    private static function epoch(mixed $value): string
+    {
+        return (string) (\is_int($value) || \is_string($value) ? $value : 0);
     }
 
     private static function hash(#[\SensitiveParameter] string $id): string

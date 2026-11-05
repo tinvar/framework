@@ -141,11 +141,12 @@ it('lists every customer\'s newest orders, with whose each is', function () {
 
                 return $placed === $sorted;
             }))
-        // Two for the panel's membership, the session and the loader's
-        // three -- the page, its orders' customers in one statement, the
-        // orders by status: a loader that started reading each order's
-        // customer alone would blow it.
-        ->assertQueryBudget(13);
+        // Two for the panel's membership, the session -- its sign-in among
+        // them, which reads the credential epoch it is held to (ADR 0165)
+        // -- and the loader's three: the page, its orders' customers in one
+        // statement, the orders by status. A loader that started reading
+        // each order's customer alone would blow it.
+        ->assertQueryBudget(14);
 });
 
 // The report a GROUP BY reads into typed rows (ADR 0064): each status any

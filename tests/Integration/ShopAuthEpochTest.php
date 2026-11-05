@@ -51,7 +51,7 @@ function shop(): array
     });
     $orm = new Orm($connection, new IdentityMap('shop'));
     $epochs = new AuthEpochs($connection);
-    $sessions = new Sessions($connection, new SessionCookie(KEY, Kernel::SESSION_COOKIE), new Customers($orm), $epochs, new CredentialEpochs($connection));
+    $sessions = new Sessions($connection, new SessionCookie(KEY, Kernel::SESSION_COOKIE), new Customers($orm), $epochs, new CredentialEpochs($connection), KEY);
 
     return [$sessions, $epochs, $orm, new \PDO("sqlite:{$path}")];
 }
@@ -74,7 +74,7 @@ function request(string $cookie): Request
 function signIn(Sessions $sessions, Customer $customer): string
 {
     $state = $sessions->open(request(Kernel::newSession(KEY)));
-    $sessions->signIn($state, $customer);
+    $sessions->signIn($state, $customer, $sessions->credentials($customer));
 
     return (string) $state->replacement();
 }
