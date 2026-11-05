@@ -1179,7 +1179,10 @@ it('signs in by an emailed link, resets a password by one, signs up and moves to
         ->and($result['reset']['signedInWithIt'])->not->toBe('/sign-in')
         // Made from the sign-up page, then moved to another address (ADR 0162).
         ->and([$result['signUp']['built'], $result['signUp']['addressBuilt']])->toBe(['https://pellwick.test', 'https://pellwick.test'])
-        ->and($result['signUp']['heading'])->toBe('Welcome, Newcomer Tester')
+        // The name asked with is no heading: a stranger's link would choose it.
+        ->and($result['signUp']['heading'])->toBe('Finish making your account')
+        ->and($result['signUp']['names'])->toBeTrue()
+        ->and($result['signUp']['warns'])->toBeTrue()
         ->and($result['signUp']['landed'])->toBe('/orders')
         ->and($result['signUp']['addressHeading'])->toBe('Use this address?')
         ->and($result['signUp']['moved'])->toBeTrue()
