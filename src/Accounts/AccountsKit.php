@@ -9,6 +9,7 @@ use Tinvar\Accounts\Passkeys\PasskeyStore;
 use Tinvar\Accounts\Passkeys\RelyingParty;
 use Tinvar\Accounts\TwoFactor\TwoFactorStore;
 use Tinvar\Api\TokenHolderLookup;
+use Tinvar\Audit\AuditLog;
 use Tinvar\Auth\Authenticatable;
 use Tinvar\Auth\AuthContext;
 use Tinvar\Auth\UserLookup;
@@ -94,6 +95,9 @@ final readonly class AccountsKit
      * @param (\Closure(string): bool)|null $keepHash whether a stored hash is kept as it is
      *        though the policy has moved on (Passwords): a seeded demo account's, hashed
      *        cheaply on purpose, say; none by default
+     * @param AuditLog|null $audit where every sign-in, failed and not, every sign-out and
+     *        every change to how an account signs in is recorded, about that account
+     *        (ADR 0156); nowhere unless given
      */
     public function __construct(
         Connection $connection,
@@ -115,6 +119,7 @@ final readonly class AccountsKit
         ?\Closure $clock = null,
         ?Realms $realms = null,
         ?\Closure $keepHash = null,
+        ?AuditLog $audit = null,
     ) {
         $this->paths = $paths;
         $this->cookie = new SessionCookie($key, $cookieName, $clock);
@@ -170,6 +175,8 @@ final readonly class AccountsKit
             relyingParty: $origin === null ? null : RelyingParty::forOrigin($origin, $name),
             key: $key,
             issuer: $name,
+            audit: $audit,
+            auth: $auth,
         );
     }
 

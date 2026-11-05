@@ -78,10 +78,13 @@ final class Visitor
     {
         $request = $this->request();
         $state = $this->app->kit->sessions->open($request);
+        // Signed in for the request as StartSession signs it in.
+        $this->app->auth->login($state->user(), $state->epoch());
         try {
             return $work($this->app->kit->accounts, $request->withAttribute(SessionState::ATTRIBUTE, $state));
         } finally {
             $this->cookie = $state->replacement() ?? $this->cookie;
+            $this->app->auth->login(null);
         }
     }
 
@@ -1004,5 +1007,54 @@ it('makes and opens no link, sends no account email and starts no passkey ceremo
         $none->work();
         expect($none->mail->sent)->toBe([])
             ->and($visitor->who())->toBe('ada@example.com');
+    });
+});
+
+it('records sign-ins, failed and not, sign-outs and each change to how an account signs in, in the audit log it is given', function () {
+    onDriver('sqlite', function (MemberApp $plain): void {
+        $connection = $plain->orm->connection();
+        $app = new MemberApp($connection, audit: true);
+        $rows = static fn (): array => array_map(
+            static fn (array $row): array => [$row['event'], $row['actor_id'], $row['subject_id'], $row['data']],
+            $connection->select('SELECT event, actor_id, subject_id, data FROM audit_entries ORDER BY sequence'),
+        );
+
+        $ada = member($app);
+        $user = $ada->state()->user();
+        \assert($user !== null);
+        $id = $user->authIdentifier();
+        $stranger = new Visitor($app);
+        refused(static fn () => $stranger->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', 'not the password at all')));
+        refused(static fn () => $stranger->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'nobody@example.com', 'not the password at all')));
+        $stranger->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD));
+        $stranger->do(static fn (Accounts $a, Request $r) => $a->signOut($r));
+        $ada->do(static fn (Accounts $a, Request $r) => $a->changePassword($r, $user, PASSWORD, 'another long passphrase'));
+        $ada->do(static fn (Accounts $a, Request $r) => $a->requestPasswordReset($r, 'ada@example.com'));
+        $app->work();
+        $reset = new Visitor($app);
+        $reset->do(static fn (Accounts $a, Request $r) => $a->resetPassword($r, token($app->links('password-reset', 'ada@example.com')[0]), PASSWORD));
+        $reset->do(static fn (Accounts $a, Request $r) => $a->requestEmailChange($r, $user, 'ada@new.example', PASSWORD));
+        $app->work();
+        $reset->do(static fn (Accounts $a, Request $r) => $a->confirmEmailChange($r, token($app->links('email-change', 'ada@new.example')[0])));
+        $reset->do(static fn (Accounts $a, Request $r) => $a->signOutEverywhere($r));
+
+        expect($rows())->toBe([
+            // The sign-up's sign-in, as the account it made.
+            ['auth.signed_in', $id, $id, null],
+            // In the account's log where there is one, by the address tried, as nobody.
+            ['auth.sign_in_failed', null, $id, '{"email":"ada@example.com"}'],
+            ['auth.sign_in_failed', null, null, '{"email":"nobody@example.com"}'],
+            ['auth.signed_in', $id, $id, null],
+            ['auth.signed_out', $id, $id, null],
+            ['auth.password_changed', $id, $id, null],
+            // On the worker, once its email went.
+            ['auth.password_reset_requested', null, $id, null],
+            // By the link, so as a visitor; then the sign-in after it.
+            ['auth.password_changed', null, $id, null],
+            ['auth.signed_in', $id, $id, null],
+            // By the link, which the browser it reached may open signed in or not.
+            ['auth.email_changed', $id, $id, null],
+            ['auth.signed_out_everywhere', $id, $id, null],
+        ]);
     });
 });

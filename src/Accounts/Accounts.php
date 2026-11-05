@@ -18,12 +18,16 @@ use Tinvar\Accounts\TwoFactor\TwoFactorStore;
 use Tinvar\Api\ApiTokenRefused;
 use Tinvar\Api\ApiTokens;
 use Tinvar\Api\IssuedApiToken;
+use Tinvar\Audit\AuditLog;
+use Tinvar\Audit\SecurityEvent;
+use Tinvar\Auth\AuthContext;
 use Tinvar\Http\Request;
 use Tinvar\Identity\EmailLinks;
 use Tinvar\Jobs\Dispatcher;
 use Tinvar\Mail\Mailer;
 use Tinvar\Mail\SendMail;
 use Tinvar\Orm\Connection;
+use Tinvar\Orm\Model;
 use Tinvar\Validation\ValidationException;
 
 /**
@@ -67,6 +71,9 @@ use Tinvar\Validation\ValidationException;
  *   itself. So a stolen session cookie cannot add a way back in that
  *   outlives it, or take away the owner's, and a passkey added or removed,
  *   or an API token made, is told to the owner by email.
+ * - **What happened is in the audit log**, where the app keeps one (ADR
+ *   0156, 0162): every sign-in, failed and not, every sign-out, and every
+ *   change to how an account signs in, about that account.
  */
 final class Accounts
 {
@@ -123,6 +130,11 @@ final class Accounts
         #[\SensitiveParameter]
         private readonly string $key,
         string $issuer,
+        // Where sign-ins and changes to how an account signs in are recorded,
+        // and who is signed in, to record a sign-in as its account; neither
+        // unless the app keeps an audit log.
+        private readonly ?AuditLog $audit = null,
+        private readonly ?AuthContext $auth = null,
     ) {
         $this->issuer = $issuer;
     }
@@ -189,6 +201,7 @@ final class Accounts
         });
 
         $this->sessions->signIn(SessionState::of($http), $user);
+        $this->signedIn($user);
 
         return $user;
     }
@@ -258,6 +271,12 @@ final class Accounts
         // Checked either way, against a decoy as costly as the accounts, so
         // an unknown email takes what a known one does.
         if (!$this->passwords->verify($password, $user?->accountPasswordHash()) || $user === null) {
+            // In the account's log, where there is one, by the address that
+            // was tried: written though the sign-in fails, since it runs in
+            // no transaction -- and written for an unknown address too, so
+            // the work is the same either way.
+            $this->record(SecurityEvent::SignInFailed, $user, ['email' => $email]);
+
             throw new ValidationException(['password' => [self::NO_MATCH]]);
         }
         $this->signInThrottle->succeeded($http, $email);
@@ -291,18 +310,28 @@ final class Accounts
         $this->secondFactorThrottle->succeeded($http, $user->authIdentifier());
 
         $this->sessions->signIn($state, $user);
+        $this->signedIn($user);
 
         return $user;
     }
 
     public function signOut(Request $http): void
     {
-        $this->sessions->signOut(SessionState::of($http));
+        $state = SessionState::of($http);
+        // In the log of the account signing out, while it is still signed in.
+        if ($state->user() !== null) {
+            $this->record(SecurityEvent::SignedOut, $state->user());
+        }
+        $this->sessions->signOut($state);
     }
 
     public function signOutEverywhere(Request $http): void
     {
-        $this->sessions->signOutEverywhere(SessionState::of($http));
+        $state = SessionState::of($http);
+        if ($state->user() !== null) {
+            $this->record(SecurityEvent::SignedOutEverywhere, $state->user());
+        }
+        $this->sessions->signOutEverywhere($state);
     }
 
     // ------------------------------------------------------------ passwords
@@ -345,6 +374,8 @@ final class Accounts
             $this->sessions->endEverywhere($user->authIdentifier());
             $this->epochs->bump($user->authIdentifier());
             $this->credentials->bump($user->authIdentifier());
+            // In the transaction that sets it: by the link, so as a visitor.
+            $this->record(SecurityEvent::PasswordChanged, $user);
 
             return $user;
         });
@@ -369,6 +400,7 @@ final class Accounts
             $this->sessions->endEverywhere($user->authIdentifier());
             $this->epochs->bump($user->authIdentifier());
             $this->credentials->bump($user->authIdentifier());
+            $this->record(SecurityEvent::PasswordChanged, $user);
         });
 
         $this->sessions->signIn(SessionState::of($http), $user);
@@ -435,6 +467,7 @@ final class Accounts
             $this->sessions->endEverywhere($user->authIdentifier());
             $this->epochs->bump($user->authIdentifier());
             $this->credentials->bump($user->authIdentifier());
+            $this->record(SecurityEvent::EmailChanged, $user);
 
             return [$this->users->find($user->authIdentifier()) ?? $user, $old];
         });
@@ -573,6 +606,7 @@ final class Accounts
             throw new ValidationException(['code' => ["That code didn't match. Type the code your authenticator app shows for this account now."]]);
         }
         $this->secondFactorThrottle->succeeded($http, $user->authIdentifier());
+        $this->record(SecurityEvent::TwoFactorEnabled, $user);
 
         return $codes;
     }
@@ -594,6 +628,7 @@ final class Accounts
             $this->sessions->endEverywhere($user->authIdentifier());
             $this->epochs->bump($user->authIdentifier());
             $this->credentials->bump($user->authIdentifier());
+            $this->record(SecurityEvent::TwoFactorDisabled, $user);
         });
 
         $this->sessions->signIn(SessionState::of($http), $user);
@@ -733,6 +768,7 @@ final class Accounts
     {
         $user = $this->verifyPasskey($http, $credential, PasskeyChallenges::AUTHENTICATE);
         $this->sessions->signIn(SessionState::of($http), $user);
+        $this->signedIn($user);
 
         return $user;
     }
@@ -857,6 +893,14 @@ final class Accounts
         // through its backoff, each try would make another link, for a send
         // that can never succeed.
         SendMail::attempt(fn () => $this->mailer->send($mailable));
+
+        // A reset asked for is in the account's log, written here where the
+        // account is known -- the request that asked answered the same for
+        // every address -- and once its email has gone, so a retry records
+        // it once.
+        if ($job->kind === AccountMailKind::PasswordReset) {
+            $this->record(SecurityEvent::PasswordResetRequested, $this->users->findByEmail($job->email));
+        }
     }
 
     // --------------------------------------------------------------- helpers
@@ -940,8 +984,39 @@ final class Accounts
             return SignInResult::SecondFactor;
         }
         $this->sessions->signIn($state, $user);
+        $this->signedIn($user);
 
         return SignInResult::SignedIn;
+    }
+
+    /** A sign-in in the account's log, as the account it signed in: the request began with nobody. */
+    private function signedIn(AccountUser $user): void
+    {
+        $audit = $this->audit;
+        if ($audit === null) {
+            return;
+        }
+        $subject = $user instanceof Model ? $user : null;
+        if ($this->auth === null) {
+            $audit->security(SecurityEvent::SignedIn, $subject);
+
+            return;
+        }
+        $this->auth->actingAs($user, static function () use ($audit, $subject): void {
+            $audit->security(SecurityEvent::SignedIn, $subject);
+        });
+    }
+
+    /**
+     * $event in the audit log, where the app keeps one, about $user's account
+     * -- its model, where the app's users are models -- as whoever is
+     * signed in.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function record(SecurityEvent $event, ?AccountUser $user, array $data = []): void
+    {
+        $this->audit?->security($event, $user instanceof Model ? $user : null, $data);
     }
 
     /**

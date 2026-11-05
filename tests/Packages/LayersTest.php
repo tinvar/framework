@@ -197,7 +197,7 @@ describe('the modules', function () {
     it('lets a module use the core and jobs, never one beside it, and only the kernel use them all', function () {
         $modules = Layers::modules();
 
-        expect($modules->names())->toBe(['support', 'database', 'queue', ...CORE, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'api', 'accounts', 'audit', 'kernel', 'tenancy', 'billing', 'testing', 'codegen'])
+        expect($modules->names())->toBe(['support', 'database', 'queue', ...CORE, 'jobs', 'events', 'mail', 'webhooks', 'transfers', 'workflows', 'push', 'search', 'notifications', 'calls', 'tools', 'services', 'gateway', 'api', 'audit', 'accounts', 'kernel', 'tenancy', 'billing', 'testing', 'codegen'])
             ->and($modules->mayUse('queue', 'database'))->toBeTrue()
             ->and($modules->mayUse('queue', 'http'))->toBeFalse()
             ->and($modules->mayUse('queue', 'jobs'))->toBeFalse()
@@ -223,6 +223,9 @@ describe('the modules', function () {
             ->and($modules->mayUse('accounts', 'webhooks'))->toBeFalse()
             ->and($modules->mayUse('accounts', 'kernel'))->toBeFalse()
             ->and($modules->mayUse('mail', 'accounts'))->toBeFalse()
+            // ADR 0162: and on the audit log, where it records sign-ins; never the other way.
+            ->and($modules->mayUse('accounts', 'audit'))->toBeTrue()
+            ->and($modules->mayUse('audit', 'accounts'))->toBeFalse()
             // ADR 0098, 0099: workflows on jobs; tools and services on calls,
             // and neither on the other; the gateway's contract on the core.
             ->and($modules->mayUse('workflows', 'jobs'))->toBeTrue()

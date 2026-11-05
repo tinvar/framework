@@ -296,8 +296,11 @@ final class MemberApp
 
     public const string KEY = 'accounts-kit-test-key-of-32-bytes-long!!';
 
-    /** @param (\Closure(string): bool)|null $keepHash */
-    public function __construct(Connection $connection, public readonly ?string $origin = 'https://app.example', ?AccountMails $mails = null, ?\Tinvar\Mail\Transport $transport = null, ?\Closure $keepHash = null)
+    /**
+     * @param (\Closure(string): bool)|null $keepHash
+     * @param bool $audit whether the kit is given an audit log, its tables made here
+     */
+    public function __construct(Connection $connection, public readonly ?string $origin = 'https://app.example', ?AccountMails $mails = null, ?\Tinvar\Mail\Transport $transport = null, ?\Closure $keepHash = null, bool $audit = false)
     {
         $this->now = time();
         $this->orm = new Orm($connection, new IdentityMap($connection->name()));
@@ -306,6 +309,9 @@ final class MemberApp
         $this->mail = new ArrayTransport();
         $jobs = new Dispatcher($this->queue, $this->orm, new Signer(self::KEY, \Tinvar\Jobs\Envelope::PURPOSE), $this->auth);
         $clock = fn (): int => $this->now;
+        if ($audit) {
+            \Tinvar\Audit\AuditTable::define(new Schema($connection, \Tinvar\Orm\Schema\Dialect::for($connection)), ifNotExists: true);
+        }
         $this->kit = new AccountsKit(
             connection: $connection,
             key: self::KEY,
@@ -320,6 +326,7 @@ final class MemberApp
             auth: $this->auth,
             clock: $clock,
             keepHash: $keepHash,
+            audit: $audit ? new \Tinvar\Audit\AuditLog($this->orm, $this->auth, self::KEY) : null,
         );
     }
 
