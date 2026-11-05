@@ -802,6 +802,32 @@ describe('an address in another case', function () {
     });
 });
 
+describe('an account notice', function () {
+    // AccountNotice.tsx draws each after the customer's first name and a
+    // comma -- "Ada, your account's email address is now ..." -- so every
+    // message goes on from there, in lower case.
+    it('says each of its messages on from the customer\'s name', function () {
+        $mails = new \Shop\Mail\Account\AccountMails();
+        $demo = customer($this->kernel, DemoAccount::EMAIL);
+        $reset = ORIGIN . '/password/forgot';
+        $notices = [
+            $mails->alreadyRegistered($demo, ORIGIN . '/sign-in', $reset),
+            $mails->emailChanged($demo, 'old@example.com', $reset),
+            $mails->apiTokenCreated($demo, 'Order export', ORIGIN . '/account/api-tokens', $reset),
+            $mails->passkeyAdded($demo, 'Laptop', ORIGIN . '/account', $reset),
+            $mails->passkeyRemoved($demo, 'Laptop', ORIGIN . '/account', $reset),
+            $mails->twoFactorDisabled($demo, $reset),
+        ];
+
+        foreach ($notices as $notice) {
+            $props = $notice->email()->props;
+            expect($props)->toBeInstanceOf(\Shop\Http\Data\Account\AccountNoticeData::class);
+            \assert($props instanceof \Shop\Http\Data\Account\AccountNoticeData);
+            expect($props->message)->toMatch('/^[a-z]/');
+        }
+    });
+});
+
 describe('drawn by the renderer', function () {
     beforeEach(function () {
         $unbuilt = Shop::ensureBuilt();
