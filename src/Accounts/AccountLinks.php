@@ -25,15 +25,20 @@ use Tinvar\Support\DevMode;
  */
 final readonly class AccountLinks
 {
-    public string $origin;
+    /**
+     * The origin every link is built and opened on; null for an app that has
+     * no https origin of its own -- the example shop on plain http off this
+     * machine -- which builds no link and opens none (ADR 0162).
+     */
+    public ?string $origin;
 
     public function __construct(
         public EmailLinks $links,
-        string $origin,
+        ?string $origin,
         public AccountPaths $paths = new AccountPaths(),
     ) {
-        $this->origin = rtrim($origin, '/');
-        if (BrowserOrigin::hostOf($this->origin, localHttp: true) === null) {
+        $this->origin = $origin === null ? null : rtrim($origin, '/');
+        if ($this->origin !== null && BrowserOrigin::hostOf($this->origin, localHttp: true) === null) {
             throw new \InvalidArgumentException("'{$origin}' is not the app's origin: a scheme and a host, perhaps a port, as https://app.example.");
         }
     }
@@ -77,46 +82,52 @@ final readonly class AccountLinks
     /** Whether the origin is plain http, as only development's can be: EmailLinks must be told. */
     public function local(): bool
     {
-        return str_starts_with($this->origin, 'http://');
+        return $this->origin !== null && str_starts_with($this->origin, 'http://');
     }
 
     /** The URL of the link that makes an account for $email. */
     public function signUp(string $email, string $name): string
     {
-        return $this->links->issue(EmailLinks::SIGN_UP, $this->origin, $this->paths->completeSignUp, '', null, ['email' => $email, 'name' => $name])['url'];
+        return $this->links->issue(EmailLinks::SIGN_UP, $this->linkOrigin(), $this->paths->completeSignUp, '', null, ['email' => $email, 'name' => $name])['url'];
     }
 
     /** The URL of the link that signs $user in, for an app that sends them (SignInLinkMails). */
     public function signIn(AccountUser $user): string
     {
-        return $this->links->issue(EmailLinks::SIGN_IN, $this->origin, $this->paths->signInLink, '', $user)['url'];
+        return $this->links->issue(EmailLinks::SIGN_IN, $this->linkOrigin(), $this->paths->signInLink, '', $user)['url'];
     }
 
     public function passwordReset(AccountUser $user): string
     {
-        return $this->links->issue(EmailLinks::PASSWORD_RESET, $this->origin, $this->paths->resetPassword, '', $user)['url'];
+        return $this->links->issue(EmailLinks::PASSWORD_RESET, $this->linkOrigin(), $this->paths->resetPassword, '', $user)['url'];
     }
 
     public function changeEmail(AccountUser $user, string $email): string
     {
-        return $this->links->issue(EmailLinks::CHANGE_EMAIL, $this->origin, $this->paths->confirmEmail, '', $user, ['email' => $email])['url'];
+        return $this->links->issue(EmailLinks::CHANGE_EMAIL, $this->linkOrigin(), $this->paths->confirmEmail, '', $user, ['email' => $email])['url'];
     }
 
-    /** The link a token is, for $purpose, if it would open now; null otherwise. */
+    /** The link a token is, for $purpose, if it would open now; null otherwise, and always with no origin. */
     public function peek(string $token, string $purpose): ?EmailLink
     {
-        return $token === '' ? null : $this->links->peek($token, $purpose, $this->origin, '');
+        return $token === '' || $this->origin === null ? null : $this->links->peek($token, $purpose, $this->origin, '');
     }
 
-    /** The link a token is, used up by this call; null for every reason it is refused. */
+    /** The link a token is, used up by this call; null for every reason it is refused, and always with no origin. */
     public function consume(string $token, string $purpose): ?EmailLink
     {
-        return $token === '' ? null : $this->links->consume($token, $purpose, $this->origin, '');
+        return $token === '' || $this->origin === null ? null : $this->links->consume($token, $purpose, $this->origin, '');
     }
 
     /** An absolute URL on the origin, for a page with no token. */
     public function page(string $path): string
     {
-        return $this->origin . $path;
+        return $this->linkOrigin() . $path;
+    }
+
+    /** The origin a link is built on; none is a mistake, since nothing asks for a link without one (Accounts::deliver()). */
+    private function linkOrigin(): string
+    {
+        return $this->origin ?? throw new \LogicException('An account link is built on the app\'s origin, and this app has none.');
     }
 }

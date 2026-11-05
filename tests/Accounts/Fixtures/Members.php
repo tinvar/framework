@@ -297,7 +297,7 @@ final class MemberApp
     public const string KEY = 'accounts-kit-test-key-of-32-bytes-long!!';
 
     /** @param (\Closure(string): bool)|null $keepHash */
-    public function __construct(Connection $connection, public readonly string $origin = 'https://app.example', ?AccountMails $mails = null, ?\Tinvar\Mail\Transport $transport = null, ?\Closure $keepHash = null)
+    public function __construct(Connection $connection, public readonly ?string $origin = 'https://app.example', ?AccountMails $mails = null, ?\Tinvar\Mail\Transport $transport = null, ?\Closure $keepHash = null)
     {
         $this->now = time();
         $this->orm = new Orm($connection, new IdentityMap($connection->name()));

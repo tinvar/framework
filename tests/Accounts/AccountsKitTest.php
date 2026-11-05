@@ -975,3 +975,34 @@ it('hands the app the passwords it hashes with, for an account it makes itself',
             ->and($app->kit->passwords->needsRehash($hash))->toBeFalse();
     });
 });
+
+it('makes and opens no link, sends no account email and starts no passkey ceremony for an app with no https origin, and signs in by password', function () {
+    onDriver('sqlite', function (MemberApp $app): void {
+        $owner = member($app);
+        $owner->do(static fn (Accounts $a, Request $r) => $a->requestPasswordReset($r, 'ada@example.com'));
+        $app->work();
+        $made = token($app->links('password-reset', 'ada@example.com')[0]);
+
+        $none = new MemberApp($app->orm->connection(), origin: null);
+        $visitor = new Visitor($none);
+        $visitor->do(static fn (Accounts $a, Request $r) => $a->requestPasswordReset($r, 'ada@example.com'));
+        $visitor->do(static fn (Accounts $a, Request $r) => $a->requestSignUp($r, 'new@example.com', 'New'));
+        $visitor->do(static fn (Accounts $a, Request $r) => $a->requestSignInLink($r, 'ada@example.com'));
+        $none->work();
+        expect($none->mail->sent)->toBe([])
+            ->and($none->kit->accountLinks->origin)->toBeNull()
+            // A link made where there was an origin opens nothing here.
+            ->and($none->kit->accounts->resetOffer($made))->toBeNull()
+            ->and(refused(static fn () => $visitor->do(static fn (Accounts $a, Request $r) => $a->resetPassword($r, $made, 'a brand new passphrase'))))->toBe(['token' => [Accounts::LINK_REFUSED]])
+            ->and(refused(static fn () => $visitor->do(static fn (Accounts $a, Request $r) => $a->passkeySignInOptions($r))))->toBe(['credential' => [Accounts::WRONG_HOST]])
+            ->and($visitor->do(static fn (Accounts $a, Request $r) => $a->signIn($r, 'ada@example.com', PASSWORD)))->toBe(SignInResult::SignedIn);
+
+        // A change the owner is told of by email is still made, and nothing is sent.
+        $user = $visitor->state()->user();
+        \assert($user !== null);
+        $visitor->do(static fn (Accounts $a, Request $r) => $a->changePassword($r, $user, PASSWORD, 'a brand new passphrase'));
+        $none->work();
+        expect($none->mail->sent)->toBe([])
+            ->and($visitor->who())->toBe('ada@example.com');
+    });
+});

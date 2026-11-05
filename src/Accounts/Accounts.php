@@ -118,7 +118,8 @@ final class Accounts
         private readonly TwoFactorStore $twoFactor,
         private readonly PasskeyStore $passkeys,
         private readonly PasskeyChallenges $challenges,
-        private readonly RelyingParty $relyingParty,
+        // Null where the app has no https origin: then no ceremony starts.
+        private readonly ?RelyingParty $relyingParty,
         #[\SensitiveParameter]
         private readonly string $key,
         string $issuer,
@@ -493,12 +494,12 @@ final class Accounts
      */
     public function passkeyConfirmationOptions(Request $http, AccountUser $user): array
     {
-        $this->assertRelyingPartyHost($http);
+        $party = $this->assertRelyingPartyHost($http);
         $challenge = $this->challenges->issue(SessionState::of($http)->id, PasskeyChallenges::CONFIRM, $user->authIdentifier());
 
         return [
             'challenge' => Base64Url::encode($challenge),
-            'rpId' => $this->relyingParty->id,
+            'rpId' => $party->id,
             'userVerification' => 'required',
             'timeout' => PasskeyChallenges::LIFETIME * 1000,
             'allowCredentials' => array_map(
@@ -634,13 +635,13 @@ final class Accounts
      */
     public function passkeyRegistrationOptions(Request $http, AccountUser $user): array
     {
-        $this->assertRelyingPartyHost($http);
+        $party = $this->assertRelyingPartyHost($http);
         $this->assertRecentlyConfirmed($http);
         $challenge = $this->challenges->issue(SessionState::of($http)->id, PasskeyChallenges::REGISTER, $user->authIdentifier());
 
         return [
             'challenge' => Base64Url::encode($challenge),
-            'rp' => ['id' => $this->relyingParty->id, 'name' => $this->relyingParty->name],
+            'rp' => ['id' => $party->id, 'name' => $party->name],
             'user' => [
                 'id' => Base64Url::encode($this->userHandle($user)),
                 'name' => $user->accountEmail(),
@@ -665,7 +666,7 @@ final class Accounts
      */
     public function registerPasskey(Request $http, AccountUser $user, string $credential, string $name): Passkey
     {
-        $this->assertRelyingPartyHost($http);
+        $party = $this->assertRelyingPartyHost($http);
         $this->assertRecentlyConfirmed($http);
         $challenge = $this->challenges->consume(SessionState::of($http)->id, PasskeyChallenges::REGISTER, $user->authIdentifier());
         if ($challenge === null) {
@@ -677,7 +678,7 @@ final class Accounts
 
         try {
             $parts = self::credential($credential, ['clientDataJSON', 'attestationObject']);
-            $verified = new WebAuthn($this->relyingParty)->verifyRegistration($parts['clientDataJSON'], $parts['attestationObject'], $challenge);
+            $verified = new WebAuthn($party)->verifyRegistration($parts['clientDataJSON'], $parts['attestationObject'], $challenge);
             if (!hash_equals($verified->credentialId, $parts['rawId'])) {
                 throw new PasskeyRefused('malformed');
             }
@@ -710,12 +711,12 @@ final class Accounts
      */
     public function passkeySignInOptions(Request $http): array
     {
-        $this->assertRelyingPartyHost($http);
+        $party = $this->assertRelyingPartyHost($http);
         $challenge = $this->challenges->issue(SessionState::of($http)->id, PasskeyChallenges::AUTHENTICATE);
 
         return [
             'challenge' => Base64Url::encode($challenge),
-            'rpId' => $this->relyingParty->id,
+            'rpId' => $party->id,
             'userVerification' => 'required',
             'timeout' => PasskeyChallenges::LIFETIME * 1000,
             'allowCredentials' => [],
@@ -817,6 +818,11 @@ final class Accounts
      */
     public function deliver(SendAccountMail $job): void
     {
+        // Every account email links to the app, and an app with no https
+        // origin has nowhere to link: nothing is sent.
+        if ($this->links->origin === null) {
+            return;
+        }
         $user = $job->userId === '' ? null : $this->users->find($job->userId);
         $resetPage = $this->links->page($this->links->paths->forgotPassword);
         $minutes = static fn (string $purpose): int => intdiv(EmailLinks::LIFETIMES[$purpose], 60);
@@ -864,7 +870,7 @@ final class Accounts
      */
     private function verifyPasskey(Request $http, string $credential, string $purpose, ?AccountUser $owner = null): AccountUser
     {
-        $this->assertRelyingPartyHost($http);
+        $party = $this->assertRelyingPartyHost($http);
         $state = SessionState::of($http);
         $refused = static fn (string $message = PasskeyRefused::TRY_AGAIN): ValidationException => new ValidationException(['credential' => [$message]]);
         $notThisAccount = 'That passkey is not on this account. Use one you added here, or type your password.';
@@ -896,7 +902,7 @@ final class Accounts
         }
 
         try {
-            $assertion = new WebAuthn($this->relyingParty)->verifyAssertion(
+            $assertion = new WebAuthn($party)->verifyAssertion(
                 $parts['clientDataJSON'],
                 $parts['authenticatorData'],
                 $parts['signature'],
@@ -964,13 +970,17 @@ final class Accounts
     /**
      * A ceremony is for the relying party's host and no other: the session
      * it is bound to is that host's, and an assertion made for it would not
-     * verify for another anyway.
+     * verify for another anyway. An app with no https origin has no relying
+     * party, and starts none.
      */
-    private function assertRelyingPartyHost(Request $http): void
+    private function assertRelyingPartyHost(Request $http): RelyingParty
     {
-        if (!hash_equals($this->relyingParty->host(), Sessions::realmOf($http))) {
+        $party = $this->relyingParty;
+        if ($party === null || !hash_equals($party->host(), Sessions::realmOf($http))) {
             throw new ValidationException(['credential' => [self::WRONG_HOST]]);
         }
+
+        return $party;
     }
 
     /**

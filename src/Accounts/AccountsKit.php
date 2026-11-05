@@ -78,8 +78,10 @@ final readonly class AccountsKit
     /**
      * @param ThrottleStore $throttles where sign-in guesses are counted: one a flood of
      *        other keys cannot clear, so never APCu (SignInThrottle refuses it)
-     * @param string $origin the https origin links are built on and passkeys are for
-     *        (AccountLinks::origin())
+     * @param string|null $origin the https origin links are built on and passkeys are for
+     *        (AccountLinks::origin()); null for an app that has none of its own, which
+     *        makes and opens no account link, sends no account email and starts no
+     *        passkey ceremony, and signs in by password (ADR 0162)
      * @param string $name the app's name: the passkey relying party's, and the issuer an
      *        authenticator app files codes under
      * @param array<string, int> $limits sign-in throttle limits by bucket over the
@@ -103,7 +105,7 @@ final readonly class AccountsKit
         Mailer $mailer,
         ThrottleStore $throttles,
         Throttle $throttle,
-        string $origin,
+        ?string $origin,
         string $name,
         AuthContext $auth,
         ?CsrfTokens $csrf = null,
@@ -123,7 +125,7 @@ final readonly class AccountsKit
         $this->sessions = new Sessions($connection, $this->cookie, $users, $this->epochs, $this->credentials);
         $this->arrivals = new HandoffArrivals($this->sessions);
         $this->passwords = new Passwords($users->passwordHashes(...), $keepHash);
-        $local = str_starts_with($origin, 'http://');
+        $local = $origin !== null && str_starts_with($origin, 'http://');
         $this->links = EmailLinks::fromKey($key, new DatabaseEmailLinkStore($connection), $this->lookup, $clock, localHttp: $local);
         $this->accountLinks = new AccountLinks($this->links, $origin, $paths);
         $this->startSession = new StartSession($this->sessions, $auth, $csrf);
@@ -165,7 +167,7 @@ final readonly class AccountsKit
             twoFactor: new TwoFactorStore($connection, new Encrypter($key), $clock),
             passkeys: new PasskeyStore($connection, $clock),
             challenges: new PasskeyChallenges($connection, $clock),
-            relyingParty: RelyingParty::forOrigin($origin, $name),
+            relyingParty: $origin === null ? null : RelyingParty::forOrigin($origin, $name),
             key: $key,
             issuer: $name,
         );
